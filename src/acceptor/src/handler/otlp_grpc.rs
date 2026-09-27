@@ -20,7 +20,7 @@ use super::WalManager;
 use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::processors_apply::apply_trace_processors;
-use super::retry_dedup::RetryDedup;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
@@ -162,18 +162,19 @@ impl TraceHandler {
                 metadata["tracestate"] = tracestate.into();
             }
         }
-        let metadata_str = serde_json::to_string(&metadata).ok();
 
         let batch_bytes = record_batch_to_bytes(&record_batch)
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
-        let fingerprint = self.retry_dedup.fingerprint(
+        let ingest_id = stamp_batch_fingerprint(
+            &mut metadata,
             &tenant_context.tenant_id,
             &tenant_context.dataset_id,
             &WalOperation::WriteTraces,
             &batch_bytes,
         );
+        let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
             .append(WalOperation::WriteTraces, batch_bytes, metadata_str.clone())
             .await
@@ -193,7 +194,7 @@ impl TraceHandler {
         // flush above (issue #1734). Awaiting the handle keeps behavior for
         // connected clients unchanged. A client's resend of a batch already
         // accepted is retired instead (see `retry_dedup`).
-        let forward_task = if self.retry_dedup.is_resend(fingerprint) {
+        let forward_task = if self.retry_dedup.is_resend(ingest_id) {
             spawn_retire_resend(
                 wal,
                 wal_entry_id,
@@ -205,6 +206,7 @@ impl TraceHandler {
                 self.flight_transport.clone(),
                 wal,
                 wal_entry_id,
+                ingest_id,
                 record_batch,
                 metadata_str,
                 "traces",

@@ -172,11 +172,20 @@ impl WalRetryConsumer {
                     }
                 };
 
+                // The hot path forwarded under the batch fingerprint stored in
+                // the metadata; reuse it so the writer's dedup sees the same
+                // id. Entries written before the field existed fall back to
+                // their own id.
+                let ingest_id = entry
+                    .metadata
+                    .as_deref()
+                    .and_then(common::ingest_dedup::ingest_id_from_metadata)
+                    .unwrap_or(entry.id);
                 match forward_batch_to_writer(
                     &self.flight_transport,
                     batch,
                     entry.metadata.as_deref(),
-                    entry.id,
+                    ingest_id,
                 )
                 .await
                 {
@@ -955,11 +964,10 @@ mod tests {
         }
     }
 
-    #[tokio::test]
-    async fn retried_entry_carries_its_own_id_as_ingest_id() {
-        // The retry consumer re-forwards an entry the hot path already wrote
-        // to the WAL; the writer must see the *entry's* id as `ingest_id`
-        // (not a freshly minted one) so dedup recognizes the resend.
+    /// Append one valid batch with `metadata` to a WAL, run a retry pass
+    /// against a capturing writer, and return the entry id alongside the
+    /// `ingest_id` the writer received.
+    async fn ingest_id_forwarded_for(metadata: Option<String>) -> (Uuid, serde_json::Value) {
         let catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
 
         let captured = CapturingFlightService {
@@ -1000,7 +1008,7 @@ mod tests {
             .unwrap();
         let batch_bytes = common::wal::record_batch_to_bytes(&sample_record_batch()).unwrap();
         let entry_id = wal
-            .append(WalOperation::WriteTraces, batch_bytes, None)
+            .append(WalOperation::WriteTraces, batch_bytes, metadata)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -1012,6 +1020,28 @@ mod tests {
 
         let metadata = captured.captured_metadata.lock().unwrap().clone().unwrap();
         let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-        assert_eq!(value["ingest_id"], entry_id.to_string());
+        (entry_id, value["ingest_id"].clone())
+    }
+
+    #[tokio::test]
+    async fn retried_entry_carries_the_ingest_id_from_its_metadata() {
+        // The hot path forwards under the batch fingerprint it stored in the
+        // entry's metadata; the retry consumer must reuse it (not the entry
+        // id) so the writer dedups a copy of the batch it already has.
+        let ingest_id = Uuid::new_v4();
+        let metadata = serde_json::json!({ "ingest_id": ingest_id.to_string() }).to_string();
+
+        let (_, forwarded) = ingest_id_forwarded_for(Some(metadata)).await;
+
+        assert_eq!(forwarded, ingest_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn retried_entry_without_a_stored_ingest_id_uses_its_own_id() {
+        // An entry left by an acceptor that predates the stored ingest id
+        // still forwards under a stable id, so its own retries dedup.
+        let (entry_id, forwarded) = ingest_id_forwarded_for(None).await;
+
+        assert_eq!(forwarded, entry_id.to_string());
     }
 }

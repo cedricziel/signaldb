@@ -19,7 +19,7 @@ use super::WalManager;
 use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::processors_apply::apply_log_processors;
-use super::retry_dedup::RetryDedup;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct LogHandler {
     /// Flight transport for forwarding telemetry
@@ -157,20 +157,20 @@ impl LogHandler {
             }
         }
 
-        // Serialize metadata for WAL storage (enables background processor routing)
-        let metadata_str = serde_json::to_string(&metadata).ok();
-
         // Step 1: Write to WAL first for durability
         let batch_bytes = record_batch_to_bytes(&record_batch)
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
-        let fingerprint = self.retry_dedup.fingerprint(
+        let ingest_id = stamp_batch_fingerprint(
+            &mut metadata,
             &tenant_context.tenant_id,
             &tenant_context.dataset_id,
             &WalOperation::WriteLogs,
             &batch_bytes,
         );
+        // Serialize metadata for WAL storage (enables background processor routing)
+        let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
             .append(WalOperation::WriteLogs, batch_bytes, metadata_str.clone())
             .await
@@ -190,7 +190,7 @@ impl LogHandler {
         // flush above (issue #1734). Awaiting the handle keeps behavior for
         // connected clients unchanged. A client's resend of a batch already
         // accepted is retired instead (see `retry_dedup`).
-        let forward_task = if self.retry_dedup.is_resend(fingerprint) {
+        let forward_task = if self.retry_dedup.is_resend(ingest_id) {
             spawn_retire_resend(
                 wal,
                 wal_entry_id,
@@ -202,6 +202,7 @@ impl LogHandler {
                 self.flight_transport.clone(),
                 wal,
                 wal_entry_id,
+                ingest_id,
                 record_batch,
                 metadata_str,
                 "logs",

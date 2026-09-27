@@ -68,9 +68,13 @@ being lost — the affected entries stay pending and retry once it recovers.
 
 One acceptor counter pairs with those: `signaldb.acceptor.resends_dropped`
 (`signaldb.tenant.id` and `signal` attributes) counts client resends of a batch the
-acceptor had already made durable, acknowledged without being ingested again
-(`[acceptor].retry_dedup_window`). A steady rate means clients give up before
-the acceptor answers: its ingest latency exceeds their export timeout.
+same acceptor had already made durable, acknowledged without being forwarded
+again (`[acceptor].retry_dedup_window`). A resend that reaches another acceptor
+replica, or arrives after a restart, is forwarded and dropped at the writer
+instead, counted by `signaldb.writer.ingest_duplicates_dropped` alongside the
+acceptor's own forward retries. A steady `resends_dropped` rate means clients
+give up before the acceptor answers: its ingest latency exceeds their export
+timeout.
 
 ## Resource identity
 

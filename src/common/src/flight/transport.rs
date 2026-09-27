@@ -483,9 +483,9 @@ impl InMemoryFlightTransport {
     /// a given set of candidates, and only the keys owned by a
     /// removed/added service remap when the candidate set changes — every
     /// other key's choice is unaffected. Used to pin every DoPut for a given
-    /// `ingest_id` to one writer, so a resend of the same acceptor WAL entry
-    /// (hot path or retry consumer) always reaches the writer that can
-    /// dedup it.
+    /// `ingest_id` (a batch content fingerprint) to one writer, so every copy
+    /// of a batch -- hot path, retry consumer, or a client's resend through
+    /// another acceptor -- reaches the writer that can dedup it.
     ///
     /// The hash uses a fixed seed (never `std`'s randomized `RandomState`)
     /// so the mapping is stable across processes and restarts, not just
