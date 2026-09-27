@@ -207,12 +207,16 @@ surface-parity check (`client-surface-parity` spec): every operation must
 have a CLI command and an MCP tool, or a reviewed entry in that test's
 `EXCLUDED` list explaining why not.
 
-xtask also owns one non-OpenAPI generation task: `cargo xtask vendor-semconv`
+xtask also owns two non-OpenAPI vendoring tasks. `cargo xtask vendor-semconv`
 copies the OpenTelemetry semantic-conventions `model/` tree at the version
 pinned by `common::self_monitoring::SEMCONV_SCHEMA_URL` into
 `vendor/otel-semconv/` (the source of the bundled `otel` schema registry). It
 is run by hand when the pin is bumped; a `common` test fails if the vendored
-`VERSION` and the pin disagree.
+`VERSION` and the pin disagree. `cargo xtask vendor-semconv-genai <commit>`
+does the same for the GenAI conventions (`vendor/otel-semconv-genai/`, the
+bundled `otel-genai` registry) at a full commit SHA, since that repository has
+no release tag yet, and repins `otel/registry-genai/manifest.yaml` to the
+same commit; the build fails if the two ever differ.
 
 Because the annotated paths are absolute, generated client URLs are absolute
 too — the CLI's admin client and the UI client are both configured with the

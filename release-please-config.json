@@ -125,6 +125,10 @@
         {
           "type": "generic",
           "path": "/otel/registry/manifest.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "/otel/registry-genai/manifest.yaml"
         }
       ]
     },
