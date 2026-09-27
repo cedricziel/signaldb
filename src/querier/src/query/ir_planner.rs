@@ -26,7 +26,8 @@
 //!   limit before it is lowered, so a pathological pattern is rejected rather
 //!   than executed.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
@@ -1368,6 +1369,12 @@ pub(crate) async fn plan_document(
         now_ns,
         aggregated: false,
         series_shaped: false,
+        demand: common::discovery::signal_for_source(source.name).map(|signal| AttrDemandScope {
+            tenant_slug,
+            dataset_slug,
+            signal,
+            seen: RefCell::new(HashSet::new()),
+        }),
         col_of: HashMap::new(),
         derived_types: HashMap::new(),
         schema_cols: base
@@ -1616,10 +1623,30 @@ struct CorrelateScan<'a> {
     correlate_max_rows: usize,
 }
 
+/// Where to record per-level attribute-promotion demand for one document
+/// (change: otel-native-schema layer 6) — the tenant/dataset slugs and
+/// signal the compactor's analyzer keys `attribute_level_stats` by, plus
+/// this document's own dedup set so a key hit more than once (e.g. the same
+/// filter repeated, or a key used in both a filter and a group-by) counts
+/// once, mirroring the compat paths' flat demand counters.
+struct AttrDemandScope<'a> {
+    tenant_slug: &'a str,
+    dataset_slug: &'a str,
+    signal: &'static str,
+    seen: RefCell<HashSet<(AttributeLevel, String)>>,
+}
+
 struct Lowering<'a> {
     source: &'a SourcePlan,
     resolver: &'a SchemaResolver,
     now_ns: i64,
+    /// Tenant/dataset slugs — the same ones the compactor's analyzer keys
+    /// `attribute_level_stats` by — for recording per-level attribute
+    /// demand (change: otel-native-schema layer 6). `None` for a caller
+    /// that constructs a `Lowering` directly rather than through
+    /// `plan_document` (a `correlate` unit test): demand is simply not
+    /// recorded then.
+    demand: Option<AttrDemandScope<'a>>,
     aggregated: bool,
     series_shaped: bool,
     /// Logical name → current DataFrame column name (extract-derived and
@@ -1716,6 +1743,7 @@ impl Lowering<'_> {
                 let sort = keys
                     .iter()
                     .map(|k| {
+                        self.record_field_demand(&k.of);
                         let ascending = matches!(k.dir, common::query_ir::Direction::Asc);
                         Ok(self.value_expr(&k.of)?.sort(ascending, true))
                     })
@@ -1993,6 +2021,7 @@ impl Lowering<'_> {
         n: i64,
         ascending: bool,
     ) -> Result<DataFrame, QuerierError> {
+        self.record_field_demand(of);
         // `value_expr`, not `df_col` — see `Stage::Order`'s comment above.
         df.sort(vec![self.value_expr(of)?.sort(ascending, false)])
             .map_err(QuerierError::QueryFailed)?
@@ -2034,6 +2063,7 @@ impl Lowering<'_> {
             group_exprs.push(date_bin(stride, ts_ns, origin).alias("bucket"));
         }
         for by in &agg.by {
+            self.record_field_demand(by);
             let alias = safe_ident(by);
             group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
             new_col_of.insert(by.clone(), alias);
@@ -2314,6 +2344,7 @@ impl Lowering<'_> {
         let mut group_exprs = vec![ident("bucket").alias("bucket")];
         let mut new_col_of = HashMap::new();
         for by in &agg.by {
+            self.record_field_demand(by);
             let alias = safe_ident(by);
             group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
             new_col_of.insert(by.clone(), alias);
@@ -2938,6 +2969,46 @@ impl Lowering<'_> {
         typed_home_filter_expr(homes, promoted, key, prefix, op, literal)
     }
 
+    /// Record per-level attribute-promotion demand for a field used in a
+    /// filter or grouping position (change: otel-native-schema layer 6):
+    /// only a [`Resolved::TypedAttribute`] with at least one committed home
+    /// counts — a key with no committed type has nothing to promote. One
+    /// hit per (level, key) per document, whichever level(s) the resolved
+    /// homes actually read (an unqualified reference coalescing more than
+    /// one level counts each of them).
+    fn record_attr_demand(&self, resolved: &Resolved) {
+        let Some(scope) = &self.demand else { return };
+        let Resolved::TypedAttribute { homes, key, .. } = resolved else {
+            return;
+        };
+        for home in homes {
+            let Some((container, _)) = typed_attributes::canonical_of_home_column(home) else {
+                continue;
+            };
+            let level = typed_attributes::container_level(container);
+            if scope.seen.borrow_mut().insert((level, key.clone())) {
+                common::attr_demand::record_level(
+                    scope.tenant_slug,
+                    scope.dataset_slug,
+                    scope.signal,
+                    level,
+                    key,
+                );
+            }
+        }
+    }
+
+    /// Resolve `logical` and record its attribute demand, for a grouping or
+    /// ordering position ([`Self::lower_aggregate`], [`Self::lower_rank`],
+    /// `Stage::Order`) — the filter path ([`Self::lower_leaf`]) already has
+    /// its `Resolved` in hand and calls [`Self::record_attr_demand`]
+    /// directly.
+    fn record_field_demand(&self, logical: &str) {
+        if let Some(resolved) = self.resolver.resolve("", logical) {
+            self.record_attr_demand(&resolved);
+        }
+    }
+
     /// Extract one attribute from a named span event (see
     /// `Resolved::EventAttribute`), via the `ir_event_attr` UDF.
     fn event_attr_expr(&self, events_column: &str, event_name: &str, key: &str) -> Expr {
@@ -3019,6 +3090,7 @@ impl Lowering<'_> {
             // committed canonical type, not a permissive-fallback default.
             let untyped = !self.resolver.has_declared_type(&leaf.field)
                 && !matches!(&resolved, Resolved::TypedAttribute { .. });
+            self.record_attr_demand(&resolved);
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -6511,6 +6583,146 @@ mod tests {
         );
     }
 
+    /// A `logs` table on the typed layout with all three attribute
+    /// containers (`log_attributes`, `scope_attributes`,
+    /// `resource_attributes`) so a per-level attribute-demand test can
+    /// exercise a record-level filter, a `resource.`-qualified filter, and
+    /// an unqualified key recorded at two levels — registered under
+    /// `tenant`/`dataset` rather than the fixed `"t"`/`"d"` most tests share,
+    /// so a parallel test's demand hits never land in this one's drain.
+    fn attr_demand_logs_ctx(tenant: &str, dataset: &str) -> SessionContext {
+        let mut fields = vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        )];
+        let mut columns: Vec<ArrayRef> =
+            vec![Arc::new(TimestampNanosecondArray::from(vec![10_i64]))];
+
+        for (container, row_pairs) in [
+            (
+                "log_attributes",
+                vec![
+                    ("http.status_code", serde_json::json!(200)),
+                    ("priority", serde_json::json!(7)),
+                    ("region", serde_json::json!("eu")),
+                ],
+            ),
+            ("scope_attributes", vec![("priority", serde_json::json!(7))]),
+            (
+                "resource_attributes",
+                vec![("environment", serde_json::json!("prod"))],
+            ),
+        ] {
+            extend_typed_container(
+                &mut fields,
+                &mut columns,
+                "logs",
+                "physical-v4",
+                container,
+                &[row(&row_pairs)],
+                |_, observed| standard_placement(observed),
+            );
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema(dataset, sp).unwrap();
+        ctx.register_catalog(tenant, cat);
+        ctx
+    }
+
+    /// A document filtering on a duplicated record-level attribute, a
+    /// `resource.`-qualified one negated (`not`), an unqualified key
+    /// committed at two levels, and a key with no committed type at all —
+    /// plus a `group by` on a fifth key — must record exactly the (level,
+    /// key) pairs that have a committed type, once each, no matter how many
+    /// times a document repeats them (change: otel-native-schema layer 6).
+    #[tokio::test]
+    async fn ir_query_records_per_level_attribute_demand_from_filters_and_grouping() {
+        let tenant = "attr-demand-tenant";
+        let dataset = "attr-demand-dataset";
+        let ctx = attr_demand_logs_ctx(tenant, dataset);
+        let types = canonical_types(&[
+            (
+                "http.status_code",
+                AttributeLevel::Record,
+                CanonicalType::Int64,
+            ),
+            ("priority", AttributeLevel::Record, CanonicalType::Int64),
+            ("priority", AttributeLevel::Scope, CanonicalType::Int64),
+            (
+                "environment",
+                AttributeLevel::Resource,
+                CanonicalType::String,
+            ),
+            ("region", AttributeLevel::Record, CanonicalType::String),
+        ]);
+        let lookup: Arc<dyn CanonicalTypeLookup> = Arc::new(StaticLookup(types));
+
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table", "fields": ["region", "n"],
+            "pipeline": [
+                { "where": { "and": [
+                    { "field": "http.status_code", "op": "eq", "value": 200 },
+                    { "field": "http.status_code", "op": "eq", "value": 200 },
+                    { "not": { "field": "resource.environment", "op": "eq", "value": "staging" } },
+                    { "field": "priority", "op": "eq", "value": 7 },
+                    { "field": "nope.attr", "op": "exists" }
+                ]}},
+                { "aggregate": { "by": ["region"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+
+        let (df, ..) = plan_document(
+            &ctx,
+            &d,
+            PlanRequest::new(tenant, dataset, 0)
+                .with_attribute_type_request(AttributeTypeRequest::Resolve(Some(lookup))),
+        )
+        .await
+        .unwrap()
+        .expect("typed table scans");
+        df.collect().await.unwrap();
+
+        let drained: Vec<((AttributeLevel, String), u64)> = common::attr_demand::drain_level()
+            .into_iter()
+            .filter(|((t, d, s, _, _), _)| t == tenant && d == dataset && s == "logs")
+            .map(|((_, _, _, level, key), count)| ((level, key), count))
+            .collect();
+        let recorded: HashMap<(AttributeLevel, String), u64> = drained.into_iter().collect();
+
+        for (level, key) in [
+            (AttributeLevel::Record, "http.status_code"),
+            (AttributeLevel::Resource, "environment"),
+            (AttributeLevel::Record, "priority"),
+            (AttributeLevel::Scope, "priority"),
+            (AttributeLevel::Record, "region"),
+        ] {
+            assert_eq!(
+                recorded.get(&(level, key.to_string())),
+                Some(&1),
+                "expected exactly one hit for {level:?}/{key}, got {recorded:?}"
+            );
+        }
+        assert!(
+            !recorded.keys().any(|(_, key)| key == "nope.attr"),
+            "a key with no committed type has nothing to promote: {recorded:?}"
+        );
+        assert_eq!(
+            recorded.len(),
+            5,
+            "no unexpected demand entries: {recorded:?}"
+        );
+    }
+
     /// A `logs` table with `service.tier` (`String`-canonical) and
     /// `retry.count` (`Int64`-canonical), plus a `label_<key>` column for
     /// each — `label_service_tier` (relevant, since its type is `String`)
@@ -8717,6 +8929,7 @@ mod tests {
                     source,
                     resolver,
                     now_ns: 0,
+                    demand: None,
                     aggregated: false,
                     series_shaped: false,
                     col_of: HashMap::new(),
