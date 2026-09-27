@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useId, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   type AttrValue,
@@ -103,7 +103,11 @@ import {
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
 import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
+import {
+  buildWaterfall,
+  formatDurationMs,
+  rulerTicks,
+} from "../../lib/waterfall";
 import { traceToGraph } from "../../lib/traceToGraph";
 import {
   ServiceGraph,
@@ -640,16 +644,16 @@ function GroupList({
     DEFAULT_GROUP_SORT.key,
     DEFAULT_GROUP_SORT.dir,
   );
-  const refetchInterval = liveRefetchInterval(live);
-  const result = useQuery({
-    queryKey: [
-      "trace-groups",
   // Rate is count over a fixed window: it keeps its own header key so the
   // arrow follows the clicked column, but shares the count query and cache.
   const querySort: GroupSort = {
     key: sort.key === "rate" ? "n" : sort.key,
     dir: sort.dir,
   };
+  const refetchInterval = liveRefetchInterval(live);
+  const result = useQuery({
+    queryKey: [
+      "trace-groups",
       rangeKey,
       dims.join(","),
       grain,
@@ -1159,6 +1163,21 @@ function TraceDetail({ state, update }: Props) {
             aria-label="Spans"
             onPointerLeave={clearHover}
           >
+            <div className="wf-ruler" aria-hidden="true">
+              <span className="span-label" />
+              <span className="wf-ruler-track">
+                {rulerTicks(waterfall.traceDurationNs).map((tick) => (
+                  <span
+                    key={tick.pct}
+                    className="wf-tick"
+                    style={{ "--pct": tick.pct } as CSSProperties}
+                  >
+                    {tick.label}
+                  </span>
+                ))}
+              </span>
+              <span className="span-dur" />
+            </div>
             {visibleRows.map((row) => (
               <button
                 key={row.span.spanId}

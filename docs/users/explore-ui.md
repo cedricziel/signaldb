@@ -89,7 +89,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   status as a coloured chip (error / ok / unset), sortable with errors
   first; duplicate trace ids in the response (a backend data issue) are
   deduped to the first occurrence, so a repeat doesn't scramble the sort; selecting a trace
-  opens a waterfall with span details and error highlighting. A parent span
+  opens a waterfall with span details and error highlighting. A time ruler
+  above the bars marks 0, ¼, ½, ¾, and the total trace duration (0, ½, and
+  the total at phone width). A parent span
   that recorded no duration (an un-ended root, for instance) is drawn as a
   dashed outline over its child spans instead of a sliver; its own duration
   still reads as recorded. Clicking a span row or bar selects it and opens
