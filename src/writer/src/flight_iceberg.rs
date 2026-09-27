@@ -866,6 +866,20 @@ mod tests {
     use tempfile::tempdir;
     use tracing_subscriber::layer::SubscriberExt;
 
+    /// A `TypeAuthority` backed by a fresh in-memory SQL catalog. Every
+    /// signal table's current `schemas.toml` version is the typed
+    /// attribute layout (one-shot cutover), so a service that actually
+    /// commits a batch needs one attached.
+    async fn test_type_authority() -> Arc<TypeAuthority> {
+        let sql_catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+        let resolver = common::schema_registry::SchemaResolver::new(sql_catalog.clone());
+        Arc::new(TypeAuthority::new(
+            sql_catalog,
+            resolver,
+            Arc::new(common::config::Configuration::default()),
+        ))
+    }
+
     /// Captures event field values as they are actually recorded by
     /// `tracing::Value`, so tests can tell a raw string field apart from one
     /// that fell through to `Debug` formatting.
@@ -1082,7 +1096,12 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let service = IcebergWriterFlightService::new(catalog_manager, manager, &writer_config);
+        let service = IcebergWriterFlightService::with_type_authority(
+            catalog_manager,
+            manager,
+            &writer_config,
+            test_type_authority().await,
+        );
 
         wal.append(
             WalOperation::WriteMetrics,
@@ -1145,8 +1164,12 @@ mod tests {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let (manager, wal) = test_wal_manager(temp_dir.path()).await;
-        let service =
-            IcebergWriterFlightService::new(catalog_manager, manager, &WriterConfig::default());
+        let service = IcebergWriterFlightService::with_type_authority(
+            catalog_manager,
+            manager,
+            &WriterConfig::default(),
+            test_type_authority().await,
+        );
 
         wal.append(
             WalOperation::WriteMetrics,

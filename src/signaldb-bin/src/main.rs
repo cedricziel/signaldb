@@ -261,11 +261,23 @@ async fn main() -> Result<()> {
     writer::cli::open_existing_writer_wals(&writer_wal_manager).await;
     writer_wal_manager.warn_if_fd_headroom_thin("writer").await;
 
+    // Canonical-type resolver for the typed attribute layout (otel-native-schema
+    // layer 4.2a): shared across every table writer the WAL processor creates,
+    // so a key resolved for one commit group is cached for the next. Mirrors
+    // the standalone writer binary's wiring (`writer::cli`) -- the monolith is
+    // an independent wiring and does not inherit it for free.
+    let writer_type_authority = Arc::new(common::schema::type_authority::TypeAuthority::new(
+        router_bootstrap.catalog().clone(),
+        common::schema_registry::SchemaResolver::new(router_bootstrap.catalog().clone()),
+        Arc::new(config.clone()),
+    ));
+
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let writer_flight_service = IcebergWriterFlightService::new(
+    let writer_flight_service = IcebergWriterFlightService::with_type_authority(
         catalog_manager.clone(),
         writer_wal_manager.clone(),
         &config.writer,
+        writer_type_authority,
     );
 
     // Seed the ingest-id dedup cache from WAL entries a previous run left on

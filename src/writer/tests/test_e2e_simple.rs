@@ -1,6 +1,7 @@
 use anyhow::Result;
 use common::CatalogManager;
 use common::config::{Configuration, SchemaConfig, StorageConfig};
+use common::schema::type_authority::TypeAuthority;
 use datafusion::arrow::array::{
     Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
 };
@@ -8,15 +9,26 @@ use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use std::sync::Arc;
 use writer::IcebergTableWriter;
 
+/// `metrics_gauge`'s current `schemas.toml` version is the typed attribute
+/// layout, so a writer that actually commits a batch needs a `TypeAuthority`
+/// attached (see `IcebergTableWriter::with_type_authority`).
 async fn create_writer(config: Configuration, tenant_id: &str) -> Result<IcebergTableWriter> {
     let catalog_manager = CatalogManager::new(config).await?;
-    IcebergTableWriter::new(
+    let sql_catalog = common::catalog::Catalog::new_in_memory().await?;
+    let resolver = common::schema_registry::SchemaResolver::new(sql_catalog.clone());
+    let type_authority = Arc::new(TypeAuthority::new(
+        sql_catalog,
+        resolver,
+        Arc::new(Configuration::default()),
+    ));
+    let writer = IcebergTableWriter::new(
         &catalog_manager,
         tenant_id.to_string(),
         "test_dataset".to_string(),
         "metrics_gauge".to_string(),
     )
-    .await
+    .await?;
+    Ok(writer.with_type_authority(type_authority))
 }
 
 /// Simple E2E test configuration

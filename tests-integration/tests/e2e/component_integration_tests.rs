@@ -26,7 +26,6 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::{Instant, sleep, timeout};
 use tonic::transport::{Channel, Server};
-use writer::IcebergWriterFlightService;
 
 /// Build a WalConfig with an immediate-flush buffer (size 1) so tests don't
 /// need to wait out the time-based flush interval, plus an isolated Iceberg
@@ -256,11 +255,13 @@ async fn test_acceptor_writer_flow() {
             .expect("Failed to create CatalogManager for writer"),
     );
     precreate_namespace(&writer_catalog_manager).await;
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         writer_catalog_manager,
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(common::flight::flight_service_server(writer_service))
@@ -634,11 +635,13 @@ async fn test_direct_acceptor_writer_flight() {
             .expect("Failed to create CatalogManager for writer"),
     );
     precreate_namespace(&writer_catalog_manager).await;
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         writer_catalog_manager,
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();

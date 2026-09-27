@@ -15,7 +15,6 @@ use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
 use std::sync::Arc;
 use tempfile::tempdir;
-use writer::{IcebergTableWriter, WalProcessor};
 
 /// Integration test demonstrating the Iceberg table writer functionality
 #[tokio::test]
@@ -26,7 +25,7 @@ async fn test_iceberg_writer_integration() -> Result<()> {
 
     // Creating an Iceberg writer against a fresh in-memory catalog must
     // deterministically succeed (it creates the "traces" table on demand).
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "default".to_string(),
         "default".to_string(),
@@ -149,7 +148,11 @@ async fn test_wal_processor_integration() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
 
     // Create WAL processor
-    let mut processor = WalProcessor::new(wal_manager.clone(), catalog_manager.clone());
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
 
     // Serialize a schema-correct metrics batch and write it to WAL.
     let batch = metrics_gauge_batch(&[1.0, 2.0])?;
@@ -223,7 +226,7 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create writer with tenant_id/dataset_id that map to slugs "mycorp"/"prod"
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "tenant-1".to_string(),
         "dataset-1".to_string(),
@@ -289,7 +292,7 @@ async fn test_created_tables_enable_metadata_pruning() -> Result<()> {
 
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "tenant-1".to_string(),
         "dataset-1".to_string(),
@@ -366,7 +369,7 @@ async fn test_metadata_pruning_reclaims_old_metadata_files() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create the table (applies the retention properties).
-    let _writer = IcebergTableWriter::new(
+    let _writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "tenant-1".to_string(),
         "dataset-1".to_string(),
@@ -428,7 +431,7 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create a writer for the traces table (which creates the table with partitioning)
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "default".to_string(),
         "default".to_string(),
@@ -458,7 +461,7 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     );
 
     // Also test logs table
-    let logs_writer = IcebergTableWriter::new(
+    let logs_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "default".to_string(),
         "default".to_string(),
@@ -472,7 +475,7 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     assert!(!logs_spec.fields().is_empty());
 
     // Also test metrics_gauge table
-    let metrics_writer = IcebergTableWriter::new(
+    let metrics_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "default".to_string(),
         "default".to_string(),
@@ -534,7 +537,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
 
     // Step 1: Writer creates the traces table under slug-based namespace [testco, staging]
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "test-tenant".to_string(),
         "test-dataset".to_string(),
@@ -952,7 +955,7 @@ async fn attr_tokens_write_populates_column_and_bloom_filter() -> Result<()> {
         "sqlite:file:signaldb_attr_tokens?mode=memory&cache=shared".to_string();
     let manager = CatalogManager::new(config).await?;
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &manager,
         "default".to_string(),
         "default".to_string(),

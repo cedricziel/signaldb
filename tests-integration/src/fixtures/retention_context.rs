@@ -162,7 +162,7 @@ impl RetentionTestContext {
         dataset_id: &str,
         table_name: &str,
     ) -> Result<IcebergTableWriter> {
-        let writer = IcebergTableWriter::new(
+        let writer = crate::test_support::writer_with_type_authority(
             &self.catalog.catalog_manager,
             tenant_id.to_string(),
             dataset_id.to_string(),

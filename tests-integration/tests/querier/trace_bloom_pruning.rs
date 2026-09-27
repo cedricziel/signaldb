@@ -24,7 +24,6 @@ use anyhow::Result;
 use common::catalog_manager::CatalogManager;
 use datafusion::prelude::SessionContext;
 use tests_integration::generators::{self, BLOOM_TARGET_TRACE_ID};
-use writer::IcebergTableWriter;
 
 const NUM_FILES: usize = 5;
 const TARGET_FILE: usize = 2;
@@ -50,7 +49,7 @@ async fn single_trace_lookup_prunes_row_groups_via_bloom_filter() -> Result<()> 
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

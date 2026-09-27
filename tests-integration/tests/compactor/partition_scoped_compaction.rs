@@ -24,7 +24,6 @@ use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -101,7 +100,7 @@ async fn compaction_rewrites_only_the_target_partition() -> Result<()> {
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -225,7 +224,7 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -290,7 +289,7 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
 
     // Append into a *different*, still-open partition — the realistic shape of
     // live ingest running alongside compaction of an older hour.
-    let mut concurrent_writer = IcebergTableWriter::new(
+    let mut concurrent_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -401,7 +400,7 @@ async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -516,7 +515,7 @@ async fn wide_rows_compact_only_under_a_bounded_scan_batch() -> Result<()> {
         let dataset_id = "test-dataset";
         let table_name = "traces";
 
-        let mut writer = IcebergTableWriter::new(
+        let mut writer = tests_integration::test_support::writer_with_type_authority(
             &catalog_manager,
             tenant_id.to_string(),
             dataset_id.to_string(),
@@ -636,7 +635,7 @@ async fn unspillable_reservation_over_budget_fails_with_attributable_resource_er
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -731,7 +730,7 @@ async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> 
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

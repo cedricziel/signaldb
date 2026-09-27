@@ -40,7 +40,6 @@ use std::collections::HashSet;
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -141,7 +140,7 @@ async fn default_config_compacts_and_reclaims_end_to_end() -> Result<()> {
 
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

@@ -41,7 +41,6 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 const BASE_NS: u64 = 1_700_000_000_000_000_000;
 const API_KEY: &str = "test-key-123";
@@ -189,11 +188,13 @@ async fn setup() -> TestServices {
             .await
             .expect("catalog mgr"),
     );
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()

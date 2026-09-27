@@ -91,7 +91,7 @@ impl SequentialTraces {
             .with_tenant(tenant, DATASET)
             .build();
         let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-        let writer = IcebergTableWriter::new(
+        let writer = crate::test_support::writer_with_type_authority(
             &catalog_manager,
             tenant.to_string(),
             DATASET.to_string(),

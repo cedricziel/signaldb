@@ -41,7 +41,6 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 /// A base timestamp (2023-11-14T22:13:20Z) shared by the ingested signals.
 const BASE_NS: i64 = 1_700_000_000_000_000_000;
@@ -195,11 +194,13 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
             .await
             .expect("catalog mgr"),
     );
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
         writer_wal,
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()

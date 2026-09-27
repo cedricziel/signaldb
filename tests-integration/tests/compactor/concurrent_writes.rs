@@ -68,7 +68,7 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // Phase 1: Create initial small files via Writer
     tracing::info!("Phase 1: Creating initial small files via Writer");
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -146,7 +146,7 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // Phase 4: Simulate concurrent write from Writer service
     tracing::info!("Phase 4: Writing concurrent data via Writer");
 
-    let mut concurrent_writer = IcebergTableWriter::new(
+    let mut concurrent_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),
@@ -276,7 +276,7 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     let table_name = "traces";
 
     // Create initial data via Writer
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         tenant_id.to_string(),
         dataset_id.to_string(),

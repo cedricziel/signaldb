@@ -27,7 +27,6 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 struct TestServices {
     object_store: Arc<dyn ObjectStore>,
@@ -144,11 +143,13 @@ async fn setup_logs_metrics_services() -> TestServices {
             .await
             .expect("Failed to create CatalogManager for writer"),
     );
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         writer_catalog_manager,
         writer_wal,
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(common::flight::flight_service_server(writer_service))

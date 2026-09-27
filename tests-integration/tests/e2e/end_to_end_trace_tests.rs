@@ -28,7 +28,6 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 const TEST_TENANT: &str = "test-tenant";
 const TEST_DATASET: &str = "test-dataset";
@@ -217,11 +216,13 @@ async fn setup_services() -> TestServices {
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
         writer_wal,
         &WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
