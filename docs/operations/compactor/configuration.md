@@ -492,7 +492,7 @@ max_live_files_threshold = 500000
 
 ### `[compactor.attr_promotion]`
 
-Attribute auto-promotion (epic #737) turns frequently queried attribute keys into materialized `label_<key>` columns at compaction time. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the persisted statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite.
+Attribute auto-promotion (epic #737) turns frequently queried attribute keys into materialized `label_<key>` columns at compaction time. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the persisted statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite. On a table in the typed attribute layout (the current version of every signal), only a key whose canonical type is recorded as `String` everywhere it appears is eligible — see [Attribute Promotion](operations.md#attribute-promotion).
 
 ```toml
 [compactor.attr_promotion]

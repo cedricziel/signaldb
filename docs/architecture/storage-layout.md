@@ -403,75 +403,105 @@ lists — metrics/profiles only gained this in the same change that added
 their `schemas.toml` sections; before that, only traces/logs resolved from
 TOML and metrics/profiles were hand-written Rust.
 
-#### Traces Table (v4 -- current)
+#### Traces Table (v5 -- current)
 
-Defined in `schemas.toml` via v1 base plus v2 (renames, computed fields), v3 (#1208's numeric/dropped-count columns), and v4 (#1340's `resource_identity`) inheritance.
+Defined in `schemas.toml` via v1 base plus v2 (renames, computed fields), v3 (#1208's numeric/dropped-count columns), v4 (#1340's `resource_identity`), and v5 (the typed attribute layout, `otel-native-schema` layer 4 -- see below) inheritance.
 
-| #   | Field                      | Iceberg Type | Required | Notes                                                                                             |
-| --- | -------------------------- | ------------ | -------- | ------------------------------------------------------------------------------------------------- |
-| 1   | `trace_id`                 | String       | Yes      |                                                                                                   |
-| 2   | `span_id`                  | String       | Yes      |                                                                                                   |
-| 3   | `parent_span_id`           | String       | No       |                                                                                                   |
-| 4   | `span_name`                | String       | Yes      | Renamed from `name` in v2                                                                         |
-| 5   | `service_name`             | String       | Yes      |                                                                                                   |
-| 6   | `start_time_unix_nano`     | Long         | Yes      | Nanoseconds since epoch                                                                           |
-| 7   | `end_time_unix_nano`       | Long         | Yes      | Nanoseconds since epoch                                                                           |
-| 8   | `duration_nanos`           | Long         | Yes      | Renamed from `duration_nano` in v2                                                                |
-| 9   | `span_kind`                | String       | Yes      | Derived from `span_kind_number`, never the reverse                                                |
-| 10  | `status_code`              | String       | Yes      | Derived from `status_code_number`, never the reverse                                              |
-| 11  | `status_message`           | String       | No       |                                                                                                   |
-| 12  | `is_root`                  | Boolean      | Yes      |                                                                                                   |
-| 13  | `span_attributes`          | String       | No       | JSON. Renamed from `attributes_json` in v2                                                        |
-| 14  | `resource_attributes`      | String       | No       | JSON. Renamed from `resource_json` in v2                                                          |
-| 15  | `events`                   | String       | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
-| 16  | `links`                    | String       | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
-| 17  | `trace_state`              | String       | No       |                                                                                                   |
-| 18  | `resource_schema_url`      | String       | No       |                                                                                                   |
-| 19  | `scope_name`               | String       | No       |                                                                                                   |
-| 20  | `scope_version`            | String       | No       |                                                                                                   |
-| 21  | `scope_schema_url`         | String       | No       |                                                                                                   |
-| 22  | `scope_attributes`         | String       | No       |                                                                                                   |
-| 23  | `timestamp`                | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key.                                              |
-| 24  | `date_day`                 | Date         | Yes      | Computed from timestamp                                                                           |
-| 25  | `hour`                     | Int          | Yes      | Computed from timestamp                                                                           |
-| 26  | `span_kind_number`         | Int          | No       | v3: numeric OTel source of truth for `span_kind` (#1208)                                          |
-| 27  | `status_code_number`       | Int          | No       | v3: numeric OTel source of truth for `status_code` (#1208)                                        |
-| 28  | `dropped_attributes_count` | Long         | No       | v3: preserved verbatim from the OTel span (#1208)                                                 |
-| 29  | `dropped_events_count`     | Long         | No       | v3: as above                                                                                      |
-| 30  | `dropped_links_count`      | Long         | No       | v3: as above                                                                                      |
-| 31  | `resource_identity`        | String       | No       | v4: digest of the span's resource attribute set, from `common::schema::resource_identity` (#1340) |
+| #   | Field                                                      | Iceberg Type           | Required | Notes                                                                                             |
+| --- | ---------------------------------------------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| 1   | `trace_id`                                                 | String                 | Yes      |                                                                                                   |
+| 2   | `span_id`                                                  | String                 | Yes      |                                                                                                   |
+| 3   | `parent_span_id`                                           | String                 | No       |                                                                                                   |
+| 4   | `span_name`                                                | String                 | Yes      | Renamed from `name` in v2                                                                         |
+| 5   | `service_name`                                             | String                 | Yes      |                                                                                                   |
+| 6   | `start_time_unix_nano`                                     | Long                   | Yes      | Nanoseconds since epoch                                                                           |
+| 7   | `end_time_unix_nano`                                       | Long                   | Yes      | Nanoseconds since epoch                                                                           |
+| 8   | `duration_nanos`                                           | Long                   | Yes      | Renamed from `duration_nano` in v2                                                                |
+| 9   | `span_kind`                                                | String                 | Yes      | Derived from `span_kind_number`, never the reverse                                                |
+| 10  | `status_code`                                              | String                 | Yes      | Derived from `status_code_number`, never the reverse                                              |
+| 11  | `status_message`                                           | String                 | No       |                                                                                                   |
+| 12  | `is_root`                                                  | Boolean                | Yes      |                                                                                                   |
+| 13  | `span_attributes_str`                                      | Map<String,String>     | No       | v5: typed attribute layout -- one of five `span_attributes` columns, see below                    |
+| 13a | `span_attributes_int`                                      | Map<String,Long>       | No       | v5: as above                                                                                      |
+| 13b | `span_attributes_double`                                   | Map<String,Double>     | No       | v5: as above                                                                                      |
+| 13c | `span_attributes_bool`                                     | Map<String,Boolean>    | No       | v5: as above                                                                                      |
+| 13d | `span_attributes_residue`                                  | Binary                 | No       | v5: one CBOR document per row for off-type/array/kvlist/bytes values, see below                   |
+| 14  | `resource_attributes_str`                                  | Map<String,String>     | No       | v5: typed attribute layout, replaces v2's `resource_attributes` (renamed from `resource_json`)    |
+| 14a | `resource_attributes_int`                                  | Map<String,Long>       | No       | v5: as above                                                                                      |
+| 14b | `resource_attributes_double`                               | Map<String,Double>     | No       | v5: as above                                                                                      |
+| 14c | `resource_attributes_bool`                                 | Map<String,Boolean>    | No       | v5: as above                                                                                      |
+| 14d | `resource_attributes_residue`                              | Binary                 | No       | v5: as above                                                                                      |
+| 15  | `events`                                                   | String                 | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
+| 16  | `links`                                                    | String                 | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
+| 17  | `trace_state`                                              | String                 | No       |                                                                                                   |
+| 18  | `resource_schema_url`                                      | String                 | No       |                                                                                                   |
+| 19  | `scope_name`                                               | String                 | No       |                                                                                                   |
+| 20  | `scope_version`                                            | String                 | No       |                                                                                                   |
+| 21  | `scope_schema_url`                                         | String                 | No       |                                                                                                   |
+| 22  | `scope_attributes_str`/`_int`/`_double`/`_bool`/`_residue` | Map/Map/Map/Map/Binary | No       | v5: typed attribute layout, same five-column shape as `span_attributes`/`resource_attributes`     |
+| 23  | `timestamp`                                                | Timestamp              | Yes      | Computed from `start_time_unix_nano`. Partition key.                                              |
+| 24  | `date_day`                                                 | Date                   | Yes      | Computed from timestamp                                                                           |
+| 25  | `hour`                                                     | Int                    | Yes      | Computed from timestamp                                                                           |
+| 26  | `span_kind_number`                                         | Int                    | No       | v3: numeric OTel source of truth for `span_kind` (#1208)                                          |
+| 27  | `status_code_number`                                       | Int                    | No       | v3: numeric OTel source of truth for `status_code` (#1208)                                        |
+| 28  | `dropped_attributes_count`                                 | Long                   | No       | v3: preserved verbatim from the OTel span (#1208)                                                 |
+| 29  | `dropped_events_count`                                     | Long                   | No       | v3: as above                                                                                      |
+| 30  | `dropped_links_count`                                      | Long                   | No       | v3: as above                                                                                      |
+| 31  | `resource_identity`                                        | String                 | No       | v4: digest of the span's resource attribute set, from `common::schema::resource_identity` (#1340) |
 
-All v3/v4 additions are nullable; null on any row written before its column existed.
+All v3/v4/v5 additions are nullable; null on any row written before its column existed. See
+[Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) below for what the five
+columns per container mean and how the v4 -> v5 cutover was applied.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Logs Table (v3 -- current)
+##### Typed attribute layout (v5, one-shot cutover)
+
+Every attribute container on every signal (span/log/record, resource, scope)
+is five physical columns instead of one `Map<String,String>`: one typed map
+per canonical type (`{container}_str`, `_int`, `_double`, `_bool`) plus a
+`{container}_residue` `Binary` column holding one CBOR document per row for
+values that have no typed home -- a value whose sent type doesn't match the
+key's canonical type, an array or key-value list, or bytes. A key lives in
+exactly one typed home; `attribute-type-authority` (see
+`docs/users/querying-ir.md`) picks that home from the first value ever
+observed for the key (or a config override), and later conflicting values go
+to the residue rather than retyping the column.
+
+This landed as a **one-shot cutover**, not an evolution: a table still in the
+legacy single-map layout is dropped and recreated in the typed layout the
+next time it is loaded (`IcebergTableManager::ensure_table`), because Iceberg
+schema evolution cannot add or remove map-typed columns on a live table. Data
+in a table at cutover time is not migrated -- see
+`docs/operations/table-provisioning.md` for the operational impact.
+
+#### Logs Table (v4 -- current)
 
 Defined in `schemas.toml`.
 
-| #   | Field                 | Iceberg Type       | Required | Notes                                                                                                         |
-| --- | --------------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------- |
-| 1   | `timestamp`           | Timestamp          | Yes      | Partition key                                                                                                 |
-| 2   | `observed_timestamp`  | Timestamp          | No       |                                                                                                               |
-| 3   | `trace_id`            | String             | No       | Correlation with traces                                                                                       |
-| 4   | `span_id`             | String             | No       | Correlation with traces                                                                                       |
-| 5   | `trace_flags`         | Int                | No       |                                                                                                               |
-| 6   | `severity_text`       | String             | No       |                                                                                                               |
-| 7   | `severity_number`     | Int                | No       |                                                                                                               |
-| 8   | `service_name`        | String             | Yes      |                                                                                                               |
-| 9   | `body`                | String             | No       |                                                                                                               |
-| 10  | `resource_schema_url` | String             | No       |                                                                                                               |
-| 11  | `resource_attributes` | Map<String,String> | No       | typed map (legacy tables: JSON string)                                                                        |
-| 12  | `scope_schema_url`    | String             | No       |                                                                                                               |
-| 13  | `scope_name`          | String             | No       |                                                                                                               |
-| 14  | `scope_version`       | String             | No       |                                                                                                               |
-| 15  | `scope_attributes`    | Map<String,String> | No       | typed map (legacy tables: JSON string)                                                                        |
-| 16  | `log_attributes`      | Map<String,String> | No       | typed map (legacy tables: JSON string)                                                                        |
-| 17  | `resource_identity`   | String             | No       | v2: digest of the record's resource attribute set (#1340). Null on any row written before the column existed. |
-| 18  | `date_day`            | Date               | Yes      | Computed from timestamp                                                                                       |
-| 19  | `hour`                | Int                | Yes      | Computed from timestamp                                                                                       |
-| 20  | `event_name`          | String              | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
-| 21  | `dropped_attributes_count` | Long           | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
+| #   | Field                                               | Iceberg Type           | Required | Notes                                                                                                         |
+| --- | --------------------------------------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| 1   | `timestamp`                                         | Timestamp              | Yes      | Partition key                                                                                                 |
+| 2   | `observed_timestamp`                                | Timestamp              | No       |                                                                                                               |
+| 3   | `trace_id`                                          | String                 | No       | Correlation with traces                                                                                       |
+| 4   | `span_id`                                           | String                 | No       | Correlation with traces                                                                                       |
+| 5   | `trace_flags`                                       | Int                    | No       |                                                                                                               |
+| 6   | `severity_text`                                     | String                 | No       |                                                                                                               |
+| 7   | `severity_number`                                   | Int                    | No       |                                                                                                               |
+| 8   | `service_name`                                      | String                 | Yes      |                                                                                                               |
+| 9   | `body`                                              | String                 | No       |                                                                                                               |
+| 10  | `resource_schema_url`                               | String                 | No       |                                                                                                               |
+| 11  | `resource_attributes_{str,int,double,bool,residue}` | Map/Map/Map/Map/Binary | No       | v4: typed attribute layout -- see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) above |
+| 12  | `scope_schema_url`                                  | String                 | No       |                                                                                                               |
+| 13  | `scope_name`                                        | String                 | No       |                                                                                                               |
+| 14  | `scope_version`                                     | String                 | No       |                                                                                                               |
+| 15  | `scope_attributes_{str,int,double,bool,residue}`    | Map/Map/Map/Map/Binary | No       | v4: typed attribute layout, same shape as `resource_attributes`                                               |
+| 16  | `log_attributes_{str,int,double,bool,residue}`      | Map/Map/Map/Map/Binary | No       | v4: typed attribute layout, same shape as `resource_attributes`                                               |
+| 17  | `resource_identity`                                 | String                 | No       | v2: digest of the record's resource attribute set (#1340). Null on any row written before the column existed. |
+| 18  | `date_day`                                          | Date                   | Yes      | Computed from timestamp                                                                                       |
+| 19  | `hour`                                              | Int                    | Yes      | Computed from timestamp                                                                                       |
+| 20  | `event_name`                                        | String                 | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
+| 21  | `dropped_attributes_count`                          | Long                   | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -694,36 +724,37 @@ DataFusion's physical filter-pushdown injects the query predicate into the
 defaulting on, a bloom-filtered file skips row groups that cannot contain the
 target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
 
-#### Metrics Gauge Table (v2 -- current)
+#### Metrics Gauge Table (v3 -- current)
 
-Defined in `schemas.toml`. v2 (#1340) adds the `resource_identity` digest column.
+Defined in `schemas.toml`. v2 (#1340) adds the `resource_identity` digest column; v3 is the
+typed attribute layout (see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) above).
 
-| #   | Field                      | Iceberg Type       | Required | Notes                                                                                                        |
-| --- | -------------------------- | ------------------ | -------- | ------------------------------------------------------------------------------------------------------------ |
-| 1   | `timestamp`                | Timestamp          | Yes      | Partition key                                                                                                |
-| 2   | `start_timestamp`          | Timestamp          | No       |                                                                                                              |
-| 3   | `service_name`             | String             | Yes      |                                                                                                              |
-| 4   | `metric_name`              | String             | Yes      |                                                                                                              |
-| 5   | `metric_description`       | String             | No       |                                                                                                              |
-| 6   | `metric_unit`              | String             | No       |                                                                                                              |
-| 7   | `value`                    | Double             | Yes      |                                                                                                              |
-| 8   | `flags`                    | Int                | No       |                                                                                                              |
-| 9   | `resource_schema_url`      | String             | No       |                                                                                                              |
-| 10  | `resource_attributes`      | String             | No       | JSON                                                                                                         |
-| 11  | `scope_name`               | String             | No       |                                                                                                              |
-| 12  | `scope_version`            | String             | No       |                                                                                                              |
-| 13  | `scope_schema_url`         | String             | No       |                                                                                                              |
-| 14  | `scope_attributes`         | String             | No       | JSON                                                                                                         |
-| 15  | `scope_dropped_attr_count` | Int                | No       |                                                                                                              |
-| 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string)                                                                              |
-| 17  | `exemplars`                | String             | No       | JSON                                                                                                         |
-| 18  | `date_day`                 | Date               | Yes      | Computed                                                                                                     |
-| 19  | `hour`                     | Int                | Yes      | Computed                                                                                                     |
-| 20  | `resource_identity`        | String             | No       | v2: digest of the point's resource attribute set (#1340). Null on any row written before the column existed. |
+| #   | Field                                               | Iceberg Type           | Required | Notes                                                                                                        |
+| --- | --------------------------------------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
+| 1   | `timestamp`                                         | Timestamp              | Yes      | Partition key                                                                                                |
+| 2   | `start_timestamp`                                   | Timestamp              | No       |                                                                                                              |
+| 3   | `service_name`                                      | String                 | Yes      |                                                                                                              |
+| 4   | `metric_name`                                       | String                 | Yes      |                                                                                                              |
+| 5   | `metric_description`                                | String                 | No       |                                                                                                              |
+| 6   | `metric_unit`                                       | String                 | No       |                                                                                                              |
+| 7   | `value`                                             | Double                 | Yes      |                                                                                                              |
+| 8   | `flags`                                             | Int                    | No       |                                                                                                              |
+| 9   | `resource_schema_url`                               | String                 | No       |                                                                                                              |
+| 10  | `resource_attributes_{str,int,double,bool,residue}` | Map/Map/Map/Map/Binary | No       | v3: typed attribute layout                                                                                   |
+| 11  | `scope_name`                                        | String                 | No       |                                                                                                              |
+| 12  | `scope_version`                                     | String                 | No       |                                                                                                              |
+| 13  | `scope_schema_url`                                  | String                 | No       |                                                                                                              |
+| 14  | `scope_attributes_{str,int,double,bool,residue}`    | Map/Map/Map/Map/Binary | No       | v3: typed attribute layout                                                                                   |
+| 15  | `scope_dropped_attr_count`                          | Int                    | No       |                                                                                                              |
+| 16  | `attributes_{str,int,double,bool,residue}`          | Map/Map/Map/Map/Binary | No       | v3: typed attribute layout (the record-level container)                                                      |
+| 17  | `exemplars`                                         | String                 | No       | JSON                                                                                                         |
+| 18  | `date_day`                                          | Date                   | Yes      | Computed                                                                                                     |
+| 19  | `hour`                                              | Int                    | Yes      | Computed                                                                                                     |
+| 20  | `resource_identity`                                 | String                 | No       | v2: digest of the point's resource attribute set (#1340). Null on any row written before the column existed. |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Sum Table (v2 -- current)
+#### Metrics Sum Table (v3 -- current)
 
 Extends Gauge with aggregation fields.
 
@@ -737,7 +768,7 @@ Extends Gauge with aggregation fields.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Histogram Table (v2 -- current)
+#### Metrics Histogram Table (v3 -- current)
 
 | #     | Field                                                 | Iceberg Type | Required | Notes                  |
 | ----- | ----------------------------------------------------- | ------------ | -------- | ---------------------- |
@@ -750,12 +781,12 @@ Extends Gauge with aggregation fields.
 | 12    | `explicit_bounds`                                     | String       | No       | JSON array             |
 | 13    | `flags`                                               | Int          | No       |                        |
 | 14    | `aggregation_temporality`                             | Int          | Yes      |                        |
-| 15-25 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                        |
+| 15-25 | _(resource/scope/attributes as v3 typed columns, plus exemplars/date_day/hour)_ |              |          |                        |
 | 26    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340) |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Exponential Histogram Table (v2 -- current)
+#### Metrics Exponential Histogram Table (v3 -- current)
 
 | #     | Field                                                 | Iceberg Type | Required | Notes                  |
 | ----- | ----------------------------------------------------- | ------------ | -------- | ---------------------- |
@@ -773,12 +804,12 @@ Extends Gauge with aggregation fields.
 | 17    | `flags`                                               | Int          | No       |                        |
 | 18    | `aggregation_temporality`                             | Int          | Yes      |                        |
 | 19    | `zero_threshold`                                      | Double       | No       |                        |
-| 20-30 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                        |
+| 20-30 | _(resource/scope/attributes as v3 typed columns, plus exemplars/date_day/hour)_ |              |          |                        |
 | 31    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340) |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Metrics Summary Table (v2 -- current)
+#### Metrics Summary Table (v3 -- current)
 
 | #     | Field                                                 | Iceberg Type | Required | Notes                                     |
 | ----- | ----------------------------------------------------- | ------------ | -------- | ----------------------------------------- |
@@ -787,17 +818,19 @@ Extends Gauge with aggregation fields.
 | 8     | `sum`                                                 | Double       | Yes      |                                           |
 | 9     | `quantile_values`                                     | String       | No       | JSON array of `{quantile, value}` objects |
 | 10    | `flags`                                               | Int          | No       |                                           |
-| 11-21 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                                           |
+| 11-21 | _(resource/scope/attributes as v3 typed columns, plus exemplars/date_day/hour)_ |              |          |                                           |
 | 22    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340)                    |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Profiles Table (v2 -- current)
+#### Profiles Table (v3 -- current)
 
 Defined in `schemas.toml` (see `[profiles.*]` for the full field list, not
 reproduced here). v2 (#1340) adds the same nullable `resource_identity`
 digest column the tables above gained, null on any row written before the
-column existed.
+column existed; v3 is the typed attribute layout (`profile_attributes`,
+`resource_attributes`, `scope_attributes` as their five typed columns each --
+see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) above).
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 

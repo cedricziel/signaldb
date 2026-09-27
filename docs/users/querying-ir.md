@@ -142,11 +142,15 @@ predicate, `order`/`rank` key, `aggregate.by`, or aggregate operand on `body`
 compares against the same decoded string value a `rows` result's `body`
 field shows, never the raw JSON-encoded storage form.
 
-An attribute with no declared schema type resolves to a string, but `gt`/
-`gte`/`lt`/`lte` against a numeric literal (`{ "field": "http.status_code",
-"op": "gt", "value": 400 }`) still compares numerically: a non-numeric-looking
-value never matches, rather than sorting lexicographically (`"9" > "10"`).
-Compare against a string literal to keep lexicographic ordering.
+Every field — attribute or column — has a **canonical type**, and a
+comparison operator's literal must match it: `eq`/`ne`/`gt`/`gte`/`lt`/`lte`/
+`between`/`in` against an int64 field accepts an integer literal; against a
+float64 field an integer literal widens to float, but a fractional literal
+against an int64 field is **rejected at validation**, as is a non-numeric
+string literal against a numeric field. `contains` and `regex` only work on
+a string field — used against a non-string field they are rejected, never
+silently stringified. An attribute with no recorded canonical type (nothing
+observed it yet) resolves as a string.
 
 `span_events` on `traces` is the span's whole events list as a JSON string:
 `[{"name", "timestamp_unix_nano", "attributes": {...}}, ...]`, `null` for a
@@ -160,7 +164,8 @@ container: the **resource** (the entity that emitted the telemetry), the
 **instrumentation scope** (the library that produced it), and the **record**
 itself (the log line or span).
 
-An unqualified name searches all of them:
+An unqualified name resolves to the **most specific level that recorded the
+key** — record, then scope, then resource:
 
 ```jsonc
 { "field": "deployment.environment", "op": "eq", "value": "prod" }
@@ -196,8 +201,14 @@ qualify it: `log.resource.foo` is the key `resource.foo` on the record.
 
 The whole bag of one scope is a field too: `log.attributes`, `span.attributes`,
 `profile.attributes`, `scope.attributes`, and `resource.attributes` project
-the container as a `map<string,string>` (a JSON object in a `rows` result).
-They are retrieval-only — filter on the individual keys, not on the bag.
+the container as a JSON object in a `rows` result, one entry per key
+**in its originally sent value and type** — including a value whose type
+doesn't match the key's canonical type, an array or key-value list, and
+bytes, none of which are individually filterable. A single filterable key
+(`deployment.environment`, above) always reads its one canonical-typed
+value; the raw bag is the only place an off-type or structured value
+surfaces. They are retrieval-only — filter on the individual keys, not on
+the bag.
 
 ### Exception attributes
 
@@ -270,16 +281,14 @@ thing a later stage may reference:
 `first` and `last` order by the source's own time column, so they mean
 earliest and latest — not whichever row the scan happened to produce first.
 
-`sum`/`avg`/`quantile`/`stddev`/`stdvar` require a numeric `of` field —
-**with one exception**: an unpromoted attribute, or an attribute captured on
-a span event (e.g. `exception.message`) — both typed `string` until the
-attribute-registry work lands canonical attribute types (see
-[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant))
-— is accepted too, and coerced to a number at query time. A value that
-doesn't parse as a number becomes absent for that row rather than failing
-the query — the same non-numeric-value handling any other field gets. A
-_registered_ string field (a real column, e.g. `service.name`) is not
-exempted; only an attribute's inherent lack of a declared type is.
+`sum`/`avg`/`quantile`/`stddev`/`stdvar` require a numeric (`int64` or
+`float64`) `of` field — an aggregate over a `string` field, whether a real
+column (`service.name`) or an attribute whose canonical type was recorded as
+`string`, is rejected at validation, not silently coerced. An attribute with
+no recorded canonical type yet resolves as `string` and is rejected the same
+way; it starts aggregating once an observed value establishes a numeric
+canonical type for it (see
+[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant)).
 
 ### Reporting a rate: `divisor` (v5)
 
@@ -449,21 +458,24 @@ the IR, independent of the execution engine.
 
 Fields resolve through the logical schema (`LogicalSchema::core()`, which
 declares the canonical client-visible OTel fields independent of the physical
-Iceberg layout) and then through the attribute registry to a physical location —
-a promoted column or an attribute-map extraction — at plan time. The **result of
-a query does not depend on whether a field is currently promoted**; promotion is
-pure performance upside. (Until the attribute-registry work lands canonical
-attribute types, an unpromoted attribute is typed as a string; a field with no
-resolvable type is a defined rejection.)
+Iceberg layout) and then through the attribute type authority to a physical
+location — a promoted column or a typed-home retrieval — at plan time. The
+**result of a query does not depend on whether a field is currently
+promoted**; promotion is pure performance upside. An attribute's canonical
+type is picked, in order: a config pin, else a semantic-convention type hint
+(from the resource/scope `schema_url`'s semconv registry), else the type of
+the first value ever observed for it — and never changes once established.
+An attribute never observed yet resolves as a string, and a field with no
+resolvable type at all is a defined rejection.
 
-A table created before the typed-attribute migration stores an attribute
-container as a flat JSON string rather than a `Map<Utf8,Utf8>`. Every
-single-table scan — `logs`, `traces`, `profiles`, `metrics_histogram`, and a
-`metrics` query backed by only one of `metrics_gauge`/`metrics_sum` — coerces
-such a container to the typed form before the plan reaches it, so filtering
-and grouping by attribute work the same way on a legacy table as on a
-migrated one; nothing about a query changes based on when the underlying
-table was created.
+Every table is in the typed attribute layout — each attribute container
+(`log_attributes`, `span_attributes`, `resource_attributes`, ...) is stored as
+one typed map per canonical type plus a binary residue, not a single
+`Map<Utf8,Utf8>` or JSON string. This was a one-shot cutover: an operator
+upgrading across it lost pre-cutover data in tables that were still in the
+legacy layout (see `docs/operations/table-provisioning.md`), but from a
+query's perspective there is no coexistence to reason about — every table a
+query can see today is typed.
 
 ## Result envelopes
 
@@ -489,10 +501,12 @@ its records — see [Discovery](#discovery-what-can-i-query).
 Values follow the value type: timestamps/durations are integer nanoseconds,
 bytes are base64, everything else its JSON-native form.
 
-An attribute container is typed `map<string,string>` and arrives as a JSON
-object, so you index a key rather than parse a rendering. A `null` cell means
-the row carried no such container; `{}` means it carried one holding no
-attributes.
+A single attribute field's value follows its own canonical value type — an
+`int64`-canonical key comes back as a JSON number, not a numeric string. The
+whole-bag field (`log.attributes`, and its siblings) arrives as a JSON
+object with each key in its original sent type, so you index a key rather
+than parse a rendering. A `null` cell means the row carried no such
+container; `{}` means it carried one holding no attributes.
 
 ### Warnings
 
