@@ -45,7 +45,7 @@ use tower::ServiceExt;
 const BASE_NS: i64 = 1_700_000_000_000_000_000;
 
 pub(crate) struct TestServices {
-    flight_transport: Arc<InMemoryFlightTransport>,
+    pub(crate) flight_transport: Arc<InMemoryFlightTransport>,
     pub(crate) log_handler: Arc<LogHandler>,
     pub(crate) trace_handler: Arc<TraceHandler>,
     /// Shared with the router built by `build_router`, so a processor

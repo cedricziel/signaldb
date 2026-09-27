@@ -284,6 +284,43 @@ mod tests {
     }
 
     #[test]
+    fn attribute_json_columns_stay_utf8_on_the_flight_wire() {
+        // Attributes are typed at the storage boundary; the wire keeps JSON.
+        let schemas = FlightSchemas::new();
+        let attribute_columns: &[(&Schema, &[&str])] = &[
+            (
+                &schemas.trace_schema,
+                &["attributes_json", "resource_json", "scope_attributes"],
+            ),
+            (
+                &schemas.log_schema,
+                &["attributes_json", "resource_json", "scope_json"],
+            ),
+            (
+                &schemas.metric_schema,
+                &["attributes_json", "resource_json", "scope_json"],
+            ),
+            (
+                &schemas.profile_schema,
+                &["attributes_json", "resource_json", "scope_json"],
+            ),
+        ];
+
+        for (schema, columns) in attribute_columns {
+            for column in *columns {
+                let field = schema.field_with_name(column).unwrap_or_else(|_| {
+                    panic!("expected attribute column {column} in schema {schema:?}")
+                });
+                assert_eq!(
+                    field.data_type(),
+                    &DataType::Utf8,
+                    "{column} must stay JSON-in-Utf8 on the Flight wire"
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_span_batch_schema() {
         let schema = create_span_batch_schema();
 

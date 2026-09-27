@@ -235,12 +235,11 @@ mod cancellation_safety_tests {
     use std::time::Duration;
 
     use arrow_flight::flight_service_server::FlightService;
-    use common::auth::{TenantContext, TenantSource};
+    use common::auth::TenantContext;
     use common::catalog::Catalog;
     use common::flight::transport::InMemoryFlightTransport;
     use common::processors::ProcessorRegistry;
     use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-    use common::wal::WalConfig;
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{
@@ -250,25 +249,9 @@ mod cancellation_safety_tests {
     use tokio::sync::Notify;
 
     use super::*;
-
-    fn test_tenant_context() -> TenantContext {
-        TenantContext {
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            tenant_slug: "acme".to_string(),
-            dataset_slug: "production".to_string(),
-            api_key_name: Some("test-key".to_string()),
-            api_key_scopes: None,
-            api_key_dataset_ids: None,
-            oauth_tenant_grants: None,
-            api_key_allowed_origins: None,
-            user_id: None,
-            role: None,
-            is_instance_admin: false,
-            session_id: None,
-            source: TenantSource::Config,
-        }
-    }
+    use crate::handler::test_support::{
+        only_wal_entry_bytes, test_tenant_context, test_wal_manager, transport_without_writer,
+    };
 
     fn sample_trace_request() -> ExportTraceServiceRequest {
         ExportTraceServiceRequest {
@@ -408,11 +391,6 @@ mod cancellation_safety_tests {
         }
     }
 
-    fn test_wal_manager(base_dir: &std::path::Path) -> WalManager {
-        let config = WalConfig::with_defaults(base_dir.to_path_buf());
-        WalManager::new(config.clone(), config.clone(), config.clone(), config)
-    }
-
     #[tokio::test]
     async fn dropping_the_request_future_after_flush_does_not_duplicate_the_forward() {
         let catalog = Catalog::new_in_memory().await.unwrap();
@@ -504,26 +482,9 @@ mod cancellation_safety_tests {
         );
     }
 
-    /// A handler whose writer is unreachable: forwards fail, so every entry
-    /// the handler appends stays unprocessed and is visible to the test.
     async fn handler_without_writer(wal_manager: Arc<WalManager>) -> TraceHandler {
-        let catalog = Catalog::new_in_memory().await.unwrap();
-        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
-            catalog,
-            ServiceType::Acceptor,
-            "127.0.0.1:0",
-        )
-        .await
-        .unwrap();
-        let processor_registry = Arc::new(ProcessorRegistry::new(
-            Arc::new(common::catalog::Catalog::new_in_memory().await.unwrap()),
-            &common::config::ProcessorsConfig::default(),
-        ));
-        TraceHandler::new(
-            Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap)),
-            wal_manager,
-            processor_registry,
-        )
+        let (transport, processor_registry) = transport_without_writer().await;
+        TraceHandler::new(transport, wal_manager, processor_registry)
     }
 
     async fn unprocessed_traces(wal_manager: &WalManager, tenant_context: &TenantContext) -> usize {
@@ -581,5 +542,29 @@ mod cancellation_safety_tests {
         }
 
         assert_eq!(unprocessed_traces(&wal_manager, &tenant_context).await, 2);
+    }
+
+    /// The WAL carries the unmodified JSON-in-Utf8 conversion: attribute
+    /// typing happens at the writer, never in the acceptor's WAL bytes.
+    #[tokio::test]
+    async fn wal_entry_bytes_match_the_unmodified_otlp_to_arrow_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler_without_writer(wal_manager.clone()).await;
+        let tenant_context = test_tenant_context();
+        let request = sample_trace_request();
+
+        let expected_batch = otlp_traces_to_arrow(&request).unwrap();
+        let expected_bytes = record_batch_to_bytes(&expected_batch).unwrap();
+
+        handler
+            .handle_grpc_otlp_traces(&tenant_context, request)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            only_wal_entry_bytes(&wal_manager, &tenant_context, "traces").await,
+            expected_bytes
+        );
     }
 }
