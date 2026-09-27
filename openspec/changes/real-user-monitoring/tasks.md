@@ -10,11 +10,11 @@ Each numbered group is one PR in a stack (under ~500 changed lines each).
 
 ## 2. UI self-instrumentation
 
-- [ ] 2.1 Failing tests (`pnpm --filter ./src/ui test`) for a `RouteTemplateLogRecordProcessor` (stamps `url.template` from the active route; nothing before mount) and for the browser resource attributes.
-- [ ] 2.2 Implement the processor, wire it into `telemetry/logs.ts`, feed it the matched route pattern from the router.
-- [ ] 2.3 Add `browser.brands` / `browser.platform` / `user_agent.original` to `telemetry/resource.ts`.
-- [ ] 2.4 Enable `UserActionInstrumentation` (click, no text capture) in `telemetry/logs.ts`, retargeting SVG clicks to the closest `HTMLElement`, with tests that no element text is recorded and an icon click is attributed to its button.
-- [ ] 2.5 Update the `frontend-instrumentation` skill's module map and signal table.
+- [x] 2.1 Failing tests (`pnpm --filter ./src/ui test`) for a `RouteTemplateLogRecordProcessor` (stamps `url.template` from the active route; nothing before mount) and for the browser resource attributes.
+- [x] 2.2 Implement the processor, wire it into `telemetry/logs.ts`, feed it the matched route pattern from the router.
+- [x] 2.3 Add `browser.brands` / `browser.platform` / `user_agent.original` to `telemetry/resource.ts`.
+- [x] 2.4 Enable `UserActionInstrumentation` (click, no text capture) in `telemetry/logs.ts`, retargeting SVG clicks to the closest `HTMLElement`, with tests that no element text is recorded and an icon click is attributed to its button.
+- [x] 2.5 Update the `frontend-instrumentation` skill's module map and signal table.
 
 ## 3. Real users page: shell + Overview + Setup
 

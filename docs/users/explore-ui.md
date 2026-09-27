@@ -1257,21 +1257,30 @@ body](response-trace-context.md#trace-context-in-the-document-body) for the
 sampling trade-off that comes with real parenting.
 
 **Log records**: Core Web Vitals, navigation/resource timing, route changes,
-uncaught errors, and console `error`/`warn` calls are captured as log records
-via `@opentelemetry/browser-instrumentation`, stamped with the same
-`session.id`/`tenant.id`/`dataset.id`. Browser errors show up here (not as
-`browser.error` spans — that hand-rolled span capture was replaced by this).
-A render error React Router's own error boundary catches — one that never
-reaches `window`'s `error` event, so the instrumentation above can't see it —
-is recorded the same way: the root route's `errorElement` emits one
-`exception` log record (type, message, stacktrace, plus the route's URL) and
-shows a fallback with **Reload** / **Go home** actions instead of the router's
-bare default.
+uncaught errors, console `error`/`warn` calls, and clicks are captured as log
+records via `@opentelemetry/browser-instrumentation`, stamped with the same
+`session.id`/`tenant.id`/`dataset.id` plus `url.template` — the active
+route's pattern (`/traces/:traceId`), never a concrete path with ids, absent
+on any record emitted before the router has mounted. A click emits
+`browser.user_action.click` with the target's CSS selector and tag name
+(never its text or an input's value); a click on an SVG icon — every icon in
+the UI is inline SVG — is attributed to its closest real HTML element (the
+button or link around it), since the upstream instrumentation otherwise
+drops it. Browser errors show up here (not as `browser.error` spans — that
+hand-rolled span capture was replaced by this). A render error React Router's
+own error boundary catches — one that never reaches `window`'s `error`
+event, so the instrumentation above can't see it — is recorded the same way:
+the root route's `errorElement` emits one `exception` log record (type,
+message, stacktrace, plus the route's URL) and shows a fallback with
+**Reload** / **Go home** actions instead of the router's bare default.
 The UI's resource also carries `service.namespace`, `signaldb.server.version`
 (the backend build that served the session — distinct from the UI bundle's
-own `service.version`), and `deployment.environment.name`, all sourced from
-the same runtime config as the export settings below. Full instrumentation
-list and rationale in the `frontend-instrumentation` skill.
+own `service.version`), `deployment.environment.name`, and browser identity
+(`user_agent.original`, plus `browser.brands`/`browser.platform` where
+`navigator.userAgentData` is available — Chromium browsers, not Safari or
+Firefox), all sourced from the same runtime config as the export settings
+below (browser identity aside, which reads `navigator` directly). Full
+instrumentation list and rationale in the `frontend-instrumentation` skill.
 
 Export is **opt-in**. The preferred way to turn it on is the
 `[self_monitoring.frontend]` config section — the router serves it to the
