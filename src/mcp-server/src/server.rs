@@ -4328,7 +4328,7 @@ fn eval_set_page(
     let offset = offset.unwrap_or(0).min(total_cases);
     let limit = limit
         .unwrap_or(EVAL_CASES_DEFAULT_LIMIT)
-        .min(EVAL_CASES_MAX_LIMIT);
+        .clamp(1, EVAL_CASES_MAX_LIMIT);
     let page: Vec<_> = cases.into_iter().skip(offset).take(limit).collect();
     let returned = page.len();
     serde_json::json!({
