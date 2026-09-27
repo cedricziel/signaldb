@@ -79,11 +79,19 @@ jobs:
             --no-stream \
             --format json --output http \
             --fail-on violation
-          # Wait for the listener to accept connections.
-          for i in $(seq 1 30); do
-            (echo > /dev/tcp/localhost/14317) 2>/dev/null && break
+          # A bare TCP probe passes early: docker's port proxy accepts before
+          # weaver listens, and the reset drops SignalDB's one boot-log batch.
+          # Wait until an HTTP/2 server answers (curl exits 0 on any status).
+          deadline=$((SECONDS + 120))
+          until curl -s --http2-prior-knowledge -o /dev/null --max-time 1 http://localhost:14317/; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::weaver OTLP listener not ready after 120 s"
+              docker logs weaver
+              exit 1
+            fi
             sleep 1
           done
+          echo "weaver OTLP listener ready (step time ${SECONDS} s)"
 
       - name: Boot SignalDB with self-monitoring
         env:
