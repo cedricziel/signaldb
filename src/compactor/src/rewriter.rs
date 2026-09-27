@@ -1165,6 +1165,56 @@ mod tests {
         assert_eq!(out[0].num_rows(), 10);
     }
 
+    /// A rewrite is a generic column pass-through: `rewrite_stream` only
+    /// touches columns named in `dropped_columns`/`backfill`, so a column it
+    /// knows nothing about -- like the warm containment index's
+    /// `attr_index` (task 4.3, otel-native-schema) -- survives a compaction
+    /// rewrite untouched, values included.
+    #[tokio::test]
+    async fn chunking_preserves_an_unrelated_column_like_the_warm_index() {
+        use datafusion::arrow::array::{ArrayRef, BinaryArray, Int64Array, ListArray, ListBuilder};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let mut builder = ListBuilder::new(datafusion::arrow::array::BinaryBuilder::new());
+        builder.values().append_value(b"tok-a");
+        builder.append(true);
+        builder.append(true); // second row: no tokens, still a present (empty) list
+        let attr_index: ArrayRef = Arc::new(builder.finish());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "attr_index",
+                DataType::List(Arc::new(Field::new("item", DataType::Binary, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2])), attr_index],
+        )
+        .unwrap();
+
+        let out = drain(chunk(vec![batch], 1024 * 1024)).await;
+
+        assert_eq!(out.len(), 1);
+        let attr_index = out[0]
+            .column_by_name("attr_index")
+            .expect("attr_index column must survive the rewrite")
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let row0 = attr_index
+            .value(0)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap()
+            .value(0)
+            .to_vec();
+        assert_eq!(row0, b"tok-a");
+        assert_eq!(attr_index.value(1).len(), 0, "row 1 kept its empty list");
+    }
+
     /// A single incoming batch already larger than the target must still be
     /// split into several chunks, not pushed and flushed whole.
     ///
