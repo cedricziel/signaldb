@@ -4,11 +4,10 @@
 
 use std::sync::Arc;
 
-use datafusion::arrow::array::{ArrayRef, RecordBatch};
+use datafusion::arrow::array::{Array, ArrayRef, MapArray, RecordBatch, StringArray};
 use datafusion::arrow::datatypes::{Field, Fields, Schema};
 use serde_json::{Map, Value as JsonValue};
 
-use crate::attrs::json_documents;
 use crate::attrs::typed::TypedAttrBuilder;
 use crate::schema::SCHEMA_DEFINITIONS;
 use crate::schema::type_authority::{CanonicalType, ObservedKind, Placement};
@@ -107,6 +106,50 @@ pub fn typed_attribute_columns_from_with_placement(
     (fields, arrays)
 }
 
+/// Decode a legacy-shaped attribute column (a `Map<Utf8,Utf8>` or a
+/// JSON-in-`Utf8` string column) into per-row documents. Fixture-only:
+/// [`crate::attrs::json_documents`] no longer reads the whole-container map
+/// form. Used by [`to_typed_layout`] to bridge a test fixture written
+/// against the legacy layout onto the typed one.
+fn legacy_container_rows(column: &dyn Array) -> Vec<Option<Map<String, JsonValue>>> {
+    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
+        return (0..map.len())
+            .map(|i| {
+                if map.is_null(i) {
+                    return None;
+                }
+                let entries = map.value(i);
+                let keys = entries.column(0).as_any().downcast_ref::<StringArray>()?;
+                let values = entries.column(1).as_any().downcast_ref::<StringArray>()?;
+                let mut doc = Map::new();
+                for j in 0..entries.len() {
+                    if !keys.is_null(j) && !values.is_null(j) {
+                        doc.insert(
+                            keys.value(j).to_string(),
+                            JsonValue::String(values.value(j).to_string()),
+                        );
+                    }
+                }
+                Some(doc)
+            })
+            .collect();
+    }
+    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
+        return (0..arr.len())
+            .map(|i| {
+                if arr.is_null(i) {
+                    return None;
+                }
+                match serde_json::from_str::<JsonValue>(arr.value(i)) {
+                    Ok(JsonValue::Object(map)) => Some(map),
+                    _ => None,
+                }
+            })
+            .collect();
+    }
+    vec![None; column.len()]
+}
+
 /// Rewrites `batch`'s `containers` (each a legacy `Map<Utf8,Utf8>` or
 /// JSON-string column) onto the typed layout, using `table`'s `version`
 /// schema for the typed field shapes — column order is otherwise preserved.
@@ -124,7 +167,8 @@ pub fn to_typed_layout(
     for field in batch.schema().fields() {
         let name = field.name().as_str();
         if containers.contains(&name) {
-            let rows = json_documents(batch, name);
+            let column = batch.column_by_name(name).expect("field is in schema");
+            let rows = legacy_container_rows(column.as_ref());
             let (typed_fields, typed_arrays) =
                 typed_attribute_columns_from(table, version, name, &rows);
             fields.extend(typed_fields);
@@ -146,6 +190,7 @@ pub fn to_typed_layout(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::attrs::json_documents;
     use datafusion::arrow::array::{MapBuilder, MapFieldNames, StringBuilder};
     use datafusion::arrow::datatypes::DataType;
 
