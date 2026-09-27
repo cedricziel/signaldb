@@ -145,6 +145,13 @@ pub struct AppMetrics {
     // rejected by an `ErrorMode::Propagate` processor.
     pub processors_statements: Counter<u64>,
     pub processors_rejected_requests: Counter<u64>,
+
+    // Attribute values kept in the residue because their sent type differs
+    // from the field's canonical type, and config pins that retype an
+    // already-established field. By `signaldb.tenant.id`, `signal`, `level`
+    // (resource|scope|record), and `reason` (`off_type` | `pin_conflict`) —
+    // never the attribute key.
+    pub writer_attribute_type_mismatches: Counter<u64>,
 }
 
 /// Attribute key naming the tool on the MCP metrics (`gen_ai.tool.name`).
@@ -167,6 +174,32 @@ impl AppMetrics {
         self.mcp_tool_call_duration.record(
             duration.as_secs_f64(),
             &[KeyValue::new(MCP_TOOL_ATTR, tool.to_owned())],
+        );
+    }
+
+    /// Bump `signaldb.writer.attribute_type_mismatches` by `count` for
+    /// `(tenant_id, signal, level, reason)`. Never pass the attribute key —
+    /// it would make this an unbounded label.
+    pub fn record_attribute_type_mismatches(
+        &self,
+        tenant_id: &str,
+        signal: &str,
+        level: &str,
+        reason: &str,
+        count: u64,
+    ) {
+        use opentelemetry::KeyValue;
+        if !should_count_tenant(tenant_id) {
+            return;
+        }
+        self.writer_attribute_type_mismatches.add(
+            count,
+            &[
+                KeyValue::new("signaldb.tenant.id", tenant_id.to_owned()),
+                KeyValue::new("signal", signal.to_owned()),
+                KeyValue::new("level", level.to_owned()),
+                KeyValue::new("reason", reason.to_owned()),
+            ],
         );
     }
 }
@@ -448,6 +481,14 @@ impl AppMetrics {
                     "Tenant OTTL processor statement evaluations, by tenant, processor, and outcome",
                 )
                 .with_unit("{statement}")
+                .build(),
+            writer_attribute_type_mismatches: meter
+                .u64_counter("signaldb.writer.attribute_type_mismatches")
+                .with_description(
+                    "Attribute values stored in the residue because their type differs from \
+                     the field's canonical type, and pin conflicts",
+                )
+                .with_unit("{value}")
                 .build(),
             processors_rejected_requests: meter
                 .u64_counter("signaldb.processors.rejected_requests")

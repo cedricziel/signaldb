@@ -229,7 +229,7 @@ async fn cache_survives_a_direct_retype_until_invalidated() {
 }
 
 #[tokio::test]
-async fn config_pins_an_already_established_field_when_the_scope_is_built() {
+async fn config_pin_retypes_an_already_established_field_and_warns() {
     let field = record_field("logs", "retry.count");
     let seed_catalog = Catalog::new_in_memory().await.expect("catalog");
     seed_catalog
@@ -258,7 +258,10 @@ async fn config_pins_an_already_established_field_when_the_scope_is_built() {
         Arc::new(config),
     );
 
+    let (warnings, _guard) =
+        common::testing::WarnCapture::install("retyped an already-established attribute field");
     let scope = authority.scope("t", "d", "logs").await.expect("scope");
     let pinned = canon(&scope, "retry.count", NO_URL, ObservedKind::Int64).await;
     assert_eq!(pinned, Some(CanonicalType::String));
+    assert_eq!(warnings.messages().len(), 1, "{:?}", warnings.messages());
 }

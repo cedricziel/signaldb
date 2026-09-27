@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 use std::sync::Arc;
 
-use dashmap::DashMap;
+use dashmap::{DashMap, DashSet};
 
 use super::{CanonicalType, ObservedKind, SchemaUrls, resolve};
 use crate::catalog::Catalog;
@@ -105,10 +105,30 @@ impl TypeAuthority {
                 .catalog
                 .get_attribute_type(tenant_id, dataset_id, &field)
                 .await?;
-            if current.map(|stored| stored.canonical) != Some(canonical) {
+            let stored_canonical = current.map(|stored| stored.canonical);
+            if stored_canonical != Some(canonical) {
                 self.catalog
                     .override_attribute_type(tenant_id, dataset_id, &field, canonical)
                     .await?;
+                if let Some(from) = stored_canonical {
+                    tracing::warn!(
+                        tenant_id,
+                        dataset_id,
+                        signal,
+                        level = level.as_str(),
+                        key,
+                        from = ?from,
+                        to = ?canonical,
+                        "config pin retyped an already-established attribute field"
+                    );
+                    crate::self_monitoring::app_metrics().record_attribute_type_mismatches(
+                        tenant_id,
+                        signal,
+                        level.as_str(),
+                        "pin_conflict",
+                        1,
+                    );
+                }
             }
         }
 
@@ -122,6 +142,7 @@ impl TypeAuthority {
             resource: DashMap::new(),
             scope_level: DashMap::new(),
             record: DashMap::new(),
+            off_type_warned: DashSet::new(),
         })
     }
 }
@@ -139,6 +160,9 @@ pub struct SignalScope {
     resource: DashMap<String, CanonicalType>,
     scope_level: DashMap<String, CanonicalType>,
     record: DashMap<String, CanonicalType>,
+    /// (level, key) pairs already warned about for an off-type value, so a
+    /// hot key logs once per process rather than once per batch.
+    off_type_warned: DashSet<(AttributeLevel, String)>,
 }
 
 impl SignalScope {
@@ -194,5 +218,62 @@ impl SignalScope {
             .await?;
         cache.insert(key.to_string(), stored.canonical);
         Ok(Some(stored.canonical))
+    }
+
+    /// Records `count` off-type placements observed for `key` at `level`
+    /// during one write: increments the catalog's `off_type_count` and the
+    /// `signaldb.writer.attribute_type_mismatches` metric, and logs once per
+    /// (level, key) per process. A catalog failure is logged and does not
+    /// suppress the metric or the warning.
+    pub async fn record_off_type(
+        &self,
+        level: AttributeLevel,
+        key: &str,
+        canonical: CanonicalType,
+        observed: ObservedKind,
+        count: i64,
+    ) {
+        let field = LogicalFieldId {
+            source: self.signal.clone(),
+            level: Some(level),
+            name: key.to_string(),
+        };
+        if let Err(e) = self
+            .catalog
+            .record_off_type(&self.tenant_id, &self.dataset_id, &field, count)
+            .await
+        {
+            tracing::warn!(
+                tenant_id = %self.tenant_id,
+                dataset_id = %self.dataset_id,
+                signal = %self.signal,
+                level = level.as_str(),
+                key,
+                error = %e,
+                "failed to record off-type attribute occurrences in the catalog"
+            );
+        }
+
+        crate::self_monitoring::app_metrics().record_attribute_type_mismatches(
+            &self.tenant_id,
+            &self.signal,
+            level.as_str(),
+            "off_type",
+            count.max(0) as u64,
+        );
+
+        if self.off_type_warned.insert((level, key.to_string())) {
+            tracing::warn!(
+                tenant_id = %self.tenant_id,
+                dataset_id = %self.dataset_id,
+                signal = %self.signal,
+                level = level.as_str(),
+                key,
+                canonical_type = ?canonical,
+                observed_kind = ?observed,
+                "attribute value sent under a different type than the field's canonical \
+                 type; kept as sent in the residue"
+            );
+        }
     }
 }
