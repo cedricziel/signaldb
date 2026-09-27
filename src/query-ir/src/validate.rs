@@ -351,7 +351,7 @@ impl InferCtx<'_> {
 
     fn check_leaf(&self, leaf: &Leaf) -> Result<(), IrError> {
         self.require_filterable(&leaf.field)?;
-        let ty = self.ref_type(&leaf.field)?;
+        let (ty, advisory) = self.ref_type_and_advisory(&leaf.field)?;
         match (leaf.op.takes_value(), &leaf.value) {
             (true, None) => {
                 return Err(IrError::Invalid(format!(
@@ -394,7 +394,24 @@ impl InferCtx<'_> {
                 }
             }
             ComparisonOp::Contains | ComparisonOp::Regex => {
-                // Substring/regex operate on the string form.
+                // Substring/regex operate on the string form. An advisory
+                // type (an unpromoted/event-captured attribute, or a
+                // resolver's permissive unknown-name fallback) is let
+                // through — it commonly reports `String` without that being
+                // a real guarantee, the same "authoritative wins" carve-out
+                // `check_agg`'s numeric-operand check makes. An authoritative
+                // non-`String` type (a `TypedAttribute` off its committed
+                // canonical type, or an ordinary physical column) has no
+                // string form to match against and is rejected here, rather
+                // than reaching the engine as an unpredictable runtime cast
+                // error.
+                if !advisory && ty != ValueType::String {
+                    return Err(IrError::Invalid(format!(
+                        "operator '{}' needs a string field, but '{}' is typed {ty}",
+                        leaf.op.as_str(),
+                        leaf.field
+                    )));
+                }
                 let v = leaf.value.as_ref().unwrap();
                 coerce_for(&leaf.field, v, &ValueType::String)?;
             }
@@ -1256,7 +1273,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolver::InMemoryResolver;
+    use crate::resolver::{InMemoryResolver, Resolved};
     use serde_json::json;
 
     fn logs_resolver() -> InMemoryResolver {
@@ -2089,6 +2106,82 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(err, IrError::Coercion { .. }), "got {err:?}");
+    }
+
+    /// Wraps [`InMemoryResolver`] to resolve one field as a
+    /// [`Resolved::TypedAttribute`] — `InMemoryResolver` has no such entry
+    /// kind of its own, but `check_leaf`'s authoritative-non-string rejection
+    /// (`otel-native-schema` task 4.4) must cover it the same as an ordinary
+    /// physical column.
+    struct WithTypedAttribute {
+        inner: InMemoryResolver,
+        source: &'static str,
+        field: &'static str,
+        value_type: ValueType,
+    }
+
+    impl FieldResolver for WithTypedAttribute {
+        fn resolve(&self, source: &str, field: &str) -> Option<Resolved> {
+            if source == self.source && field == self.field {
+                return Some(Resolved::TypedAttribute {
+                    homes: vec!["log_attributes_int".to_string()],
+                    promoted: None,
+                    key: field.to_string(),
+                    value_type: self.value_type.clone(),
+                });
+            }
+            self.inner.resolve(source, field)
+        }
+
+        fn is_filterable(&self, source: &str, field: &str) -> bool {
+            self.inner.is_filterable(source, field)
+        }
+    }
+
+    /// `contains`/`regex` need a `String` field: a non-`String`
+    /// `TypedAttribute` is a defined rejection naming the field and its
+    /// type, the same "authoritative wins" shape as `check_agg`'s
+    /// numeric-operand check — not an implicit cast to string.
+    #[test]
+    fn contains_on_non_string_typed_attribute_is_rejected() {
+        let resolver = WithTypedAttribute {
+            inner: logs_resolver(),
+            source: "logs",
+            field: "retry.count",
+            value_type: ValueType::Int64,
+        };
+        let err = validate(
+            &doc(json!({
+                "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+                "result": "rows",
+                "pipeline": [ { "where": { "field": "retry.count", "op": "contains", "value": "3" } } ]
+            })),
+            &SourceRegistry::core(),
+            &resolver,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("retry.count") && message.contains("int64")),
+            "got {err:?}"
+        );
+    }
+
+    /// The same rejection applies to an ordinary physical (authoritative)
+    /// non-`String` column, not just a `TypedAttribute` — today that case
+    /// falls through validation and only fails as an unpredictable
+    /// DataFusion runtime error.
+    #[test]
+    fn contains_on_non_string_physical_column_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "severity_number", "op": "contains", "value": "1" } } ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("severity_number") && message.contains("int64")),
+            "got {err:?}"
+        );
     }
 
     // 12.1a — a field with no canonical registry type is a defined rejection.

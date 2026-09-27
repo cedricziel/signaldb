@@ -2946,11 +2946,26 @@ impl Lowering<'_> {
         })
     }
 
-    /// The `of` field of an aggregate as a numeric (Float64) expression.
+    /// The `of` field of an aggregate as a numeric expression. A legacy
+    /// resolution (`JsonPath`/`Column`/...) has no canonical-type guarantee,
+    /// so it casts to `Float64` — a non-numeric-looking value becomes NULL
+    /// rather than failing the whole aggregate. A `TypedAttribute`'s home
+    /// column is already the writer-committed numeric Arrow type: no cast,
+    /// same "no cast off a typed home" rule as every predicate operator in
+    /// `lower_leaf`. A non-numeric `TypedAttribute` (e.g. `String`) never
+    /// reaches here — `validate`'s numeric-operand check already rejects it,
+    /// since `TypedAttribute` is never advisory (see `Resolved::
+    /// is_advisory_type`).
     fn numeric_of(&self, a: &common::query_ir::Agg) -> Result<Expr, QuerierError> {
         let of = a.of.as_deref().ok_or_else(|| {
             QuerierError::InvalidInput(format!("aggregate '{}' requires a field", a.func.as_str()))
         })?;
+        if matches!(
+            self.resolver.resolve("", of),
+            Some(Resolved::TypedAttribute { .. })
+        ) {
+            return self.value_expr(of);
+        }
         Ok(cast(self.value_expr(of)?, DataType::Float64))
     }
 
@@ -3239,7 +3254,8 @@ impl Lowering<'_> {
         };
 
         let coerce_val = |v: &serde_json::Value, ty: &ValueType| -> Result<Literal, QuerierError> {
-            coerce(v, ty).map_err(|e| QuerierError::InvalidInput(e.to_string()))
+            coerce(v, ty)
+                .map_err(|e| QuerierError::InvalidInput(format!("field '{}': {e}", leaf.field)))
         };
 
         Ok(match leaf.op {
@@ -3263,15 +3279,7 @@ impl Lowering<'_> {
                 }
             }
             ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => {
-                let v = self.require_value(leaf)?;
-                self.ordered(
-                    decoded_field_expr(),
-                    leaf.op,
-                    v,
-                    &value_type,
-                    is_json,
-                    untyped,
-                )?
+                self.ordered(leaf, decoded_field_expr(), &value_type, is_json, untyped)?
             }
             ComparisonOp::Contains => {
                 let v = self.require_value(leaf)?;
@@ -3334,13 +3342,15 @@ impl Lowering<'_> {
 
     fn ordered(
         &self,
+        leaf: &Leaf,
         field_expr: Expr,
-        op: ComparisonOp,
-        value: &serde_json::Value,
         value_type: &ValueType,
         is_json: bool,
         untyped: bool,
     ) -> Result<Expr, QuerierError> {
+        let field = leaf.field.as_str();
+        let op = leaf.op;
+        let value = self.require_value(leaf)?;
         // An untyped attribute (no declared logical type — resolved as
         // `String` only by the resolver's permissive fallback, see
         // `lower_leaf`) compared against a JSON *number* literal: comparing
@@ -3373,8 +3383,8 @@ impl Lowering<'_> {
             // A numeric type compares numerically in both cases (an
             // attribute's Utf8 value is cast to Float64); a string type
             // compares lexically in both.
-            let literal =
-                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+            let literal = coerce(value, value_type)
+                .map_err(|e| QuerierError::InvalidInput(format!("field '{field}': {e}")))?;
             if is_json {
                 (
                     cast(field_expr, DataType::Float64),
@@ -3384,8 +3394,8 @@ impl Lowering<'_> {
                 (field_expr, self.value_lit(&literal, false))
             }
         } else {
-            let literal =
-                coerce(value, value_type).map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+            let literal = coerce(value, value_type)
+                .map_err(|e| QuerierError::InvalidInput(format!("field '{field}': {e}")))?;
             (field_expr, self.value_lit(&literal, is_json))
         };
         Ok(match op {
@@ -7053,6 +7063,232 @@ mod tests {
         .await;
         assert_eq!(span_ids, vec![Some("c0".to_string())]);
         assert_eq!(parent_routes, vec![Some("/checkout".to_string())]);
+    }
+
+    // --- IR-5: typed predicates compare against the field's canonical type
+    // (`otel-native-schema` task 4.4) ---------------------------------------
+
+    /// Like [`plan_typed`], but for a document expected to fail at plan
+    /// time: returns the `Err` instead of panicking.
+    async fn plan_typed_err(
+        ctx: &SessionContext,
+        d: &Document,
+        types: CanonicalTypes,
+    ) -> QuerierError {
+        let lookup: Arc<dyn CanonicalTypeLookup> = Arc::new(StaticLookup(types));
+        plan_document(
+            ctx,
+            d,
+            PlanRequest::new("t", "d", 0)
+                .with_attribute_type_request(AttributeTypeRequest::Resolve(Some(lookup))),
+        )
+        .await
+        .expect_err("expected the document to be rejected")
+    }
+
+    fn typed_predicate_types() -> CanonicalTypes {
+        canonical_types(&[
+            (
+                "service.tier",
+                AttributeLevel::Record,
+                CanonicalType::String,
+            ),
+            ("retry.count", AttributeLevel::Record, CanonicalType::Int64),
+        ])
+    }
+
+    /// Reuses [`typed_promotion_logs_ctx`] with no `label_*` backfill, so
+    /// `service.tier`/`retry.count` are served purely from their typed
+    /// homes: rows `("gold", 3)` and `("silver", 5)`.
+    fn typed_predicate_ctx() -> SessionContext {
+        typed_promotion_logs_ctx([vec![None, None], vec![None, None]])
+    }
+
+    /// An unpromoted `gt`/`between` on an `Int64`-canonical key compares the
+    /// typed home column directly against an `Int64` literal — no `CAST`.
+    #[tokio::test]
+    async fn typed_attribute_gt_and_between_compare_typed_column_with_no_cast() {
+        let ctx = typed_predicate_ctx();
+        let types = typed_predicate_types();
+
+        let gt_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "gt", "value": 3 } }]
+        }));
+        let df = plan_typed(&ctx, &gt_doc, types.clone()).await;
+        assert!(
+            !df.logical_plan().to_string().contains("CAST"),
+            "an unpromoted numeric comparison must not cast the typed home"
+        );
+        let values = column_values_i64(df, &safe_ident("retry.count")).await;
+        assert_eq!(values, vec![Some(5)]);
+
+        let between_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "between", "value": [3, 5] } }]
+        }));
+        let values = column_values_i64(
+            plan_typed(&ctx, &between_doc, types).await,
+            &safe_ident("retry.count"),
+        )
+        .await;
+        assert_eq!(values, vec![Some(3), Some(5)]);
+    }
+
+    /// `eq` with an int literal, and `in` with an int-literal list, both
+    /// compare against the typed home directly.
+    #[tokio::test]
+    async fn typed_attribute_eq_and_in_use_typed_column() {
+        let ctx = typed_predicate_ctx();
+        let types = typed_predicate_types();
+
+        let eq_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "eq", "value": 3 } }]
+        }));
+        let values = column_values_i64(
+            plan_typed(&ctx, &eq_doc, types.clone()).await,
+            &safe_ident("retry.count"),
+        )
+        .await;
+        assert_eq!(values, vec![Some(3)]);
+
+        let in_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "in", "value": [3, 99] } }]
+        }));
+        let values = column_values_i64(
+            plan_typed(&ctx, &in_doc, types).await,
+            &safe_ident("retry.count"),
+        )
+        .await;
+        assert_eq!(values, vec![Some(3)]);
+    }
+
+    /// A literal that can't be represented in the field's canonical type is
+    /// a defined rejection naming the field and its type — never a silent
+    /// cast (a fractional-vs-`Int64` case is `coerce`'s own concern, tested
+    /// in `query-ir`'s `value.rs`; this only needs one representative case
+    /// end to end through the planner).
+    #[tokio::test]
+    async fn typed_attribute_uncoercible_literal_is_rejected() {
+        let ctx = typed_predicate_ctx();
+        let types = typed_predicate_types();
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "eq", "value": "abc" } }]
+        }));
+        let err = plan_typed_err(&ctx, &d, types).await.to_string();
+        assert!(err.contains("retry.count"), "unexpected error: {err}");
+        assert!(err.contains("int64"), "unexpected error: {err}");
+    }
+
+    /// `contains` needs a `String` field: a non-`String` `TypedAttribute` is
+    /// a defined rejection rather than an implicit cast to string
+    /// (`query-ir::validate`'s authoritative-type check — see its own unit
+    /// tests for the isolated case; this exercises it end to end through
+    /// the planner), but a `String`-canonical one works on its typed home.
+    #[tokio::test]
+    async fn typed_attribute_contains_rejects_non_string_and_works_on_string() {
+        let ctx = typed_predicate_ctx();
+        let types = typed_predicate_types();
+
+        let contains_int = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "contains", "value": "3" } }]
+        }));
+        let err = plan_typed_err(&ctx, &contains_int, types.clone())
+            .await
+            .to_string();
+        assert!(err.contains("retry.count"), "unexpected error: {err}");
+
+        let contains_str = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["service.tier"],
+            "pipeline": [{ "where": { "field": "service.tier", "op": "contains", "value": "gol" } }]
+        }));
+        let values = column_values(
+            plan_typed(&ctx, &contains_str, types).await,
+            &safe_ident("service.tier"),
+        )
+        .await;
+        assert_eq!(values, vec![Some("gold".to_string())]);
+    }
+
+    /// `sum` over an `Int64`-canonical `TypedAttribute` reads the typed
+    /// column with no cast; over a `String`-canonical one it is a defined
+    /// rejection (`validate`'s numeric-operand check, since `TypedAttribute`
+    /// is never advisory — never even reaches the planner).
+    #[tokio::test]
+    async fn typed_attribute_sum_uses_typed_column_and_rejects_string() {
+        let ctx = typed_predicate_ctx();
+        let types = typed_predicate_types();
+
+        let sum_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [{ "aggregate": { "aggs": [
+                { "fn": "sum", "of": "retry.count", "as": "total" }
+            ] } }]
+        }));
+        let df = plan_typed(&ctx, &sum_doc, types.clone()).await;
+        let plan_text = df.logical_plan().to_string();
+        assert!(
+            !plan_text.contains("CAST"),
+            "a typed Int64 sum must not cast: {plan_text}"
+        );
+        let batches = df.collect().await.unwrap();
+        let total = batches[0]
+            .column_by_name("total")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .expect("sum over an Int64 typed home stays Int64, uncast")
+            .value(0);
+        assert_eq!(total, 8);
+
+        let sum_string_doc = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [{ "aggregate": { "aggs": [
+                { "fn": "sum", "of": "service.tier", "as": "total" }
+            ] } }]
+        }));
+        let err = plan_typed_err(&ctx, &sum_string_doc, types)
+            .await
+            .to_string();
+        assert!(
+            err.contains("numeric") && err.contains("string"),
+            "unexpected error: {err}"
+        );
+    }
+
+    /// Compat mode (`IrService::plan`'s default `AttributeTypeRequest::
+    /// CompatOnly`, no typed resolve) over the same typed table keeps
+    /// accepting the legacy string comparison — task 4.4's typed predicates
+    /// only apply once a table's types are actually resolved.
+    #[tokio::test]
+    async fn typed_attribute_compat_mode_still_accepts_string_literals() {
+        let ctx = typed_predicate_ctx();
+        let svc = IrService::new(ctx);
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["retry.count"],
+            "pipeline": [{ "where": { "field": "retry.count", "op": "eq", "value": "3" } }]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let values = column_values(df, &safe_ident("retry.count")).await;
+        assert_eq!(values, vec![Some("3".to_string())]);
     }
 
     /// A `logs` table with `log_attributes` on the typed layout, holding one
