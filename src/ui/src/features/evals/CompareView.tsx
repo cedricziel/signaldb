@@ -280,21 +280,25 @@ export function CompareView(shell: ShellContext) {
         />
       )}
       <div className="evals-bar" style={{ padding: "10px 12px", gap: 10 }}>
-        <span className="evals-picker-label">Baseline</span>
-        <RunPicker
-          label="Baseline run"
-          runs={pickable}
-          value={baseline?.id ?? ""}
-          onChange={(id) => setEvals({ baseline: id })}
-        />
+        <span className="evals-picker-group">
+          <span className="evals-picker-label">Baseline</span>
+          <RunPicker
+            label="Baseline run"
+            runs={pickable}
+            value={baseline?.id ?? ""}
+            onChange={(id) => setEvals({ baseline: id })}
+          />
+        </span>
         <span className="faint">vs</span>
-        <span className="evals-picker-label">Candidate</span>
-        <RunPicker
-          label="Candidate run"
-          runs={pickable}
-          value={candidate?.id ?? ""}
-          onChange={(id) => setEvals({ candidate: id })}
-        />
+        <span className="evals-picker-group">
+          <span className="evals-picker-label">Candidate</span>
+          <RunPicker
+            label="Candidate run"
+            runs={pickable}
+            value={candidate?.id ?? ""}
+            onChange={(id) => setEvals({ candidate: id })}
+          />
+        </span>
         {candidate?.set && (
           <>
             <span className="faint">on</span>
@@ -302,7 +306,7 @@ export function CompareView(shell: ShellContext) {
           </>
         )}
         <span className="evals-bar-fill" />
-        <div style={{ display: "flex", gap: 6 }}>
+        <div className="evals-filters">
           {FILTERS.map(([kind, label, color]) => (
             <button
               key={kind}
@@ -338,66 +342,71 @@ export function CompareView(shell: ShellContext) {
 
       {summary.length > 0 && (
         <div className="evals-card">
-          <table className="evals-table" style={{ minWidth: 820 }}>
-            <thead>
-              <tr>
-                <th>Metric</th>
-                <th className="num">Baseline</th>
-                <th className="num">Candidate</th>
-                <th className="num">Delta</th>
-                <th style={{ paddingLeft: 24 }}>Pass rate</th>
-                <th className="num">Cases worse</th>
-                <th className="num">Cases better</th>
-              </tr>
-            </thead>
-            <tbody>
-              {summary.map((s) => {
-                const rb = passRateOf(s.baseline);
-                const rc = passRateOf(s.candidate);
-                const delta = statsDelta(s.baseline, s.candidate);
-                const labelOnly = delta
-                  ? delta.unit === "pp"
-                  : meanOf(s.baseline) === null && meanOf(s.candidate) === null;
-                const d = fmtDelta(delta?.d ?? null, delta?.unit, true);
-                return (
-                  <tr key={s.name}>
-                    <td className="mono strong">
-                      {s.name}
-                      {labelOnly && <span className="faint"> label</span>}
-                    </td>
-                    <td className="num dim">
-                      {labelOnly ? fmtPct(rb, 1) : fmtScore(meanOf(s.baseline))}
-                    </td>
-                    <td className="num">
-                      {labelOnly
-                        ? fmtPct(rc, 1)
-                        : fmtScore(meanOf(s.candidate))}
-                    </td>
-                    <td className={`num ${d.tone}`}>{d.text}</td>
-                    <td className="mono dim" style={{ paddingLeft: 24 }}>
-                      {fmtPct(rb)} → {fmtPct(rc)}
-                    </td>
-                    <td className={`num${s.worse > 5 ? " bad" : ""}`}>
-                      {s.worse}
-                    </td>
-                    <td className="num">{s.better}</td>
-                  </tr>
-                );
-              })}
-              <PerfRow
-                name="latency p95"
-                b={pb.p95}
-                c={pc.p95}
-                fmt={formatDurationMs}
-              />
-              <PerfRow
-                name="tokens / run"
-                b={pb.tokens}
-                c={pc.tokens}
-                fmt={(v) => fmtCount(Math.round(v))}
-              />
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="evals-table" style={{ minWidth: 820 }}>
+              <thead>
+                <tr>
+                  <th>Metric</th>
+                  <th className="num">Baseline</th>
+                  <th className="num">Candidate</th>
+                  <th className="num">Delta</th>
+                  <th style={{ paddingLeft: 24 }}>Pass rate</th>
+                  <th className="num">Cases worse</th>
+                  <th className="num">Cases better</th>
+                </tr>
+              </thead>
+              <tbody>
+                {summary.map((s) => {
+                  const rb = passRateOf(s.baseline);
+                  const rc = passRateOf(s.candidate);
+                  const delta = statsDelta(s.baseline, s.candidate);
+                  const labelOnly = delta
+                    ? delta.unit === "pp"
+                    : meanOf(s.baseline) === null &&
+                      meanOf(s.candidate) === null;
+                  const d = fmtDelta(delta?.d ?? null, delta?.unit, true);
+                  return (
+                    <tr key={s.name}>
+                      <td className="mono strong">
+                        {s.name}
+                        {labelOnly && <span className="faint"> label</span>}
+                      </td>
+                      <td className="num dim">
+                        {labelOnly
+                          ? fmtPct(rb, 1)
+                          : fmtScore(meanOf(s.baseline))}
+                      </td>
+                      <td className="num">
+                        {labelOnly
+                          ? fmtPct(rc, 1)
+                          : fmtScore(meanOf(s.candidate))}
+                      </td>
+                      <td className={`num ${d.tone}`}>{d.text}</td>
+                      <td className="mono dim" style={{ paddingLeft: 24 }}>
+                        {fmtPct(rb)} → {fmtPct(rc)}
+                      </td>
+                      <td className={`num${s.worse > 5 ? " bad" : ""}`}>
+                        {s.worse}
+                      </td>
+                      <td className="num">{s.better}</td>
+                    </tr>
+                  );
+                })}
+                <PerfRow
+                  name="latency p95"
+                  b={pb.p95}
+                  c={pc.p95}
+                  fmt={formatDurationMs}
+                />
+                <PerfRow
+                  name="tokens / run"
+                  b={pb.tokens}
+                  c={pc.tokens}
+                  fmt={(v) => fmtCount(Math.round(v))}
+                />
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
 
@@ -424,33 +433,35 @@ export function CompareView(shell: ShellContext) {
               </span>
             </span>
           </div>
-          <table className="evals-table" style={{ minWidth: 1000 }}>
-            <thead>
-              <tr>
-                <th>Case</th>
-                <th>User input</th>
-                {names.map((n) => (
-                  <th key={n}>{n}</th>
+          <div className="table-scroll">
+            <table className="evals-table" style={{ minWidth: 1000 }}>
+              <thead>
+                <tr>
+                  <th>Case</th>
+                  <th>User input</th>
+                  {names.map((n) => (
+                    <th key={n}>{n}</th>
+                  ))}
+                  <th>Tools called, candidate vs baseline</th>
+                  <th className="evals-sticky-end" />
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((row) => (
+                  <CaseLine
+                    key={row.caseId}
+                    row={row}
+                    names={names}
+                    baseline={base.data?.cases.get(row.caseId)}
+                    candidate={cand.data?.cases.get(row.caseId)}
+                    baseTrace={agentOf(base.data?.traces, row.caseId)}
+                    candTrace={agentOf(cand.data?.traces, row.caseId)}
+                    href={caseHref(row.caseId)}
+                  />
                 ))}
-                <th>Tools called, candidate vs baseline</th>
-                <th />
-              </tr>
-            </thead>
-            <tbody>
-              {shown.map((row) => (
-                <CaseLine
-                  key={row.caseId}
-                  row={row}
-                  names={names}
-                  baseline={base.data?.cases.get(row.caseId)}
-                  candidate={cand.data?.cases.get(row.caseId)}
-                  baseTrace={agentOf(base.data?.traces, row.caseId)}
-                  candTrace={agentOf(cand.data?.traces, row.caseId)}
-                  href={caseHref(row.caseId)}
-                />
-              ))}
-            </tbody>
-          </table>
+              </tbody>
+            </table>
+          </div>
           {shown.length === 0 && <EmptyState title={emptyTitle} />}
         </div>
       )}
@@ -593,7 +604,7 @@ function CaseLine({
           {!candTrace && <span className="faint">no trace</span>}
         </div>
       </td>
-      <td className="nowrap" style={{ textAlign: "right" }}>
+      <td className="nowrap evals-sticky-end" style={{ textAlign: "right" }}>
         <Link to={href}>Open ›</Link>
       </td>
     </tr>

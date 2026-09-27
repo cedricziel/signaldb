@@ -156,13 +156,14 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface2);
-  overflow: auto;
+  /* Scroll rather than wrap: a hard wrap splits tokens (URLs, header
+     values) that the reader copies verbatim. */
+  overflow-x: auto;
   max-width: 100%;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  white-space: pre;
 }
 
 .code-snippet code {

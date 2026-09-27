@@ -858,9 +858,31 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 /* A table wider than the viewport scrolls on its own axis instead of
-   blowing out the page — these tables don't reasonably reflow. */
+   blowing out the page — these tables don't reasonably reflow. Every data
+   table sits in one.
+
+   The scroll cue: an edge shade (attachment `scroll`, pinned to the
+   wrapper's edge) under a cover in the background colour (attachment
+   `local`, riding on the content's own ends). A cover hides its shadow
+   while that end of the table is in view, so a shadow only shows on a side
+   that has more columns to scroll to. The cover must match what the
+   wrapper sits on: the page's --bg unless an ancestor card declares
+   `--scroll-cover: var(--surface)` in its own CSS. */
 .table-scroll {
+  /* From --text, not --shadow: it flips with the theme, so the edge is a
+     shade on the light theme and a lighter band on the dark one, where a
+     near-black shadow would vanish into the near-black page. */
+  --scroll-edge: color-mix(in srgb, var(--text) 16%, transparent);
   overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--scroll-cover, var(--bg)) 40%, transparent)
+      left center / 36px 100% no-repeat local,
+    linear-gradient(to left, var(--scroll-cover, var(--bg)) 40%, transparent)
+      right center / 36px 100% no-repeat local,
+    linear-gradient(to right, var(--scroll-edge), transparent) left center /
+      14px 100% no-repeat scroll,
+    linear-gradient(to left, var(--scroll-edge), transparent) right center /
+      14px 100% no-repeat scroll;
 }
 
 /* ---------- view note (features/*: every explore view) ---------- */

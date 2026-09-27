@@ -726,10 +726,14 @@
   background: color-mix(in srgb, var(--err) 7%, transparent);
 }
 
+/* Wraps, and lets the exception type shrink to an ellipsis, so the
+   type and its Copy button never run past the pane's edge. */
 .span-event-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
+  min-width: 0;
 }
 
 .span-event-name {
@@ -741,6 +745,8 @@
 }
 
 .span-event-type {
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--mono);
   color: var(--dim);
 }

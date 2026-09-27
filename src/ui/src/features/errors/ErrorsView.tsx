@@ -384,7 +384,9 @@ export function ErrorsView({ state, update }: Props) {
                             className="errors-message"
                             title={g.exceptionMessage ?? undefined}
                           >
-                            {g.exceptionMessage ?? "—"}
+                            <span className="errors-message-text">
+                              {g.exceptionMessage ?? "—"}
+                            </span>
                           </td>
                           <td className="errors-col-secondary">
                             {g.serviceName ?? "—"}

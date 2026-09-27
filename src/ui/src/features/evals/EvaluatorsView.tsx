@@ -55,45 +55,49 @@ export function EvaluatorsView({ state, update }: ShellContext) {
         <QueryError what="evaluators" error={evaluators.error} />
       )}
       <div className="evals-card">
-        <table className="evals-table" style={{ minWidth: 900 }}>
-          <thead>
-            <tr>
-              <th>Evaluator</th>
-              <th>Versions seen</th>
-              <th>Scores</th>
-              <th>Output</th>
-              <th>Seen in</th>
-              <th className="num">Results</th>
-              <th>Last result</th>
-            </tr>
-          </thead>
-          <tbody>
-            {rows.map((e) => (
-              <tr key={e.name}>
-                <td>
-                  <div className="mono strong">{e.name}</div>
-                  <div className="faint" style={{ fontSize: 12 }}>
-                    first seen {fmtDay(e.firstMs)}
-                  </div>
-                </td>
-                <td className="mono dim">{e.versions.join(", ") || "—"}</td>
-                <td>
-                  <span className="evals-tag plain">{e.operation ?? "—"}</span>
-                </td>
-                <td className="mono dim">{outputKind(e)}</td>
-                <td className="dim" style={{ fontSize: 12 }}>
-                  {seenIn(e)}
-                </td>
-                <td className="num">{fmtCount(e.results)}</td>
-                <td
-                  className={`mono nowrap ${isReceiving(e.lastMs, now) ? "good" : "dim"}`}
-                >
-                  {ago(now - e.lastMs)}
-                </td>
+        <div className="table-scroll">
+          <table className="evals-table" style={{ minWidth: 900 }}>
+            <thead>
+              <tr>
+                <th>Evaluator</th>
+                <th>Versions seen</th>
+                <th>Scores</th>
+                <th>Output</th>
+                <th>Seen in</th>
+                <th className="num">Results</th>
+                <th>Last result</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((e) => (
+                <tr key={e.name}>
+                  <td>
+                    <div className="mono strong">{e.name}</div>
+                    <div className="faint" style={{ fontSize: 12 }}>
+                      first seen {fmtDay(e.firstMs)}
+                    </div>
+                  </td>
+                  <td className="mono dim">{e.versions.join(", ") || "—"}</td>
+                  <td>
+                    <span className="evals-tag plain">
+                      {e.operation ?? "—"}
+                    </span>
+                  </td>
+                  <td className="mono dim">{outputKind(e)}</td>
+                  <td className="dim" style={{ fontSize: 12 }}>
+                    {seenIn(e)}
+                  </td>
+                  <td className="num">{fmtCount(e.results)}</td>
+                  <td
+                    className={`mono nowrap ${isReceiving(e.lastMs, now) ? "good" : "dim"}`}
+                  >
+                    {ago(now - e.lastMs)}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
         {evaluators.isPending && <EmptyState title="Loading evaluators…" />}
         {evaluators.isSuccess && rows.length === 0 && (
           <EmptyState title="No evaluator results in this range" />

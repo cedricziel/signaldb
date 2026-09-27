@@ -100,71 +100,73 @@ export function RunsView(shell: ShellContext) {
             />
           </div>
           <div className="evals-card">
-            <table className="evals-table" style={{ minWidth: 900 }}>
-              <thead>
-                <tr>
-                  <th>Run</th>
-                  <th>Eval set</th>
-                  <th>Version</th>
-                  <th>Started</th>
-                  <th className="num">Cases</th>
-                  <th className="num">Results</th>
-                  <th className="num">Pass rate</th>
-                  <th>Status</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {shown.map((run) => {
-                  const status = runStatus(run, now);
-                  const baseline = baselines.get(run.id);
-                  return (
-                    <tr key={run.id}>
-                      <td className="mono strong nowrap">{run.id}</td>
-                      <td className="mono">
-                        {run.set ? (
-                          <Link to={setHref(state, run.set)}>{run.set}</Link>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td>
-                        {run.version ? (
-                          <span className="evals-tag">{run.version}</span>
-                        ) : (
-                          "—"
-                        )}
-                      </td>
-                      <td className="mono dim nowrap">
-                        {fmtDateTime(run.firstMs)}
-                        <div
-                          className="faint"
-                          style={{ fontFamily: "var(--ui)" }}
-                        >
-                          {run.agent}
-                        </div>
-                      </td>
-                      <td className="num">{fmtCount(run.cases)}</td>
-                      <td className="num">{fmtCount(run.results)}</td>
-                      <td className="num">{fmtPct(passRateOf(run.stats))}</td>
-                      <td>
-                        <RunStatusCell
-                          kind={status.kind}
-                          reasons={status.reasons}
-                        />
-                      </td>
-                      <td className="nowrap" style={{ textAlign: "right" }}>
-                        {status.kind !== "running" && baseline && (
-                          <Link to={compareHref(state, baseline.id, run.id)}>
-                            Compare ›
-                          </Link>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+            <div className="table-scroll">
+              <table className="evals-table" style={{ minWidth: 900 }}>
+                <thead>
+                  <tr>
+                    <th>Run</th>
+                    <th>Eval set</th>
+                    <th>Version</th>
+                    <th>Started</th>
+                    <th className="num">Cases</th>
+                    <th className="num">Results</th>
+                    <th className="num">Pass rate</th>
+                    <th>Status</th>
+                    <th />
+                  </tr>
+                </thead>
+                <tbody>
+                  {shown.map((run) => {
+                    const status = runStatus(run, now);
+                    const baseline = baselines.get(run.id);
+                    return (
+                      <tr key={run.id}>
+                        <td className="mono strong nowrap">{run.id}</td>
+                        <td className="mono">
+                          {run.set ? (
+                            <Link to={setHref(state, run.set)}>{run.set}</Link>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td>
+                          {run.version ? (
+                            <span className="evals-tag">{run.version}</span>
+                          ) : (
+                            "—"
+                          )}
+                        </td>
+                        <td className="mono dim nowrap">
+                          {fmtDateTime(run.firstMs)}
+                          <div
+                            className="faint"
+                            style={{ fontFamily: "var(--ui)" }}
+                          >
+                            {run.agent}
+                          </div>
+                        </td>
+                        <td className="num">{fmtCount(run.cases)}</td>
+                        <td className="num">{fmtCount(run.results)}</td>
+                        <td className="num">{fmtPct(passRateOf(run.stats))}</td>
+                        <td>
+                          <RunStatusCell
+                            kind={status.kind}
+                            reasons={status.reasons}
+                          />
+                        </td>
+                        <td className="nowrap" style={{ textAlign: "right" }}>
+                          {status.kind !== "running" && baseline && (
+                            <Link to={compareHref(state, baseline.id, run.id)}>
+                              Compare ›
+                            </Link>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
             {runs.isPending && <EmptyState title="Loading runs…" />}
             {runs.isSuccess && shown.length === 0 && (
               <EmptyState title="No runs in this range" />

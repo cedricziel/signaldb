@@ -40,8 +40,9 @@
 
 .catalog-headline {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 12px;
+  gap: 8px 12px;
   margin-bottom: 12px;
 }
 
