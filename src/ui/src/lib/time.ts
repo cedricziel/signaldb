@@ -187,18 +187,23 @@ export function formatTimestampForRange(
  * `formatTimestamp` is always time-of-day, which makes both ends of a 24h
  * window render as the same string. The granularity here follows the window:
  * time-only inside one calendar day, date + time once it crosses midnight,
- * and date-only past a couple of days where the time of day is noise.
+ * and date-only past a couple of days where the time of day is noise. The
+ * year joins the date only when the window crosses a year boundary.
  */
 export function axisLabelFormatter(
   fromMs: number,
   toMs: number,
 ): (ms: number) => string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const date = (d: Date) => `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const time = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
   const from = new Date(fromMs);
   const to = new Date(toMs);
+  const crossesYear = from.getFullYear() !== to.getFullYear();
+  const date = (d: Date) =>
+    crossesYear
+      ? formatDate(d.getTime())
+      : `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const sameDay =
     from.getFullYear() === to.getFullYear() &&
     from.getMonth() === to.getMonth() &&
