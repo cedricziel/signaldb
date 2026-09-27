@@ -7,7 +7,7 @@
 
 use datafusion::arrow::datatypes::{DataType, Schema};
 use datafusion::functions::core::expr_fn::{coalesce, get_field};
-use datafusion::logical_expr::{Expr, cast, lit};
+use datafusion::logical_expr::{BinaryExpr, Expr, Operator, cast, lit};
 use datafusion::prelude::ident;
 use datafusion::scalar::ScalarValue;
 
@@ -71,6 +71,22 @@ pub fn typed_home_expr(
     if homes.is_empty() {
         return lit(ScalarValue::Utf8(None));
     }
+    let mut parts = typed_home_parts(homes, promoted, key, prefix);
+    if parts.len() == 1 {
+        parts.remove(0)
+    } else {
+        coalesce(parts)
+    }
+}
+
+/// The flat list [`typed_home_expr`] coalesces: `promoted[i]`'s ident (when
+/// present) before `homes[i]`'s `get_field`, in home order.
+fn typed_home_parts(
+    homes: &[String],
+    promoted: &[Option<String>],
+    key: &str,
+    prefix: &str,
+) -> Vec<Expr> {
     let mut parts: Vec<Expr> = Vec::with_capacity(homes.len() * 2);
     for (i, home) in homes.iter().enumerate() {
         if let Some(label) = promoted.get(i).and_then(Option::as_deref) {
@@ -78,11 +94,49 @@ pub fn typed_home_expr(
         }
         parts.push(get_field(ident(format!("{prefix}{home}")), key));
     }
-    if parts.len() == 1 {
-        parts.remove(0)
-    } else {
-        coalesce(parts)
+    parts
+}
+
+/// A typed attribute filter comparison (`= != < <= > >=`), lowered to give
+/// DataFusion a prunable disjunct on a promoted column instead of hiding it
+/// behind a coalesce. When at least one `promoted[i]` is `Some`, rewrites
+/// `coalesce(parts...) op literal` as `(x1 IS NOT NULL AND x1 op literal) OR
+/// (x1 IS NULL AND R(rest))`, recursively — exactly [`typed_home_expr`]'s
+/// coalesce under SQL three-valued logic, so `NOT`/`!=` stay correct, but
+/// each part's own nullness is now a directly prunable predicate. With no
+/// promoted column, returns the plain `typed_home_expr(...) op literal` form
+/// unchanged (the shape the warm-index probe recognizes).
+pub fn typed_home_filter_expr(
+    homes: &[String],
+    promoted: &[Option<String>],
+    key: &str,
+    prefix: &str,
+    op: Operator,
+    literal: Expr,
+) -> Expr {
+    if !promoted.iter().any(Option::is_some) {
+        return binary(typed_home_expr(homes, promoted, key, prefix), op, literal);
     }
+    coalesce_op_expr(&typed_home_parts(homes, promoted, key, prefix), op, literal)
+}
+
+fn coalesce_op_expr(parts: &[Expr], op: Operator, literal: Expr) -> Expr {
+    match parts.split_first() {
+        None => binary(lit(ScalarValue::Utf8(None)), op, literal),
+        Some((head, [])) => binary(head.clone(), op, literal),
+        Some((head, rest)) => head
+            .clone()
+            .is_not_null()
+            .and(binary(head.clone(), op, literal.clone()))
+            .or(head
+                .clone()
+                .is_null()
+                .and(coalesce_op_expr(rest, op, literal))),
+    }
+}
+
+fn binary(lhs: Expr, op: Operator, rhs: Expr) -> Expr {
+    Expr::BinaryExpr(BinaryExpr::new(Box::new(lhs), op, Box::new(rhs)))
 }
 
 /// The column names to project for `columns`: each entry expands to its
@@ -115,6 +169,7 @@ mod tests {
     use crate::testing::{typed_attribute_columns, typed_attribute_columns_from};
     use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
     use datafusion::arrow::datatypes::Fields;
+    use datafusion::logical_expr::not;
     use datafusion::prelude::SessionContext;
     use serde_json::json;
     use std::sync::Arc;
@@ -239,6 +294,173 @@ mod tests {
             text.contains("get_field(parent.span_attributes_str"),
             "{text}"
         );
+    }
+
+    #[test]
+    fn typed_home_filter_expr_keeps_the_plain_coalesce_form_without_a_promoted_column() {
+        let one_home = vec!["span_attributes_int".to_string()];
+        let expr =
+            typed_home_filter_expr(&one_home, &[None], "status", "", Operator::Eq, lit(200i64));
+        assert_eq!(
+            expr.to_string(),
+            typed_home_expr(&one_home, &[None], "status", "")
+                .eq(lit(200i64))
+                .to_string()
+        );
+
+        let two_homes = vec![
+            "span_attributes_int".to_string(),
+            "resource_attributes_int".to_string(),
+        ];
+        let expr = typed_home_filter_expr(
+            &two_homes,
+            &[None, None],
+            "status",
+            "",
+            Operator::Eq,
+            lit(200i64),
+        );
+        assert_eq!(
+            expr.to_string(),
+            typed_home_expr(&two_homes, &[None, None], "status", "")
+                .eq(lit(200i64))
+                .to_string()
+        );
+    }
+
+    #[test]
+    fn typed_home_filter_expr_rewrites_to_a_disjunction_when_promoted() {
+        let one_home = vec!["span_attributes_int".to_string()];
+        let promoted_one = vec![Some("attr_record_status".to_string())];
+        let text = typed_home_filter_expr(
+            &one_home,
+            &promoted_one,
+            "status",
+            "",
+            Operator::Eq,
+            lit(200i64),
+        )
+        .to_string();
+        assert!(text.contains("attr_record_status IS NOT NULL"), "{text}");
+        assert!(text.contains("attr_record_status = Int64(200)"), "{text}");
+        assert!(text.contains("attr_record_status IS NULL"), "{text}");
+        assert!(
+            text.contains("get_field(span_attributes_int") && text.contains("= Int64(200)"),
+            "{text}"
+        );
+
+        let two_homes = vec![
+            "span_attributes_str".to_string(),
+            "resource_attributes_str".to_string(),
+        ];
+        let promoted_two = vec![Some("attr_record_host".to_string()), None];
+        let text = typed_home_filter_expr(
+            &two_homes,
+            &promoted_two,
+            "host",
+            "",
+            Operator::Eq,
+            lit("a"),
+        )
+        .to_string();
+        // Three parts total (the promoted ident plus both homes) fold into
+        // two nested disjunctions, one per fallback step (the last part is
+        // the recursion base case: no null check, just the comparison).
+        assert_eq!(text.matches(" OR ").count(), 2, "{text}");
+        assert_eq!(text.matches("IS NOT NULL").count(), 2, "{text}");
+    }
+
+    /// The OR-rewrite matches the coalesce form's SQL three-valued-logic
+    /// truth table row for row, including where both sides are NULL — across
+    /// (promoted non-null), (promoted null, home non-null), and (both null).
+    #[tokio::test]
+    async fn typed_home_filter_expr_matches_the_coalesce_form_row_for_row() {
+        use datafusion::arrow::array::{BooleanArray, Int64Array};
+
+        let promoted_field =
+            datafusion::arrow::datatypes::Field::new("attr_record_status", DataType::Int64, true);
+        let promoted_array: ArrayRef = Arc::new(Int64Array::from(vec![Some(200i64), None, None]));
+
+        let rows = [
+            Some(serde_json::Map::from_iter([(
+                "status".to_string(),
+                json!(999),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "status".to_string(),
+                json!(200),
+            )])),
+            None,
+        ];
+        let (home_fields, home_arrays) = typed_attribute_columns("span_attributes", &rows);
+
+        let mut fields = vec![promoted_field];
+        fields.extend(home_fields);
+        let mut arrays = vec![promoted_array];
+        arrays.extend(home_arrays);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema, arrays).expect("build the fixture batch");
+
+        let ctx = SessionContext::new();
+        ctx.register_batch("t", batch).unwrap();
+        let df = ctx.table("t").await.unwrap();
+
+        let homes = vec!["span_attributes_int".to_string()];
+        let promoted = vec![Some("attr_record_status".to_string())];
+        for op in [Operator::Eq, Operator::NotEq] {
+            let coalesce_form = super::binary(
+                typed_home_expr(&homes, &promoted, "status", ""),
+                op,
+                lit(200i64),
+            );
+            let rewritten =
+                typed_home_filter_expr(&homes, &promoted, "status", "", op, lit(200i64));
+            for (name, expr) in [
+                ("plain", coalesce_form.clone()),
+                ("negated", not(coalesce_form.clone())),
+            ] {
+                let rewritten_expr = if name == "negated" {
+                    not(rewritten.clone())
+                } else {
+                    rewritten.clone()
+                };
+                let result = df
+                    .clone()
+                    .select(vec![
+                        expr.clone().alias("coalesce_form"),
+                        rewritten_expr.alias("rewritten"),
+                    ])
+                    .expect("project both forms")
+                    .collect()
+                    .await
+                    .expect("collect");
+                let batch = &result[0];
+                let coalesce_col = batch
+                    .column(0)
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .expect("Boolean coalesce column");
+                let rewritten_col = batch
+                    .column(1)
+                    .as_any()
+                    .downcast_ref::<BooleanArray>()
+                    .expect("Boolean rewritten column");
+                for i in 0..coalesce_col.len() {
+                    assert_eq!(
+                        coalesce_col.is_null(i),
+                        rewritten_col.is_null(i),
+                        "{op:?} {name} row {i} nullness"
+                    );
+                    if !coalesce_col.is_null(i) {
+                        assert_eq!(
+                            coalesce_col.value(i),
+                            rewritten_col.value(i),
+                            "{op:?} {name} row {i} value"
+                        );
+                    }
+                }
+            }
+        }
     }
 
     #[test]
