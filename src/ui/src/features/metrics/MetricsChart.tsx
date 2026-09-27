@@ -10,6 +10,7 @@ import {
   formatTimestamp,
   formatValue,
 } from "../../lib/vizFormat";
+import { timeAxisLabels } from "../../lib/time";
 
 interface Props {
   series: PromSeries[];
@@ -177,6 +178,14 @@ export function MetricsChart({
     const AXIS_MIN_SIZE = 40;
     const widestLabel =
       (hasNegativeValue ? "-" : "") + compactCount(maxAbsValue, unit);
+    // One-line labels with the date only where it changes, spaced for the
+    // widest (`MM-DD HH:mm:ss`) so neighbours never overlap.
+    const xAxis: uPlot.Axis = {
+      ...axis,
+      space: 80,
+      values: (_u, splits, _axisIdx, _space, incr) =>
+        timeAxisLabels(splits, incr),
+    };
     const yAxis: uPlot.Axis = {
       ...axis,
       values: (_u, splits) => {
@@ -214,7 +223,7 @@ export function MetricsChart({
               points: { show: false },
             })),
           ],
-          axes: [axis, yAxis],
+          axes: [xAxis, yAxis],
           legend: { show: false },
           hooks: {
             setCursor: [(u) => onCursor(u as unknown as CursorPlot)],

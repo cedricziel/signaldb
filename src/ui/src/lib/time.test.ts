@@ -13,6 +13,7 @@ import {
   resolveStep,
   secondsToDuration,
   stepForRange,
+  timeAxisLabels,
   stepOptionsForRange,
 } from "./time";
 
@@ -209,5 +210,42 @@ describe("resolveStep", () => {
 
   it("falls back on a malformed step", () => {
     expect(resolveStep(range, "banana")).toBe(stepForRange(range));
+  });
+});
+
+describe("timeAxisLabels", () => {
+  const at = (d: number, h: number, m: number, s = 0) =>
+    new Date(2023, 10, d, h, m, s).getTime();
+
+  it("shows the date on the first tick only while the day stays the same", () => {
+    const ticks = [at(14, 22, 10), at(14, 22, 15), at(14, 22, 20)];
+    expect(timeAxisLabels(ticks, 5 * 60_000)).toEqual([
+      "11-14 22:10",
+      "22:15",
+      "22:20",
+    ]);
+  });
+
+  it("repeats the date where the day changes", () => {
+    const ticks = [at(14, 23, 0), at(14, 23, 30), at(15, 0, 0), at(15, 0, 30)];
+    expect(timeAxisLabels(ticks, 30 * 60_000)).toEqual([
+      "11-14 23:00",
+      "23:30",
+      "11-15 00:00",
+      "00:30",
+    ]);
+  });
+
+  it("adds seconds below a minute step", () => {
+    const ticks = [at(14, 22, 10, 0), at(14, 22, 10, 15)];
+    expect(timeAxisLabels(ticks, 15_000)).toEqual([
+      "11-14 22:10:00",
+      "22:10:15",
+    ]);
+  });
+
+  it("drops the time of day at a step of a day or more", () => {
+    const ticks = [at(14, 0, 0), at(15, 0, 0)];
+    expect(timeAxisLabels(ticks, 86_400_000)).toEqual(["11-14", "11-15"]);
   });
 });
