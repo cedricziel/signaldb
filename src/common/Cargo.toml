@@ -183,6 +183,12 @@ required-features = ["testing-containers"]
 name = "tracing_interest_fallback"
 required-features = ["testing"]
 
+# Same reasoning: `config_pin_retypes_an_already_established_field_and_warns` reaches
+# `common::testing::WarnCapture`.
+[[test]]
+name = "type_authority"
+required-features = ["testing"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }

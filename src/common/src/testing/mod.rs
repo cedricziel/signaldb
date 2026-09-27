@@ -34,6 +34,7 @@ mod otlp_fixtures;
 mod temp_catalog;
 mod tracing_fallback;
 mod typed_attrs;
+mod warn_capture;
 
 pub use config_builder::TestConfigBuilder;
 #[cfg(any(test, feature = "testing-containers"))]
@@ -51,3 +52,4 @@ pub use typed_attrs::{
     to_typed_layout, typed_attribute_columns, typed_attribute_columns_from,
     typed_attribute_columns_from_with_placement,
 };
+pub use warn_capture::WarnCapture;
