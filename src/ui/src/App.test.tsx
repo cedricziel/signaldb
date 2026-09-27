@@ -10,6 +10,7 @@ import {
   resetUpdateState,
   setUpdateAvailable,
 } from "./lib/pwaUpdate";
+import { AppRoot } from "./AppRoot";
 import { createAppRouter } from "./routes";
 import {
   emptyIrLogs,
@@ -46,7 +47,7 @@ vi.mock("./api/traceGroupMembers", async (importOriginal) => {
 // that reads `window.location` keeps working unchanged.
 function renderApp(path = "/") {
   window.history.replaceState(null, "", path);
-  return renderWithClient(<RouterProvider router={createAppRouter()} />);
+  return renderWithClient(<AppRoot router={createAppRouter()} />);
 }
 
 /** A page link in the sidebar's page list. */
@@ -718,6 +719,17 @@ describe("App", () => {
       ]);
       renderApp("/logs");
       await screen.findByText(/No log lines in this range/);
+
+      act(() => {
+        setUpdateAvailable(vi.fn());
+      });
+
+      expect(screen.getByText("A new version is ready")).toBeInTheDocument();
+    });
+
+    it("shows the update banner outside the app shell too", async () => {
+      renderApp("/login");
+      await screen.findByRole("button", { name: /sign in/i });
 
       act(() => {
         setUpdateAvailable(vi.fn());

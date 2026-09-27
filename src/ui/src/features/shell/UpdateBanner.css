@@ -1,9 +1,0 @@
-.update-banner {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 5px 14px;
-  font-size: 12px;
-  border-bottom: 1px solid var(--border);
-}
-

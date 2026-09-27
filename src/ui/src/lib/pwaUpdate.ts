@@ -41,7 +41,7 @@ export function schedulePeriodicUpdateCheck(
 // edit (see lib/dirtyForms.ts). `pwa.ts`'s `onNeedRefresh` calls
 // `setUpdateAvailable` with the SDK's `updateSW` callback; from there the
 // update is applied either by the visitor clicking Reload on
-// `features/shell/UpdateBanner.tsx`, or automatically on the next route
+// `components/UpdateBanner.tsx`, or automatically on the next route
 // change once no form is dirty (`App.tsx` calls `maybeAutoApplyUpdate`).
 
 /** The virtual `pwa-register` module's `updateSW`: activates the waiting
@@ -94,6 +94,16 @@ export function applyPendingUpdate(): void {
  * manually via the banner regardless of dirty state. */
 export function maybeAutoApplyUpdate(): void {
   if (updateState.updateSW && !anyDirty()) applyPendingUpdate();
+}
+
+/** Ask the browser to look for a new service worker right away, instead of
+ * waiting for the hourly poll. Finding one fires `onNeedRefresh` as usual.
+ * A no-op where service workers are unavailable. */
+export function checkForUpdateNow(): void {
+  void navigator.serviceWorker
+    ?.getRegistration()
+    .then((registration) => registration?.update())
+    .catch(() => {});
 }
 
 /** Test hook: forget any pending update. */

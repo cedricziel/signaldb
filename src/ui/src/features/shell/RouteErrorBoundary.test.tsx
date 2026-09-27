@@ -14,8 +14,9 @@ import {
   LoggerProvider,
   SimpleLogRecordProcessor,
 } from "@opentelemetry/sdk-logs";
-import { screen, waitFor } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { act, screen, waitFor } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { resetUpdateState, setUpdateAvailable } from "../../lib/pwaUpdate";
 import { renderWithRouter } from "../../test/render";
 import { RouteErrorBoundary } from "./RouteErrorBoundary";
 
@@ -36,7 +37,21 @@ describe("RouteErrorBoundary", () => {
 
   afterEach(() => {
     logs.disable();
+    resetUpdateState();
   });
+
+  function renderBoom() {
+    renderWithRouter(
+      [
+        {
+          path: "/boom",
+          element: <Bomb />,
+          errorElement: <RouteErrorBoundary />,
+        },
+      ],
+      ["/boom"],
+    );
+  }
 
   it("shows the fallback and records exactly one exception log", async () => {
     renderWithRouter(
@@ -63,5 +78,47 @@ describe("RouteErrorBoundary", () => {
     });
     expect(record.attributes[ATTR_EXCEPTION_MESSAGE]).toBe("render blew up");
     expect(record.attributes["url.full"]).toBe("http://localhost:3000/boom");
+  });
+
+  // A crash is often an old cached build that no longer fits the backend.
+  // A plain reload keeps serving it while a new service worker waits, so the
+  // error page applies a pending update itself: a crashed page has no form
+  // state left to protect.
+  it("applies an already pending update straight away", async () => {
+    const updateSW = vi.fn().mockResolvedValue(undefined);
+    setUpdateAvailable(updateSW);
+
+    renderBoom();
+
+    await screen.findByRole("alert");
+    expect(updateSW).toHaveBeenCalledWith(true);
+  });
+
+  it("applies an update that arrives while the error page is showing", async () => {
+    renderBoom();
+    await screen.findByRole("alert");
+
+    const updateSW = vi.fn().mockResolvedValue(undefined);
+    act(() => {
+      setUpdateAvailable(updateSW);
+    });
+
+    expect(updateSW).toHaveBeenCalledWith(true);
+  });
+
+  it("asks the service worker to look for a new version", async () => {
+    const update = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "serviceWorker", {
+      configurable: true,
+      value: { getRegistration: vi.fn().mockResolvedValue({ update }) },
+    });
+
+    try {
+      renderBoom();
+      await screen.findByRole("alert");
+      await waitFor(() => expect(update).toHaveBeenCalled());
+    } finally {
+      Reflect.deleteProperty(navigator, "serviceWorker");
+    }
   });
 });

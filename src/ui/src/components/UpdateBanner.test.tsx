@@ -5,7 +5,7 @@ import {
   applyPendingUpdate,
   resetUpdateState,
   setUpdateAvailable,
-} from "../../lib/pwaUpdate";
+} from "../lib/pwaUpdate";
 import { UpdateBanner } from "./UpdateBanner";
 
 afterEach(() => {

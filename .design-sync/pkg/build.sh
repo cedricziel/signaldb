@@ -53,7 +53,7 @@ rm -rf dist && mkdir -p dist
   # schema storage explorer. Story-local CSS compiles empty, so without these
   # lines any story rendering them previews unstyled. Order mirrors the app's
   # import order (UserMenu.css before AppNav.css).
-  for c in features/shell/UserMenu.css features/shell/AppNav.css features/shell/UpdateBanner.css \
+  for c in features/shell/UserMenu.css features/shell/AppNav.css \
     features/shell/RouteErrorBoundary.css features/shell/UnsavedChangesGuard.css \
     features/schema/SchemaExplorer.css; do
     echo "import \"../$UI/$c\";"

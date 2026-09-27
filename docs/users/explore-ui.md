@@ -1179,6 +1179,21 @@ outright is bounded by its own client-side timeout, sooner than the backend's,
 so a stuck panel eventually shows an error instead of loading forever (see
 [client retry](client-retry.md)).
 
+## Updates
+
+The UI is an installable web app that keeps a cached copy of itself, and it
+checks for a new build when it loads and every hour while the tab is
+visible. A new build downloads in the background and waits: a "A new version
+is ready" banner with **Reload** appears across the top of every page,
+including sign-in and the error screen, and the update also applies itself on your next navigation as long as no form has
+unsaved edits. A plain browser reload does not switch versions while the new
+build waits; closing every tab of the app does.
+
+If a page crashes, the "Something went wrong" screen checks for a new build
+straight away and switches to it as soon as it is ready, since an outdated
+cached build is a common cause and a crashed page has no unsaved edits to
+lose.
+
 ## Availability
 
 Container images (router and monolithic) ship the UI preinstalled. For

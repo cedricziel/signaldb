@@ -1,0 +1,13 @@
+.update-banner {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  font-size: 12px;
+}
+
+.update-banner-action {
+  color: inherit;
+  font-weight: 600;
+  text-decoration: underline;
+}

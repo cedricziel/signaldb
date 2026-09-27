@@ -157,6 +157,13 @@
         "components-throttlebanner--hidden"
       ]
     },
+    "UpdateBanner": {
+      "cardMode": "single",
+      "primaryStory": "Visible",
+      "skip": [
+        "components-updatebanner--hidden"
+      ]
+    },
     "ServiceGraph": {
       "cardMode": "column"
     },
