@@ -7,9 +7,13 @@
 //! false negative: an unrecognized predicate shape is dropped rather than
 //! guessed at.
 
+#[cfg(test)]
+mod e2e_test;
 mod prefilter;
 mod probe;
 mod table;
+#[cfg(test)]
+pub(crate) mod test_support;
 
 pub(crate) use prefilter::WarmIndexGate;
 pub(crate) use table::WarmIndexTable;
