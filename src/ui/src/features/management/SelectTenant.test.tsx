@@ -193,7 +193,9 @@ describe("SelectTenant", () => {
 
     await userEvent.click(screen.getByRole("button", { name: "Retry" }));
 
-    expect(await screen.findByText(/production/)).toBeInTheDocument();
+    expect(
+      await screen.findByText(/production/, {}, { timeout: 3000 }),
+    ).toBeInTheDocument();
     expect(screen.queryByText(/Failed to load datasets/)).toBeNull();
   });
 

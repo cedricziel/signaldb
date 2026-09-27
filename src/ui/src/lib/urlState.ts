@@ -132,6 +132,11 @@ export interface ExploreState {
    * drilled-into case). Only those pages read it; like `env` it isn't
    * carried to other pages. */
   evals: EvalParams;
+  /** The Real users page's selected frontend app (a `service.name`) — ""
+   * means "not yet picked" (the page defaults to the busiest app and
+   * writes it here). Only `/rum` reads it; like `env` it isn't carried to
+   * other pages. */
+  rumApp: string;
 }
 
 export type EvalSource = "offline" | "production" | "both";
@@ -213,6 +218,7 @@ export const DEFAULT_STATE: ExploreState = {
   catalogView: "list",
   env: "",
   evals: DEFAULT_EVAL_PARAMS,
+  rumApp: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -387,6 +393,7 @@ export function parseExploreState(search: string): ExploreState {
     catalogView: catalogViewFromParam(p.get("cview")),
     env: p.get("env") ?? "",
     evals: parseEvalParams(p),
+    rumApp: p.get("app") ?? "",
   };
 }
 
@@ -476,6 +483,7 @@ export function buildSearch(state: ExploreState): string {
   for (const key of EVAL_STRING_PARAMS) if (ev[key]) p.set(key, ev[key]);
   if (ev.source !== DEFAULT_EVAL_PARAMS.source) p.set("source", ev.source);
   if (ev.mode !== DEFAULT_EVAL_PARAMS.mode) p.set("mode", ev.mode);
+  if (state.rumApp) p.set("app", state.rumApp);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }
