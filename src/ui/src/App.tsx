@@ -11,7 +11,6 @@ import { ThrottleBanner } from "./components/ThrottleBanner";
 import { AppNav, useAppNavState } from "./features/shell/AppNav";
 import { CommandPalette } from "./features/shell/CommandPalette";
 import { PageHeader } from "./features/shell/PageHeader";
-import { UpdateBanner } from "./features/shell/UpdateBanner";
 import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";
 import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
 import { useExploreState, type ExploreState } from "./lib/urlState";
@@ -140,7 +139,10 @@ export function App() {
   return (
     <div className="app-frame">
       {isDemo && (
-        <div className="demo-banner" title="Read-only public demo account">
+        <div
+          className="accent-banner demo-banner"
+          title="Read-only public demo account"
+        >
           Demo · read-only
         </div>
       )}
@@ -154,7 +156,6 @@ export function App() {
         />
         <div className="app-column">
           {!nav.narrow && <PageHeader onOpenPalette={nav.openPalette} />}
-          <UpdateBanner />
           <ThrottleBanner />
           <main className="app-main">
             <Outlet context={{ state: effective, update }} />

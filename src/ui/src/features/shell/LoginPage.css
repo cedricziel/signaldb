@@ -5,7 +5,7 @@
    the gate modal, and consent share one visual family (design decision 1). */
 
 .login-page {
-  min-height: 100vh;
+  min-height: 100%;
   display: grid;
   grid-template-rows: 1fr auto 1fr;
   justify-items: center;

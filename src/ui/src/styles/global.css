@@ -205,14 +205,34 @@
   background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
 }
 
+/* Shared full-width accent strip (the demo banner, UpdateBanner). */
+.accent-banner {
+  padding: 5px 14px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
+}
+
 * {
   box-sizing: border-box;
 }
 
 html,
-body,
+body {
+  height: 100%;
+}
+
+/* The update banner (AppRoot.tsx) sits above the routed page, which fills
+   whatever height is left. */
 #root {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-root-main {
+  flex: 1;
+  min-height: 0;
 }
 
 body {

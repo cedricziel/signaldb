@@ -1184,8 +1184,8 @@ so a stuck panel eventually shows an error instead of loading forever (see
 The UI is an installable web app that keeps a cached copy of itself, and it
 checks for a new build when it loads and every hour while the tab is
 visible. A new build downloads in the background and waits: a "A new version
-is ready" banner with **Reload** appears under the page header, and the
-update also applies itself on your next navigation as long as no form has
+is ready" banner with **Reload** appears across the top of every page,
+including sign-in and the error screen, and the update also applies itself on your next navigation as long as no form has
 unsaved edits. A plain browser reload does not switch versions while the new
 build waits; closing every tab of the app does.
 
