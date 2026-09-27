@@ -42,14 +42,7 @@ Nightly trend + baseline/compare workflow: `docs/contributing/benchmarking.md`.
 
 ## Pre-Commit Checks (MANDATORY before committing)
 
-These run automatically via cargo-husky hooks, but run manually to catch issues early:
-
-```bash
-cargo fmt                                               # Format code
-cargo clippy --workspace --all-targets --all-features   # Lint
-cargo machete --with-metadata                           # Unused dependencies
-cargo deny check                                        # License/security audit
-```
+The cargo-husky hook runs `cargo fmt --check` and workspace-wide clippy on commits that stage Rust files, and the pnpm checks on commits that stage UI files. The scoped checks to run first are in CLAUDE.md, "Verifying a change".
 
 CI additionally enforces span hygiene (no bare `#[tracing::instrument]`;
 `otel.kind` only inside `common::self_monitoring` — boundary spans come from
