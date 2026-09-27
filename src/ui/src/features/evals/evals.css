@@ -303,6 +303,10 @@
   color: var(--ok-text);
 }
 
+.evals .warn {
+  color: var(--warn);
+}
+
 /* KPI tiles: shared KpiCard, with a warning or dashed border. */
 
 .kpi-card.evals-kpi-warn {

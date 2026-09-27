@@ -190,6 +190,11 @@ export function verdictOf(s: EvalStats): Verdict | null {
  * long. */
 const RUN_QUIET_MS = 10 * 60_000;
 
+/** Results still arriving: the last one landed within `RUN_QUIET_MS`. */
+export function isReceiving(lastMs: number, nowMs: number): boolean {
+  return nowMs - lastMs < RUN_QUIET_MS;
+}
+
 export interface RunStatus {
   kind: "running" | "complete" | "partial";
   reasons: string[];
@@ -199,8 +204,7 @@ export function runStatus(
   run: { lastMs: number; errors: number; unlinked: number },
   nowMs: number,
 ): RunStatus {
-  if (nowMs - run.lastMs < RUN_QUIET_MS)
-    return { kind: "running", reasons: [] };
+  if (isReceiving(run.lastMs, nowMs)) return { kind: "running", reasons: [] };
   const reasons: string[] = [];
   if (run.errors) reasons.push(`${run.errors} not scored`);
   if (run.unlinked) reasons.push(`${run.unlinked} unmatched`);
