@@ -60,7 +60,8 @@ release tag. Core semconv v1.44.0 still uses v1 `groups`.
 - **Pin a commit, not a tag.** Upstream has no release. `cargo xtask
   vendor-semconv-genai <sha>` clones `semantic-conventions-genai` at that commit into
   `vendor/otel-semconv-genai/<sha>/`, with a `VERSION` file, `LICENSE` and a README
-  like the core vendor tree. The registry version is the short SHA. Moving to a
+  like the core vendor tree, and repins `otel/registry-genai/manifest.yaml` to
+  the same commit. The registry version is the short SHA. Moving to a
   tag once one exists is a re-vendor.
 - **No core-version coupling.** GenAI declares core v1.44.0, and we pin v1.43.0.
   `otel-genai` is resolved against the bundled 1.43.0 `otel`, and `build.rs` fails on

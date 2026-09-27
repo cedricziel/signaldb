@@ -2,10 +2,10 @@
 
 ## 1. Parse definition/2 in schema-model
 
-- [ ] 1.1 Add real upstream `definition/2` files (a registry, spans, metrics and events file from `semantic-conventions-genai`) plus hand-written v1 equivalents as fixtures under `src/schema-model/tests/fixtures/`, and a failing conformance test asserting both resolve to identical attributes, entities, metrics, spans and events. Verify it fails with `cargo test -p schema-model`
-- [ ] 1.2 Implement `file_format` dispatch and lowering of `definition/2` into `Group`s in `src/schema-model/src/model.rs`. Verify with `cargo test -p schema-model`
-- [ ] 1.3 Add failing tests where an unknown `file_format` and a non-manifest file without `groups` each produce a `ParseError` naming the file, then make them pass. Verify with `cargo test -p schema-model`
-- [ ] 1.4 Bump the CI Weaver image to a version that supports `definition/2` and add the new fixtures to `scripts/weaver-check-fixtures.sh`. Verify the script passes locally
+- [x] 1.1 Add real upstream `definition/2` files (a registry, spans, metrics and events file from `semantic-conventions-genai`) plus hand-written v1 equivalents as fixtures under `src/schema-model/tests/fixtures/`, and a failing conformance test asserting both resolve to identical attributes, entities, metrics, spans and events. Verify it fails with `cargo test -p schema-model`
+- [x] 1.2 Implement `file_format` dispatch and lowering of `definition/2` into `Group`s in `src/schema-model/src/model.rs`. Verify with `cargo test -p schema-model`
+- [x] 1.3 Add failing tests where an unknown `file_format` and a non-manifest file without `groups` each produce a `ParseError` naming the file, then make them pass. Verify with `cargo test -p schema-model`
+- [x] 1.4 Run Weaver ≥ v0.26 over `definition/2` content in CI. Covered by the `otel/registry-genai` check (task 4.4), which loads the vendored GenAI model as a dependency. `scripts/weaver-check-fixtures.sh` stays on v1 single-document upload fixtures. Verify the CI step passes locally
 
 ## 2. Custom registry uploads
 
@@ -21,11 +21,11 @@
 
 ## 4. Bundle otel-genai at a pinned commit
 
-- [ ] 4.1 Add `cargo xtask vendor-semconv-genai <sha>` that clones `semantic-conventions-genai` at a pinned commit into `vendor/otel-semconv-genai/<sha>/` with `VERSION`, `LICENSE` and a README, and vendor `e57c543`. Verify by running it and checking the tree
-- [ ] 4.2 Add failing tests in `src/common/tests/schema_registry.rs`: bundled registries list `otel`, `otel-genai` and `signaldb`; `otel-genai` rejects mutation; `gen_ai.agent.id` resolves primary `otel-genai` (not deprecated) with `otel` as an alternative; a custom registry named `otel-genai` is rejected. Verify with `cargo test -p common --test schema_registry`
-- [ ] 4.3 Bundle `otel-genai` in `src/common/build.rs` (resolved against `otel`), insert it into the precedence order and the reserved-namespace list in `common::schema_registry`, and fold `otel/registry-genai/` into the bundled `signaldb` registry (resolved against `otel` and `otel-genai`). Verify with the 4.2 tests
-- [ ] 4.4 Create `otel/registry-genai/` (manifest depending on GenAI at the pinned commit) and add a Weaver v0.26.1 `registry check` step for it in `.github/workflows/ci.yml`. Verify by running the same command locally
-- [ ] 4.5 Update `docs/users/schema-registry.md` and the `multi-tenancy`/`configuration` skills only if they list bundled or reserved namespaces (route via the docs skill). Verify with a grep for `otel` and `signaldb` namespace lists
+- [x] 4.1 Add `cargo xtask vendor-semconv-genai <sha>` that clones `semantic-conventions-genai` at a pinned commit into `vendor/otel-semconv-genai/<sha>/` with `VERSION`, `LICENSE` and a README, and vendor `e57c543`. Verify by running it and checking the tree
+- [x] 4.2 Add failing tests in `src/common/tests/schema_registry.rs`: bundled registries list `otel`, `otel-genai` and `signaldb`; `otel-genai` rejects mutation; `gen_ai.agent.id` resolves primary `otel-genai` (not deprecated) with `otel` as an alternative; a custom registry named `otel-genai` is rejected. Verify with `cargo test -p common --test schema_registry`
+- [x] 4.3 Bundle `otel-genai` in `src/common/build.rs` (resolved against `otel`), insert it into the precedence order and the reserved-namespace list in `common::schema_registry`, and fold `otel/registry-genai/` into the bundled `signaldb` registry (resolved against `otel` and `otel-genai`). Verify with the 4.2 tests
+- [x] 4.4 Create `otel/registry-genai/` (manifest depending on GenAI at the pinned commit) and add a Weaver v0.26.1 `registry check` step for it in `.github/workflows/ci.yml`. Verify by running the same command locally
+- [x] 4.5 Update `docs/users/schema-registry.md` and the `multi-tenancy`/`configuration` skills only if they list bundled or reserved namespaces (route via the docs skill). Verify with a grep for `otel` and `signaldb` namespace lists
 
 ## 5. Integration check
 
