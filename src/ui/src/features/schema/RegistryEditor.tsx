@@ -311,7 +311,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
 
       <div className="schema-editor">
         <div className="schema-editor-toolbar">
-          <label className="schema-button">
+          <label className="btn">
             Upload file
             <input
               ref={fileInput}
@@ -325,7 +325,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           <span className="spacer" />
           <button
             type="button"
-            className="schema-button btn"
+            className="btn"
             disabled={busy || text.trim() === ""}
             onClick={() => validation.mutate(text)}
           >
@@ -333,7 +333,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           </button>
           <button
             type="button"
-            className="schema-button btn btn-primary"
+            className="btn btn-primary"
             disabled={busy || !validated}
             title={validated ? undefined : "Validate first"}
             onClick={() => save.mutate()}
@@ -351,19 +351,20 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
               />
               <button
                 type="button"
-                className="schema-button btn"
+                className="btn"
                 disabled={busy || !validated || newVersion.trim() === ""}
                 onClick={() => saveAsNew.mutate()}
               >
                 Save as new version
               </button>
-              <ConfirmButton
-                className="schema-button"
-                label="Delete"
-                prompt={`Delete ${title}?`}
-                disabled={busy}
-                onConfirm={() => remove.mutate()}
-              />
+              <span className="schema-editor-danger">
+                <ConfirmButton
+                  label="Delete"
+                  prompt={`Delete ${title}?`}
+                  disabled={busy}
+                  onConfirm={() => remove.mutate()}
+                />
+              </span>
             </>
           )}
         </div>
