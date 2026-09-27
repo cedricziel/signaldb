@@ -53,7 +53,9 @@
 
 ## 8. Surfaces
 
-- [ ] 8.1 CLI: `signaldb-cli evals sets …` and `evals upload` with `--compare-to` / `--fail-if`, with tests.
+- [x] 8.1a CLI: eval sets — `signaldb-cli eval-sets list|get|export` and `signaldb-cli admin eval-sets create|replace|delete|append`, with tests.
+- [ ] 8.1b CLI: `evals upload` with `--compare-to` / `--fail-if`, with tests.
 - [ ] 8.2 UI: Eval sets list and detail, New eval set dialog, Add traces panel, Upload results dialog, "Save regressed cases as eval set".
-- [ ] 8.3 MCP: read tools for runs and comparisons (`mcp-server`), with tests.
+- [x] 8.3a MCP: eval set tools `list_eval_sets`, `get_eval_set`, `create_eval_set`, `replace_eval_set`, `delete_eval_set`, `append_eval_cases` (`mcp-server`), with tests.
+- [ ] 8.3b MCP: read tools for runs and comparisons (`mcp-server`), with tests.
 - [ ] 8.4 Docs: eval sets, results file format, CI gate; update the `http-api` and `crate-map` skills if their described behaviour changes.

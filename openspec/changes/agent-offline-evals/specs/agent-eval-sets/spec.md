@@ -72,7 +72,8 @@ score (`/evals/sets/{name}`), with a New eval set dialog (from JSONL, from
 traces, or empty), an Add traces panel, and Export JSONL (written by the
 client from the set's cases). Compare SHALL
 offer "Save N regressed cases as eval set". The CLI SHALL offer
-`signaldb-cli evals sets list|get|create|delete|export|add-traces`.
+`signaldb-cli eval-sets list|get|export` (export writes the cases as JSONL)
+and `signaldb-cli admin eval-sets create|replace|delete|append`.
 
 #### Scenario: Saving regressions
 

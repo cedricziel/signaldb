@@ -6,6 +6,8 @@ sources:
   - src/common/src/eval_sets/mod.rs
   - src/common/src/eval_sets/store.rs
   - src/router/src/endpoints/eval_sets.rs
+  - src/signaldb-cli/src/commands/eval_sets.rs
+  - src/mcp-server/src/server.rs
   - src/common/src/auth/mod.rs
   - openspec/changes/agent-offline-evals/**
 ---
@@ -147,6 +149,47 @@ curl -sS -X DELETE "$SIGNALDB/api/v1/eval-sets/refund-edge-cases-40" \
 The Rust SDK (`signaldb-sdk`) exposes the same operations as
 `list_eval_sets`, `create_eval_set`, `get_eval_set`, `replace_eval_set`,
 `delete_eval_set` and `append_eval_cases`.
+
+## CLI
+
+Reads use `signaldb-cli eval-sets`, writes `signaldb-cli admin eval-sets`.
+Both authenticate with a tenant API key (`--api-key`, `--tenant-id`,
+optional `--dataset-id`, or the `SIGNALDB_*` environment), not the instance
+admin key.
+
+```bash
+signaldb-cli eval-sets list                      # NAME AGENT CASES UPDATED DESCRIPTION
+signaldb-cli eval-sets get refund-edge-cases-40  # the set, then one row per case
+signaldb-cli eval-sets export refund-edge-cases-40 > cases.jsonl
+
+signaldb-cli admin eval-sets create --file refund-edge-cases-40.json
+signaldb-cli admin eval-sets replace refund-edge-cases-40 --file refund-edge-cases-40.json
+signaldb-cli admin eval-sets append refund-edge-cases-40 --file new-cases.jsonl
+signaldb-cli admin eval-sets delete refund-edge-cases-40
+```
+
+`list` and `get` print tables; add `--json` for the raw response. `export`
+writes the set's cases to stdout as JSONL, one case object per line, in
+order: the same shape `append` reads.
+
+`create` and `replace` take the set as a YAML or JSON file (`.json` is read
+as JSON, anything else as YAML) in the shape shown
+[above](#the-set-and-its-cases). For `replace`, a file without a `name`
+takes the one on the command line, and a file naming a different set is
+refused. `append` takes a JSONL file of cases or a JSON `{"cases": [...]}`
+object, and prints how many cases were added and how many were already
+present.
+
+## MCP tools
+
+`list_eval_sets` and `get_eval_set` (`evals:read`), and `create_eval_set`,
+`replace_eval_set`, `delete_eval_set` and `append_eval_cases`
+(`evals:write`). Each takes the `tenant` argument and a required `dataset`:
+one MCP session may span several datasets, so there is no implicit default.
+`get_eval_set` returns one page of cases (`offset`, default 0; `limit`,
+default 200, at most 1000) with the set header plus `total_cases`, `offset`,
+`returned` and `has_more`; page through a large set by raising `offset`. See
+[the MCP tool catalogue](mcp.md#what-it-exposes).
 
 ## Scopes
 
