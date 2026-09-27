@@ -265,7 +265,9 @@ fn parse_document(headers: &HeaderMap, body: &Bytes) -> Result<RegistryDocument,
     };
     parsed.map_err(|e| {
         let status = match e {
-            ParseError::UnsupportedFileFormat { .. } => StatusCode::UNPROCESSABLE_ENTITY,
+            ParseError::UnsupportedFileFormat { .. } | ParseError::RefGroupCycle { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
             _ => StatusCode::BAD_REQUEST,
         };
         Box::new(error(
@@ -1354,6 +1356,25 @@ mod tests {
                 "{body}"
             );
         }
+
+        let cycle = json!({
+            "file_format": "definition/2",
+            "name": "loop",
+            "version": "1.0.0",
+            "attribute_groups": [
+                {"id": "a", "attributes": [{"ref_group": "b"}]},
+                {"id": "b", "attributes": [{"ref_group": "a"}]},
+            ],
+        });
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries:validate",
+            Some(("application/json", cycle.to_string())),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
     }
 
     // ---- 5.2 resolve / search --------------------------------------------

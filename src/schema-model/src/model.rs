@@ -287,6 +287,8 @@ pub enum ParseError {
     UnsupportedFileFormat { path: String, format: String },
     #[error("{path}: model file has no `groups` key")]
     MissingGroups { path: String },
+    #[error("definition/2 `ref_group` cycle through `{group}`")]
+    RefGroupCycle { group: String },
 }
 
 /// A v1 model file. `groups` is `Option` (rather than defaulting to empty) so
@@ -376,7 +378,7 @@ impl RegistryDocument {
                 .collect();
             let model: ModelFileV2 = serde_json::from_value(sections.into())?;
             self.groups
-                .extend(lower_v2(vec![(format!("registry.{}", self.name), model)]));
+                .extend(lower_v2(vec![(format!("registry.{}", self.name), model)])?);
         }
         Ok(self)
     }
@@ -445,7 +447,7 @@ impl RegistryDocument {
                 }
             }
         }
-        groups.extend(lower_v2(v2_files));
+        groups.extend(lower_v2(v2_files)?);
         Ok(RegistryDocument {
             name: name.to_string(),
             version: version.to_string(),
@@ -614,7 +616,7 @@ fn v2_group(id: String, r#type: &str, common: V2Common) -> (Group, Vec<V2Attr>) 
 /// `metric.<name>`, spans `span.<type>`, events `event.<name>`, entities
 /// `entity.<name>`, and a file's top-level `attributes` a synthetic
 /// `registry.<path>` group.
-fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Vec<Group> {
+fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Result<Vec<Group>, ParseError> {
     let mut pending: Vec<(Group, Vec<V2Attr>)> = Vec::new();
     for (registry_id, file) in files {
         if !file.attributes.is_empty() {
@@ -665,30 +667,30 @@ fn lower_v2(files: Vec<(String, ModelFileV2)>) -> Vec<Group> {
         .map(|(group, attrs)| (group.id.as_str(), attrs.as_slice()))
         .collect();
     let mut memo = BTreeMap::new();
-    let expanded: Vec<Vec<AttributeSpec>> = pending
+    let expanded = pending
         .iter()
         .map(|(_, attrs)| expand_v2_attrs(attrs, &by_id, &mut memo, &mut BTreeSet::new()))
-        .collect();
-    pending
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(pending
         .into_iter()
         .zip(expanded)
         .map(|((mut group, _), attributes)| {
             group.attributes = attributes;
             group
         })
-        .collect()
+        .collect())
 }
 
 /// Flatten a v2 attribute list into [`AttributeSpec`]s, splicing each
-/// `ref_group` in place (recursively; a cycle splices nothing). Each group
-/// is expanded once (`memo`), and a splice skips attributes already present,
+/// `ref_group` in place (recursively; a cycle is an error). Each group is
+/// expanded once (`memo`), and a splice skips attributes already present,
 /// so uploads cannot make expansion grow exponentially.
 fn expand_v2_attrs<'a>(
     attrs: &'a [V2Attr],
     by_id: &BTreeMap<&str, &'a [V2Attr]>,
     memo: &mut BTreeMap<&'a str, Vec<AttributeSpec>>,
     visiting: &mut BTreeSet<&'a str>,
-) -> Vec<AttributeSpec> {
+) -> Result<Vec<AttributeSpec>, ParseError> {
     let mut out: Vec<AttributeSpec> = Vec::new();
     let mut seen = BTreeSet::new();
     for attr in attrs {
@@ -700,9 +702,11 @@ fn expand_v2_attrs<'a>(
                         continue;
                     };
                     if !visiting.insert(group_id) {
-                        continue;
+                        return Err(ParseError::RefGroupCycle {
+                            group: group_id.to_string(),
+                        });
                     }
-                    let spliced = expand_v2_attrs(inner, by_id, memo, visiting);
+                    let spliced = expand_v2_attrs(inner, by_id, memo, visiting)?;
                     visiting.remove(group_id);
                     memo.insert(group_id, spliced);
                 }
@@ -722,7 +726,7 @@ fn expand_v2_attrs<'a>(
             }
         }
     }
-    out
+    Ok(out)
 }
 
 /// Deterministic synthetic `attribute_group` id for a file's top-level

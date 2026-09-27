@@ -91,6 +91,38 @@ fn repeated_ref_group_splices_expand_once() {
 }
 
 #[test]
+fn ref_group_cycle_is_rejected() {
+    let yaml = r#"
+file_format: definition/2
+name: loop
+version: 1.0.0
+attribute_groups:
+  - id: a
+    attributes:
+      - key: loop.a
+        type: string
+        brief: A.
+        stability: development
+      - ref_group: b
+  - id: b
+    attributes:
+      - key: loop.b
+        type: string
+        brief: B.
+        stability: development
+      - ref_group: a
+  - id: d
+    attributes:
+      - ref_group: a
+"#;
+    let err = RegistryDocument::from_yaml(yaml).expect_err("a ref_group cycle must be rejected");
+    assert!(
+        matches!(&err, schema_model::ParseError::RefGroupCycle { .. }),
+        "{err}"
+    );
+}
+
+#[test]
 fn non_string_file_format_is_rejected() {
     let dir = fixtures_dir().join("non-string-file-format/model");
     let err = RegistryDocument::from_dir("bad", "1.0.0", &dir)

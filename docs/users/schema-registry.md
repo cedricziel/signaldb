@@ -218,8 +218,8 @@ reading the registry back returns the `groups` form: metrics become
 `metric.<name>`, entities `entity.<name>`, and the top-level `attributes` one
 group named `registry.<name>`. The attributes, entities and metrics resolve the
 same as in the `groups` version; only the group an attribute is listed under
-differs. Any other `file_format` value is rejected with `422` and nothing is
-stored.
+differs. Any other `file_format` value, or `ref_group` references that loop
+back on themselves, are rejected with `422` and nothing is stored.
 
 Validate, then create:
 
