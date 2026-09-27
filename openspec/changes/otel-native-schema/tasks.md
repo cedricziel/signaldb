@@ -52,7 +52,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 - [ ] 5.1 Write failing tests: canonical-typed value stored typed; off-type value retained losslessly in residue (never coerced-away or dropped); existing OTLP clients unchanged; conflict/off-type surfaced not silent (spec `ingest-type-enforcement`)
 - [ ] 5.2 Route the acceptor through the registry (the writer side lands in 4.2a) to pick the canonical home or residue; cache the per-attribute lookup
 - [x] 5.3 Keep Flight/WAL as JSON-in-Utf8; assert WAL byte-unchanged this phase
-- [ ] 5.4 Surface off-type/conflict as metrics+logs (no silent drop)
+- [x] 5.4 Surface off-type/conflict as metrics+logs (no silent drop)
 - [ ] 5.5 `cargo test -p acceptor -p writer -p common -p tests-integration` (ingest→storage round-trip) green; lint/format/machete
 
 ## 6. Promotion as pure perf (budgeted, demotable) + the invariant test

@@ -76,6 +76,16 @@ acceptor's own forward retries. A steady `resends_dropped` rate means clients
 give up before the acceptor answers: its ingest latency exceeds their export
 timeout.
 
+`signaldb.writer.attribute_type_mismatches` (counter; `signaldb.tenant.id`,
+`signal`, `level` and `reason` attributes) counts attribute values that did not
+match their field's canonical type. With `reason=off_type`, the value was
+stored as sent in the residue: it can still be retrieved, but it can't be
+filtered as a typed value. With `reason=pin_conflict`, a
+`[[schema.attribute_types]]` pin retyped a field that data had already typed.
+Each affected key is logged once per writer process, and its running total is
+the `off_type_count` returned by `GET /api/v1/schema/attributes/{key}`. The
+metric never carries the attribute key.
+
 ## Resource identity
 
 Every service exports with:

@@ -15,7 +15,7 @@ use common::iceberg::sort::{
 };
 use common::schema::logical::AttributeLevel;
 use common::schema::type_authority::{
-    CanonicalType, ObservedKind, SchemaUrls, TypeAuthority, place,
+    CanonicalType, ObservedKind, Placement, SchemaUrls, TypeAuthority, place,
 };
 use common::schema::typed_attributes;
 use datafusion::arrow::array::{
@@ -680,8 +680,8 @@ impl IcebergTableWriter {
         // property of any one entry's bytes, so it propagates as an `Err`
         // from the whole call instead of a rejection — the processor retries
         // the group rather than dead-lettering it.
-        let resolved_types = match &type_authority {
-            None => ResolvedAttributeTypes::new(),
+        let (resolved_types, scope) = match &type_authority {
+            None => (ResolvedAttributeTypes::new(), None),
             Some(authority) => {
                 let signal =
                     common::discovery::signal_for_source(&table_name).with_context(|| {
@@ -697,14 +697,18 @@ impl IcebergTableWriter {
                     .scope(&self.tenant_id, &self.dataset_id, signal)
                     .await
                     .context("failed to resolve attribute type scope")?;
-                resolve_typed_attribute_types(&scope, keys)
+                let resolved = resolve_typed_attribute_types(&scope, keys)
                     .await
-                    .context("failed to resolve canonical attribute types")?
+                    .context("failed to resolve canonical attribute types")?;
+                (resolved, Some(scope))
             }
         };
 
         // Step 3: split typed containers into their per-type homes plus
-        // residue, then coerce onto the table's exact Arrow schema.
+        // residue, then coerce onto the table's exact Arrow schema. Off-type
+        // placements are surfaced only once the commit lands, so a retried
+        // call never double counts them.
+        let mut off_type_counts = OffTypeCounts::new();
         let mut transformed = Vec::new();
         for ((id, batch), parsed) in prepared_batches.into_iter().zip(parsed_containers) {
             let prepared = apply_typed_attribute_containers(
@@ -715,9 +719,17 @@ impl IcebergTableWriter {
                 &resolved_types,
                 &table_name,
             )
-            .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
+            .and_then(|(batch, counts)| {
+                coerce_batch_to_schema(batch, &target_schema).map(|batch| (batch, counts))
+            });
             match prepared {
-                Ok(batch) => {
+                Ok((batch, counts)) => {
+                    for (level, keys) in counts {
+                        let merged = off_type_counts.entry(level).or_default();
+                        for (key, (count, observed)) in keys {
+                            merged.entry(key).or_insert((0, observed)).0 += count;
+                        }
+                    }
                     committed_ids.push(id);
                     transformed.push(batch);
                 }
@@ -788,6 +800,9 @@ impl IcebergTableWriter {
                     table = %self.table.identifier(),
                     "Committed rows to Iceberg table"
                 );
+                if let Some(scope) = &scope {
+                    record_off_type_counts(scope, off_type_counts, &resolved_types).await;
+                }
                 return Ok(CommitOutcome {
                     committed: committed_ids,
                     rejected,
@@ -1093,6 +1108,11 @@ fn collect_typed_attribute_keys(
 /// placement closure, never a per-value `String` allocation.
 type ResolvedAttributeTypes = HashMap<AttributeLevel, HashMap<String, Option<CanonicalType>>>;
 
+/// Off-type placements per level and key: the count and one observed kind
+/// for the warning. Arrays, kvlists, bytes and empty values are never
+/// off-type.
+type OffTypeCounts = HashMap<AttributeLevel, HashMap<String, (i64, ObservedKind)>>;
+
 /// How many [`common::schema::type_authority::SignalScope::canonical`] calls
 /// [`resolve_typed_attribute_types`] runs concurrently.
 const TYPE_RESOLUTION_CONCURRENCY: usize = 16;
@@ -1135,6 +1155,36 @@ async fn resolve_typed_attribute_types(
     Ok(resolved)
 }
 
+/// Surfaces `counts` through `scope` (catalog `off_type_count`, the
+/// mismatch metric, and a once-per-process warning) — called only once the
+/// Iceberg commit carrying these values has actually landed, so a retried
+/// commit attempt never double counts.
+async fn record_off_type_counts(
+    scope: &common::schema::type_authority::SignalScope,
+    counts: OffTypeCounts,
+    resolved: &ResolvedAttributeTypes,
+) {
+    use futures::stream::StreamExt;
+
+    let entries = counts.into_iter().flat_map(|(level, keys)| {
+        keys.into_iter()
+            .filter_map(move |(key, (count, observed))| {
+                let canonical = resolved.get(&level)?.get(&key).copied().flatten()?;
+                Some((level, key, count, canonical, observed))
+            })
+    });
+    futures::stream::iter(entries)
+        .for_each_concurrent(
+            TYPE_RESOLUTION_CONCURRENCY,
+            |(level, key, count, canonical, observed)| async move {
+                scope
+                    .record_off_type(level, &key, canonical, observed, count)
+                    .await;
+            },
+        )
+        .await;
+}
+
 /// Splits every typed container's already-parsed rows (e.g. `span_attributes`)
 /// into its five typed-attribute columns (e.g. `span_attributes_str`, ...,
 /// `span_attributes_residue`), placed per `resolved`. The source JSON
@@ -1148,14 +1198,15 @@ fn apply_typed_attribute_containers(
     parsed: &ParsedContainerRows,
     resolved: &ResolvedAttributeTypes,
     table_name: &str,
-) -> Result<RecordBatch> {
+) -> Result<(RecordBatch, OffTypeCounts)> {
     if typed_containers.is_empty() {
-        return Ok(batch);
+        return Ok((batch, OffTypeCounts::new()));
     }
 
     let mut fields: Vec<std::sync::Arc<Field>> = Vec::new();
     let mut columns: Vec<ArrayRef> = Vec::new();
     let mut consumed = HashSet::new();
+    let mut off_type_counts = OffTypeCounts::new();
 
     // Present only on tables opted into the warm containment index (4.3):
     // every typed home value placed below also feeds one token into this
@@ -1192,7 +1243,17 @@ fn apply_typed_attribute_containers(
                     row.as_ref(),
                     |key, observed| {
                         let canonical = level_map.and_then(|m| m.get(key)).copied().flatten();
-                        place(canonical, observed)
+                        let placement = place(canonical, observed);
+                        if placement == (Placement::Residue { off_type: true }) {
+                            let keys = off_type_counts.entry(*level).or_default();
+                            match keys.get_mut(key) {
+                                Some(entry) => entry.0 += 1,
+                                None => {
+                                    keys.insert(key.to_string(), (1, observed));
+                                }
+                            }
+                        }
+                        placement
                     },
                     |key, home| {
                         if let Some(warm_index) = warm_index.as_mut()
@@ -1246,8 +1307,9 @@ fn apply_typed_attribute_containers(
     }
 
     let schema = std::sync::Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
-    RecordBatch::try_new(schema, columns)
-        .map_err(|e| anyhow::anyhow!("failed to build typed-attribute batch: {e}"))
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| anyhow::anyhow!("failed to build typed-attribute batch: {e}"))?;
+    Ok((batch, off_type_counts))
 }
 
 /// Project and cast a batch onto the table's Arrow schema (columns matched
@@ -2257,6 +2319,128 @@ mod tests {
         assert!(
             row_doc.get("payload").is_some(),
             "bytes must round-trip via the residue"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_type_values_are_counted_after_commit_and_warned_once() {
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "offtype-tenant", "local", false).await;
+        let (type_authority, sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "offtype-tenant", "local")
+            .with_type_authority(type_authority);
+
+        let setup = wire_trace_batch(0x01, vec![("http.status_code", Value::IntValue(200))]);
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), setup)])
+            .await
+            .unwrap();
+
+        let field = common::schema::logical::LogicalFieldId {
+            source: "traces".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "http.status_code".to_string(),
+        };
+        let before = sql_catalog
+            .get_attribute_type("offtype-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("established by the int occurrence above");
+        assert_eq!(before.off_type_count, 0);
+        let (warnings, _guard) =
+            common::testing::WarnCapture::install("kept as sent in the residue");
+
+        // Two entries in ONE call each send the same key off-type -- the
+        // commit still lands and both entries' off-type values are summed.
+        let batch_a = wire_trace_batch(
+            0x02,
+            vec![("http.status_code", Value::StringValue("200".to_string()))],
+        );
+        let batch_b = wire_trace_batch(
+            0x03,
+            vec![("http.status_code", Value::StringValue("404".to_string()))],
+        );
+        let outcome = writer
+            .append_batches_with_marker(
+                "w1",
+                vec![
+                    (uuid::Uuid::new_v4(), batch_a),
+                    (uuid::Uuid::new_v4(), batch_b),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+        assert_eq!(outcome.committed.len(), 2, "the commit still lands");
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0202020202020202");
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        assert_eq!(
+            decoded[row],
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!("200")
+            )])),
+            "the off-type value is kept, in the residue"
+        );
+
+        let after = sql_catalog
+            .get_attribute_type("offtype-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("still established");
+        assert_eq!(
+            after.off_type_count - before.off_type_count,
+            2,
+            "off-type values from both entries of the one call must be summed"
+        );
+
+        // An array value for the same key has no scalar to compare against
+        // the canonical type, so `place` marks it off-type-free by design;
+        // it must not move the counter.
+        let batch_c = wire_trace_batch(
+            0x04,
+            vec![(
+                "http.status_code",
+                Value::ArrayValue(ArrayValue {
+                    values: vec![AnyValue {
+                        value: Some(Value::IntValue(1)),
+                    }],
+                }),
+            )],
+        );
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch_c)])
+            .await
+            .unwrap();
+
+        let unchanged = sql_catalog
+            .get_attribute_type("offtype-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("still established");
+        assert_eq!(
+            unchanged.off_type_count, after.off_type_count,
+            "an array value must not be counted as off-type"
+        );
+
+        let batch_d = wire_trace_batch(
+            0x05,
+            vec![("http.status_code", Value::StringValue("500".to_string()))],
+        );
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch_d)])
+            .await
+            .unwrap();
+        assert_eq!(
+            warnings.messages().len(),
+            1,
+            "warns once per (level, key) per process: {:?}",
+            warnings.messages()
         );
     }
 
