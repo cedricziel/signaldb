@@ -171,6 +171,7 @@ describe("decodeStats", () => {
       fail: 0,
       scoreSum: 7.2,
       scored: 8,
+      labels: { pass: 8 },
     });
     expect(stats.get("run-b")).toEqual({
       results: 3,
@@ -179,6 +180,7 @@ describe("decodeStats", () => {
       fail: 3,
       scoreSum: 0.9,
       scored: 3,
+      labels: { fail: 3 },
     });
   });
 

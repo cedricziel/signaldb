@@ -32,7 +32,13 @@ import {
   type EvalStats,
   type StatsDelta,
 } from "./evalModel";
-import { fmtCount, fmtDelta, fmtPct, fmtScore } from "./evalFormat";
+import {
+  fmtCount,
+  fmtDelta,
+  fmtMeanOrLabel,
+  fmtPct,
+  fmtScore,
+} from "./evalFormat";
 import {
   EvalsHead,
   PassBar,
@@ -349,9 +355,7 @@ export function AgentsScoresView(shell: ShellContext) {
                       <td>
                         <PassBar stats={r.current} />
                       </td>
-                      <td className="num">
-                        {r.mean === null ? "label" : fmtScore(r.mean)}
-                      </td>
+                      <td className="num">{fmtMeanOrLabel(r.current)}</td>
                       <td className={`num ${d.tone}`}>{d.text}</td>
                       <td>
                         <Sparkline
