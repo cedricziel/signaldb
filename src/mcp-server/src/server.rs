@@ -386,7 +386,7 @@ struct CreateApiKeyParams {
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
     /// `schema:read`, `schema:write`, `processors:read`, `processors:write`,
-    /// `tenant:manage` (manage the key's own
+    /// `evals:read`, `evals:write`, `tenant:manage` (manage the key's own
     /// tenant — datasets, API keys, memberships, schema — through the
     /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
@@ -1431,7 +1431,7 @@ struct TenantCreateApiKeyParams {
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
     /// `schema:read`, `schema:write`, `processors:read`, `processors:write`,
-    /// `tenant:manage` (manage this tenant's
+    /// `evals:read`, `evals:write`, `tenant:manage` (manage this tenant's
     /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
     /// Dataset set the key is restricted to (non-empty; a bare empty array

@@ -526,10 +526,10 @@ a multi-tenant connector's whole reachable set before any one tenant has been
 selected for a call; it isn't something you call directly as an operator or
 agent. The read scopes a token may hold —
 `traces:read`, `logs:read`, `metrics:read`, `profiles:read`, `schema:read`,
-`processors:read` —
+`processors:read`, `evals:read` —
 gate the corresponding query surface (see the
 [multi-tenancy](../architecture/overview.md) model); a request with no `scope`
-is granted all of them, and `schema:write`/`processors:write` are never
+is granted all of them, and `schema:write`/`processors:write`/`evals:write` are never
 grantable through OAuth (a request naming only one of them is rejected with
 `invalid_scope`). The
 existing `Bearer <api-key>` + `X-Tenant-ID` path is unchanged; OAuth is an

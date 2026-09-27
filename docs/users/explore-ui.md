@@ -1067,7 +1067,8 @@ Every key carries explicit scopes chosen in a picker grouped into
 **Ingestion** (`metrics:write`, `logs:write`, `traces:write`,
 `profiles:write` — all four checked by default, since a key missing any of
 them 403s on that signal's OTLP ingest), **Schema** (`schema:read`,
-`schema:write`), and **Management** (`tenant:manage` — lets the key manage
+`schema:write`), **Evals** (`evals:read`, `evals:write` — reading and
+managing [eval sets](eval-sets.md)), and **Management** (`tenant:manage` — lets the key manage
 this tenant's datasets, keys, and members through the same management API
 this page uses; see [Authentication](authentication.md#api-key-scopes)),
 each with a one-line description; at least one scope is required, and an

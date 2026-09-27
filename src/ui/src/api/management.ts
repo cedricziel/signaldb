@@ -41,6 +41,9 @@ export type SchemaScope = "schema:read" | "schema:write";
 /** Tenant OTTL processor scopes an API key may be granted. */
 export type ProcessorScope = "processors:read" | "processors:write";
 
+/** Eval-set scopes an API key may be granted. */
+export type EvalScope = "evals:read" | "evals:write";
+
 /** Tenant self-management scope: the key may call the management API for
  * its own tenant. Explicit only — a legacy unscoped key never gains it. */
 export type ManagementScope = "tenant:manage";
@@ -49,7 +52,11 @@ export type ManagementScope = "tenant:manage";
  * `string[]`, this drives the scope picker; the vocabulary mirrors
  * `common::auth::API_KEY_SCOPES` (the read scopes are OAuth-only). */
 export type ApiKeyScope =
-  IngestScope | SchemaScope | ProcessorScope | ManagementScope;
+  | IngestScope
+  | SchemaScope
+  | ProcessorScope
+  | EvalScope
+  | ManagementScope;
 
 /** Scope picker groups with one-line descriptions, in display order. */
 export const SCOPE_GROUPS: ReadonlyArray<{
@@ -85,6 +92,19 @@ export const SCOPE_GROUPS: ReadonlyArray<{
       {
         scope: "processors:write",
         description: "Create, replace, and delete tenant OTTL processors",
+      },
+    ],
+  },
+  {
+    name: "Evals",
+    scopes: [
+      {
+        scope: "evals:read",
+        description: "Read eval sets and their cases",
+      },
+      {
+        scope: "evals:write",
+        description: "Create, replace, delete, and append cases to eval sets",
       },
     ],
   },
