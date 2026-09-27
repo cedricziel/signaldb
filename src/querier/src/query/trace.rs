@@ -606,7 +606,8 @@ impl TraceService {
             .select_columns(&scan_columns)
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns, so the JSON-era
-        // `distinct()` dedup is skipped for map-typed attribute tables.
+        // `distinct()` dedup is skipped for map-typed attribute tables —
+        // the typed layout's homes are Map columns too.
         let map_typed = cols.iter().any(|c| is_map_column(&scan, c));
         let scan = if map_typed {
             scan
@@ -1722,51 +1723,7 @@ mod tests {
     }
 
     #[test]
-    fn attribute_map_reads_typed_map_columns() {
-        use datafusion::arrow::array::{ArrayRef, MapBuilder, StringBuilder};
-        use datafusion::arrow::record_batch::RecordBatch;
-
-        // Build a Map<Utf8, Utf8> column, the form the writer stores today.
-        let mut builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
-        builder.keys().append_value("http.method");
-        builder.values().append_value("POST");
-        builder.keys().append_value("http.status_code");
-        builder.values().append_value("200");
-        builder.append(true).unwrap();
-        let column: ArrayRef = Arc::new(builder.finish());
-        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
-
-        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
-        let attrs = attribute_map_from(&mut resolved, 0);
-        assert_eq!(
-            attrs.get("http.method"),
-            Some(&serde_json::Value::String("POST".to_string()))
-        );
-        assert_eq!(
-            attrs.get("http.status_code"),
-            Some(&serde_json::Value::String("200".to_string()))
-        );
-    }
-
-    #[test]
-    fn attribute_map_reads_legacy_json_columns() {
-        use datafusion::arrow::record_batch::RecordBatch;
-
-        let column: datafusion::arrow::array::ArrayRef = Arc::new(StringArray::from(vec![Some(
-            r#"{"db.system":"postgresql"}"#,
-        )]));
-        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
-
-        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
-        let attrs = attribute_map_from(&mut resolved, 0);
-        assert_eq!(
-            attrs.get("db.system"),
-            Some(&serde_json::Value::String("postgresql".to_string()))
-        );
-    }
-
-    #[test]
-    fn attribute_map_reads_typed_layout_columns_like_the_legacy_layout() {
+    fn attribute_map_reads_typed_layout_columns() {
         use datafusion::arrow::datatypes::Schema;
         use datafusion::arrow::record_batch::RecordBatch;
 
@@ -2203,50 +2160,18 @@ mod tests {
 
     // ---- Tag discovery (#1073) ----
 
-    /// Register a `t.d.traces` table with map-typed attribute columns and
+    /// Register a `t.d.traces` table with typed-layout attribute columns and
     /// three spans: one outside the `[1_000, 3_000]` test window carrying
     /// attribute keys unique to it (to prove window exclusion), and two
     /// inside it with distinct resource/span attribute keys and values, one
     /// root and one not (to prove `is_root`-filtered intrinsics).
     fn tags_session() -> SessionContext {
-        use datafusion::arrow::array::{
-            ArrayRef, BooleanArray, MapBuilder, MapFieldNames, StringBuilder,
-            TimestampNanosecondArray,
-        };
-        use datafusion::arrow::datatypes::{Field, Fields, Schema};
+        use datafusion::arrow::array::{ArrayRef, BooleanArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{Field, Schema};
         use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
         use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
 
-        fn map_field(name: &str) -> Field {
-            let entries = Field::new(
-                "entries",
-                DataType::Struct(Fields::from(vec![
-                    Field::new("keys", DataType::Utf8, false),
-                    Field::new("values", DataType::Utf8, true),
-                ])),
-                false,
-            );
-            Field::new(name, DataType::Map(Arc::new(entries), false), true)
-        }
-
-        fn maps(rows: &[&[(&str, &str)]]) -> ArrayRef {
-            let names = MapFieldNames {
-                entry: "entries".to_string(),
-                key: "keys".to_string(),
-                value: "values".to_string(),
-            };
-            let mut b = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
-            for row in rows {
-                for (k, v) in *row {
-                    b.keys().append_value(k);
-                    b.values().append_value(v);
-                }
-                b.append(true).unwrap();
-            }
-            Arc::new(b.finish())
-        }
-
-        let schema = Arc::new(Schema::new(vec![
+        let mut fields = vec![
             Field::new("trace_id", DataType::Utf8, false),
             Field::new("span_id", DataType::Utf8, false),
             Field::new("parent_span_id", DataType::Utf8, true),
@@ -2262,50 +2187,59 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
                 false,
             ),
-            map_field("span_attributes"),
-            map_field("resource_attributes"),
-        ]));
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["t-old", "t-mid", "t-new"])),
+            Arc::new(StringArray::from(vec!["s0", "s1", "s2"])),
+            Arc::new(StringArray::from(vec![Some(""), Some(""), Some("")])),
+            Arc::new(StringArray::from(vec![
+                "LEGACY",
+                "GET /orders",
+                "ProcessQueue",
+            ])),
+            Arc::new(StringArray::from(vec![
+                "legacy-svc",
+                "checkout",
+                "checkout-worker",
+            ])),
+            Arc::new(StringArray::from(vec!["Internal", "Server", "Internal"])),
+            Arc::new(StringArray::from(vec![
+                Some("Ok"),
+                Some("Ok"),
+                Some("Error"),
+            ])),
+            Arc::new(BooleanArray::from(vec![true, true, false])),
+            Arc::new(Int64Array::from(vec![100_i64, 1_000, 2_000])),
+            Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
+            Arc::new(TimestampNanosecondArray::from(vec![100_i64, 1_000, 2_000])),
+        ];
 
-        let starts: Vec<i64> = vec![100, 1_000, 2_000];
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["t-old", "t-mid", "t-new"])) as ArrayRef,
-                Arc::new(StringArray::from(vec!["s0", "s1", "s2"])),
-                Arc::new(StringArray::from(vec![Some(""), Some(""), Some("")])),
-                Arc::new(StringArray::from(vec![
-                    "LEGACY",
-                    "GET /orders",
-                    "ProcessQueue",
-                ])),
-                Arc::new(StringArray::from(vec![
-                    "legacy-svc",
-                    "checkout",
-                    "checkout-worker",
-                ])),
-                Arc::new(StringArray::from(vec!["Internal", "Server", "Internal"])),
-                Arc::new(StringArray::from(vec![
-                    Some("Ok"),
-                    Some("Ok"),
-                    Some("Error"),
-                ])),
-                Arc::new(BooleanArray::from(vec![true, true, false])),
-                Arc::new(Int64Array::from(starts.clone())),
-                Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
-                Arc::new(TimestampNanosecondArray::from(starts)),
-                maps(&[
-                    &[("legacy.route", "/old")],
-                    &[("http.route", "/api/orders")],
-                    &[("http.route", "/api/users")],
-                ]),
-                maps(&[
-                    &[("legacy.only", "x")],
-                    &[("deployment.environment.name", "prod")],
-                    &[("deployment.environment.name", "staging")],
-                ]),
-            ],
-        )
-        .unwrap();
+        let json_row = |pairs: &[(&str, &str)]| {
+            Some(serde_json::Map::from_iter(pairs.iter().map(|(k, v)| {
+                (k.to_string(), serde_json::Value::String(v.to_string()))
+            })))
+        };
+        let span_rows = [
+            json_row(&[("legacy.route", "/old")]),
+            json_row(&[("http.route", "/api/orders")]),
+            json_row(&[("http.route", "/api/users")]),
+        ];
+        let resource_rows = [
+            json_row(&[("legacy.only", "x")]),
+            json_row(&[("deployment.environment.name", "prod")]),
+            json_row(&[("deployment.environment.name", "staging")]),
+        ];
+        for (name, rows) in [
+            ("span_attributes", &span_rows),
+            ("resource_attributes", &resource_rows),
+        ] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns(name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
