@@ -932,12 +932,27 @@ pub fn shape_log_query(
     if let Some(filter) = filter {
         df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
     }
-    df.select(log_query_projection(LOG_COLUMNS))
-        .map_err(QuerierError::QueryFailed)?
-        .sort(vec![col("timestamp").sort(direction.ascending(), true)])
-        .map_err(QuerierError::QueryFailed)?
-        .limit(0, Some(limit as usize))
-        .map_err(QuerierError::QueryFailed)
+    // `LOG_COLUMNS`' two attribute containers are the typed layout's five
+    // columns each on a typed table, not the literal container name.
+    let schema = df.schema().as_arrow();
+    let columns: Vec<String> = LOG_COLUMNS
+        .iter()
+        .flat_map(|&c| {
+            if ATTR_CONTAINERS.contains(&c) {
+                common::attrs::expr::select_columns_for_containers(Some(schema), &[c])
+            } else {
+                vec![c.to_string()]
+            }
+        })
+        .collect();
+    df.select(log_query_projection(
+        &columns.iter().map(String::as_str).collect::<Vec<_>>(),
+    ))
+    .map_err(QuerierError::QueryFailed)?
+    .sort(vec![col("timestamp").sort(direction.ascending(), true)])
+    .map_err(QuerierError::QueryFailed)?
+    .limit(0, Some(limit as usize))
+    .map_err(QuerierError::QueryFailed)
 }
 
 /// Inclusive nanosecond bounds on the `timestamp` column.
@@ -955,14 +970,15 @@ pub(super) fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
 
 /// The attribute-matching context for a logs table: its materialized
 /// `label_<key>` columns, and whether its attribute columns are typed maps
-/// (new tables) or JSON strings (legacy tables).
+/// (either a single `Map<Utf8,Utf8>` column or the typed-attribute layout's
+/// five columns) or JSON strings (legacy tables).
 fn attr_context_of(df: &DataFrame) -> AttrContext {
-    let map_attrs = df
-        .schema()
+    let schema = df.schema().as_arrow();
+    let map_attrs = schema
         .fields()
         .iter()
         .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)))
-        || common::attrs::expr::is_typed_layout(df.schema().as_arrow(), "log_attributes");
+        || common::attrs::expr::is_typed_layout(schema, "log_attributes");
     AttrContext {
         materialized: materialized_columns_of(df),
         map_attrs,
@@ -2100,11 +2116,9 @@ mod tests {
         out
     }
 
-    /// A `t.d.logs` table whose attribute columns are typed
-    /// `Map<Utf8, Utf8>` (the new-table storage form).
+    /// A `t.d.logs` table whose attribute columns are the typed layout
+    /// (four typed maps plus a CBOR residue column each).
     fn service_with_map_attrs() -> LogsService {
-        use datafusion::arrow::array::{MapBuilder, StringBuilder};
-
         let mut fields: Vec<Field> = vec![
             Field::new(
                 "timestamp",
@@ -2117,75 +2131,47 @@ mod tests {
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
         ];
-        let map_field = |name: &str| {
-            Field::new_map(
-                name,
-                "key_value",
-                Field::new("key", DataType::Utf8, false),
-                Field::new("value", DataType::Utf8, true),
-                false,
-                true,
-            )
-        };
-        fields.push(map_field("log_attributes"));
-        fields.push(map_field("resource_attributes"));
-        let schema = Arc::new(Schema::new(fields));
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            str_col(&["a", "b", "c"]),
+            str_col(&["api", "api", "web"]),
+            str_col(&["info", "error", "info"]),
+            str_col(&["t1", "t2", "t3"]),
+            str_col(&["s1", "s2", "s3"]),
+        ];
 
-        let mut log_attrs = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
         // Row 1: namespace=prod, status=200; row 2: namespace=prod, status=503;
         // row 3: namespace=staging.
-        for (ns, status) in [
-            ("prod", Some("200")),
-            ("prod", Some("503")),
-            ("staging", None),
+        let log_rows = [
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("status".to_string(), serde_json::json!(200)),
+            ])),
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("status".to_string(), serde_json::json!(503)),
+            ])),
+            Some(serde_json::Map::from_iter([(
+                "namespace".to_string(),
+                serde_json::json!("staging"),
+            )])),
+        ];
+        let resource_rows = [
+            Some(serde_json::Map::new()),
+            Some(serde_json::Map::new()),
+            Some(serde_json::Map::new()),
+        ];
+        for (name, rows) in [
+            ("log_attributes", &log_rows),
+            ("resource_attributes", &resource_rows),
         ] {
-            log_attrs.keys().append_value("namespace");
-            log_attrs.values().append_value(ns);
-            if let Some(st) = status {
-                log_attrs.keys().append_value("status");
-                log_attrs.values().append_value(st);
-            }
-            log_attrs.append(true).unwrap();
+            let (typed_fields, typed_arrays) =
+                common::testing::typed_attribute_columns_from("logs", "physical-v4", name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
         }
-        let log_attrs = log_attrs.finish();
-        let mut resource_attrs = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
-        for _ in 0..3 {
-            resource_attrs.append(true).unwrap();
-        }
-        let resource_attrs = resource_attrs.finish();
-
-        // MapBuilder's default field naming must match the schema fields.
-        let log_attrs = datafusion::arrow::compute::cast(
-            &(Arc::new(log_attrs) as Arc<dyn Array>),
-            schema
-                .field_with_name("log_attributes")
-                .unwrap()
-                .data_type(),
-        )
-        .unwrap();
-        let resource_attrs = datafusion::arrow::compute::cast(
-            &(Arc::new(resource_attrs) as Arc<dyn Array>),
-            schema
-                .field_with_name("resource_attributes")
-                .unwrap()
-                .data_type(),
-        )
-        .unwrap();
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                str_col(&["a", "b", "c"]),
-                str_col(&["api", "api", "web"]),
-                str_col(&["info", "error", "info"]),
-                str_col(&["t1", "t2", "t3"]),
-                str_col(&["s1", "s2", "s3"]),
-                log_attrs,
-                resource_attrs,
-            ],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();

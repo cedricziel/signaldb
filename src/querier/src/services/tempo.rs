@@ -637,64 +637,40 @@ mod tests {
     /// `span_attributes`) with one resource key beyond the always-present
     /// `service.name` and one span key.
     fn tag_fixture_querier() -> SignalDBQuerier {
-        use datafusion::arrow::array::{
-            ArrayRef, MapBuilder, MapFieldNames, RecordBatch, StringBuilder,
-            TimestampNanosecondArray,
-        };
-        use datafusion::arrow::datatypes::{DataType, Field, Fields, Schema, TimeUnit};
+        use datafusion::arrow::array::{ArrayRef, RecordBatch, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
         use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
         use datafusion::prelude::SessionContext;
         use std::sync::Arc;
 
-        fn map_field(name: &str) -> Field {
-            let entries = Field::new(
-                "entries",
-                DataType::Struct(Fields::from(vec![
-                    Field::new("keys", DataType::Utf8, false),
-                    Field::new("values", DataType::Utf8, true),
-                ])),
-                false,
-            );
-            Field::new(name, DataType::Map(Arc::new(entries), false), true)
+        let mut fields = vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        )];
+        let mut columns: Vec<ArrayRef> =
+            vec![Arc::new(TimestampNanosecondArray::from(vec![1_000_i64]))];
+
+        let span_rows = [Some(serde_json::Map::from_iter([(
+            "http.route".to_string(),
+            serde_json::json!("/api/orders"),
+        )]))];
+        let resource_rows = [Some(serde_json::Map::from_iter([(
+            "deployment.environment.name".to_string(),
+            serde_json::json!("prod"),
+        )]))];
+        for (name, rows) in [
+            ("span_attributes", &span_rows),
+            ("resource_attributes", &resource_rows),
+        ] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns(name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
         }
 
-        fn maps(rows: &[&[(&str, &str)]]) -> ArrayRef {
-            let names = MapFieldNames {
-                entry: "entries".to_string(),
-                key: "keys".to_string(),
-                value: "values".to_string(),
-            };
-            let mut b = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
-            for row in rows {
-                for (k, v) in *row {
-                    b.keys().append_value(k);
-                    b.values().append_value(v);
-                }
-                b.append(true).unwrap();
-            }
-            Arc::new(b.finish())
-        }
-
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            map_field("span_attributes"),
-            map_field("resource_attributes"),
-        ]));
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![1_000_i64])),
-                maps(&[&[("http.route", "/api/orders")]]),
-                maps(&[&[("deployment.environment.name", "prod")]]),
-            ],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         // Matches `SignalDBQuerier::resolve_tenant`'s default when a
         // request carries neither a `TenantContext` extension nor an

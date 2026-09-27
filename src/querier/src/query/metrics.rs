@@ -2806,38 +2806,70 @@ mod tests {
         MetricsService::new(ctx)
     }
 
-    /// Same series as [`service_with_data`], rewritten onto the typed
-    /// attribute layout (`attributes_str`/`_int`/`_double`/`_bool`/`_residue`
-    /// instead of a single `attributes` column) -- the layout every table
-    /// is stored in since the typed-layout cutover.
-    fn service_with_typed_data() -> MetricsService {
-        let schema = metrics_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                Arc::new(TimestampNanosecondArray::from(vec![None, None, None])),
-                Arc::new(StringArray::from(vec!["api", "api", "web"])),
-                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
-                Arc::new(Float64Array::from(vec![1.0, 3.0, 5.0])),
-                Arc::new(StringArray::from(vec![
-                    r#"{"code":"200"}"#,
-                    r#"{"code":"500"}"#,
-                    r#"{"code":"200"}"#,
-                ])),
-                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
-            ],
-        )
-        .unwrap();
-        let typed_batch = common::testing::to_typed_layout(
-            "metrics_gauge",
-            "physical-v3",
-            &batch,
-            &["attributes", "resource_attributes"],
-        );
+    /// Like [`service_with_data`], but with typed-layout (residue-backed)
+    /// attribute columns instead of legacy JSON-in-`Utf8` ones.
+    fn service_with_typed_attrs() -> MetricsService {
+        let mut fields: Vec<Field> = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new(
+                "start_timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                true,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            Arc::new(TimestampNanosecondArray::from(vec![None, None, None])),
+            Arc::new(StringArray::from(vec!["api", "api", "web"])),
+            Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
+            Arc::new(Float64Array::from(vec![1.0, 3.0, 5.0])),
+        ];
+
+        let attr_rows = [
+            Some(serde_json::Map::from_iter([(
+                "code".to_string(),
+                serde_json::json!("200"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "code".to_string(),
+                serde_json::json!("500"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "code".to_string(),
+                serde_json::json!("200"),
+            )])),
+        ];
+        let resource_rows = [
+            Some(serde_json::Map::new()),
+            Some(serde_json::Map::new()),
+            Some(serde_json::Map::new()),
+        ];
+        for (name, rows) in [
+            (LOG_ATTRIBUTES, &attr_rows),
+            (RESOURCE_ATTRIBUTES, &resource_rows),
+        ] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                "metrics_gauge",
+                "physical-v3",
+                name,
+                rows,
+            );
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(typed_batch.schema(), vec![vec![typed_batch]]).unwrap();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
             .register_table("metrics_gauge".to_string(), Arc::new(table))
@@ -3271,7 +3303,7 @@ mod tests {
     /// against that layout instead of erroring with "No field named attributes".
     #[tokio::test]
     async fn label_matcher_filters_attributes_on_typed_layout() {
-        let service = service_with_typed_data();
+        let service = service_with_typed_attrs();
         let out = matrix(&service, r#"sum(reqs{code="500"})"#, 1000).await;
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].2, 3.0);
@@ -3461,7 +3493,7 @@ mod tests {
 
     #[tokio::test]
     async fn label_names_include_known_and_attribute_keys() {
-        let service = service_with_data();
+        let service = service_with_typed_attrs();
         let labels = service.get_labels(0, 1000, "t", "d").await.unwrap();
         assert!(labels.contains(&"__name__".to_string()));
         assert!(labels.contains(&"job".to_string()));
@@ -3470,7 +3502,7 @@ mod tests {
 
     #[tokio::test]
     async fn label_values_for_name_job_and_attribute() {
-        let service = service_with_data();
+        let service = service_with_typed_attrs();
         assert_eq!(
             service
                 .get_label_values("__name__", 0, 1000, "t", "d")
