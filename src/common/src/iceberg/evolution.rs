@@ -544,7 +544,18 @@ pub async fn add_promoted_attr_columns(
         let column = promoted_attr_column(*level, key);
         let doc = promoted_attr_doc(*level, key);
         match existing_by_name.get(column.as_str()) {
-            Some(field) if field.doc.as_deref() == Some(doc.as_str()) => {}
+            Some(field) if field.doc.as_deref() == Some(doc.as_str()) => {
+                let existing = canonical_type_of(&field.field_type);
+                if existing != Some(*canonical) {
+                    tracing::warn!(
+                        table = %identifier,
+                        column = %column,
+                        requested = ?canonical,
+                        existing = ?existing,
+                        "Promoted attribute column already exists with a different type; left unchanged"
+                    );
+                }
+            }
             Some(field) => {
                 tracing::warn!(
                     table = %identifier,
@@ -556,8 +567,17 @@ pub async fn add_promoted_attr_columns(
                      different origin"
                 );
             }
-            None if new_columns.iter().any(|(_, _, c, _)| c == &column) => {}
-            None => new_columns.push((*level, key.clone(), column, *canonical)),
+            None => match new_columns.iter().find(|(_, _, c, _)| c == &column) {
+                Some((_, _, _, first)) if first != canonical => tracing::warn!(
+                    table = %identifier,
+                    column = %column,
+                    kept = ?first,
+                    dropped = ?canonical,
+                    "Promoted attribute requested twice with different types; keeping the first"
+                ),
+                Some(_) => {}
+                None => new_columns.push((*level, key.clone(), column, *canonical)),
+            },
         }
     }
     if new_columns.is_empty() {
@@ -2308,6 +2328,26 @@ mod tests {
             2,
             "idempotent re-run must not add another schema"
         );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn re_requesting_a_promoted_column_with_another_type_warns_and_keeps_it()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        let int = [pa(AttributeLevel::Record, "count", CanonicalType::Int64)];
+        let first = add_promoted_attr_columns(catalog.clone(), &identifier, &int).await?;
+
+        let (warnings, _guard) =
+            crate::testing::WarnCapture::install("already exists with a different type");
+        let double = [pa(AttributeLevel::Record, "count", CanonicalType::Float64)];
+        let second = add_promoted_attr_columns(catalog.clone(), &identifier, &double).await?;
+
+        assert_eq!(first, second, "the existing column is left unchanged");
+        assert_eq!(warnings.messages().len(), 1);
         Ok(())
     }
 
