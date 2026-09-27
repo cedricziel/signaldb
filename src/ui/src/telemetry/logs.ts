@@ -28,6 +28,7 @@ import {
 } from "@opentelemetry/sdk-logs";
 import { resolveExportConfig } from "./runtimeConfig";
 import { RUNTIME_CONFIG, buildResource } from "./resource";
+import { RouteTemplateLogRecordProcessor } from "./routeTemplateLogRecordProcessor";
 import { sanitizeNavigationUrl } from "./sanitizeNavigationUrl";
 import { SessionLogRecordProcessor } from "./sessionLogRecordProcessor";
 import { getDefaultSessionManager } from "./session";
@@ -73,6 +74,7 @@ export function initBrowserLogs(): void {
 
   const processors: LogRecordProcessor[] = [
     new SessionLogRecordProcessor(getDefaultSessionManager()),
+    new RouteTemplateLogRecordProcessor(),
   ];
   const exporter = resolveLogExporter();
   if (exporter) {

@@ -4,6 +4,7 @@
 // via outlet context so `/logs`, `/traces`, ... and `/manage` all read/write
 // the same tenant, dataset, and range without re-deriving them.
 
+import { useEffect } from "react";
 import {
   createBrowserRouter,
   createRoutesFromElements,
@@ -30,6 +31,18 @@ import { processorsRoutes } from "./features/processors/routes";
 import { schemaRoutes } from "./features/schema/routes";
 import { useOutletState } from "./lib/outletState";
 import { signalFromParam } from "./lib/urlState";
+import { buildRouteTemplate } from "./telemetry/routeTemplate";
+import { setRouteTemplate } from "./telemetry/routeTemplateLogRecordProcessor";
+
+/** Keeps the telemetry `url.template` in step with the matched route. */
+function RouteTemplateReporter() {
+  const location = useLocation();
+  const params = useParams();
+  useEffect(() => {
+    setRouteTemplate(buildRouteTemplate(location.pathname, params));
+  });
+  return null;
+}
 
 /**
  * Pathless root layout above every route, including `/oauth/consent` and
@@ -41,6 +54,7 @@ function RootLayout() {
   return (
     <>
       <UnsavedChangesGuard />
+      <RouteTemplateReporter />
       <Outlet />
     </>
   );
