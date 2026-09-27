@@ -52,6 +52,13 @@ pub enum AggFn {
     SumOverTime,
     /// The count of raw samples seen in the window (`irVersion` 7).
     CountOverTime,
+    /// An approximate count of distinct non-null values of the field in the
+    /// group, computed with a bounded-memory sketch (DataFusion
+    /// `approx_distinct`, HyperLogLog) rather than an exact distinct count —
+    /// its cost does not grow with the number of distinct values. Accepts
+    /// `string`/`int64`/`bool`/`timestamp` operands; `float64` is rejected at
+    /// validation (`irVersion` 9).
+    CountDistinct,
 }
 
 impl AggFn {
@@ -113,6 +120,7 @@ impl AggFn {
             AggFn::MaxOverTime => "max_over_time",
             AggFn::SumOverTime => "sum_over_time",
             AggFn::CountOverTime => "count_over_time",
+            AggFn::CountDistinct => "count_distinct",
         }
     }
 }

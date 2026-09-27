@@ -54,7 +54,8 @@ use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
 use datafusion::functions::string::expr_fn::contains;
 use datafusion::functions_aggregate::expr_fn::{
-    approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum, var_pop,
+    approx_distinct, approx_percentile_cont, avg, count, first_value, last_value, max, min,
+    stddev_pop, sum, var_pop,
 };
 use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
@@ -2613,6 +2614,14 @@ impl Lowering<'_> {
             }
             AggFn::Stddev => stddev_pop(self.numeric_of(a)?),
             AggFn::Stdvar => var_pop(self.numeric_of(a)?),
+            // `approx_distinct` (HyperLogLog); cast to `Int64` below, after
+            // the scope filter attaches — `.filter()` only builds on a bare
+            // `Expr::AggregateFunction`, not a `Cast` wrapping one. Nulls
+            // are already ignored by `approx_distinct`, same as every other
+            // aggregate here.
+            AggFn::CountDistinct => {
+                approx_distinct(self.value_expr(a.of.as_deref().unwrap_or_default())?)
+            }
             // Population, not sample: LogQL's stddev_over_time/stdvar_over_time
             // describe the window they were given rather than estimating a
             // wider distribution from it, and the compat path already uses the
@@ -2669,6 +2678,14 @@ impl Lowering<'_> {
                 .filter(self.lower_predicate(scope)?)
                 .build()
                 .map_err(QuerierError::QueryFailed)?,
+        };
+        // `approx_distinct` returns `UInt64`; cast to `Int64` so the
+        // physical output matches the `Int64` type `validate` declares for
+        // `count_distinct` — done after the scope filter attaches, above.
+        let expr = if a.func == AggFn::CountDistinct {
+            cast(expr, DataType::Int64)
+        } else {
+            expr
         };
         // `divisor` reports the aggregate per unit rather than absolute — the
         // whole of what a rate is. It divides whatever the aggregate produced,
@@ -7150,6 +7167,190 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
         ctx
+    }
+
+    /// A logs table for `count_distinct`: two `service.name` groups, an
+    /// `event_name` physical column, and unpromoted `session.id`/`user.id`
+    /// attributes.
+    ///
+    /// `web` carries two sessions (`s1`, `s2`); `s1` alone has an `exception`
+    /// row (ts=20). `api` carries one session (`s3`, two rows), never an
+    /// `exception`. `user.id` is absent on row 3 (`web`/`s2`) — the null
+    /// `count_distinct` must not count.
+    fn count_distinct_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, true),
+            Field::new("event_name", DataType::Utf8, true),
+            map_field_named("log_attributes"),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30, 40, 50])),
+                Arc::new(StringArray::from(vec!["web", "web", "web", "api", "api"])),
+                Arc::new(StringArray::from(vec![
+                    "page_view",
+                    "exception",
+                    "page_view",
+                    "page_view",
+                    "page_view",
+                ])),
+                build_map(&[
+                    &[("session.id", "s1"), ("user.id", "u1")],
+                    &[("session.id", "s1"), ("user.id", "u1")],
+                    &[("session.id", "s2")],
+                    &[("session.id", "s3"), ("user.id", "u2")],
+                    &[("session.id", "s3"), ("user.id", "u2")],
+                ]),
+            ],
+        )
+        .unwrap();
+        // The querier's attribute reads only understand the typed layout
+        // (the legacy map/JSON attribute paths were dropped) — rewrite the
+        // legacy-shaped `log_attributes` map built above onto it, same as
+        // `logs_ctx()`.
+        let batch =
+            common::testing::to_typed_layout("logs", "physical-v4", &batch, &["log_attributes"]);
+        single_table_ctx("logs", batch.schema(), batch)
+    }
+
+    /// Plain `count_distinct` of a string attribute: within 2% of the true
+    /// distinct count (exact here, since the cardinalities are tiny) —
+    /// mirrors the spec's "Counting sessions" scenario.
+    #[tokio::test]
+    async fn count_distinct_counts_distinct_sessions_per_group() {
+        let batches = collect_doc_over(
+            count_distinct_ctx(),
+            serde_json::json!({
+                "irVersion": 9, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                    { "fn": "count_distinct", "of": "session.id", "as": "sessions" }
+                ] } } ]
+            }),
+        )
+        .await;
+        let sessions = count_distinct_by_group(&batches, "sessions");
+        assert_eq!(sessions.get("web").copied(), Some(2), "s1, s2");
+        assert_eq!(sessions.get("api").copied(), Some(1), "s3 only");
+    }
+
+    /// A scoped `count_distinct` counts only the records the scope admits;
+    /// a group with no matching record reports zero rather than being
+    /// dropped — mirrors the spec's "Scoped distinct count" scenario.
+    #[tokio::test]
+    async fn a_scoped_count_distinct_counts_only_matching_records_and_zeros_the_rest() {
+        let batches = collect_doc_over(
+            count_distinct_ctx(),
+            serde_json::json!({
+                "irVersion": 9, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                    { "fn": "count_distinct", "of": "session.id", "as": "sessions",
+                      "where": { "field": "event_name", "op": "eq", "value": "exception" } }
+                ] } } ]
+            }),
+        )
+        .await;
+        let sessions = count_distinct_by_group(&batches, "sessions");
+        assert_eq!(
+            sessions.get("web").copied(),
+            Some(1),
+            "only s1's exception row counts"
+        );
+        assert_eq!(
+            sessions.get("api").copied(),
+            Some(0),
+            "no exception row in this group — zero, not dropped"
+        );
+    }
+
+    /// A record with no `user.id` is not counted — mirrors the spec's
+    /// "Nulls are not a value" scenario.
+    #[tokio::test]
+    async fn count_distinct_does_not_count_nulls() {
+        let batches = collect_doc_over(
+            count_distinct_ctx(),
+            serde_json::json!({
+                "irVersion": 9, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                    { "fn": "count_distinct", "of": "user.id", "as": "users" }
+                ] } } ]
+            }),
+        )
+        .await;
+        let users = count_distinct_by_group(&batches, "users");
+        // `web` has u1 (rows 1-2) and a null (row 3) — the null must not
+        // inflate the count to 2.
+        assert_eq!(users.get("web").copied(), Some(1));
+        assert_eq!(users.get("api").copied(), Some(1));
+    }
+
+    /// A document declaring an earlier `irVersion` may not use
+    /// `count_distinct` — validation rejects it naming v9, mirroring the v5
+    /// gate on `stddev`/`stdvar`/`first`/`last`.
+    #[tokio::test]
+    async fn count_distinct_is_rejected_below_ir_version_9() {
+        let svc = IrService::new(count_distinct_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 8, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": [], "aggs": [
+                { "fn": "count_distinct", "of": "session.id", "as": "sessions" }
+            ] } } ]
+        }));
+        let err = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .expect_err("count_distinct at irVersion 8 must be rejected");
+        assert!(
+            format!("{err:?}").contains('9'),
+            "error should name irVersion 9: {err:?}"
+        );
+    }
+
+    /// Groups the aggregate output's `service_name`/`col` columns into a
+    /// `HashMap`, downcasting `col` as `Int64` — the shared tail of every
+    /// `count_distinct`-by-group assertion above.
+    fn count_distinct_by_group(batches: &[RecordBatch], col: &str) -> HashMap<String, i64> {
+        let mut out = HashMap::new();
+        for batch in batches {
+            let groups = batch
+                .column_by_name("service_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            let values = batch
+                .column_by_name(col)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Int64Array>()
+                .unwrap();
+            for i in 0..batch.num_rows() {
+                out.insert(groups.value(i).to_string(), values.value(i));
+            }
+        }
+        out
+    }
+
+    /// Like `collect_doc`, but over a caller-supplied context rather than
+    /// the shared `logs_ctx()` fixture.
+    async fn collect_doc_over(ctx: SessionContext, v: serde_json::Value) -> Vec<RecordBatch> {
+        let svc = IrService::new(ctx);
+        let d = doc(v);
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("logs table is registered");
+        df.collect().await.unwrap()
     }
 
     /// A string column's values across every batch, sorted — the shared

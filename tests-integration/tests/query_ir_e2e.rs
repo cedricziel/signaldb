@@ -1190,6 +1190,64 @@ async fn scoped_aggregate_keeps_groups_with_no_match() {
     );
 }
 
+/// A `count_distinct` aggregate (`irVersion` 9) over ingested OTLP logs:
+/// three records carry two distinct `session.id` values, one has no
+/// `session.id` at all — the null must not inflate the count.
+#[tokio::test]
+async fn count_distinct_aggregate_end_to_end() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let with_session = |offset_ns: i64, session_id: &str| LogRecord {
+        attributes: vec![KeyValue {
+            key: "session.id".to_string(),
+            value: Some(string_value(session_id)),
+            ..Default::default()
+        }],
+        ..log_record(offset_ns, "INFO", "page view")
+    };
+
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "web",
+                vec![
+                    with_session(0, "s1"),
+                    with_session(1_000_000, "s1"),
+                    with_session(2_000_000, "s2"),
+                    log_record(3_000_000, "INFO", "no session on this one"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest web logs");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 9,
+            "from": "logs",
+            "range": range(),
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                { "fn": "count_distinct", "of": "session.id", "as": "sessions" }
+            ] } } ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "count_distinct aggregate: {body}");
+    assert_eq!(
+        table_pairs(&body, "service_name", "sessions"),
+        vec![("web".to_string(), 2)],
+        "two distinct sessions (s1, s2); the record with no session.id doesn't count: {body}"
+    );
+}
+
 /// #1340: `resource.identity` is declared on `logs` (and every other
 /// source) but had no producer, so grouping by it always fell into one null
 /// bucket with a self-contradicting warning. The writer now materialises it
