@@ -798,10 +798,11 @@ estimate `describe: fields` reports for each one), and grouping by a
 high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
-The metric and group-by boxes grow with what you type, up to the row's
-width, and the row wraps onto a second line once its parts no longer fit,
-so a long dotted metric name is neither clipped nor cut off without an
-ellipsis; each box also carries its full value as a title.
+The metric box sizes itself to the metric name, and the group-by box grows
+with what you type, up to the row's width. The row wraps onto a second line
+once its parts no longer fit, so a long dotted metric name is never clipped.
+Each box also carries its full value as a title. On a phone, the metric
+stays on one line with its query letter and the `from` keyword.
 
 **Run** compiles the row to an IR document and charts it — a dotted
 OTel-native metric name (e.g. `signaldb.wal.entries_processed`) works
@@ -809,6 +810,13 @@ directly, where PromQL's grammar can't even lex it. Series take one of
 twelve colours in order; past twelve, the colours repeat with a different
 dash pattern, so two series sharing a hue are still distinguishable in the
 chart and the legend.
+
+The legend and the chart tooltip name each series by its label values, for
+example `checkout` rather than `{service_name="checkout"}`, with several
+values joined by `·`. Hover a legend entry to see its full selector. The
+**Copy** button at the end of the legend copies every series' selector, one
+per line. The time axis shows the date only on the first tick and wherever
+the day changes.
 
 ### Formulas across multiple queries
 
