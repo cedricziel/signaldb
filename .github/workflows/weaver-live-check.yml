@@ -142,6 +142,25 @@ jobs:
           echo "weaver exit code: $code"
           exit "$code"
 
+      # A clean report is meaningless if spans or logs never reached weaver.
+      - name: Check spans and logs were sampled
+        if: always()
+        run: |
+          if [ ! -s live-check-report.json ]; then
+            echo "::error::live-check-report.json is missing or empty"
+            exit 1
+          fi
+          missing=0
+          for signal in span log; do
+            n=$(jq --arg s "$signal" '[.samples[] | select(has($s))] | length' live-check-report.json)
+            echo "$signal samples: $n"
+            if [ "$n" -eq 0 ]; then
+              echo "::error::live-check report holds zero $signal samples; the result does not cover ${signal}s"
+              missing=1
+            fi
+          done
+          exit "$missing"
+
       - name: Upload report
         if: always()
         uses: actions/upload-artifact@v7
