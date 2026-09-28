@@ -22,6 +22,7 @@ const MS = 1_000_000;
 interface IrDoc {
   from?: string;
   result?: string;
+  fields?: string[];
   range?: { from?: string; to?: string };
   pipeline?: Array<{
     correlate?: unknown;
@@ -304,6 +305,101 @@ const SESSIONS_ROWS: (string | number | boolean | null)[][] = [
   ],
 ];
 
+/** Column names for the session-detail `rows` reads — `irColumn`-mapped, the
+ * same convention `api/rumSessionDetail.ts`'s `pick()` tries first. */
+const SESSION_SPAN_COLUMNS = [
+  "trace_id",
+  "span_id",
+  "parent_span_id",
+  "span_name",
+  "span_kind",
+  "service_name",
+  "start_time_unix_nano",
+  "duration",
+  "status_code",
+  "http_request_method",
+  "url_full",
+  "http_response_status_code",
+];
+
+const SESSION_LOG_COLUMNS = [
+  "timestamp",
+  "event_name",
+  "trace_id",
+  "url_template",
+  "url_full",
+  "browser_web_vital_name",
+  "browser_web_vital_rating",
+  "browser_web_vital_value",
+  "browser_css_selector",
+  "browser_tag_name",
+  "exception_type",
+  "exception_message",
+  "exception_stacktrace",
+  "resource_attributes",
+];
+
+/** One session's timeline (the first `SESSIONS_ROWS` entry): a page view, a
+ * failed checkout request, and the exception it caused — the spec's own
+ * "A failed checkout request" scenario. */
+const SESSION_SPAN_ROWS: (string | number | null)[][] = [
+  [
+    "trace-501",
+    "span-501",
+    null,
+    "POST",
+    "Client",
+    "storefront-web",
+    "1700002610000000000",
+    "180000000",
+    "Unset",
+    "POST",
+    "https://api.storefront.example.com/api/checkout",
+    502,
+  ],
+];
+
+const SESSION_LOG_ROWS: (string | number | null)[][] = [
+  [
+    "1700002600000000000",
+    "browser.navigation",
+    null,
+    "/checkout",
+    "https://shop.example.com/checkout",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    JSON.stringify({
+      "session.id": "8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+      "user.id": "user-1001",
+    }),
+  ],
+  [
+    "1700002612800000000",
+    "exception",
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    "TypeError",
+    "Cannot read properties of undefined (reading 'total')",
+    "TypeError: Cannot read properties of undefined\n  at Checkout.render (checkout.js:42)",
+    JSON.stringify({
+      "session.id": "8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+      "user.id": "user-1001",
+    }),
+  ],
+];
+
 function eventNameOf(pipe: NonNullable<IrDoc["pipeline"]>): string | undefined {
   for (const stage of pipe) {
     if (
@@ -370,6 +466,26 @@ function rumIr(raw: unknown): unknown {
 }
 
 function singleDocResponse(b: IrDoc): unknown {
+  // Session-detail reads (`api/rumSessionDetail.ts`'s `buildSessionSpansDoc`/
+  // `buildSessionLogsDoc`) are `rows` queries with no `aggregate` stage —
+  // handled before the aggregate-keyed branches below, which all assume one.
+  if (b.result === "rows") {
+    if (b.from === "traces") {
+      return {
+        result: "rows",
+        columns: SESSION_SPAN_COLUMNS.map((name) => ({ name })),
+        rows: SESSION_SPAN_ROWS,
+      };
+    }
+    if (b.from === "logs") {
+      return {
+        result: "rows",
+        columns: SESSION_LOG_COLUMNS.map((name) => ({ name })),
+        rows: SESSION_LOG_ROWS,
+      };
+    }
+  }
+
   const pipe = b.pipeline ?? [];
   const agg = pipe.find((s) => s.aggregate)?.aggregate;
   const by = agg?.by ?? [];
@@ -699,6 +815,12 @@ export const PagesRouteDetail: Story = {
 
 export const Sessions: Story = {
   render: () => <RealUsersPage path="/rum/sessions?app=storefront-web" />,
+};
+
+export const SessionDetail: Story = {
+  render: () => (
+    <RealUsersPage path="/rum/sessions?app=storefront-web&session=8f14e45f-ceea-467e-adc0-fb62a1a8be22" />
+  ),
 };
 
 export const Interactions: Story = {

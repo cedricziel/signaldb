@@ -5,6 +5,8 @@ import * as rumApi from "../../api/rum";
 import type { RumApp, RumPageRow, RumRequestRow } from "../../api/rum";
 import * as rumSessionsApi from "../../api/rumSessions";
 import type { RumSessionRow } from "../../api/rumSessions";
+import * as rumSessionDetailApi from "../../api/rumSessionDetail";
+import type { SessionEvent } from "../../api/rumSessionDetail";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { createAppRouter } from "../../routes";
 import { RouterProvider } from "react-router";
@@ -34,6 +36,10 @@ vi.mock("../../api/errors", async (orig) => ({
 vi.mock("../../api/rumSessions", async (orig) => ({
   ...(await orig<typeof import("../../api/rumSessions")>()),
   fetchSessions: vi.fn().mockResolvedValue([]),
+}));
+vi.mock("../../api/rumSessionDetail", async (orig) => ({
+  ...(await orig<typeof import("../../api/rumSessionDetail")>()),
+  fetchSessionDetail: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
 }));
 
 function rumApp(overrides: Partial<RumApp> = {}): RumApp {
@@ -514,5 +520,99 @@ describe("Sessions tab", () => {
       screen.queryByRole("button", { name: /clean/ }),
     ).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: /errored/ })).toBeInTheDocument();
+  });
+
+  it("shows the session detail timeline and events when ?session= is set", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([sessionRow()]);
+    const events: SessionEvent[] = [
+      {
+        kind: "log",
+        tsNs: "1700000000000000000",
+        lane: "views",
+        eventName: "browser.navigation",
+        traceId: null,
+        urlTemplate: "/checkout",
+        urlFull: null,
+        vitalName: null,
+        vitalRating: null,
+        vitalValue: null,
+        cssSelector: null,
+        tagName: null,
+        exceptionType: null,
+        exceptionMessage: null,
+        exceptionStacktrace: null,
+        resourceAttributes: { "user.id": "user-42" },
+      },
+    ];
+    vi.mocked(rumSessionDetailApi.fetchSessionDetail).mockResolvedValue({
+      events,
+      hasMore: false,
+    });
+    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+
+    expect(
+      await screen.findByText("Navigated to /checkout"),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("user.id")).toBeInTheDocument();
+  });
+
+  it("resets the selected event when ?session= switches to a different session", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([
+      sessionRow({ sessionId: "sess-1" }),
+      sessionRow({ sessionId: "sess-2" }),
+    ]);
+    vi.mocked(rumSessionDetailApi.fetchSessionDetail).mockImplementation(
+      async (sessionId) => ({
+        events: [
+          {
+            kind: "log",
+            tsNs: "1700000000000000000",
+            lane: "views",
+            eventName: "browser.navigation",
+            traceId: null,
+            urlTemplate: `/${sessionId}`,
+            urlFull: null,
+            vitalName: null,
+            vitalRating: null,
+            vitalValue: null,
+            cssSelector: null,
+            tagName: null,
+            exceptionType: null,
+            exceptionMessage: null,
+            exceptionStacktrace: null,
+            resourceAttributes: {},
+          },
+        ],
+        hasMore: false,
+      }),
+    );
+    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+
+    const user = userEvent.setup();
+    const eventRow = await screen.findByRole("button", {
+      name: /Navigated to \/sess-1/,
+    });
+    await user.click(eventRow);
+    expect(eventRow).toHaveAttribute("aria-current", "true");
+
+    await user.click(await screen.findByRole("button", { name: /sess-2/ }));
+    await waitFor(() =>
+      expect(window.location.search).toContain("session=sess-2"),
+    );
+
+    const eventsPanel = (
+      await screen.findByText("Navigated to /sess-2")
+    ).closest(".rum-session-events") as HTMLElement;
+    for (const button of within(eventsPanel).getAllByRole("button")) {
+      expect(button).not.toHaveAttribute("aria-current", "true");
+    }
   });
 });

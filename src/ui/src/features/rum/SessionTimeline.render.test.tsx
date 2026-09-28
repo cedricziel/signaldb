@@ -45,6 +45,7 @@ function vitalEvent(overrides: Partial<SessionLogEvent> = {}): SessionLogEvent {
     exceptionType: null,
     exceptionMessage: null,
     exceptionStacktrace: null,
+    resourceAttributes: {},
     ...overrides,
   };
 }

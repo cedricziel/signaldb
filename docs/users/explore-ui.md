@@ -334,7 +334,19 @@ placeholder.
   (LCP poor)", narrow the list client-side from those same counts; a
   free-text filter narrows the aggregate itself, matching a `session.id` or
   `user.id` exactly, or `key=value` against any attribute. Picking a session
-  writes `?session=`.
+  writes `?session=` and opens its detail: every span and log record for
+  that `session.id` (everything but `browser.resource_timing`, which the
+  Network tab covers in aggregate), up to 2,000 records, merged into one
+  ascending timeline across six lanes — Views, Actions, Network, Perf,
+  Errors and Logs; each page view renders as a Views-lane segment from its
+  own navigation to the next one (or the session's last record) — and the
+  same records as an ordered list; selecting a mark, segment or row
+  highlights it in both. A session holding more than the cap says so (an
+  exact count when knowable, else "more records exist") and offers to load
+  the next page. The panel below lists the latest record's own resource
+  attributes. An inline trace waterfall for a selected network event and an
+  exception panel with its preceding failed request are a later addition to
+  this tab.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced

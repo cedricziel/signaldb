@@ -51,6 +51,7 @@ const LOG_COLUMNS = [
   "exception_type",
   "exception_message",
   "exception_stacktrace",
+  "resource_attributes",
 ];
 
 function spanRow(overrides: Partial<Record<string, unknown>> = {}): unknown[] {
@@ -204,6 +205,26 @@ describe("sessionDetailFromResponses", () => {
     expect(events.map((e) => e.lane)).toEqual(["errors", "errors", "network"]);
     expect(events[0]!.kind === "span" && events[0]!.isError).toBe(true);
     expect(events[2]!.kind === "span" && events[2]!.isError).toBe(false);
+  });
+
+  it("decodes a log event's resource attributes off the resource.attributes container", () => {
+    const logs = rowsResponse(LOG_COLUMNS, [
+      logRow({
+        resource_attributes: JSON.stringify({
+          "session.id": "sess-1",
+          "user.id": "user-42",
+        }),
+      }),
+    ]);
+    const page = sessionDetailFromResponses(
+      rowsResponse(SPAN_COLUMNS, []),
+      logs,
+    );
+    const event = page.events[0]!;
+    expect(event.kind === "log" && event.resourceAttributes).toEqual({
+      "session.id": "sess-1",
+      "user.id": "user-42",
+    });
   });
 
   it("says how many more when neither source hit its own page limit", () => {

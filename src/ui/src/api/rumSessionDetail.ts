@@ -71,6 +71,10 @@ export interface SessionLogEvent extends SessionEventBase {
   exceptionType: string | null;
   exceptionMessage: string | null;
   exceptionStacktrace: string | null;
+  /** The record's own resource attributes — the session attributes panel
+   * reads this off the *latest* log event (the spec's "resource attributes
+   * of the latest record"), not fetched separately. */
+  resourceAttributes: Record<string, unknown>;
 }
 
 export type SessionEvent = SessionSpanEvent | SessionLogEvent;
@@ -138,6 +142,7 @@ const LOG_FIELDS = [
   "exception.type",
   "exception.message",
   "exception.stacktrace",
+  "resource.attributes",
 ] as const;
 
 export function buildSessionLogsDoc(
@@ -186,6 +191,23 @@ const str = (v: unknown): string => (v == null ? "" : String(v));
 const strOrNull = (v: unknown): string | null => (v == null ? null : String(v));
 const numOrNull = (v: unknown): number | null =>
   typeof v === "number" ? v : null;
+
+/** An attribute container cell: a JSON object from a Map column, or a JSON
+ * string from a legacy table — same shape `traceDetail.ts`'s own
+ * `container()` handles, duplicated here rather than exported from there
+ * since that module treats it as a private decoding detail. */
+function container(v: unknown): Record<string, unknown> {
+  let obj: unknown = v;
+  if (typeof v === "string") {
+    try {
+      obj = JSON.parse(v);
+    } catch {
+      return {};
+    }
+  }
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return {};
+  return obj as Record<string, unknown>;
+}
 
 /** ≥400, or the span itself recorded an error — `api/rum.ts`'s
  * `HTTP_ERROR_WHERE` predicate, applied client-side here since it decides
@@ -254,6 +276,7 @@ function logEventFromRow(row: IrRow): SessionLogEvent {
     exceptionType: strOrNull(pick(row, "exception.type")),
     exceptionMessage: strOrNull(pick(row, "exception.message")),
     exceptionStacktrace: strOrNull(pick(row, "exception.stacktrace")),
+    resourceAttributes: container(pick(row, "resource.attributes")),
   };
 }
 
