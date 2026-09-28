@@ -244,6 +244,26 @@ export function timeAxisLabels(splits: number[], incrMs: number): string[] {
   });
 }
 
+/**
+ * `timeAxisLabels` for every `every`-th of at most `maxTicks` points, the
+ * rest blank. The tick spacing comes from the points' smallest gap, so
+ * sub-daily points keep their hour whatever the window's length.
+ */
+export function thinnedTimeAxisLabels(
+  points: number[],
+  maxTicks: number,
+  fallbackStepMs: number,
+): string[] {
+  const every = Math.max(1, Math.ceil(points.length / maxTicks));
+  const gaps = points.slice(1).map((t, i) => t - points[i]!);
+  const incr = gaps.length ? Math.min(...gaps) * every : fallbackStepMs;
+  const labels = timeAxisLabels(
+    points.filter((_, i) => i % every === 0),
+    incr,
+  );
+  return points.map((_, i) => (i % every ? "" : labels[i / every]!));
+}
+
 export function formatRangeLabel(range: TimeRange): string {
   if (range.type === "relative") {
     const preset = RANGE_PRESETS.find((p) => p.seconds === range.seconds);
