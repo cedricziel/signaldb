@@ -2148,6 +2148,21 @@ fn json_array_of<T>(
     Some(array.iter().map(|v| decode(Some(v))).collect())
 }
 
+type OptionalF64List = Option<Vec<Option<f64>>>;
+
+fn summary_quantile_lists(value: Option<&serde_json::Value>) -> (OptionalF64List, OptionalF64List) {
+    let Some(entries) = value.and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+        return (None, None);
+    };
+    let mut quantiles = Vec::with_capacity(entries.len());
+    let mut values = Vec::with_capacity(entries.len());
+    for entry in entries {
+        quantiles.push(json_to_f64(entry.get("quantile")));
+        values.push(json_to_f64(entry.get("value")));
+    }
+    (Some(quantiles), Some(values))
+}
+
 #[derive(Default)]
 struct WidePointFields {
     value: Option<f64>,
@@ -2168,6 +2183,13 @@ struct WidePointFields {
     quantile_values: Option<Vec<Option<f64>>>,
     aggregation_temporality: Option<i32>,
     is_monotonic: Option<bool>,
+}
+
+fn bucket_side(side: Option<&serde_json::Value>) -> (Option<i32>, Option<Vec<Option<i64>>>) {
+    (
+        side.and_then(|s| json_to_i32(s.get("offset"))),
+        side.and_then(|s| json_array_of(s.get("bucket_counts"), json_to_i64)),
+    )
 }
 
 /// The wire carries temporality and monotonicity on every row; only the
@@ -2200,6 +2222,35 @@ fn wide_point_fields(
             aggregation_temporality,
             ..Default::default()
         },
+        "exponential_histogram" => {
+            let (positive_offset, positive_bucket_counts) = bucket_side(point.get("positive"));
+            let (negative_offset, negative_bucket_counts) = bucket_side(point.get("negative"));
+            WidePointFields {
+                count: json_to_i64(point.get("count")),
+                sum: json_to_f64(point.get("sum")),
+                min: json_to_f64(point.get("min")),
+                max: json_to_f64(point.get("max")),
+                scale: json_to_i32(point.get("scale")),
+                zero_count: json_to_i64(point.get("zero_count")),
+                zero_threshold: json_to_f64(point.get("zero_threshold")),
+                positive_offset,
+                positive_bucket_counts,
+                negative_offset,
+                negative_bucket_counts,
+                aggregation_temporality,
+                ..Default::default()
+            }
+        }
+        "summary" => {
+            let (quantiles, quantile_values) = summary_quantile_lists(point.get("quantile_values"));
+            WidePointFields {
+                count: json_to_i64(point.get("count")),
+                sum: json_to_f64(point.get("sum")),
+                quantiles,
+                quantile_values,
+                ..Default::default()
+            }
+        }
         _ => WidePointFields {
             value: json_to_f64(point.get("value")),
             ..Default::default()
@@ -4139,7 +4190,7 @@ mod tests {
     fn metrics_v1_batch_mixed_types() -> RecordBatch {
         use datafusion::arrow::array::{BooleanArray, Int32Array};
 
-        let rows: [(&str, &str, &str); 3] = [
+        let rows: [(&str, &str, &str); 5] = [
             (
                 "requests.gauge",
                 "gauge",
@@ -4154,6 +4205,16 @@ mod tests {
                 "requests.duration",
                 "histogram",
                 r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"min":1.0,"max":3.0,"bucket_counts":[1,2,0],"explicit_bounds":[1.0,"+Inf"],"attributes":{"host":"a"}}]"#,
+            ),
+            (
+                "requests.duration.exp",
+                "exponential_histogram",
+                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"scale":2,"zero_count":1,"positive":{"offset":0,"bucket_counts":[1,2]},"negative":{"offset":1,"bucket_counts":[0,1]},"attributes":{"host":"a"}}]"#,
+            ),
+            (
+                "requests.summary",
+                "summary",
+                r#"[{"time_unix_nano":1,"count":5,"sum":10.0,"quantile_values":[{"quantile":0.5,"value":2.0},{"quantile":0.9,"value":4.0}],"attributes":{"host":"a"}}]"#,
             ),
         ];
         let n = rows.len();
@@ -4241,7 +4302,11 @@ mod tests {
     fn transform_metrics_to_wide_fans_mixed_types_into_one_row_each() {
         let batch = metrics_v1_batch_mixed_types();
         let wide = transform_metrics_to_wide(batch, &[]).expect("transform");
-        assert_eq!(wide.num_rows(), 4, "2 gauge points + 1 sum + 1 histogram");
+        assert_eq!(
+            wide.num_rows(),
+            6,
+            "2 gauge points + 1 each of 4 other types"
+        );
 
         let metric_types = wide_col::<StringArray>(&wide, "metric_type");
         let gauge_rows: Vec<usize> = (0..wide.num_rows())
@@ -4260,6 +4325,8 @@ mod tests {
             ("gauge", None, None),
             ("sum", Some(2), Some(true)),
             ("histogram", Some(2), None),
+            ("exponential_histogram", Some(2), None),
+            ("summary", None, None),
         ] {
             let row = wide_row(&wide, metric_type);
             assert_eq!(
@@ -4284,6 +4351,17 @@ mod tests {
             [1.0, f64::INFINITY]
         );
         assert_eq!(i64_list_at(&wide, "bucket_counts", row), [1, 2, 0]);
+
+        // exponential_histogram: scale plus positive/negative bucket lists.
+        let row = wide_row(&wide, "exponential_histogram");
+        assert_eq!(wide_col::<Int32Array>(&wide, "scale").value(row), 2);
+        assert_eq!(i64_list_at(&wide, "positive_bucket_counts", row), [1, 2]);
+
+        // summary: count/sum plus parallel quantile lists.
+        let row = wide_row(&wide, "summary");
+        assert_eq!(wide_col::<Int64Array>(&wide, "count").value(row), 5);
+        assert_eq!(f64_list_at(&wide, "quantiles", row), [0.5, 0.9]);
+        assert_eq!(f64_list_at(&wide, "quantile_values", row), [2.0, 4.0]);
     }
 }
 
