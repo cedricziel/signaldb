@@ -185,11 +185,20 @@ async fn query_sources_body(
 /// The physical tables that make a source queryable. A source with none of
 /// them is reported unavailable; a source whose table exists but holds no data
 /// is available and empty, never omitted.
+///
+/// Under the wide `metrics` table (otel-native-schema layer 7, D10), both
+/// `metrics` and `metrics_histogram` are backed by that one physical table
+/// rather than a per-type one.
 fn source_tables(source: &str) -> &'static [&'static str] {
+    use common::iceberg::schemas::MetricsLayout;
+
     match source {
         "logs" => &["logs"],
         "traces" => &["traces"],
         "profiles" => &["profiles"],
+        "metrics" | "metrics_histogram" if MetricsLayout::current() == MetricsLayout::Wide => {
+            &["metrics"]
+        }
         "metrics" => &["metrics_gauge", "metrics_sum"],
         "metrics_histogram" => &["metrics_histogram"],
         _ => &[],
