@@ -2551,9 +2551,8 @@ impl Lowering<'_> {
             projection.push(utf8(self.value_expr(by)?).alias(alias.clone()));
         }
         // No Utf8 cast here (unlike the columns above): `BucketCol::resolve`
-        // reads the wide `metrics` table's typed `List<Int64>`/`List<Float64>`
-        // columns directly, alongside the legacy Utf8/Utf8View JSON shape, so
-        // casting a list column to Utf8 would just break it for no reason.
+        // reads the `metrics` table's typed `List<Int64>`/`List<Float64>`
+        // columns directly.
         projection.push(col("bucket_counts"));
         projection.push(col("explicit_bounds"));
         projection.push(
@@ -2590,10 +2589,6 @@ impl Lowering<'_> {
             std::collections::BTreeMap::new();
         let mut rated: std::collections::BTreeMap<RawKey, (RateHistAcc, Vec<Option<String>>)> =
             std::collections::BTreeMap::new();
-        // `explicit_bounds` is typically identical across every row of a
-        // series — cache its parse (see histogram::parse_bounds_cached).
-        let mut bounds_cache: HashMap<String, Vec<f64>> = HashMap::new();
-
         for batch in &batches {
             let bucket = batch
                 .column_by_name("bucket")
@@ -2628,12 +2623,8 @@ impl Lowering<'_> {
                 if bucket.is_null(i) || counts.is_null(i) || bounds.is_null(i) {
                     continue;
                 }
-                let (Some(row_counts), Some(row_bounds)) = (
-                    counts.decode(i, None),
-                    bounds.decode(i, Some(&mut bounds_cache)),
-                ) else {
-                    continue;
-                };
+                let row_counts = counts.decode(i);
+                let row_bounds = bounds.decode(i);
                 // OTLP invariant: one more bucket count than bound.
                 if row_counts.len() != row_bounds.len() + 1 || row_bounds.is_empty() {
                     continue;
@@ -5841,11 +5832,11 @@ mod tests {
     }
 
     /// The `latency` (svcA/svcB)/`reset` (svcD) slice of
-    /// [`metrics_histogram_ctx`], built via [`common::testing::to_wide`] under
-    /// [`MetricsLayout::Wide`], plus — Wide only — an unrelated
-    /// `summary`-typed row sharing `latency`'s `metric_name` so only
-    /// `metric_type` filtering can exclude it from a histogram scan.
-    fn histogram_ctx_for_layout(layout: MetricsLayout) -> SessionContext {
+    /// [`metrics_histogram_ctx`], built via [`common::testing::to_wide`],
+    /// plus an unrelated `summary`-typed row sharing `latency`'s
+    /// `metric_name` so only `metric_type` filtering can exclude it from a
+    /// histogram scan.
+    fn histogram_ctx_with_summary_leak() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -5892,35 +5883,26 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = SessionContext::new();
+        let leak = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![0])),
+                Arc::new(StringArray::from(vec!["leak"])),
+                Arc::new(StringArray::from(vec!["latency"])),
+                Arc::new(StringArray::from(vec!["[100,100,100,100]"])),
+                Arc::new(StringArray::from(vec!["[0.1,0.5,1.0]"])),
+                build_map(&[&[] as &[(&str, &str)]]),
+                build_map(&[&[] as &[(&str, &str)]]),
+            ],
+        )
+        .unwrap();
+        let main = common::testing::to_wide(&batch, "histogram");
+        let leak = common::testing::to_wide(&leak, "summary");
+        let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
-        match layout {
-            MetricsLayout::Legacy => {
-                let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-                sp.register_table("metrics_histogram".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-            MetricsLayout::Wide => {
-                let leak = RecordBatch::try_new(
-                    schema.clone(),
-                    vec![
-                        Arc::new(TimestampNanosecondArray::from(vec![0])),
-                        Arc::new(StringArray::from(vec!["leak"])),
-                        Arc::new(StringArray::from(vec!["latency"])),
-                        Arc::new(StringArray::from(vec!["[100,100,100,100]"])),
-                        Arc::new(StringArray::from(vec!["[0.1,0.5,1.0]"])),
-                        build_map(&[&[] as &[(&str, &str)]]),
-                        build_map(&[&[] as &[(&str, &str)]]),
-                    ],
-                )
-                .unwrap();
-                let main = common::testing::to_wide(&batch, "histogram");
-                let leak = common::testing::to_wide(&leak, "summary");
-                let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
-                sp.register_table("metrics".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-        }
+        sp.register_table("metrics".to_string(), Arc::new(table))
+            .unwrap();
+        let ctx = SessionContext::new();
         let cat = Arc::new(MemoryCatalogProvider::new());
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
@@ -5929,57 +5911,48 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_instant_mode_merges_and_groups_by_service() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let svc = IrService::new(histogram_ctx_for_layout(layout)).with_metrics_layout(layout);
-            let d = doc(serde_json::json!({
-                "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
-                "result": "series",
-                "pipeline": [
-                    { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
-                    { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } }
-                ]
-            }));
-            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-            let batches = df.collect().await.unwrap();
-            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-            assert_eq!(total_rows, 2, "{layout:?}: one row per service");
-            for label in ["svcA", "svcB"] {
-                let vs = histogram_value(&batches, "p50", Some(label));
-                assert_eq!(vs.len(), 1, "{layout:?}: {label}");
-                assert!(
-                    (vs[0] - 0.3).abs() < 1e-9,
-                    "{layout:?}: {label}: got {:?}",
-                    vs[0]
-                );
-            }
-            // The `summary` row must not leak into a histogram scan.
-            assert!(
-                histogram_value(&batches, "p50", Some("leak")).is_empty(),
-                "{layout:?}: {batches:?}"
-            );
+        let svc = IrService::new(histogram_ctx_with_summary_leak());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(total_rows, 2, "one row per service");
+        for label in ["svcA", "svcB"] {
+            let vs = histogram_value(&batches, "p50", Some(label));
+            assert_eq!(vs.len(), 1, "{label}");
+            assert!((vs[0] - 0.3).abs() < 1e-9, "{label}: got {:?}", vs[0]);
         }
+        assert!(
+            histogram_value(&batches, "p50", Some("leak")).is_empty(),
+            "{batches:?}"
+        );
     }
 
     #[tokio::test]
     async fn histogram_quantile_rate_mode_clamps_counter_reset_and_inf_overflow() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let svc = IrService::new(histogram_ctx_for_layout(layout)).with_metrics_layout(layout);
-            let d = doc(serde_json::json!({
-                "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
-                "result": "series",
-                "pipeline": [
-                    { "where": { "field": "metric.name", "op": "eq", "value": "reset" } },
-                    { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
-                ]
-            }));
-            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-            let batches = df.collect().await.unwrap();
-            let vs = histogram_value(&batches, "p50", None);
-            assert_eq!(vs.len(), 1, "{layout:?}");
-            // first=[5,0] last=[3,2]: bucket 0 decreases (reset, clamped to 0),
-            // delta=[0,2] → rank lands in the +Inf bucket → clamps to bound 1.0.
-            assert!((vs[0] - 1.0).abs() < 1e-9, "{layout:?}: got {:?}", vs[0]);
-        }
+        let svc = IrService::new(histogram_ctx_with_summary_leak());
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "reset" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let vs = histogram_value(&batches, "p50", None);
+        assert_eq!(vs.len(), 1);
+        // first=[5,0] last=[3,2]: bucket 0 decreases (reset, clamped to 0),
+        // delta=[0,2] → rank lands in the +Inf bucket → clamps to bound 1.0.
+        assert!((vs[0] - 1.0).abs() < 1e-9, "got {:?}", vs[0]);
     }
 
     /// Regression: rate mode must compute each raw series' delta
@@ -6076,77 +6049,6 @@ mod tests {
         let batches = df.collect().await.unwrap();
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 1, "limit narrows the 2-service result to 1");
-    }
-
-    /// A Parquet-backed scan under DataFusion 54 can yield `Utf8View` for
-    /// string columns (a zero-copy optimization) rather than plain `Utf8`.
-    /// `string_column` only accepts `StringArray`, so `metric_name`/
-    /// `bucket_counts`/`explicit_bounds`/`service_name` must be cast to
-    /// `Utf8` in the projection before `.collect()` — this fixture proves
-    /// that cast makes the stage source-encoding-agnostic.
-    #[tokio::test]
-    async fn histogram_quantile_reads_utf8view_encoded_columns() {
-        let schema = Arc::new(Schema::new(vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new("service_name", DataType::Utf8View, false),
-            Field::new("metric_name", DataType::Utf8View, false),
-            Field::new("count", DataType::Int64, true),
-            Field::new("sum", DataType::Float64, true),
-            Field::new("min", DataType::Float64, true),
-            Field::new("max", DataType::Float64, true),
-            Field::new("bucket_counts", DataType::Utf8View, true),
-            Field::new("explicit_bounds", DataType::Utf8View, true),
-            Field::new("aggregation_temporality", DataType::Int32, true),
-            map_field_named("attributes"),
-            map_field_named("resource_attributes"),
-        ]));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![0_i64])),
-                Arc::new(StringViewArray::from(vec!["svcV"])),
-                Arc::new(StringViewArray::from(vec!["viewmetric"])),
-                Arc::new(datafusion::arrow::array::Int64Array::from(vec![1i64])),
-                Arc::new(Float64Array::from(vec![0.0f64])),
-                Arc::new(Float64Array::from(vec![0.0f64])),
-                Arc::new(Float64Array::from(vec![0.0f64])),
-                Arc::new(StringViewArray::from(vec!["[2,2,0,0]"])),
-                Arc::new(StringViewArray::from(vec!["[0.1,0.5,1.0]"])),
-                Arc::new(datafusion::arrow::array::Int32Array::from(vec![2i32])),
-                build_map(&[&[] as &[(&str, &str)]]),
-                build_map(&[&[] as &[(&str, &str)]]),
-            ],
-        )
-        .unwrap();
-        let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-        let sp = Arc::new(MemorySchemaProvider::new());
-        sp.register_table("metrics_histogram".to_string(), Arc::new(table))
-            .unwrap();
-        let cat = Arc::new(MemoryCatalogProvider::new());
-        cat.register_schema("d", sp).unwrap();
-        ctx.register_catalog("t", cat);
-
-        // Utf8View is specifically a legacy-table concern: the wide table's
-        // bucket columns are typed `List`, never a JSON-in-Utf8View string.
-        let svc = IrService::new(ctx).with_metrics_layout(MetricsLayout::Legacy);
-        let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
-            "result": "series",
-            "pipeline": [
-                { "where": { "field": "metric.name", "op": "eq", "value": "viewmetric" } },
-                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "instant", "as": "p50" } }
-            ]
-        }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-        let batches = df.collect().await.unwrap();
-        let vs = histogram_value(&batches, "p50", None);
-        assert_eq!(vs.len(), 1);
-        assert!(vs[0].is_finite(), "got {:?}", vs[0]);
     }
 
     #[tokio::test]
