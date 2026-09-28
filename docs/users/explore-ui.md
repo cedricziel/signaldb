@@ -353,7 +353,8 @@ placeholders.
   browser is public. The collector/backend then forwards to SignalDB holding
   the key server-side. A live checklist tracks the first session, first page
   view, first vitals record and the share of client requests joined to a
-  backend trace for the selected app.
+  backend trace for the selected app. Step by step: [Instrument a browser
+  app](instrument-browser-app.md).
 - **Command palette.** The Real users tabs and every frontend app with RUM
   data are palette entries; picking an app opens `/rum/overview?app=`.
 
