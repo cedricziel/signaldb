@@ -15,8 +15,8 @@ can read them back.
 
 The endpoints are nested under `/prometheus` on the router and speak the
 Prometheus `api/v1` response format. They translate a PromQL expression into a
-querier plan over the `metrics_gauge` and `metrics_sum` Iceberg tables — the
-same query path used for traces and logs.
+querier plan over the `metrics` Iceberg table (filtered to `metric_type` gauge
+or sum) — the same query path used for traces and logs.
 
 ## Prerequisites
 

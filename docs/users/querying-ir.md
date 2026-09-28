@@ -827,17 +827,13 @@ first frame seen under that name when the profiler recorded a source file,
 
 ## Metrics
 
-`metrics` scans `metrics_gauge` and `metrics_sum` (unioned) — a scalar
-`value` per point, filtered/grouped/aggregated the same way as any other
-source. The two tables need not agree on the physical shape of their
-columns — not on type, order, or count. A dataset whose `metrics_sum`
-predates the typed-attribute change (attribute containers stored as JSON
-strings) while `metrics_gauge` stores maps, or whose tables carry their
-columns in different positions, is reconciled before the union, so both
-filtering and grouping by any resource attribute (`host.name`,
-`k8s.pod.name`, …) work across both (see
-[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant)
-for the single-table case). `metrics_histogram` is a separate source (see [Histograms](#histograms))
+`metrics` scans the wide `metrics` table filtered to `metric_type` gauge or
+sum — a scalar `value` per point, filtered/grouped/aggregated the same way
+as any other source. Filtering and grouping by any resource attribute
+(`host.name`, `k8s.pod.name`, …) works the same way as on any other source
+(see
+[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant)).
+`metrics_histogram` is a separate source (see [Histograms](#histograms))
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
