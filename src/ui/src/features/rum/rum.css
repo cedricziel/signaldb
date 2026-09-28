@@ -591,7 +591,6 @@ a.rum-row:hover {
   align-items: center;
   padding: 8px var(--gutter-sm);
   border-bottom: 1px solid var(--border);
-  min-width: 0;
 }
 .rum-network-row:last-child {
   border-bottom: 0;

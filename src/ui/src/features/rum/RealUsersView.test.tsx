@@ -301,7 +301,7 @@ describe("Network tab", () => {
     ]);
     renderRum("/rum/network?app=storefront-web");
 
-    const callout = await screen.findByText(/doesn't receive a/);
+    const callout = await screen.findByText(/couldn't be joined/);
     expect(callout.textContent).toContain("reviews.partner-cdn.com");
     expect(callout.textContent).toContain("38K");
     expect(callout.textContent).not.toContain("ingest.acme.example.com");

@@ -105,10 +105,10 @@ function UntracedCallout({
   return (
     <div className="rum-callout">
       <span>
-        <b>{names}</b> doesn't receive a{" "}
-        <code className="mono">traceparent</code> header, so{" "}
-        {compactCount(total)} requests can't be joined to a backend trace.
-        Propagate it to that origin and allow it in the origin's CORS policy.
+        {compactCount(total)} requests to <b>{names}</b> couldn't be joined to a
+        backend trace. Check that the SDK propagates{" "}
+        <code className="mono">traceparent</code> to that origin, that its CORS
+        policy allows the header, and that its backend is instrumented.
       </span>
       <button type="button" className="btn" onClick={onOpenSetup}>
         Show setup
@@ -232,7 +232,7 @@ export function SplitBar({
           title={`${row.method} ${row.template}`}
           rows={[
             {
-              label: "client + network",
+              label: "client + network (est.)",
               value: formatDurationMs(client),
               swatch: "var(--accent)",
             },
