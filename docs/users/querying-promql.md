@@ -75,6 +75,16 @@ expression. The quantile is interpolated per series from the metric's stored
 buckets, assuming a uniform spread within the containing bucket — the same
 estimate Prometheus's `histogram_quantile` produces.
 
+`histogram_quantile` and `histogram_fraction` over a **summary** metric fail
+with a `bad_data` error (`histogram_quantile is not supported on summary
+metrics`) instead of returning an empty result: a summary carries precomputed
+quantiles, not buckets. Over an exponential histogram they fail with a
+`not_implemented` error until exponential-histogram quantiles land.
+
+`histogram_count` and `histogram_sum` read the stored count and sum, which
+histograms, exponential histograms and summaries all carry, so they sum rows
+of all three types.
+
 ## Instant query (vector)
 
 `query` evaluates a single point in time (default: now), returning a vector —

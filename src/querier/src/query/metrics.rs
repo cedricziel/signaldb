@@ -30,7 +30,8 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::histogram::{
-    HistogramAcc, RateHistAcc, decode_bucket_row, histogram_fraction, histogram_quantile,
+    HistogramAcc, NON_SCALAR_METRIC_TYPES, RateHistAcc, decode_bucket_row, histogram_fraction,
+    histogram_quantile, reject_non_histogram,
 };
 use super::logql::MaterializedColumns;
 use super::promql::{
@@ -41,13 +42,13 @@ use super::promql::{
 use super::{
     error::QuerierError,
     table_lookup::{
-        LABEL_SCAN_LIMIT, column, distinct_non_empty, optional_table, string_column, time_window,
+        LABEL_SCAN_LIMIT, column, distinct_non_empty, metric_type_filter, optional_table,
+        string_column, time_window,
     },
 };
 use common::schema::materialized_column_name;
 
 const GAUGE_SUM_TYPES: &[&str] = &["gauge", "sum"];
-const HISTOGRAM_TYPES: &[&str] = &["histogram"];
 
 const LOG_ATTRIBUTES: &str = "attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
@@ -1158,12 +1159,17 @@ impl MetricsService {
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         // No histogram table yet → empty result. A catalog failure still errors.
         let Some(df) = self
-            .scan_metrics(tenant_slug, dataset_slug, HISTOGRAM_TYPES)
+            .scan_metrics(tenant_slug, dataset_slug, NON_SCALAR_METRIC_TYPES)
             .await?
         else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
+        let function = if plan.histogram_fraction.is_some() {
+            "histogram_fraction"
+        } else {
+            "histogram_quantile"
+        };
         // `histogram_quantile(phi, rate(metric[range]))` rates the buckets:
         // the quantile is scale-invariant, so the per-series delta of counts
         // (last − first, ordered by time) suffices — the ÷seconds cancels.
@@ -1172,6 +1178,7 @@ impl MetricsService {
             .select(vec![
                 bucket_expr(step, plan.offset_ns),
                 col("metric_name"),
+                col("metric_type"),
                 col("service_name"),
                 col("bucket_counts"),
                 col("explicit_bounds"),
@@ -1194,6 +1201,7 @@ impl MetricsService {
                     QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
                 })?;
             let name = string_column(batch, "metric_name")?;
+            let metric_type = string_column(batch, "metric_type")?;
             let service = string_column(batch, "service_name")?;
             let counts = column(batch, "bucket_counts")?;
             let bounds = column(batch, "explicit_bounds")?;
@@ -1204,6 +1212,7 @@ impl MetricsService {
                     QuerierError::InvalidInput("ts column is not a timestamp".to_string())
                 })?;
             for i in 0..batch.num_rows() {
+                reject_non_histogram(function, metric_type.value(i))?;
                 if bucket.is_null(i) {
                     continue;
                 }
@@ -1300,8 +1309,9 @@ impl MetricsService {
         Ok(vec![batch])
     }
 
-    /// `histogram_count(v)` / `histogram_sum(v)`: sum the stored histogram's
-    /// `count`/`sum` column per (step bucket, series).
+    /// `histogram_count(v)` / `histogram_sum(v)`: sum the stored `count`/`sum`
+    /// column per (step bucket, series). Summaries and exponential
+    /// histograms carry both too, so their rows count alongside histograms.
     #[allow(clippy::too_many_arguments)]
     async fn histogram_scalar_query(
         &self,
@@ -1315,7 +1325,7 @@ impl MetricsService {
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         // No histogram table yet → empty result. A catalog failure still errors.
         let Some(df) = self
-            .scan_metrics(tenant_slug, dataset_slug, HISTOGRAM_TYPES)
+            .scan_metrics(tenant_slug, dataset_slug, NON_SCALAR_METRIC_TYPES)
             .await?
         else {
             return Ok(vec![]);
@@ -1528,9 +1538,8 @@ impl MetricsService {
         else {
             return Ok(None);
         };
-        let type_list = metric_types.iter().map(|t| lit(*t)).collect();
         Ok(Some(
-            df.filter(col("metric_type").in_list(type_list, false))
+            df.filter(metric_type_filter(metric_types))
                 .map_err(QuerierError::QueryFailed)?,
         ))
     }
@@ -3814,7 +3823,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_without_table_is_empty() {
-        // The gauge-only service has no metrics_histogram table.
+        // The gauge-only service has no histogram rows.
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
@@ -3899,10 +3908,9 @@ mod tests {
 
     /// [`service_with_histogram`]'s merged-series `latency` data, plus a
     /// `latency_inf` series whose top `explicit_bounds` entry is
-    /// `f64::INFINITY` and an unrelated `summary`-typed row sharing
-    /// `latency`'s `metric_name` so only `metric_type` filtering can exclude
-    /// it.
-    fn histogram_service_with_summary_leak() -> MetricsService {
+    /// `f64::INFINITY` and one `leak_type` row sharing `latency`'s
+    /// `metric_name`.
+    fn histogram_service_with_leak(leak_type: &str) -> MetricsService {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -3957,13 +3965,13 @@ mod tests {
         )
         .unwrap();
         let main = common::testing::to_wide(&batch, "histogram");
-        let leak = common::testing::to_wide(&leak, "summary");
+        let leak = common::testing::to_wide(&leak, leak_type);
         wide_metrics_service(vec![main, leak])
     }
 
     #[tokio::test]
     async fn histogram_quantile_instant_mode_excludes_other_metric_types() {
-        let service = histogram_service_with_summary_leak();
+        let service = histogram_service_with_leak("gauge");
         let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
         assert_eq!(out.len(), 1, "{out:?}");
         let (name, svc, value) = &out[0];
@@ -3980,8 +3988,41 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn histogram_quantile_over_a_summary_is_a_typed_error() {
+        let service = histogram_service_with_leak("summary");
+        for query in [
+            "histogram_quantile(0.5, latency)",
+            "histogram_quantile(0.5, rate(latency[5m]))",
+        ] {
+            let err = service
+                .query_range(query, 0, 1000, 1000, "t", "d")
+                .await
+                .unwrap_err();
+            assert!(
+                matches!(&err, QuerierError::InvalidInput(m)
+                    if m == "histogram_quantile is not supported on summary metrics"),
+                "{query}: {err}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_over_an_exponential_histogram_is_not_yet_supported() {
+        let service = histogram_service_with_leak("exponential_histogram");
+        let err = service
+            .query_range("histogram_quantile(0.5, latency)", 0, 1000, 1000, "t", "d")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::Unsupported(m)
+                if m == "histogram_quantile is not yet supported on exponential_histogram metrics"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
     async fn histogram_quantile_rate_mode_excludes_other_metric_types() {
-        let service = histogram_service_with_summary_leak();
+        let service = histogram_service_with_leak("gauge");
         let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
         assert_eq!(out.len(), 1);
         assert!(
@@ -3993,7 +4034,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_with_real_infinite_bound_clamps_to_infinity() {
-        let service = histogram_service_with_summary_leak();
+        let service = histogram_service_with_leak("gauge");
         // rank = 0.99 * 10 = 9.9, landing in the open `+Inf` bucket, which
         // clamps to the top bound.
         let out = matrix(&service, "histogram_quantile(0.99, latency_inf)", 1000).await;
@@ -4138,6 +4179,29 @@ mod tests {
         let out = matrix(&service, "histogram_sum(latency)", 1000).await;
         assert_eq!(out.len(), 1);
         assert!((out[0].2 - 110.0).abs() < 1e-9, "got {}", out[0].2);
+    }
+
+    #[tokio::test]
+    async fn histogram_count_and_sum_include_summary_and_exponential_histogram_rows() {
+        for (leak_type, included) in [
+            ("summary", true),
+            ("exponential_histogram", true),
+            ("gauge", false),
+        ] {
+            let service = histogram_service_with_leak(leak_type);
+            for (query, expected) in [
+                ("histogram_count(latency)", 10.0),
+                ("histogram_sum(latency)", 55.0),
+            ] {
+                let out = matrix(&service, query, 1000).await;
+                let leak = out.iter().find(|(_, s, _)| s.as_deref() == Some("leak"));
+                assert_eq!(
+                    leak.map(|l| l.2),
+                    included.then_some(expected),
+                    "{leak_type} {query}: {out:?}"
+                );
+            }
+        }
     }
 
     #[test]

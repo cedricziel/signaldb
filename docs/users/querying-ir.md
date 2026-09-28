@@ -832,8 +832,8 @@ sum, histogram, exponential histogram and summary. The metric type is a
 field, not a separate source: filter or group by `metric.type` to pick the
 types you want. An unfiltered `metrics` query returns every type, with
 `metric.value` null on the histogram, exponential-histogram and summary rows.
-`metrics_histogram` reads only the histogram rows and feeds the
-`histogram_quantile` stage (see [Histograms](#histograms)).
+The `histogram_quantile` stage reads the histogram rows (see
+[Histograms](#histograms)).
 
 | Field                    | Type    | Meaning                                                                   |
 | ------------------------ | ------- | ------------------------------------------------------------------------- |
@@ -913,8 +913,8 @@ resource attributes) for filtering and grouping; the bucket columns themselves a
 addressable in a `where` or `by` — they only feed the `histogram_quantile`
 stage below.
 
-A `histogram_quantile` stage (IR v3+) interpolates a percentile from those
-buckets, following the same linear-interpolation-within-bucket algorithm as
+A `histogram_quantile` stage (IR v3+) runs on the `metrics` source, reads only
+its histogram rows, and interpolates a percentile from their buckets, following the same linear-interpolation-within-bucket algorithm as
 Prometheus's `histogram_quantile()` — and, since it shares its implementation
 with SignalDB's PromQL `histogram_quantile()`, the two return identical
 values for the same query. It always produces a `series` result, grouped by
@@ -923,7 +923,7 @@ values for the same query. It always produces a `series` result, grouped by
 ```json
 {
   "irVersion": 3,
-  "from": "metrics_histogram",
+  "from": "metrics",
   "range": { "from": "now-1h", "to": "now" },
   "result": "series",
   "pipeline": [
@@ -967,6 +967,15 @@ via `approx_percentile_cont` — a completely different algorithm, for a
 completely different source shape. Neither is a substitute for the other:
 `histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
 `quantile` needs raw numeric samples.
+
+Rows the stage cannot interpolate are refused, never skipped. If the rows
+matched by the stage's source and filters include a **summary** metric, the
+query fails with `histogram_quantile is not supported on summary metrics`
+(HTTP 400): a summary carries precomputed quantiles, not buckets, so read them
+from `metric.quantiles`/`metric.quantile_values` instead. Rows of an
+**exponential histogram** fail with `histogram_quantile is not yet supported
+on exponential_histogram metrics` (HTTP 501). Gauge and sum rows are ignored.
+Filter by `metric.name` (or `metric.type`) to keep the stage on histograms.
 
 `rate`/`increase` over `metrics_histogram` work the same as over `metrics`
 (see [Counter rate](#counter-rate-rateincrease-v6)) — the source restriction
