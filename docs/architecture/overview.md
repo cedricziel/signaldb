@@ -308,15 +308,15 @@ reachable via `signaldb-sdk`, `signaldb-cli profiles`, and the MCP
 
 **Prometheus API Endpoints** (metrics, nested at `/prometheus`; see epic #328):
 
-| Endpoint                                                           | Status                                                                                                                |
-| ------------------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------- |
-| `GET\|POST /prometheus/api/v1/query_range`                         | Implemented -- PromQL over the `metrics` table (`metric_type` gauge/sum), `date_bin(step)` matrix                     |
-| `GET\|POST /prometheus/api/v1/query`                               | Implemented -- instant vector (latest sample per series)                                                              |
-| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier                                     |
-| `GET /prometheus/api/v1/label_stats`                               | Implemented -- SignalDB extension: per-label cardinality from the catalog's `attribute_stats` (no Querier)            |
-| PromQL `rate`/`increase`                                           | Implemented -- counter delta over `date_bin` buckets                                                                  |
-| PromQL `histogram_quantile(phi, metric)`                           | Implemented -- interpolated per series from the `metrics` table's typed histogram buckets (`metric_type = histogram`) |
-| PromQL `histogram_quantile` over `rate()`, binary ops, `topk`      | Not implemented yet (#335)                                                                                            |
+| Endpoint                                                           | Status                                                                                                                                       |
+| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET\|POST /prometheus/api/v1/query_range`                         | Implemented -- PromQL over the `metrics` table (`metric_type` gauge/sum), `date_bin(step)` matrix                                            |
+| `GET\|POST /prometheus/api/v1/query`                               | Implemented -- instant vector (latest sample per series)                                                                                     |
+| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier                                                            |
+| `GET /prometheus/api/v1/label_stats`                               | Implemented -- SignalDB extension: per-label cardinality from the catalog's `attribute_stats` (no Querier)                                   |
+| PromQL `rate`/`increase`                                           | Implemented -- counter delta over `date_bin` buckets                                                                                         |
+| PromQL `histogram_quantile(phi, metric)`                           | Implemented -- interpolated per series from the `metrics` table's typed histogram buckets (`metric_type = histogram`); a summary is rejected |
+| PromQL `histogram_quantile` over `rate()`, binary ops, `topk`      | Not implemented yet (#335)                                                                                                                   |
 
 **Native Query IR** (`POST /api/v1/query`, `src/router/src/endpoints/query.rs`):
 the first-party structured query surface the UI and CLI build against. The
@@ -324,8 +324,8 @@ router shapes the querier's Arrow batches into the declared envelope, encoding
 attribute containers (`Map<Utf8,Utf8>`) as JSON objects rather than flattening
 them to strings — the compatibility dialects lose the OTel resource/scope/record
 distinction, the IR preserves it. `source_read_scope` gates a document's `from`
-against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`,
-with `metrics_histogram` mapped to the same `metrics` scope) before the request
+against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`)
+before the request
 ever reaches the querier. A multi-query request (`queries` + `formulas`) checks
 that scope for every inner query before any of them runs, executes each inner
 `series` query the same way, and evaluates the formulas in the router,

@@ -624,13 +624,13 @@ impl InferCtx<'_> {
         Ok(())
     }
 
-    /// Quantile-over-histogram-buckets — legal only on the metric sources,
+    /// Quantile-over-histogram-buckets — legal only on `metrics`,
     /// always produces a series (`metric.name` plus any extra `by` labels).
     /// Distinct from `aggregate`'s `fn: "quantile"` (an approx-percentile over
     /// independent scalar values, `check_agg` below) — different algorithm,
     /// different source shape.
     fn apply_histogram_quantile(&mut self, hq: &HistogramQuantile) -> Result<(), IrError> {
-        if !matches!(self.source, "metrics" | "metrics_histogram") {
+        if self.source != "metrics" {
             return Err(IrError::IllegalStage {
                 stage: "histogram_quantile".into(),
                 reason: "is only supported on the metrics source".into(),
@@ -810,11 +810,11 @@ impl InferCtx<'_> {
                 a.func.as_str()
             )));
         }
-        if a.func.is_range_fn() && !matches!(self.source, "metrics" | "metrics_histogram") {
+        if a.func.is_range_fn() && self.source != "metrics" {
             return Err(IrError::IllegalStage {
                 stage: "aggregate".to_string(),
                 reason: format!(
-                    "'{}' is only valid on the metrics/metrics_histogram sources, not '{}'",
+                    "'{}' is only valid on the metrics source, not '{}'",
                     a.func.as_str(),
                     self.source
                 ),
@@ -1357,14 +1357,10 @@ mod tests {
             )
     }
 
-    fn metrics_histogram_resolver() -> InMemoryResolver {
-        histogram_resolver_for("metrics_histogram")
-    }
-
-    fn histogram_resolver_for(source: &str) -> InMemoryResolver {
+    fn histogram_resolver() -> InMemoryResolver {
         logs_resolver()
-            .with_column(source, "metric.name", "metric_name", ValueType::String)
-            .with_column(source, "service.name", "service_name", ValueType::String)
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+            .with_column("metrics", "service.name", "service_name", ValueType::String)
     }
 
     fn doc(v: serde_json::Value) -> Document {
@@ -1538,8 +1534,8 @@ mod tests {
     #[test]
     fn v3_histogram_quantile_infers_series_relation() {
         let v = validate_json_with(
-            histogram_quantile_doc(3, "metrics_histogram", 0.95),
-            &metrics_histogram_resolver(),
+            histogram_quantile_doc(3, "metrics", 0.95),
+            &histogram_resolver(),
         )
         .unwrap();
         match v.terminal {
@@ -1553,17 +1549,10 @@ mod tests {
     }
 
     #[test]
-    fn histogram_quantile_is_legal_on_the_metrics_source() {
-        let resolver = histogram_resolver_for("metrics");
-        let v = validate_json_with(histogram_quantile_doc(3, "metrics", 0.95), &resolver).unwrap();
-        assert!(matches!(v.terminal, RelationType::Series(_)));
-    }
-
-    #[test]
     fn histogram_quantile_rejects_non_histogram_source() {
         let err = validate_json_with(
             histogram_quantile_doc(3, "logs", 0.95),
-            &metrics_histogram_resolver(),
+            &histogram_resolver(),
         )
         .unwrap_err();
         match err {
@@ -1576,8 +1565,8 @@ mod tests {
     fn histogram_quantile_rejects_q_outside_zero_one() {
         for q in [-0.1, 1.2] {
             let err = validate_json_with(
-                histogram_quantile_doc(3, "metrics_histogram", q),
-                &metrics_histogram_resolver(),
+                histogram_quantile_doc(3, "metrics", q),
+                &histogram_resolver(),
             )
             .unwrap_err();
             assert!(matches!(err, IrError::Invalid(_)), "q={q} got {err:?}");
@@ -1587,8 +1576,8 @@ mod tests {
     #[test]
     fn v2_rejects_histogram_quantile_stage_needing_v3() {
         let err = validate_json_with(
-            histogram_quantile_doc(2, "metrics_histogram", 0.95),
-            &metrics_histogram_resolver(),
+            histogram_quantile_doc(2, "metrics", 0.95),
+            &histogram_resolver(),
         )
         .unwrap_err();
         assert!(matches!(err, IrError::Invalid(message) if message.contains("irVersion 3")));
@@ -1596,32 +1585,32 @@ mod tests {
 
     #[test]
     fn histogram_quantile_rejects_metric_name_in_by() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["by"] = json!(["metric.name"]);
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_rejects_duplicate_as_name() {
         let mut document = json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": "now-1h", "to": "now" },
+            "irVersion": 3, "from": "metrics", "range": { "from": "now-1h", "to": "now" },
             "result": "rows",
             "pipeline": [
                 { "histogram_quantile": { "q": 0.95, "step": "1m", "as": "service.name" } }
             ]
         });
         document["result"] = json!("series");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_rejects_duplicate_by_field() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["by"] =
             json!(["service.name", "service.name"]);
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
     }
 
@@ -1630,20 +1619,10 @@ mod tests {
         // Two independently-resolvable logical fields that normalize
         // (dots→underscores) to the same output identifier: the lowerer
         // would alias both `by` fields to the same output column.
-        let resolver = metrics_histogram_resolver()
-            .with_column(
-                "metrics_histogram",
-                "host.name",
-                "host_name_a",
-                ValueType::String,
-            )
-            .with_column(
-                "metrics_histogram",
-                "host_name",
-                "host_name_b",
-                ValueType::String,
-            );
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let resolver = histogram_resolver()
+            .with_column("metrics", "host.name", "host_name_a", ValueType::String)
+            .with_column("metrics", "host_name", "host_name_b", ValueType::String);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["by"] = json!(["host.name", "host_name"]);
         let err = validate_json_with(document, &resolver).unwrap_err();
         assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
@@ -1651,27 +1630,27 @@ mod tests {
 
     #[test]
     fn histogram_quantile_rejects_as_reserved_bucket_name() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["as"] = json!("bucket");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_rejects_as_colliding_with_a_by_alias() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         // `by: ["service.name"]` aliases to "service_name"; `as` colliding
         // with that alias (not the logical name) is still ambiguous output.
         document["pipeline"][0]["histogram_quantile"]["as"] = json!("service_name");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_result_rows_is_envelope_mismatch() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["result"] = json!("rows");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(
             matches!(err, IrError::EnvelopeMismatch { .. }),
             "got {err:?}"
@@ -1804,13 +1783,18 @@ mod tests {
     }
 
     #[test]
-    fn metrics_histogram_is_registered_as_an_event_grain_source() {
-        let sources = SourceRegistry::core();
-        let source = sources
-            .resolve("metrics_histogram")
-            .expect("metrics_histogram source is registered");
-        assert_eq!(source.grain, Grain::Event);
-        assert!(!source.allows_extract);
+    fn metrics_histogram_is_not_a_source() {
+        assert!(
+            SourceRegistry::core()
+                .resolve("metrics_histogram")
+                .is_none()
+        );
+        let err = validate_json_with(
+            histogram_quantile_doc(3, "metrics_histogram", 0.95),
+            &histogram_resolver(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, IrError::UnknownSource { .. }), "got {err:?}");
     }
 
     #[test]
@@ -2602,24 +2586,6 @@ mod tests {
             other => panic!("got {other:?}"),
         }
         assert!(format!("{err}").contains("metrics"), "{err}");
-    }
-
-    #[test]
-    fn rate_on_metrics_histogram_is_accepted_by_source_check() {
-        // The source restriction passes for metrics_histogram; `of` still
-        // needs a numeric field, which `metric.value` is not on this source
-        // (only bucket columns), so this exercises the source gate alone by
-        // aggregating a numeric column that does exist.
-        let resolver = metrics_histogram_resolver().with_column(
-            "metrics_histogram",
-            "count",
-            "count",
-            ValueType::Int64,
-        );
-        let mut d = rate_doc("increase", "metrics_histogram", Some("1m"));
-        d["pipeline"][0]["aggregate"]["aggs"][0]["of"] = json!("count");
-        let v = validate_json_with(d, &resolver).unwrap();
-        assert!(matches!(v.terminal, RelationType::Series(_)));
     }
 
     #[test]

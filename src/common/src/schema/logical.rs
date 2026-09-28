@@ -325,18 +325,6 @@ impl LogicalSchema {
                 LogicalType::AnyValue,
             )
             .retrieval_only(),
-            // metrics_histogram: a whole bucketed histogram per row, not a
-            // scalar — only reachable via the `histogram_quantile` stage
-            // (ir_planner.rs), which reads bucket_counts/explicit_bounds by
-            // physical column name directly rather than through the
-            // resolver. Only the fields a `where`/`by` clause can reference
-            // need registering here.
-            LogicalField::record_metadata(
-                "metrics_histogram",
-                "timestamp",
-                LogicalType::TimestampNs,
-            ),
-            LogicalField::record_metadata("metrics_histogram", "metric.name", LogicalType::String),
             // Profiles: the summary row's own time column. Every scalar
             // source registers its primary timestamp (logs `timestamp`,
             // traces `start_time_unix_nano`) so a cross-signal "last seen"
@@ -351,16 +339,6 @@ impl LogicalSchema {
             "service.name",
             LogicalType::String,
         ));
-        fields.push(LogicalField::attribute(
-            "metrics_histogram",
-            AttributeLevel::Resource,
-            "service.name",
-            LogicalType::String,
-        ));
-        // resource_identity is materialized on metrics_gauge/metrics_sum
-        // (the tables backing the "metrics" source) and on profiles, same
-        // as logs/traces below — but not on metrics_histogram, which has no
-        // alias table at all (see ir_planner's `SourcePlan::for_source`).
         fields.push(LogicalField::signaldb_resource_identity("metrics"));
         fields.push(LogicalField::signaldb_resource_identity("profiles"));
         // A record's whole attribute bag per OTel scope, as one map value.
@@ -591,7 +569,6 @@ mod tests {
             ("logs", "timestamp"),
             ("traces", "start_time_unix_nano"),
             ("metrics", "timestamp"),
-            ("metrics_histogram", "timestamp"),
             ("profiles", "timestamp"),
         ] {
             let field = schema
@@ -666,7 +643,7 @@ mod tests {
     }
 
     const FIELD_SET_FINGERPRINT: &str =
-        "41a9b6be7746f73d27fb6c99b08a5860b45ddd9e58f01f2aa7f7e839184185d3";
+        "a64b3014de3de83e515c8530284a54be9857593ec6653f911572e082a3cad6cb";
 
     fn fingerprint() -> String {
         use sha2::{Digest, Sha256};

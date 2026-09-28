@@ -423,8 +423,8 @@ pub struct MetricPlan {
     /// Set for `rate`/`increase` — a per-series counter delta over the
     /// window is computed before any outer aggregation.
     pub range: Option<RangeSpec>,
-    /// Set for `histogram_quantile(phi, <selector>)` — the query targets
-    /// the `metrics_histogram` table and interpolates the phi-quantile from
+    /// Set for `histogram_quantile(phi, <selector>)` — the query reads the
+    /// histogram rows of the `metrics` table and interpolates the phi-quantile from
     /// each series' stored buckets instead of aggregating a scalar `value`.
     pub quantile: Option<f64>,
     /// Math/scalar-arithmetic transforms applied to the result `value`, in

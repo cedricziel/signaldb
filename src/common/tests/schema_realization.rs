@@ -72,10 +72,6 @@ fn alias_table(source: &str) -> &'static [(&'static str, &'static str)] {
             ("quantile_values", "metric.quantile_values"),
             ("resource_identity", "resource.identity"),
         ],
-        "metrics_histogram" => &[
-            ("service_name", "service.name"),
-            ("metric_name", "metric.name"),
-        ],
         // Profiles: only `timestamp` and `resource.identity` are registered
         // in `LogicalSchema::core()` today (see the comment on
         // `record_metadata("profiles", "timestamp", ...)` -- "the remaining
@@ -120,9 +116,7 @@ fn containers(source: &str) -> &'static [&'static str] {
             "scope_attributes",
             "resource_attributes",
         ],
-        "metrics" | "metrics_histogram" => {
-            &["attributes", "resource_attributes", "scope_attributes"]
-        }
+        "metrics" => &["attributes", "resource_attributes", "scope_attributes"],
         _ => &[],
     }
 }
@@ -153,7 +147,6 @@ fn is_attribute_container_column(source: &str, physical: &str) -> bool {
 ///   scale/zero/offset/bucket columns (layer 8 adds exp-histogram
 ///   quantiles). They carry real meaning, so marking them `physical_only`
 ///   would misstate that they're computed/partition artifacts.
-/// - legacy `metrics_histogram` columns, for the same reason.
 fn known_gap(source: &str, physical: &str) -> bool {
     let names: &[&str] = match source {
         "traces" => &["links"],
@@ -193,32 +186,6 @@ fn known_gap(source: &str, physical: &str) -> bool {
             "negative_offset",
             "negative_bucket_counts",
         ],
-        "metrics_histogram" => &[
-            "start_timestamp",
-            "metric_description",
-            "metric_unit",
-            "flags",
-            "resource_schema_url",
-            "scope_name",
-            "scope_version",
-            "scope_schema_url",
-            "scope_dropped_attr_count",
-            "exemplars",
-            "aggregation_temporality",
-            "count",
-            "sum",
-            "min",
-            "max",
-            "bucket_counts",
-            "explicit_bounds",
-            // `resource.identity` has no `SourcePlan` entry at all for
-            // `metrics_histogram` (see `LogicalSchema::core()`'s comment: "not
-            // on metrics_histogram, which has no alias table at all") -- the
-            // column exists (schemas.toml added it uniformly across every
-            // metrics_* table) but isn't wired up as a logical field for this
-            // source.
-            "resource_identity",
-        ],
         _ => &[],
     };
     names.contains(&physical)
@@ -237,11 +204,6 @@ fn schemas_for(
         "traces" => (&d.traces, &m.current_trace_version),
         "profiles" => (&d.profiles, &m.current_profile_version),
         "metrics" => (&d.metrics, &m.current_metric_version),
-        // Pinned to the legacy per-type version, not `current_metric_version`.
-        "metrics_histogram" => (
-            &d.metrics_histogram,
-            common::iceberg::schemas::LEGACY_METRIC_VERSION,
-        ),
         other => panic!("unhandled source {other}"),
     }
 }
@@ -270,7 +232,7 @@ fn layouts_of(source: &str) -> [(&'static str, Vec<ResolvedField>); 2] {
 }
 
 /// Every physical table whose current version this test checks.
-const PHYSICAL_SOURCES: [&str; 5] = ["logs", "traces", "profiles", "metrics", "metrics_histogram"];
+const PHYSICAL_SOURCES: [&str; 4] = ["logs", "traces", "profiles", "metrics"];
 
 /// The logical source name a physical table resolves fields against.
 fn logical_source_for(physical_source: &str) -> &'static str {
@@ -279,7 +241,6 @@ fn logical_source_for(physical_source: &str) -> &'static str {
         "logs" => "logs",
         "traces" => "traces",
         "profiles" => "profiles",
-        "metrics_histogram" => "metrics_histogram",
         other => panic!("unhandled source {other}"),
     }
 }
