@@ -949,25 +949,38 @@ export AWS_S3_USE_ACCELERATE_ENDPOINT=true
 
 ## Attribute Promotion
 
-With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. On a table in the typed attribute layout (every table's current version -- see `docs/architecture/storage-layout.md`'s "Typed attribute layout" section), only a key whose canonical type is recorded as `String` at every attribute level it appears qualifies: `label_<key>` is itself a `String` column, and a numeric or boolean canonical key has no lossless `String` promotion today (typed promotion -- a native-typed promoted column -- is a later layer). Such a key stays in its typed home (`{container}_int`/`_double`/`_bool`) and is filterable there, just not promotable yet.
+With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes frequently queried attributes to typed columns as part of a normal compaction rewrite. Promotion works per (attribute level, key): the same key at resource, scope, and record level is three candidates, each with its own column `attr_<level>_<key>` typed as the key's canonical type (`String` → string, `Int64` → long, `Float64` → double, `Bool` → boolean). See `docs/architecture/storage-layout.md` for the naming rule.
+
+A promoted column is a **copy**. The key's typed map (`{container}_str`/`_int`/`_double`/`_bool`) stays its one home and keeps every value; the column only duplicates it so filters can use column statistics. Demotion therefore drops the column in a metadata-only commit, loses nothing, and does not change query results.
+
+A (level, key) is promoted when all of these hold for `promote_streak` consecutive cycles: it has a canonical type at that level, the table has that level's attribute container, the key is not machine-generated-looking or capped by the analyzer, its presence is at least `min_presence`, it has at least `min_query_hits` query hits, and it was queried within `demote_after_idle`. Candidates are ranked by `query_hits × presence`; at most `max_promotions_per_cycle` are promoted per cycle, within `max_labels_per_table`.
+
+Demotion runs before promotion in each cycle:
+
+1. A promoted column whose (level, key) was not queried within `demote_after_idle` is demoted.
+2. If the table is still over `max_labels_per_table`, the least recently queried promoted columns are demoted until it fits.
+
+A pair demoted in a cycle is not re-promoted in the same cycle. The budget counts promoted columns and `label_<key>` columns together.
 
 Each acted-on promotion makes two commits per table:
 
-1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns. No data files change; readers null-fill the new columns until the rewrite lands.
-2. **Rewrite/delta commit** (the normal compaction commit): every row _in the partition being compacted_ is rewritten with the label values backfilled from its attributes (resource, then scope, then record attributes). Existing label columns are recomputed too, healing rows the writer left null during the transition window. Because compaction is partition-scoped, backfill reaches a table's older rows as their partitions are compacted, not all at once.
+1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns with fresh Iceberg field ids. No data files change; readers null-fill the new columns until the rewrite lands.
+2. **Rewrite/delta commit** (the normal compaction commit): every row _in the partition being compacted_ is rewritten with each promoted column filled from its level's typed home. Because compaction is partition-scoped, backfill reaches older rows as their partitions are compacted. A column whose type no longer matches the key's canonical type (the key was repinned) is left null, and the querier ignores it.
 
 A schema-evolution failure is logged as a warning and the compaction continues under the old schema — promotion never fails a rewrite.
 
-**Queries stay correct during the transition window**: between the schema flip and a given file's rewrite, the querier does not trust a promoted column exclusively — it falls back to the attribute map for any row where the column reads NULL, so a query returns the same result whether or not the file it's reading has been backfilled yet. This costs the exclusive-column fast path for the life of the column (there is no signal yet for "every file is backfilled, stop falling back"), so promotion is pure query-performance upside once backfill catches up, never a correctness risk in the meantime.
+**Queries stay correct during the transition window**: the querier reads `coalesce(promoted column, typed home)` per level, so a row the rewrite has not backfilled yet still returns its value from the map. The writer does not fill promoted columns.
+
+**Legacy `label_<key>` columns**: the compactor no longer adds new ones. Existing ones and `[schema.materialized_labels]` pins stay; pins are never demoted, and an unpinned label column with no query hits is dropped at rewrite as before.
 
 **What operators see in the logs:**
 
-- `Attribute promotion decision` (info) — per table: `dry_run`, `promote`, `demote`, and `building` (keys still accumulating their hysteresis streak).
-- `Added materialized label columns via schema evolution` (info) — the schema flip landed; lists the table, new schema id, and columns.
-- `Failed to evolve schema for attribute promotion; continuing compaction without it` (warn) — the flip failed; the rewrite proceeded without new columns.
+- `Typed attribute promotion decision` (info) — per table: `dry_run`, the (level, key) pairs to promote, and those still `building` their streak.
+- `Added typed promoted attribute columns via schema evolution` / `Removed typed promoted attribute columns via schema evolution` (info) — a promotion or demotion schema commit landed; lists the table, schema id, and columns.
+- `Failed to evolve schema for attribute promotion; continuing compaction without it` and `Failed to evolve schema for attribute demotion; continuing compaction without it` (warn) — the schema commit failed; the rewrite proceeded under the old schema.
 - The usual `Rewrote table data into compacted files` line covers the backfilled rewrite — there is no separate backfill log line, and no promotion-specific Prometheus metric yet.
 
-Demotion candidates are dropped at rewrite (schema commit without the column, after the promote half; the rewrite then omits it — attribute data stays in the map tier). Pinned `[schema.materialized_labels]` entries are never demoted. Note: demand counters are cumulative today, so a once-queried key is not demoted until a demand-decay window lands (follow-up).
+See [troubleshooting](troubleshooting.md#attribute-promotion) for the skip warnings.
 
 ## Additional Resources
 
@@ -975,4 +988,4 @@ Demotion candidates are dropped at rewrite (schema commit without the column, af
 - [Troubleshooting Guide](troubleshooting.md)
 - [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 
-> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). The same pass also counts presence per (attribute level, key) — resource/scope/record, from the typed layout's four typed homes only, never the off-type residue — into the catalog's `attribute_level_stats` table, which the demand-driven per-level promotion path (change: otel-native-schema layer 6) reads instead of the flat `attribute_stats`. The same pass records a bounded per-key **value sketch** (the most frequent values with their counts, sized by `value_sketch_size`, default 100) into `attribute_value_stats`, which is what lets query discovery suggest values without reading data — a key whose distinct values exceed the analyzer's cardinality cap keeps no sketch, so a runaway key is reported as uncovered rather than partially suggested. Each pass replaces a key's sketch wholesale, so suggestions follow the data rather than accumulating values that have stopped occurring. Apart from `value_sketch_size` this pass requires no configuration and changes no table data; the promotion pass built on it is covered in [Attribute Promotion](#attribute-promotion).
+> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). The same pass also counts presence per (attribute level, key) — resource/scope/record, from the typed layout's four typed homes only, never the off-type residue — into the catalog's `attribute_level_stats` table, which, together with per-level query demand recorded by the querier, drives [Attribute Promotion](#attribute-promotion); the flat `attribute_stats` does not. The same pass records a bounded per-key **value sketch** (the most frequent values with their counts, sized by `value_sketch_size`, default 100) into `attribute_value_stats`, which is what lets query discovery suggest values without reading data — a key whose distinct values exceed the analyzer's cardinality cap keeps no sketch, so a runaway key is reported as uncovered rather than partially suggested. Each pass replaces a key's sketch wholesale, so suggestions follow the data rather than accumulating values that have stopped occurring. Apart from `value_sketch_size` this pass requires no configuration and changes no table data; the promotion pass built on it is covered in [Attribute Promotion](#attribute-promotion).

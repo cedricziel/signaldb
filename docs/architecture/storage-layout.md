@@ -532,7 +532,7 @@ logs = ["team", "region"]
   `label_http_method`) never share a column or drop each other's values.
   Resolution goes through
   `common::iceberg::evolution::resolve_label_columns_canonical` /
-  `resolve_label_columns_fresh` — the same doc-stamping mechanism [auto-promotion's
+  `resolve_label_columns_fresh` — the same doc-stamping mechanism [the label
   evolution path](#label-columns-can-be-added-to-existing-tables) uses
   (`resolve_label_columns`), wrapped to sort the configured keys into a
   canonical (alphabetical) order before resolving: the key that sorts first
@@ -614,12 +614,12 @@ logs = ["team", "region"]
   **Known limitation**: nothing automatically promotes a _newly_ configured
   key to a real column on a table that already exists — the writer's
   signal-table reconciler (see the multi-tenancy skill) only walks
-  `schemas.toml` versions, and the compactor's auto-promotion decision
-  engine explicitly skips keys already pinned by static config.
+  `schemas.toml` versions, and the compactor no longer adds `label_<key>`
+  columns.
   `reconcile_label_columns` (above) keeps this safe rather than
   corrupting: a new key's values stay on the JSON substring path,
-  exactly as if the table simply predated the label, until it's promoted
-  or the table is recreated. Actually promoting it still needs a
+  exactly as if the table simply predated the label, until the table is
+  recreated. Actually promoting it still needs a
   dedicated reconciliation path; tracked as a follow-up to #1448.
 - **Querying**: the querier routes a label to its `label_<key>` column when
   the table has one, else to the JSON match (see the
@@ -1141,7 +1141,7 @@ The transformation is applied in the Writer's Flight `do_put` handler before dat
 
 ### Label columns can be added to existing tables
 
-Existing tables can gain optional string `label_<key>` columns after creation via `add_label_columns()` (`src/common/src/iceberg/evolution.rs`). This is the evolution path used by attribute auto-promotion: the helper appends the columns to the current schema and commits `AddSchema` + `SetCurrentSchema` through `Catalog::update_table` — a metadata-only commit.
+Existing tables can gain optional string `label_<key>` columns after creation via `add_label_columns()` (`src/common/src/iceberg/evolution.rs`). The compactor no longer auto-promotes new label columns (it promotes to [typed per-level columns](#typed-promoted-attribute-columns) instead); the label path remains for pins and existing columns. The helper appends the columns to the current schema and commits `AddSchema` + `SetCurrentSchema` through `Catalog::update_table` — a metadata-only commit.
 
 - **No data rewrite**: Parquet files written before the flip are never rewritten for it; readers null-fill the new columns for old files. The rewrite-coupled promotion backfills values at the next compaction.
 - **Snapshot-pinned schemas remain reachable**: the previous schema stays in table metadata, so snapshots that pin it keep resolving.
@@ -1151,6 +1151,17 @@ Existing tables can gain optional string `label_<key>` columns after creation vi
 - **Verified**: the table is reloaded after the commit and the evolved schema checked, because the SQL catalog's compare-and-swap can silently lose a race.
 
 Requires iceberg-rust rev >= 96f28c18; earlier revisions resolved `current_schema` through the current snapshot's pinned schema id, so the flip never took effect (JanKaul/iceberg-rust#378).
+
+### Typed promoted attribute columns
+
+Attribute promotion adds a redundant typed copy of one (attribute level, key) home: a nullable column `attr_<level>_<key>` for level `resource`, `scope`, or `record`, typed as the key's canonical type (`String` → string, `Int64` → long, `Float64` → double, `Bool` → boolean). The per-type map stays the key's only canonical home and keeps every value, so dropping the column (demotion) is a metadata-only commit that loses nothing. The writer never fills these columns; the compactor backfills them from the level's typed map at rewrite.
+
+- **Naming**: a key made of lowercase alphanumeric segments joined by single `.` or `_` gets a readable name, with `.` → `_` and `_` → `__` (`http.request.method` → `attr_record_http_request_method`, `http.response.status_code` → `attr_record_http_response_status__code`). Any other key gets `attr_<level>_<sanitized stem>___<8-hex FNV-1a hash>`.
+- **Origin in `doc`**: each column's field `doc` records its (level, key). A name already held by a column of another origin is never retyped; the promotion is skipped with a warning.
+- **Field ids** go past both the schema tree's maximum and `last_column_id`, and a dropped id is never reused.
+- **Querying**: the IR reads `coalesce(promoted, home)` per level and uses a promoted column only when it has the canonical Arrow type. The compat dialects (LogQL, PromQL, TraceQL) do not read `attr_*` columns; they keep using `label_<key>`.
+
+The decision and demotion rules are operator-facing: see [Attribute Promotion](../operations/compactor/operations.md#attribute-promotion).
 
 ### An existing table's schema tracks and catches up to schemas.toml's version
 
