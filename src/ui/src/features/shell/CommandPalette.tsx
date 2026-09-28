@@ -6,6 +6,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { fetchCatalogEntities } from "../../api/catalog";
 import { fetchRumApps } from "../../api/rum";
+import { fetchSessionLookup } from "../../api/rumSessions";
 import { RUM_TABS } from "../rum/rumModel";
 import { entityType } from "../catalog/entityTypes";
 import { entityQueryKey, NAV_SORT } from "../catalog/CatalogView";
@@ -21,6 +22,7 @@ import { NavIcon } from "./NavIcon";
 import { pageHref, visibleNavGroups } from "./navModel";
 import {
   buildPaletteGroups,
+  isSessionIdLike,
   type PaletteItem,
   type PaletteSources,
 } from "./paletteModel";
@@ -49,6 +51,7 @@ export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
 
   const services = useServiceItems(state, query.trim() !== "");
   const rumApps = useRumAppItems(state, query.trim() !== "");
+  const sessionLookup = useSessionLookupItem(state, query);
   const recent = useMemo(
     () =>
       loadRecentQueries().map((q) => ({
@@ -110,8 +113,8 @@ export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
         href: withParam(`/overview${crossSignalSearch(state)}`, "setup"),
       },
     ];
-    return { pages, services, rumApps, recent, actions };
-  }, [state, canManage, isDemo, services, rumApps, recent]);
+    return { pages, services, rumApps, recent, actions, sessionLookup };
+  }, [state, canManage, isDemo, services, rumApps, recent, sessionLookup]);
 
   const groups = buildPaletteGroups(query, sources);
   const flat = groups.flatMap((g) => g.items);
@@ -298,4 +301,51 @@ function useRumAppItems(state: ExploreState, enabled: boolean): PaletteItem[] {
       href: `/rum/overview${search}${search ? "&" : "?"}app=${encodeURIComponent(a.serviceName)}`,
     }));
   }, [data, state]);
+}
+
+/** Debounce lookup requests so a session id typed character-by-character
+ * doesn't fire one bounded read per keystroke while it still looks
+ * id-shaped at every intermediate length. */
+const SESSION_LOOKUP_DEBOUNCE_MS = 300;
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/** A pasted session id, resolved to its app via one bounded logs read
+ * (`fetchSessionLookup`) — the spec's "Pasting a session id" scenario.
+ * `null` while the query doesn't look like a session id, the lookup hasn't
+ * settled yet, or nothing matched. */
+function useSessionLookupItem(
+  state: ExploreState,
+  query: string,
+): PaletteItem | null {
+  const debounced = useDebouncedValue(query.trim(), SESSION_LOOKUP_DEBOUNCE_MS);
+  const enabled = isSessionIdLike(debounced);
+  const rangeKey = rangeScopeKey(state);
+  const { data } = useQuery({
+    queryKey: ["rum-session-lookup", debounced, rangeKey],
+    queryFn: () =>
+      fetchSessionLookup(debounced, resolveRange(state.range, Date.now())),
+    enabled,
+    staleTime: 30_000,
+  });
+  return useMemo(() => {
+    // Guards against picking a stale match: if the user kept typing past
+    // the debounce window, `debounced`/`data` still reflect the older
+    // query until the next debounce settles.
+    if (!enabled || !data || debounced !== query.trim()) return null;
+    const search = crossSignalSearch(state);
+    const sep = search ? "&" : "?";
+    return {
+      label: `Open session ${debounced}`,
+      meta: "session",
+      href: `/rum/sessions${search}${sep}app=${encodeURIComponent(data)}&session=${encodeURIComponent(debounced)}`,
+    };
+  }, [enabled, data, debounced, query, state]);
 }
