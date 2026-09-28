@@ -1,8 +1,9 @@
 // The Real users page's Sessions tab: the session list (grouped by
 // session.id, `useRumSessions`), quick filters ("With errors" / "Slow load")
 // and a free-text filter (session.id/user.id or key=value, sent server-side
-// — see `api/rumSessions.ts`'s module doc). Session detail (`?session=`)
-// ships in a later branch of this same change.
+// — see `api/rumSessions.ts`'s module doc), and — once `?session=` names a
+// session — its detail timeline below the list (mirrors `PagesTab`'s own
+// list-then-detail layout).
 import { useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
@@ -10,15 +11,17 @@ import { compactCount } from "../../lib/vizFormat";
 import { formatTimestamp } from "../../lib/time";
 import { formatDurationMs } from "../../lib/waterfall";
 import { Panel } from "./Panel";
+import { SessionDetailView } from "./SessionDetailView";
 import { filterSessionsRows, type RumSessionRow } from "../../api/rumSessions";
 import { useRumSessions, type RumScope } from "./useRumData";
 
 interface Props {
   scope: RumScope;
+  session: string;
   onSelectSession: (sessionId: string) => void;
 }
 
-export function SessionsTab({ scope, onSelectSession }: Props) {
+export function SessionsTab({ scope, session, onSelectSession }: Props) {
   const [filterText, setFilterText] = useState("");
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [onlySlow, setOnlySlow] = useState(false);
@@ -77,18 +80,31 @@ export function SessionsTab({ scope, onSelectSession }: Props) {
             }
           />
         ) : (
-          <SessionsTable rows={rows} onSelect={onSelectSession} />
+          <SessionsTable
+            rows={rows}
+            selected={session}
+            onSelect={onSelectSession}
+          />
         )}
       </Panel>
+
+      {session !== "" && (
+        // `key` forces a full remount on session change, so the detail
+        // view's own selected-event state doesn't carry over from the
+        // previous session.
+        <SessionDetailView key={session} scope={scope} sessionId={session} />
+      )}
     </div>
   );
 }
 
 function SessionsTable({
   rows,
+  selected,
   onSelect,
 }: {
   rows: RumSessionRow[];
+  selected: string;
   onSelect: (sessionId: string) => void;
 }) {
   return (
@@ -108,7 +124,12 @@ function SessionsTable({
         <button
           key={r.sessionId}
           type="button"
-          className="rum-sessions-row"
+          className={
+            r.sessionId === selected
+              ? "rum-sessions-row on"
+              : "rum-sessions-row"
+          }
+          aria-current={r.sessionId === selected ? "true" : undefined}
           onClick={() => onSelect(r.sessionId)}
         >
           <span className="mono ell" title={r.sessionId}>

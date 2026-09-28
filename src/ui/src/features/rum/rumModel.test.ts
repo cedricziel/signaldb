@@ -452,6 +452,7 @@ describe("sessionEventLabel", () => {
       exceptionType: null,
       exceptionMessage: null,
       exceptionStacktrace: null,
+      resourceAttributes: {},
     };
     expect(sessionEventLabel(event)).toBe("Navigated to /checkout");
   });
@@ -473,6 +474,7 @@ describe("sessionEventLabel", () => {
       exceptionType: "TypeError",
       exceptionMessage: "Cannot read properties of undefined",
       exceptionStacktrace: null,
+      resourceAttributes: {},
     };
     expect(sessionEventLabel(event)).toBe(
       "TypeError: Cannot read properties of undefined",

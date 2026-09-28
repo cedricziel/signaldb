@@ -4,6 +4,7 @@
 // rather than serving another app's cached data under the same key.
 
 import { useQuery } from "@tanstack/react-query";
+import { useEffect, useState } from "react";
 import {
   fetchBackendCalls,
   fetchBreakdown,
@@ -22,6 +23,10 @@ import {
 } from "../../api/rum";
 import { fetchErrorGroups } from "../../api/errors";
 import { fetchSessions } from "../../api/rumSessions";
+import {
+  fetchSessionDetail,
+  type SessionEvent,
+} from "../../api/rumSessionDetail";
 import {
   durationToSeconds,
   stepForRange,
@@ -235,6 +240,78 @@ export function useRumSessions(scope: RumScope, filterText: string) {
     enabled: app !== "",
     staleTime: STALE,
   });
+}
+
+export interface RumSessionDetail {
+  events: SessionEvent[];
+  isPending: boolean;
+  isError: boolean;
+  error: unknown;
+  hasMore: boolean;
+  moreCount?: number;
+  isLoadingMore: boolean;
+  loadMore: () => void;
+}
+
+/** One session's detail timeline (`?session=`) — accumulates pages loaded
+ * via "Load more" (`api/rumSessionDetail.ts`'s cursor pagination) into one
+ * ordered list, resetting whenever the session or scope changes. Plain
+ * component state rather than `useInfiniteQuery`: each page depends on the
+ * *previous* page's last timestamp, not a page index, and there's no
+ * existing infinite-query usage in this codebase to match. */
+export function useRumSessionDetail(
+  scope: RumScope,
+  sessionId: string,
+): RumSessionDetail {
+  const { range, rangeKey, app } = scope;
+  const scopeKey = `${rangeKey}\u0000${app}\u0000${sessionId}`;
+  const [cursor, setCursor] = useState<string | undefined>(undefined);
+  const [pages, setPages] = useState<SessionEvent[][]>([]);
+  // Resetting during render (React's own escape hatch for "derived state
+  // that depends on a prop") rather than in a `useEffect`: an effect-based
+  // reset lands one commit *after* the scope change, which can race a
+  // same-commit data-arrival effect and drop the very page that change was
+  // meant to fetch.
+  const [seenScopeKey, setSeenScopeKey] = useState(scopeKey);
+  if (seenScopeKey !== scopeKey) {
+    setSeenScopeKey(scopeKey);
+    setCursor(undefined);
+    setPages([]);
+  }
+  const resetting = seenScopeKey !== scopeKey;
+
+  const page = useQuery({
+    queryKey: ["rum-session-detail", scopeKey, cursor],
+    queryFn: () => fetchSessionDetail(sessionId, range, cursor),
+    enabled: sessionId !== "" && !resetting,
+    staleTime: STALE,
+  });
+
+  useEffect(() => {
+    if (page.data && !resetting) {
+      setPages((prev) =>
+        cursor === undefined ? [page.data.events] : [...prev, page.data.events],
+      );
+    }
+    // `cursor`/`resetting` intentionally excluded: this only decides how a
+    // *newly arrived* page slots in, not something to re-run for.
+  }, [page.data]);
+
+  const events = pages.flat();
+
+  return {
+    events,
+    isPending: resetting || page.isPending,
+    isError: page.isError,
+    error: page.error,
+    hasMore: page.data?.hasMore ?? false,
+    moreCount: page.data?.moreCount,
+    isLoadingMore: cursor !== undefined && page.isFetching,
+    loadMore: () => {
+      const last = events[events.length - 1];
+      if (last) setCursor(last.tsNs);
+    },
+  };
 }
 
 /** One field's value breakdown for the app — shared by the browser
