@@ -15,3 +15,4 @@ mod retention_failure_scenarios;
 mod snapshot_expiration;
 mod sort_attestation;
 mod target_encoded_file_size;
+mod typed_attr_promotion_rewrite;
