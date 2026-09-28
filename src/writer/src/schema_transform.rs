@@ -1070,86 +1070,6 @@ pub fn create_metrics_gauge_arrow_schema() -> Arc<Schema> {
     ]))
 }
 
-// No longer called by a transform (metrics now flow through
-// `transform_metrics_to_wide`); kept `pub` rather than deleted because
-// `schema_consistency` below still pins it against `schemas.toml`.
-pub fn create_metrics_sum_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("aggregation_temporality", DataType::Int32, false),
-        Field::new("is_monotonic", DataType::Boolean, false),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-        Field::new("resource_identity", DataType::Utf8, true),
-    ]))
-}
-
-// No longer called by a transform (metrics now flow through
-// `transform_metrics_to_wide`); kept `pub` rather than deleted because
-// `schema_consistency` below still pins it against `schemas.toml`.
-pub fn create_metrics_histogram_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("count", DataType::Int64, false),
-        Field::new("sum", DataType::Float64, true),
-        Field::new("min", DataType::Float64, true),
-        Field::new("max", DataType::Float64, true),
-        Field::new("bucket_counts", DataType::Utf8, true),
-        Field::new("explicit_bounds", DataType::Utf8, true),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("aggregation_temporality", DataType::Int32, false),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-        Field::new("resource_identity", DataType::Utf8, true),
-    ]))
-}
-
 fn get_typed_column<'a, T>(batch: &'a RecordBatch, name: &str) -> Result<&'a T>
 where
     T: Array + 'static,
@@ -1386,91 +1306,6 @@ fn extract_scope_context(scope_json: Option<&str>) -> ScopeContext {
         scope_attributes: serialize_json(obj.get("attributes")),
         scope_dropped_attr_count: json_to_i32(obj.get("dropped_attributes_count")).unwrap_or(0),
     }
-}
-
-// No longer called by a transform (metrics now flow through
-// `transform_metrics_to_wide`); kept `pub` rather than deleted because
-// `schema_consistency` below still pins it against `schemas.toml`.
-pub fn create_metrics_exponential_histogram_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("count", DataType::Int64, false),
-        Field::new("sum", DataType::Float64, true),
-        Field::new("min", DataType::Float64, true),
-        Field::new("max", DataType::Float64, true),
-        Field::new("scale", DataType::Int32, true),
-        Field::new("zero_count", DataType::Int64, true),
-        Field::new("positive_offset", DataType::Int32, true),
-        Field::new("positive_bucket_counts", DataType::Utf8, true), // JSON array string
-        Field::new("negative_offset", DataType::Int32, true),
-        Field::new("negative_bucket_counts", DataType::Utf8, true), // JSON array string
-        Field::new("flags", DataType::Int32, true),
-        Field::new("aggregation_temporality", DataType::Int32, false),
-        Field::new("zero_threshold", DataType::Float64, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-        Field::new("resource_identity", DataType::Utf8, true),
-    ]))
-}
-
-// No longer called by a transform (metrics now flow through
-// `transform_metrics_to_wide`); kept `pub` rather than deleted because
-// `schema_consistency` below still pins it against `schemas.toml`.
-pub fn create_metrics_summary_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("count", DataType::Int64, false),
-        Field::new("sum", DataType::Float64, false),
-        Field::new("quantile_values", DataType::Utf8, true), // JSON array of {quantile, value}
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-        Field::new("resource_identity", DataType::Utf8, true),
-    ]))
 }
 
 /// The Arrow schema a transform emits for `resolved`, with each typed
@@ -2952,35 +2787,6 @@ mod tests {
         .unwrap()
     }
 
-    /// The remaining four metrics representations share `extract_resource_context`
-    /// and the same `resource_identity` population code path as
-    /// `metrics_gauge` (asserted above with the full grouping/null
-    /// behaviour); this checks each one declares the column, nullable, so a
-    /// transform that forgot to add it to its own
-    /// `create_metrics_*_arrow_schema()` fails here instead of only at
-    /// `schema_consistency`.
-    #[test]
-    fn remaining_metrics_transforms_declare_a_nullable_resource_identity_column() {
-        for (name, schema) in [
-            ("metrics_sum", create_metrics_sum_arrow_schema()),
-            ("metrics_histogram", create_metrics_histogram_arrow_schema()),
-            (
-                "metrics_exponential_histogram",
-                create_metrics_exponential_histogram_arrow_schema(),
-            ),
-            ("metrics_summary", create_metrics_summary_arrow_schema()),
-        ] {
-            let field = schema
-                .field_with_name("resource_identity")
-                .unwrap_or_else(|_| panic!("{name}: missing resource_identity column"));
-            assert!(
-                field.is_nullable(),
-                "{name}: resource_identity must be nullable"
-            );
-            assert_eq!(field.data_type(), &DataType::Utf8, "{name}");
-        }
-    }
-
     fn make_log_flight_batch_with_attrs(
         time_unix_nanos: &[u64],
         observed_time_unix_nanos: &[u64],
@@ -3863,49 +3669,6 @@ mod schema_consistency {
         let schema = create_metrics_gauge_arrow_schema();
         let touched = metrics_arrow_touched_fields(&schema);
         assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_sum_transform_covers_every_non_computed_physical_v2_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v2")
-            .unwrap();
-        let schema = create_metrics_sum_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_sum", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_histogram_transform_covers_every_non_computed_physical_v2_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v2")
-            .unwrap();
-        let schema = create_metrics_histogram_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_histogram", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_exponential_histogram_transform_covers_every_non_computed_physical_v2_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                "physical-v2",
-            )
-            .unwrap();
-        let schema = create_metrics_exponential_histogram_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_exponential_histogram", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_summary_transform_covers_every_non_computed_physical_v2_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v2")
-            .unwrap();
-        let schema = create_metrics_summary_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_summary", &resolved, &touched);
     }
 
     #[test]
