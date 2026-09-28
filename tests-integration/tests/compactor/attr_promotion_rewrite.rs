@@ -1,12 +1,13 @@
 //! Rewrite-coupled attribute auto-promotion (epic #737, #734)
 //!
-//! Legacy label promotion no longer decides new columns
-//! (otel-native-schema layer 6 promotes typed `attr_<level>_<key>` columns
-//! instead): this is now a regression test that a table with map-typed
-//! attributes and recorded query demand for a key does *not* grow a new
-//! `label_<key>` column through a compaction, in either the active
-//! (non-dry-run) or the dry-run path. Existing label demotion is
-//! unaffected and stays covered by `attr_demotion_rewrite.rs`.
+//! End-to-end test of the active (non-dry-run) promotion path: a table
+//! with map-typed attributes and per-level query demand for one key runs
+//! through a compaction, which must evolve the schema (add the typed
+//! `attr_record_<key>` column via AddSchema + SetCurrentSchema, per
+//! otel-native-schema layer 6), backfill the column for the pre-existing
+//! rows during the rewrite, and leave the data queryable. Legacy
+//! `label_<key>` promotion no longer decides new columns at all -- with
+//! `dry_run = true` the same setup must change nothing.
 
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
@@ -325,11 +326,22 @@ async fn setup(
     )
     .await?;
 
-    // Query demand for `env` only. The promotion pass reads stats keyed
-    // by the identifier's namespace slugs (equal to the ids here).
+    // Query demand for `env` only, at the record level -- the typed
+    // per-level promotion decision reads `attribute_level_stats`, not the
+    // flat `attribute_stats` (legacy label promotion no longer promotes new
+    // columns from it). The promotion pass reads stats keyed by the
+    // identifier's namespace slugs (equal to the ids here).
     let service_catalog = Arc::new(common::catalog::Catalog::new_in_memory().await?);
     service_catalog
-        .add_attribute_query_hits(TENANT, DATASET, "logs", "env", 10)
+        .add_attribute_level_query_hits(
+            TENANT,
+            DATASET,
+            "logs",
+            AttributeLevel::Record,
+            "env",
+            10,
+            chrono::Utc::now(),
+        )
         .await?;
     for key in ["env", "pod"] {
         let field = LogicalFieldId {
@@ -382,7 +394,7 @@ async fn count_rows(ctx: &SessionContext, sql: &str) -> Result<usize> {
 }
 
 #[tokio::test]
-async fn active_promotion_no_longer_creates_new_label_columns() -> Result<()> {
+async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
@@ -391,19 +403,28 @@ async fn active_promotion_no_longer_creates_new_label_columns() -> Result<()> {
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
-    // No schema evolution at all: `env` has recorded query demand and
-    // would have been promoted under the old scoring, but legacy label
-    // promotion no longer decides new columns.
+    // Schema evolved: `attr_record_env` exists (and only it — `pod` had no
+    // query demand and must not be promoted, and no legacy `label_*`
+    // column is ever created any more).
     let table = load_table(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
-        !schema.fields().iter().any(|f| f.name.starts_with("label_")),
-        "no new label column must be created regardless of demand"
+        schema.fields().iter().any(|f| f.name == "attr_record_env"),
+        "promoted column must exist in the current schema"
     );
-    assert_eq!(table.metadata().schemas.len(), 1);
+    assert!(
+        !schema.fields().iter().any(|f| f.name == "attr_record_pod"),
+        "unqueried key must not be promoted"
+    );
+    assert!(
+        !schema.fields().iter().any(|f| f.name.starts_with("label_")),
+        "legacy label promotion must never create a new column"
+    );
+    assert_eq!(table.metadata().current_schema_id, 1);
+    assert_eq!(table.metadata().schemas.len(), 2);
 
-    // Compaction itself still worked and preserved the data, queryable via
-    // the attributes map.
+    // The rewrite backfilled the column for the pre-existing rows and the
+    // data is queryable through the promoted column.
     let provider = Arc::new(datafusion_iceberg::DataFusionTable::new(
         Tabular::Table(table),
         None,
@@ -414,6 +435,25 @@ async fn active_promotion_no_longer_creates_new_label_columns() -> Result<()> {
     ctx.register_table("logs", provider)?;
 
     assert_eq!(count_rows(&ctx, "SELECT body FROM logs").await?, 4);
+    assert_eq!(
+        count_rows(&ctx, "SELECT body FROM logs WHERE attr_record_env = 'prod'").await?,
+        2,
+        "pre-existing rows must be backfilled from the attributes map"
+    );
+    assert_eq!(
+        count_rows(
+            &ctx,
+            "SELECT body FROM logs WHERE attr_record_env = 'staging'"
+        )
+        .await?,
+        1
+    );
+    assert_eq!(
+        count_rows(&ctx, "SELECT body FROM logs WHERE attr_record_env IS NULL").await?,
+        1,
+        "rows without the attribute stay null"
+    );
+    // The source attributes are still intact after the rewrite.
     assert_eq!(
         count_rows(
             &ctx,
@@ -436,11 +476,15 @@ async fn dry_run_promotion_changes_nothing() -> Result<()> {
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
-    // Schema untouched: no label columns, no extra schema version.
+    // Schema untouched: no label or promoted-attr columns, no extra
+    // schema version.
     let table = load_table(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
-        !schema.fields().iter().any(|f| f.name.starts_with("label_")),
+        !schema
+            .fields()
+            .iter()
+            .any(|f| f.name.starts_with("label_") || f.name.starts_with("attr_record_")),
         "dry run must not evolve the schema"
     );
     assert_eq!(table.metadata().schemas.len(), 1);

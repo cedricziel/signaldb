@@ -25,7 +25,8 @@
 
 use anyhow::{Context, Result};
 use common::attrs::AttrDocument;
-use common::catalog::AttributeStatsRecord;
+use common::catalog::{AttributeLevelStatsRecord, AttributeStatsRecord};
+use common::config::AttrPromotionConfig;
 use common::iceberg::evolution;
 use common::schema::logical::AttributeLevel;
 use common::schema::type_authority::{AttributeKeyType, CanonicalType};
@@ -126,6 +127,113 @@ pub fn log_decision(table_name: &str, decision: &PromotionDecision, dry_run: boo
         dry_run,
         demote = ?decision.demote,
         "Attribute label demotion decision"
+    );
+}
+
+/// Which `(level, key)` pairs get a typed `attr_<level>_<key>` column at the next rewrite.
+#[derive(Debug, Default, PartialEq)]
+pub struct TypedPromotionDecision {
+    /// `(level, key)` pairs to promote, highest score first.
+    pub promote: Vec<(AttributeLevel, String)>,
+    /// `(level, key, streak)` over threshold but still building toward `promote_streak`.
+    pub building: Vec<(AttributeLevel, String, i64)>,
+}
+
+/// A new promotion streak for one `(level, key)`, persisted by the caller.
+pub type LevelStreak = (AttributeLevel, String, i64);
+
+/// The [`AttributeLevel`]s with a typed-layout container, found by its `_residue` column.
+fn levels_with_container<'a>(
+    field_names: impl IntoIterator<Item = &'a str>,
+) -> HashSet<AttributeLevel> {
+    let names: HashSet<&str> = field_names.into_iter().collect();
+    BACKFILL_SOURCE_COLUMNS
+        .iter()
+        .filter(|container| names.contains(residue_column(container).as_str()))
+        .map(|container| container_level(container))
+        .collect()
+}
+
+/// The [`AttributeLevel`]s this Iceberg schema has a typed-layout container for.
+pub fn available_attribute_levels(
+    schema: &iceberg_rust::spec::schema::Schema,
+) -> HashSet<AttributeLevel> {
+    levels_with_container(schema.fields().iter().map(|f| f.name.as_str()))
+}
+
+/// The per-level typed promotion decision for one table: the legacy label guardrails
+/// (cardinality cap, generated keys, presence/demand thresholds, hysteresis) keyed by
+/// `(level, key)`, with `max_labels_per_table` shared with the `label_columns_used`
+/// label columns. `capped_keys` comes from the flat, level-less `attribute_stats`.
+#[allow(clippy::too_many_arguments)]
+pub fn decide_typed_promotions(
+    level_stats: &[AttributeLevelStatsRecord],
+    canonical_types: &HashMap<(AttributeLevel, String), CanonicalType>,
+    promoted: &HashSet<(AttributeLevel, String)>,
+    available_levels: &HashSet<AttributeLevel>,
+    capped_keys: &HashSet<String>,
+    label_columns_used: usize,
+    config: &AttrPromotionConfig,
+) -> (TypedPromotionDecision, Vec<LevelStreak>) {
+    let mut decision = TypedPromotionDecision::default();
+    let mut new_streaks: Vec<LevelStreak> = Vec::new();
+
+    let mut eligible: Vec<(&AttributeLevelStatsRecord, f64)> = Vec::new();
+    for record in level_stats {
+        let level_key = (record.level, record.attr_key.clone());
+        if promoted.contains(&level_key) {
+            continue;
+        }
+        let over_threshold = canonical_types.contains_key(&level_key)
+            && available_levels.contains(&record.level)
+            && !capped_keys.contains(&record.attr_key)
+            && !looks_generated(&record.attr_key)
+            && record.total_rows > 0
+            && record.query_hits >= config.min_query_hits
+            && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence;
+        let streak = if over_threshold {
+            record.promote_streak + 1
+        } else {
+            0
+        };
+        if streak != record.promote_streak {
+            new_streaks.push((record.level, record.attr_key.clone(), streak));
+        }
+        if over_threshold && streak >= config.promote_streak {
+            let presence = record.present_rows as f64 / record.total_rows as f64;
+            eligible.push((record, record.query_hits as f64 * presence));
+        } else if over_threshold {
+            decision
+                .building
+                .push((record.level, record.attr_key.clone(), streak));
+        }
+    }
+
+    let headroom = config
+        .max_labels_per_table
+        .saturating_sub(label_columns_used + promoted.len())
+        .min(config.max_promotions_per_cycle);
+    eligible.sort_by(|a, b| b.1.total_cmp(&a.1));
+    decision.promote = eligible
+        .iter()
+        .take(headroom)
+        .map(|(r, _)| (r.level, r.attr_key.clone()))
+        .collect();
+
+    (decision, new_streaks)
+}
+
+/// Log the typed-attribute promotion decision for one table.
+pub fn log_typed_decision(table_name: &str, decision: &TypedPromotionDecision, dry_run: bool) {
+    if decision.promote.is_empty() && decision.building.is_empty() {
+        return;
+    }
+    tracing::info!(
+        table = %table_name,
+        dry_run,
+        promote = ?decision.promote,
+        building = ?decision.building,
+        "Typed attribute promotion decision"
     );
 }
 
@@ -456,6 +564,237 @@ mod tests {
         let hot = record("namespace", 90, 100, 50, 5);
         let decision = decide(&[hot], &[], &[]);
         assert_eq!(decision, PromotionDecision::default());
+    }
+
+    fn config() -> AttrPromotionConfig {
+        AttrPromotionConfig {
+            enabled: true,
+            dry_run: true,
+            max_labels_per_table: 4,
+            min_presence: 0.01,
+            min_query_hits: 1,
+            promote_streak: 3,
+            max_promotions_per_cycle: 4,
+        }
+    }
+
+    fn level_record(
+        level: AttributeLevel,
+        key: &str,
+        present: i64,
+        total: i64,
+        hits: i64,
+        streak: i64,
+    ) -> AttributeLevelStatsRecord {
+        AttributeLevelStatsRecord {
+            tenant_id: "t".into(),
+            dataset_id: "d".into(),
+            signal: "logs".into(),
+            level,
+            attr_key: key.into(),
+            present_rows: present,
+            total_rows: total,
+            query_hits: hits,
+            last_queried_at: None,
+            promote_streak: streak,
+            updated_at: "2026-08-17 09:00:00".into(),
+        }
+    }
+
+    fn types(
+        entries: &[(AttributeLevel, &str, CanonicalType)],
+    ) -> HashMap<(AttributeLevel, String), CanonicalType> {
+        entries
+            .iter()
+            .map(|(level, key, canonical)| ((*level, key.to_string()), *canonical))
+            .collect()
+    }
+
+    fn all_levels() -> HashSet<AttributeLevel> {
+        [
+            AttributeLevel::Resource,
+            AttributeLevel::Scope,
+            AttributeLevel::Record,
+        ]
+        .into_iter()
+        .collect()
+    }
+
+    #[test]
+    fn typed_promotes_only_after_the_streak_builds() {
+        let cfg = config();
+        let ready = level_record(AttributeLevel::Record, "namespace", 90, 100, 50, 2);
+        let fresh = level_record(AttributeLevel::Record, "pod", 90, 100, 50, 0);
+        let types = types(&[
+            (AttributeLevel::Record, "namespace", CanonicalType::String),
+            (AttributeLevel::Record, "pod", CanonicalType::String),
+        ]);
+        let (decision, streaks) = decide_typed_promotions(
+            &[ready, fresh],
+            &types,
+            &HashSet::new(),
+            &all_levels(),
+            &HashSet::new(),
+            0,
+            &cfg,
+        );
+        assert_eq!(
+            decision.promote,
+            vec![(AttributeLevel::Record, "namespace".to_string())]
+        );
+        assert_eq!(
+            decision.building,
+            vec![(AttributeLevel::Record, "pod".to_string(), 1)]
+        );
+        assert!(streaks.contains(&(AttributeLevel::Record, "namespace".to_string(), 3)));
+        assert!(streaks.contains(&(AttributeLevel::Record, "pod".to_string(), 1)));
+    }
+
+    #[test]
+    fn typed_streak_resets_when_demand_disappears() {
+        let cfg = config();
+        let cooled = level_record(AttributeLevel::Record, "namespace", 90, 100, 0, 2);
+        let types = types(&[(AttributeLevel::Record, "namespace", CanonicalType::String)]);
+        let (decision, streaks) = decide_typed_promotions(
+            &[cooled],
+            &types,
+            &HashSet::new(),
+            &all_levels(),
+            &HashSet::new(),
+            0,
+            &cfg,
+        );
+        assert!(decision.promote.is_empty());
+        assert_eq!(
+            streaks,
+            vec![(AttributeLevel::Record, "namespace".to_string(), 0)]
+        );
+    }
+
+    /// Each eligibility rule alone rejects an otherwise-eligible key.
+    #[test]
+    fn typed_rejects_each_guardrail_independently() {
+        let cfg = config();
+        let no_type = level_record(AttributeLevel::Record, "no_type", 90, 100, 50, 5);
+        let no_container = level_record(AttributeLevel::Scope, "no_container", 90, 100, 50, 5);
+        let capped = level_record(AttributeLevel::Record, "request_id", 90, 100, 50, 5);
+        let generated = level_record(
+            AttributeLevel::Record,
+            "span.0123456789abcdef",
+            90,
+            100,
+            50,
+            5,
+        );
+        let sparse = level_record(AttributeLevel::Record, "rare", 1, 10_000, 50, 5);
+        let types = types(&[
+            (AttributeLevel::Scope, "no_container", CanonicalType::String),
+            (AttributeLevel::Record, "request_id", CanonicalType::String),
+            (
+                AttributeLevel::Record,
+                "span.0123456789abcdef",
+                CanonicalType::String,
+            ),
+            (AttributeLevel::Record, "rare", CanonicalType::String),
+        ]);
+        let available: HashSet<AttributeLevel> = [AttributeLevel::Resource, AttributeLevel::Record]
+            .into_iter()
+            .collect();
+        let capped_keys: HashSet<String> = ["request_id".to_string()].into_iter().collect();
+        let (decision, _) = decide_typed_promotions(
+            &[no_type, no_container, capped, generated, sparse],
+            &types,
+            &HashSet::new(),
+            &available,
+            &capped_keys,
+            0,
+            &cfg,
+        );
+        assert!(decision.promote.is_empty());
+        assert!(decision.building.is_empty());
+    }
+
+    #[test]
+    fn typed_rejects_low_query_hits() {
+        let cfg = config();
+        let quiet = level_record(AttributeLevel::Record, "quiet", 90, 100, 0, 5);
+        let types = types(&[(AttributeLevel::Record, "quiet", CanonicalType::String)]);
+        let (decision, _) = decide_typed_promotions(
+            &[quiet],
+            &types,
+            &HashSet::new(),
+            &all_levels(),
+            &HashSet::new(),
+            0,
+            &cfg,
+        );
+        assert!(decision.promote.is_empty());
+    }
+
+    #[test]
+    fn typed_budget_is_shared_with_labels_and_ranks_by_score() {
+        let mut cfg = config();
+        cfg.max_labels_per_table = 3;
+        // 2 labels + 1 promoted attr exhaust a budget of 3.
+        let a = level_record(AttributeLevel::Record, "a", 100, 100, 10, 5); // score 10
+        let b = level_record(AttributeLevel::Record, "b", 50, 100, 30, 5); // score 15
+        let types = types(&[
+            (AttributeLevel::Record, "a", CanonicalType::String),
+            (AttributeLevel::Record, "b", CanonicalType::String),
+        ]);
+        let promoted: HashSet<(AttributeLevel, String)> =
+            [(AttributeLevel::Resource, "already".to_string())]
+                .into_iter()
+                .collect();
+        let (decision, _) = decide_typed_promotions(
+            &[a, b],
+            &types,
+            &promoted,
+            &all_levels(),
+            &HashSet::new(),
+            2,
+            &cfg,
+        );
+        assert!(decision.promote.is_empty());
+
+        cfg.max_labels_per_table = 4;
+        let a = level_record(AttributeLevel::Record, "a", 100, 100, 10, 5);
+        let b = level_record(AttributeLevel::Record, "b", 50, 100, 30, 5);
+        let (decision, _) = decide_typed_promotions(
+            &[a, b],
+            &types,
+            &promoted,
+            &all_levels(),
+            &HashSet::new(),
+            2,
+            &cfg,
+        );
+        assert_eq!(
+            decision.promote,
+            vec![(AttributeLevel::Record, "b".to_string())]
+        );
+    }
+
+    /// The same key at two levels is decided independently.
+    #[test]
+    fn typed_decides_the_same_key_independently_per_level() {
+        let cfg = config();
+        let record_row = level_record(AttributeLevel::Record, "env", 90, 100, 50, 2);
+        let resource_row = level_record(AttributeLevel::Resource, "env", 90, 100, 50, 2);
+        let types = types(&[(AttributeLevel::Record, "env", CanonicalType::String)]);
+        let (decision, _) = decide_typed_promotions(
+            &[record_row, resource_row],
+            &types,
+            &HashSet::new(),
+            &all_levels(),
+            &HashSet::new(),
+            0,
+            &cfg,
+        );
+        assert_eq!(
+            decision.promote,
+            vec![(AttributeLevel::Record, "env".to_string())]
+        );
     }
 
     #[test]

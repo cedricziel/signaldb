@@ -609,9 +609,81 @@ impl ParquetRewriter {
         let decision = crate::attr_promotion::decide(&stats, &materialized, pinned);
         crate::attr_promotion::log_decision(table_name, &decision, promotion.dry_run);
 
-        // Act on the decision when the pass is out of dry-run.
+        let level_stats = match catalog
+            .list_attribute_level_stats(tenant, dataset, signal)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, table = %table_name, "Failed to load per-level attribute stats for promotion pass");
+                Vec::new()
+            }
+        };
+        let promoted_attrs = common::iceberg::evolution::promoted_attrs_of(&current_schema);
+        let promoted: HashSet<(AttributeLevel, String)> = promoted_attrs
+            .iter()
+            .map(|(level, key, _, _)| (*level, key.clone()))
+            .collect();
+        let available_levels = crate::attr_promotion::available_attribute_levels(&current_schema);
+        let capped_keys: HashSet<String> = stats
+            .iter()
+            .filter(|r| r.capped)
+            .map(|r| r.attr_key.clone())
+            .collect();
+        let label_budget_used =
+            materialized.len() + pinned.iter().filter(|p| !materialized.contains(p)).count();
+        let (typed_decision, new_level_streaks) = crate::attr_promotion::decide_typed_promotions(
+            &level_stats,
+            &canonical_types,
+            &promoted,
+            &available_levels,
+            &capped_keys,
+            label_budget_used,
+            promotion,
+        );
+        crate::attr_promotion::log_typed_decision(table_name, &typed_decision, promotion.dry_run);
+        for (level, key, streak) in new_level_streaks {
+            if let Err(e) = catalog
+                .set_attribute_level_promote_streak(tenant, dataset, signal, level, &key, streak)
+                .await
+            {
+                tracing::warn!(error = %e, attr_key = %key, level = level.as_str(), "Failed to persist per-level promotion streak");
+            }
+        }
+
         if promotion.dry_run {
             return outcome;
+        }
+        if !typed_decision.promote.is_empty() {
+            let attrs: Vec<(AttributeLevel, String, CanonicalType)> = typed_decision
+                .promote
+                .iter()
+                .filter_map(|(level, key)| {
+                    canonical_types
+                        .get(&(*level, key.clone()))
+                        .map(|canonical| (*level, key.clone(), *canonical))
+                })
+                .collect();
+            match common::iceberg::evolution::add_promoted_attr_columns(
+                self.catalog_manager.catalog(),
+                table.identifier(),
+                &attrs,
+            )
+            .await
+            {
+                Ok(evolved) => {
+                    outcome.evolved = true;
+                    current_schema = evolved;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        table = %table_name,
+                        keys = ?typed_decision.promote,
+                        "Failed to evolve schema for typed attribute promotion; continuing compaction without it"
+                    );
+                }
+            }
         }
 
         // Demotion (#734 P3): drop the long-unqueried auto-promoted
