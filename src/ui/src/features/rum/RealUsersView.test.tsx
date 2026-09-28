@@ -23,6 +23,7 @@ vi.mock("../../api/rum", async (orig) => ({
   fetchPages: vi.fn().mockResolvedValue([]),
   fetchLoadBreakdown: vi.fn().mockResolvedValue(undefined),
   fetchBackendCalls: vi.fn().mockResolvedValue([]),
+  fetchInteractions: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../api/errors", async (orig) => ({
   ...(await orig<typeof import("../../api/errors")>()),
@@ -417,5 +418,34 @@ describe("Overview tab's Slowest pages panel", () => {
 
     await waitFor(() => expect(window.location.pathname).toBe("/rum/pages"));
     expect(window.location.search).toContain("route=%2Forders%2F%3Aid");
+  });
+});
+
+describe("Interactions tab", () => {
+  it("shows clicks by target and page, joined to the page's own INP p75", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([
+      pageRow({
+        route: "/orders/:id",
+        vitals: new Map([["inp", { p75: 240, counts: {} }]]),
+      }),
+    ]);
+    vi.mocked(rumApi.fetchInteractions).mockResolvedValue([
+      {
+        target: "html > body > div.app > button.buy",
+        route: "/orders/:id",
+        clicks: 812,
+      },
+    ]);
+    renderRum("/rum/interactions?app=storefront-web");
+
+    expect(await screen.findByText("812")).toBeInTheDocument();
+    expect(await screen.findByText("/orders/:id")).toBeInTheDocument();
+    expect(
+      await screen.findByText("body > div.app > button.buy"),
+    ).toBeInTheDocument();
   });
 });

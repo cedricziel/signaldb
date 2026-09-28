@@ -243,6 +243,7 @@ describe("RUM_TABS / rumTabFromParam", () => {
       "overview",
       "pages",
       "network",
+      "interactions",
       "setup",
     ]);
   });

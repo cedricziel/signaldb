@@ -409,16 +409,20 @@ export function loadBreakdownPhases(p75: NavTimingP75): LoadPhase[] {
 
 // ---- Tabs ------------------------------------------------------------
 
-export type RumTab = "overview" | "pages" | "network" | "setup";
+export type RumTab =
+  "overview" | "pages" | "network" | "interactions" | "setup";
 
 /** The tabs this build ships, in display order — the page's tab strip and
  * the command palette both map over this (`explore-ui-rum`'s "Real users
  * command palette entries" requirement), so a later group's new tab needs
- * adding only here. */
+ * adding only here. Final order per `rum-explore-tabs`: Overview, Pages,
+ * Sessions, Errors, Network, Interactions, Setup — Sessions and Errors ship
+ * in later groups. */
 export const RUM_TABS: { id: RumTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "pages", label: "Pages" },
   { id: "network", label: "Network" },
+  { id: "interactions", label: "Interactions" },
   { id: "setup", label: "Setup" },
 ];
 

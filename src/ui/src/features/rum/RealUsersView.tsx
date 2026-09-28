@@ -1,6 +1,6 @@
 // The Real users page (`/rum/{tab}`): an app switcher, a tab strip, and one
-// tab body per selected tab. Sessions, Errors and Interactions are later
-// groups (tasks.md groups 2-4) and are not rendered as placeholders here.
+// tab body per selected tab. Sessions and Errors are later groups (tasks.md
+// groups 3-4) and are not rendered as placeholders here.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { rangeScopeKey, resolveRange } from "../../lib/time";
@@ -11,6 +11,7 @@ import { NavIcon } from "../shell/NavIcon";
 import { useRumApps } from "./useRumData";
 import type { RumApp } from "../../api/rum";
 import { RUM_TABS, type RumTab } from "./rumModel";
+import { InteractionsTab } from "./InteractionsTab";
 import { NetworkTab } from "./NetworkTab";
 import { OverviewTab } from "./OverviewTab";
 import { PagesTab } from "./PagesTab";
@@ -137,6 +138,8 @@ export function RealUsersView({
             onOpenSetup={() => onTabChange("setup")}
             onOpenNetwork={() => onTabChange("network")}
           />
+        ) : tab === "interactions" ? (
+          <InteractionsTab scope={scope} />
         ) : (
           <OverviewTab
             scope={scope}

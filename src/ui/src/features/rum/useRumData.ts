@@ -7,6 +7,7 @@ import { useQuery } from "@tanstack/react-query";
 import {
   fetchBackendCalls,
   fetchBreakdown,
+  fetchInteractions,
   fetchKpis,
   fetchLoadBreakdown,
   fetchNetworkRequests,
@@ -206,6 +207,17 @@ export function useRumBackendCalls(scope: RumScope, route: string) {
     queryKey: ["rum-backend-calls", rangeKey, app, route],
     queryFn: () => fetchBackendCalls(app, range, route),
     enabled: app !== "" && route !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Interactions tab's clicks by (target, page). */
+export function useRumInteractions(scope: RumScope) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-interactions", rangeKey, app],
+    queryFn: () => fetchInteractions(app, range),
+    enabled: app !== "",
     staleTime: STALE,
   });
 }
