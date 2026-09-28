@@ -25,12 +25,31 @@ export interface PaletteSources {
   rumApps: PaletteItem[];
   recent: PaletteItem[];
   actions: PaletteItem[];
+  /** The "open session" row for a pasted session id, once the caller's
+   * bounded lookup (`fetchSessionLookup`) has resolved it — `null` while
+   * unresolved or when the id doesn't match anything, in which case
+   * `isSessionIdLike`'s "Jump to ID" group shows no items rather than a
+   * spinner. */
+  sessionLookup: PaletteItem | null;
 }
 
 const TRACE_OR_SPAN_ID = /^(?:[0-9a-f]{16}|[0-9a-f]{32})$/i;
 
 export function isTraceOrSpanId(query: string): boolean {
   return TRACE_OR_SPAN_ID.test(query.trim());
+}
+
+const SESSION_ID_UUID =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const SESSION_ID_HEX = /^[0-9a-f]{12,}$/i;
+
+/** A UUID, or a bare hex string of at least 12 characters — the spec's own
+ * "session id (UUID or ≥12 hex chars)" — excluding trace/span ids, which
+ * take priority. */
+export function isSessionIdLike(query: string): boolean {
+  const q = query.trim();
+  if (isTraceOrSpanId(q)) return false;
+  return SESSION_ID_UUID.test(q) || SESSION_ID_HEX.test(q);
 }
 
 export function buildPaletteGroups(
@@ -61,6 +80,14 @@ export function buildPaletteGroups(
         ],
       },
     ];
+  }
+  if (isSessionIdLike(q)) {
+    // The caller's bounded lookup resolves asynchronously — no group (not
+    // an empty "Jump to ID" group) while it's pending or came back empty,
+    // so a wrong guess doesn't flash a heading with nothing under it.
+    return sources.sessionLookup
+      ? [{ title: "Jump to ID", items: [sources.sessionLookup] }]
+      : [];
   }
   const needle = q.toLowerCase();
   const match = (items: PaletteItem[], cap: number) =>

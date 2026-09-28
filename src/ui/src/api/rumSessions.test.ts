@@ -2,10 +2,12 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { QueryIrResponse } from "./gen";
 import {
   buildSessionIdLookupDoc,
+  buildSessionLookupDoc,
   buildSessionsListDoc,
   fetchSessions,
   filterSessionsRows,
   sessionIdsFromResponse,
+  sessionLookupFromResponse,
   sessionsFromResponse,
   sessionsTextFilterWhere,
   type RumSessionRow,
@@ -301,5 +303,29 @@ describe("fetchSessions", () => {
 
     expect(rows).toEqual([]);
     expect(spy).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe("buildSessionLookupDoc", () => {
+  it("filters to the exact session.id and caps at one row", () => {
+    const doc = buildSessionLookupDoc("sess-abc123", range) as {
+      pipeline: Record<string, unknown>[];
+    };
+    expect(doc.pipeline[0]).toEqual({
+      where: { field: "session.id", op: "eq", value: "sess-abc123" },
+    });
+    expect(doc.pipeline[2]).toEqual({ limit: 1 });
+  });
+});
+
+describe("sessionLookupFromResponse", () => {
+  it("returns the session's app when found", () => {
+    expect(sessionLookupFromResponse(table([["storefront-web", 12]]))).toBe(
+      "storefront-web",
+    );
+  });
+
+  it("returns null when the session doesn't exist", () => {
+    expect(sessionLookupFromResponse(table([]))).toBeNull();
   });
 });

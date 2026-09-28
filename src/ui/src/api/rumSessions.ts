@@ -274,3 +274,44 @@ export async function fetchSessions(
     await runIrQuery(buildSessionsListDoc(app, range, sessionIds)),
   );
 }
+
+// ---- Command palette: jump to a pasted session id -----------------------
+//
+// One bounded read — `session.id = <query>`, grouped by `service.name`,
+// capped at one row — answers "does this session exist, and which app does
+// it belong to" without scanning every session in the window (the spec's
+// "Pasting a session id" scenario).
+
+export function buildSessionLookupDoc(
+  query: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      { where: { field: "session.id", op: "eq", value: query } },
+      { aggregate: { by: ["service.name"], aggs: [{ fn: "count", as: "n" }] } },
+      { limit: 1 },
+    ],
+  };
+}
+
+/** The session's app (`service.name`), or `null` when no record with that
+ * `session.id` exists in the window. */
+export function sessionLookupFromResponse(res: QueryIrResponse): string | null {
+  const row = res.rows?.[0] as unknown[] | undefined;
+  const app = row?.[0];
+  return typeof app === "string" && app !== "" ? app : null;
+}
+
+export async function fetchSessionLookup(
+  query: string,
+  range: ResolvedRange,
+): Promise<string | null> {
+  return sessionLookupFromResponse(
+    await runIrQuery(buildSessionLookupDoc(query, range)),
+  );
+}

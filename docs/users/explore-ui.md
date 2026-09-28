@@ -384,6 +384,10 @@ placeholder.
   app](instrument-browser-app.md).
 - **Command palette.** The Real users tabs and every frontend app with RUM
   data are palette entries; picking an app opens `/rum/overview?app=`.
+  Pasting a session id (a UUID, or a bare hex string of 12 or more
+  characters, checked after the existing trace/span id check) looks it up
+  with one bounded read and, once resolved, offers "Open session" —
+  `/rum/sessions?app=&session=` for the app it belongs to.
 
 ### Agent evaluations
 

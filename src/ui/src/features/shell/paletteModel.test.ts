@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { buildPaletteGroups, type PaletteSources } from "./paletteModel";
+import {
+  buildPaletteGroups,
+  isSessionIdLike,
+  type PaletteSources,
+} from "./paletteModel";
 
 const item = (label: string, meta = "x") => ({
   label,
@@ -36,6 +40,7 @@ const SOURCES: PaletteSources = {
     "Instrument a service",
     "Switch tenant",
   ].map((l) => item(l, "action")),
+  sessionLookup: null,
 };
 
 const titles = (q: string) =>
@@ -89,5 +94,48 @@ describe("buildPaletteGroups", () => {
     expect(titles("00f067aa0ba902b7")).toEqual(["Jump to ID"]);
     // Not an id: wrong length, or not hex.
     expect(titles("00f067aa0ba902b")).not.toContain("Jump to ID");
+  });
+
+  it("shows no group for a session-id-like query with no resolved lookup", () => {
+    expect(
+      buildPaletteGroups("8f14e45f-ceea-467e-adc0-fb62a1a8be22", SOURCES),
+    ).toEqual([]);
+  });
+
+  it("offers the resolved session once the caller's lookup finds one", () => {
+    const sessionItem = {
+      label: "Open session 8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+      meta: "session",
+      href: "/rum/sessions?session=8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+    };
+    expect(
+      buildPaletteGroups("8f14e45f-ceea-467e-adc0-fb62a1a8be22", {
+        ...SOURCES,
+        sessionLookup: sessionItem,
+      }),
+    ).toEqual([{ title: "Jump to ID", items: [sessionItem] }]);
+  });
+});
+
+describe("isSessionIdLike", () => {
+  it("recognizes a UUID", () => {
+    expect(isSessionIdLike("8f14e45f-ceea-467e-adc0-fb62a1a8be22")).toBe(true);
+  });
+
+  it("recognizes a bare hex string of at least 12 characters", () => {
+    expect(isSessionIdLike("abcdef012345")).toBe(true);
+  });
+
+  it("rejects a shorter hex string", () => {
+    expect(isSessionIdLike("abcdef01234")).toBe(false);
+  });
+
+  it("rejects non-hex text", () => {
+    expect(isSessionIdLike("checkout-service")).toBe(false);
+  });
+
+  it("rejects trace and span ids, which take priority", () => {
+    expect(isSessionIdLike("0123456789abcdef")).toBe(false);
+    expect(isSessionIdLike("0123456789abcdef0123456789abcdef")).toBe(false);
   });
 });
