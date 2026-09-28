@@ -901,12 +901,10 @@ to right as a sentence:
   suggestion list (typing narrows it, arrow keys move the highlight, Enter
   or a click picks it); the names come from the Query IR's discovery stage
   (`describe: values` on `metric.name`) for the current time range, run
-  against both `metrics` (gauges and sums) and `metrics_histogram` — the two
-  scalar and bucketed shapes are separate IR sources. A name that exists
-  only in `metrics_histogram` still shows up (so searching for it isn't a
-  dead end) but renders greyed out and labelled "histogram · not chartable
-  yet": this builder always queries `metrics`, so picking one would run and
-  return nothing. When a time range has no metrics at all, the list shows a
+  against the `metrics` source. A histogram or summary name still shows up
+  (so searching for it isn't a dead end) but renders greyed out and labelled
+  "histogram · not chartable yet": this builder charts `metric.value`, which
+  is null on those rows, so picking one would run and return nothing. When a time range has no metrics at all, the list shows a
   single muted "No metrics in this range" row instead.
 - **from** — add tag filters (`+ filter`). Label names and their values are
   suggested from the same Query IR discovery stage (`describe:

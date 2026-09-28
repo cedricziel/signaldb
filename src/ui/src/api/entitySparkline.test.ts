@@ -76,7 +76,7 @@ describe("buildSparklineDoc", () => {
     });
   });
 
-  it("asks the histogram source through the quantile stage", () => {
+  it("asks the histogram rows through the quantile stage", () => {
     const doc = buildSparklineDoc(
       metric("http.server.request.duration", "histogram"),
       ["service.name"],
@@ -84,7 +84,10 @@ describe("buildSparklineDoc", () => {
       300,
     );
 
-    expect(doc.from).toBe("metrics_histogram");
+    expect(doc.from).toBe("metrics");
+    expect(doc.pipeline!.at(-2)).toEqual({
+      where: { field: "metric.type", op: "eq", value: "histogram" },
+    });
     expect(doc.pipeline!.at(-1)).toEqual({
       histogram_quantile: {
         q: 0.95,

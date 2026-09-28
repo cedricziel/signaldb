@@ -217,14 +217,8 @@ export function QueryRow({ query, range, onChange }: Props) {
   );
 }
 
-/** The metric-name box: a combobox over the discovered metric names, in the
- * same open-on-focus/filter-as-you-type/arrow-key-navigable shape as
- * `AttributeKeyInput`'s label suggestions, but plain strings — there's no
- * registry metadata to show alongside a metric name. A name that only
- * exists in `metrics_histogram` (`chartable: false`) renders disabled: it's
- * worth surfacing so a search for it doesn't come up empty, but picking it
- * would compile a query against `metrics` that silently returns nothing, so
- * it's skipped by keyboard nav and does nothing on click. */
+/** The metric-name box. A `chartable: false` name stays findable but renders
+ * disabled: picking it would chart nothing. */
 function MetricNameCombobox({
   value,
   names,

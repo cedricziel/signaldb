@@ -9,6 +9,7 @@ import type { QueryIrRequest, QueryIrResponse, DiscoveredField } from "../gen";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
 import { runIrQuery } from "../queryIr";
 import type { ProfileType } from "../profileTypes";
+import { METRICS_SOURCE, NON_SCALAR_METRIC_TYPES } from "../entityMetrics";
 
 const IR_VERSION = 4;
 
@@ -97,40 +98,49 @@ export async function values(
 }
 
 /** A discovered metric name plus whether the metrics-query builder can
- * actually chart it: names that exist only in `metrics_histogram` are worth
- * surfacing (so a user searching for one learns it exists) but the builder
- * always compiles to the `metrics` source, so picking one would silently
- * return nothing — `chartable: false` lets a picker show, but not let you
- * pick, that case. */
+ * actually chart it: a histogram or summary is worth surfacing (so a user
+ * searching for one learns it exists) but the builder charts `metric.value`,
+ * which is null on those rows — `chartable: false` lets a picker show, but
+ * not let you pick, that case. */
 export interface DiscoveredMetricName extends DiscoveredValueView {
   chartable: boolean;
 }
 
-/** Distinct metric names in the window: `metric.name` on `metrics` (gauges
- * and sums) unioned with `metrics_histogram`, which is a separate IR source
- * (its bucketed row shape has no place in `metrics`'s scalar-value schema —
- * see `SourcePlan::for_source` in the querier) and so needs its own
- * discovery call to be part of name suggestions at all. */
+/** Every name with non-scalar rows in the window. `describe` composes with
+ * no `where`, so this reads the data; it is not capped, because a name
+ * dropped here would be offered as chartable. */
+async function nonScalarMetricNames(
+  range: ResolvedRange,
+): Promise<Set<string>> {
+  const res = await runIrQuery({
+    irVersion: IR_VERSION,
+    from: METRICS_SOURCE,
+    range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
+    result: "table",
+    pipeline: [
+      {
+        where: {
+          field: "metric.type",
+          op: "in",
+          value: NON_SCALAR_METRIC_TYPES,
+        },
+      },
+      { aggregate: { by: ["metric.name"], aggs: [{ fn: "count", as: "n" }] } },
+    ],
+  });
+  return new Set((res.rows ?? []).map((row) => String(row[0])));
+}
+
+/** Distinct metric names in the window, each marked chartable unless the
+ * window holds non-scalar rows for it. */
 export async function metricNames(
   range: ResolvedRange,
 ): Promise<DiscoveredMetricName[]> {
-  const [scalar, histogram] = await Promise.all([
-    values("metrics", "metric.name", range),
-    values("metrics_histogram", "metric.name", range),
+  const [all, unchartable] = await Promise.all([
+    values(METRICS_SOURCE, "metric.name", range),
+    nonScalarMetricNames(range),
   ]);
-  const byValue = new Map<string, DiscoveredMetricName>();
-  for (const v of scalar) {
-    byValue.set(v.value, { ...v, chartable: true });
-  }
-  for (const v of histogram) {
-    const existing = byValue.get(v.value);
-    if (!existing) {
-      byValue.set(v.value, { ...v, chartable: false });
-    } else if (existing.partial && !v.partial) {
-      byValue.set(v.value, { ...existing, partial: false });
-    }
-  }
-  return [...byValue.values()];
+  return all.map((v) => ({ ...v, chartable: !unchartable.has(v.value) }));
 }
 
 /**

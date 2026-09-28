@@ -20,34 +20,29 @@ import {
   type MetricHit,
 } from "../features/schema/api";
 
-/**
- * The IR sources metric points live in, by the shape of the row.
- *
- * Two sources for one OTel signal: a `metrics` row is a scalar sample, a
- * `metrics_histogram` row is a whole bucketed histogram. They are named by
- * role rather than listed, because which one a metric belongs to is decided
- * per metric from its instrument — asking the wrong one is not a slow query
- * but a rejected one.
- */
-export const METRIC_SOURCES = {
-  scalar: "metrics",
-  histogram: "metrics_histogram",
-} as const;
+export const METRICS_SOURCE = "metrics";
+
+export const HISTOGRAM_ROWS = {
+  where: { field: "metric.type", op: "eq", value: "histogram" },
+};
+
+export const NON_SCALAR_METRIC_TYPES = [
+  "histogram",
+  "exponential_histogram",
+  "summary",
+];
 
 /** One response's series, as the IR envelope carries them. */
 export type IrSeries = NonNullable<QueryIrResponse["series"]>;
 
 /**
- * Whether a metric's rows live in the histogram source.
- *
- * A `metrics_histogram` row is a whole bucketed histogram rather than a
- * scalar, so it carries no value column at all: a scalar aggregate over it is
- * rejected outright ("requires a numeric field, got string"). The instrument
- * the registry declares is what says which source can answer for a metric, so
- * nothing is ever asked of a source that cannot.
+ * Whether a metric is charted through the quantile stage. A histogram row's
+ * `metric.value` is null, so a scalar aggregate over it charts nothing.
+ * Exponential histograms are left out: the stage refuses them until
+ * exponential-histogram quantiles land.
  */
 export function isHistogram(instrument: string): boolean {
-  return instrument === "histogram" || instrument === "exponentialhistogram";
+  return instrument === "histogram";
 }
 
 /**

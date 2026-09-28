@@ -162,7 +162,6 @@ function overviewIr(raw: unknown): unknown {
         logs: 1600,
         traces: 760,
         metrics: 250,
-        metrics_histogram: 60,
         profiles: 95,
       }[b.from ?? ""] ?? 40;
     if (by.includes("service.name")) {

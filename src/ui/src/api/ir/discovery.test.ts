@@ -84,14 +84,14 @@ describe("values", () => {
       ],
     } as QueryIrResponse);
 
-    const result = await values("metrics_histogram", "metric.name", RANGE);
+    const result = await values("metrics", "metric.name", RANGE);
 
     expect(result).toEqual([
       { value: "http.server.request.duration", partial: false },
     ]);
     expect(calls[1]?.body).toEqual({
       irVersion: 4,
-      from: "metrics_histogram",
+      from: "metrics",
       range: { from: "1000000000", to: "4600000000" },
       result: "table",
       pipeline: [
@@ -203,69 +203,58 @@ describe("metricNames", () => {
     });
   });
 
-  it("also asks metrics_histogram, since it's a separate IR source", async () => {
+  it("asks which names have non-scalar rows via a metric.type filter", async () => {
     const calls = stubApiFetch(
       valuesResponse([{ value: "http.server.duration", origin: "registry" }]),
     );
     await metricNames(RANGE);
-    expect(
-      calls.some((c) => (c.body as { from: string }).from === "metrics"),
-    ).toBe(true);
-    expect(
-      calls.some(
-        (c) => (c.body as { from: string }).from === "metrics_histogram",
-      ),
-    ).toBe(true);
+    expect(calls.map((c) => (c.body as { from: string }).from)).toEqual([
+      "metrics",
+      "metrics",
+    ]);
+    expect(calls[1]?.body).toMatchObject({
+      result: "table",
+      pipeline: [
+        {
+          where: {
+            field: "metric.type",
+            op: "in",
+            value: ["histogram", "exponential_histogram", "summary"],
+          },
+        },
+        { aggregate: { by: ["metric.name"] } },
+      ],
+    });
   });
 
-  it("unions scalar and histogram names, deduping and preferring an exact hit", async () => {
+  it("marks names with non-scalar rows as not chartable", async () => {
     stubFetchRoutes([
       {
         match: "/api/v1/query",
-        bodyMatch: (b) => (b as { from?: string }).from === "metrics",
+        bodyMatch: (b) => (b as { result?: string }).result === "metadata",
         body: valuesResponse(
           [
-            { value: "shared_metric", origin: "statistics" },
-            { value: "up", origin: "registry" },
+            { value: "http.server.duration", origin: "registry" },
+            { value: "up", origin: "statistics" },
           ],
           true,
         ),
       },
       {
         match: "/api/v1/query",
-        bodyMatch: (b) => (b as { from?: string }).from === "metrics_histogram",
-        body: valuesResponse([
-          { value: "shared_metric", origin: "registry" },
-          { value: "http.server.duration", origin: "registry" },
-        ]),
+        bodyMatch: (b) => (b as { result?: string }).result === "table",
+        body: {
+          result: "table",
+          window: { start_ns: 0, end_ns: 1 },
+          rows: [["http.server.duration", 4]],
+        } as QueryIrResponse,
       },
     ]);
 
-    const result = await metricNames(RANGE);
-    expect(result.map((v) => v.value).sort()).toEqual([
-      "http.server.duration",
-      "shared_metric",
-      "up",
+    expect(await metricNames(RANGE)).toEqual([
+      { value: "http.server.duration", partial: true, chartable: false },
+      { value: "up", partial: true, chartable: true },
     ]);
-    // The exact (registry) hit for the name both sources return wins over
-    // the approximate one, and a name present in `metrics` is chartable
-    // even though `metrics_histogram` also reports it.
-    expect(result.find((v) => v.value === "shared_metric")).toEqual({
-      value: "shared_metric",
-      partial: false,
-      chartable: true,
-    });
-    // Histogram-only: discoverable, but the builder can't chart it.
-    expect(result.find((v) => v.value === "http.server.duration")).toEqual({
-      value: "http.server.duration",
-      partial: false,
-      chartable: false,
-    });
-    expect(result.find((v) => v.value === "up")).toEqual({
-      value: "up",
-      partial: true,
-      chartable: true,
-    });
   });
 });
 

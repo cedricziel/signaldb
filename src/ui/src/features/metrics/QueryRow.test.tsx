@@ -93,12 +93,21 @@ function isDescribeValues(field: string, from?: string) {
   };
 }
 
+function isNonScalarNamesQuery(body: unknown): boolean {
+  return (body as { result?: string }).result === "table";
+}
+
 function stubMetadata() {
   stubFetchRoutes([
     {
       match: "/api/v1/query",
       bodyMatch: isDescribeValues("metric.name"),
       body: valuesBody(["http_reqs", "up"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isNonScalarNamesQuery,
+      body: { ...metadataWindow(), result: "table", rows: [] },
     },
     {
       match: "/api/v1/query",
@@ -120,19 +129,23 @@ function stubMetadata() {
   ]);
 }
 
-/** Like `stubMetadata`, but `metrics_histogram` reports a name `metrics`
- * doesn't — the disabled-suggestion case. */
+/** Like `stubMetadata`, but one name only has histogram rows — the
+ * disabled-suggestion case. */
 function stubMetadataWithHistogramOnlyMetric() {
   stubFetchRoutes([
     {
       match: "/api/v1/query",
       bodyMatch: isDescribeValues("metric.name", "metrics"),
-      body: valuesBody(["http_reqs", "up"]),
+      body: valuesBody(["http_reqs", "up", "http.server.duration"]),
     },
     {
       match: "/api/v1/query",
-      bodyMatch: isDescribeValues("metric.name", "metrics_histogram"),
-      body: valuesBody(["http.server.duration"]),
+      bodyMatch: isNonScalarNamesQuery,
+      body: {
+        ...metadataWindow(),
+        result: "table",
+        rows: [["http.server.duration", 3]],
+      },
     },
     {
       match: "/api/v1/query",

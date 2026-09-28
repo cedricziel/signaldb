@@ -231,15 +231,6 @@ export const INGEST_SIGNALS: IngestSignal[] = [
   "profiles",
 ];
 
-/** Sources counted under each signal — histogram metrics are a separate
- * source but the same signal to a reader. */
-const INGEST_SOURCES: Record<IngestSignal, string[]> = {
-  logs: ["logs"],
-  traces: ["traces"],
-  metrics: ["metrics", "metrics_histogram"],
-  profiles: ["profiles"],
-};
-
 export function buildRecordCountDoc(
   source: string,
   range: ResolvedRange,
@@ -278,20 +269,14 @@ export async function fetchIngestVolume(
 ): Promise<VolumeSeries[]> {
   return Promise.all(
     INGEST_SIGNALS.map(async (signal): Promise<VolumeSeries> => {
-      const perSource = await Promise.all(
-        INGEST_SOURCES[signal].map((source) =>
-          runIrQuery(buildRecordCountDoc(source, range, env, stepSeconds))
-            .then((res) => decodePoints(res.series?.[0]?.points ?? []))
-            .catch(() => [] as SeriesPoint[]),
-        ),
-      );
-      const byT = new Map<number, number>();
-      for (const p of perSource.flat()) {
-        byT.set(p.tMs, (byT.get(p.tMs) ?? 0) + p.value);
-      }
+      const points = await runIrQuery(
+        buildRecordCountDoc(signal, range, env, stepSeconds),
+      )
+        .then((res) => decodePoints(res.series?.[0]?.points ?? []))
+        .catch(() => [] as SeriesPoint[]);
       return {
         key: signal,
-        points: [...byT.entries()].sort((a, b) => a[0] - b[0]),
+        points: points.map((p): [number, number] => [p.tMs, p.value]),
       };
     }),
   );
