@@ -5,8 +5,10 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  fetchBackendCalls,
   fetchBreakdown,
   fetchKpis,
+  fetchLoadBreakdown,
   fetchNetworkRequests,
   fetchPages,
   fetchResources,
@@ -179,6 +181,31 @@ export function useRumPages(scope: RumScope) {
     queryKey: ["rum-pages", rangeKey, app],
     queryFn: () => fetchPages(app, range),
     enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Pages tab detail panel's load waterfall for one route — only issued
+ * once a route is selected. */
+export function useRumLoadBreakdown(scope: RumScope, route: string) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-load-breakdown", rangeKey, app, route],
+    queryFn: () => fetchLoadBreakdown(app, range, route),
+    enabled: app !== "" && route !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Pages tab detail panel's backend calls for one route — joined to the
+ * Network tab's own service names by the caller
+ * (`joinBackendCallsToNetworkService`), not fetched again here. */
+export function useRumBackendCalls(scope: RumScope, route: string) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-backend-calls", rangeKey, app, route],
+    queryFn: () => fetchBackendCalls(app, range, route),
+    enabled: app !== "" && route !== "",
     staleTime: STALE,
   });
 }

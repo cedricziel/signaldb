@@ -351,7 +351,15 @@ function shareOverTime(
   }));
 }
 
-function VitalCell({ name, figure }: { name: VitalName; figure: VitalFigure }) {
+/** One vital's card — p75, rating and distribution bar — shared by the
+ * Overview's Core Web Vitals panel and the Pages tab's route detail. */
+export function VitalCell({
+  name,
+  figure,
+}: {
+  name: VitalName;
+  figure: VitalFigure;
+}) {
   const good = figure.shares.find((s) => s.rating === "good");
   const goodPct = good ? Math.round(good.share * 100) : 0;
   return (

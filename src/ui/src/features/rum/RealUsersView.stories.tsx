@@ -25,7 +25,11 @@ interface IrDoc {
   range?: { from?: string; to?: string };
   pipeline?: Array<{
     correlate?: unknown;
-    where?: { field?: string; or?: { field?: string }[] };
+    where?: {
+      field?: string;
+      value?: string | string[];
+      or?: { field?: string }[];
+    };
     aggregate?: {
       by?: string[];
       aggs?: Array<{
@@ -160,6 +164,95 @@ const PAGE_VITALS: Record<
 
 const PAGE_ERRORS_ROWS: (string | number)[][] = [[ORDERS_ROUTE, 640]];
 
+/** `[template, full, n, ...10 phase-boundary p75s]` — field order matches
+ * `NAV_TIMING_FIELDS` in `api/rum.ts`. */
+const LOAD_BREAKDOWN_ROWS: (string | number)[][] = [
+  [
+    ORDERS_ROUTE,
+    ORDERS_URLS[0]!,
+    4200,
+    10,
+    40,
+    40,
+    90,
+    90,
+    140,
+    300,
+    650,
+    700,
+    900,
+  ],
+  [
+    ORDERS_ROUTE,
+    ORDERS_URLS[1]!,
+    3800,
+    12,
+    45,
+    45,
+    95,
+    95,
+    145,
+    310,
+    660,
+    710,
+    910,
+  ],
+  [
+    CHECKOUT_ROUTE,
+    CHECKOUT_URL,
+    3000,
+    5,
+    20,
+    20,
+    50,
+    50,
+    80,
+    160,
+    260,
+    300,
+    420,
+  ],
+];
+
+/** `[pageTemplate, pageFull, requestUrl, n, p75]` — the request URLs match
+ * `NETWORK_TRACED_ROWS`'s own origins/templates so the join finds
+ * `catalog-svc`/`checkout-svc`. */
+const BACKEND_CALL_ROWS: (string | number)[][] = [
+  [
+    ORDERS_ROUTE,
+    ORDERS_URLS[0]!,
+    "https://api.storefront.example.com/api/products/48213",
+    4200,
+    180_000_000,
+  ],
+  [
+    ORDERS_ROUTE,
+    ORDERS_URLS[1]!,
+    "https://api.storefront.example.com/api/products/91820",
+    3800,
+    185_000_000,
+  ],
+  [
+    CHECKOUT_ROUTE,
+    CHECKOUT_URL,
+    "https://api.storefront.example.com/api/checkout",
+    3000,
+    420_000_000,
+  ],
+];
+
+function eventNameOf(pipe: NonNullable<IrDoc["pipeline"]>): string | undefined {
+  for (const stage of pipe) {
+    if (
+      stage.where?.field === "event_name" &&
+      typeof stage.where.value === "string"
+    ) {
+      return stage.where.value;
+    }
+  }
+  return undefined;
+}
+
 /** A deterministic wobble around `base`, one value per bucket. */
 function wave(seed: number, base: number, amp: number, n: number): number[] {
   return Array.from({ length: n }, (_, i) =>
@@ -269,11 +362,18 @@ function singleDocResponse(b: IrDoc): unknown {
   // (url.template, url.full), disambiguated by `by.length` alone (no
   // event_name collision yet at these lengths).
   if (by[0] === "url.template") {
+    const eventName = eventNameOf(pipe);
     if (by.length === 1) {
       return { result: "table", rows: PAGE_ERRORS_ROWS };
     }
-    if (by.length === 2) {
+    if (by.length === 2 && eventName === "browser.navigation") {
       return { result: "table", rows: PAGE_VIEWS_ROWS };
+    }
+    if (by.length === 2 && eventName === "browser.navigation_timing") {
+      return { result: "table", rows: LOAD_BREAKDOWN_ROWS };
+    }
+    if (by.length === 2 && eventName === "browser.resource_timing") {
+      return { result: "table", rows: BACKEND_CALL_ROWS };
     }
     if (by.length === 3) {
       return {
@@ -288,7 +388,7 @@ function singleDocResponse(b: IrDoc): unknown {
         ),
       };
     }
-    if (by.length === 4) {
+    if (by.length === 4 && eventName === "browser.web_vital") {
       return {
         result: "table",
         rows: Object.entries(PAGE_VITALS).flatMap(([route, vitals]) =>
@@ -507,4 +607,12 @@ export const Network: Story = {
 
 export const Pages: Story = {
   render: () => <RealUsersPage path="/rum/pages?app=storefront-web" />,
+};
+
+export const PagesRouteDetail: Story = {
+  render: () => (
+    <RealUsersPage
+      path={`/rum/pages?app=storefront-web&route=${encodeURIComponent(ORDERS_ROUTE)}`}
+    />
+  ),
 };

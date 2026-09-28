@@ -21,6 +21,8 @@ vi.mock("../../api/rum", async (orig) => ({
   fetchResources: vi.fn().mockResolvedValue([]),
   fetchTracedShare: vi.fn().mockResolvedValue({ traced: [], total: [] }),
   fetchPages: vi.fn().mockResolvedValue([]),
+  fetchLoadBreakdown: vi.fn().mockResolvedValue(undefined),
+  fetchBackendCalls: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../api/errors", async (orig) => ({
   ...(await orig<typeof import("../../api/errors")>()),
@@ -381,6 +383,18 @@ describe("Pages tab", () => {
     expect(
       await screen.findByText(/carry no/, { exact: false }),
     ).toBeInTheDocument();
+  });
+
+  it("shows the route detail panel when ?route= names a known route", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([pageRow()]);
+    renderRum("/rum/pages?app=storefront-web&route=%2Forders%2F%3Aid");
+
+    expect(await screen.findByText("Load breakdown")).toBeInTheDocument();
+    expect(await screen.findByText("Backend calls")).toBeInTheDocument();
   });
 });
 
