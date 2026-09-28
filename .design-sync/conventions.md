@@ -15,7 +15,7 @@ Every design must work in both light and dark. The theme follows `prefers-color-
 
 ## Screens: always inside `AppShell`
 
-Every full-screen design renders inside `AppShell`, the real SignalDB frame: the sidebar (Monitor, Investigate, Evaluate, Configure), tenant switcher, account row, and the page header with breadcrumb and ⌘K search. Never draw your own sidebar, top bar, breadcrumb, nav links, logo or tenant switcher, and don't restyle, reorder or extend the shell. Only the page's own content is yours.
+Every full-screen design renders inside `AppShell`, the real SignalDB frame: the sidebar (Monitor, Investigate, Evaluate, Configure, and Settings for admins), tenant switcher, account row, and the page header with breadcrumb and ⌘K search. Never draw your own sidebar, top bar, breadcrumb, nav links, logo or tenant switcher, and don't restyle, reorder or extend the shell. Only the page's own content is yours.
 
 ```jsx
 const { QueryClientProvider, previewQueryClient, AppShell, previewWhoami } =
@@ -27,7 +27,8 @@ const { QueryClientProvider, previewQueryClient, AppShell, previewWhoami } =
 </QueryClientProvider>;
 ```
 
-- `page` marks the current nav item and breadcrumb. Use one of `overview`, `errors`, `catalog`, `logs`, `traces`, `metrics`, `profiles`, `query`, `evals` (Agents & scores), `compare`, `sets` (Eval sets), `runs`, `evaluators`, `schema`, `processors`, `instrumentation`, `manage`. For a page that isn't in the nav yet, use the closest one; don't add nav entries unless the brief is about the navigation itself.
+- `page` marks the current nav item and breadcrumb. Use one of `overview`, `errors`, `catalog`, `logs`, `traces`, `metrics`, `profiles`, `query`, `evals` (Agents & scores), `compare`, `sets` (Eval sets), `runs`, `evaluators`, `schema`, `processors`, `instrumentation` (Send data), `manage`, `api-keys`, `integrations`. For a page that isn't in the nav yet, use the closest one; don't add nav entries unless the brief is about the navigation itself.
+- `detail` adds a last breadcrumb for a detail view, e.g. `<AppShell page="traces" detail="4bf92f35">` reads "Investigate / Traces / 4bf92f35".
 - `who={previewWhoami}` fills the tenant switcher and account row with sample data. Leave it out and the account row disappears.
 - `isDemo` adds the read-only demo banner.
 - The page views (`OverviewView`, `LogsView`, `TracesView`, `ErrorsView`, `CatalogView`, `AgentsScoresView`, …) are the existing screens' content, meant to sit inside the shell. They load their data from the SignalDB API, so a new design composes its content from the components and tokens below; use the page views' cards as the reference for how a page is laid out.
@@ -37,14 +38,15 @@ const { QueryClientProvider, previewQueryClient, AppShell, previewWhoami } =
 There's no utility-class system. Style your own layout with plain CSS that uses these tokens (they're defined in `styles.css` → `_ds_bundle.css`):
 
 - Surfaces: `--bg`, `--surface`, `--surface2`, `--surface3`, `--border`, `--bg-inset`
-- Text: `--text`, `--dim` (secondary), `--faint` (tertiary)
-- Accent: `--accent`, `--accent-soft` (tint), `--on-accent` (text on solid accent)
-- Status: `--err`, `--warn`, `--info`, `--ok`, `--debug`, plus `--err-bar`, `--warn-bar`, `--info-bar`, `--debug-bar` for chart and level bars, and `--ok-text` / `--warn-banner-text` for AA text on tints
-- Series colors: `--svc-a` … `--svc-l`
+- Text: `--text`, `--dim` (secondary), `--faint` (tertiary). All three meet AA contrast on every surface.
+- Accent: `--accent`, `--accent-soft` (tint), `--on-accent` (text on solid accent), `--accent-text` (accent-coloured text)
+- Status: `--err`, `--warn`, `--info`, `--ok`, `--debug`, plus `--err-bar`, `--warn-bar`, `--info-bar`, `--debug-bar` for chart and level bars, and `--ok-text`, `--warn-text`, `--err-text` for status-coloured text. Use a `-text` token whenever status or accent colour is text; the base tokens are for fills, bars, borders and dots
+- Series colors: `--svc-a` … `--svc-l` (never a status colour)
+- Shadow: `--shadow`, mixed to strength, e.g. `color-mix(in srgb, var(--shadow) 20%, transparent)`
 - Fonts: `--ui` (system sans) for chrome, `--mono` for every data value (attribute keys, IDs, durations, code)
 - Spacing and type: `--gutter` (16px pane inset), `--gutter-sm` (12px), `--text-title` (18px page and dialog titles), `--text-section` (14px section headings)
 
-Global classes you can use on your own elements: `btn`, `btn-primary`, `btn-danger`, `btn-ghost` for buttons; `chip` for filter chips; `error-text` for inline errors. Don't make up other class names. Use tokens in inline or local CSS instead.
+Global classes you can use on your own elements: `btn`, `btn-primary`, `btn-danger`, `btn-ghost` for buttons; `chip` for filter chips; `error-text` for inline errors; `table-scroll` around any table that can be wider than its container (it scrolls sideways and shades the edge that has more). Don't make up other class names. Use tokens in inline or local CSS instead.
 
 Look/feel rules: 1px `var(--border)` hairlines, small radii (4–6px), no heavy shadows (only Dialog and floating tooltips have one), and `--accent` only for the primary action or selection.
 

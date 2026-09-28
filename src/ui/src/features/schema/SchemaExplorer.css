@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .schema-explorer-page {
   padding: 24px;
@@ -6,7 +6,7 @@
   margin: 0 auto;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .schema-explorer-page {
     padding: 12px;
   }

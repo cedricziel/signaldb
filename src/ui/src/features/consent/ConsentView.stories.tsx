@@ -7,6 +7,7 @@ import type { ConsentContextResponse } from "../../api/consent";
 import type { JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { ConsentView } from "./ConsentView";
 
 const AUTHORIZE_QUERY =
@@ -78,13 +79,7 @@ function ConsentPage({ context }: { context: ConsentContextResponse }) {
 const meta = {
   title: "Pages/Consent",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof ConsentPage>;
 
 export default meta;

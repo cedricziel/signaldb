@@ -1,15 +1,15 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .catalog {
   display: flex;
   flex: 1;
   min-height: 0;
 }
 
-/* Below the tablet breakpoint the entity-type sidebar and the RED table
-   fight over ~375px of width and both lose — hide the sidebar behind the
+/* Once the main column is 720px or narrower the entity-type sidebar and
+   the RED table fight over ~375px of width and both lose — hide the sidebar behind the
    MobileFiltersToggle/MobileSidebarDrawer instead (see CatalogView.tsx),
    same mechanism Logs/Traces/Errors use for their facet sidebars. */
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .catalog .sidebar {
     display: none;
   }
@@ -32,7 +32,7 @@
   flex-direction: column;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .catalog-main {
     padding: 12px;
   }
@@ -40,8 +40,9 @@
 
 .catalog-headline {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 12px;
+  gap: 8px 12px;
   margin-bottom: 12px;
 }
 
@@ -347,7 +348,7 @@
   min-width: 0;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .entity-service-maps {
     grid-template-columns: 1fr;
   }
@@ -480,7 +481,7 @@
   white-space: nowrap;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .catalog-map-layout.with-panel {
     grid-template-columns: 1fr;
   }

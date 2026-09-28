@@ -6,6 +6,7 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irBody, irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { ErrorsView } from "./ErrorsView";
 
 /** `buildErrorGroupDoc` rows: [type, message, service, escaped, count, first, last]. */
@@ -114,13 +115,7 @@ function ErrorsPage({
 const meta = {
   title: "Pages/Errors",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof ErrorsPage>;
 
 export default meta;

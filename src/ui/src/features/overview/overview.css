@@ -350,6 +350,7 @@
 }
 
 .overview-card {
+  --scroll-cover: var(--surface);
   box-sizing: border-box;
   min-width: 0;
   padding: 12px 16px 14px;
@@ -382,6 +383,13 @@
 
 .overview-map {
   border-radius: 6px;
+}
+
+/* A map wider than the card stops shrinking at ServiceGraph's readable
+   floor; here ZoomPan's drag does the panning, so the graph's own scroll
+   box would only get in its way. */
+.overview-map .service-graph {
+  overflow: visible;
 }
 
 .zoompan {

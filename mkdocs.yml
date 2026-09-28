@@ -97,3 +97,4 @@ nav:
       - contributing/compat-crates.md
       - contributing/benchmarking.md
       - contributing/ui-e2e-live.md
+      - contributing/ui-page-stories.md

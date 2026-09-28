@@ -1,5 +1,5 @@
 /* Schema hub: tabs, conventions list, lookup, registry browser, editor. */
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .schema-hub {
   max-width: 1100px;
@@ -7,7 +7,7 @@
   padding: 16px 24px 24px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .schema-hub {
     padding: 12px 12px 16px;
   }
@@ -108,7 +108,7 @@
   font-size: 12px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .schema-lookup-form input {
     /* Force the input onto its own row so Resolve keeps a usable width
        instead of both fighting over what's left of a narrow row. */
@@ -267,7 +267,7 @@
   align-items: start;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .schema-browser {
     grid-template-columns: 1fr;
   }

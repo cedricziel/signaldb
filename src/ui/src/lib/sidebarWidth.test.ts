@@ -62,6 +62,23 @@ describe("createPanelWidth", () => {
     expect(cssVar()).toBe("480px");
     expect(localStorage.getItem("signaldb.test.panelWidth")).toBe("480");
   });
+
+  it("dragStart uses the drawn width when the CSS caps the saved one", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "400");
+    expect(panel.dragStart(252.6)).toBe(253);
+  });
+
+  it("dragStart keeps the saved width when the pane is drawn at it", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "300");
+    expect(panel.dragStart(300)).toBe(300);
+    expect(panel.dragStart(500)).toBe(300);
+  });
+
+  it("dragStart falls back to the saved width with nothing measured", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "300");
+    expect(panel.dragStart()).toBe(300);
+    expect(panel.dragStart(0)).toBe(300);
+  });
 });
 
 describe("panel instances", () => {

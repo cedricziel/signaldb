@@ -112,7 +112,7 @@ export function DependencyTable({
   const activeRow = rows.find((r) => r.key === active) ?? null;
 
   return (
-    <div className="dep-table-scroll viz-host" ref={rootRef}>
+    <div className="table-scroll dep-table-scroll viz-host" ref={rootRef}>
       <table className="dep-table">
         <thead>
           <tr>

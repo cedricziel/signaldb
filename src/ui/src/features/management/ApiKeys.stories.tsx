@@ -11,6 +11,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { ApiKeys } from "./ApiKeys";
 
 const tenant = "acme";
@@ -72,13 +73,7 @@ function ApiKeysPage() {
 const meta = {
   title: "Pages/API Keys",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof ApiKeysPage>;
 
 export default meta;

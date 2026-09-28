@@ -319,6 +319,11 @@ a.rum-row:hover {
   gap: var(--gutter);
   align-items: start;
 }
+@container app-main (max-width: 720px) {
+  .rum-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
 .rum-kv {
   display: grid;
   grid-template-columns: auto minmax(0, 1fr);
@@ -426,7 +431,7 @@ a.rum-row:hover {
   background: none;
   border: none;
   padding: 0;
-  color: var(--accent);
+  color: var(--accent-text);
   cursor: pointer;
   text-decoration: underline;
   font-size: inherit;
@@ -546,5 +551,7 @@ a.rum-row:hover {
 }
 .rum-kv-desc {
   margin: 0;
+  min-width: 0;
   color: var(--text);
+  overflow-wrap: anywhere;
 }

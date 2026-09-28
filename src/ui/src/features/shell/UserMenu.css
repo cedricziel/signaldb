@@ -62,7 +62,7 @@
   white-space: nowrap;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 719px) {
   .user-name {
     display: none;
   }
@@ -79,7 +79,7 @@
   z-index: 40;
 }
 
-/* breakpoints: tablet <=900px, mobile <=600px (see explore.css) */
+/* The mobile top bar (<720px, AppNav.css) anchors the popover differently. */
 .user-menu-popover {
   position: absolute;
   top: 44px;
@@ -95,7 +95,7 @@
   overflow: hidden;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 719px) {
   /* `.user-menu`'s `margin-left: auto` (above) already keeps the toggle
      itself on-screen, but anchor the popover to the viewport rather than the
      toggle's own box here too: the top bar can still wrap to a second row at

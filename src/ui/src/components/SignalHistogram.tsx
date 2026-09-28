@@ -103,6 +103,18 @@ function bucketsFor(
   return Math.floor((rangeMs.toMs - start) / stepMs) + 1;
 }
 
+/** The bucket under `clientX` in a strip of `count` equal columns spanning
+ * `rect`, clamped to the strip's ends. */
+export function bucketAtX(
+  clientX: number,
+  rect: { left: number; width: number },
+  count: number,
+): number {
+  if (count <= 0 || rect.width <= 0) return 0;
+  const i = Math.floor(((clientX - rect.left) / rect.width) * count);
+  return Math.min(count - 1, Math.max(0, i));
+}
+
 interface Props {
   series: VolumeSeries[];
   /** Stacking order, bottom to top. Series outside it are not drawn. */
@@ -143,6 +155,9 @@ export function SignalHistogram({
 }: Props) {
   const [active, setActive] = useState<number | null>(null);
   const rootRef = useRef<HTMLDivElement>(null);
+  // The bars strip's box, measured once when a touch starts and reused
+  // while the finger scrubs, so pointermove never forces a layout.
+  const touchBars = useRef<DOMRect | null>(null);
   const pointer = useVizPointer(rootRef);
 
   const buckets = useMemo(() => {
@@ -165,6 +180,11 @@ export function SignalHistogram({
     buckets[buckets.length - 1]!.tMs,
   );
   const activeBucket = active === null ? null : buckets[active];
+  const showBucket = (i: number, e: { clientX: number; clientY: number }) => {
+    setActive(i);
+    roving.setActiveIndex(i);
+    pointer.track(e);
+  };
 
   return (
     <div className="svol viz-host" ref={rootRef}>
@@ -199,13 +219,35 @@ export function SignalHistogram({
                 tabIndex={item.tabIndex}
                 ref={item.ref}
                 onKeyDown={item.onKeyDown}
-                onMouseEnter={(e) => {
-                  setActive(i);
-                  roving.setActiveIndex(i);
-                  pointer.track(e);
+                onPointerEnter={(e) => {
+                  if (e.pointerType === "touch") {
+                    touchBars.current =
+                      e.currentTarget.parentElement?.getBoundingClientRect() ??
+                      null;
+                  }
+                  showBucket(i, e);
                 }}
-                onMouseMove={pointer.track}
-                onMouseLeave={() => setActive((a) => (a === i ? null : a))}
+                onPointerMove={(e) => {
+                  // A touch is captured by the column it started on, so a
+                  // finger scrubbing sideways never enters its neighbours:
+                  // resolve the column under the finger from its x instead.
+                  if (e.pointerType !== "touch") {
+                    pointer.track(e);
+                    return;
+                  }
+                  const bars = touchBars.current;
+                  const at = bars
+                    ? bucketAtX(e.clientX, bars, buckets.length)
+                    : i;
+                  showBucket(at, e);
+                }}
+                // A lifted finger leaves the column at once; keep its
+                // tooltip up until the next tap or blur instead.
+                onPointerLeave={(e) => {
+                  if (e.pointerType !== "touch") {
+                    setActive((a) => (a === i ? null : a));
+                  }
+                }}
                 onFocus={(e) => {
                   item.onFocus();
                   setActive(i);

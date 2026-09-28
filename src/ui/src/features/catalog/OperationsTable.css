@@ -15,7 +15,7 @@
 }
 
 .operations-headline .search-input {
-  width: 220px;
+  width: min(220px, 100%);
   flex: none;
 }
 

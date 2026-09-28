@@ -303,81 +303,83 @@ export function AgentsScoresView(shell: ShellContext) {
                 sorted by biggest drop against the previous window
               </span>
             </div>
-            <table className="evals-table" style={{ minWidth: 900 }}>
-              <thead>
-                <tr>
-                  <th>Evaluator</th>
-                  <th>Scores</th>
-                  <th>Judge</th>
-                  <th className="num">Results</th>
-                  <th style={{ width: 150 }}>Pass rate</th>
-                  <th className="num">Mean</th>
-                  <th className="num">Δ</th>
-                  <th>Trend</th>
-                </tr>
-              </thead>
-              <tbody>
-                {rows.map((r) => {
-                  const info = infoByName.get(r.name);
-                  const d = fmtDelta(
-                    r.delta?.d ?? null,
-                    r.delta?.unit ?? (r.mean === null ? "pp" : "score"),
-                  );
-                  return (
-                    <tr key={r.name}>
-                      <td className="evals-row-name">
-                        {r.regressed && (
-                          <span
-                            className="evals-row-flag"
-                            aria-label="regressed"
-                          />
-                        )}
-                        <div className="mono strong">{r.name}</div>
-                      </td>
-                      <td>
-                        <span className="evals-tag plain">
-                          {info?.operation ?? "—"}
-                        </span>
-                      </td>
-                      <td className="dim mono nowrap">
-                        {info?.versions[0] ?? "—"}
-                      </td>
-                      <td className="num">
-                        {fmtCount(r.current.results - r.current.errors)}
-                        {r.current.errors > 0 && (
-                          <div style={{ fontSize: 11 }}>
-                            <span className="evals-tag dashed">
-                              {fmtCount(r.current.errors)} errored
-                            </span>
-                          </div>
-                        )}
-                      </td>
-                      <td>
-                        <PassBar stats={r.current} />
-                      </td>
-                      <td className="num">{fmtMeanOrLabel(r.current)}</td>
-                      <td className={`num ${d.tone}`}>{d.text}</td>
-                      <td>
-                        <Sparkline
-                          points={(trendByName.get(r.name)?.points ?? []).map(
-                            (p) => ({ x: p.tMs, v: p.value }),
+            <div className="table-scroll">
+              <table className="evals-table" style={{ minWidth: 900 }}>
+                <thead>
+                  <tr>
+                    <th>Evaluator</th>
+                    <th>Scores</th>
+                    <th>Judge</th>
+                    <th className="num">Results</th>
+                    <th style={{ width: 150 }}>Pass rate</th>
+                    <th className="num">Mean</th>
+                    <th className="num">Δ</th>
+                    <th>Trend</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {rows.map((r) => {
+                    const info = infoByName.get(r.name);
+                    const d = fmtDelta(
+                      r.delta?.d ?? null,
+                      r.delta?.unit ?? (r.mean === null ? "pp" : "score"),
+                    );
+                    return (
+                      <tr key={r.name}>
+                        <td className="evals-row-name">
+                          {r.regressed && (
+                            <span
+                              className="evals-row-flag"
+                              aria-label="regressed"
+                            />
                           )}
-                          tone={r.regressed ? "error" : "neutral"}
-                          width={80}
-                          height={20}
-                          strokeWidth={1.5}
-                          valueLabel="mean"
-                          formatValue={(v) => v.toFixed(2)}
-                          formatLabel={(x) => formatTimeBucket(x, stepMs)}
-                          ariaLabel={`${r.name} mean over time`}
-                          emptyText="—"
-                        />
-                      </td>
-                    </tr>
-                  );
-                })}
-              </tbody>
-            </table>
+                          <div className="mono strong">{r.name}</div>
+                        </td>
+                        <td>
+                          <span className="evals-tag plain">
+                            {info?.operation ?? "—"}
+                          </span>
+                        </td>
+                        <td className="dim mono nowrap">
+                          {info?.versions[0] ?? "—"}
+                        </td>
+                        <td className="num">
+                          {fmtCount(r.current.results - r.current.errors)}
+                          {r.current.errors > 0 && (
+                            <div style={{ fontSize: 11 }}>
+                              <span className="evals-tag dashed">
+                                {fmtCount(r.current.errors)} errored
+                              </span>
+                            </div>
+                          )}
+                        </td>
+                        <td>
+                          <PassBar stats={r.current} />
+                        </td>
+                        <td className="num">{fmtMeanOrLabel(r.current)}</td>
+                        <td className={`num ${d.tone}`}>{d.text}</td>
+                        <td>
+                          <Sparkline
+                            points={(trendByName.get(r.name)?.points ?? []).map(
+                              (p) => ({ x: p.tMs, v: p.value }),
+                            )}
+                            tone={r.regressed ? "error" : "neutral"}
+                            width={80}
+                            height={20}
+                            strokeWidth={1.5}
+                            valueLabel="mean"
+                            formatValue={(v) => v.toFixed(2)}
+                            formatLabel={(x) => formatTimeBucket(x, stepMs)}
+                            ariaLabel={`${r.name} mean over time`}
+                            emptyText="—"
+                          />
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
             {!loaded && <EmptyState title="Loading evaluators…" />}
           </div>
         </>

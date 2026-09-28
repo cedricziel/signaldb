@@ -6,6 +6,7 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { ProfilesView } from "./ProfilesView";
 
 function isDescribeFields(body: unknown): boolean {
@@ -163,13 +164,7 @@ function ProfilesPage({ state }: { state: ExploreState }) {
 const meta = {
   title: "Pages/Profiles",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof ProfilesPage>;
 
 export default meta;

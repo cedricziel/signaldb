@@ -10,6 +10,7 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { growingPageFrame } from "../../stories/PageFrame";
 import {
   EVAL_SET_DETAILS,
   EVAL_SET_LIST,
@@ -76,13 +77,7 @@ export function evalPage(
 
 export const evalPageMeta = {
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280 }}>
-        <Story />
-      </div>
-    ),
-  ] satisfies Decorator[],
+  decorators: [growingPageFrame] satisfies Decorator[],
 };
 
 /** The light and dark renders of `Page`. */

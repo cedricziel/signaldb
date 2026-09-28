@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .traces-search {
   display: flex;
   flex-direction: column;
@@ -371,9 +371,9 @@
   min-height: 0;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   /* The resizer only makes sense for a permanently-visible pane; below the
-     tablet breakpoint the span detail moves into the drawer below instead. */
+     drawer breakpoint the span detail moves into the drawer below instead. */
   .trace-resizer {
     display: none;
   }
@@ -392,7 +392,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .traces-toolbar {
     gap: 6px;
     padding: 8px 10px;
@@ -518,7 +518,7 @@
   overflow: hidden;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* At the fixed 300px basis, the label alone leaves the track (and its
      duration bars) only a sliver of a ~390px viewport; shrink it to a share
      of the row instead. */
@@ -683,9 +683,11 @@
 
 /* ---------- span detail ---------- */
 
+/* The saved width applies up to 40% of the trace body, so the waterfall
+   keeps the larger share however wide the pane was dragged elsewhere. */
 .span-detail {
-  flex: 0 0 var(--span-detail-w, 300px);
-  width: var(--span-detail-w, 300px);
+  flex: 0 0 min(var(--span-detail-w, 300px), 40%);
+  width: min(var(--span-detail-w, 300px), 40%);
   padding: 12px 14px;
   overflow-y: auto;
   font-size: 12px;
@@ -726,10 +728,14 @@
   background: color-mix(in srgb, var(--err) 7%, transparent);
 }
 
+/* Wraps, and lets the exception type shrink to an ellipsis, so the
+   type and its Copy button never run past the pane's edge. */
 .span-event-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
+  min-width: 0;
 }
 
 .span-event-name {
@@ -741,6 +747,8 @@
 }
 
 .span-event-type {
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--mono);
   color: var(--dim);
 }

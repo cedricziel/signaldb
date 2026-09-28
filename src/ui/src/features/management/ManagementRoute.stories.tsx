@@ -9,6 +9,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { ManagementPanel } from "./ManagementPanel";
 
 const tenant = "acme";
@@ -125,13 +126,7 @@ function ManagePage() {
 const meta = {
   title: "Pages/Manage",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof ManagePage>;
 
 export default meta;

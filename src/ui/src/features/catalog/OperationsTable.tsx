@@ -120,7 +120,7 @@ export function OperationsTable({
         />
       </div>
       {result.isError && <QueryError what={label} error={result.error} />}
-      <div className="operations-scroll">
+      <div className="table-scroll operations-scroll">
         <table className="trace-table operations-grid" aria-busy={pending}>
           <thead>
             <tr>

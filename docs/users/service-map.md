@@ -62,6 +62,10 @@ dependency kinds and every response field.
 - **One trace:** trace detail has a **Waterfall | Map | Both** switch. Click a
   service node to filter the waterfall to its spans.
 
+On a narrow screen the maps stop shrinking once labels would get too small to
+read: the Catalog map scrolls sideways instead, and on the Overview you drag
+to pan to the rest of the map.
+
 [Explore UI](explore-ui.md) describes each view in full.
 
 ### Over the API

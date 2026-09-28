@@ -6,7 +6,7 @@
   display: flex;
   flex-direction: column;
   gap: 16px;
-  padding: 20px;
+  padding: var(--gutter);
   font-size: 13px;
   line-height: 1.45;
   color: var(--text);
@@ -144,6 +144,7 @@
 /* Cards and tables */
 
 .evals-card {
+  --scroll-cover: var(--surface);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -364,9 +365,9 @@
 
 .evals-empty {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr));
   gap: 24px;
-  padding: 28px;
+  padding: clamp(var(--gutter), 4vw, 28px);
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
@@ -410,7 +411,7 @@
 
 .evals-steps {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(200px, 100%), 1fr));
   margin: 0;
   padding: 0;
   list-style: none;
@@ -574,6 +575,36 @@
   font-family: var(--mono);
 }
 
+/* Compare's filter chips: wrap inside the bar rather than widening it. */
+.evals-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  min-width: 0;
+}
+
+/* A picker's label and its select wrap as one unit. */
+.evals-picker-group {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.evals-picker-group .evals-picker {
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* The case table's "Open ›" column stays in view while the rest scrolls. */
+.evals-table .evals-sticky-end {
+  position: sticky;
+  right: 0;
+  background: var(--surface);
+  box-shadow: -8px 0 8px -8px color-mix(in srgb, var(--text) 30%, transparent);
+}
+
 .evals-picker-label {
   font-size: 11px;
   font-weight: 600;
@@ -662,7 +693,7 @@
 .evals-panes {
   display: grid;
   grid-auto-flow: column;
-  grid-auto-columns: minmax(420px, 1fr);
+  grid-auto-columns: minmax(min(420px, 100%), 1fr);
   gap: 14px;
   overflow-x: auto;
 }
@@ -704,10 +735,11 @@
   font: 12px var(--mono);
 }
 
+/* Wraps rather than ellipsizes: "execute_tool refund_order" and
+   "execute_tool check_policy" only differ at the end. */
 .evals-traj-name > span:last-child {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  min-width: 0;
+  overflow-wrap: anywhere;
 }
 
 .evals-traj-name .indent {
@@ -773,6 +805,47 @@
   flex-wrap: wrap;
   justify-content: flex-end;
   gap: 4px;
+  min-width: 0;
+}
+
+.evals-traj-scores .evals-badge {
+  max-width: 100%;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* A pane narrower than the three columns need (a phone, or side by side
+   on a tablet): name and timing share the first line, the score chips
+   take the full width under them. */
+.evals-traj {
+  container-type: inline-size;
+}
+
+@container (max-width: 520px) {
+  .evals-traj-head,
+  .evals-traj-row {
+    grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+    padding-left: 10px;
+    padding-right: 10px;
+  }
+
+  .evals-traj-head > :last-child {
+    display: none;
+  }
+
+  .evals-traj-row {
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+
+  .evals-traj-scores {
+    grid-column: 1 / -1;
+    justify-content: flex-start;
+  }
+
+  .evals-traj-scores:empty {
+    display: none;
+  }
 }
 
 .evals-convo {
@@ -787,7 +860,7 @@
 
 .evals-convo-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(260px, 100%), 1fr));
   gap: 10px;
 }
 
@@ -823,7 +896,7 @@
   flex: 1 1 380px;
   min-width: 0;
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(340px, 100%), 1fr));
   gap: 10px;
 }
 

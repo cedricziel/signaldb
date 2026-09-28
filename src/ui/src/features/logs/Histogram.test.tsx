@@ -118,7 +118,7 @@ describe("Histogram bucket tooltip", () => {
       />,
     );
     const col = screen.getAllByTestId("svol-col")[1]!;
-    fireEvent.mouseEnter(col, { clientX: 100, clientY: 20 });
+    fireEvent.pointerEnter(col, { clientX: 100, clientY: 20 });
     const tip = screen.getByRole("tooltip");
     const rows = within(tip).getAllByTestId("viz-tip-row");
     expect(rows.map((r) => r.textContent)).toEqual([

@@ -15,6 +15,7 @@ import {
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { growingPageFrame } from "../../stories/PageFrame";
 import { CatalogView } from "./CatalogView";
 
 /** The metric-definition/registry lookups behind the sparkline column and
@@ -1166,18 +1167,7 @@ function CatalogPage({
 const meta = {
   title: "Pages/Catalog",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    // `DarkScope` uses `min-height: 100%` (not a fixed `height`), so it
-    // already stretches to cover whatever a story renders — no fixed height
-    // needed here to keep a taller entity detail page's later sections
-    // (Error groups, Time by dependency, the spans table) inside the dark
-    // scope.
-    (Story) => (
-      <div style={{ width: 1280 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [growingPageFrame],
 } satisfies Meta<typeof CatalogPage>;
 
 export default meta;

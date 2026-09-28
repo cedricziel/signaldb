@@ -6,6 +6,7 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
+import { pageFrame } from "../../stories/PageFrame";
 import { MetricsView } from "./MetricsView";
 
 const START_NS = 1_700_000_000_000_000_000;
@@ -123,13 +124,7 @@ function MetricsPage({ state }: { state: ExploreState }) {
 const meta = {
   title: "Pages/Metrics",
   parameters: { layout: "fullscreen" },
-  decorators: [
-    (Story) => (
-      <div style={{ width: "100%", maxWidth: 1280, height: 800 }}>
-        <Story />
-      </div>
-    ),
-  ],
+  decorators: [pageFrame],
 } satisfies Meta<typeof MetricsPage>;
 
 export default meta;

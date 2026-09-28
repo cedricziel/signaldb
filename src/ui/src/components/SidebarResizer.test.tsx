@@ -45,3 +45,32 @@ it("stops listening when unmounted mid-drag", () => {
   expect(apply).not.toHaveBeenCalled();
   expect(set).not.toHaveBeenCalled();
 });
+
+it("starts a drag from the drawn width when the CSS caps the saved one", () => {
+  localStorage.setItem("test.resizer", "300");
+  const apply = vi.spyOn(panel, "apply");
+  const set = vi.spyOn(panel, "set");
+  render(
+    <aside data-testid="pane">
+      <SidebarResizer panel={panel} />
+    </aside>,
+  );
+  vi.spyOn(screen.getByTestId("pane"), "getBoundingClientRect").mockReturnValue(
+    { width: 150 } as DOMRect,
+  );
+  fireEvent.mouseDown(screen.getByRole("separator"), { clientX: 10 });
+  fireEvent.mouseMove(window, { clientX: 20 });
+  expect(apply).toHaveBeenLastCalledWith(160);
+  fireEvent.mouseUp(window);
+  expect(set).toHaveBeenCalledWith(160);
+});
+
+it("does not persist a press that never moved", () => {
+  localStorage.setItem("test.resizer", "300");
+  const set = vi.spyOn(panel, "set");
+  render(<SidebarResizer panel={panel} />);
+  fireEvent.mouseDown(screen.getByRole("separator"), { clientX: 10 });
+  fireEvent.mouseUp(window);
+  expect(set).not.toHaveBeenCalled();
+  expect(localStorage.getItem("test.resizer")).toBe("300");
+});

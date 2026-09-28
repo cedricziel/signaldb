@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .query-ir {
   display: flex;
@@ -68,7 +68,7 @@
   gap: 4px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .query-ir-builder {
     flex-direction: column;
     align-items: stretch;

@@ -858,9 +858,31 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 /* A table wider than the viewport scrolls on its own axis instead of
-   blowing out the page — these tables don't reasonably reflow. */
+   blowing out the page — these tables don't reasonably reflow. Every data
+   table sits in one.
+
+   The scroll cue: an edge shade (attachment `scroll`, pinned to the
+   wrapper's edge) under a cover in the background colour (attachment
+   `local`, riding on the content's own ends). A cover hides its shadow
+   while that end of the table is in view, so a shadow only shows on a side
+   that has more columns to scroll to. The cover must match what the
+   wrapper sits on: the page's --bg unless an ancestor card declares
+   `--scroll-cover: var(--surface)` in its own CSS. */
 .table-scroll {
+  /* From --text, not --shadow: it flips with the theme, so the edge is a
+     shade on the light theme and a lighter band on the dark one, where a
+     near-black shadow would vanish into the near-black page. */
+  --scroll-edge: color-mix(in srgb, var(--text) 16%, transparent);
   overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--scroll-cover, var(--bg)) 40%, transparent)
+      left center / 36px 100% no-repeat local,
+    linear-gradient(to left, var(--scroll-cover, var(--bg)) 40%, transparent)
+      right center / 36px 100% no-repeat local,
+    linear-gradient(to right, var(--scroll-edge), transparent) left center /
+      14px 100% no-repeat scroll,
+    linear-gradient(to left, var(--scroll-edge), transparent) right center /
+      14px 100% no-repeat scroll;
 }
 
 /* ---------- view note (features/*: every explore view) ---------- */
@@ -981,7 +1003,7 @@ th[aria-sort="descending"] .th-sort::after {
   z-index: 100;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 719px) {
   .dialog-backdrop {
     padding: 8px;
   }
@@ -1125,8 +1147,9 @@ th[aria-sort="descending"] .th-sort::after {
 /* `opacity`, not `visibility: hidden` — the latter also drops the buttons
    from keyboard tab order and defeats a `:focus-within` reveal, so a
    keyboard/touch user could never reach them; the override below keeps them
-   reachable without a hover at all, on a narrow viewport or any device that
-   reports no hover capability (touch). */
+   reachable without a hover at all, below the shell's tablet width (1024px,
+   AppNav.tsx TABLET_QUERY) or on any device that reports no hover
+   capability (touch). */
 .attrtable-actions {
   opacity: 0;
   display: inline-flex;
@@ -1167,7 +1190,7 @@ th[aria-sort="descending"] .th-sort::after {
   margin-left: 6px;
 }
 
-@media (max-width: 900px), (hover: none) {
+@media (max-width: 1023px), (hover: none) {
   .attrtable-actions {
     opacity: 1;
     max-width: none;
@@ -1257,4 +1280,44 @@ button.attrtable-section {
   text-transform: none;
   letter-spacing: normal;
   color: var(--faint);
+}
+
+/* ---------- touch targets ----------
+   A coarse pointer (finger) gets at least a 32px hit area on the small
+   controls below; a mouse keeps the compact look. Inline buttons that sit in
+   text rows grow an invisible `::after` hit area so the row height does not
+   change; controls inside an `overflow: hidden` group (segmented toggles, a
+   filter chip) would clip that, so they grow a min-height instead. */
+@media (pointer: coarse) {
+  .attrtable-actions button,
+  .copy-value-button,
+  .attribute-value-toggle {
+    position: relative;
+  }
+
+  .attrtable-actions button::after,
+  .copy-value-button::after,
+  .attribute-value-toggle::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 32px);
+    height: max(100%, 32px);
+    transform: translate(-50%, -50%);
+  }
+
+  .trace-volume-mode button,
+  .flame-view-toggle button,
+  .qrow-filter-remove,
+  .query-remove,
+  .chip-x {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .facet-check,
+  .sidebar-toggle {
+    min-height: 32px;
+  }
 }

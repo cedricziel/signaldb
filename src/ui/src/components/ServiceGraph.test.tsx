@@ -1,6 +1,8 @@
 import { fireEvent, render, screen } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import {
+  graphScale,
+  MIN_GRAPH_SCALE,
   ServiceGraph,
   type ServiceGraphEdge,
   type ServiceGraphNode,
@@ -134,6 +136,23 @@ describe("ServiceGraph", () => {
     expect(scale).toBeLessThan(1);
   });
 
+  it("stops shrinking at the readable floor and lets the box scroll", () => {
+    // Twelve layers are far wider than the stubbed 1200px container: the
+    // fit scale would be ~0.5, which puts node names near 6px.
+    const ids = "abcdefghijkl".split("");
+    const nodes: ServiceGraphNode[] = ids.map((id) => ({ id, label: id }));
+    const edges: ServiceGraphEdge[] = ids
+      .slice(1)
+      .map((to, i) => ({ from: ids[i]!, to, count: 1 }));
+    const { container } = render(<ServiceGraph nodes={nodes} edges={edges} />);
+    const host = container.querySelector(".service-graph-host") as HTMLElement;
+    expect(host.style.transform).toBe(`scale(${MIN_GRAPH_SCALE})`);
+    const viewport = container.querySelector(
+      ".service-graph-viewport",
+    ) as HTMLElement;
+    expect(parseFloat(viewport.style.width)).toBeGreaterThan(1200);
+  });
+
   it("marks external nodes distinctly and can hide them", () => {
     const { rerender } = render(<ServiceGraph nodes={NODES} edges={EDGES} />);
     expect(
@@ -169,5 +188,23 @@ describe("ServiceGraph", () => {
   it("shows an error state", () => {
     render(<ServiceGraph nodes={[]} edges={[]} error="failed to load" />);
     expect(screen.getByRole("alert")).toHaveTextContent("failed to load");
+  });
+});
+
+describe("graphScale", () => {
+  it("keeps a graph that fits at its natural size", () => {
+    expect(graphScale(800, 600)).toBe(1);
+  });
+
+  it("scales a wider graph down to fit", () => {
+    expect(graphScale(900, 1000)).toBeCloseTo(0.9);
+  });
+
+  it("never goes below the readable floor", () => {
+    expect(graphScale(300, 1000)).toBe(MIN_GRAPH_SCALE);
+  });
+
+  it("draws at 1 before the container is measured", () => {
+    expect(graphScale(0, 1000)).toBe(1);
   });
 });

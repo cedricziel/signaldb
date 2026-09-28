@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .instrumentation-page {
   padding: 24px;
@@ -156,13 +156,14 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface2);
-  overflow: auto;
+  /* Scroll rather than wrap: a hard wrap splits tokens (URLs, header
+     values) that the reader copies verbatim. */
+  overflow-x: auto;
   max-width: 100%;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  white-space: pre;
 }
 
 .code-snippet code {
@@ -222,7 +223,7 @@
   color: var(--dim);
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .instrumentation-page {
     padding: 16px;
   }
@@ -246,7 +247,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .instrumentation-page {
     padding: 12px;
   }

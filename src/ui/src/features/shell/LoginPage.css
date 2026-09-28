@@ -85,7 +85,7 @@
   color: var(--text);
 }
 
-@media (max-width: 600px) {
+@media (max-width: 719px) {
   .login-page {
     padding: 20px 16px;
   }

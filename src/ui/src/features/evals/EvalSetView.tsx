@@ -260,28 +260,30 @@ export function EvalSetView({
           </ol>
           <div className="evals-set-body">
             <div className="evals-card">
-              <table className="evals-table" style={{ minWidth: 760 }}>
-                <thead>
-                  <tr>
-                    <th>Case</th>
-                    <th>Input</th>
-                    <th>Expected tools</th>
-                    <th>Reference</th>
-                    <th>Source</th>
-                    <th className="num">Last score</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {cases.slice(0, shown).map((c) => (
-                    <CaseRow
-                      key={c.id}
-                      c={c}
-                      score={caseScore(scores.data?.cases.get(c.id))}
-                      traceHref={traceHref}
-                    />
-                  ))}
-                </tbody>
-              </table>
+              <div className="table-scroll">
+                <table className="evals-table" style={{ minWidth: 760 }}>
+                  <thead>
+                    <tr>
+                      <th>Case</th>
+                      <th>Input</th>
+                      <th>Expected tools</th>
+                      <th>Reference</th>
+                      <th>Source</th>
+                      <th className="num">Last score</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {cases.slice(0, shown).map((c) => (
+                      <CaseRow
+                        key={c.id}
+                        c={c}
+                        score={caseScore(scores.data?.cases.get(c.id))}
+                        traceHref={traceHref}
+                      />
+                    ))}
+                  </tbody>
+                </table>
+              </div>
               {set.isPending && <EmptyState title="Loading cases…" />}
               {set.isSuccess && cases.length === 0 && (
                 <EmptyState title="No cases yet">

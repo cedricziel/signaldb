@@ -469,7 +469,7 @@ function TrajectoryPane({
   rows: TrajectoryRow[];
 }) {
   return (
-    <div className="evals-card" style={{ minWidth: 0 }}>
+    <div className="evals-card evals-traj" style={{ minWidth: 0 }}>
       <div
         className="evals-card-head"
         style={{ padding: "10px 12px", gap: 10 }}
