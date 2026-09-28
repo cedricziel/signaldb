@@ -59,7 +59,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 - [x] 6.1 Write the demote-and-still-correct invariant test: identical result set AND types with promotion off vs on, over canonical-typed fields (specs `typed-attribute-storage`, `query-ir-core` MODIFIED)
 - [x] 6.2 Promotion produces typed columns via **Iceberg field-id evolution** (not create-time `max(id)+1`); driven by `attr_demand`; per-table **budget + LRU demotion** (cold column folds back into the typed map on compaction)
-- [ ] 6.3 `cargo test -p querier -p compactor -p tests-integration` green; lint/format/machete
+- [x] 6.3 `cargo test -p querier -p compactor -p tests-integration` green; lint/format/machete
 
 ## 7. Typed metric substrate (replaces the data_json blob)
 
