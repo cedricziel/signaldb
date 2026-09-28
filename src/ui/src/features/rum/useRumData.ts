@@ -7,6 +7,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   fetchBreakdown,
   fetchKpis,
+  fetchNetworkRequests,
+  fetchResources,
   fetchRumApps,
   fetchSessionsOverTime,
   fetchVitals,
@@ -116,6 +118,29 @@ export function useRumTopErrors(scope: RumScope) {
   return useQuery({
     queryKey: ["rum-top-errors", rangeKey, app],
     queryFn: () => fetchErrorGroups(range, app),
+    enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Network tab's requests table — client HTTP spans grouped by method
+ * and URL template, split into client+network and backend time. */
+export function useRumNetworkRequests(scope: RumScope) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-network-requests", rangeKey, app],
+    queryFn: () => fetchNetworkRequests(app, range),
+    enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Network tab's resources-by-initiator-type table. */
+export function useRumResources(scope: RumScope) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-resources", rangeKey, app],
+    queryFn: () => fetchResources(app, range),
     enabled: app !== "",
     staleTime: STALE,
   });

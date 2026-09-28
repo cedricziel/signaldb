@@ -24,6 +24,7 @@ interface IrDoc {
   result?: string;
   range?: { from?: string; to?: string };
   pipeline?: Array<{
+    correlate?: unknown;
     where?: { field?: string; or?: { field?: string }[] };
     aggregate?: {
       by?: string[];
@@ -37,6 +38,87 @@ interface IrDoc {
     };
   }>;
 }
+
+/** Fixture rows for the Network tab's two reads: every call to the app's
+ * own API is traced (`orders-svc`/`cart-svc`/`checkout-svc`); the CDN and
+ * the telemetry export endpoint are not — the CDN to exercise the
+ * untraced-origin callout, the export endpoint to exercise "SDK export". */
+const NETWORK_TOTAL_ROWS: (string | number)[][] = [
+  [
+    "GET",
+    "https://api.storefront.example.com/api/products/48213",
+    "api.storefront.example.com",
+    42000,
+    180_000_000,
+    210,
+  ],
+  [
+    "GET",
+    "https://api.storefront.example.com/api/cart",
+    "api.storefront.example.com",
+    28000,
+    95_000_000,
+    40,
+  ],
+  [
+    "POST",
+    "https://api.storefront.example.com/api/checkout",
+    "api.storefront.example.com",
+    9200,
+    420_000_000,
+    380,
+  ],
+  [
+    "GET",
+    "https://reviews.partner-cdn.com/widget/48213",
+    "reviews.partner-cdn.com",
+    38100,
+    260_000_000,
+    0,
+  ],
+  [
+    "POST",
+    "https://ingest.acme.example.com/v1/traces",
+    "ingest.acme.example.com",
+    184210,
+    40_000_000,
+    0,
+  ],
+];
+
+const NETWORK_TRACED_ROWS: (string | number)[][] = [
+  [
+    "GET",
+    "https://api.storefront.example.com/api/products/48213",
+    "api.storefront.example.com",
+    "catalog-svc",
+    41200,
+    90_000_000,
+  ],
+  [
+    "GET",
+    "https://api.storefront.example.com/api/cart",
+    "api.storefront.example.com",
+    "cart-svc",
+    27500,
+    55_000_000,
+  ],
+  [
+    "POST",
+    "https://api.storefront.example.com/api/checkout",
+    "api.storefront.example.com",
+    "checkout-svc",
+    9100,
+    260_000_000,
+  ],
+];
+
+const RESOURCE_ROWS: (string | number)[][] = [
+  ["script", 612000, 48_200_000_000, 210, 812_000],
+  ["img", 340000, 122_500_000_000, 340, 2_400_000],
+  ["css", 88000, 6_100_000_000, 60, 210_000],
+  ["fetch", 210000, 9_800_000_000, 140, 480_000],
+];
 
 /** A deterministic wobble around `base`, one value per bucket. */
 function wave(seed: number, base: number, amp: number, n: number): number[] {
@@ -141,6 +223,19 @@ function singleDocResponse(b: IrDoc): unknown {
         [true, 33010],
       ],
     };
+  }
+
+  // Network: totals (buildNetworkRequestsDoc), the correlate join
+  // (buildNetworkCorrelateDoc, `parent.`-prefixed grouping), and resources
+  // by initiator type (buildResourcesDoc).
+  if (by[0] === "http.request.method") {
+    return { result: "table", rows: NETWORK_TOTAL_ROWS };
+  }
+  if (by[0] === "parent.http.request.method") {
+    return { result: "table", rows: NETWORK_TRACED_ROWS };
+  }
+  if (by[0] === "browser.resource_timing.initiator_type") {
+    return { result: "table", rows: RESOURCE_ROWS };
   }
 
   // Error groups (api/errors.ts's shared shape).
@@ -312,4 +407,8 @@ export const Empty: Story = {
 
 export const Setup: Story = {
   render: () => <RealUsersPage path="/rum/setup?app=storefront-web" />,
+};
+
+export const Network: Story = {
+  render: () => <RealUsersPage path="/rum/network?app=storefront-web" />,
 };

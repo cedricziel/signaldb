@@ -268,4 +268,10 @@ test("sidebar → Real users → Overview renders", async ({ page }) => {
   await page.getByRole("button", { name: "Open Setup" }).click();
   await expect(page).toHaveURL(/\/rum\/setup$/);
   await expect(page.getByText("Install the SDK")).toBeVisible();
+  await page.getByRole("button", { name: "Network" }).click();
+  await expect(page).toHaveURL(/\/rum\/network$/);
+  await expect(page.getByRole("button", { name: "Network" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 });
