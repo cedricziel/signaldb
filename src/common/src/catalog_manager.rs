@@ -344,6 +344,90 @@ impl CatalogManager {
         report
     }
 
+    /// Drops the five legacy per-type metric tables for `tenant_id`/
+    /// `dataset_id`, under [`crate::iceberg::schemas::MetricsLayout::current`].
+    ///
+    /// A no-op under [`crate::iceberg::schemas::MetricsLayout::Legacy`] --
+    /// nothing creates the wide `metrics`/`metric_exemplars` tables yet, so
+    /// there is nothing to cut over from. Returns the table names actually
+    /// dropped.
+    pub async fn purge_legacy_metric_tables(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> Vec<String> {
+        self.purge_legacy_metric_tables_with_layout(
+            tenant_id,
+            dataset_id,
+            crate::iceberg::schemas::MetricsLayout::current(),
+        )
+        .await
+    }
+
+    /// Like [`Self::purge_legacy_metric_tables`], with the metrics layout as
+    /// a parameter so tests can exercise the drop under
+    /// [`crate::iceberg::schemas::MetricsLayout::Wide`] without depending on
+    /// global config.
+    ///
+    /// Idempotent: a legacy table already absent (dropped by an earlier pass,
+    /// or never created) is skipped without error, same as
+    /// [`crate::iceberg::table_manager::IcebergTableManager::ensure_table`]'s
+    /// own recreate-as-typed cutover.
+    pub async fn purge_legacy_metric_tables_with_layout(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        layout: crate::iceberg::schemas::MetricsLayout,
+    ) -> Vec<String> {
+        if layout != crate::iceberg::schemas::MetricsLayout::Wide {
+            return Vec::new();
+        }
+
+        const LEGACY_METRIC_TABLE_NAMES: &[&str] = &[
+            "metrics_gauge",
+            "metrics_sum",
+            "metrics_histogram",
+            "metrics_exponential_histogram",
+            "metrics_summary",
+        ];
+
+        let mut dropped = Vec::new();
+        for table_name in LEGACY_METRIC_TABLE_NAMES {
+            let identifier = self.build_table_identifier(tenant_id, dataset_id, table_name);
+            if self
+                .catalog
+                .clone()
+                .load_tabular(&identifier)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+
+            match self.catalog.drop_table(&identifier).await {
+                Ok(()) => {
+                    tracing::info!(
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
+                        "Dropped legacy per-type metric table superseded by the wide metrics table"
+                    );
+                    dropped.push((*table_name).to_string());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
+                        error = %e,
+                        "Failed to drop legacy metric table; will retry on the next pass"
+                    );
+                }
+            }
+        }
+        dropped
+    }
+
     /// Get all enabled tenants.
     pub fn get_enabled_tenants(&self) -> Vec<&crate::config::TenantConfig> {
         self.config
@@ -1296,5 +1380,74 @@ mod tests {
             tables_in(&manager, "acme", "production").await,
             vec!["logs".to_string(), "profiles".to_string()]
         );
+    }
+
+    // otel-native-schema layer 7, D10 cutover prep.
+    async fn manager_with_legacy_metric_tables() -> CatalogManager {
+        let manager = provisioning_manager(vec![provisioning_tenant("acme")]).await;
+        manager
+            .ensure_tables_named(
+                "acme",
+                "production",
+                &[
+                    "metrics_gauge",
+                    "metrics_sum",
+                    "metrics_histogram",
+                    "metrics_exponential_histogram",
+                    "metrics_summary",
+                ],
+            )
+            .await;
+        manager
+    }
+
+    #[tokio::test]
+    async fn purge_legacy_metric_tables_legacy_layout_never_drops_anything() {
+        let manager = manager_with_legacy_metric_tables().await;
+
+        let dropped = manager
+            .purge_legacy_metric_tables_with_layout(
+                "acme",
+                "production",
+                crate::iceberg::schemas::MetricsLayout::Legacy,
+            )
+            .await;
+
+        assert!(dropped.is_empty());
+        assert_eq!(tables_in(&manager, "acme", "production").await.len(), 5);
+    }
+
+    #[tokio::test]
+    async fn purge_legacy_metric_tables_wide_drops_pre_existing_legacy_tables_and_is_idempotent() {
+        let manager = manager_with_legacy_metric_tables().await;
+
+        let mut dropped = manager
+            .purge_legacy_metric_tables_with_layout(
+                "acme",
+                "production",
+                crate::iceberg::schemas::MetricsLayout::Wide,
+            )
+            .await;
+        dropped.sort();
+        assert_eq!(
+            dropped,
+            vec![
+                "metrics_exponential_histogram".to_string(),
+                "metrics_gauge".to_string(),
+                "metrics_histogram".to_string(),
+                "metrics_sum".to_string(),
+                "metrics_summary".to_string(),
+            ]
+        );
+        assert!(tables_in(&manager, "acme", "production").await.is_empty());
+
+        let dropped_again = manager
+            .purge_legacy_metric_tables_with_layout(
+                "acme",
+                "production",
+                crate::iceberg::schemas::MetricsLayout::Wide,
+            )
+            .await;
+        assert!(dropped_again.is_empty(), "nothing left to drop");
     }
 }
