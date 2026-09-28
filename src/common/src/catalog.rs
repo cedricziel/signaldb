@@ -3815,6 +3815,48 @@ impl Catalog {
         Ok(())
     }
 
+    /// Store the new promotion streak for one (level, key) (LRU/hysteresis
+    /// state for demand-driven promotion).
+    pub async fn set_attribute_level_promote_streak(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        streak: i64,
+    ) -> Result<(), sqlx::Error> {
+        let sql_sqlite = "UPDATE attribute_level_stats SET promote_streak = ? \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND level = ? AND attr_key = ?";
+        let sql_pg = "UPDATE attribute_level_stats SET promote_streak = $1 \
+             WHERE tenant_id = $2 AND dataset_id = $3 AND signal = $4 AND level = $5 AND attr_key = $6";
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(sql_sqlite)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(level.as_str())
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(sql_pg)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(level.as_str())
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
     /// The stored per-level statistics for one (tenant, dataset, signal),
     /// sorted by level then attribute key. A row whose stored `level` string
     /// doesn't map to a known [`AttributeLevel`] is skipped with a warning
@@ -8900,6 +8942,54 @@ mod multi_tenancy_tests {
             .find(|s| s.level == AttributeLevel::Record)
             .expect("record-level row");
         assert_eq!(record_row.present_rows, 40);
+    }
+
+    #[tokio::test]
+    async fn attribute_level_stats_list_round_trips_the_level_and_promote_streak() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Scope,
+                "instrumentation.name",
+                5,
+                100,
+            )
+            .await
+            .unwrap();
+        catalog
+            .set_attribute_level_promote_streak(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Scope,
+                "instrumentation.name",
+                3,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].level, AttributeLevel::Scope);
+        assert_eq!(stats[0].attr_key, "instrumentation.name");
+        assert_eq!(stats[0].promote_streak, 3);
+
+        assert!(
+            catalog
+                .list_attribute_level_stats("t", "d", "traces")
+                .await
+                .unwrap()
+                .is_empty()
+        );
     }
 
     #[tokio::test]
