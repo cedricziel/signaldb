@@ -28,9 +28,12 @@ use common::attrs::AttrDocument;
 use common::catalog::AttributeStatsRecord;
 use common::config::AttrPromotionConfig;
 use common::iceberg::evolution;
+use common::schema::logical::AttributeLevel;
 use common::schema::type_authority::{AttributeKeyType, CanonicalType};
-use common::schema::typed_attributes::home_column;
-use datafusion::arrow::array::{ArrayRef, RecordBatch, StringArray};
+use common::schema::typed_attributes::{container_level, home_column, residue_column};
+use datafusion::arrow::array::{
+    Array, ArrayRef, BooleanArray, Float64Array, Int64Array, MapArray, RecordBatch, StringArray,
+};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
@@ -184,6 +187,20 @@ pub fn string_only_keys(types: &[AttributeKeyType]) -> HashSet<String> {
         .collect()
 }
 
+/// A canonical-type lookup keyed by `(level, key)`, built from the type
+/// authority's per-table rows -- the per-level counterpart of
+/// [`string_only_keys`], used by the typed promoted-attribute backfill to
+/// detect a repinned key (its stored column type no longer matches the type
+/// authority's current one for that `(level, key)`).
+pub fn canonical_types_by_level(
+    types: &[AttributeKeyType],
+) -> HashMap<(AttributeLevel, String), CanonicalType> {
+    types
+        .iter()
+        .map(|t| ((t.level, t.attr_key.clone()), t.canonical_type))
+        .collect()
+}
+
 /// Log the decision for one table (the advisory face of the pass; the
 /// rewrite-coupled half acts on it when `dry_run` is off).
 pub fn log_decision(table_name: &str, decision: &PromotionDecision, dry_run: bool) {
@@ -326,10 +343,170 @@ fn backfill_batch(batch: RecordBatch, pairs: &[(String, String)]) -> Result<Reco
         .context("Failed to rebuild batch with backfilled label columns")
 }
 
+/// The typed-layout container backing `level` in this batch: the fixed
+/// names for resource/scope, and whichever one record-level container
+/// (`span_attributes`, `log_attributes`, `attributes`, or
+/// `profile_attributes`) the batch actually carries — a table has at most
+/// one. `None` if the batch has no typed container for this level.
+fn container_for_level(batch: &RecordBatch, level: AttributeLevel) -> Option<&'static str> {
+    let schema = batch.schema();
+    let names: HashSet<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+    BACKFILL_SOURCE_COLUMNS.iter().copied().find(|container| {
+        container_level(container) == level && names.contains(residue_column(container).as_str())
+    })
+}
+
+/// A null array of the Arrow type backing `canonical`, `num_rows` long.
+fn null_typed_array(canonical: CanonicalType, num_rows: usize) -> ArrayRef {
+    match canonical {
+        CanonicalType::String => Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
+        CanonicalType::Int64 => Arc::new(Int64Array::from(vec![None::<i64>; num_rows])),
+        CanonicalType::Float64 => Arc::new(Float64Array::from(vec![None::<f64>; num_rows])),
+        CanonicalType::Bool => Arc::new(BooleanArray::from(vec![None::<bool>; num_rows])),
+    }
+}
+
+/// The Arrow type backing a promoted column of canonical type `canonical`.
+fn arrow_type_for_canonical(canonical: CanonicalType) -> DataType {
+    match canonical {
+        CanonicalType::String => DataType::Utf8,
+        CanonicalType::Int64 => DataType::Int64,
+        CanonicalType::Float64 => DataType::Float64,
+        CanonicalType::Bool => DataType::Boolean,
+    }
+}
+
+/// One row's value for `key` in a `Map<Utf8, V>` home, read as its native
+/// type via `extract` rather than stringified — `None` when the row lacks
+/// the key, the map is null, or the entries aren't shaped as expected.
+fn find_value<V: Array + 'static, T>(
+    map: &MapArray,
+    key: &str,
+    row: usize,
+    extract: impl Fn(&V, usize) -> T,
+) -> Option<T> {
+    if map.is_null(row) {
+        return None;
+    }
+    let entries = map.value(row);
+    let keys = entries.column(0).as_any().downcast_ref::<StringArray>()?;
+    let values = entries.column(1).as_any().downcast_ref::<V>()?;
+    (0..entries.len())
+        .find(|&j| !keys.is_null(j) && keys.value(j) == key && !values.is_null(j))
+        .map(|j| extract(values, j))
+}
+
+/// `key`'s value from `home` (a `Map<Utf8, T>` typed-home column), one Arrow
+/// array of `canonical`'s type. All-null when `home` is absent from the
+/// batch or isn't a map — never coerced from a different type's home.
+fn typed_home_array(
+    batch: &RecordBatch,
+    home: &str,
+    key: &str,
+    canonical: CanonicalType,
+) -> ArrayRef {
+    let num_rows = batch.num_rows();
+    let Some(map) = batch
+        .column_by_name(home)
+        .and_then(|c| c.as_any().downcast_ref::<MapArray>())
+    else {
+        return null_typed_array(canonical, num_rows);
+    };
+    match canonical {
+        CanonicalType::String => Arc::new(StringArray::from(
+            (0..num_rows)
+                .map(|i| find_value::<StringArray, _>(map, key, i, |v, j| v.value(j).to_string()))
+                .collect::<Vec<_>>(),
+        )),
+        CanonicalType::Int64 => Arc::new(Int64Array::from(
+            (0..num_rows)
+                .map(|i| find_value::<Int64Array, _>(map, key, i, |v, j| v.value(j)))
+                .collect::<Vec<_>>(),
+        )),
+        CanonicalType::Float64 => Arc::new(Float64Array::from(
+            (0..num_rows)
+                .map(|i| find_value::<Float64Array, _>(map, key, i, |v, j| v.value(j)))
+                .collect::<Vec<_>>(),
+        )),
+        CanonicalType::Bool => Arc::new(BooleanArray::from(
+            (0..num_rows)
+                .map(|i| find_value::<BooleanArray, _>(map, key, i, |v, j| v.value(j)))
+                .collect::<Vec<_>>(),
+        )),
+    }
+}
+
+/// Recompute the typed promoted `attr_<level>_<key>` columns of the given
+/// batches from exactly their level's container typed home — never the
+/// residue, and never another canonical type's home.
+///
+/// `attrs` is `(level, key, column, canonical type)` per
+/// [`common::iceberg::evolution::promoted_attrs_of`]. Rows without the key
+/// stay null; a level whose container isn't present in this batch also
+/// stays null (defensive — the caller only passes attrs the current schema
+/// actually carries). Callers filter out an entry whose stored canonical
+/// type no longer matches the key's current type authority canonical type
+/// (a repin) before calling this — such an entry is left null rather than
+/// backfilled from a home that no longer matches it.
+pub(crate) fn backfill_promoted_attr_columns(
+    batches: Vec<RecordBatch>,
+    attrs: &[(AttributeLevel, String, String, CanonicalType)],
+) -> Result<Vec<RecordBatch>> {
+    if attrs.is_empty() {
+        return Ok(batches);
+    }
+    batches
+        .into_iter()
+        .map(|batch| backfill_promoted_attr_batch(batch, attrs))
+        .collect()
+}
+
+fn backfill_promoted_attr_batch(
+    batch: RecordBatch,
+    attrs: &[(AttributeLevel, String, String, CanonicalType)],
+) -> Result<RecordBatch> {
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    let mut columns: Vec<ArrayRef> = batch.columns().to_vec();
+
+    for (level, key, column, canonical) in attrs {
+        let arrow_type = arrow_type_for_canonical(*canonical);
+        let values = match container_for_level(&batch, *level) {
+            Some(container) => {
+                typed_home_array(&batch, &home_column(container, *canonical), key, *canonical)
+            }
+            None => null_typed_array(*canonical, batch.num_rows()),
+        };
+        match fields.iter().position(|f| f.name() == column) {
+            Some(idx) if fields[idx].data_type() == &arrow_type => {
+                columns[idx] = values;
+            }
+            Some(_) => {
+                tracing::warn!(
+                    column = %column,
+                    attr_key = %key,
+                    "Promoted attribute column has an unexpected Arrow type; skipping backfill"
+                );
+            }
+            None => {
+                fields.push(Field::new(column, arrow_type, true));
+                columns.push(values);
+            }
+        }
+    }
+
+    let schema = Arc::new(Schema::new(fields));
+    RecordBatch::try_new(schema, columns)
+        .context("Failed to rebuild batch with backfilled promoted attribute columns")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use common::schema::logical::AttributeLevel;
     use datafusion::arrow::array::Array;
     use iceberg_rust::spec::schema::Schema as IcebergSchema;
     use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
@@ -593,6 +770,41 @@ mod tests {
             retries.is_null(0),
             "an int-home key must not be stringified into a label column"
         );
+    }
+
+    /// A typed promoted-attribute column is recomputed from exactly its
+    /// key's canonical home: `retries` (int) reads its native `Int64`
+    /// value rather than a stringified one, and a row missing the key
+    /// stays null.
+    #[test]
+    fn backfill_promoted_attr_columns_reads_the_canonical_home() {
+        let row = serde_json::Map::from_iter([
+            ("env".to_string(), serde_json::json!("prod")),
+            ("retries".to_string(), serde_json::json!(3)),
+        ]);
+        let empty_row = serde_json::Map::new();
+        let (fields, arrays) = common::testing::typed_attribute_columns(
+            "span_attributes",
+            &[Some(row), Some(empty_row)],
+        );
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
+
+        let attrs = vec![(
+            AttributeLevel::Record,
+            "retries".to_string(),
+            "attr_record_retries".to_string(),
+            CanonicalType::Int64,
+        )];
+        let out = backfill_promoted_attr_columns(vec![batch], &attrs).unwrap();
+        let retries = out[0]
+            .column_by_name("attr_record_retries")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Int64Array>()
+            .unwrap();
+        assert_eq!(retries.value(0), 3);
+        assert!(retries.is_null(1), "a row without the key stays null");
     }
 
     /// A single-field schema with one materialized label column,

@@ -8,6 +8,8 @@
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::iceberg::sort::{DeclaredSortColumn, UndeclaredFallback, WriteSortKey, write_sort_key};
+use common::schema::logical::AttributeLevel;
+use common::schema::type_authority::CanonicalType;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::ScalarValue;
 use datafusion::prelude::*;
@@ -18,14 +20,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// What the promotion pass decided to do to this rewrite (epic #737,
-/// #734). Empty/default when promotion is disabled or dry-run.
+/// #734; typed per-level columns: otel-native-schema layer 6, D4/D5).
+/// Empty/default when promotion is disabled or dry-run.
 #[derive(Debug, Default)]
 struct PromotionOutcome {
     /// `(attribute key, label column)` pairs whose columns should be
     /// recomputed from the attribute sources during this rewrite.
     backfill: Vec<(String, String)>,
-    /// Whether the table's schema was evolved (label columns added or
-    /// dropped) and must be reloaded before writing.
+    /// `(level, key, column, canonical type)` typed promoted-attribute
+    /// columns to recompute during this rewrite, per
+    /// [`common::iceberg::evolution::promoted_attrs_of`]. Always empty
+    /// until something actually promotes a typed column.
+    promoted_attr_backfill: Vec<(AttributeLevel, String, String, CanonicalType)>,
+    /// Whether the table's schema was evolved (columns added or dropped)
+    /// and must be reloaded before writing.
     evolved: bool,
     /// `label_<key>` columns dropped by the demotion half: the rewrite
     /// must project them out of the merged batches, since the read
@@ -242,19 +250,21 @@ impl ParquetRewriter {
         )
         .await;
 
-        let backfill: Vec<(String, String)> = if promotion.backfill.is_empty() {
-            vec![]
-        } else {
-            let schema_columns: HashSet<String> = write_table
-                .current_schema()
-                .map(|schema| schema.fields().iter().map(|f| f.name.clone()).collect())
-                .unwrap_or_default();
+        let schema_columns: HashSet<String> = write_table
+            .current_schema()
+            .map(|schema| schema.fields().iter().map(|f| f.name.clone()).collect())
+            .unwrap_or_default();
+        let backfill: Vec<(String, String)> = promotion
+            .backfill
+            .into_iter()
+            .filter(|(_, column)| schema_columns.contains(column))
+            .collect();
+        let promoted_attr_backfill: Vec<(AttributeLevel, String, String, CanonicalType)> =
             promotion
-                .backfill
+                .promoted_attr_backfill
                 .into_iter()
-                .filter(|(_, column)| schema_columns.contains(column))
-                .collect()
-        };
+                .filter(|(_, _, column, _)| schema_columns.contains(column))
+                .collect();
 
         // Pass 2: the sorted stream that becomes the output files.
         //
@@ -286,6 +296,7 @@ impl ParquetRewriter {
             stream,
             promotion.dropped_columns,
             backfill,
+            promoted_attr_backfill,
             target_file_size_bytes,
         );
 
@@ -366,6 +377,7 @@ impl ParquetRewriter {
         mut stream: datafusion::execution::SendableRecordBatchStream,
         dropped_columns: Vec<String>,
         backfill: Vec<(String, String)>,
+        promoted_attr_backfill: Vec<(AttributeLevel, String, String, CanonicalType)>,
         target_file_size_bytes: u64,
     ) -> impl futures::Stream<
         Item = std::result::Result<RecordBatch, datafusion::arrow::error::ArrowError>,
@@ -401,6 +413,17 @@ impl ParquetRewriter {
                 };
 
                 let batch = match crate::attr_promotion::backfill_label_columns(vec![batch], &backfill) {
+                    Ok(mut batches) => batches.remove(0),
+                    Err(e) => {
+                        yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
+                        return;
+                    }
+                };
+
+                let batch = match crate::attr_promotion::backfill_promoted_attr_columns(
+                    vec![batch],
+                    &promoted_attr_backfill,
+                ) {
                     Ok(mut batches) => batches.remove(0),
                     Err(e) => {
                         yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
@@ -569,16 +592,21 @@ impl ParquetRewriter {
         // namespace slug `dataset` is here -- resolve it or a
         // slug-!=-id dataset finds no rows and promotion silently stops.
         let dataset_id = config.get_dataset_id_by_slug(&tenant_id, dataset);
-        let typed_string_keys = match catalog
+        let types = match catalog
             .list_attribute_types_for_table(&tenant_id, &dataset_id, source_signal)
             .await
         {
-            Ok(types) => crate::attr_promotion::string_only_keys(&types),
+            Ok(types) => types,
             Err(e) => {
                 tracing::warn!(error = %e, table = %table_name, "Failed to load attribute types for promotion pass");
-                std::collections::HashSet::new()
+                Vec::new()
             }
         };
+        let typed_string_keys = crate::attr_promotion::string_only_keys(&types);
+        // Keyed per (level, key): the repin check below needs the canonical
+        // type at the exact level a promoted column was created for, not
+        // folded across levels the way `string_only_keys` does.
+        let canonical_types = crate::attr_promotion::canonical_types_by_level(&types);
         let (decision, new_streaks) = crate::attr_promotion::decide(
             &stats,
             &materialized,
@@ -705,6 +733,36 @@ impl ParquetRewriter {
                 }
             }
         }
+
+        // Typed attr backfill plan (otel-native-schema layer 6, D4/D5):
+        // every typed promoted-attribute column of the (possibly evolved)
+        // current schema, unless the type authority's current canonical
+        // type for its `(level, key)` no longer matches the column's own
+        // stored type (a repin) — such a column is left null rather than
+        // backfilled from a home it no longer agrees with. Nothing creates
+        // a promoted attribute column yet, so `promoted_attrs_of` is empty
+        // and this is a no-op in practice until that lands.
+        for (level, key, column, stored_canonical) in
+            common::iceberg::evolution::promoted_attrs_of(&current_schema)
+        {
+            let current_canonical = canonical_types.get(&(level, key.clone())).copied();
+            if current_canonical == Some(stored_canonical) {
+                outcome
+                    .promoted_attr_backfill
+                    .push((level, key, column, stored_canonical));
+            } else {
+                tracing::warn!(
+                    table = %table_name,
+                    level = level.as_str(),
+                    attr_key = %key,
+                    column = %column,
+                    current_type = ?current_canonical,
+                    stored_type = ?stored_canonical,
+                    "Promoted attribute column's type no longer matches the key's current canonical type; skipping backfill"
+                );
+            }
+        }
+
         outcome
     }
 
@@ -1104,7 +1162,7 @@ mod tests {
             schema,
             futures::stream::iter(batches.into_iter().map(Ok)),
         ));
-        ParquetRewriter::rewrite_stream(inner, vec![], vec![], target_size_bytes)
+        ParquetRewriter::rewrite_stream(inner, vec![], vec![], vec![], target_size_bytes)
     }
 
     #[tokio::test]
