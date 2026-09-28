@@ -180,6 +180,11 @@ a.rum-row:hover {
   border-color: color-mix(in oklab, var(--warn) 50%, transparent);
   background: color-mix(in oklab, var(--warn) 10%, transparent);
 }
+.rum-pill.err {
+  color: var(--err-text);
+  border-color: color-mix(in oklab, var(--err) 50%, transparent);
+  background: color-mix(in oklab, var(--err) 10%, transparent);
+}
 .rum-eyebrow {
   display: block;
   font-size: 10.5px;
@@ -711,6 +716,88 @@ a.rum-row:hover {
 .rum-load-wrap {
   position: relative;
 }
+
+.rum-session-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.rum-session-filter-input {
+  min-width: 220px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: 12px/1.4 var(--mono);
+}
+.rum-quick-filter {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rum-quick-filter:hover {
+  color: var(--text);
+}
+.rum-quick-filter.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.rum-sessions-table {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-sessions-head,
+.rum-sessions-row {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 1.2fr) minmax(90px, 0.9fr) 84px 76px minmax(120px, 0.9fr)
+    76px 56px minmax(160px, 1.6fr) minmax(90px, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 900px;
+}
+.rum-sessions-head {
+  padding: 6px var(--gutter-sm);
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.rum-sessions-row {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 8px var(--gutter-sm);
+}
+.rum-sessions-row:last-child {
+  border-bottom: 0;
+}
+.rum-sessions-row:hover {
+  background: var(--surface2);
+}
+.rum-sessions-row .num,
+.rum-sessions-head .num {
+  text-align: right;
+}
+.rum-session-signals {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
 .rum-load-bar {
   display: flex;
   height: 22px;

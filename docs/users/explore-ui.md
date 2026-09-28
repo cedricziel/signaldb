@@ -286,9 +286,9 @@ the window. The app switcher lists every such app, busiest first, and
 defaults to the busiest; picking one writes `?app=` and keeps the
 current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
-the **Overview**, **Pages**, **Network**, **Interactions** and **Setup**
-tabs; Sessions and Errors follow in later changes and are not shown as
-placeholders.
+the **Overview**, **Pages**, **Sessions**, **Network**, **Interactions** and
+**Setup** tabs; Errors follows in a later change and is not shown as a
+placeholder.
 
 - **Overview.** Sessions, users, sessions-with-errors and traced requests
   (distinct `session.id`/`user.id`, the error share scoped to a session
@@ -324,6 +324,17 @@ placeholders.
   **backend calls** — `fetch`/`xhr` requests from that route, joined to the
   Network tab's own backend service names. Page views with no attributable
   route raise a callout explaining `url.template` and linking to Setup.
+- **Sessions.** Every `session.id` seen in the window, one aggregate read:
+  the session id, `user.id`, browser (parsed from
+  `resource.user_agent.original`) and device (`browser.mobile`), start time,
+  duration (first to last record), page views, entry and exit route
+  (`url.template` of the first/last record — a null entry or exit means that
+  record carried no route), and signal pills for error and slow-load
+  (poor-rated LCP) counts. Two quick filters, "With errors" and "Slow load
+  (LCP poor)", narrow the list client-side from those same counts; a
+  free-text filter narrows the aggregate itself, matching a `session.id` or
+  `user.id` exactly, or `key=value` against any attribute. Picking a session
+  writes `?session=`.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced
@@ -343,8 +354,8 @@ placeholders.
   selector is in the row's title — or `browser.tag_name` when no selector
   was captured) and page, with a click count and a bar of that page's own
   INP p75 (joined from the Pages tab's data, not a second read). Rows link
-  toward the Sessions tab; until Sessions ships, that link lands back on
-  Overview.
+  to the Sessions tab, scoped to the app (not yet to sessions containing that
+  click).
 - **Setup.** Copyable snippets for instrumenting a browser app with the
   upstream OpenTelemetry SDK: install, initialize with the app's
   `service.name`, and export to an OpenTelemetry Collector or the app's own

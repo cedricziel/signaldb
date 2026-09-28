@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import * as rumApi from "../../api/rum";
 import type { RumApp, RumPageRow, RumRequestRow } from "../../api/rum";
+import * as rumSessionsApi from "../../api/rumSessions";
+import type { RumSessionRow } from "../../api/rumSessions";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { createAppRouter } from "../../routes";
 import { RouterProvider } from "react-router";
@@ -28,6 +30,10 @@ vi.mock("../../api/rum", async (orig) => ({
 vi.mock("../../api/errors", async (orig) => ({
   ...(await orig<typeof import("../../api/errors")>()),
   fetchErrorGroups: vi.fn().mockResolvedValue({ groups: [], truncated: false }),
+}));
+vi.mock("../../api/rumSessions", async (orig) => ({
+  ...(await orig<typeof import("../../api/rumSessions")>()),
+  fetchSessions: vi.fn().mockResolvedValue([]),
 }));
 
 function rumApp(overrides: Partial<RumApp> = {}): RumApp {
@@ -448,5 +454,65 @@ describe("Interactions tab", () => {
     expect(
       await screen.findByText("body > div.app > button.buy"),
     ).toBeInTheDocument();
+  });
+});
+
+function sessionRow(overrides: Partial<RumSessionRow> = {}): RumSessionRow {
+  return {
+    sessionId: "sess-1",
+    firstMs: 1_700_000_000_000,
+    lastMs: 1_700_000_060_000,
+    durationMs: 60_000,
+    views: 4,
+    errors: 0,
+    slow: 0,
+    entry: "/checkout",
+    exit: "/thanks",
+    userId: "user-42",
+    browser: "Chrome",
+    mobile: false,
+    ...overrides,
+  };
+}
+
+describe("Sessions tab", () => {
+  it("lists sessions and writes ?session= when one is picked", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([sessionRow()]);
+    renderRum("/rum/sessions?app=storefront-web");
+
+    const row = await screen.findByRole("button", { name: /sess-1/ });
+    const user = userEvent.setup();
+    await user.click(row);
+
+    await waitFor(() =>
+      expect(window.location.search).toContain("session=sess-1"),
+    );
+  });
+
+  it("filters to sessions with errors via the quick filter", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([
+      sessionRow({ sessionId: "clean", errors: 0 }),
+      sessionRow({ sessionId: "errored", errors: 3 }),
+    ]);
+    renderRum("/rum/sessions?app=storefront-web");
+
+    expect(
+      await screen.findByRole("button", { name: /clean/ }),
+    ).toBeInTheDocument();
+    const user = userEvent.setup();
+    await user.click(screen.getByRole("button", { name: "With errors" }));
+
+    expect(
+      screen.queryByRole("button", { name: /clean/ }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /errored/ })).toBeInTheDocument();
   });
 });

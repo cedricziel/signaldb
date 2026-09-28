@@ -21,6 +21,7 @@ import {
   type RumKpiMetric,
 } from "../../api/rum";
 import { fetchErrorGroups } from "../../api/errors";
+import { fetchSessions } from "../../api/rumSessions";
 import {
   durationToSeconds,
   stepForRange,
@@ -217,6 +218,20 @@ export function useRumInteractions(scope: RumScope) {
   return useQuery({
     queryKey: ["rum-interactions", rangeKey, app],
     queryFn: () => fetchInteractions(app, range),
+    enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Sessions tab's list — one row per `session.id`. `filterText` is part
+ * of the query key (and the request itself — see `api/rumSessions.ts`'s
+ * module doc): it narrows which sessions are aggregated, unlike the quick
+ * filters the tab applies client-side to this same result. */
+export function useRumSessions(scope: RumScope, filterText: string) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-sessions", rangeKey, app, filterText],
+    queryFn: () => fetchSessions(app, range, filterText),
     enabled: app !== "",
     staleTime: STALE,
   });
