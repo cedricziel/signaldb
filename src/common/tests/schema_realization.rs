@@ -223,9 +223,19 @@ fn schemas_for(
         "logs" => (&d.logs, &m.current_log_version),
         "traces" => (&d.traces, &m.current_trace_version),
         "profiles" => (&d.profiles, &m.current_profile_version),
-        "metrics_gauge" => (&d.metrics_gauge, &m.current_metric_version),
-        "metrics_sum" => (&d.metrics_sum, &m.current_metric_version),
-        "metrics_histogram" => (&d.metrics_histogram, &m.current_metric_version),
+        // Pinned to the legacy per-type version, not `current_metric_version`.
+        "metrics_gauge" => (
+            &d.metrics_gauge,
+            common::iceberg::schemas::LEGACY_METRIC_VERSION,
+        ),
+        "metrics_sum" => (
+            &d.metrics_sum,
+            common::iceberg::schemas::LEGACY_METRIC_VERSION,
+        ),
+        "metrics_histogram" => (
+            &d.metrics_histogram,
+            common::iceberg::schemas::LEGACY_METRIC_VERSION,
+        ),
         other => panic!("unhandled source {other}"),
     }
 }

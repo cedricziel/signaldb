@@ -1013,8 +1013,8 @@ mod tests {
                 .metadata()
                 .properties
                 .get(evolution::SCHEMA_VERSION_PROPERTY),
-            Some(&SCHEMA_DEFINITIONS.metadata.current_metric_version),
-            "schema version property should be stamped to current after recreation"
+            Some(&schemas::LEGACY_METRIC_VERSION.to_string()),
+            "legacy-named metric tables stay pinned to the legacy version after recreation"
         );
         Ok(())
     }

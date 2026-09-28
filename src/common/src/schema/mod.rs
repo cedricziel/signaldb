@@ -1428,9 +1428,8 @@ type = "int64"
         // Verify specific schemas exist
         assert!(schemas.contains_key("traces"));
         assert!(schemas.contains_key("logs"));
-        assert!(schemas.contains_key("metrics_gauge"));
-        assert!(schemas.contains_key("metrics_sum"));
-        assert!(schemas.contains_key("metrics_histogram"));
+        assert!(schemas.contains_key("metrics"));
+        assert!(schemas.contains_key("metric_exemplars"));
     }
 
     #[test]
@@ -1445,9 +1444,8 @@ type = "int64"
         // Verify specific partition specs exist
         assert!(partition_specs.contains_key("traces"));
         assert!(partition_specs.contains_key("logs"));
-        assert!(partition_specs.contains_key("metrics_gauge"));
-        assert!(partition_specs.contains_key("metrics_sum"));
-        assert!(partition_specs.contains_key("metrics_histogram"));
+        assert!(partition_specs.contains_key("metrics"));
+        assert!(partition_specs.contains_key("metric_exemplars"));
     }
 
     #[test]
@@ -1500,7 +1498,11 @@ type = "int64"
         // "Would create table ...".
         let namespace = manager.build_namespace("acme", "production").unwrap();
         let tables = manager.catalog().list_tabulars(&namespace).await.unwrap();
-        assert_eq!(tables.len(), 8, "{tables:?}");
+        assert_eq!(
+            tables.len(),
+            crate::iceberg::schemas::TableSchema::all().len(),
+            "{tables:?}"
+        );
     }
 
     /// Tenant isolation: `resolve_tenant_by_slug` matches config tenants

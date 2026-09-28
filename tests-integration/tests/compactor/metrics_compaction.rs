@@ -165,7 +165,7 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics_gauge";
+    let table_name = "metrics";
 
     // Phase 1: Write 10 small batches via Writer
     tracing::info!("Phase 1: Writing 10 small gauge metric batches");
@@ -267,7 +267,7 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics_histogram";
+    let table_name = "metrics";
 
     // Phase 1: Write 10 small batches via Writer
     tracing::info!("Phase 1: Writing 10 small histogram metric batches");

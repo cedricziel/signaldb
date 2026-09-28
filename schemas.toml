@@ -5,7 +5,7 @@
 description = "SignalDB built-in table schemas"
 current_trace_version = "physical-v5"
 current_log_version = "physical-v4"
-current_metric_version = "physical-v3"
+current_metric_version = "physical-v4"
 current_profile_version = "physical-v3"
 logical_schema_version = "otel-2026-08"
 
@@ -400,11 +400,7 @@ field_additions = [
     { name = "scope_attributes", type = "typed_attributes", required = false },
 ]
 
-# otel-native-schema layer 7 (D10): the wide metrics table and its paired
-# exemplars table, replacing the five metrics_* tables above at cutover.
-# Declared here at physical-v4 only -- current_metric_version above still
-# points at physical-v3, so nothing creates, writes or reads these tables
-# yet.
+# otel-native-schema layer 7 (D10): replaces the five metrics_* tables above.
 [metrics.physical-v4]
 description = "Wide OTel-native metrics table (otel-native-schema layer 7, D10): one row per datapoint across every metric type, with typed list columns for histogram buckets/summary quantiles instead of JSON strings."
 fields = [

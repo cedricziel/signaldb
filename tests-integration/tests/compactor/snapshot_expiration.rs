@@ -8,7 +8,7 @@
 //! The DataGenerator creates schemas matching the production v1 schemas:
 //! - Traces: 22 columns (full OTLP trace data with attributes, events, links)
 //! - Logs: 18 columns (complete OTLP log records with resource and scope attributes)
-//! - Metrics: 19 columns (metrics_gauge schema with exemplars and partitioning fields)
+//! - Metrics: the wide `metrics` schema (one row per datapoint, typed list columns)
 
 use anyhow::{Context, Result};
 use compactor::iceberg::snapshot::SnapshotManager;
@@ -232,7 +232,7 @@ async fn test_snapshot_expiration_handles_no_snapshots() -> Result<()> {
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics_gauge";
+    let table_name = "metrics";
 
     // Create table but don't write any data (no snapshots)
     let _writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;

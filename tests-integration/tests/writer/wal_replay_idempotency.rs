@@ -117,7 +117,7 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
         wal.get_unprocessed_entries().await?.is_empty(),
         "all entries should be marked processed after the first pass"
     );
-    assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 5);
+    assert_eq!(count_rows(&catalog_manager, "metrics").await?, 5);
 
     // Simulate the crash: the commit landed, the index write did not.
     processor.shutdown().await?;
@@ -140,7 +140,7 @@ async fn replay_after_crash_does_not_duplicate_rows() -> Result<()> {
 
     // The idempotency marker must prevent re-inserting the committed rows.
     assert_eq!(
-        count_rows(&catalog_manager, "metrics_gauge").await?,
+        count_rows(&catalog_manager, "metrics").await?,
         5,
         "replay after crash must not duplicate rows"
     );
@@ -174,7 +174,7 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     )
     .await?;
     processor.process_pending_entries().await?;
-    assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 2);
+    assert_eq!(count_rows(&catalog_manager, "metrics").await?, 2);
     processor.shutdown().await?;
     drop(processor);
     drop(wal);
@@ -202,7 +202,7 @@ async fn mixed_replay_commits_only_new_entries() -> Result<()> {
     processor.process_pending_entries().await?;
 
     assert_eq!(
-        count_rows(&catalog_manager, "metrics_gauge").await?,
+        count_rows(&catalog_manager, "metrics").await?,
         5,
         "old entry must be deduplicated, new entry committed"
     );
@@ -248,7 +248,7 @@ async fn processing_is_idempotent_across_repeated_replays() -> Result<()> {
         )
         .await?;
         processor.process_pending_entries().await?;
-        assert_eq!(count_rows(&catalog_manager, "metrics_gauge").await?, 1);
+        assert_eq!(count_rows(&catalog_manager, "metrics").await?, 1);
         processor.shutdown().await?;
     }
 

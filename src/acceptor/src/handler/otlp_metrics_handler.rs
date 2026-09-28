@@ -424,10 +424,7 @@ mod tests {
             "Should have gauge partition"
         );
         let (gauge_table, gauge_request) = &partitions["gauge"];
-        assert_eq!(
-            gauge_table, "metrics_gauge",
-            "Gauge should map to metrics_gauge table"
-        );
+        assert_eq!(gauge_table, "metrics", "Gauge should map to metrics table");
         assert_eq!(
             gauge_request.resource_metrics[0].scope_metrics[0]
                 .metrics
@@ -443,10 +440,7 @@ mod tests {
         // Verify sum partition
         assert!(partitions.contains_key("sum"), "Should have sum partition");
         let (sum_table, sum_request) = &partitions["sum"];
-        assert_eq!(
-            sum_table, "metrics_sum",
-            "Sum should map to metrics_sum table"
-        );
+        assert_eq!(sum_table, "metrics", "Sum should map to metrics table");
         assert_eq!(
             sum_request.resource_metrics[0].scope_metrics[0]
                 .metrics
@@ -466,8 +460,8 @@ mod tests {
         );
         let (histogram_table, histogram_request) = &partitions["histogram"];
         assert_eq!(
-            histogram_table, "metrics_histogram",
-            "Histogram should map to metrics_histogram table"
+            histogram_table, "metrics",
+            "Histogram should map to metrics table"
         );
         assert_eq!(
             histogram_request.resource_metrics[0].scope_metrics[0]
@@ -605,8 +599,8 @@ mod tests {
 
         let (table_name, exp_hist_request) = &partitions["exponential_histogram"];
         assert_eq!(
-            table_name, "metrics_exponential_histogram",
-            "ExponentialHistogram should map to metrics_exponential_histogram table"
+            table_name, "metrics",
+            "ExponentialHistogram should map to metrics table"
         );
         assert_eq!(
             exp_hist_request.resource_metrics[0].scope_metrics[0]
@@ -683,10 +677,7 @@ mod tests {
         );
 
         let (table_name, summary_request) = &partitions["summary"];
-        assert_eq!(
-            table_name, "metrics_summary",
-            "Summary should map to metrics_summary table"
-        );
+        assert_eq!(table_name, "metrics", "Summary should map to metrics table");
         assert_eq!(
             summary_request.resource_metrics[0].scope_metrics[0]
                 .metrics
@@ -847,15 +838,16 @@ mod tests {
         assert!(partitions.contains_key("exponential_histogram"));
         assert!(partitions.contains_key("summary"));
 
-        // Verify table names
-        assert_eq!(partitions["gauge"].0, "metrics_gauge");
-        assert_eq!(partitions["sum"].0, "metrics_sum");
-        assert_eq!(partitions["histogram"].0, "metrics_histogram");
-        assert_eq!(
-            partitions["exponential_histogram"].0,
-            "metrics_exponential_histogram"
-        );
-        assert_eq!(partitions["summary"].0, "metrics_summary");
+        // Under the wide layout, every metric type routes to the same table.
+        for kind in [
+            "gauge",
+            "sum",
+            "histogram",
+            "exponential_histogram",
+            "summary",
+        ] {
+            assert_eq!(partitions[kind].0, "metrics");
+        }
     }
 
     mod ingest_id_tests {

@@ -83,14 +83,15 @@ pub enum MetricType {
 }
 
 impl MetricType {
-    /// Get the Iceberg table name for this metric type.
-    pub fn table_name(&self) -> &str {
+    /// The `metric_type` column value identifying this type's rows in the
+    /// wide `metrics` table.
+    pub fn metric_type_value(&self) -> &str {
         match self {
-            Self::Gauge => "metrics_gauge",
-            Self::Sum => "metrics_sum",
-            Self::Histogram => "metrics_histogram",
-            Self::ExponentialHistogram => "metrics_exponential_histogram",
-            Self::Summary => "metrics_summary",
+            Self::Gauge => "gauge",
+            Self::Sum => "sum",
+            Self::Histogram => "histogram",
+            Self::ExponentialHistogram => "exponential_histogram",
+            Self::Summary => "summary",
         }
     }
 
@@ -211,15 +212,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metric_type_table_names() {
-        assert_eq!(MetricType::Gauge.table_name(), "metrics_gauge");
-        assert_eq!(MetricType::Sum.table_name(), "metrics_sum");
-        assert_eq!(MetricType::Histogram.table_name(), "metrics_histogram");
+    fn metric_type_values() {
+        assert_eq!(MetricType::Gauge.metric_type_value(), "gauge");
+        assert_eq!(MetricType::Sum.metric_type_value(), "sum");
+        assert_eq!(MetricType::Histogram.metric_type_value(), "histogram");
         assert_eq!(
-            MetricType::ExponentialHistogram.table_name(),
-            "metrics_exponential_histogram"
+            MetricType::ExponentialHistogram.metric_type_value(),
+            "exponential_histogram"
         );
-        assert_eq!(MetricType::Summary.table_name(), "metrics_summary");
+        assert_eq!(MetricType::Summary.metric_type_value(), "summary");
     }
 
     #[test]

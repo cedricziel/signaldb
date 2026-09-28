@@ -560,7 +560,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            8
+            crate::iceberg::schemas::TableSchema::all().len()
         );
     }
 
@@ -582,7 +582,8 @@ mod tests {
             .collect();
         assert!(schema_names.contains(&"traces".to_string()));
         assert!(schema_names.contains(&"logs".to_string()));
-        assert!(schema_names.contains(&"metrics_gauge".to_string()));
+        assert!(schema_names.contains(&"metrics".to_string()));
+        assert!(schema_names.contains(&"metric_exemplars".to_string()));
     }
 
     #[test]
@@ -593,9 +594,8 @@ mod tests {
         let schema_names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(schema_names.contains(&"traces".to_string()));
         assert!(schema_names.contains(&"logs".to_string()));
-        assert!(schema_names.contains(&"metrics_gauge".to_string()));
-        assert!(schema_names.contains(&"metrics_sum".to_string()));
-        assert!(schema_names.contains(&"metrics_histogram".to_string()));
+        assert!(schema_names.contains(&"metrics".to_string()));
+        assert!(schema_names.contains(&"metric_exemplars".to_string()));
     }
 
     #[tokio::test]

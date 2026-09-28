@@ -249,7 +249,7 @@ mod tests {
             (WalOperation::WriteTraces, "traces"),
             (WalOperation::WriteLogs, "logs"),
             (WalOperation::WriteProfiles, "profiles"),
-            (WalOperation::WriteMetrics, DEFAULT_METRICS_TABLE),
+            (WalOperation::WriteMetrics, WIDE_METRICS_TABLE),
         ] {
             let target = on_ingest(&operation, RouteMetadata::default());
             assert_eq!(target.table_name, table);
@@ -257,7 +257,7 @@ mod tests {
     }
 
     #[test]
-    fn metrics_honour_target_table_and_fall_back_to_gauge() {
+    fn metrics_honour_target_table_and_fall_back_to_the_wide_table() {
         let with_table = on_ingest(
             &WalOperation::WriteMetrics,
             RouteMetadata {
@@ -265,7 +265,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(with_table.table_name, "metrics_exponential_histogram");
+        assert_eq!(with_table.table_name, WIDE_METRICS_TABLE);
 
         // Absent or blank falls back rather than routing to a nameless table.
         for target_table in [None, Some(""), Some("  ")] {
@@ -276,7 +276,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            assert_eq!(target.table_name, DEFAULT_METRICS_TABLE);
+            assert_eq!(target.table_name, WIDE_METRICS_TABLE);
         }
     }
 
