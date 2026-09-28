@@ -36,9 +36,16 @@ import {
 } from "./evalFormat";
 import { EvalsHead } from "./EvalBits";
 import {
+  regressionsDescription,
+  regressionsSetName,
+  saveRegressionsBlocked,
+} from "./evalSetModel";
+import { SaveRegressionsDialog } from "./SaveRegressionsDialog";
+import {
   evalsUpdater,
   useAgentTraces,
   useComparedRuns,
+  useEvalSets,
   useRuns,
 } from "./useEvalData";
 import "./evals.css";
@@ -200,6 +207,21 @@ export function CompareView(shell: ShellContext) {
   const error = runs.error ?? base.error ?? cand.error;
   const agent = candidate?.agent ?? baseline?.agent;
 
+  const sourceSet = baseline?.set ?? candidate?.set ?? "";
+  // The list settles whether the set is stored; its cases load only once
+  // the dialog opens.
+  const storedSets = useEvalSets(state);
+  const storedNames = useMemo(
+    () => storedSets.data?.items.map((s) => s.name),
+    [storedSets.data],
+  );
+  const [saving, setSaving] = useState(false);
+  const regressed = byKind.regression;
+  const saveBlocked = saveRegressionsBlocked({
+    sourceSet,
+    storedSets: storedNames,
+  });
+
   return (
     <div className="evals">
       <EvalsHead
@@ -217,14 +239,45 @@ export function CompareView(shell: ShellContext) {
           </>
         }
         actions={
-          <CopyValueButton
-            value={window.location.href}
-            label="to this comparison"
-            text={["Copy link", "Link copied"]}
-            className="btn"
-          />
+          <>
+            {regressed.length > 0 && (
+              <button
+                type="button"
+                className="btn"
+                disabled={saveBlocked !== null}
+                title={saveBlocked ?? undefined}
+                onClick={() => setSaving(true)}
+              >
+                Save {fmtCount(regressed.length)} regressed cases as eval set
+              </button>
+            )}
+            <CopyValueButton
+              value={window.location.href}
+              label="to this comparison"
+              text={["Copy link", "Link copied"]}
+              className="btn"
+            />
+          </>
         }
       />
+      {regressed.length > 0 && saveBlocked && (
+        <span className="evals-note">{saveBlocked}.</span>
+      )}
+      {saving && (
+        <SaveRegressionsDialog
+          state={state}
+          caseIds={regressed.map((r) => r.caseId)}
+          sourceSet={sourceSet}
+          candidateTraces={cand.data?.traces ?? new Map()}
+          defaultName={regressionsSetName(candidate?.firstMs ?? Date.now())}
+          defaultAgent={agent ?? ""}
+          description={regressionsDescription(
+            candidate?.version ?? candidate?.id ?? "the candidate",
+            baseline?.version ?? baseline?.id ?? "the baseline",
+          )}
+          onClose={() => setSaving(false)}
+        />
+      )}
       <div className="evals-bar" style={{ padding: "10px 12px", gap: 10 }}>
         <span className="evals-picker-label">Baseline</span>
         <RunPicker

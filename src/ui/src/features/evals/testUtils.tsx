@@ -4,13 +4,21 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import { render } from "@testing-library/react";
 import type { ComponentType } from "react";
-import { MemoryRouter } from "react-router";
+import { MemoryRouter, useLocation } from "react-router";
 import { vi } from "vitest";
 import * as queryIrApi from "../../api/queryIr";
 import { testQueryClient } from "../../lib/queryClient";
 import type { ShellContext } from "../../lib/outletState";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
-import { withColumns, type IrDoc } from "./evalFixtures";
+import * as evalSetsApi from "../../api/evalSets";
+import { EvalApiError } from "../../api/evalSets";
+import {
+  EVAL_SET_DETAILS,
+  EVAL_SET_LIST,
+  evalsIrResponse,
+  withColumns,
+  type IrDoc,
+} from "./evalFixtures";
 
 export type { IrDoc };
 
@@ -52,6 +60,34 @@ export function mockIr(handler: (doc: IrDoc) => unknown) {
   );
 }
 
+/** Answers every IR request from the shared scenario (`evalFixtures.ts`). */
+export function mockScenarioIr() {
+  mockIr((doc) => evalsIrResponse(doc));
+}
+
+/** Wires a file's `vi.mock("../../api/evalSets", …)` to the scenario's
+ * sets: list and get answer from `EVAL_SET_*`, a missing set 404s. */
+export function mockEvalSetsApi() {
+  vi.mocked(evalSetsApi.listEvalSets).mockResolvedValue(
+    EVAL_SET_LIST as Awaited<ReturnType<typeof evalSetsApi.listEvalSets>>,
+  );
+  vi.mocked(evalSetsApi.getEvalSet).mockImplementation(async (name) => {
+    const set = EVAL_SET_DETAILS[name];
+    if (!set) throw new EvalApiError(`no eval set ${name}`, 404, []);
+    return set as Awaited<ReturnType<typeof evalSetsApi.getEvalSet>>;
+  });
+}
+
+/** The router's current path + search, for asserting navigation. */
+function LocationProbe() {
+  const { pathname, search } = useLocation();
+  return (
+    <span data-testid="location" hidden>
+      {pathname + search}
+    </span>
+  );
+}
+
 /** Renders an Evaluate page with `state` over the defaults; returns its
  * `update` mock. */
 export function renderEvalView(
@@ -63,6 +99,7 @@ export function renderEvalView(
     <QueryClientProvider client={testQueryClient()}>
       <MemoryRouter>
         <View state={{ ...DEFAULT_STATE, ...state }} update={update} />
+        <LocationProbe />
       </MemoryRouter>
     </QueryClientProvider>,
   );

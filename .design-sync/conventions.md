@@ -27,7 +27,7 @@ const { QueryClientProvider, previewQueryClient, AppShell, previewWhoami } =
 </QueryClientProvider>;
 ```
 
-- `page` marks the current nav item and breadcrumb. Use one of `overview`, `errors`, `catalog`, `logs`, `traces`, `metrics`, `profiles`, `query`, `evals` (Agents & scores), `compare`, `runs`, `evaluators`, `schema`, `processors`, `instrumentation`, `manage`. For a page that isn't in the nav yet, use the closest one; don't add nav entries unless the brief is about the navigation itself.
+- `page` marks the current nav item and breadcrumb. Use one of `overview`, `errors`, `catalog`, `logs`, `traces`, `metrics`, `profiles`, `query`, `evals` (Agents & scores), `compare`, `sets` (Eval sets), `runs`, `evaluators`, `schema`, `processors`, `instrumentation`, `manage`. For a page that isn't in the nav yet, use the closest one; don't add nav entries unless the brief is about the navigation itself.
 - `who={previewWhoami}` fills the tenant switcher and account row with sample data. Leave it out and the account row disappears.
 - `isDemo` adds the read-only demo banner.
 - The page views (`OverviewView`, `LogsView`, `TracesView`, `ErrorsView`, `CatalogView`, `AgentsScoresView`, …) are the existing screens' content, meant to sit inside the shell. They load their data from the SignalDB API, so a new design composes its content from the components and tokens below; use the page views' cards as the reference for how a page is laid out.

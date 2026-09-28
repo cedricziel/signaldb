@@ -1,6 +1,10 @@
 // Small pieces shared by the Evaluate pages.
 import type { ReactNode } from "react";
+import { EvalApiError } from "../../api/evalSets";
+import { toErrorMessage } from "../../api/http";
+import { Dialog } from "../../components/Dialog";
 import { ShareBar } from "../../components/ShareBar";
+import { viewHref, type ExploreState } from "../../lib/urlState";
 import { passRateOf, type EvalStats } from "./evalModel";
 import { fmtPct } from "./evalFormat";
 
@@ -9,7 +13,7 @@ export function EvalsHead({
   sub,
   actions,
 }: {
-  title: string;
+  title: ReactNode;
   sub?: ReactNode;
   actions?: ReactNode;
 }) {
@@ -127,6 +131,93 @@ export function ScoreBadge({
     <span className={`evals-badge${tone ? ` ${tone}` : ""}`} title={title}>
       {children}
     </span>
+  );
+}
+
+const DOCS = "https://github.com/cedricziel/signaldb/blob/main/docs/users";
+export const CASE_FORMAT_DOC = `${DOCS}/eval-sets.md#the-set-and-its-cases`;
+export const RESULTS_FORMAT_DOC = `${DOCS}/evaluations.md#upload-a-results-file`;
+
+/** Compare for two runs; an empty baseline lets Compare pick the
+ * candidate's previous run of the same set. */
+export function compareHref(
+  state: ExploreState,
+  baseline: string,
+  candidate: string,
+): string {
+  return viewHref("/evals/compare", state, {
+    evals: { ...state.evals, baseline, candidate, case: "" },
+  });
+}
+
+/** An eval set's page. */
+export function setHref(state: ExploreState, name: string): string {
+  return viewHref(`/evals/sets/${encodeURIComponent(name)}`, state);
+}
+
+/** The Evaluate dialogs' frame: title row with a close button, a body and
+ * a footer. */
+export function EvalDialog({
+  label,
+  wide,
+  onClose,
+  children,
+  footer,
+  tabs,
+}: {
+  label: string;
+  wide?: boolean;
+  onClose: () => void;
+  children: ReactNode;
+  footer: ReactNode;
+  tabs?: ReactNode;
+}) {
+  return (
+    <Dialog
+      label={label}
+      onClose={onClose}
+      className={`evals-dialog${wide ? " wide" : ""}`}
+    >
+      <div className="evals evals-dlg">
+        <div className="evals-dlg-head">
+          <h2>{label}</h2>
+          <button
+            type="button"
+            className="btn btn-ghost"
+            aria-label="Close"
+            onClick={onClose}
+          >
+            ✕
+          </button>
+        </div>
+        {tabs}
+        <div className="evals-dlg-body">{children}</div>
+        <div className="evals-dlg-foot">{footer}</div>
+      </div>
+    </Dialog>
+  );
+}
+
+/** The problems behind a failed write: the server's message plus, for an
+ * upload, each invalid row. */
+export function WriteError({ error }: { error: unknown }) {
+  const details = error instanceof EvalApiError ? error.details : [];
+  return (
+    <div role="alert" className="evals-errors-wrap">
+      <div className="error-text">{toErrorMessage(error)}</div>
+      {details.length > 0 && (
+        <ul className="evals-errors" aria-label="Problems">
+          {details.map((d, i) => (
+            <li key={i}>
+              {d.row != null && `line ${d.row}`}
+              {d.column && ` · ${d.column}`}
+              {(d.row != null || d.column) && ": "}
+              {d.reason}
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
   );
 }
 

@@ -8,6 +8,8 @@ import * as agents from "./AgentsScoresView.stories";
 import * as caseStories from "./CaseView.stories";
 import * as compare from "./CompareView.stories";
 import * as evaluators from "./EvaluatorsView.stories";
+import * as sets from "./EvalSetsView.stories";
+import * as oneSet from "./EvalSetView.stories";
 import * as runs from "./RunsView.stories";
 
 const A = composeStories(agents);
@@ -15,6 +17,8 @@ const C = composeStories(caseStories);
 const P = composeStories(compare);
 const E = composeStories(evaluators);
 const R = composeStories(runs);
+const S = composeStories(sets);
+const T = composeStories(oneSet);
 
 describe("Evaluate scenario stories", () => {
   it("Agents & scores: KPIs, the mean-score chart and its bucket tooltip", async () => {
@@ -76,6 +80,54 @@ describe("Evaluate scenario stories", () => {
       expect(toggles[0]).toHaveAttribute("aria-expanded", "false"),
     );
     render(<C.Dark />);
+  });
+
+  it("Eval sets: the scenario's sets, their last run, and the empty state", async () => {
+    render(<S.Default />);
+    expect(
+      await screen.findByText(
+        "traces 3 · hand-written 9",
+        {},
+        { timeout: 5000 },
+      ),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("v1.8.0")).toBeInTheDocument();
+    render(<S.Dark />);
+    render(<S.Empty />);
+    expect(
+      await screen.findByText("No eval sets yet", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+  });
+
+  it("Eval set: cases scored by the newest run, Add traces, and a missing set", async () => {
+    render(<T.Default />);
+    expect(
+      await screen.findByText("3 failing", {}, { timeout: 5000 }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Add traces…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Add up to 50 cases" }));
+    expect(
+      await screen.findByRole("status", { name: "Last add" }),
+    ).toHaveTextContent("Matches 214");
+    render(<T.Dark />);
+    render(<T.NotFound />);
+    expect(
+      await screen.findByText(
+        "No eval set named triage-golden-200",
+        {},
+        { timeout: 5000 },
+      ),
+    ).toBeInTheDocument();
+  });
+
+  it("Compare: saving the regressions is offered against the stored set", async () => {
+    render(<P.Default />);
+    const save = await screen.findByRole(
+      "button",
+      { name: "Save 1 regressed cases as eval set" },
+      { timeout: 5000 },
+    );
+    await waitFor(() => expect(save).toBeEnabled());
   });
 
   it("Evaluators: the discovered evaluators", async () => {

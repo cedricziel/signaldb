@@ -80,6 +80,15 @@ describe("buildSearch", () => {
     );
   });
 
+  it("round-trips the Runs page's eval-set filter", () => {
+    const search = buildSearch({
+      ...DEFAULT_STATE,
+      evals: { ...DEFAULT_STATE.evals, set: "triage-golden-200" },
+    });
+    expect(search).toBe("?set=triage-golden-200");
+    expect(parseExploreState(search).evals.set).toBe("triage-golden-200");
+  });
+
   it("never emits a trace param", () => {
     // Single-trace view is a route (see buildPath), not a ?trace= param.
     expect(buildSearch({ ...DEFAULT_STATE, trace: "deadbeef" })).not.toContain(

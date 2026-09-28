@@ -14,9 +14,11 @@ import {
   fetchRuns,
   fetchStats,
   fetchTraces,
+  fetchTraceVersions,
   fetchVersions,
   type ResultScope,
 } from "../../api/evals";
+import { getEvalSet, listEvalSets } from "../../api/evalSets";
 import { previousPeriod } from "../../api/entityDetailStats";
 import { WIDE_LOOKBACK_MS } from "../../api/traceDetail";
 import {
@@ -188,8 +190,8 @@ export function useEvaluators(scope: EvalScope) {
   return useEvalQuery("eval-evaluators", scope, [], fetchEvaluators);
 }
 
-/** Per-case results of one run. */
-function useRunCases(scope: EvalScope, runId: string) {
+/** Per-case results of one run (an empty id disables it). */
+export function useRunCases(scope: EvalScope, runId: string) {
   return useEvalQuery(
     "eval-run-cases",
     scope,
@@ -251,6 +253,55 @@ export function useCaseTraces(scope: EvalScope, traceIds: string[]) {
     scope,
     [traceIds],
     (range) => fetchTraces(range, traceIds),
+    traceIds.length > 0,
+  );
+}
+
+// ---- eval sets ---------------------------------------------------------------
+
+/** Query keys of the eval-set endpoints, scoped to the tenant/dataset. */
+export function evalSetKeys(state: ExploreState) {
+  const scope = [state.tenant, state.dataset];
+  return {
+    all: ["eval-sets", ...scope],
+    list: ["eval-sets", ...scope, "list"],
+    one: (name: string) => ["eval-sets", ...scope, "set", name],
+  };
+}
+
+export function useEvalSets(state: ExploreState) {
+  return useQuery({
+    queryKey: evalSetKeys(state).list,
+    queryFn: listEvalSets,
+    staleTime: STALE,
+    retry: false,
+  });
+}
+
+export function useEvalSet(state: ExploreState, name: string) {
+  return useQuery({
+    queryKey: evalSetKeys(state).one(name),
+    queryFn: () => getEvalSet(name),
+    staleTime: STALE,
+    enabled: name !== "",
+    retry: false,
+  });
+}
+
+/** Runs over the fixed lookback: the eval-set pages show each set's newest
+ * runs whatever window the shell holds. */
+export function useLookbackRuns(state: ExploreState) {
+  const scope = lookbackScope(state);
+  return { scope, runs: useRuns(scope, {}) };
+}
+
+/** The `service.version`s of the traces an upload links to. */
+export function useTraceVersions(state: ExploreState, traceIds: string[]) {
+  return useEvalQuery(
+    "eval-trace-versions",
+    lookbackScope(state),
+    [traceIds],
+    (range) => fetchTraceVersions(range, traceIds),
     traceIds.length > 0,
   );
 }

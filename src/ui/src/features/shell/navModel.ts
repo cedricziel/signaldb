@@ -20,6 +20,7 @@ export type PageId =
   | "instrumentation"
   | "evals"
   | "compare"
+  | "sets"
   | "runs"
   | "evaluators"
   | "manage"
@@ -67,6 +68,7 @@ export const NAV_GROUPS: NavGroup[] = [
     pages: [
       { id: "evals", label: "Agents & scores", path: "/evals" },
       { id: "compare", label: "Compare", path: "/evals/compare" },
+      { id: "sets", label: "Eval sets", path: "/evals/sets" },
       { id: "runs", label: "Runs", path: "/evals/runs" },
       { id: "evaluators", label: "Evaluators", path: "/evals/evaluators" },
     ],
