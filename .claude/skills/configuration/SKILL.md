@@ -296,15 +296,16 @@ Env: `SIGNALDB__COMPACTOR__RETENTION__ENABLED`, `SIGNALDB__COMPACTOR__RETENTION_
 ```toml
 [compactor.attr_promotion]
 enabled = false               # Decision pass off by default
-dry_run = true                # Log-only (schema-changing rewrite not yet implemented)
-max_labels_per_table = 32     # Width budget incl. pinned [schema.materialized_labels]
+dry_run = true                # Log-only; false evolves the schema during the rewrite
+max_labels_per_table = 32     # Width budget shared by label columns (pins) and attr_* columns
+demote_after_idle = "7d"      # Demote a promoted column not queried this long; "0s" disables
 min_presence = 0.005          # Min fraction of rows carrying the key
 min_query_hits = 1            # Min accumulated query demand
 promote_streak = 3            # Consecutive over-threshold cycles (hysteresis)
 max_promotions_per_cycle = 4
 ```
 
-Scores persisted attribute stats (compactor scan stats + querier demand counters in the catalog's `attribute_stats` table) as demand × presence; rejects capped-cardinality and generated-looking keys; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
+Scores per-(level, key) stats (compactor presence + querier demand and `last_queried_at` in the catalog's `attribute_level_stats` table) as demand × presence and adds typed `attr_<level>_<key>` copy columns; rejects capped-cardinality and generated-looking keys; demotes idle, then least-recently-queried columns when over budget; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
 
 #### Orphan Cleanup (Phase 3)
 

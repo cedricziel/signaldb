@@ -976,6 +976,7 @@ A schema-evolution failure is logged as a warning and the compaction continues u
 **What operators see in the logs:**
 
 - `Typed attribute promotion decision` (info) — per table: `dry_run`, the (level, key) pairs to promote, and those still `building` their streak.
+- `Typed attribute demotion decision` (info) — per table: `dry_run` and the (level, key) pairs to demote (idle or over budget).
 - `Added typed promoted attribute columns via schema evolution` / `Removed typed promoted attribute columns via schema evolution` (info) — a promotion or demotion schema commit landed; lists the table, schema id, and columns.
 - `Failed to evolve schema for attribute promotion; continuing compaction without it` and `Failed to evolve schema for attribute demotion; continuing compaction without it` (warn) — the schema commit failed; the rewrite proceeded under the old schema.
 - The usual `Rewrote table data into compacted files` line covers the backfilled rewrite — there is no separate backfill log line, and no promotion-specific Prometheus metric yet.

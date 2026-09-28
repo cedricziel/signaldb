@@ -519,7 +519,7 @@ demote_after_idle = "7d"
 
 **`dry_run` semantics:**
 
-- `dry_run = true` (default): the pass only logs a `Typed attribute promotion decision` line per table. No schema or data changes.
+- `dry_run = true` (default): the pass only logs `Typed attribute promotion decision` and `Typed attribute demotion decision` lines per table. No schema or data changes.
 - `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds or drops promoted columns through a metadata-only commit), backfills each promoted column from its level's typed map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](operations.md#attribute-promotion) for the observable sequence.
 
 The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of promoted and label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched.
