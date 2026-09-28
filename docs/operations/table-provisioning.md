@@ -39,16 +39,16 @@ tell whether it is working.
 
 ## What gets provisioned
 
-Up to eight tables per dataset, gated on the signal types enabled **for that
+Up to five tables per dataset, gated on the signal types enabled **for that
 tenant** — a tenant that carries its own `[schema]` block narrows the set, so
-one that disabled metrics gets no `metrics_*` tables:
+one that disabled metrics gets no `metrics`/`metric_exemplars` tables:
 
-| Signal   | Tables                                                                                                  | Gate                               |
-| -------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| Traces   | `traces`                                                                                                | `default_schemas.traces_enabled`   |
-| Logs     | `logs`                                                                                                  | `default_schemas.logs_enabled`     |
-| Metrics  | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `default_schemas.metrics_enabled`  |
-| Profiles | `profiles`                                                                                              | `default_schemas.profiles_enabled` |
+| Signal   | Tables                        | Gate                               |
+| -------- | ----------------------------- | ---------------------------------- |
+| Traces   | `traces`                      | `default_schemas.traces_enabled`   |
+| Logs     | `logs`                        | `default_schemas.logs_enabled`     |
+| Metrics  | `metrics`, `metric_exemplars` | `default_schemas.metrics_enabled`  |
+| Profiles | `profiles`                    | `default_schemas.profiles_enabled` |
 
 Custom tables declared in `default_schemas.custom_schemas` are a config-only
 concept and are never provisioned.
@@ -90,6 +90,12 @@ long a _newly created_ dataset waits.
    tenant whose default exists only as a column on its tenant row is
    provisioned like any other.
 3. For each dataset, load-or-create every enabled table.
+4. For each dataset, drop any of the five legacy per-type metric tables
+   (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
+   `metrics_exponential_histogram`, `metrics_summary`) still present — the
+   otel-native-schema layer 7 cutover to the typed `metrics`/`metric_exemplars`
+   tables. Dropped data is not migrated; see
+   [the metrics table](../architecture/storage-layout.md#metrics-table-physical-v4----current).
 
 Datasets created while the writer was down, datasets predating this behavior,
 and datasets added at runtime all converge on a later pass — no restart, no
@@ -230,7 +236,7 @@ A converged pass logs at `debug`.
 ## Consequences to expect
 
 - **Empty tables multiply catalog objects.** Each provisioned dataset gains up
-  to eight catalog rows and eight `metadata.json` files. They carry no
+  to five catalog rows and five `metadata.json` files. They carry no
   snapshots and no data files, so retention, orphan cleanup, storage
   accounting, and the compactor all treat them as no-ops.
 - **Materialized labels are fixed at creation time.** `[schema]
@@ -244,8 +250,8 @@ materialized_labels` is applied when a table is created; `ensure_table`'s
   pass adds typed `attr_<level>_<key>` copies of hot attributes instead — see
   [Attribute Promotion](compactor/operations.md#attribute-promotion).
 - **`ensure_table` does evolve an existing table's schema** — every
-  `schemas.toml`-sourced signal (traces, logs, all five metrics
-  representations, and profiles). Every load, not just creation, brings the
+  `schemas.toml`-sourced signal (traces, logs, both metrics tables, and
+  profiles). Every load, not just creation, brings the
   table's schema forward to the current `schemas.toml` version if it's
   behind. New columns are always nullable and historical rows are never
   rewritten to backfill them; beyond that, a table whose recorded starting

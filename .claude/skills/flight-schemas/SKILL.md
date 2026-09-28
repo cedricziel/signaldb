@@ -16,7 +16,7 @@ sources:
 
 Schemas are defined in `schemas.toml` (compiled into binary via `include_str!`) and support:
 
-- **Versioning**: Each signal type tracks a current physical version (traces=physical-v5, logs=physical-v4, metrics=physical-v3, profiles=physical-v3) — the typed attribute layout (see below), landed as a one-shot cutover: a table still in the legacy single-map layout is dropped and recreated, never evolved, the next time `IcebergTableManager::ensure_table` loads it. A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
+- **Versioning**: Each signal type tracks a current physical version (traces=physical-v5, logs=physical-v4, metrics=physical-v4, profiles=physical-v3) — the typed attribute layout (see below), landed as a one-shot cutover: a table still in the legacy single-map layout is dropped and recreated, never evolved, the next time `IcebergTableManager::ensure_table` loads it. Metrics' `physical-v4` is additionally a table-shape cutover (`otel-native-schema` layer 7): the five legacy per-type tables are replaced by `metrics`/`metric_exemplars`. A separate `logical_schema_version` (`otel-2026-08`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
 - **Three version axes, not one**: (1) the Flight **wire** format vs Iceberg storage — the `*_v1_to_*` transforms in `src/writer/src/schema_transform.rs`; "v1"/"v2" in those names is historical and means wire→storage, nothing else; (2) the **physical** chain `physical-v1..vN` in `schemas.toml`, one per signal; (3) the **logical** schema version (`logical_schema_version`), which describes `common::schema::logical`. A storage migration moves (2) only; a logical field change moves (3) only.
 - **Inheritance**: `inherits = "physical-v1"` pulls all parent fields
 - **Field renames**: `{ from = "name", to = "span_name" }`
@@ -63,17 +63,17 @@ field name on every batch. Plan construction returns `Err` (never panics)
 on a field with no matching rule, so a bad extraction-rule reference fails
 before the writer serves traffic. Only this trace v1→v2 step is
 plan-based; `transform_logs_v1_to_iceberg`/`transform_profiles_v1_to_iceberg`/
-the five metrics transforms stay hand-written per-field code (none of them
-have a v1→v2 split the way traces does — they go wire-to-physical
-directly).
+`transform_metrics_to_wide`/`transform_metric_exemplars` stay hand-written
+per-field code (none of them have a v1→v2 split the way traces does — they
+go wire-to-physical directly).
 
-Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in the current physical format.
+Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in the current physical format. On the wire, a `WriteMetrics` batch still carries `data_json` unchanged; the writer turns it into both the `metrics` and `metric_exemplars` rows, and one WAL entry commits to both tables (replay-safe via per-table idempotency markers).
 
-Non-finite metric doubles (NaN, ±Inf) are carried in v1 `data_json` as the strings `"NaN"`/`"+Inf"`/`"-Inf"` (`common::flight::conversion::{f64_to_json, json_to_f64}`), never `null`; the writer maps them back and stores a value-less point as NaN, so the non-nullable `metrics_gauge`/`metrics_sum.value` columns never see a null (#1061). The querier's histogram bounds parser accepts the same sentinels.
+Non-finite metric doubles (NaN, ±Inf) are carried in `data_json` as the strings `"NaN"`/`"+Inf"`/`"-Inf"` (`common::flight::conversion::{f64_to_json, json_to_f64}`), never `null`; the writer maps them back and stores a value-less point as NaN, so the non-nullable `metrics.value` column never sees a null for a gauge/sum row (#1061). The querier's histogram bounds parser accepts the same sentinels.
 
 `service_name` is non-nullable in every Iceberg table. A resource without `service.name` (OTLP allows it; a Collector hostmetrics pipeline without a resource processor is the classic producer) is stored as `common::flight::conversion::UNKNOWN_SERVICE_NAME` (`"unknown"`) — the acceptor's OTLP conversion does this for traces and logs (their v1 batches carry `service_name`), the writer's `extract_resource_context` for the metrics transforms, which re-derive `service_name` from `resource_json` — so such batches are never dead-lettered with "Column 'service_name' is declared as non-nullable but contains null values".
 
-`writer::schema_transform::schema_consistency` (`unified-table-schema`'s `table-schema-consistency` capability) asserts, per table, that `schemas.toml`'s current non-computed field names exactly match a hand-maintained "fields this transform touches" set — the failure mode it exists to catch is a field declared physical but never actually read or written, the way `dropped_*_count` went silent before #1208. `transform_trace_v1_to_v2`/`transform_logs_v1_to_iceberg`/`transform_profiles_v1_to_iceberg` also self-check this at runtime (each iterates its own resolved schema's field list with an exhaustive match, erroring on an unhandled name); the five metrics transforms build columns positionally against their own hand-written `create_metrics_*_arrow_schema()` with no such runtime check, so the test-level check is these five tables' only guard.
+`writer::schema_transform::schema_consistency` (`unified-table-schema`'s `table-schema-consistency` capability) asserts, per table, that `schemas.toml`'s current non-computed field names exactly match a hand-maintained "fields this transform touches" set — the failure mode it exists to catch is a field declared physical but never actually read or written, the way `dropped_*_count` went silent before #1208. `transform_trace_v1_to_v2`/`transform_logs_v1_to_iceberg`/`transform_profiles_v1_to_iceberg` also self-check this at runtime (each iterates its own resolved schema's field list with an exhaustive match, erroring on an unhandled name); `transform_metrics_to_wide`/`transform_metric_exemplars` build columns positionally against their own resolved `metrics.physical-v4`/`metric_exemplars.physical-v4` schemas with no such runtime check, so the test-level check is these two tables' only guard.
 
 ## Traces Table Schema (physical-v4, the write-transform's target -- current storage is physical-v5, the typed attribute layout; see `docs/architecture/storage-layout.md`)
 
@@ -112,35 +112,47 @@ The five v3 columns and `resource_identity` are nullable, so rows written before
 
 Key fields: `timestamp` (partition), `trace_id`, `span_id`, `severity_text`, `severity_number`, `service_name`, `body`, `resource_attributes`, `log_attributes`, `date_day`, `hour`. `transform_logs_v1_to_iceberg` emits `log_attributes`/`resource_attributes`/`scope_attributes` as JSON strings at this intermediate `physical-v3` shape; the table's actual current schema (`physical-v4`) declares each as five typed columns (`{container}_str/_int/_double/_bool/_residue` — see `docs/architecture/storage-layout.md`'s "Typed attribute layout" section), and `apply_typed_attribute_containers` splits the JSON into them before commit, resolving each key's canonical type through the attribute type authority. v2 (#1340) adds a nullable `resource_identity` string column -- same digest and same null-before-the-column-existed rule as traces'. v3 (#1743) adds nullable `event_name` (String) and `dropped_attributes_count` (Long, cast from the wire batch's UInt32) columns, mirroring `traces.physical-v3`'s dropped counts.
 
-Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `label_<key>` column per key — except when two configured keys sanitize to the same candidate name (e.g. `http.method`/`http_method`), in which case `common::iceberg::evolution::resolve_label_columns_canonical`/`resolve_label_columns_fresh` assign collision-safe suffixes (`label_http_method`, `label_http_method_2`, ...) deterministically from the full configured key _set_ (order-independent), stamping each column's `doc` as the authoritative key→column record (#1448; same doc-authoritative mechanism as auto-promotion's `resolve_label_columns`, #814). The writer reconciles a batch's label columns against the table's `doc`-authoritative assignment before commit, so a config edit that grows the key set on an already-existing table doesn't misroute one key's values into another's column; matching is by the origin key stamped into each label column's Arrow field metadata (`LABEL_ORIGIN_KEY_METADATA`), which survives the WAL's IPC round trip, not by column name (#1534) — a pre-#1534 WAL entry has no such metadata and falls back to the old name-based guard. All eight `transform_*_v1_to_iceberg` transforms append these via `extend_schema_with_labels` — value from resource→scope→record attributes, first non-null. Logs/traces/profiles use the batch-level `materialized_label_columns`; the 5 exploded metrics transforms use `materialized_label_columns_from_json` (per data point). Schema creation for all six built-in table types appends label columns via `ResolvedSchema::to_iceberg_schema_with_labels` (`schemas.toml`-sourced for every one of them since #1237 — no hand-written label-appending function remains). Default empty ⇒ unchanged schema. Per-tenant: transforms and schema creation take the tenant-resolved `MaterializedLabels` (tenant schema override replaces global; resolved in `CatalogManager::ensure_table` and `IcebergTableWriter::new`/`transform_for_signal`). See `docs/architecture/storage-layout.md#materialized-labels`.
+Plus, when `[schema.materialized_labels].<signal>` is configured, a nullable `label_<key>` column per key — except when two configured keys sanitize to the same candidate name (e.g. `http.method`/`http_method`), in which case `common::iceberg::evolution::resolve_label_columns_canonical`/`resolve_label_columns_fresh` assign collision-safe suffixes (`label_http_method`, `label_http_method_2`, ...) deterministically from the full configured key _set_ (order-independent), stamping each column's `doc` as the authoritative key→column record (#1448; same doc-authoritative mechanism as auto-promotion's `resolve_label_columns`, #814). The writer reconciles a batch's label columns against the table's `doc`-authoritative assignment before commit, so a config edit that grows the key set on an already-existing table doesn't misroute one key's values into another's column; matching is by the origin key stamped into each label column's Arrow field metadata (`LABEL_ORIGIN_KEY_METADATA`), which survives the WAL's IPC round trip, not by column name (#1534) — a pre-#1534 WAL entry has no such metadata and falls back to the old name-based guard. Every write-transform appends these via `extend_schema_with_labels` — value from resource→scope→record attributes, first non-null. Logs/traces/profiles use the batch-level `materialized_label_columns`; `transform_metrics_to_wide` uses `materialized_label_columns_from_json` (per data point). Schema creation for all five built-in table types appends label columns via `ResolvedSchema::to_iceberg_schema_with_labels` (`schemas.toml`-sourced for every one of them since #1237 — no hand-written label-appending function remains). Default empty ⇒ unchanged schema. Per-tenant: transforms and schema creation take the tenant-resolved `MaterializedLabels` (tenant schema override replaces global; resolved in `CatalogManager::ensure_table` and `IcebergTableWriter::new`/`transform_for_signal`). See `docs/architecture/storage-layout.md#materialized-labels`.
 
 ## Metrics Schemas
 
-The current version (`physical-v3` for all five metrics representations and for `profiles`) is the typed attribute layout: `attributes`/`resource_attributes`/`scope_attributes` (metrics) and `profile_attributes`/`resource_attributes`/`scope_attributes` (profiles) are each five typed columns, not one `Map<String,String>`.
+The current metrics layout (`otel-native-schema` layer 7, D10) is two wide
+tables, `metrics.physical-v4` and `metric_exemplars.physical-v4`
+(`schemas.toml`), replacing the five legacy per-type tables
+(`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
+`metrics_exponential_histogram`, `metrics_summary`). `MetricsLayout::current()`
+(`common::iceberg::schemas`) reads `current_metric_version` and returns
+`Wide` for `physical-v4`; `Legacy` for anything else. Under `Wide`, the writer
+runs two transforms per wire metrics batch instead of the five hand-written
+per-type ones:
 
-`schemas.toml` defines `physical-v1` through `physical-v3` for all five metrics
-representations (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
-`metrics_exponential_histogram`, `metrics_summary`) and for `profiles`; v2
-(#1340) adds the same nullable `resource_identity` digest column traces/logs
-gained, null on any row written before the column existed; v3 is the typed
-attribute layout, landed by the same one-shot cutover as traces/logs (a table
-still on `physical-v2` is dropped and recreated, never evolved, since live
-evolution cannot add/remove a map-typed column).
-`iceberg::schemas`'s `create_*_schema_with()` functions resolve from it via
-`ResolvedSchema::to_iceberg_schema_with_labels` — the same path traces/logs
-already used — rather than building `StructField` lists by hand. Live-table
-evolution (`common::iceberg::evolution`, via `TableManager::ensure_schema_evolved`)
-covers the `physical-v1` → `physical-v2` hop for all five metrics tables and
-`profiles`; the `physical-v2` → `physical-v3` (typed layout) hop is the
-drop-and-recreate path instead, same as traces/logs.
+- `transform_metrics_to_wide` (`src/writer/src/schema_transform.rs`) fans
+  each OTLP data point into one `metrics` row, typed by `metric_type`
+  (`gauge`/`sum`/`histogram`/`exponential_histogram`/`summary`): scalar
+  `value` for gauge/sum, `count`/`sum`/`min`/`max` plus `explicit_bounds`/
+  `bucket_counts` (`List<Double>`/`List<Int64>`) for histograms,
+  `scale`/`zero_count`/`zero_threshold`/positive-negative bucket lists for
+  exponential histograms, and parallel `quantiles`/`quantile_values`
+  (`List<Double>`) for summaries — no JSON-string columns. `series_id` is a
+  stable digest of the metric name, `metric_type`, resource identity,
+  instrumentation scope, and record attributes.
+- `transform_metric_exemplars` fans the same batch's exemplars into one
+  `metric_exemplars` row each, carrying `series_id` (linking it to its
+  `metrics` row), `point_timestamp`, `value`, and flat hex `trace_id`/
+  `span_id` (same encoding as traces).
 
-Tables:
+Both are typed-attribute-layout tables from creation (`attributes`/
+`resource_attributes`/`scope_attributes` and `filtered_attributes` are each
+five typed columns, not one `Map<String,String>`), so there is no
+legacy-layout hop to evolve for them the way traces/logs/profiles have.
+`iceberg::schemas`'s `create_metrics_schema_with()`/
+`create_metric_exemplars_schema_with()` resolve from `schemas.toml` via
+`ResolvedSchema::to_iceberg_schema_with_labels`.
 
-- `metrics_gauge`: timestamp, service_name, metric_name, value, attributes
-- `metrics_sum`: extends gauge with `aggregation_temporality`, `is_monotonic`
-- `metrics_histogram`: count, sum, min, max, bucket_counts, explicit_bounds
-- `metrics_exponential_histogram`: scale, zero_count, positive/negative buckets
-- `metrics_summary`: count, sum, quantile_values
+One WAL entry commits to both tables, replay-safe via per-table idempotency
+markers; the writer's table reconciler drops the five legacy tables on the
+cutover (dropped data is not migrated) — see
+`docs/operations/table-provisioning.md`.
 
 All partitioned by `Hour(timestamp)`.
 
