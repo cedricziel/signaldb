@@ -354,6 +354,41 @@ describe("networkRowsFromResponses", () => {
     expect(cdn.backendService).toBeUndefined();
   });
 
+  it("sums traced rows for one URL served by several backend services", () => {
+    const split = table([
+      [
+        "GET",
+        "https://api.example.com/cart",
+        "api.example.com",
+        "cart-v1",
+        20,
+        100_000_000,
+      ],
+      [
+        "GET",
+        "https://api.example.com/cart",
+        "api.example.com",
+        "cart-v2",
+        60,
+        200_000_000,
+      ],
+    ]);
+    const totalsCart = table([
+      [
+        "GET",
+        "https://api.example.com/cart",
+        "api.example.com",
+        100,
+        300_000_000,
+        0,
+      ],
+    ]);
+    const [row] = networkRowsFromResponses(totalsCart, split);
+    expect(row!.tracedCalls).toBe(80);
+    expect(row!.backendService).toBe("cart-v2");
+    expect(row!.backendP75Ms).toBeCloseTo(175, 1);
+  });
+
   it("flags the telemetry export endpoint as an SDK export", () => {
     const withExport = table([
       [

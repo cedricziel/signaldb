@@ -769,9 +769,11 @@ export function networkRowsFromResponses(
   totalsRes: QueryIrResponse,
   tracedRes: QueryIrResponse,
 ): RumRequestRow[] {
-  const tracedByKey = new Map<string, RawTraced>();
+  // One raw key can have several traced rows, one per backend service.
+  const tracedByKey = new Map<string, RawTraced[]>();
   for (const t of tracedFromResponse(tracedRes)) {
-    tracedByKey.set(rawGroupKey(t), t);
+    const key = rawGroupKey(t);
+    tracedByKey.set(key, [...(tracedByKey.get(key) ?? []), t]);
   }
 
   interface Bucket {
@@ -783,7 +785,7 @@ export function networkRowsFromResponses(
     errorCalls: number;
     p75Pairs: { value: number; weight: number }[];
     backendP75Pairs: { value: number; weight: number }[];
-    backendService?: string;
+    callsByService: Map<string, number>;
   }
   const buckets = new Map<string, Bucket>();
 
@@ -792,9 +794,8 @@ export function networkRowsFromResponses(
     const origin = parsed?.origin ?? total.serverAddress ?? "unknown";
     const template = parsed?.template ?? total.urlFull;
     const bucketKey = `${total.method}\u0000${origin}\u0000${template}`;
-    const traced = tracedByKey.get(rawGroupKey(total));
 
-    const bucket = buckets.get(bucketKey) ?? {
+    const bucket: Bucket = buckets.get(bucketKey) ?? {
       method: total.method,
       origin,
       template,
@@ -803,15 +804,22 @@ export function networkRowsFromResponses(
       errorCalls: 0,
       p75Pairs: [],
       backendP75Pairs: [],
+      callsByService: new Map(),
     };
     bucket.calls += total.calls;
     bucket.errorCalls += total.errors;
     if (total.p75Ms !== null) {
       bucket.p75Pairs.push({ value: total.p75Ms, weight: total.calls });
     }
-    if (traced) {
+    for (const traced of tracedByKey.get(rawGroupKey(total)) ?? []) {
       bucket.tracedCalls += traced.tracedCalls;
-      if (traced.backendService) bucket.backendService = traced.backendService;
+      if (traced.backendService) {
+        bucket.callsByService.set(
+          traced.backendService,
+          (bucket.callsByService.get(traced.backendService) ?? 0) +
+            traced.tracedCalls,
+        );
+      }
       if (traced.serverP75Ms !== null) {
         bucket.backendP75Pairs.push({
           value: traced.serverP75Ms,
@@ -832,10 +840,19 @@ export function networkRowsFromResponses(
       errorCalls: b.errorCalls,
       totalP75Ms: weightedMean(b.p75Pairs) ?? null,
       backendP75Ms: weightedMean(b.backendP75Pairs),
-      backendService: b.backendService,
+      backendService: busiestService(b.callsByService),
       isSdkExport: isSdkExportPath(b.template),
     }))
     .sort((a, b) => b.calls - a.calls);
+}
+
+function busiestService(callsByService: Map<string, number>) {
+  let best: string | undefined;
+  let bestCalls = -1;
+  for (const [service, calls] of callsByService) {
+    if (calls > bestCalls) [best, bestCalls] = [service, calls];
+  }
+  return best;
 }
 
 export async function fetchNetworkRequests(
