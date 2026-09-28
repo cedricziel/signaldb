@@ -43,7 +43,12 @@ import type {
 } from "./gen";
 import { decodePoints, rangeDoc, runIrQuery, type IrPoint } from "./queryIr";
 import type { ResolvedRange } from "../lib/time";
-import type { VitalName, VitalRating } from "../features/rum/rumModel";
+import {
+  isSdkExportPath,
+  urlTemplate,
+  type VitalName,
+  type VitalRating,
+} from "../features/rum/rumModel";
 
 /** A log record carrying any of these `event_name`s, or any record with a
  * `session.id` at all, counts as a RUM event — the spec's frontend-app
@@ -542,6 +547,389 @@ export async function fetchBreakdown(
   return breakdownFromResponse(
     await runIrQuery(buildBreakdownDoc(app, range, field, opts)),
   );
+}
+
+// ---- Network: requests grouped by URL template -----------------------
+//
+// Two reads, merged client-side (design.md decision 3): `buildNetworkRequestsDoc`
+// groups every client HTTP span by its raw (method, url.full, server.address)
+// for the total calls, p75 and error share; `buildNetworkCorrelateDoc` joins
+// each to its server-kind child via `correlate` for the traced count and the
+// backend's own p75 (`docs/users/querying-ir.md`'s "Joining spans to their
+// parents"). `networkRowsFromResponses` merges the two by that raw key, then
+// buckets by (method, origin, URL template) since the raw grouping is too
+// fine for display (`/orders/48213` and `/orders/91820` are one endpoint).
+
+function clientSpanWhere(app: string): Record<string, unknown> {
+  return {
+    where: {
+      and: [
+        { field: "service.name", op: "eq", value: app },
+        { field: "span_kind", op: "eq", value: "Client" },
+      ],
+    },
+  };
+}
+
+/** ≥400, or the span itself recorded an error — the spec's error-share
+ * predicate for a client HTTP span. */
+const HTTP_ERROR_WHERE = {
+  or: [
+    { field: "status.code", op: "eq", value: "Error" },
+    { field: "http.response.status_code", op: "gte", value: 400 },
+  ],
+};
+
+const NETWORK_GROUP_LIMIT = 500;
+
+/** The `correlate`-joined pair of stages shared by `buildNetworkCorrelateDoc`
+ * and `buildTracedShareDoc`'s traced query: join to the parent span, then
+ * keep only rows where that parent is one of the app's own client spans and
+ * this (child) row is its server-kind callee — the "traced" join, once. */
+function correlatedServerChildOfAppClient(
+  app: string,
+): Record<string, unknown>[] {
+  return [
+    { correlate: { to: "parent", kind: "inner" } },
+    {
+      where: {
+        and: [
+          { field: "parent.service.name", op: "eq", value: app },
+          { field: "parent.span_kind", op: "eq", value: "Client" },
+          { field: "span_kind", op: "eq", value: "Server" },
+        ],
+      },
+    },
+  ];
+}
+
+export function buildNetworkRequestsDoc(
+  app: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "traces",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      clientSpanWhere(app),
+      {
+        aggregate: {
+          by: ["http.request.method", "url.full", "server.address"],
+          aggs: [
+            { fn: "count", as: "n" },
+            { fn: "quantile", of: "duration", arg: 0.75, as: "p75" },
+            { fn: "count", as: "errors", where: HTTP_ERROR_WHERE },
+          ],
+        },
+      },
+      { order: [{ of: "n", dir: "desc" }] },
+      { limit: NETWORK_GROUP_LIMIT },
+    ],
+  };
+}
+
+export function buildNetworkCorrelateDoc(
+  app: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 9,
+    from: "traces",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      ...correlatedServerChildOfAppClient(app),
+      {
+        aggregate: {
+          by: [
+            "parent.http.request.method",
+            "parent.url.full",
+            "parent.server.address",
+            "service.name",
+          ],
+          aggs: [
+            // A client span can have more than one server-kind child (a
+            // retry, a fan-out) — `count` would count children, not calls,
+            // and could push a group's traced share past 100%.
+            { fn: "count_distinct", of: "parent.span_id", as: "n" },
+            { fn: "quantile", of: "duration", arg: 0.75, as: "server_p75" },
+          ],
+        },
+      },
+      { order: [{ of: "n", dir: "desc" }] },
+      { limit: NETWORK_GROUP_LIMIT },
+    ],
+  };
+}
+
+export interface RumRequestRow {
+  method: string;
+  origin: string;
+  template: string;
+  calls: number;
+  tracedCalls: number;
+  errorCalls: number;
+  /** p75 across every call in the group (traced or not), ms — null with no
+   * duration recorded. */
+  totalP75Ms: number | null;
+  /** p75 of the server-kind child's own duration, over the traced subset,
+   * ms — undefined for a group with no traced call. */
+  backendP75Ms?: number;
+  /** The backend `service.name` seen for this group's traced calls —
+   * undefined for a group with no traced call. */
+  backendService?: string;
+  /** A request to SignalDB's own telemetry export endpoint — the spec's
+   * "marked as SDK export, not as untraced". */
+  isSdkExport: boolean;
+}
+
+const NS_PER_MS = 1_000_000;
+
+interface RawGroupKey {
+  method: string;
+  urlFull: string;
+  serverAddress: string | null;
+}
+
+function rawGroupKey(k: RawGroupKey): string {
+  return `${k.method}\u0000${k.urlFull}\u0000${k.serverAddress ?? ""}`;
+}
+
+interface RawTotal extends RawGroupKey {
+  calls: number;
+  p75Ms: number | null;
+  errors: number;
+}
+
+interface RawTraced extends RawGroupKey {
+  backendService: string | null;
+  tracedCalls: number;
+  serverP75Ms: number | null;
+}
+
+function totalsFromResponse(res: QueryIrResponse): RawTotal[] {
+  return (res.rows ?? []).map((row) => {
+    const [method, urlFull, serverAddress, n, p75, errors] = row as [
+      string | null,
+      string | null,
+      string | null,
+      number,
+      number | null,
+      number,
+    ];
+    return {
+      method: method ?? "",
+      urlFull: urlFull ?? "",
+      serverAddress: serverAddress ?? null,
+      calls: typeof n === "number" ? n : 0,
+      p75Ms: typeof p75 === "number" ? p75 / NS_PER_MS : null,
+      errors: typeof errors === "number" ? errors : 0,
+    };
+  });
+}
+
+function tracedFromResponse(res: QueryIrResponse): RawTraced[] {
+  return (res.rows ?? []).map((row) => {
+    const [method, urlFull, serverAddress, backendService, n, serverP75] =
+      row as [
+        string | null,
+        string | null,
+        string | null,
+        string | null,
+        number,
+        number | null,
+      ];
+    return {
+      method: method ?? "",
+      urlFull: urlFull ?? "",
+      serverAddress: serverAddress ?? null,
+      backendService: backendService ?? null,
+      tracedCalls: typeof n === "number" ? n : 0,
+      serverP75Ms: typeof serverP75 === "number" ? serverP75 / NS_PER_MS : null,
+    };
+  });
+}
+
+/** Weighted mean of a p75 per merged group — an approximation (a mean of
+ * p75s is not the merged population's own p75), documented as such in
+ * `RumRequestRow`'s display, not hidden as an exact figure. */
+function weightedMean(
+  pairs: { value: number; weight: number }[],
+): number | undefined {
+  const totalWeight = pairs.reduce((s, p) => s + p.weight, 0);
+  if (totalWeight <= 0) return undefined;
+  return pairs.reduce((s, p) => s + p.value * p.weight, 0) / totalWeight;
+}
+
+/** Merges the two network reads into display rows, bucketed by (method,
+ * origin, URL template) — see the module doc above. */
+export function networkRowsFromResponses(
+  totalsRes: QueryIrResponse,
+  tracedRes: QueryIrResponse,
+): RumRequestRow[] {
+  const tracedByKey = new Map<string, RawTraced>();
+  for (const t of tracedFromResponse(tracedRes)) {
+    tracedByKey.set(rawGroupKey(t), t);
+  }
+
+  interface Bucket {
+    method: string;
+    origin: string;
+    template: string;
+    calls: number;
+    tracedCalls: number;
+    errorCalls: number;
+    p75Pairs: { value: number; weight: number }[];
+    backendP75Pairs: { value: number; weight: number }[];
+    backendService?: string;
+  }
+  const buckets = new Map<string, Bucket>();
+
+  for (const total of totalsFromResponse(totalsRes)) {
+    const parsed = urlTemplate(total.urlFull);
+    const origin = parsed?.origin ?? total.serverAddress ?? "unknown";
+    const template = parsed?.template ?? total.urlFull;
+    const bucketKey = `${total.method}\u0000${origin}\u0000${template}`;
+    const traced = tracedByKey.get(rawGroupKey(total));
+
+    const bucket = buckets.get(bucketKey) ?? {
+      method: total.method,
+      origin,
+      template,
+      calls: 0,
+      tracedCalls: 0,
+      errorCalls: 0,
+      p75Pairs: [],
+      backendP75Pairs: [],
+    };
+    bucket.calls += total.calls;
+    bucket.errorCalls += total.errors;
+    if (total.p75Ms !== null) {
+      bucket.p75Pairs.push({ value: total.p75Ms, weight: total.calls });
+    }
+    if (traced) {
+      bucket.tracedCalls += traced.tracedCalls;
+      if (traced.backendService) bucket.backendService = traced.backendService;
+      if (traced.serverP75Ms !== null) {
+        bucket.backendP75Pairs.push({
+          value: traced.serverP75Ms,
+          weight: traced.tracedCalls,
+        });
+      }
+    }
+    buckets.set(bucketKey, bucket);
+  }
+
+  return Array.from(buckets.values())
+    .map((b): RumRequestRow => ({
+      method: b.method,
+      origin: b.origin,
+      template: b.template,
+      calls: b.calls,
+      tracedCalls: b.tracedCalls,
+      errorCalls: b.errorCalls,
+      totalP75Ms: weightedMean(b.p75Pairs) ?? null,
+      backendP75Ms: weightedMean(b.backendP75Pairs),
+      backendService: b.backendService,
+      isSdkExport: isSdkExportPath(b.template),
+    }))
+    .sort((a, b) => b.calls - a.calls);
+}
+
+export async function fetchNetworkRequests(
+  app: string,
+  range: ResolvedRange,
+): Promise<RumRequestRow[]> {
+  const [totalsRes, tracedRes] = await Promise.all([
+    runIrQuery(buildNetworkRequestsDoc(app, range)),
+    runIrQuery(buildNetworkCorrelateDoc(app, range)),
+  ]);
+  return networkRowsFromResponses(totalsRes, tracedRes);
+}
+
+// ---- Resources by initiator type -------------------------------------
+
+export interface RumResourceRow {
+  initiatorType: string;
+  count: number;
+  transferBytes: number;
+  p75Ms: number;
+  maxTransferBytes: number;
+}
+
+export function buildResourcesDoc(
+  app: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      {
+        where: {
+          field: "event_name",
+          op: "eq",
+          value: "browser.resource_timing",
+        },
+      },
+      {
+        aggregate: {
+          by: ["browser.resource_timing.initiator_type"],
+          aggs: [
+            { fn: "count", as: "n" },
+            {
+              fn: "sum",
+              of: "browser.resource_timing.transfer_size",
+              as: "bytes",
+            },
+            {
+              fn: "quantile",
+              of: "browser.resource_timing.duration",
+              arg: 0.75,
+              as: "p75",
+            },
+            {
+              fn: "max",
+              of: "browser.resource_timing.transfer_size",
+              as: "max_bytes",
+            },
+          ],
+        },
+      },
+      { order: [{ of: "n", dir: "desc" }] },
+    ],
+  };
+}
+
+export function resourcesFromResponse(res: QueryIrResponse): RumResourceRow[] {
+  return (res.rows ?? []).map((row) => {
+    const [type, n, bytes, p75, maxBytes] = row as [
+      string | null,
+      number,
+      number | null,
+      number | null,
+      number | null,
+    ];
+    return {
+      initiatorType: type ?? "unknown",
+      count: typeof n === "number" ? n : 0,
+      transferBytes: typeof bytes === "number" ? bytes : 0,
+      p75Ms: typeof p75 === "number" ? p75 : 0,
+      maxTransferBytes: typeof maxBytes === "number" ? maxBytes : 0,
+    };
+  });
+}
+
+export async function fetchResources(
+  app: string,
+  range: ResolvedRange,
+): Promise<RumResourceRow[]> {
+  return resourcesFromResponse(await runIrQuery(buildResourcesDoc(app, range)));
 }
 
 export type { VitalName, VitalRating };

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   formatVitalValue,
+  isSdkExportPath,
   NO_VITAL_DATA,
   rateVital,
   ratingSwatchColorVar,
@@ -8,6 +9,7 @@ import {
   RUM_TABS,
   rumTabFromParam,
   splitKpiSeries,
+  urlTemplate,
   vitalFigure,
   vitalShares,
   vitalThresholdBound,
@@ -108,6 +110,55 @@ describe("splitKpiSeries", () => {
   it("has no previous figure when the earlier half is empty", () => {
     const figure = splitKpiSeries([{ tMs: 20, value: 5 }], 20);
     expect(figure.previous).toBeUndefined();
+  });
+});
+
+describe("urlTemplate", () => {
+  it("strips the query and keeps a plain path as-is", () => {
+    expect(urlTemplate("https://api.example.com/health?verbose=1")).toEqual({
+      origin: "api.example.com",
+      template: "/health",
+    });
+  });
+
+  it("replaces a numeric id segment", () => {
+    expect(urlTemplate("https://api.example.com/orders/48213")).toEqual({
+      origin: "api.example.com",
+      template: "/orders/:id",
+    });
+  });
+
+  it("replaces a UUID id segment", () => {
+    expect(
+      urlTemplate(
+        "https://api.example.com/users/9b1deb4d-3b7d-4bad-9bdd-2b0d7b3dcb6d/profile",
+      ),
+    ).toEqual({
+      origin: "api.example.com",
+      template: "/users/:id/profile",
+    });
+  });
+
+  it("replaces a long hex id segment", () => {
+    expect(
+      urlTemplate("https://api.example.com/sessions/8f14e45fceea167a"),
+    ).toEqual({ origin: "api.example.com", template: "/sessions/:id" });
+  });
+
+  it("is null for a URL that doesn't parse", () => {
+    expect(urlTemplate("not-a-url")).toBeNull();
+  });
+});
+
+describe("isSdkExportPath", () => {
+  it("names the telemetry export endpoints", () => {
+    expect(isSdkExportPath("/v1/traces")).toBe(true);
+    expect(isSdkExportPath("/otlp/v1/logs")).toBe(true);
+    expect(isSdkExportPath("/v1/metrics")).toBe(true);
+  });
+
+  it("is false for an ordinary API path", () => {
+    expect(isSdkExportPath("/api/checkout")).toBe(false);
   });
 });
 
