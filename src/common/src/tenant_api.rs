@@ -125,6 +125,8 @@ fn table_schema_type_and_description(name: &str) -> (&'static str, &'static str)
         ),
         "metrics_summary" => ("metrics_summary", "OpenTelemetry summary metrics"),
         "profiles" => ("profiles", "OpenTelemetry profiles"),
+        "metrics" => ("metrics", "OpenTelemetry metrics"),
+        "metric_exemplars" => ("metric_exemplars", "OpenTelemetry metric exemplars"),
         _ => ("custom", "Custom table"),
     }
 }
@@ -146,9 +148,7 @@ fn table_info_for_schema(schema: iceberg_schemas::TableSchema) -> TableInfo {
         }
         iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
         iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
-        // Not yet reachable: `all_from_config` never produces these until
-        // the otel-native-schema cutover PR. Handled here only to keep this
-        // match exhaustive.
+        // Reachable once `MetricsLayout::current()` is Wide.
         iceberg_schemas::TableSchema::Metrics => "OpenTelemetry metrics",
         iceberg_schemas::TableSchema::MetricExemplars => "OpenTelemetry metric exemplars",
         iceberg_schemas::TableSchema::Custom(ref name) => {

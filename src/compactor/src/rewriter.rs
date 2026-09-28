@@ -1598,6 +1598,9 @@ mod tests {
             "metrics_exponential_histogram",
             "metrics_summary",
             "profiles",
+            // otel-native-schema layer 7 (D10) cutover prep.
+            "metrics",
+            "metric_exemplars",
         ] {
             assert!(
                 crate::retention::SignalType::from_table_name(table).is_ok(),

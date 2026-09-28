@@ -395,6 +395,7 @@ impl SignalType {
             "traces" => Ok(SignalType::Traces),
             "logs" => Ok(SignalType::Logs),
             "metrics" => Ok(SignalType::Metrics),
+            "metric_exemplars" => Ok(SignalType::Metrics),
             "profiles" => Ok(SignalType::Profiles),
             // Handle metric subtypes (metrics_gauge, metrics_sum, metrics_histogram)
             s if s.starts_with("metrics_") => Ok(SignalType::Metrics),
@@ -551,6 +552,16 @@ mod tests {
             SignalType::Profiles
         );
         assert!(SignalType::from_table_name("invalid").is_err());
+    }
+
+    // otel-native-schema layer 7 (D10) cutover prep: `metric_exemplars`
+    // doesn't start with `metrics_`, so it needs its own arm.
+    #[test]
+    fn test_signal_type_from_table_name_recognizes_metric_exemplars() {
+        assert_eq!(
+            SignalType::from_table_name("metric_exemplars").unwrap(),
+            SignalType::Metrics
+        );
     }
 
     /// Every table the schema registry can create must map to a retention

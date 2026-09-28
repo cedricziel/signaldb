@@ -6,15 +6,29 @@
 
 use std::collections::HashMap;
 
+use common::iceberg::schemas::MetricsLayout;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::metrics::v1::{
     Metric, ResourceMetrics, ScopeMetrics, metric::Data,
 };
 
-/// Partition metrics by type to avoid schema conflicts.
+/// Partition metrics by type to avoid schema conflicts, under
+/// [`MetricsLayout::current`].
 /// Returns: HashMap<metric_type, (table_name, partitioned_request)>
 pub(crate) fn partition_metrics_by_type(
     request: &ExportMetricsServiceRequest,
+) -> HashMap<String, (String, ExportMetricsServiceRequest)> {
+    partition_metrics_by_type_with_layout(request, MetricsLayout::current())
+}
+
+/// Like [`partition_metrics_by_type`], with the metrics layout as a
+/// parameter -- splits by wire type either way (each type still becomes its
+/// own `ExportMetricsServiceRequest`), but under [`MetricsLayout::Wide`]
+/// every partition targets the single `metrics` table rather than its own
+/// per-type legacy table.
+pub(crate) fn partition_metrics_by_type_with_layout(
+    request: &ExportMetricsServiceRequest,
+    layout: MetricsLayout,
 ) -> HashMap<String, (String, ExportMetricsServiceRequest)> {
     // Single pass: group metrics by type, then by the (resource, scope)
     // they came from. Grouping by index (rather than cloning
@@ -70,22 +84,25 @@ pub(crate) fn partition_metrics_by_type(
     let mut result = HashMap::new();
 
     for (metric_type, by_resource) in by_type {
-        let table_name = match metric_type {
-            "gauge" => "metrics_gauge",
-            "sum" => "metrics_sum",
-            "histogram" => "metrics_histogram",
-            "exponential_histogram" => "metrics_exponential_histogram",
-            "summary" => "metrics_summary",
-            other => {
-                // Defensive fallback, not expected to be reachable: every
-                // value pushed into `by_type` above came from one of the
-                // five match arms in the first pass.
-                tracing::warn!(
-                    metric_type = %other,
-                    "Unknown metric type, falling back to metrics_gauge table"
-                );
-                "metrics_gauge"
-            }
+        let table_name = match layout {
+            MetricsLayout::Wide => "metrics",
+            MetricsLayout::Legacy => match metric_type {
+                "gauge" => "metrics_gauge",
+                "sum" => "metrics_sum",
+                "histogram" => "metrics_histogram",
+                "exponential_histogram" => "metrics_exponential_histogram",
+                "summary" => "metrics_summary",
+                other => {
+                    // Defensive fallback, not expected to be reachable: every
+                    // value pushed into `by_type` above came from one of the
+                    // five match arms in the first pass.
+                    tracing::warn!(
+                        metric_type = %other,
+                        "Unknown metric type, falling back to metrics_gauge table"
+                    );
+                    "metrics_gauge"
+                }
+            },
         };
 
         let mut partitioned_resource_metrics = Vec::new();
@@ -328,5 +345,50 @@ mod tests {
             1,
             "sum partition must not include the gauge-only scope"
         );
+    }
+
+    /// Under [`MetricsLayout::Wide`], every type still gets its own wire
+    /// partition (the per-type split is unchanged), but every partition's
+    /// target table is the single `metrics` table.
+    #[test]
+    fn wide_layout_targets_the_single_metrics_table_for_every_type() {
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(resource("svc")),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![gauge("g", 1.0), sum("s", 1)],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let partitions = partition_metrics_by_type_with_layout(&request, MetricsLayout::Wide);
+        assert_eq!(partitions.len(), 2, "still one wire partition per type");
+        for (table_name, _) in partitions.values() {
+            assert_eq!(table_name, "metrics");
+        }
+    }
+
+    /// [`MetricsLayout::Legacy`] must keep routing each type to its own
+    /// per-type table -- today's unchanged behavior.
+    #[test]
+    fn legacy_layout_keeps_targeting_per_type_tables() {
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(resource("svc")),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![gauge("g", 1.0), sum("s", 1)],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let partitions = partition_metrics_by_type_with_layout(&request, MetricsLayout::Legacy);
+        assert_eq!(partitions["gauge"].0, "metrics_gauge");
+        assert_eq!(partitions["sum"].0, "metrics_sum");
     }
 }
