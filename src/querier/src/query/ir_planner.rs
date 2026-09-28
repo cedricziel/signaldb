@@ -6897,8 +6897,16 @@ mod tests {
             ])
         }
 
-        /// `timestamp` plus the three typed attribute containers.
-        fn typed_container_fields_and_columns(rows: &[Row]) -> (Vec<Field>, Vec<ArrayRef>) {
+        /// `timestamp` plus the three typed attribute containers. `offset`
+        /// is `rows`'s starting position within [`ROWS`], so a `timestamp`
+        /// derived from it stays the same whether `rows` is the whole
+        /// fixture or one slice of a multi-batch table (otherwise a split
+        /// batch would repeat `timestamp` values a single-batch one never
+        /// does, making the two layouts hold different data).
+        fn typed_container_fields_and_columns(
+            rows: &[Row],
+            offset: usize,
+        ) -> (Vec<Field>, Vec<ArrayRef>) {
             let n = rows.len();
             let mut fields = vec![Field::new(
                 "timestamp",
@@ -6906,7 +6914,9 @@ mod tests {
                 false,
             )];
             let mut columns: Vec<ArrayRef> = vec![Arc::new(TimestampNanosecondArray::from(
-                (0..n).map(|i| 10 * (i as i64 + 1)).collect::<Vec<_>>(),
+                (0..n)
+                    .map(|i| 10 * (offset + i + 1) as i64)
+                    .collect::<Vec<_>>(),
             ))];
             let record_rows = rows
                 .iter()
@@ -6991,8 +7001,8 @@ mod tests {
             RecordEnvOnly,
         }
 
-        fn typed_batch(rows: &[Row], promotion: Promotion) -> RecordBatch {
-            let (mut fields, mut columns) = typed_container_fields_and_columns(rows);
+        fn typed_batch(rows: &[Row], offset: usize, promotion: Promotion) -> RecordBatch {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(rows, offset);
             match promotion {
                 Promotion::Off => {}
                 Promotion::RecordEnvOnly => {
@@ -7023,7 +7033,7 @@ mod tests {
         }
 
         fn ctx(rows: &[Row], promotion: Promotion) -> SessionContext {
-            let batch = typed_batch(rows, promotion);
+            let batch = typed_batch(rows, 0, promotion);
             single_table_ctx("logs", batch.schema(), batch)
         }
 
@@ -7042,8 +7052,8 @@ mod tests {
 
         /// Promotion on, over two files: rows 0-1 unbackfilled, 2-3 backfilled.
         fn promotion_on_ctx() -> SessionContext {
-            let batch1 = typed_batch(&ROWS[0..2], Promotion::Unbackfilled);
-            let batch2 = typed_batch(&ROWS[2..4], Promotion::Backfilled);
+            let batch1 = typed_batch(&ROWS[0..2], 0, Promotion::Unbackfilled);
+            let batch2 = typed_batch(&ROWS[2..4], 2, Promotion::Backfilled);
             multi_batch_table_ctx(batch1.schema(), vec![batch1, batch2])
         }
 
@@ -7177,6 +7187,13 @@ mod tests {
                     "multi-level env unqualified and qualified",
                     rows_doc(&["env", "log.env", "resource.env"], serde_json::json!([])),
                 ),
+                (
+                    "ordered by timestamp",
+                    rows_doc(
+                        &["timestamp", "str_field"],
+                        serde_json::json!([{ "order": [{ "of": "timestamp", "dir": "asc" }] }]),
+                    ),
+                ),
             ];
             for (name, field, op, value) in [
                 ("eq string", "str_field", "eq", serde_json::json!("apple")),
@@ -7224,10 +7241,81 @@ mod tests {
             }
         }
 
+        /// `env` is committed at both `Record` and `Resource`, so a legacy
+        /// `label_env` column must never stand in for it — even when it's
+        /// the only promoted column present, with no per-level
+        /// `attr_*_env` column to make `promoted_for` return early. Proves
+        /// the `single_level` guard actually rejects a multi-level key's
+        /// legacy label, the counterpart to `label_tier`'s single-level
+        /// key, which `promotion_on_ctx` already trusts throughout
+        /// [`scenarios`].
+        #[tokio::test]
+        async fn multi_level_legacy_label_is_ignored_without_attr_columns() {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(&ROWS, 0);
+            fields.push(Field::new("label_env", DataType::Utf8, true));
+            columns.push(Arc::new(StringArray::from(vec![Some("WRONG"); ROWS.len()])) as ArrayRef);
+            let schema = Arc::new(Schema::new(fields));
+            let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+            let with_label = single_table_ctx("logs", schema, batch);
+
+            let d = doc(rows_doc(&["env"], serde_json::json!([])));
+            let with_label_values = column_values(
+                plan_typed(&with_label, &d, fixture_types()).await,
+                &safe_ident("env"),
+            )
+            .await;
+            let off_values = column_values(
+                plan_typed(&ctx(&ROWS, Promotion::Off), &d, fixture_types()).await,
+                &safe_ident("env"),
+            )
+            .await;
+            assert_eq!(
+                with_label_values, off_values,
+                "label_env must be ignored for a key recorded at more than one level"
+            );
+        }
+
+        /// The invariant holds on genuinely redundant data, but that alone
+        /// can't tell a promoted column that's actually read apart from one
+        /// silently skipped (e.g. always NULL, or equal to the home by
+        /// coincidence): assert the backfilled context's plan text
+        /// references `attr_record_str_field` for both a projection and a
+        /// filter, the way `promotion_invariance_same_result` and
+        /// `scope_qualified_attribute_resolves_to_promoted_column` already
+        /// do for the legacy `label_*` columns.
+        #[tokio::test]
+        async fn promoted_columns_are_referenced_in_the_plan() {
+            let backfilled = ctx(&ROWS, Promotion::Backfilled);
+            let promoted_str_field = promoted_attr_column(Record, "str_field");
+
+            for (name, d) in [
+                (
+                    "projection",
+                    doc(rows_doc(&["str_field"], serde_json::json!([]))),
+                ),
+                (
+                    "filter",
+                    doc(where_doc("str_field", "eq", serde_json::json!("apple"))),
+                ),
+            ] {
+                let plan = format!(
+                    "{}",
+                    plan_typed(&backfilled, &d, fixture_types())
+                        .await
+                        .logical_plan()
+                        .display_indent()
+                );
+                assert!(
+                    plan.contains(&promoted_str_field),
+                    "expected the promoted column in the {name} plan:\n{plan}"
+                );
+            }
+        }
+
         /// A type-mismatched promoted column (`Utf8`, not `Int64`) is ignored.
         #[tokio::test]
         async fn a_type_mismatched_promoted_column_is_ignored() {
-            let (mut fields, mut columns) = typed_container_fields_and_columns(&ROWS);
+            let (mut fields, mut columns) = typed_container_fields_and_columns(&ROWS, 0);
             let mismatched = promoted_attr_column(Record, "int_field");
             fields.push(Field::new(&mismatched, DataType::Utf8, true));
             columns.push(Arc::new(StringArray::from(vec![Some("999"); ROWS.len()])) as ArrayRef);
