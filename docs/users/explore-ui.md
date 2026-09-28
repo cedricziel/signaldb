@@ -309,12 +309,16 @@ and Interactions follow in later changes and are not shown as placeholders.
   don't yet, so this can read empty) and `browser.mobile`.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
-  `url.template`), each with calls, a p75 split into client+network and
-  backend time, error share and traced share (a server-kind child span in
-  the same trace, found via the `correlate` stage). An origin with zero
-  traced calls raises a callout explaining `traceparent` propagation and
-  CORS, linking to Setup; requests to the telemetry export endpoint itself
-  are marked "SDK export" rather than counted there. A **Resources** table
+  `url.template`), each with calls, p75 duration, error share and traced
+  share (a server-kind child span in the same trace, found via the
+  `correlate` stage). The split bar shows the backend p75 (the server
+  child's duration, over traced calls only) against the p75 of all calls;
+  the client+network part is the difference of those two separate
+  aggregates, so it's an estimate. An origin whose calls have a known
+  tracing status and none joined to a backend trace raises a callout
+  listing what to check (`traceparent` propagation, CORS, backend
+  instrumentation), linking to Setup; requests to the telemetry export
+  endpoint itself are marked "SDK export" rather than counted there. A **Resources** table
   summarises `browser.resource_timing` by initiator type: count, transfer
   size, p75 duration and the largest transfer.
 - **Setup.** Copyable snippets for instrumenting a browser app with the
