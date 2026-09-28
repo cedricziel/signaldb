@@ -41,6 +41,8 @@ dependency kinds and every response field.
 - Nodes and edges are coloured by error rate: neutral below 0.5%, warning
   from 0.5%, critical from 2%.
 - External nodes have a dashed border.
+- A service node shows its p95 next to its name. A long name is shortened
+  first, so the p95 always shows in full.
 
 ## Open the map
 
@@ -49,6 +51,7 @@ dependency kinds and every response field.
 - **At a glance:** the [Overview](explore-ui.md#the-overview) (`/overview`,
   the UI's landing page) shows the whole-system map scoped to the selected
   environment, with zoom buttons, ⌘/Ctrl + scroll to zoom and drag to pan.
+  The zoom buttons are hidden while the map is empty.
   Click a node to open that service's catalog entry.
 - **Whole system:** Catalog → Services → **Map**. The URL keeps
   `?cview=map`, so the link reopens the map. Click a node for its side panel;
@@ -108,7 +111,8 @@ maps one trace. See the [CLI section](querying-ir.md#cli) for every flag.
   `[querier].correlate_max_rows` rows (default 5,000,000). The map is then
   built from partial data and the response carries a `correlate_row_limit`
   warning. Some calls into instrumented services can show up as external
-  edges.
+  edges. The Catalog map then says some calls may be missing and suggests a
+  shorter range.
 - **Window start.** A call whose caller span started before the window has no
   parent to join, so it is missing from its edge.
 - **Window end.** A call still in flight when the window ends shows up as an

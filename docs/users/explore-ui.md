@@ -73,7 +73,8 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   span name (or by service, any observed root-span/resource attribute, or
   two dimensions combined via "Then by"), with per-group trace count,
   request rate, error rate, p50/p95 latency, and last-seen columns —
-  all sortable. An **Errors only** checkbox at the top of the facet sidebar
+  all sortable. Error rates are grey below 0.5%, amber from 0.5% and red
+  from 2%, the same thresholds as the Catalog and the Overview. An **Errors only** checkbox at the top of the facet sidebar
   narrows groups, list, volume chart, and facet counts to traces whose root
   span has an error status (it is the `status = Error` facet filter as a
   one-click toggle). Drilling into a group applies the same dimension-value
@@ -149,8 +150,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   [Exception attributes](querying-ir.md#exception-attributes)) — since
   neither source alone is the whole picture. A facet sidebar (type, service,
   source, handled) narrows the list. Selecting a group shows a
-  count-over-time chart for that exact group, its service (a link to that
-  service's [catalog](#the-catalog) entry), and its individual
+  count-over-time chart for that exact group (labelled with the window's
+  start, middle and end times), its service (a link to that service's
+  [catalog](#the-catalog) entry), and its individual
   occurrences (up to 25, newest first); each occurrence independently offers
   a link into the trace waterfall when it carries a trace id — occurrences
   of the same group don't all share one trace outcome — and expands to its
@@ -259,7 +261,7 @@ window, 30 buckets wide, and every row links into the view that explains it
   reduced motion. A node opens its catalog entry.
 - **Services.** Worst health first, then busiest: **critical** at ≥ 2%
   errors, **degraded** at ≥ 0.5% errors or a p95 above 500 ms — the same
-  error thresholds the map colours by. Rate, errors and p95 cover Server
+  error thresholds the map and every error-rate cell colour by. Rate, errors and p95 cover Server
   spans, as in the catalog; **Last deploy** shows an in-window deploy's
   version and age, otherwise the running version.
 - **Ingest volume.** Records per signal per bucket, stacked, with totals and
@@ -269,7 +271,8 @@ window, 30 buckets wide, and every row links into the view that explains it
 - **Setup checklist.** The **Setup** button opens the steps that add
   coverage to the page: traces, every service traced, logs and profiles
   from every traced service, GitHub source links, and (for admins) a second
-  member. Coverage is read off the window shown. The button hides once every
+  member. The admin step stays listed while the member count loads, so
+  the count doesn't jump; it drops out only if the count can't be read. Coverage is read off the window shown. The button hides once every
   step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
 

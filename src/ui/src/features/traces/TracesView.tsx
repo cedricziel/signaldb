@@ -57,7 +57,11 @@ import {
   repositoryHints,
 } from "../../lib/sourceLocation";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
-import { formatErrorRate, pluralCount } from "../../lib/vizFormat";
+import {
+  errorRateClass,
+  formatErrorRate,
+  pluralCount,
+} from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
@@ -814,7 +818,9 @@ function GroupList({
                     <td className="num col-secondary">
                       {formatRate(g.count, rangeSeconds)}
                     </td>
-                    <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
+                    <td
+                      className={`num ${g.count > 0 ? errorRateClass(g.errors / g.count) : ""}`}
+                    >
                       {formatErrorRate(g.errors, g.count)}
                     </td>
                     <td className="num col-secondary">

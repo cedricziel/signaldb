@@ -38,7 +38,14 @@ export function zoomAround(
   };
 }
 
-export function ZoomPan({ children }: { children: ReactNode }) {
+export function ZoomPan({
+  children,
+  controls = true,
+}: {
+  children: ReactNode;
+  /** Off when there is nothing to zoom, e.g. an empty map. */
+  controls?: boolean;
+}) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(HOME);
   const [dragging, setDragging] = useState(false);
@@ -107,36 +114,40 @@ export function ZoomPan({ children }: { children: ReactNode }) {
       >
         {children}
       </div>
-      <div className="zoompan-controls">
-        <button
-          type="button"
-          aria-label="Zoom in"
-          title="Zoom in"
-          onClick={() => zoomBy(1.25)}
-        >
-          +
-        </button>
-        <button
-          type="button"
-          aria-label="Zoom out"
-          title="Zoom out"
-          onClick={() => zoomBy(0.8)}
-        >
-          −
-        </button>
-        <button
-          type="button"
-          aria-label="Reset zoom"
-          title="Reset zoom"
-          onClick={() => setView(HOME)}
-        >
-          <span className="zoompan-fit">FIT</span>
-        </button>
-      </div>
-      <div className="zoompan-readout" aria-live="polite">
-        {Math.round(view.z * 100)}%
-        {moved ? " · drag to pan" : " · ⌘/ctrl + scroll to zoom"}
-      </div>
+      {controls && (
+        <>
+          <div className="zoompan-controls">
+            <button
+              type="button"
+              aria-label="Zoom in"
+              title="Zoom in"
+              onClick={() => zoomBy(1.25)}
+            >
+              +
+            </button>
+            <button
+              type="button"
+              aria-label="Zoom out"
+              title="Zoom out"
+              onClick={() => zoomBy(0.8)}
+            >
+              −
+            </button>
+            <button
+              type="button"
+              aria-label="Reset zoom"
+              title="Reset zoom"
+              onClick={() => setView(HOME)}
+            >
+              <span className="zoompan-fit">FIT</span>
+            </button>
+          </div>
+          <div className="zoompan-readout" aria-live="polite">
+            {Math.round(view.z * 100)}%
+            {moved ? " · drag to pan" : " · ⌘/ctrl + scroll to zoom"}
+          </div>
+        </>
+      )}
     </div>
   );
 }

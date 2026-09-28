@@ -9,7 +9,7 @@
  */
 import { formatRate } from "../../lib/traceGroups";
 import { formatDurationMs } from "../../lib/waterfall";
-import { formatErrorRate } from "../../lib/vizFormat";
+import { errorRateClass, formatErrorRate } from "../../lib/vizFormat";
 import type { EntityObservation, EntityRed } from "../../api/catalog";
 
 /**
@@ -64,7 +64,8 @@ export function redDuration(
   return red ? formatDurationMs(red[field]) : "–";
 }
 
-/** Marks a measured, non-zero error rate. Absent RED is not an error. */
-export function redErrorClass(red: EntityRed | undefined): boolean {
-  return (red?.errors ?? 0) > 0;
+/** The error-rate cell's colour class; none when nothing was measured. */
+export function redErrorClass(red: EntityRed | undefined): string {
+  if (!red || red.traces <= 0) return "";
+  return errorRateClass(red.errors / red.traces);
 }

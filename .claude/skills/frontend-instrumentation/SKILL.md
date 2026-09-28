@@ -343,7 +343,8 @@ draws its own tooltip markup is a defect
   magnitude and keeps the sign, so budget a leading `-` when measuring an
   axis gutter from it, `formatErrorRate`
   — a dash for no errors, `<1%` for a non-zero rate that would round to
-  zero, never a red `0%`), not ad-hoc
+  zero, never a red `0%`; colour it with `errorRateClass` /
+  `errorRateSeverity`, the one 0.5%/2% threshold rule), not ad-hoc
   `toFixed`/`Intl` calls. Table timestamps on multi-day ranges go through
   `formatTimestampForRange` in `src/ui/src/lib/time.ts`, which prepends the
   date once the window spans more than a day.

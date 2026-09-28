@@ -18,6 +18,28 @@ const EDGES: ServiceGraphEdge[] = [
 ];
 
 describe("ServiceGraph", () => {
+  it("shows a node's latency beside its name, apart from the truncating label", () => {
+    render(
+      <ServiceGraph
+        nodes={[
+          {
+            id: "checkout",
+            label: "checkout-service-with-a-long-name",
+            latency: "p95 30 ms",
+          },
+        ]}
+        edges={[]}
+      />,
+    );
+    const node = screen.getByRole("button", { name: /checkout/ });
+    expect(node.querySelector(".sg-node-label")).toHaveTextContent(
+      "checkout-service-with-a-long-name",
+    );
+    expect(node.querySelector(".sg-node-latency")).toHaveTextContent(
+      "p95 30 ms",
+    );
+  });
+
   it("renders a node per service and calls onNodeClick with its id", () => {
     const onNodeClick = vi.fn();
     render(

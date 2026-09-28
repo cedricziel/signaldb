@@ -23,10 +23,11 @@ function nodeMetricLine(node: GraphNode): string | undefined {
   if (node.error_rate != null) {
     parts.push(`${errorRatePercent(node.error_rate)} err`);
   }
-  if (node.p95_ns != null) {
-    parts.push(`p95 ${formatDurationMs(node.p95_ns / 1e6)}`);
-  }
   return parts.length > 0 ? parts.join(" · ") : undefined;
+}
+
+function p95Label(p95Ns: number | null | undefined): string | undefined {
+  return p95Ns != null ? `p95 ${formatDurationMs(p95Ns / 1e6)}` : undefined;
 }
 
 /** One of a node's edge partners — the other node's identity plus the
@@ -80,16 +81,14 @@ export function toGraphView(
       external: n.kind === "external",
       errorRate: n.error_rate ?? undefined,
       metricLine: nodeMetricLine(n),
+      latency: n.kind === "service" ? p95Label(n.p95_ns) : undefined,
     })),
     edges: edges.map((e): ServiceGraphEdge => ({
       from: e.source,
       to: e.target,
       count: e.count,
       errorRate: e.error_rate,
-      metricLine:
-        e.p95_ns != null
-          ? `p95 ${formatDurationMs(e.p95_ns / 1e6)}`
-          : undefined,
+      metricLine: p95Label(e.p95_ns),
     })),
   };
 }

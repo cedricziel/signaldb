@@ -1,8 +1,8 @@
 // A compact "occurrences over time" chart for a selected exception group —
 // the same shape error-tracking issue views commonly lead with. Unlike
-// the full traces volume chart, this is a single, unlabeled series with no
-// axis/legend chrome: it exists to show a shape (a spike, a steady trickle);
-// the exact value per bucket is one hover away. A thin wrapper over the
+// the full traces volume chart, this is a single series with only start,
+// middle and end time labels: it exists to show a shape (a spike, a steady
+// trickle); the exact value per bucket is one hover away. A thin wrapper over the
 // shared `Sparkline`'s bar variant, with bucket padding and the empty-state
 // text this view needs kept local.
 import {
@@ -11,6 +11,7 @@ import {
   type VolumeSeries,
 } from "../../components/SignalHistogram";
 import { Sparkline } from "../../components/Sparkline";
+import { axisLabelFormatter } from "../../lib/time";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 
 interface Props {
@@ -44,12 +45,14 @@ export function ErrorSparkline({ series, rangeMs, stepMs }: Props) {
     );
   }
 
+  const label = axisLabelFormatter(rangeMs.fromMs, rangeMs.toMs);
+  const midMs = (rangeMs.fromMs + rangeMs.toMs) / 2;
   return (
     <div className="errors-sparkline-host">
       <Sparkline
         points={buckets.map((b) => ({ x: b.tMs, v: b.total }))}
         variant="bar"
-        tone="neutral"
+        tone="error"
         width="100%"
         height={HEIGHT}
         ariaLabel="Occurrences over time"
@@ -59,6 +62,11 @@ export function ErrorSparkline({ series, rangeMs, stepMs }: Props) {
         // A padded, empty bucket has no data under the pointer: no tooltip.
         isFocusable={(p) => p.v > 0}
       />
+      <div className="errors-sparkline-axis" aria-hidden="true">
+        <span>{label(rangeMs.fromMs)}</span>
+        <span>{label(midMs)}</span>
+        <span>{label(rangeMs.toMs)}</span>
+      </div>
     </div>
   );
 }

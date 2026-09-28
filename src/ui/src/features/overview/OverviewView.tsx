@@ -26,7 +26,7 @@ import {
   resolveRange,
   type ResolvedRange,
 } from "../../lib/time";
-import { compactCount } from "../../lib/vizFormat";
+import { compactCount, errorRateClass } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
 import { formatRatePerSec } from "../../lib/traceGroups";
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
@@ -110,7 +110,10 @@ export function OverviewView({ state, update }: Props) {
   const steps = setupSteps({
     rows,
     githubLinked: state.tenant ? githubLinked : undefined,
-    memberCount: canManage ? members.data : undefined,
+    memberCount:
+      members.data === undefined && members.isFetching
+        ? "loading"
+        : members.data,
     canManage,
   });
 
@@ -220,7 +223,7 @@ export function OverviewView({ state, update }: Props) {
                   </Link>
                 </div>
                 <div className="overview-map">
-                  <ZoomPan>
+                  <ZoomPan controls={(map.data?.nodes.length ?? 0) > 0}>
                     <ServiceGraph
                       nodes={map.data?.nodes ?? []}
                       edges={map.data?.edges ?? []}
@@ -433,7 +436,7 @@ function ServicesCard({
           <i style={{ background: HEALTH_VAR.degraded }} />
           {counts.degraded} degraded
         </span>
-        <span className="critical">
+        <span className={counts.critical > 0 ? "critical" : undefined}>
           <i style={{ background: HEALTH_VAR.critical }} />
           {counts.critical} critical
         </span>
@@ -520,7 +523,9 @@ function ServicesTable({
                 <td className="num">
                   {traced ? formatRatePerSec(r.ratePerSec) : "–"}
                 </td>
-                <td className={`num${r.errorRate >= 0.005 ? " err" : ""}`}>
+                <td
+                  className={`num ${traced ? errorRateClass(r.errorRate) : ""}`}
+                >
                   {traced
                     ? r.errorRate < 0.001
                       ? r.errorRate === 0

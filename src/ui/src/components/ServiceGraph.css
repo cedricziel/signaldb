@@ -39,7 +39,7 @@
   fill: none;
 }
 
-.sg-edge-neutral {
+.sg-edge-ok {
   stroke: var(--border);
 }
 
@@ -51,7 +51,7 @@
   stroke: var(--err);
 }
 
-.sg-arrow-neutral {
+.sg-arrow-ok {
   fill: var(--border);
 }
 
@@ -98,9 +98,20 @@
   align-items: center;
   gap: 6px;
   font-weight: 600;
+  white-space: nowrap;
+}
+
+.sg-node-label {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
-  white-space: nowrap;
+}
+
+.sg-node-latency {
+  flex: none;
+  font: 400 11px var(--mono);
+  color: var(--dim);
 }
 
 .sg-node-dot {

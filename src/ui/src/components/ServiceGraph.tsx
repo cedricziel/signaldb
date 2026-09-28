@@ -10,7 +10,11 @@ import { useId, useMemo, useRef, useState } from "react";
 import { EmptyState } from "./EmptyState";
 import { useVizPointer, VizTooltip, type VizTooltipRow } from "./VizTooltip";
 import { useContainerWidth } from "../hooks/useContainerWidth";
-import { formatErrorRate } from "../lib/vizFormat";
+import {
+  errorRateSeverity,
+  formatErrorRate,
+  type ErrorSeverity,
+} from "../lib/vizFormat";
 import "./ServiceGraph.css";
 
 export interface ServiceGraphNode {
@@ -27,9 +31,12 @@ export interface ServiceGraphNode {
   errorRate?: number;
   /** At least one call into this node failed. */
   failed?: boolean;
-  /** Shown under the name, e.g. "420ms in service" or "120 req/s · p95 40ms"
+  /** Shown under the name, e.g. "420ms in service" or "120 req/s · 2% err"
    * — for an external node, its kind ("database", "http", …). */
   metricLine?: string;
+  /** Shown beside the name, e.g. "p95 40ms". Never truncated: a long name
+   * gives way to it. */
+  latency?: string;
 }
 
 export interface ServiceGraphEdge {
@@ -131,29 +138,22 @@ function layoutGraph(
   };
 }
 
-type Severity = "neutral" | "warn" | "critical";
-
-/** Shared neutral/warn/critical thresholds (0.5%/2%) for a node or an edge:
- * a known error-rate fraction wins, an unknown one falls back to a bare
+/** A known error-rate fraction wins, an unknown one falls back to a bare
  * pass/fail flag (the trace-derived graph, which has no rate, only whether
  * any call failed). */
 function severityFor(
   errorRate: number | undefined,
   failed: boolean | undefined,
-): Severity {
-  if (errorRate !== undefined) {
-    if (errorRate >= 0.02) return "critical";
-    if (errorRate >= 0.005) return "warn";
-    return "neutral";
-  }
-  return failed ? "critical" : "neutral";
+): ErrorSeverity {
+  if (errorRate !== undefined) return errorRateSeverity(errorRate);
+  return failed ? "critical" : "ok";
 }
 
-function edgeSeverity(edge: ServiceGraphEdge): Severity {
+function edgeSeverity(edge: ServiceGraphEdge): ErrorSeverity {
   return severityFor(edge.errorRate, edge.failed);
 }
 
-function nodeSeverity(node: ServiceGraphNode): Severity {
+function nodeSeverity(node: ServiceGraphNode): ErrorSeverity {
   return severityFor(node.errorRate, node.failed);
 }
 
@@ -171,6 +171,9 @@ function tooltipRows(hovered: Hovered): VizTooltipRow[] {
     const rows: VizTooltipRow[] = [];
     if (hovered.node.metricLine) {
       rows.push({ label: "time", value: hovered.node.metricLine });
+    }
+    if (hovered.node.latency) {
+      rows.push({ label: "latency", value: hovered.node.latency });
     }
     if (hovered.node.errorRate !== undefined) {
       rows.push({
@@ -318,7 +321,7 @@ export function ServiceGraph({
         >
           <svg className="service-graph-edges" width={width} height={height}>
             <defs>
-              {(["neutral", "warn", "critical"] as const).map((sev) => (
+              {(["ok", "warn", "critical"] as const).map((sev) => (
                 <marker
                   key={sev}
                   id={`${arrowIdBase}-${sev}`}
@@ -395,12 +398,15 @@ export function ServiceGraph({
                   {!node.external && (
                     <span
                       className={`sg-node-dot sg-node-dot-${
-                        severity === "neutral" ? "healthy" : severity
+                        severity === "ok" ? "healthy" : severity
                       }`}
                       aria-hidden
                     />
                   )}
-                  {node.label}
+                  <span className="sg-node-label">{node.label}</span>
+                  {node.latency && (
+                    <span className="sg-node-latency">{node.latency}</span>
+                  )}
                 </span>
                 {node.metricLine && (
                   <span className="sg-node-metric">{node.metricLine}</span>
