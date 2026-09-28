@@ -292,6 +292,7 @@ function MetricNameCombobox({
           activeIndex >= 0 ? optionId(activeIndex) : undefined
         }
         placeholder="metric"
+        size={Math.max(20, value.length + 1)}
         value={value}
         title={value}
         onChange={(e) => {

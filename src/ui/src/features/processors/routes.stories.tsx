@@ -13,6 +13,7 @@ import {
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
 import { processorsRoutes } from "./routes";
+import { REDACTED_LOGS_ECHO } from "./serverEcho.fixture";
 
 const who = sampleWhoami();
 
@@ -66,26 +67,7 @@ const processorsList = {
 const redactEmails = processorsList.processors[0];
 
 const testResponse = {
-  payload: {
-    resourceLogs: [
-      {
-        resource: { attributes: [] },
-        scopeLogs: [
-          {
-            scope: {},
-            logRecords: [
-              {
-                body: { stringValue: "order placed" },
-                attributes: [
-                  { key: "user.email", value: { stringValue: "[redacted]" } },
-                ],
-              },
-            ],
-          },
-        ],
-      },
-    ],
-  },
+  payload: REDACTED_LOGS_ECHO,
   statements: [{ processor: "redact-emails", index: 0, matched: 1, errors: 0 }],
 };
 
@@ -119,7 +101,7 @@ const meta = {
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
+      <div style={{ width: "100%", maxWidth: 1280, height: 800 }}>
         <Story />
       </div>
     ),

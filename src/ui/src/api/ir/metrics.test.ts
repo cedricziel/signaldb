@@ -3,6 +3,7 @@ import {
   buildFormulaIrDoc,
   buildMetricIrDoc,
   irSeriesToPromSeries,
+  seriesDisplayName,
   seriesName,
 } from "./metrics";
 import {
@@ -251,6 +252,20 @@ describe("seriesName", () => {
     expect(seriesName({ __name__: "up", b: "2", a: "1" })).toBe(
       'up{a="1", b="2"}',
     );
+  });
+});
+
+describe("seriesDisplayName", () => {
+  it("shows just the label values, ordered by label key", () => {
+    expect(
+      seriesDisplayName({ __name__: "up", service_name: "checkout" }),
+    ).toBe("checkout");
+    expect(seriesDisplayName({ region: "eu", env: "prod" })).toBe("prod · eu");
+  });
+
+  it("falls back to the metric name when there are no labels", () => {
+    expect(seriesDisplayName({ __name__: "up" })).toBe("up");
+    expect(seriesDisplayName({})).toBe("value");
   });
 });
 

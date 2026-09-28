@@ -222,16 +222,16 @@ impl IcebergWriterFlightService {
                     Ok(summary) => {
                         if summary.tables_created > 0 || summary.tables_failed > 0 {
                             tracing::info!(
-                                datasets_checked = summary.datasets_checked,
-                                datasets_skipped = summary.datasets_skipped,
-                                tables_created = summary.tables_created,
-                                tables_failed = summary.tables_failed,
+                                signaldb.job.datasets_checked = summary.datasets_checked as i64,
+                                signaldb.job.datasets_skipped = summary.datasets_skipped as i64,
+                                signaldb.job.tables_created = summary.tables_created as i64,
+                                signaldb.job.tables_failed = summary.tables_failed as i64,
                                 "Signal-table reconcile pass complete"
                             );
                         } else {
                             tracing::debug!(
-                                datasets_checked = summary.datasets_checked,
-                                datasets_skipped = summary.datasets_skipped,
+                                signaldb.job.datasets_checked = summary.datasets_checked as i64,
+                                signaldb.job.datasets_skipped = summary.datasets_skipped as i64,
                                 "Signal-table reconcile pass complete (converged)"
                             );
                         }

@@ -697,7 +697,7 @@ impl Catalog {
 
     /// Create a new Catalog client and initialize schema.
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
-        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Connecting to catalog database");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(dsn), "Connecting to catalog database");
 
         let catalog = if dsn.starts_with("sqlite:") {
             // Add mode=rwc to create database file if it doesn't exist

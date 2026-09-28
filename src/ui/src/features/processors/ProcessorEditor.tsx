@@ -160,7 +160,7 @@ function EditorForm({
   const canSave = isValidated && name.trim() !== "" && !save.isPending;
 
   return (
-    <div className="processors-page">
+    <div className="processors-page processors-editor">
       <h1 className="processors-title">
         {stored ? `Edit ${stored.name}` : "New processor"}
       </h1>
@@ -268,7 +268,7 @@ function EditorForm({
           <div className="processors-statements-actions">
             <button
               type="button"
-              className="btn btn-ghost"
+              className="btn"
               onClick={() => validation.mutate()}
               disabled={validation.isPending}
             >

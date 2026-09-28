@@ -1,0 +1,15 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "storybook",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "source ~/.nvm/nvm.sh >/dev/null && nvm use 24.9.0 >/dev/null && cd src/ui && pnpm exec storybook dev -p \"$PORT\" --no-open --ci"
+      ],
+      "port": 6116,
+      "autoPort": true
+    }
+  ]
+}
