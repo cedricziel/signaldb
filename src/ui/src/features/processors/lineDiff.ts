@@ -14,6 +14,28 @@ export type DiffLine =
 export function diffLines(before: string, after: string): DiffLine[] {
   const a = before.split("\n");
   const b = after.split("\n");
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (
+    tail < a.length - head &&
+    tail < b.length - head &&
+    a[a.length - 1 - tail] === b[b.length - 1 - tail]
+  ) {
+    tail++;
+  }
+  const same = (text: string): DiffLine => ({ kind: "same", text });
+  return [
+    ...a.slice(0, head).map(same),
+    ...diffMiddle(
+      a.slice(head, a.length - tail),
+      b.slice(head, b.length - tail),
+    ),
+    ...a.slice(a.length - tail).map(same),
+  ];
+}
+
+function diffMiddle(a: string[], b: string[]): DiffLine[] {
   const n = a.length;
   const m = b.length;
   // Guard against pathological input: the DP matrix below is O(n*m) cells,
