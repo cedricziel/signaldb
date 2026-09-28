@@ -798,6 +798,69 @@ a.rum-row:hover {
   flex-wrap: wrap;
 }
 
+.rum-session-timeline {
+  /* Not scrolling itself (see .rum-session-timeline-scroll below): the
+     shared hover VizTooltip is positioned relative to this element, and
+     `overflow-x: auto` here would also clip the y axis (per the CSS
+     spec's "the other axis defaults to auto when one is non-visible"
+     rule), cutting off tooltips on the lower lanes and adding a spurious
+     vertical scrollbar on hover. */
+  position: relative;
+}
+.rum-session-timeline-scroll {
+  /* The min-width lives on .rum-session-timeline-content (the scrolled
+     content), not here: putting it on the overflow element itself would
+     stop it from ever shrinking below 480px, overflowing this element's
+     own parent on narrow viewports instead of scrolling internally. */
+  max-width: 100%;
+  overflow-x: auto;
+}
+.rum-session-timeline-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 480px;
+}
+.rum-session-lane {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.rum-session-lane-label {
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+}
+.rum-session-lane-track {
+  position: relative;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--surface3);
+}
+.rum-session-mark {
+  position: absolute;
+  top: 2px;
+  width: 6px;
+  height: 14px;
+  border-radius: 2px;
+  border: 0;
+  padding: 0;
+  background: var(--accent);
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+.rum-session-mark.on {
+  background: var(--warn);
+  outline: 2px solid var(--text);
+}
+.rum-session-mark.segment {
+  /* A view segment spans its own [start, end) — left-aligned at its start,
+     not centred on a point like a plain mark. */
+  min-width: 3px;
+  transform: none;
+}
+
 .rum-load-bar {
   display: flex;
   height: 22px;
