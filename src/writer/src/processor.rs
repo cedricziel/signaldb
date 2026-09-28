@@ -1,8 +1,10 @@
 use crate::routing::{self, RouteMetadata, RouteTarget};
+use crate::schema_transform::transform_metric_exemplars;
 use crate::storage::IcebergTableWriter;
 use anyhow::{Context, Result};
 use common::CatalogManager;
 use common::config::WriterConfig;
+use common::iceberg::schemas::TableSchema;
 use common::schema::type_authority::TypeAuthority;
 use common::wal::manager::WalManager;
 use common::wal::{Wal, WalEntry, bytes_to_record_batch};
@@ -1168,6 +1170,112 @@ impl WalProcessor {
         Ok(())
     }
 
+    /// This tenant/dataset/table's cached writer, creating and inserting one
+    /// if absent. Creation happens with the cache lock released (a catalog
+    /// round trip); `or_insert` settles a race by keeping whichever writer
+    /// landed first. Shared by the group's own table lookup in
+    /// [`Self::process_batch_for_table`] and the `metric_exemplars`
+    /// companion commit in [`Self::commit_metric_exemplars_for_chunk`].
+    async fn get_or_create_table_writer(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Result<Arc<tokio::sync::Mutex<IcebergTableWriter>>> {
+        let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
+        let cached = self.table_writers.lock().await.get(&writer_key).cloned();
+        if let Some(writer) = cached {
+            return Ok(writer);
+        }
+        let mut writer = IcebergTableWriter::new(
+            &self.catalog_manager,
+            tenant_id.to_string(),
+            dataset_id.to_string(),
+            table_name.to_string(),
+        )
+        .await?;
+        if let Some(authority) = self.type_authority.clone() {
+            writer = writer.with_type_authority(authority);
+        }
+        let writer = Arc::new(tokio::sync::Mutex::new(writer));
+        Ok(self
+            .table_writers
+            .lock()
+            .await
+            .entry(writer_key)
+            .or_insert(writer)
+            .clone())
+    }
+
+    /// Commit one metrics chunk's exemplars to `metric_exemplars`, deduped
+    /// against that table's own idempotency marker. Never marks the WAL —
+    /// callers must do that themselves after their own commit.
+    async fn commit_metric_exemplars_for_chunk(
+        &self,
+        wal_writer_id: &str,
+        tenant_id: &str,
+        dataset_id: &str,
+        chunk: &[(Uuid, RecordBatch)],
+        processed_so_far: &[Uuid],
+    ) -> Result<(), CommitFailure> {
+        let exemplar_entries: Vec<(Uuid, RecordBatch)> = chunk
+            .iter()
+            .filter_map(|(id, batch)| match transform_metric_exemplars(batch.clone()) {
+                Ok(transformed) if transformed.num_rows() > 0 => Some((*id, transformed)),
+                Ok(_) => None,
+                Err(e) => {
+                    tracing::debug!(
+                        entry_id = %id,
+                        error = %e,
+                        "Skipping exemplar extraction; the metrics commit below will reject or retire this entry"
+                    );
+                    None
+                }
+            })
+            .collect();
+        if exemplar_entries.is_empty() {
+            return Ok(());
+        }
+
+        // Shared by every fallible step below: each is a catalog/object-store
+        // dependency failure, not a property of any one entry, so all of them
+        // become the same transient, whole-chunk `CommitFailure`.
+        let transient = |source: anyhow::Error| CommitFailure {
+            kind: CommitFailureKind::Transient,
+            processed: processed_so_far.to_vec(),
+            source,
+        };
+
+        let exemplars_writer = self
+            .get_or_create_table_writer(
+                tenant_id,
+                dataset_id,
+                TableSchema::MetricExemplars.table_name(),
+            )
+            .await
+            .map_err(transient)?;
+        let mut exemplars_writer = exemplars_writer.lock().await;
+
+        let committed = exemplars_writer
+            .load_committed_marker(wal_writer_id)
+            .await
+            .map_err(transient)?;
+        let remaining: Vec<(Uuid, RecordBatch)> = exemplar_entries
+            .into_iter()
+            .filter(|(id, _)| !committed.contains(id))
+            .collect();
+        if remaining.is_empty() {
+            return Ok(());
+        }
+
+        exemplars_writer
+            .append_batches_with_marker(wal_writer_id, remaining)
+            .await
+            .map_err(transient)?;
+
+        Ok(())
+    }
+
     /// Process a batch of entries for a specific table
     #[tracing::instrument(
         skip_all,
@@ -1206,48 +1314,17 @@ impl WalProcessor {
             tokio::time::sleep(delay).await;
         }
 
-        let writer_key = format!("{tenant_id}:{dataset_id}:{table_name}");
-
-        // Get or create this table's writer. The cache lock is released
-        // before the commit so other tables proceed in parallel; the writer's
-        // own lock then serializes this table's commits, which is required —
-        // a commit reloads the table and replaces its idempotency marker.
-        let cached = self.table_writers.lock().await.get(&writer_key).cloned();
-        let shared_writer = match cached {
-            Some(writer) => writer,
-            None => {
-                // Created with the cache lock RELEASED. Creation is a catalog
-                // round trip, and the outer lock covers every table — holding
-                // it here would make a burst of first-time tenants serialize
-                // behind each other, and block even groups whose writer is
-                // already cached, which is exactly the coupling this fan-out
-                // removes. `or_insert` settles a race by keeping the first
-                // writer in; a table appears in only one group per cycle, so
-                // that race is not reachable today anyway.
-                let mut writer = IcebergTableWriter::new(
-                    &self.catalog_manager,
-                    tenant_id.to_string(),
-                    dataset_id.to_string(),
-                    table_name.to_string(),
-                )
-                .await
-                .map_err(|e| CommitFailure {
-                    kind: classify_table_creation_error(&e),
-                    processed: Vec::new(),
-                    source: e,
-                })?;
-                if let Some(authority) = self.type_authority.clone() {
-                    writer = writer.with_type_authority(authority);
-                }
-                let writer = Arc::new(tokio::sync::Mutex::new(writer));
-                self.table_writers
-                    .lock()
-                    .await
-                    .entry(writer_key.clone())
-                    .or_insert(writer)
-                    .clone()
-            }
-        };
+        // The writer's own lock (taken below) serializes this table's
+        // commits, which is required — a commit reloads the table and
+        // replaces its idempotency marker.
+        let shared_writer = self
+            .get_or_create_table_writer(tenant_id, dataset_id, table_name)
+            .await
+            .map_err(|e| CommitFailure {
+                kind: classify_table_creation_error(&e),
+                processed: Vec::new(),
+                source: e,
+            })?;
 
         let wal_writer_id = wal.writer_id().to_string();
         let writer = &mut *shared_writer.lock().await;
@@ -1321,6 +1398,23 @@ impl WalProcessor {
         while fresh_iter.peek().is_some() {
             let chunk: Vec<(Uuid, RecordBatch)> =
                 fresh_iter.by_ref().take(MAX_ENTRIES_PER_COMMIT).collect();
+
+            // Commit this chunk's exemplars before the metrics commit below.
+            // Replay-safe: each table's marker records only its own last
+            // commit's ids, so a crash between the two makes replay skip
+            // these ids here (already marked) while the metrics commit still
+            // proceeds; a crash after the metrics commit is caught by the
+            // ordinary marker dedupe on both tables.
+            if table_name == TableSchema::Metrics.table_name() {
+                self.commit_metric_exemplars_for_chunk(
+                    &wal_writer_id,
+                    tenant_id,
+                    dataset_id,
+                    &chunk,
+                    &processed_ids,
+                )
+                .await?;
+            }
 
             let outcome = writer
                 .append_batches_with_marker(&wal_writer_id, chunk)
@@ -1602,6 +1696,7 @@ pub(crate) fn link_batch_origins(span: &tracing::Span, trace_contexts: &[EntryTr
 mod tests {
     use super::*;
     use common::wal::{Wal, WalConfig, WalOperation};
+    use datafusion::arrow::array::StringArray;
     use tempfile::tempdir;
 
     /// A `TypeAuthority` backed by a fresh in-memory SQL catalog. Every
@@ -3426,5 +3521,319 @@ mod tests {
             "today this only wrote a bare .bin with no reason; the .rejected.json marker \
              must now be recorded too"
         );
+    }
+
+    /// A wire-format (`data_json`) metrics batch with one gauge point,
+    /// optionally carrying one exemplar -- the schema the acceptor produces
+    /// before the wide-table transforms run.
+    fn metrics_wire_batch(with_exemplar: bool) -> RecordBatch {
+        use datafusion::arrow::array::{BooleanArray, Int32Array, UInt64Array};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let exemplar_json = if with_exemplar {
+            r#","exemplars":[{"time_unix_nano":1700000001500000000,"value":0.5,"trace_id":"0102030405060708090a0b0c0d0e0f10","span_id":"0102030405060708","filtered_attributes":{}}]"#
+        } else {
+            ""
+        };
+        let data_json = format!(
+            r#"[{{"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":0.5,"attributes":{{}}{exemplar_json}}}]"#
+        );
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("start_time_unix_nano", DataType::UInt64, true),
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("metric_type", DataType::Utf8, false),
+            Field::new("data_json", DataType::Utf8, false),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["exemplar.test.metric"])),
+                Arc::new(StringArray::from(vec![Some("desc")])),
+                Arc::new(StringArray::from(vec![Some("1")])),
+                Arc::new(UInt64Array::from(vec![Some(1_700_000_000_000_000_000u64)])),
+                Arc::new(UInt64Array::from(vec![1_700_000_001_000_000_000u64])),
+                Arc::new(StringArray::from(vec![Some("{}")])),
+                Arc::new(StringArray::from(vec![Some(
+                    r#"{"service.name":"checkout"}"#,
+                )])),
+                Arc::new(StringArray::from(vec![Some(r#"{"name":"hostmetrics"}"#)])),
+                Arc::new(StringArray::from(vec!["gauge"])),
+                Arc::new(StringArray::from(vec![data_json.as_str()])),
+                Arc::new(Int32Array::from(vec![Some(2)])),
+                Arc::new(BooleanArray::from(vec![Some(false)])),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Reads every committed row for `tenant_id`/`dataset_id`/`table_name`
+    /// back as decoded Arrow batches, mirroring
+    /// `storage::iceberg::tests::scan_batches` -- duplicated here since that
+    /// one is private to its own module, and this is the only place in the
+    /// writer's own tests that needs to read a table back rather than just
+    /// drive a commit.
+    async fn scan_table_rows(
+        catalog_manager: &CatalogManager,
+        tenant_id: &str,
+        dataset_id: &str,
+        table_name: &str,
+    ) -> Vec<RecordBatch> {
+        use futures::StreamExt;
+        let table = catalog_manager
+            .ensure_table(tenant_id, dataset_id, table_name)
+            .await
+            .unwrap();
+        let manifests = table.manifests(None, None).await.unwrap();
+        let datafiles = table
+            .datafiles(&manifests, None, (None, None))
+            .await
+            .unwrap();
+        let entries: Vec<_> = datafiles.map(|r| r.unwrap().1).collect().await;
+        let stream =
+            iceberg_rust::arrow::read::read(entries.into_iter(), table.object_store()).await;
+        stream.map(|r| r.unwrap()).collect().await
+    }
+
+    /// A metrics WAL entry whose wire batch carries one exemplar must land
+    /// one point row in `metrics` and one matching-`series_id` row in
+    /// `metric_exemplars` from the same `process_batch_for_table` call.
+    #[tokio::test]
+    async fn metrics_wal_entry_with_exemplar_lands_in_both_tables() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        wal.append(
+            WalOperation::WriteMetrics,
+            common::wal::record_batch_to_bytes(&metrics_wire_batch(true)).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let entry = wal.get_unprocessed_entries().await.unwrap().remove(0);
+        let batch = WalProcessor::deserialize_entry_data(&wal, &entry)
+            .await
+            .unwrap();
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
+            .with_type_authority(test_type_authority().await);
+
+        processor
+            .process_batch_for_table(
+                &wal,
+                "acme",
+                "production",
+                TableSchema::Metrics.table_name(),
+                vec![(entry.id, batch)],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+
+        let metrics_rows = scan_table_rows(
+            &catalog_manager,
+            "acme",
+            "production",
+            TableSchema::Metrics.table_name(),
+        )
+        .await;
+        let metrics_row = metrics_rows
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .expect("one committed metrics row");
+        let metrics_series_id = metrics_row
+            .column_by_name("series_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string();
+
+        let exemplar_rows = scan_table_rows(
+            &catalog_manager,
+            "acme",
+            "production",
+            TableSchema::MetricExemplars.table_name(),
+        )
+        .await;
+        let exemplar_row = exemplar_rows
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .expect("one committed exemplar row");
+        assert_eq!(exemplar_row.num_rows(), 1);
+        let exemplar_series_id = exemplar_row
+            .column_by_name("series_id")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(
+            exemplar_series_id, metrics_series_id,
+            "the exemplar row must carry the series_id of the point it belongs to"
+        );
+    }
+
+    /// A metrics chunk with no exemplars must not create an exemplars
+    /// snapshot (or even a writer): this path runs for every metrics
+    /// commit, so an empty commit every time would double the Iceberg
+    /// metadata writes for no reason.
+    #[tokio::test]
+    async fn metrics_chunk_with_no_exemplars_never_creates_the_exemplars_writer() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        wal.append(
+            WalOperation::WriteMetrics,
+            common::wal::record_batch_to_bytes(&metrics_wire_batch(false)).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let entry = wal.get_unprocessed_entries().await.unwrap().remove(0);
+        let batch = WalProcessor::deserialize_entry_data(&wal, &entry)
+            .await
+            .unwrap();
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager)
+            .with_type_authority(test_type_authority().await);
+
+        processor
+            .process_batch_for_table(
+                &wal,
+                "acme",
+                "production",
+                TableSchema::Metrics.table_name(),
+                vec![(entry.id, batch)],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        let writers = processor.table_writers.lock().await;
+        assert!(
+            writers.contains_key("acme:production:metrics"),
+            "the metrics writer must exist after a commit"
+        );
+        assert!(
+            !writers.contains_key("acme:production:metric_exemplars"),
+            "no exemplar rows means no exemplars writer/snapshot should ever be created"
+        );
+    }
+
+    /// Replay-safety: a crash between the exemplar commit and the metrics
+    /// commit that follows it must not duplicate rows on the next attempt.
+    /// The exemplar marker already covers these ids, so reprocessing skips
+    /// the exemplar commit and proceeds straight to the (still-pending)
+    /// metrics commit.
+    #[tokio::test]
+    async fn replaying_after_a_crash_between_the_two_commits_is_idempotent() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        wal.append(
+            WalOperation::WriteMetrics,
+            common::wal::record_batch_to_bytes(&metrics_wire_batch(true)).unwrap(),
+            None,
+        )
+        .await
+        .unwrap();
+        wal.flush().await.unwrap();
+
+        let entry = wal.get_unprocessed_entries().await.unwrap().remove(0);
+        let batch = WalProcessor::deserialize_entry_data(&wal, &entry)
+            .await
+            .unwrap();
+
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
+            .with_type_authority(test_type_authority().await);
+
+        // Simulate the crash: the exemplar commit lands, but the process
+        // dies before the metrics commit that normally follows it in the
+        // same `process_batch_for_table` call.
+        processor
+            .commit_metric_exemplars_for_chunk(
+                wal.writer_id(),
+                "acme",
+                "production",
+                &[(entry.id, batch.clone())],
+                &[],
+            )
+            .await
+            .unwrap();
+        assert!(
+            !wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "WAL marking must stay with the metrics commit, not the exemplar commit"
+        );
+
+        // Replay: the entry is still pending, so it is reprocessed exactly
+        // as a real restart would.
+        processor
+            .process_batch_for_table(
+                &wal,
+                "acme",
+                "production",
+                TableSchema::Metrics.table_name(),
+                vec![(entry.id, batch)],
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+
+        let exemplar_row_count: usize = scan_table_rows(
+            &catalog_manager,
+            "acme",
+            "production",
+            TableSchema::MetricExemplars.table_name(),
+        )
+        .await
+        .iter()
+        .map(|b| b.num_rows())
+        .sum();
+        assert_eq!(
+            exemplar_row_count, 1,
+            "the exemplar marker must dedupe the entry already committed before the crash"
+        );
+
+        let metrics_row_count: usize = scan_table_rows(
+            &catalog_manager,
+            "acme",
+            "production",
+            TableSchema::Metrics.table_name(),
+        )
+        .await
+        .iter()
+        .map(|b| b.num_rows())
+        .sum();
+        assert_eq!(metrics_row_count, 1);
     }
 }
