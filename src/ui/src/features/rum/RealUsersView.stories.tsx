@@ -214,32 +214,32 @@ const LOAD_BREAKDOWN_ROWS: (string | number)[][] = [
   ],
 ];
 
-/** `[pageTemplate, pageFull, requestUrl, n, p75]` — the request URLs match
+/** Per page route, `[requestUrl, n, p75 ms]` — the request URLs match
  * `NETWORK_TRACED_ROWS`'s own origins/templates so the join finds
  * `catalog-svc`/`checkout-svc`. */
-const BACKEND_CALL_ROWS: (string | number)[][] = [
-  [
-    ORDERS_ROUTE,
-    ORDERS_URLS[0]!,
-    "https://api.storefront.example.com/api/products/48213",
-    4200,
-    180_000_000,
+const BACKEND_CALL_ROWS: Record<string, (string | number)[][]> = {
+  [ORDERS_ROUTE]: [
+    ["https://api.storefront.example.com/api/products/48213", 4200, 180],
+    ["https://api.storefront.example.com/api/products/91820", 3800, 185],
   ],
-  [
-    ORDERS_ROUTE,
-    ORDERS_URLS[1]!,
-    "https://api.storefront.example.com/api/products/91820",
-    3800,
-    185_000_000,
+  [CHECKOUT_ROUTE]: [
+    ["https://api.storefront.example.com/api/checkout", 3000, 420],
   ],
-  [
-    CHECKOUT_ROUTE,
-    CHECKOUT_URL,
-    "https://api.storefront.example.com/api/checkout",
-    3000,
-    420_000_000,
-  ],
-];
+};
+
+function routeFilterOf(
+  pipe: NonNullable<IrDoc["pipeline"]>,
+): string | undefined {
+  for (const stage of pipe) {
+    if (
+      stage.where?.field === "url.template" &&
+      typeof stage.where.value === "string"
+    ) {
+      return stage.where.value;
+    }
+  }
+  return undefined;
+}
 
 function eventNameOf(pipe: NonNullable<IrDoc["pipeline"]>): string | undefined {
   for (const stage of pipe) {
@@ -358,6 +358,17 @@ function singleDocResponse(b: IrDoc): unknown {
     };
   }
 
+  if (
+    by.length === 1 &&
+    by[0] === "url.full" &&
+    eventNameOf(pipe) === "browser.resource_timing"
+  ) {
+    return {
+      result: "table",
+      rows: BACKEND_CALL_ROWS[routeFilterOf(pipe) ?? ""] ?? [],
+    };
+  }
+
   // Pages: views, per-route vital ratings/p75 and errors — all grouped by
   // (url.template, url.full), disambiguated by `by.length` alone (no
   // event_name collision yet at these lengths).
@@ -372,9 +383,7 @@ function singleDocResponse(b: IrDoc): unknown {
     if (by.length === 2 && eventName === "browser.navigation_timing") {
       return { result: "table", rows: LOAD_BREAKDOWN_ROWS };
     }
-    if (by.length === 2 && eventName === "browser.resource_timing") {
-      return { result: "table", rows: BACKEND_CALL_ROWS };
-    }
+
     if (by.length === 3) {
       return {
         result: "table",
