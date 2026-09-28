@@ -222,6 +222,50 @@ export function splitKpiSeries(
   };
 }
 
+// ---- Network: URL templates and SDK export detection ----------------------
+
+export interface UrlTemplate {
+  origin: string;
+  template: string;
+}
+
+const NUMERIC_SEGMENT = /^[0-9]+$/;
+const UUID_SEGMENT =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const LONG_HEX_SEGMENT = /^[0-9a-f]{16,}$/i;
+
+/** Buckets a request URL into a stable route template for grouping, when
+ * the record itself carries no `url.template` (browser fetch spans don't —
+ * see the module's callers): the path of `url.full` with its query
+ * stripped and id-like segments (numeric, UUID, or a long hex string)
+ * replaced by `:id`. `origin` is the host only (`reviews.partner-cdn.com`,
+ * not `https://reviews.partner-cdn.com`) — the spec's own display form for
+ * an origin. `null` for a URL that doesn't parse. */
+export function urlTemplate(urlFull: string): UrlTemplate | null {
+  let url: URL;
+  try {
+    url = new URL(urlFull);
+  } catch {
+    return null;
+  }
+  const segments = url.pathname.split("/").filter((s) => s !== "");
+  const templated = segments.map((s) =>
+    NUMERIC_SEGMENT.test(s) || UUID_SEGMENT.test(s) || LONG_HEX_SEGMENT.test(s)
+      ? ":id"
+      : s,
+  );
+  return { origin: url.host, template: `/${templated.join("/")}` };
+}
+
+const SDK_EXPORT_SUFFIXES = ["/v1/traces", "/v1/logs", "/v1/metrics"];
+
+/** A request to the telemetry export endpoint itself — marked "SDK export"
+ * rather than counted toward the Network tab's untraced-origin callout
+ * (`explore-ui-rum`'s "Network tab" requirement). */
+export function isSdkExportPath(path: string): boolean {
+  return SDK_EXPORT_SUFFIXES.some((suffix) => path.endsWith(suffix));
+}
+
 // ---- Tabs ------------------------------------------------------------
 
 export type RumTab = "overview" | "setup";

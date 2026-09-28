@@ -4,9 +4,14 @@ import {
   breakdownFromResponse,
   buildBreakdownDoc,
   buildKpisDoc,
+  buildNetworkCorrelateDoc,
+  buildNetworkRequestsDoc,
+  buildResourcesDoc,
   buildRumAppsDoc,
   buildSessionsOverTimeDoc,
   kpisFromResponse,
+  networkRowsFromResponses,
+  resourcesFromResponse,
   rumAppsFromResponse,
   sessionsOverTimeFromResponse,
   vitalRowsFromResponse,
@@ -231,6 +236,220 @@ describe("buildBreakdownDoc", () => {
         (s) => s.where?.field === "resource.browser.mobile",
       ),
     ).toBe(false);
+  });
+});
+
+describe("buildNetworkRequestsDoc / buildNetworkCorrelateDoc", () => {
+  it("scopes the totals read to the app's client spans, grouped by method/url/server", () => {
+    const doc = buildNetworkRequestsDoc("storefront-web", range) as {
+      from: string;
+      pipeline: { where?: unknown; aggregate?: { by: string[] } }[];
+    };
+    expect(doc.from).toBe("traces");
+    expect(doc.pipeline[0]!.where).toMatchObject({
+      and: expect.arrayContaining([
+        { field: "service.name", op: "eq", value: "storefront-web" },
+        { field: "span_kind", op: "eq", value: "Client" },
+      ]),
+    });
+    const agg = doc.pipeline.find(
+      (s) => (s as { aggregate?: unknown }).aggregate,
+    )!.aggregate!;
+    expect(agg.by).toEqual([
+      "http.request.method",
+      "url.full",
+      "server.address",
+    ]);
+  });
+
+  it("joins to the server-kind child via correlate, scoped to the app's client spans", () => {
+    const doc = buildNetworkCorrelateDoc("storefront-web", range) as {
+      pipeline: { correlate?: unknown; where?: { and?: unknown[] } }[];
+    };
+    expect(doc.pipeline[0]!.correlate).toEqual({ to: "parent", kind: "inner" });
+    expect(doc.pipeline[1]!.where?.and).toEqual(
+      expect.arrayContaining([
+        { field: "parent.service.name", op: "eq", value: "storefront-web" },
+        { field: "parent.span_kind", op: "eq", value: "Client" },
+        { field: "span_kind", op: "eq", value: "Server" },
+      ]),
+    );
+  });
+
+  it("counts distinct client spans, not their server children, for the traced count", () => {
+    const doc = buildNetworkCorrelateDoc("storefront-web", range) as {
+      irVersion: number;
+      pipeline: { aggregate?: { aggs: { fn?: string; of?: string }[] } }[];
+    };
+    expect(doc.irVersion).toBe(9);
+    const agg = doc.pipeline.find((s) => s.aggregate)!.aggregate!;
+    expect(agg.aggs[0]).toMatchObject({
+      fn: "count_distinct",
+      of: "parent.span_id",
+    });
+  });
+});
+
+describe("networkRowsFromResponses", () => {
+  const totals = table([
+    [
+      "GET",
+      "https://api.example.com/orders/48213",
+      "api.example.com",
+      100,
+      240_000_000,
+      4,
+    ],
+    [
+      "GET",
+      "https://api.example.com/orders/91820",
+      "api.example.com",
+      50,
+      260_000_000,
+      0,
+    ],
+    [
+      "GET",
+      "https://reviews.partner-cdn.com/widget",
+      "reviews.partner-cdn.com",
+      30,
+      500_000_000,
+      0,
+    ],
+  ]);
+  const traced = table([
+    [
+      "GET",
+      "https://api.example.com/orders/48213",
+      "api.example.com",
+      "orders-svc",
+      90,
+      120_000_000,
+    ],
+    [
+      "GET",
+      "https://api.example.com/orders/91820",
+      "api.example.com",
+      "orders-svc",
+      50,
+      130_000_000,
+    ],
+  ]);
+
+  it("merges rows sharing the same method/origin/URL template, summing counts", () => {
+    const rows = networkRowsFromResponses(totals, traced);
+    const merged = rows.find((r) => r.template === "/orders/:id")!;
+    expect(merged.calls).toBe(150);
+    expect(merged.tracedCalls).toBe(140);
+    expect(merged.errorCalls).toBe(4);
+    expect(merged.backendService).toBe("orders-svc");
+    expect(merged.totalP75Ms).toBeCloseTo(246.67, 1);
+    expect(merged.backendP75Ms).toBeCloseTo(123.57, 1);
+  });
+
+  it("marks a group with zero traced calls as untraced, not errored", () => {
+    const rows = networkRowsFromResponses(totals, traced);
+    const cdn = rows.find((r) => r.origin === "reviews.partner-cdn.com")!;
+    expect(cdn.tracedCalls).toBe(0);
+    expect(cdn.backendService).toBeUndefined();
+  });
+
+  it("sums traced rows for one URL served by several backend services", () => {
+    const split = table([
+      [
+        "GET",
+        "https://api.example.com/cart",
+        "api.example.com",
+        "cart-v1",
+        20,
+        100_000_000,
+      ],
+      [
+        "GET",
+        "https://api.example.com/cart",
+        "api.example.com",
+        "cart-v2",
+        60,
+        200_000_000,
+      ],
+    ]);
+    const totalsCart = table([
+      [
+        "GET",
+        "https://api.example.com/cart",
+        "api.example.com",
+        100,
+        300_000_000,
+        0,
+      ],
+    ]);
+    const [row] = networkRowsFromResponses(totalsCart, split);
+    expect(row!.tracedCalls).toBe(80);
+    expect(row!.backendService).toBe("cart-v2");
+    expect(row!.backendP75Ms).toBeCloseTo(175, 1);
+  });
+
+  it("marks unmatched rows as unknown, not untraced, when the correlate read overflows its cap", () => {
+    const overflow = table(
+      Array.from({ length: 501 }, (_, i) => [
+        "GET",
+        `https://api.example.com/other/${i}`,
+        "api.example.com",
+        "other-svc",
+        1,
+        1_000_000,
+      ]),
+    );
+    const rows = networkRowsFromResponses(totals, overflow);
+    const cdn = rows.find((r) => r.origin === "reviews.partner-cdn.com")!;
+    expect(cdn.tracedKnown).toBe(false);
+    expect(networkRowsFromResponses(totals, traced)[0]!.tracedKnown).toBe(true);
+  });
+
+  it("flags the telemetry export endpoint as an SDK export", () => {
+    const withExport = table([
+      [
+        "POST",
+        "https://api.example.com/v1/traces",
+        "api.example.com",
+        500,
+        15_000_000,
+        0,
+      ],
+    ]);
+    const rows = networkRowsFromResponses(withExport, table([]));
+    expect(rows[0]!.isSdkExport).toBe(true);
+  });
+});
+
+describe("buildResourcesDoc / resourcesFromResponse", () => {
+  it("aggregates browser.resource_timing by initiator type", () => {
+    const doc = buildResourcesDoc("storefront-web", range) as {
+      pipeline: { aggregate?: { by: string[]; aggs: { fn: string }[] } }[];
+    };
+    const agg = doc.pipeline.find(
+      (s) => (s as { aggregate?: unknown }).aggregate,
+    )!.aggregate!;
+    expect(agg.by).toEqual(["browser.resource_timing.initiator_type"]);
+    expect(agg.aggs.map((a) => a.fn)).toEqual([
+      "count",
+      "sum",
+      "quantile",
+      "max",
+    ]);
+  });
+
+  it("decodes count, transfer size, p75 duration and the largest transfer", () => {
+    const res = table([["script", 1200, 48_000_000, 210, 812_000]]);
+    expect(resourcesFromResponse(res)).toEqual([
+      {
+        initiatorType: "script",
+        count: 1200,
+        transferBytes: 48_000_000,
+        p75Ms: 210,
+        maxTransferBytes: 812_000,
+      },
+    ]);
   });
 });
 
