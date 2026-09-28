@@ -9799,7 +9799,7 @@ dependencies = [
  "libc",
  "log",
  "memchr",
- "miniz_oxide 0.8.9",
+ "miniz_oxide 0.9.1",
  "mio",
  "num-bigint 0.4.8",
  "num-iter",
