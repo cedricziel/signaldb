@@ -63,6 +63,15 @@ pub struct DatasetProvisioningReport {
     pub failed: Vec<(String, String)>,
 }
 
+/// Outcome of one [`CatalogManager::purge_legacy_metric_tables`] call.
+#[derive(Debug, Default, Clone)]
+pub struct LegacyMetricPurgeReport {
+    /// Legacy tables this call dropped.
+    pub dropped: Vec<String>,
+    /// Legacy tables that could not be dropped, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Global catalog manager holding the shared Iceberg catalog instance.
 ///
 /// This ensures all SignalDB components use the same catalog for:
@@ -349,13 +358,12 @@ impl CatalogManager {
     ///
     /// A no-op under [`crate::iceberg::schemas::MetricsLayout::Legacy`] --
     /// nothing creates the wide `metrics`/`metric_exemplars` tables yet, so
-    /// there is nothing to cut over from. Returns the table names actually
-    /// dropped.
+    /// there is nothing to cut over from.
     pub async fn purge_legacy_metric_tables(
         &self,
         tenant_id: &str,
         dataset_id: &str,
-    ) -> Vec<String> {
+    ) -> LegacyMetricPurgeReport {
         self.purge_legacy_metric_tables_with_layout(
             tenant_id,
             dataset_id,
@@ -378,9 +386,10 @@ impl CatalogManager {
         tenant_id: &str,
         dataset_id: &str,
         layout: crate::iceberg::schemas::MetricsLayout,
-    ) -> Vec<String> {
+    ) -> LegacyMetricPurgeReport {
+        let mut report = LegacyMetricPurgeReport::default();
         if layout != crate::iceberg::schemas::MetricsLayout::Wide {
-            return Vec::new();
+            return report;
         }
 
         const LEGACY_METRIC_TABLE_NAMES: &[&str] = &[
@@ -391,7 +400,6 @@ impl CatalogManager {
             "metrics_summary",
         ];
 
-        let mut dropped = Vec::new();
         for table_name in LEGACY_METRIC_TABLE_NAMES {
             let identifier = self.build_table_identifier(tenant_id, dataset_id, table_name);
             if self
@@ -412,7 +420,7 @@ impl CatalogManager {
                         signaldb.table = %table_name,
                         "Dropped legacy per-type metric table superseded by the wide metrics table"
                     );
-                    dropped.push((*table_name).to_string());
+                    report.dropped.push((*table_name).to_string());
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -422,10 +430,13 @@ impl CatalogManager {
                         error = %e,
                         "Failed to drop legacy metric table; will retry on the next pass"
                     );
+                    report
+                        .failed
+                        .push(((*table_name).to_string(), e.to_string()));
                 }
             }
         }
-        dropped
+        report
     }
 
     /// Get all enabled tenants.
@@ -1411,7 +1422,8 @@ mod tests {
                 "production",
                 crate::iceberg::schemas::MetricsLayout::Legacy,
             )
-            .await;
+            .await
+            .dropped;
 
         assert!(dropped.is_empty());
         assert_eq!(tables_in(&manager, "acme", "production").await.len(), 5);
@@ -1427,7 +1439,8 @@ mod tests {
                 "production",
                 crate::iceberg::schemas::MetricsLayout::Wide,
             )
-            .await;
+            .await
+            .dropped;
         dropped.sort();
         assert_eq!(
             dropped,
@@ -1447,7 +1460,8 @@ mod tests {
                 "production",
                 crate::iceberg::schemas::MetricsLayout::Wide,
             )
-            .await;
+            .await
+            .dropped;
         assert!(dropped_again.is_empty(), "nothing left to drop");
     }
 }

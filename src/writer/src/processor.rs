@@ -3894,18 +3894,13 @@ mod tests {
         assert_eq!(metrics_row_count, 1);
     }
 
-    /// Appends one metrics entry per name, returning each entry's id and
+    /// Appends one exemplar-carrying metrics entry per name, returning each entry's id and
     /// deserialized batch in append order.
-    async fn append_metrics_entries(
-        wal: &Arc<Wal>,
-        names: &[&str],
-        with_exemplar: bool,
-    ) -> Vec<(Uuid, RecordBatch)> {
+    async fn append_metrics_entries(wal: &Arc<Wal>, names: &[&str]) -> Vec<(Uuid, RecordBatch)> {
         for name in names {
             wal.append(
                 WalOperation::WriteMetrics,
-                common::wal::record_batch_to_bytes(&metrics_wire_batch(name, with_exemplar))
-                    .unwrap(),
+                common::wal::record_batch_to_bytes(&metrics_wire_batch(name, true)).unwrap(),
                 None,
             )
             .await
@@ -3977,7 +3972,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let entries = append_metrics_entries(&wal, &["metric.a"], true).await;
+        let entries = append_metrics_entries(&wal, &["metric.a"]).await;
         let entry_id = entries[0].0;
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
@@ -4044,7 +4039,7 @@ mod tests {
                 .await
                 .unwrap(),
         );
-        let entries = append_metrics_entries(&wal, &["metric.a", "metric.b"], true).await;
+        let entries = append_metrics_entries(&wal, &["metric.a", "metric.b"]).await;
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
         let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
             .with_type_authority(test_type_authority().await);

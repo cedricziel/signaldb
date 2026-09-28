@@ -466,7 +466,9 @@ async fn test_metrics_gauge_ingestion_and_persistence() {
         .await
         .expect("metrics export must be durably accepted");
 
-    wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("force-commit flush");
     assert_eq!(
         metric_type_row_count(&services.catalog_manager, "gauge").await,
         1,
@@ -486,7 +488,9 @@ async fn test_metrics_mixed_types_ingestion() {
         .await
         .expect("metrics export must be durably accepted");
 
-    wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("force-commit flush");
     for metric_type in ["gauge", "sum", "histogram"] {
         assert_eq!(
             metric_type_row_count(&services.catalog_manager, metric_type).await,

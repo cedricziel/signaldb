@@ -52,6 +52,9 @@ pub struct ReconcilePassSummary {
 pub struct TableReconciler {
     catalog_manager: Arc<CatalogManager>,
     ensured: Mutex<HashSet<(String, String, String)>>,
+    /// `(tenant, dataset)` pairs whose legacy metric purge fully succeeded,
+    /// so later passes skip its per-table catalog loads.
+    legacy_purged: Mutex<HashSet<(String, String)>>,
     /// Retention for the dormant-table marker sweep (see
     /// [`Self::retire_stale_markers`]). Zero disables it, same
     /// convention as the writer's own commit-path sweep.
@@ -64,6 +67,7 @@ impl TableReconciler {
         Self {
             catalog_manager,
             ensured: Mutex::new(HashSet::new()),
+            legacy_purged: Mutex::new(HashSet::new()),
             wal_marker_retention: Duration::ZERO,
             started_at: Instant::now(),
         }
@@ -103,29 +107,25 @@ impl TableReconciler {
 
                 if self.is_converged(&tenant.id, &dataset, &expected).await {
                     summary.datasets_skipped += 1;
-                    continue;
+                } else {
+                    summary.datasets_checked += 1;
+                    let report = self
+                        .catalog_manager
+                        .ensure_dataset_tables(&tenant.id, &dataset)
+                        .await;
+
+                    summary.tables_created += report.created.len();
+                    summary.tables_failed += report.failed.len();
+                    record_provisioning_metrics(&tenant.id, &dataset, &report);
+
+                    let mut ensured = self.ensured.lock().await;
+                    for table in report.created.iter().chain(report.already_present.iter()) {
+                        ensured.insert((tenant.id.clone(), dataset.clone(), table.clone()));
+                    }
                 }
 
-                summary.datasets_checked += 1;
-                let report = self
-                    .catalog_manager
-                    .ensure_dataset_tables(&tenant.id, &dataset)
-                    .await;
-
-                summary.tables_created += report.created.len();
-                summary.tables_failed += report.failed.len();
-                record_provisioning_metrics(&tenant.id, &dataset, &report);
-
-                let dropped = self
-                    .catalog_manager
-                    .purge_legacy_metric_tables(&tenant.id, &dataset)
-                    .await;
-                summary.legacy_metric_tables_dropped += dropped.len();
-
-                let mut ensured = self.ensured.lock().await;
-                for table in report.created.iter().chain(report.already_present.iter()) {
-                    ensured.insert((tenant.id.clone(), dataset.clone(), table.clone()));
-                }
+                summary.legacy_metric_tables_dropped +=
+                    self.purge_legacy_metric_tables(&tenant.id, &dataset).await;
             }
         }
 
@@ -205,6 +205,23 @@ impl TableReconciler {
                 "Retired WAL idempotency markers from dormant tables during a reconcile pass"
             );
         }
+    }
+
+    /// Drop this dataset's legacy metric tables unless an earlier pass already
+    /// did so without a failure. Returns how many were dropped.
+    async fn purge_legacy_metric_tables(&self, tenant_id: &str, dataset_id: &str) -> usize {
+        let key = (tenant_id.to_string(), dataset_id.to_string());
+        if self.legacy_purged.lock().await.contains(&key) {
+            return 0;
+        }
+        let report = self
+            .catalog_manager
+            .purge_legacy_metric_tables(tenant_id, dataset_id)
+            .await;
+        if report.failed.is_empty() {
+            self.legacy_purged.lock().await.insert(key);
+        }
+        report.dropped.len()
     }
 
     /// Whether every enabled table for this dataset was already confirmed.
@@ -506,6 +523,48 @@ mod tests {
                 legacy_metric_tables_dropped: 0,
             },
             "a converged dataset must not be re-checked against the catalog"
+        );
+    }
+
+    // A dataset converged by an earlier pass whose legacy purge failed still
+    // has that purge retried, and only until one purge succeeds.
+    #[tokio::test]
+    async fn a_converged_dataset_retries_its_legacy_metric_purge_until_it_succeeds() {
+        let manager = Arc::new(
+            CatalogManager::new(config_with(vec![config_tenant("acme", &["production"])]))
+                .await
+                .unwrap(),
+        );
+        let reconciler = TableReconciler::new(manager.clone());
+        manager.ensure_dataset_tables("acme", "production").await;
+        {
+            let mut ensured = reconciler.ensured.lock().await;
+            for table in manager.enabled_table_names("acme") {
+                ensured.insert(("acme".to_string(), "production".to_string(), table));
+            }
+        }
+        manager
+            .ensure_table("acme", "production", "metrics_gauge")
+            .await
+            .unwrap();
+
+        let retry = reconciler.run_pass().await.unwrap();
+        assert_eq!(retry.datasets_skipped, 1);
+        assert_eq!(retry.legacy_metric_tables_dropped, 1);
+        assert!(
+            !tables_in(&manager, "acme", "production")
+                .await
+                .contains(&"metrics_gauge".to_string())
+        );
+
+        manager
+            .ensure_table("acme", "production", "metrics_sum")
+            .await
+            .unwrap();
+        let later = reconciler.run_pass().await.unwrap();
+        assert_eq!(
+            later.legacy_metric_tables_dropped, 0,
+            "a dataset whose purge succeeded is not purged again"
         );
     }
 
