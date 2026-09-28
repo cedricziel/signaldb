@@ -1,10 +1,11 @@
-// The Pages tab's decoders (task 2.1): per-route views/vitals/errors,
-// navigation-timing breakdown blending and backend calls. Click-target
-// aggregation (the Interactions tab's own read) ships with task 2.3.
+// The Pages and Interactions tabs' decoders (tasks 2.1/2.3): per-route
+// views/vitals/errors, navigation-timing breakdown blending, backend calls
+// and click-target aggregation.
 import { describe, expect, it } from "vitest";
 import type { QueryIrResponse } from "./gen";
 import {
   backendCallsFromResponse,
+  interactionsFromResponse,
   joinBackendCallsToNetworkService,
   loadBreakdownFromResponse,
   pagesFromResponses,
@@ -253,5 +254,31 @@ describe("joinBackendCallsToNetworkService", () => {
       [row("GET", "orders-read"), row("DELETE", "orders-write")],
     );
     expect(joined[0]!.backendService).toBeUndefined();
+  });
+});
+
+describe("interactionsFromResponse", () => {
+  const res = table([
+    [
+      "/orders/:id",
+      "https://shop.example.com/orders/48213",
+      "body > div.app > button.buy",
+      "button",
+      42,
+    ],
+    [null, "https://shop.example.com/orders/91820", null, "a", 8],
+  ]);
+
+  it("prefers the css selector target over the tag name", () => {
+    const rows = interactionsFromResponse(res);
+    const row = rows.find((r) => r.route === "/orders/:id");
+    expect(row?.target).toBe("body > div.app > button.buy");
+  });
+
+  it("falls back to tag name and resolves the route from url.full", () => {
+    const rows = interactionsFromResponse(res);
+    const row = rows.find((r) => r.target === "a");
+    expect(row?.route).toBe("/orders/:id");
+    expect(row?.clicks).toBe(8);
   });
 });

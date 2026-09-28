@@ -353,6 +353,15 @@ export function resolveRoute(
   return MISSING_ROUTE;
 }
 
+/** The last 2-3 segments of a `browser.css_selector` path for compact
+ * display — a full DOM path selector can be extremely long, and the last
+ * few segments are what identifies the clicked element. The full value
+ * still belongs in a `title` attribute at the call site. */
+export function cssSelectorLabel(selector: string): string {
+  const parts = selector.split(/\s*>\s*/).filter((p) => p !== "");
+  return parts.slice(-3).join(" > ");
+}
+
 // ---- Pages: load breakdown --------------------------------------------
 
 export interface LoadPhase {

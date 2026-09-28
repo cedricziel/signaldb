@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  cssSelectorLabel,
   formatVitalValue,
   isSdkExportPath,
   loadBreakdownPhases,
@@ -342,6 +343,18 @@ describe("loadBreakdownPhases", () => {
       loadEventEnd: 0,
     });
     expect(phases[0]!.ms).toBe(0);
+  });
+});
+
+describe("cssSelectorLabel", () => {
+  it("keeps only the last three path segments", () => {
+    expect(
+      cssSelectorLabel("html > body > div.app > div.card > button.buy"),
+    ).toBe("div.app > div.card > button.buy");
+  });
+
+  it("returns a short selector unchanged", () => {
+    expect(cssSelectorLabel("button.buy")).toBe("button.buy");
   });
 });
 
