@@ -17,7 +17,12 @@ set -euo pipefail
 # The compatibility parsers, plus the query IR: all three exist so that a
 # query can be parsed, built, or validated without the query engine. That is
 # only true while none of them reaches into the workspace or the FDAP stack.
-CRATES=("logql-parser" "traceql-parser" "query-ir")
+# eval-model exists so signaldb-cli can share the eval run/compare model
+# without depending on `common`; it builds typed documents with query-ir.
+#
+# An unpublished leaf may depend on another crate in this list: that crate
+# is checked here too, so the dependency cannot carry the stack in.
+CRATES=("logql-parser" "traceql-parser" "query-ir" "eval-model")
 
 exec python3 - "${CRATES[@]}" <<'PY'
 import json
@@ -60,6 +65,8 @@ for target in targets:
         failures.append(f"{target}: not found in workspace metadata")
         continue
 
+    # `publish = false` shows up as an empty registry list.
+    unpublished = pkg.get("publish") == []
     bad = []
     for dep in pkg["dependencies"]:
         # dev-dependencies are test-only and never ship to a consumer.
@@ -67,6 +74,8 @@ for target in targets:
         if dep.get("kind") == "dev":
             continue
         name, source = dep["name"], dep.get("source")
+        if unpublished and source is None and name in targets:
+            continue
         if source is None:
             bad.append(f"'{name}' by path — a published parser must not")
         elif source.startswith("git+"):

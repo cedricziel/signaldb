@@ -32,9 +32,10 @@ platforms = [
 # Write out exact versions rather than a semver range. (Defaults to false.)
 # exact-versions = true
 
-# logql-parser, traceql-parser, and query-ir are the leaf crates
+# logql-parser, traceql-parser, query-ir, and eval-model are the leaf crates
 # scripts/check-leaf-purity.sh mechanically guards: none of them may depend on
-# a workspace member, a path dependency, or the DataFusion/Arrow/Iceberg
+# a workspace member, a path dependency (an unpublished one may depend on
+# another of them: eval-model on query-ir), or the DataFusion/Arrow/Iceberg
 # stack, so a query can be parsed or validated without linking the query
 # engine (design D8, docs/contributing/compat-crates.md). logql-parser and
 # traceql-parser are also published to crates.io independently, so a bare
@@ -45,8 +46,20 @@ platforms = [
 # access") even though check-leaf-purity.sh doesn't check it mechanically —
 # don't let hakari be the thing that quietly breaks it.
 #
+# eval-model is the same kind of leaf crate, also checked by
+# check-leaf-purity.sh: it exists so signaldb-cli can depend on it instead of
+# on (and building) `common` (`common::evals` re-exports it
+# for in-process consumers), which only holds if eval-model itself stays off
+# workspace-hack.
+#
 # workspace-hack is exactly the kind of dependency purity forbids (path-only,
-# and it pulls in datafusion for the rest of the workspace) — keep all four
+# and it pulls in datafusion for the rest of the workspace) — keep all five
 # excluded.
 [final-excludes]
-workspace-members = ["logql-parser", "traceql-parser", "query-ir", "ql-ir"]
+workspace-members = [
+    "logql-parser",
+    "traceql-parser",
+    "query-ir",
+    "ql-ir",
+    "eval-model",
+]

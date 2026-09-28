@@ -2078,6 +2078,145 @@ struct UploadEvalResultsParams {
     run_id: Option<String>,
 }
 
+fn default_eval_runs_from() -> String {
+    "now-7d".to_string()
+}
+
+fn default_eval_compare_from() -> String {
+    common::evals::runs::LATEST_LOOKBACK.to_string()
+}
+
+/// Default and ceiling for the `limit` of `list_eval_runs` (runs) and
+/// `compare_eval_runs` (regressed cases).
+const EVAL_RUNS_DEFAULT_LIMIT: usize = 50;
+const EVAL_RUNS_MAX_LIMIT: usize = 500;
+
+/// Parameters for `list_eval_runs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListEvalRunsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval results live in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Window start: RFC3339, a relative anchor (`now-7d`) or epoch
+    /// nanoseconds. Defaults to `now-7d`.
+    #[serde(default = "default_eval_runs_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Only runs of this agent (`gen_ai.agent.name`, or `service.name` when
+    /// a result doesn't name its agent).
+    #[serde(default)]
+    agent: Option<String>,
+    /// Only runs of this agent version (`gen_ai.agent.version`, or
+    /// `service.version`).
+    #[serde(default)]
+    version: Option<String>,
+    /// Only runs of this eval set (`signaldb.eval.set`).
+    #[serde(default)]
+    set: Option<String>,
+    /// Most runs to return, newest first. Default 50, at most 500.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Parameters for `compare_eval_runs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CompareEvalRunsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval results live in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// The run to compare against: a run id, or `latest:<version>` for the
+    /// newest run of that agent version on the same eval set.
+    baseline: String,
+    /// The run under test: a run id, or `latest:<version>`.
+    candidate: String,
+    /// Agent for resolving `latest:<version>`. Defaults to the other side's
+    /// run's agent; needed when both sides are `latest:`.
+    #[serde(default)]
+    agent: Option<String>,
+    /// Eval set for resolving `latest:<version>`. Defaults to the other
+    /// side's run's set; needed when both sides are `latest:`.
+    #[serde(default)]
+    set: Option<String>,
+    /// Window both runs' results are read from: RFC3339, a relative anchor
+    /// or epoch nanoseconds. Defaults to `now-30d`.
+    #[serde(default = "default_eval_compare_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Most regressed cases to list, largest drop first. Default 50, at
+    /// most 500. The counts always cover every case.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Add each listed regression's tool trajectory: the candidate's
+    /// `execute_tool` calls marked against the baseline's (`same`,
+    /// `skipped`, `reordered`, `repeated`, `new`). Reads the runs' traces,
+    /// so it needs `traces:read` too.
+    #[serde(default)]
+    include_tools: bool,
+}
+
+/// `common::evals::runs`'s Query IR reads, sent through the router as the
+/// caller (`POST /api/v1/query`).
+struct RouterIr<'a> {
+    client: &'a signaldb_sdk::Client,
+    what: &'static str,
+}
+
+impl common::evals::runs::IrSource for RouterIr<'_> {
+    type Error = ErrorData;
+
+    async fn query(
+        &self,
+        document: &common::evals::runs::Document,
+    ) -> Result<common::evals::runs::IrTable, ErrorData> {
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::to_value(document)
+            .and_then(serde_json::from_value)
+            .map_err(|e| {
+                ErrorData::internal_error(format!("{}: bad IR document: {e}", self.what), None)
+            })?;
+        let response = self
+            .client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, self.what))?
+            .into_inner();
+        Ok(common::evals::runs::IrTable {
+            columns: response.columns.into_iter().map(|c| c.name).collect(),
+            rows: response.rows,
+        })
+    }
+}
+
+/// A run read failure as a tool error: the IR request's own error, or an
+/// invalid-params error naming what could not be resolved.
+fn map_eval_read_err(err: common::evals::runs::ReadError<ErrorData>) -> ErrorData {
+    match err {
+        common::evals::runs::ReadError::Query(e) => e,
+        other => ErrorData::invalid_params(other.to_string(), None),
+    }
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -4499,6 +4638,86 @@ impl McpServer {
                 err
             })?;
         json_result(&resp.into_inner())
+    }
+    #[tool(
+        description = "List offline agent eval runs (one run = the results sharing a `signaldb.eval.run_id`), newest first: run_id, eval set, agent, version, started_at/last_result_at, status (`running` while results arrived in the last 10 minutes, then `complete`, or `partial` with evaluator errors or results without trace context), results, cases, errors, unlinked, overall pass rate, per-evaluator mean and pass rate, and `previous_run_id` (the newest earlier run of the same eval set: the natural baseline for `compare_eval_runs`). Use it to find the runs to compare, or to answer \"how did version X score\". Window defaults to the last 7 days; filter by `agent`, `version`, `set`; at most `limit` runs (default 50, max 500) with `total_runs` and `truncated` saying when more matched. Reads `gen_ai.evaluation.result` log records through the Query IR, so it needs the `logs:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_eval_runs(
+        &self,
+        Parameters(p): Parameters<ListEvalRunsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let source = RouterIr {
+            client: &client,
+            what: "list_eval_runs",
+        };
+        let window = common::evals::runs::Window {
+            from: p.from,
+            to: p.to,
+        };
+        let filter = common::evals::runs::RunFilter {
+            agent: p.agent.filter(|a| !a.is_empty()),
+            version: p.version.filter(|v| !v.is_empty()),
+            set: p.set.filter(|s| !s.is_empty()),
+            run_ids: Vec::new(),
+        };
+        let limit = p
+            .limit
+            .unwrap_or(EVAL_RUNS_DEFAULT_LIMIT)
+            .clamp(1, EVAL_RUNS_MAX_LIMIT);
+        let runs = common::evals::runs::list_runs(
+            &source,
+            &window,
+            &filter,
+            limit,
+            common::evals::runs::now_ms(),
+        )
+        .await
+        .map_err(map_eval_read_err)?;
+        json_result(&runs)
+    }
+
+    #[tool(
+        description = "Compare two offline agent eval runs case by case — \"did version B get worse than A, where and why\". Give `baseline` and `candidate` as run ids (see `list_eval_runs`) or `latest:<version>` (the newest run of that version of the same agent on the same eval set). Cases join on `signaldb.eval.case_id`; per evaluator a case got worse on pass→fail or a mean drop of at least 0.05 (better the other way); a case is a regression if any evaluator got worse, else an improvement if any got better, else unchanged; a candidate-only case that fails is a regression with `no_baseline`. Returns both runs' summaries, per-evaluator baseline/candidate mean and pass rate with the delta and how many cases moved, counts of regressions/improvements/unchanged, and the regressed cases (largest drop first, at most `limit`, default 50) with the evaluators that got worse (baseline and candidate mean, pass rate, verdict) and both trace ids for `get_trace`. `include_tools=true` adds each listed regression's tool-call diff (skipped, reordered, repeated, new calls). Reads through the Query IR: needs `logs:read`, plus `traces:read` with `include_tools`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn compare_eval_runs(
+        &self,
+        Parameters(p): Parameters<CompareEvalRunsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let invalid = |e: String| ErrorData::invalid_params(e, None);
+        let request = common::evals::runs::CompareRequest {
+            baseline: common::evals::runs::RunRef::parse_named("baseline", &p.baseline)
+                .map_err(invalid)?,
+            candidate: common::evals::runs::RunRef::parse_named("candidate", &p.candidate)
+                .map_err(invalid)?,
+            agent: p.agent.filter(|a| !a.is_empty()),
+            set: p.set.filter(|s| !s.is_empty()),
+            window: common::evals::runs::Window {
+                from: p.from,
+                to: p.to,
+            },
+            limit: p
+                .limit
+                .unwrap_or(EVAL_RUNS_DEFAULT_LIMIT)
+                .clamp(1, EVAL_RUNS_MAX_LIMIT),
+            include_tools: p.include_tools,
+        };
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let source = RouterIr {
+            client: &client,
+            what: "compare_eval_runs",
+        };
+        let comparison =
+            common::evals::runs::compare_runs(&source, &request, common::evals::runs::now_ms())
+                .await
+                .map_err(map_eval_read_err)?;
+        json_result(&comparison)
     }
 }
 

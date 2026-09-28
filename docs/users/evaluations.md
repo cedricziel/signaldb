@@ -9,6 +9,8 @@ sources:
   - src/acceptor/src/handler/otlp_grpc.rs
   - src/router/src/endpoints/evals.rs
   - src/signaldb-cli/src/commands/evals.rs
+  - src/mcp-server/src/server.rs
+  - testdata/eval_compare.json
   - openspec/changes/agent-offline-evals/**
 ---
 
@@ -147,7 +149,9 @@ store its results twice.
   evaluator, a case got _worse_ when it went from pass to fail or its mean
   dropped by 0.05 or more, and _better_ the other way round. A case is a
   **regression** when any evaluator got worse (even if another improved),
-  an **improvement** when any got better, otherwise **unchanged**.
+  an **improvement** when any got better, otherwise **unchanged**. A case
+  only the candidate ran is a regression marked _no baseline_ when an
+  evaluator fails it, otherwise unchanged.
 
 ## The pages
 
@@ -328,6 +332,42 @@ In GitHub Actions:
 The MCP server offers the same upload as the `upload_eval_results` tool
 (see [MCP](mcp.md)).
 
+## Runs and comparisons outside the UI
+
+The Runs and Compare pages have a CLI and an MCP counterpart that read the
+same Query IR documents and apply the same rules, so a CI job or an AI agent
+gets the figures a person sees.
+
+```bash
+signaldb-cli evals runs --agent support-triage          # last 7 days, newest first
+signaldb-cli evals runs --set triage-golden-200 --from now-30d --json
+signaldb-cli evals compare latest:v1.8.0 "$RUN_ID"      # baseline, candidate
+signaldb-cli evals compare run-0921-0930 run-0927-1004 --tools --limit 20
+```
+
+`evals runs` lists each run's eval set, agent, version, start time, status,
+cases, evaluator errors and pass rate, plus the previous run of the same eval
+set (the natural baseline). `--agent`, `--version` and `--set` filter;
+`--limit` (default 50) caps the list and a note says when more runs matched.
+`--from`/`--to` take RFC3339, relative (`now-7d`) or epoch-nanosecond times.
+
+`evals compare <baseline> <candidate>` takes run ids, or `latest:<version>` for
+the newest run of that version of the same agent on the same eval set (the
+agent and set come from the other side's run, or from `--agent`/`--set` when
+both sides are `latest:`). It reads both runs from the last 30 days by
+default and prints per-evaluator means, pass rates and deltas, how many cases
+regressed, improved or stayed unchanged, and the regressed cases, largest
+drop first (at most `--limit`, default 50), with the evaluators that got worse
+and both trace ids. `--tools` adds each listed case's tool calls marked
+against the baseline's (skipped, reordered, repeated, new); `--json` prints
+the whole comparison. Both commands need `logs:read`, and `--tools` also
+`traces:read`.
+
+The MCP server exposes the same reads as `list_eval_runs` and
+`compare_eval_runs` (see [MCP](mcp.md)), so an agent such as Claude can answer
+"did version B get worse than A, where and why" and follow a regressed case
+into its traces.
+
 ## Querying results yourself
 
 Every figure is a [Query IR](querying-ir.md) read over `logs`, so the CLI
@@ -383,5 +423,5 @@ reference answers) per tenant and dataset, behind an HTTP API. See
 
 ## Coming next
 
-Eval sets and the Upload results dialog in the UI, and MCP tools for runs
-and comparisons. See the `agent-offline-evals` OpenSpec change.
+Eval sets and the Upload results dialog in the UI. See the
+`agent-offline-evals` OpenSpec change.

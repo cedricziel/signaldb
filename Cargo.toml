@@ -5,6 +5,7 @@ members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/eval-model",
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
@@ -38,6 +39,7 @@ default-members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/eval-model",
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
@@ -67,6 +69,7 @@ license = "AGPL-3.0"
 [workspace.dependencies]
 acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
+eval-model = { path = "src/eval-model" }
 query-ir = { path = "src/query-ir" }
 ql-ir = { path = "src/ql-ir" }
 compactor = { path = "src/compactor" }
