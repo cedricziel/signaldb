@@ -260,6 +260,50 @@ const INTERACTION_ROWS: (string | number | null)[][] = [
   ],
 ];
 
+/** `[session.id, first_ts, last_ts, views, errors, slow, entry, exit, user,
+ * ua, mobile]` — the Sessions tab's aggregate rows (`buildSessionsListDoc`). */
+const SESSIONS_ROWS: (string | number | boolean | null)[][] = [
+  [
+    "8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+    1_700_002_600_000_000_000,
+    1_700_003_020_000_000_000,
+    5,
+    0,
+    0,
+    CHECKOUT_ROUTE,
+    "/thanks",
+    "user-1001",
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36",
+    false,
+  ],
+  [
+    "c1a2b3d4-5e6f-4789-9abc-def012345678",
+    1_700_002_000_000_000_000,
+    1_700_002_540_000_000_000,
+    9,
+    2,
+    1,
+    ORDERS_ROUTE,
+    CHECKOUT_ROUTE,
+    "user-2044",
+    "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1",
+    true,
+  ],
+  [
+    "aa11bb22-cc33-4dd4-8ee5-ff6677889900",
+    1_700_001_400_000_000_000,
+    1_700_001_460_000_000_000,
+    1,
+    0,
+    0,
+    null,
+    null,
+    null,
+    "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+    false,
+  ],
+];
+
 function eventNameOf(pipe: NonNullable<IrDoc["pipeline"]>): string | undefined {
   for (const stage of pipe) {
     if (
@@ -431,6 +475,11 @@ function singleDocResponse(b: IrDoc): unknown {
     if (by.length === 4 && eventName === "browser.user_action.click") {
       return { result: "table", rows: INTERACTION_ROWS };
     }
+  }
+
+  // Sessions list (buildSessionsListDoc).
+  if (by[0] === "session.id") {
+    return { result: "table", rows: SESSIONS_ROWS };
   }
 
   // Network: totals (buildNetworkRequestsDoc), the correlate join
@@ -646,6 +695,10 @@ export const PagesRouteDetail: Story = {
       path={`/rum/pages?app=storefront-web&route=${encodeURIComponent(ORDERS_ROUTE)}`}
     />
   ),
+};
+
+export const Sessions: Story = {
+  render: () => <RealUsersPage path="/rum/sessions?app=storefront-web" />,
 };
 
 export const Interactions: Story = {

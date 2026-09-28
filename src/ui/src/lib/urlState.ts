@@ -141,6 +141,10 @@ export interface ExploreState {
    * — "" means no route is selected, showing the route list only. Like
    * `rumApp`, only `/rum` reads it. */
   rumRoute: string;
+  /** The Real users Sessions tab's selected session (a `session.id`) — ""
+   * means no session is selected, showing the session list only. Like
+   * `rumApp`, only `/rum` reads it. */
+  rumSession: string;
 }
 
 export type EvalSource = "offline" | "production" | "both";
@@ -233,6 +237,7 @@ export const DEFAULT_STATE: ExploreState = {
   evals: DEFAULT_EVAL_PARAMS,
   rumApp: "",
   rumRoute: "",
+  rumSession: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -409,6 +414,7 @@ export function parseExploreState(search: string): ExploreState {
     evals: parseEvalParams(p),
     rumApp: p.get("app") ?? "",
     rumRoute: p.get("route") ?? "",
+    rumSession: p.get("session") ?? "",
   };
 }
 
@@ -500,6 +506,7 @@ export function buildSearch(state: ExploreState): string {
   if (ev.mode !== DEFAULT_EVAL_PARAMS.mode) p.set("mode", ev.mode);
   if (state.rumApp) p.set("app", state.rumApp);
   if (state.rumRoute) p.set("route", state.rumRoute);
+  if (state.rumSession) p.set("session", state.rumSession);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

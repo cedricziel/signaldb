@@ -15,6 +15,7 @@ import { InteractionsTab } from "./InteractionsTab";
 import { NetworkTab } from "./NetworkTab";
 import { OverviewTab } from "./OverviewTab";
 import { PagesTab } from "./PagesTab";
+import { SessionsTab } from "./SessionsTab";
 import { SetupTab } from "./SetupTab";
 import "./rum.css";
 
@@ -140,6 +141,11 @@ export function RealUsersView({
           />
         ) : tab === "interactions" ? (
           <InteractionsTab scope={scope} />
+        ) : tab === "sessions" ? (
+          <SessionsTab
+            scope={scope}
+            onSelectSession={(session) => update({ rumSession: session })}
+          />
         ) : (
           <OverviewTab
             scope={scope}

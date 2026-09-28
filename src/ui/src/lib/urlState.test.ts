@@ -265,6 +265,13 @@ describe("buildSearch", () => {
     expect(buildSearch(state)).toContain("route=");
     expect(parseExploreState(buildSearch(state)).rumRoute).toBe("/orders/:id");
   });
+
+  it("round-trips the Real users Sessions tab's selected session through ?session=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("session");
+    const state = { ...DEFAULT_STATE, rumSession: "sess-1" };
+    expect(buildSearch(state)).toContain("session=sess-1");
+    expect(parseExploreState(buildSearch(state)).rumSession).toBe("sess-1");
+  });
 });
 
 describe("chart scale", () => {
