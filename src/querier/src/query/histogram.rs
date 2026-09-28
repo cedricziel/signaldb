@@ -85,7 +85,7 @@ impl RateHistAcc {
 }
 
 /// Parse a JSON numeric array (`"[1,2,3]"`) into `f64`s.
-pub(crate) fn parse_f64_array(raw: &str) -> Option<Vec<f64>> {
+fn parse_f64_array(raw: &str) -> Option<Vec<f64>> {
     let value: serde_json::Value = serde_json::from_str(raw).ok()?;
     let array = value.as_array()?;
     // Bounds may carry the acceptor's non-finite sentinels ("+Inf" for a
@@ -101,10 +101,7 @@ pub(crate) fn parse_f64_array(raw: &str) -> Option<Vec<f64>> {
 /// time, so every data point of a given histogram series carries the same
 /// bounds array — caching avoids re-parsing identical JSON once per row of
 /// a potentially large per-bucket scan.
-pub(crate) fn parse_bounds_cached(
-    cache: &mut HashMap<String, Vec<f64>>,
-    raw: &str,
-) -> Option<Vec<f64>> {
+fn parse_bounds_cached(cache: &mut HashMap<String, Vec<f64>>, raw: &str) -> Option<Vec<f64>> {
     if let Some(cached) = cache.get(raw) {
         return Some(cached.clone());
     }

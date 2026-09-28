@@ -75,12 +75,11 @@ use datafusion::scalar::ScalarValue;
 
 use super::IrQueryParams;
 use super::error::QuerierError;
-use super::histogram::{
-    HistogramAcc, RateHistAcc, histogram_quantile, parse_bounds_cached, parse_f64_array,
-};
+use super::histogram::{BucketCol, HistogramAcc, RateHistAcc, histogram_quantile};
 use super::profile::batch_to_models;
-use super::table_lookup::{optional_table_provider, scan_provider, string_column};
+use super::table_lookup::{column, optional_table_provider, scan_provider, string_column};
 use super::typed_attrs::{CanonicalTypeLookup, CanonicalTypes};
+use common::iceberg::schemas::MetricsLayout;
 use datafusion::common::TableReference;
 
 /// Upper bound on profile rows aggregated into one `flamegraph` result.
@@ -121,6 +120,10 @@ pub(crate) struct SourcePlan {
     /// schema's idiosyncratic renames that a plain dot→underscore mapping does
     /// not cover.
     aliases: &'static [(&'static str, &'static str)],
+    /// Under [`MetricsLayout::Wide`], the `metric_type`s this source reads
+    /// from the wide `metrics` table instead of `tables` — empty for every
+    /// source that isn't `metrics`/`metrics_histogram`.
+    wide_metric_types: &'static [&'static str],
 }
 
 impl SourcePlan {
@@ -172,6 +175,7 @@ impl SourcePlan {
                     ("resource.attributes", "resource_attributes"),
                     ("resource.identity", "resource_identity"),
                 ],
+                wide_metric_types: &[],
             }),
             "traces" => Some(SourcePlan {
                 name: "traces",
@@ -210,6 +214,7 @@ impl SourcePlan {
                     ("resource.attributes", "resource_attributes"),
                     ("resource.identity", "resource_identity"),
                 ],
+                wide_metric_types: &[],
             }),
             "profiles" => Some(SourcePlan {
                 name: "profiles",
@@ -256,6 +261,7 @@ impl SourcePlan {
                     ("span.id", "span_id"),
                     ("resource.identity", "resource_identity"),
                 ],
+                wide_metric_types: &[],
             }),
             "metrics" => Some(SourcePlan {
                 name: "metrics",
@@ -265,6 +271,7 @@ impl SourcePlan {
                 // stage), so they're deliberately excluded here rather than
                 // scanned and misinterpreted as plain values.
                 tables: &["metrics_gauge", "metrics_sum"],
+                wide_metric_types: &["gauge", "sum"],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
@@ -300,6 +307,7 @@ impl SourcePlan {
                 // rather than through the resolver — comparing a JSON-array
                 // string in a `where` is meaningless, so they get no alias.
                 tables: &["metrics_histogram"],
+                wide_metric_types: &["histogram"],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
@@ -328,18 +336,38 @@ impl SourcePlan {
     }
 }
 
-/// Scans every table in `source.tables`, unioning them when there's more
-/// than one (metrics: gauge + sum). A single-table source's scan keeps its
-/// full raw schema unchanged — `SchemaResolver`'s promoted-attribute
-/// discovery depends on seeing every column the table actually has, not
-/// just `row_defaults` — so the projection-then-union step only runs when
-/// there's more than one table to reconcile onto a common schema.
+/// Scans this source's rows. Under [`MetricsLayout::Wide`], a source with a
+/// non-empty `wide_metric_types` (`metrics`/`metrics_histogram`) instead
+/// scans the wide `metrics` table filtered to `metric_type IN
+/// (wide_metric_types)`.
+///
+/// Otherwise, scans every table in `source.tables`, unioning them when
+/// there's more than one (legacy `metrics`: gauge + sum). A single-table
+/// source's scan keeps its full raw schema unchanged — `SchemaResolver`'s
+/// promoted-attribute discovery depends on seeing every column the table
+/// actually has, not just `row_defaults` — so the projection-then-union step
+/// only runs when there's more than one table to reconcile onto a common
+/// schema.
 async fn scan_source_tables(
     ctx: &SessionContext,
     tenant_slug: &str,
     dataset_slug: &str,
     source: &SourcePlan,
+    metrics_layout: MetricsLayout,
 ) -> Result<Option<DataFrame>, QuerierError> {
+    if metrics_layout == MetricsLayout::Wide && !source.wide_metric_types.is_empty() {
+        let Some((table_ref, provider)) =
+            optional_table_provider(ctx, tenant_slug, dataset_slug, "metrics").await?
+        else {
+            return Ok(None);
+        };
+        let df = scan_provider(ctx, table_ref, provider)?;
+        let allowed: Vec<Expr> = source.wide_metric_types.iter().map(|t| lit(*t)).collect();
+        return Ok(Some(
+            df.filter(col("metric_type").in_list(allowed, false))
+                .map_err(QuerierError::QueryFailed)?,
+        ));
+    }
     let mut providers = Vec::with_capacity(source.tables.len());
     for table in source.tables {
         // A missing table (e.g. no sum metrics ingested yet) is not an
@@ -1079,6 +1107,11 @@ pub struct IrService {
     /// by the production Flight service; `None` in every other caller
     /// (compat lowerings, most tests), which never reach a typed table.
     canonical_type_lookup: Option<Arc<dyn CanonicalTypeLookup>>,
+    /// Which physical layout the `metrics`/`metrics_histogram` sources read
+    /// (see [`MetricsLayout`]). Defaults from [`MetricsLayout::current`];
+    /// overridden by tests exercising [`MetricsLayout::Wide`] ahead of the
+    /// repo-wide cutover.
+    metrics_layout: MetricsLayout,
 }
 
 /// The resolved absolute time window `[t0, t1]` (unix epoch nanoseconds),
@@ -1096,6 +1129,7 @@ impl IrService {
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
             canonical_type_lookup: None,
+            metrics_layout: MetricsLayout::current(),
         }
     }
 
@@ -1104,6 +1138,13 @@ impl IrService {
     /// attribute types before planning.
     pub fn with_canonical_types(mut self, lookup: Arc<dyn CanonicalTypeLookup>) -> Self {
         self.canonical_type_lookup = Some(lookup);
+        self
+    }
+
+    /// Override the metrics layout this service reads (see [`MetricsLayout`]).
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub fn with_metrics_layout(mut self, metrics_layout: MetricsLayout) -> Self {
+        self.metrics_layout = metrics_layout;
         self
     }
 
@@ -1281,7 +1322,8 @@ impl IrService {
             doc,
             PlanRequest::new(tenant_slug, dataset_slug, now_ns)
                 .with_correlate_max_rows(self.correlate_max_rows)
-                .with_attribute_type_request(attribute_type_request),
+                .with_attribute_type_request(attribute_type_request)
+                .with_metrics_layout(self.metrics_layout),
         )
         .await
     }
@@ -1311,6 +1353,7 @@ pub(crate) async fn plan_document(
         now_ns,
         correlate_max_rows,
         attribute_type_request,
+        metrics_layout,
     } = request;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
@@ -1318,7 +1361,9 @@ pub(crate) async fn plan_document(
     // A dataset with none of this source's tables has no rows to plan
     // over. The document's schema-dependent validation is skipped along
     // with the scan — there is no schema to validate against.
-    let Some(base) = scan_source_tables(ctx, tenant_slug, dataset_slug, &source).await? else {
+    let Some(base) =
+        scan_source_tables(ctx, tenant_slug, dataset_slug, &source, metrics_layout).await?
+    else {
         return Ok(None);
     };
 
@@ -1586,6 +1631,7 @@ pub(crate) struct PlanRequest<'a> {
     pub now_ns: i64,
     pub correlate_max_rows: usize,
     pub attribute_type_request: AttributeTypeRequest,
+    pub metrics_layout: MetricsLayout,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -1596,6 +1642,7 @@ impl<'a> PlanRequest<'a> {
             now_ns,
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             attribute_type_request: AttributeTypeRequest::CompatOnly,
+            metrics_layout: MetricsLayout::current(),
         }
     }
 
@@ -1609,6 +1656,11 @@ impl<'a> PlanRequest<'a> {
         attribute_type_request: AttributeTypeRequest,
     ) -> Self {
         self.attribute_type_request = attribute_type_request;
+        self
+    }
+
+    pub(crate) fn with_metrics_layout(mut self, metrics_layout: MetricsLayout) -> Self {
+        self.metrics_layout = metrics_layout;
         self
     }
 }
@@ -2498,8 +2550,12 @@ impl Lowering<'_> {
         for (by, alias) in hq.by.iter().zip(&by_aliases) {
             projection.push(utf8(self.value_expr(by)?).alias(alias.clone()));
         }
-        projection.push(utf8(col("bucket_counts")).alias("bucket_counts"));
-        projection.push(utf8(col("explicit_bounds")).alias("explicit_bounds"));
+        // No Utf8 cast here (unlike the columns above): `BucketCol::resolve`
+        // reads the wide `metrics` table's typed `List<Int64>`/`List<Float64>`
+        // columns directly, alongside the legacy Utf8/Utf8View JSON shape, so
+        // casting a list column to Utf8 would just break it for no reason.
+        projection.push(col("bucket_counts"));
+        projection.push(col("explicit_bounds"));
         projection.push(
             cast(
                 col(self.source.time_col),
@@ -2551,8 +2607,16 @@ impl Lowering<'_> {
                 .iter()
                 .map(|alias| string_column(batch, alias))
                 .collect::<Result<_, _>>()?;
-            let counts = string_column(batch, "bucket_counts")?;
-            let bounds = string_column(batch, "explicit_bounds")?;
+            let counts =
+                BucketCol::resolve(column(batch, "bucket_counts")?.as_ref()).ok_or_else(|| {
+                    QuerierError::InvalidInput("unsupported bucket_counts column type".to_string())
+                })?;
+            let bounds = BucketCol::resolve(column(batch, "explicit_bounds")?.as_ref())
+                .ok_or_else(|| {
+                    QuerierError::InvalidInput(
+                        "unsupported explicit_bounds column type".to_string(),
+                    )
+                })?;
             let ts = batch
                 .column_by_name("__ts")
                 .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
@@ -2565,8 +2629,8 @@ impl Lowering<'_> {
                     continue;
                 }
                 let (Some(row_counts), Some(row_bounds)) = (
-                    parse_f64_array(counts.value(i)),
-                    parse_bounds_cached(&mut bounds_cache, bounds.value(i)),
+                    counts.decode(i, None),
+                    bounds.decode(i, Some(&mut bounds_cache)),
                 ) else {
                     continue;
                 };
@@ -5020,53 +5084,161 @@ mod tests {
         // Executes.
         let _ = df.collect().await.unwrap();
     }
-
     /// The metrics source unions metrics_gauge + metrics_sum (2 + 1 rows
     /// here) rather than scanning one table — the case every other source's
-    /// fixture doesn't exercise.
+    /// fixture doesn't exercise. Plus, under [`MetricsLayout::Wide`], an
+    /// unrelated `summary`-typed row sharing the queried `metric_name` (but
+    /// a different `service_name`) so only `metric_type` filtering can
+    /// exclude it from a `metrics` scan.
+    fn metrics_ctx_for_layout(layout: MetricsLayout) -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let gauge_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+                Arc::new(StringArray::from(vec!["signaldb", "signaldb"])),
+                Arc::new(StringArray::from(vec![
+                    "signaldb.wal.entries_processed",
+                    "signaldb.wal.entries_processed",
+                ])),
+                Arc::new(Float64Array::from(vec![5.0, 7.0])),
+                build_map(&[&[], &[]]),
+                build_map(&[&[], &[]]),
+            ],
+        )
+        .unwrap();
+        let sum_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![15_i64])),
+                Arc::new(StringArray::from(vec!["signaldb"])),
+                Arc::new(StringArray::from(vec!["signaldb.wal.entries_processed"])),
+                Arc::new(Float64Array::from(vec![3.0])),
+                build_map(&[&[]]),
+                build_map(&[&[]]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        match layout {
+            MetricsLayout::Legacy => {
+                // The union path (`union_columns`/`CoercedTableProvider`)
+                // always expands a container to its typed columns, so the
+                // legacy tables must actually carry the typed layout.
+                let containers = ["attributes", "resource_attributes"];
+                let gauge_batch = common::testing::to_typed_layout(
+                    "metrics_gauge",
+                    "physical-v3",
+                    &gauge_batch,
+                    &containers,
+                );
+                let sum_batch = common::testing::to_typed_layout(
+                    "metrics_sum",
+                    "physical-v3",
+                    &sum_batch,
+                    &containers,
+                );
+                let gauge =
+                    MemTable::try_new(gauge_batch.schema(), vec![vec![gauge_batch]]).unwrap();
+                let sum = MemTable::try_new(sum_batch.schema(), vec![vec![sum_batch]]).unwrap();
+                sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
+                    .unwrap();
+                sp.register_table("metrics_sum".to_string(), Arc::new(sum))
+                    .unwrap();
+            }
+            MetricsLayout::Wide => {
+                let leak = RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(TimestampNanosecondArray::from(vec![25_i64])),
+                        Arc::new(StringArray::from(vec!["leak"])),
+                        Arc::new(StringArray::from(vec!["signaldb.wal.entries_processed"])),
+                        Arc::new(Float64Array::from(vec![999.0])),
+                        build_map(&[&[]]),
+                        build_map(&[&[]]),
+                    ],
+                )
+                .unwrap();
+                let gauge = common::testing::to_wide(&gauge_batch, "gauge");
+                let sum = common::testing::to_wide(&sum_batch, "sum");
+                let leak = common::testing::to_wide(&leak, "summary");
+                let table =
+                    MemTable::try_new(gauge.schema(), vec![vec![gauge, sum, leak]]).unwrap();
+                sp.register_table("metrics".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+        }
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     #[tokio::test]
     async fn metrics_unions_gauge_and_sum_filters_by_name_and_aggregates() {
-        let svc = IrService::new(metrics_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
-            "result": "series",
-            "pipeline": [
-                { "where": { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" } },
-                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "1ms" } }
-            ]
-        }));
-        let (df, window) = svc
-            .plan(&d, "t", "d", 0)
-            .await
-            .unwrap()
-            .expect("both metrics tables are registered");
-        assert_eq!(
-            window,
-            ResolvedWindow {
-                start_ns: 0,
-                end_ns: 1000
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let svc = IrService::new(metrics_ctx_for_layout(layout)).with_metrics_layout(layout);
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+                "result": "series",
+                "pipeline": [
+                    { "where": { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" } },
+                    { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "1ms" } }
+                ]
+            }));
+            let (df, window) = svc
+                .plan(&d, "t", "d", 0)
+                .await
+                .unwrap()
+                .expect("the metrics source is registered");
+            assert_eq!(
+                window,
+                ResolvedWindow {
+                    start_ns: 0,
+                    end_ns: 1000
+                },
+                "{layout:?}"
+            );
+            let plan = format!("{}", df.logical_plan().display_indent());
+            // The scan is a Union only under the legacy per-type tables; the
+            // wide `metrics` table is one table, filtered.
+            if layout == MetricsLayout::Legacy {
+                assert!(plan.contains("Union"), "{layout:?}: plan:\n{plan}");
             }
-        );
-        let plan = format!("{}", df.logical_plan().display_indent());
-        assert!(plan.contains("Union"), "plan:\n{plan}");
-        assert!(plan.contains("Aggregate"), "plan:\n{plan}");
-        assert!(plan.contains("Filter"), "plan:\n{plan}");
-        assert!(plan.contains("date_bin"), "plan:\n{plan}");
-        // Executes, and sums across both tables: 5 + 7 (gauge) + 3 (sum) = 15.
-        let batches = df.collect().await.unwrap();
-        let total: f64 = batches
-            .iter()
-            .map(|b| {
-                let col = b
-                    .column_by_name("v")
-                    .unwrap()
-                    .as_any()
-                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
-                    .unwrap();
-                col.values().iter().sum::<f64>()
-            })
-            .sum();
-        assert_eq!(total, 15.0);
+            assert!(plan.contains("Aggregate"), "{layout:?}: plan:\n{plan}");
+            assert!(plan.contains("Filter"), "{layout:?}: plan:\n{plan}");
+            assert!(plan.contains("date_bin"), "{layout:?}: plan:\n{plan}");
+            // Executes, and sums across both tables: 5 + 7 (gauge) + 3 (sum) =
+            // 15. Under Wide, the `summary` row must not leak in — its 999.0
+            // would corrupt this total if the `metric_type` filter failed.
+            let batches = df.collect().await.unwrap();
+            let total: f64 = batches
+                .iter()
+                .map(|b| {
+                    let col = b
+                        .column_by_name("v")
+                        .unwrap()
+                        .as_any()
+                        .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                        .unwrap();
+                    col.values().iter().sum::<f64>()
+                })
+                .sum();
+            assert_eq!(total, 15.0, "{layout:?}");
+        }
     }
 
     /// Grouping the gauge+sum union by a resource attribute that is *not* an
@@ -5657,46 +5829,146 @@ mod tests {
         out
     }
 
+    /// The `latency` (svcA/svcB)/`reset` (svcD) slice of
+    /// [`metrics_histogram_ctx`], built via [`common::testing::to_wide`] under
+    /// [`MetricsLayout::Wide`], plus — Wide only — an unrelated
+    /// `summary`-typed row sharing `latency`'s `metric_name` so only
+    /// `metric_type` filtering can exclude it from a histogram scan.
+    fn histogram_ctx_for_layout(layout: MetricsLayout) -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let rows: &[(i64, &str, &str, &str, &str)] = &[
+            (0, "svcA", "latency", "[2,2,0,0]", "[0.1,0.5,1.0]"),
+            (50, "svcA", "latency", "[0,2,2,0]", "[0.1,0.5,1.0]"),
+            (0, "svcB", "latency", "[2,2,0,0]", "[0.1,0.5,1.0]"),
+            (50, "svcB", "latency", "[0,2,2,0]", "[0.1,0.5,1.0]"),
+            (0, "svcD", "reset", "[5,0]", "[1.0]"),
+            (99, "svcD", "reset", "[3,2]", "[1.0]"),
+        ];
+        let n = rows.len();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                )),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+                build_map(&vec![&[] as &[(&str, &str)]; n]),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        match layout {
+            MetricsLayout::Legacy => {
+                let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+                sp.register_table("metrics_histogram".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+            MetricsLayout::Wide => {
+                let leak = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(TimestampNanosecondArray::from(vec![0])),
+                        Arc::new(StringArray::from(vec!["leak"])),
+                        Arc::new(StringArray::from(vec!["latency"])),
+                        Arc::new(StringArray::from(vec!["[100,100,100,100]"])),
+                        Arc::new(StringArray::from(vec!["[0.1,0.5,1.0]"])),
+                        build_map(&[&[] as &[(&str, &str)]]),
+                        build_map(&[&[] as &[(&str, &str)]]),
+                    ],
+                )
+                .unwrap();
+                let main = common::testing::to_wide(&batch, "histogram");
+                let leak = common::testing::to_wide(&leak, "summary");
+                let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
+                sp.register_table("metrics".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+        }
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
     #[tokio::test]
     async fn histogram_quantile_instant_mode_merges_and_groups_by_service() {
-        let svc = IrService::new(metrics_histogram_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
-            "result": "series",
-            "pipeline": [
-                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
-                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } }
-            ]
-        }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-        let batches = df.collect().await.unwrap();
-        let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total_rows, 2, "one row per service");
-        for label in ["svcA", "svcB"] {
-            let vs = histogram_value(&batches, "p50", Some(label));
-            assert_eq!(vs.len(), 1, "{label}");
-            assert!((vs[0] - 0.3).abs() < 1e-9, "{label}: got {:?}", vs[0]);
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let svc = IrService::new(histogram_ctx_for_layout(layout)).with_metrics_layout(layout);
+            let d = doc(serde_json::json!({
+                "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+                "result": "series",
+                "pipeline": [
+                    { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                    { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } }
+                ]
+            }));
+            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+            let batches = df.collect().await.unwrap();
+            let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+            assert_eq!(total_rows, 2, "{layout:?}: one row per service");
+            for label in ["svcA", "svcB"] {
+                let vs = histogram_value(&batches, "p50", Some(label));
+                assert_eq!(vs.len(), 1, "{layout:?}: {label}");
+                assert!(
+                    (vs[0] - 0.3).abs() < 1e-9,
+                    "{layout:?}: {label}: got {:?}",
+                    vs[0]
+                );
+            }
+            // The `summary` row must not leak into a histogram scan.
+            assert!(
+                histogram_value(&batches, "p50", Some("leak")).is_empty(),
+                "{layout:?}: {batches:?}"
+            );
         }
     }
 
     #[tokio::test]
     async fn histogram_quantile_rate_mode_clamps_counter_reset_and_inf_overflow() {
-        let svc = IrService::new(metrics_histogram_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
-            "result": "series",
-            "pipeline": [
-                { "where": { "field": "metric.name", "op": "eq", "value": "reset" } },
-                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
-            ]
-        }));
-        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
-        let batches = df.collect().await.unwrap();
-        let vs = histogram_value(&batches, "p50", None);
-        assert_eq!(vs.len(), 1);
-        // first=[5,0] last=[3,2]: bucket 0 decreases (reset, clamped to 0),
-        // delta=[0,2] → rank lands in the +Inf bucket → clamps to bound 1.0.
-        assert!((vs[0] - 1.0).abs() < 1e-9, "got {:?}", vs[0]);
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let svc = IrService::new(histogram_ctx_for_layout(layout)).with_metrics_layout(layout);
+            let d = doc(serde_json::json!({
+                "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+                "result": "series",
+                "pipeline": [
+                    { "where": { "field": "metric.name", "op": "eq", "value": "reset" } },
+                    { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "rate", "as": "p50" } }
+                ]
+            }));
+            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+            let batches = df.collect().await.unwrap();
+            let vs = histogram_value(&batches, "p50", None);
+            assert_eq!(vs.len(), 1, "{layout:?}");
+            // first=[5,0] last=[3,2]: bucket 0 decreases (reset, clamped to 0),
+            // delta=[0,2] → rank lands in the +Inf bucket → clamps to bound 1.0.
+            assert!((vs[0] - 1.0).abs() < 1e-9, "{layout:?}: got {:?}", vs[0]);
+        }
     }
 
     /// Regression: rate mode must compute each raw series' delta
