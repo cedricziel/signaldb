@@ -268,8 +268,8 @@ window, 30 buckets wide, and every row links into the view that explains it
 - **Setup checklist.** The **Setup** button opens the steps that add
   coverage to the page: traces, every service traced, logs and profiles
   from every traced service, GitHub source links, and (for admins) a second
-  member. The admin step is always listed, so the count stays the same
-  while the member count loads. Coverage is read off the window shown. The button hides once every
+  member. The admin step stays listed while the member count loads, so
+  the count doesn't jump; it drops out only if the count can't be read. Coverage is read off the window shown. The button hides once every
   step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
 

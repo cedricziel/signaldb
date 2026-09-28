@@ -110,7 +110,10 @@ export function OverviewView({ state, update }: Props) {
   const steps = setupSteps({
     rows,
     githubLinked: state.tenant ? githubLinked : undefined,
-    memberCount: members.data,
+    memberCount:
+      members.data === undefined && members.isFetching
+        ? "loading"
+        : members.data,
     canManage,
   });
 

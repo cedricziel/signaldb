@@ -265,9 +265,9 @@ export interface SetupInputs {
   rows: ServiceRow[];
   /** `undefined` while the probe is pending. */
   githubLinked: boolean | undefined;
-  /** Distinct members; `undefined` while pending or unknown. Only read
-   * for an admin. */
-  memberCount: number | undefined;
+  /** Distinct members; `"loading"` while the probe runs, `undefined` when
+   * it can't answer (failed, or no tenant). Only read for an admin. */
+  memberCount: number | "loading" | undefined;
   canManage: boolean;
 }
 
@@ -342,17 +342,17 @@ export function setupSteps({
         : undefined,
     },
   ];
-  if (canManage) {
+  if (canManage && memberCount !== undefined) {
     steps.push({
       id: "team",
       title: "Invite your team",
       detail:
-        memberCount === undefined
+        memberCount === "loading"
           ? "checking…"
           : memberCount > 1
             ? `${memberCount} members`
             : "you are the only member",
-      done: memberCount !== undefined && memberCount > 1,
+      done: memberCount !== "loading" && memberCount > 1,
       cta: { label: "Invite members", href: "/manage" },
     });
   }
