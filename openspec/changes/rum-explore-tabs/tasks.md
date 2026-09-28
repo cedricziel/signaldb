@@ -10,9 +10,9 @@ proposal — Why).
 
 ## 2. Pages + Interactions
 
-- [ ] 2.1 Failing tests for per-route vitals, navigation-timing breakdown and click-target aggregation.
+- [x] 2.1 Failing tests for per-route vitals and navigation-timing breakdown.
 - [ ] 2.2 Pages tab (route list sorted by poor share, route detail, load breakdown, backend calls) with `?route=`; missing-route callout; Overview "Slowest pages" linking into it.
-- [ ] 2.3 Interactions tab (clicks by target, INP p75 of the page).
+- [ ] 2.3 Failing tests for click-target aggregation; Interactions tab (clicks by target, INP p75 of the page).
 
 ## 3. Sessions + session detail
 

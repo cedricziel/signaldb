@@ -310,6 +310,21 @@ export function urlTemplate(urlFull: string): UrlTemplate | null {
   return { origin: url.host, template: `/${templated.join("/")}` };
 }
 
+/** A regex matching any `url.full` whose path fits `route`, with `:param`
+ * segments matching one path segment — the server-side counterpart of
+ * `urlTemplate` for records that carry no `url.template`. */
+export function routeUrlRegex(route: string): string {
+  const path = route
+    .split("/")
+    .map((seg) =>
+      seg.startsWith(":")
+        ? "[^/?#]+"
+        : seg.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"),
+    )
+    .join("/");
+  return `^[a-z]+://[^/]+${path}/?([?#]|$)`;
+}
+
 const SDK_EXPORT_SUFFIXES = ["/v1/traces", "/v1/logs", "/v1/metrics"];
 
 /** A request to the telemetry export endpoint itself — marked "SDK export"
@@ -336,6 +351,51 @@ export function resolveRoute(
   if (template) return template;
   if (full) return urlTemplate(full)?.template ?? null;
   return MISSING_ROUTE;
+}
+
+// ---- Pages: load breakdown --------------------------------------------
+
+export interface LoadPhase {
+  label: string;
+  ms: number;
+}
+
+/** Phase boundaries (ms, from `fetchStart`) needed for
+ * `loadBreakdownPhases` — p75s of `browser.resource_timing`'s basic phases
+ * plus `browser.navigation_timing`'s DOM/load milestones, all relative to
+ * the navigation's own `fetchStart` per the Navigation Timing spec. */
+export interface NavTimingP75 {
+  domainLookupStart?: number;
+  domainLookupEnd?: number;
+  connectStart?: number;
+  connectEnd?: number;
+  requestStart?: number;
+  responseStart?: number;
+  responseEnd?: number;
+  domInteractive?: number;
+  domContentLoadedEventEnd?: number;
+  loadEventEnd?: number;
+}
+
+/** The load waterfall's named, non-overlapping phases (DNS through load),
+ * each clamped to zero — a p75 blend across boundary fields isn't
+ * guaranteed monotonic, and a negative bar would misdraw. A phase with an
+ * unrecorded boundary is left out rather than measured from zero. */
+export function loadBreakdownPhases(p75: NavTimingP75): LoadPhase[] {
+  const spans: [string, number | undefined, number | undefined][] = [
+    ["DNS", p75.domainLookupStart, p75.domainLookupEnd],
+    ["Connect + TLS", p75.connectStart, p75.connectEnd],
+    ["Request → first byte", p75.requestStart, p75.responseStart],
+    ["Response", p75.responseStart, p75.responseEnd],
+    ["DOM processing", p75.responseEnd, p75.domInteractive],
+    ["DOMContentLoaded", p75.domInteractive, p75.domContentLoadedEventEnd],
+    ["Load", p75.domContentLoadedEventEnd, p75.loadEventEnd],
+  ];
+  return spans.flatMap(([label, start, end]) =>
+    start === undefined || end === undefined
+      ? []
+      : [{ label, ms: Math.max(0, end - start) }],
+  );
 }
 
 // ---- Tabs ------------------------------------------------------------
