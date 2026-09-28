@@ -521,6 +521,12 @@ fn create_arrow_schema_from_resolved(resolved: &ResolvedSchema) -> Result<Arc<Sc
                 // For now, treat as string (will be handled properly later)
                 DataType::Utf8
             }
+            // Element field name/nullability ("item"/nullable) mirrors
+            // iceberg-rust-spec's Iceberg->Arrow list conversion
+            // (iceberg-rust-spec/src/arrow/schema.rs), so batches built here
+            // stay schema-compatible with a table created from this type.
+            "list<int64>" => DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            "list<double>" => DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
             _ => return Err(anyhow!("Unsupported field type: {}", field.field_type)),
         };
 
@@ -2300,6 +2306,49 @@ pub fn transform_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrow_schema_from_resolved_maps_typed_lists_to_arrow_list_columns() {
+        use common::schema::schema_parser::ResolvedField;
+
+        let field = |name: &str, field_type: &str| ResolvedField {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: 0,
+        };
+        let resolved = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("bucket_counts", "list<int64>"),
+                field("explicit_bounds", "list<double>"),
+            ],
+            partition_by: vec![],
+        };
+        let arrow_schema = create_arrow_schema_from_resolved(&resolved).unwrap();
+
+        let counts = arrow_schema.field_with_name("bucket_counts").unwrap();
+        let DataType::List(element) = counts.data_type() else {
+            panic!(
+                "bucket_counts should be a List, got {:?}",
+                counts.data_type()
+            );
+        };
+        assert_eq!(*element.data_type(), DataType::Int64);
+        assert!(element.is_nullable());
+
+        let bounds = arrow_schema.field_with_name("explicit_bounds").unwrap();
+        let DataType::List(element) = bounds.data_type() else {
+            panic!(
+                "explicit_bounds should be a List, got {:?}",
+                bounds.data_type()
+            );
+        };
+        assert_eq!(*element.data_type(), DataType::Float64);
+    }
 
     #[test]
     fn materialized_label_column_carries_its_origin_key_and_survives_an_ipc_round_trip() {

@@ -22,6 +22,16 @@ pub struct SchemaDefinitions {
     pub metrics_exponential_histogram: HashMap<String, TableSchemaDefinition>,
     #[serde(default)]
     pub metrics_summary: HashMap<String, TableSchemaDefinition>,
+    /// The wide, one-row-per-datapoint metrics table (otel-native-schema
+    /// layer 7, D10) replacing the five `metrics_*` tables above at cutover.
+    /// Declared at `physical-v4` only; not yet `current_metric_version` and
+    /// not wired into table creation.
+    #[serde(default)]
+    pub metrics: HashMap<String, TableSchemaDefinition>,
+    /// The exemplars table paired with [`Self::metrics`] (otel-native-schema
+    /// layer 7, D10). Same inert status as `metrics` above.
+    #[serde(default)]
+    pub metric_exemplars: HashMap<String, TableSchemaDefinition>,
     #[serde(default)]
     pub profiles: HashMap<String, TableSchemaDefinition>,
 }
@@ -360,11 +370,12 @@ impl ResolvedSchema {
     fn build_iceberg_schema(&self, labels: &[String], derived: DerivedColumns) -> Result<Schema> {
         let mut fields = Vec::new();
 
-        // Nested (map key/value) field IDs must be unique across the whole
-        // schema; allocate them after every top-level ID so the top-level
-        // numbering stays identical to the historical string-only layout.
+        // Nested (map key/value, list element) field IDs must be unique
+        // across the whole schema; allocate them after every top-level ID so
+        // the top-level numbering stays identical to the historical
+        // string-only layout.
         let mut next_nested_id = self.fields.len() as i32 + 1;
-        let mut map_slots: Vec<(usize, PrimitiveType)> = Vec::new();
+        let mut nested_slots: Vec<(usize, NestedSlot)> = Vec::new();
 
         for (idx, field) in self.fields.iter().enumerate() {
             let field_type = match field.field_type.as_str() {
@@ -377,8 +388,8 @@ impl ResolvedSchema {
                 "timestamp_ns" => Type::Primitive(PrimitiveType::Timestamp), // No TimestampNs in iceberg-rust
                 "date" => Type::Primitive(PrimitiveType::Date),
                 "binary" => Type::Primitive(PrimitiveType::Binary),
-                // Attribute maps: string keys, typed values. Key/value IDs
-                // are assigned in a second pass below.
+                // Attribute maps and typed lists: nested IDs are assigned in
+                // a second pass below.
                 map if map.starts_with("map<string,") => {
                     let value_type = match map {
                         "map<string,string>" => PrimitiveType::String,
@@ -387,13 +398,22 @@ impl ResolvedSchema {
                         "map<string,boolean>" => PrimitiveType::Boolean,
                         _ => return Err(anyhow!("Unsupported field type: {map}")),
                     };
-                    map_slots.push((idx, value_type));
+                    nested_slots.push((idx, NestedSlot::Map(value_type)));
                     Type::Primitive(PrimitiveType::String) // placeholder
                 }
                 "list<struct>" => {
                     // For now, use string for complex types
                     // TODO: Properly handle nested structures
                     Type::Primitive(PrimitiveType::String)
+                }
+                list if list.starts_with("list<") => {
+                    let element_type = match list {
+                        "list<int64>" => PrimitiveType::Long,
+                        "list<double>" => PrimitiveType::Double,
+                        _ => return Err(anyhow!("Unsupported field type: {list}")),
+                    };
+                    nested_slots.push((idx, NestedSlot::List(element_type)));
+                    Type::Primitive(PrimitiveType::String) // placeholder
                 }
                 _ => return Err(anyhow!("Unsupported field type: {}", field.field_type)),
             };
@@ -411,18 +431,30 @@ impl ResolvedSchema {
             fields.push(struct_field);
         }
 
-        // Second pass: fill in map types with globally-unique nested IDs.
-        for (idx, value_type) in map_slots {
-            let key_id = next_nested_id;
-            let value_id = next_nested_id + 1;
-            next_nested_id += 2;
-            fields[idx].field_type = Type::Map(MapType {
-                key_id,
-                key: Box::new(Type::Primitive(PrimitiveType::String)),
-                value_id,
-                value_required: false,
-                value: Box::new(Type::Primitive(value_type)),
-            });
+        // Second pass: fill in nested types with globally-unique IDs.
+        for (idx, slot) in nested_slots {
+            fields[idx].field_type = match slot {
+                NestedSlot::Map(value_type) => {
+                    let key_id = next_nested_id;
+                    next_nested_id += 2;
+                    Type::Map(MapType {
+                        key_id,
+                        key: Box::new(Type::Primitive(PrimitiveType::String)),
+                        value_id: key_id + 1,
+                        value_required: false,
+                        value: Box::new(Type::Primitive(value_type)),
+                    })
+                }
+                NestedSlot::List(element_type) => {
+                    let element_id = next_nested_id;
+                    next_nested_id += 1;
+                    Type::List(ListType {
+                        element_id,
+                        element_required: false,
+                        element: Box::new(Type::Primitive(element_type)),
+                    })
+                }
+            };
         }
 
         // Append materialized-label columns after the base fields. They are
@@ -502,6 +534,13 @@ impl ResolvedSchema {
             .filter(|f| f.computed.is_some())
             .collect()
     }
+}
+
+/// A nested column whose inner field IDs are allocated after every top-level
+/// ID in `ResolvedSchema::build_iceberg_schema`.
+enum NestedSlot {
+    Map(PrimitiveType),
+    List(PrimitiveType),
 }
 
 #[cfg(test)]
@@ -1062,6 +1101,117 @@ fields = [
                 .iter()
                 .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
         );
+    }
+
+    #[test]
+    fn list_field_types_build_iceberg_lists_with_unique_element_ids() {
+        let resolved = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("bounds", "list<double>"),
+                field("counts", "list<int64>"),
+            ],
+            partition_by: vec![],
+        };
+        let schema = resolved.to_iceberg_schema().unwrap();
+
+        let bounds = schema.fields().iter().find(|f| f.name == "bounds").unwrap();
+        let Type::List(bounds_list) = &bounds.field_type else {
+            panic!("bounds should be a List, got {:?}", bounds.field_type);
+        };
+        assert_eq!(*bounds_list.element, Type::Primitive(PrimitiveType::Double));
+        assert!(!bounds_list.element_required);
+
+        let counts = schema.fields().iter().find(|f| f.name == "counts").unwrap();
+        let Type::List(counts_list) = &counts.field_type else {
+            panic!("counts should be a List, got {:?}", counts.field_type);
+        };
+        assert_eq!(*counts_list.element, Type::Primitive(PrimitiveType::Long));
+
+        let ids: Vec<i32> = schema
+            .fields()
+            .iter()
+            .map(|f| f.id)
+            .chain([bounds_list.element_id, counts_list.element_id])
+            .collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+    }
+
+    #[test]
+    fn resolving_metrics_v4_yields_typed_lists_for_every_list_column() {
+        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
+        let resolved = defs
+            .resolve_table_schema(&defs.metrics, "physical-v4")
+            .unwrap();
+        let schema = resolved.to_iceberg_schema().unwrap();
+
+        let double_lists = ["explicit_bounds", "quantiles", "quantile_values"];
+        let int_lists = [
+            "bucket_counts",
+            "positive_bucket_counts",
+            "negative_bucket_counts",
+        ];
+
+        for name in double_lists {
+            let f = schema
+                .fields()
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let Type::List(list) = &f.field_type else {
+                panic!("{name} should be a List, got {:?}", f.field_type);
+            };
+            assert_eq!(*list.element, Type::Primitive(PrimitiveType::Double));
+        }
+        for name in int_lists {
+            let f = schema
+                .fields()
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let Type::List(list) = &f.field_type else {
+                panic!("{name} should be a List, got {:?}", f.field_type);
+            };
+            assert_eq!(*list.element, Type::Primitive(PrimitiveType::Long));
+        }
+
+        let ids: Vec<i32> = schema.fields().iter().map(|f| f.id).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+    }
+
+    #[test]
+    fn metric_exemplars_v4_has_the_filtered_attributes_typed_columns() {
+        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
+        let resolved = defs
+            .resolve_table_schema(&defs.metric_exemplars, "physical-v4")
+            .unwrap();
+        for column in typed_attributes::typed_columns("filtered_attributes") {
+            assert!(
+                resolved.fields.iter().any(|f| f.name == column),
+                "missing {column}, got {:?}",
+                resolved.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+            );
+        }
+    }
+
+    #[test]
+    fn existing_metrics_gauge_v3_top_level_ids_are_unchanged_by_the_list_type_addition() {
+        // Adding list<int64>/list<double> support must not renumber
+        // top-level field ids for tables that don't use it.
+        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
+        let resolved = defs
+            .resolve_table_schema(&defs.metrics_gauge, "physical-v3")
+            .unwrap();
+        let schema = resolved.to_iceberg_schema().unwrap();
+        let timestamp = schema
+            .fields()
+            .iter()
+            .find(|f| f.name == "timestamp")
+            .unwrap();
+        assert_eq!(timestamp.id, 1);
     }
 
     #[test]
