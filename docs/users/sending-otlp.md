@@ -189,14 +189,14 @@ a resend; an export that differs in any record is always stored.
 A successful export returns `200 OK` with an `Export*ServiceResponse`
 body in the same encoding as the request. Error responses:
 
-| Status                                                                 | Meaning                                                                                                                                                                                                                                          |
+| Status | Meaning |
 | ---------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- |
-| `400 Bad Request`                                                      | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` / `X-Dataset-ID` headers (including a non-UTF-8 `X-Dataset-ID` — it is rejected, not silently treated as absent)                                                                 |
-| `401 Unauthorized`                                                     | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked                                                                                                                                                                     |
-| `403 Forbidden`                                                        | Key does not belong to the tenant/dataset you named                                                                                                                                                                                              |
-| `413 Payload Too Large`                                                | Decoded request body exceeds `[acceptor].max_request_body_bytes`                                                                                                                                                                                 |
-| Export succeeds with a `partial_success` warning naming attribute keys | Those values were sent with a type other than the key's canonical type                                                                                                                                                                           | Send the key with its canonical type, or ask your operator to pin a different type; the values are stored as sent either way |
-| `429 Too Many Requests`                                                | Per-tenant ingest rate limit or storage quota hit; a rate-limit `429` carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so a client can back off precisely instead of guessing |
+| `400 Bad Request` | Malformed payload, or malformed `Authorization` / `X-Tenant-ID` / `X-Dataset-ID` headers (including a non-UTF-8 `X-Dataset-ID` — it is rejected, not silently treated as absent) |
+| `401 Unauthorized` | Missing `Authorization` / `X-Tenant-ID` headers, or API key wrong or revoked |
+| `403 Forbidden` | Key does not belong to the tenant/dataset you named |
+| `413 Payload Too Large` | Decoded request body exceeds `[acceptor].max_request_body_bytes` |
+| Export succeeds with a `partial_success` warning naming attribute keys | Those values were sent with a type other than the key's canonical type | Send the key with its canonical type, or ask your operator to pin a different type; the values are stored as sent either way |
+| `429 Too Many Requests` | Per-tenant ingest rate limit or storage quota hit; a rate-limit `429` carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so a client can back off precisely instead of guessing |
 
 To use OTLP/HTTP from the OpenTelemetry Collector:
 
@@ -241,7 +241,9 @@ is resolved:
   either way.
 
 Configure the restriction on the key itself; there is no separate
-acceptor-wide CORS setting for ingest.
+acceptor-wide CORS setting for ingest. To keep keys out of browser code,
+export through a collector instead: see [Instrument a browser
+app](instrument-browser-app.md).
 
 ## Troubleshooting
 
