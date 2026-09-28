@@ -1,9 +1,9 @@
 use crate::schema_transform::{
     LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg, transform_metric_exemplars,
-    transform_metrics_exponential_histogram_v1_to_iceberg, transform_metrics_gauge_v1_to_iceberg,
-    transform_metrics_histogram_v1_to_iceberg, transform_metrics_sum_v1_to_iceberg,
-    transform_metrics_summary_v1_to_iceberg, transform_metrics_to_wide,
-    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
+    transform_metrics_exponential_histogram_v1_to_iceberg,
+    transform_metrics_histogram_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
+    transform_metrics_to_wide, transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2,
+    warm_trace_v1_to_v2_plan,
 };
 use anyhow::{Context, Result};
 use common::CatalogManager;
@@ -358,12 +358,6 @@ impl IcebergTableWriter {
                 transform_logs_v1_to_iceberg(batch, labels)
             }
             // Wire-format metrics carry the raw "data_json" payload column.
-            "metrics_gauge" if has_field("data_json") => {
-                transform_metrics_gauge_v1_to_iceberg(batch, labels)
-            }
-            "metrics_sum" if has_field("data_json") => {
-                transform_metrics_sum_v1_to_iceberg(batch, labels)
-            }
             "metrics_histogram" if has_field("data_json") => {
                 transform_metrics_histogram_v1_to_iceberg(batch, labels)
             }
@@ -393,9 +387,7 @@ impl IcebergTableWriter {
             "traces" => &self.materialized.traces,
             "logs" => &self.materialized.logs,
             "profiles" => &self.materialized.profiles,
-            "metrics_gauge"
-            | "metrics_sum"
-            | "metrics_histogram"
+            "metrics_histogram"
             | "metrics_exponential_histogram"
             | "metrics_summary"
             | "metrics" => &self.materialized.metrics,
