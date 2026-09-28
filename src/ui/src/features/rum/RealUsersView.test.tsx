@@ -7,6 +7,8 @@ import * as rumSessionsApi from "../../api/rumSessions";
 import type { RumSessionRow } from "../../api/rumSessions";
 import * as rumSessionDetailApi from "../../api/rumSessionDetail";
 import type { SessionEvent } from "../../api/rumSessionDetail";
+import * as traceDetailApi from "../../api/traceDetail";
+import type { TempoTrace } from "../../api/traceTypes";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { createAppRouter } from "../../routes";
 import { RouterProvider } from "react-router";
@@ -40,6 +42,10 @@ vi.mock("../../api/rumSessions", async (orig) => ({
 vi.mock("../../api/rumSessionDetail", async (orig) => ({
   ...(await orig<typeof import("../../api/rumSessionDetail")>()),
   fetchSessionDetail: vi.fn().mockResolvedValue({ events: [], hasMore: false }),
+}));
+vi.mock("../../api/traceDetail", async (orig) => ({
+  ...(await orig<typeof import("../../api/traceDetail")>()),
+  fetchTraceDetail: vi.fn().mockResolvedValue(null),
 }));
 
 function rumApp(overrides: Partial<RumApp> = {}): RumApp {
@@ -614,5 +620,81 @@ describe("Sessions tab", () => {
     for (const button of within(eventsPanel).getAllByRole("button")) {
       expect(button).not.toHaveAttribute("aria-current", "true");
     }
+  });
+
+  it("shows an inline trace waterfall split when a network event is selected", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([sessionRow()]);
+    const networkEvent: SessionEvent = {
+      kind: "span",
+      tsNs: "1700000000000000000",
+      lane: "network",
+      traceId: "trace-501",
+      spanId: "client-1",
+      parentSpanId: null,
+      name: "POST",
+      spanKind: "Client",
+      serviceName: "storefront-web",
+      durationNs: "500000000",
+      isError: false,
+      httpMethod: "POST",
+      urlFull: "https://api.storefront.example.com/checkout",
+      httpStatusCode: 200,
+    };
+    vi.mocked(rumSessionDetailApi.fetchSessionDetail).mockResolvedValue({
+      events: [networkEvent],
+      hasMore: false,
+    });
+    const trace: TempoTrace = {
+      traceId: "trace-501",
+      rootServiceName: "storefront-web",
+      rootTraceName: "POST /checkout",
+      startNs: "1700000000000000000",
+      durationMs: 500,
+      rootAttributes: {},
+      rootError: false,
+      profiles: [],
+      spans: [
+        {
+          spanId: "client-1",
+          parentSpanId: null,
+          name: "POST",
+          serviceName: "storefront-web",
+          status: "unset",
+          kind: "Client",
+          startNs: "1700000000000000000",
+          durNs: "500000000",
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: "server-1",
+          parentSpanId: "client-1",
+          name: "checkout",
+          serviceName: "checkout-svc",
+          status: "unset",
+          kind: "Server",
+          startNs: "1700000000010000000",
+          durNs: "300000000",
+          attributes: {},
+          events: [],
+        },
+      ],
+    };
+    vi.mocked(traceDetailApi.fetchTraceDetail).mockResolvedValue(trace);
+    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+
+    const timeline = await screen.findByTestId("rum-session-timeline");
+    const mark = within(timeline).getByRole("button", { name: /POST/ });
+    const user = userEvent.setup();
+    await user.click(mark);
+
+    expect(
+      await screen.findByRole("link", { name: "Open in Traces" }),
+    ).toHaveAttribute("href", expect.stringContaining("/traces/trace-501"));
+    expect(await screen.findByText(/checkout-svc/)).toBeInTheDocument();
   });
 });

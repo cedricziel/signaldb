@@ -1,15 +1,17 @@
 // The Real users page's session detail (`?session=`): a header, the lane
-// timeline (`SessionTimeline`), the same events as an ordered list, and the
-// session's own resource attributes. Selecting an event highlights it in
-// both the timeline and the list. The selected event's own detail panel
-// (an inline trace waterfall or an exception's stack frames) ships in a
-// later branch of this change.
+// timeline (`SessionTimeline`), the same events as an ordered list, the
+// selected event's own detail panel (`SessionEventDetail` — an inline trace
+// waterfall for a network event; an exception's stack frames ship in a
+// later branch), and the session's own resource attributes. Selecting an
+// event highlights it in both the timeline and the list.
 import { useMemo, useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { formatTimestamp } from "../../lib/time";
 import { formatDurationMs } from "../../lib/waterfall";
+import type { ExploreState } from "../../lib/urlState";
 import { Panel } from "./Panel";
+import { SessionEventDetail } from "./SessionEventDetail";
 import { eventKey, SessionTimeline } from "./SessionTimeline";
 import type { SessionEvent } from "../../api/rumSessionDetail";
 import { SESSION_LANE_LABELS, sessionEventLabel } from "./rumModel";
@@ -17,10 +19,11 @@ import { useRumSessionDetail, type RumScope } from "./useRumData";
 
 interface Props {
   scope: RumScope;
+  state: ExploreState;
   sessionId: string;
 }
 
-export function SessionDetailView({ scope, sessionId }: Props) {
+export function SessionDetailView({ scope, state, sessionId }: Props) {
   const detail = useRumSessionDetail(scope, sessionId);
   const [selected, setSelected] = useState<SessionEvent | null>(null);
 
@@ -92,6 +95,22 @@ export function SessionDetailView({ scope, sessionId }: Props) {
           />
         </Panel>
       )}
+
+      {selected &&
+        selected.kind === "span" &&
+        detail.events.some(
+          (e) => e.kind === "span" && e.spanId === selected.spanId,
+        ) && (
+          <Panel title="Selected event">
+            <SessionEventDetail
+              scope={scope}
+              state={state}
+              event={selected}
+              events={detail.events}
+              onSelectEvent={setSelected}
+            />
+          </Panel>
+        )}
 
       {Object.keys(attributes).length > 0 && (
         <Panel

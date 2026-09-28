@@ -914,6 +914,66 @@ a.rum-row:hover {
   color: var(--err-text);
 }
 
+.rum-session-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rum-session-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.rum-session-detail-links {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rum-mini-waterfall {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.rum-mini-waterfall-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 480px;
+}
+.rum-mini-waterfall-ruler {
+  height: 16px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.rum-mini-waterfall-ruler .rum-mini-waterfall-track > span {
+  position: absolute;
+}
+.rum-mini-waterfall-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.rum-mini-waterfall-label {
+  font-size: 11px;
+}
+.rum-mini-waterfall-track {
+  position: relative;
+  height: 14px;
+}
+.rum-mini-waterfall-bar {
+  position: absolute;
+  top: 2px;
+  height: 10px;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.rum-mini-waterfall-bar.err {
+  background: var(--err);
+}
+
 .rum-load-bar {
   display: flex;
   height: 22px;

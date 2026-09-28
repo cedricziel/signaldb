@@ -144,6 +144,7 @@ export function RealUsersView({
         ) : tab === "sessions" ? (
           <SessionsTab
             scope={scope}
+            state={state}
             session={state.rumSession}
             onSelectSession={(session) => update({ rumSession: session })}
           />

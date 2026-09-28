@@ -344,9 +344,12 @@ placeholder.
   highlights it in both. A session holding more than the cap says so (an
   exact count when knowable, else "more records exist") and offers to load
   the next page. The panel below lists the latest record's own resource
-  attributes. An inline trace waterfall for a selected network event and an
-  exception panel with its preceding failed request are a later addition to
-  this tab.
+  attributes. Selecting a Network-lane event with backend children shows
+  that trace's waterfall inline, split into time spent in the browser and
+  network (the client span's own duration minus its first server child's)
+  versus backend time, with links to open the full trace and its backend
+  logs. An exception panel with its preceding failed request is a later
+  addition to this tab.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced
