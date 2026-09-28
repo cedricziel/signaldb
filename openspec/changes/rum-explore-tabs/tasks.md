@@ -16,7 +16,7 @@ proposal — Why).
 
 ## 3. Sessions + session detail
 
-- [ ] 3.1 Failing tests for session list aggregation/filters and for merging a session's spans and logs into lanes and events.
+- [x] 3.1 Failing tests for session list aggregation/filters and for merging a session's spans and logs into lanes and events.
 - [ ] 3.2 Sessions tab with quick filters and attribute filter; `?session=` detail with lane timeline, event list, inline trace waterfall (reusing `lib/waterfall.ts`), exception panel with preceding failed request, attributes.
 - [ ] 3.3 Palette: jump to a pasted session id.
 
