@@ -286,8 +286,8 @@ the window. The app switcher lists every such app, busiest first, and
 defaults to the busiest; picking one writes `?app=` and keeps the
 current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
-the **Overview** and **Setup** tabs; Pages, Sessions, Errors, Network and
-Interactions follow in later changes and are not shown as placeholders.
+the **Overview**, **Network** and **Setup** tabs; Pages, Sessions, Errors
+and Interactions follow in later changes and are not shown as placeholders.
 
 - **Overview.** Sessions and sessions-with-errors (distinct `session.id`,
   the latter scoped to a session carrying an `exception` record) and page
@@ -304,6 +304,16 @@ Interactions follow in later changes and are not shown as placeholders.
   device** break down the window's records by `browser.brands` (when the SDK
   sends it — many deployments don't yet, so this can read empty) and
   `browser.mobile`.
+- **Network.** The app's client HTTP spans, grouped by method and URL
+  template (derived client-side from `url.full` when the record carries no
+  `url.template`), each with calls, a p75 split into client+network and
+  backend time, error share and traced share (a server-kind child span in
+  the same trace, found via the `correlate` stage). An origin with zero
+  traced calls raises a callout explaining `traceparent` propagation and
+  CORS, linking to Setup; requests to the telemetry export endpoint itself
+  are marked "SDK export" rather than counted there. A **Resources** table
+  summarises `browser.resource_timing` by initiator type: count, transfer
+  size, p75 duration and the largest transfer.
 - **Setup.** Copyable snippets for instrumenting a browser app with the
   upstream OpenTelemetry SDK: install, initialize with the app's
   `service.name`, and export to an OpenTelemetry Collector or the app's own

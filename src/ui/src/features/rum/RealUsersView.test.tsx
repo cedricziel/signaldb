@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import * as rumApi from "../../api/rum";
-import type { RumApp } from "../../api/rum";
+import type { RumApp, RumRequestRow } from "../../api/rum";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { createAppRouter } from "../../routes";
 import { RouterProvider } from "react-router";
@@ -17,6 +17,8 @@ vi.mock("../../api/rum", async (orig) => ({
     .fn()
     .mockResolvedValue({ total: [], withErrors: [] }),
   fetchBreakdown: vi.fn().mockResolvedValue([]),
+  fetchNetworkRequests: vi.fn().mockResolvedValue([]),
+  fetchResources: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../api/errors", async (orig) => ({
   ...(await orig<typeof import("../../api/errors")>()),
@@ -205,5 +207,103 @@ describe("RealUsersView", () => {
     renderRum("/rum?tenant=acme");
     await waitFor(() => expect(window.location.pathname).toBe("/rum/overview"));
     expect(window.location.search).toContain("tenant=acme");
+  });
+});
+function networkRow(overrides: Partial<RumRequestRow> = {}): RumRequestRow {
+  return {
+    method: "GET",
+    origin: "api.storefront.example.com",
+    template: "/orders/:id",
+    calls: 150,
+    tracedCalls: 140,
+    errorCalls: 4,
+    totalP75Ms: 240,
+    backendP75Ms: 120,
+    backendService: "orders-svc",
+    isSdkExport: false,
+    tracedKnown: true,
+    ...overrides,
+  };
+}
+
+describe("Network tab", () => {
+  it("shows the requests table, the client/backend split and the traced share", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchNetworkRequests).mockResolvedValue([
+      networkRow(),
+      networkRow({
+        origin: "reviews.partner-cdn.com",
+        template: "/widget/:id",
+        calls: 38100,
+        tracedCalls: 0,
+        errorCalls: 0,
+        backendP75Ms: undefined,
+        backendService: undefined,
+      }),
+      networkRow({
+        method: "POST",
+        origin: "ingest.acme.example.com",
+        template: "/v1/traces",
+        calls: 184210,
+        tracedCalls: 0,
+        errorCalls: 0,
+        backendP75Ms: undefined,
+        backendService: undefined,
+        isSdkExport: true,
+      }),
+    ]);
+    renderRum("/rum/network?app=storefront-web");
+
+    expect(
+      await screen.findByText("/orders/:id", { exact: false }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("orders-svc")).toBeInTheDocument();
+    expect(await screen.findByText("SDK export")).toBeInTheDocument();
+    expect(await screen.findByText("no trace")).toBeInTheDocument();
+  });
+
+  it("callouts an untraced origin, naming it and its count, excluding SDK export", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchNetworkRequests).mockResolvedValue([
+      networkRow({
+        origin: "reviews.partner-cdn.com",
+        template: "/widget/:id",
+        calls: 38100,
+        tracedCalls: 0,
+        errorCalls: 0,
+        backendP75Ms: undefined,
+        backendService: undefined,
+      }),
+      networkRow({
+        method: "POST",
+        origin: "ingest.acme.example.com",
+        template: "/v1/traces",
+        calls: 184210,
+        tracedCalls: 0,
+        errorCalls: 0,
+        backendP75Ms: undefined,
+        backendService: undefined,
+        isSdkExport: true,
+      }),
+      networkRow({
+        origin: "cdn.capped.example.com",
+        tracedCalls: 0,
+        backendService: undefined,
+        tracedKnown: false,
+      }),
+    ]);
+    renderRum("/rum/network?app=storefront-web");
+
+    const callout = await screen.findByText(/doesn't receive a/);
+    expect(callout.textContent).toContain("reviews.partner-cdn.com");
+    expect(callout.textContent).toContain("38K");
+    expect(callout.textContent).not.toContain("ingest.acme.example.com");
+    expect(callout.textContent).not.toContain("cdn.capped.example.com");
   });
 });

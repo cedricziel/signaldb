@@ -164,7 +164,7 @@ describe("isSdkExportPath", () => {
 
 describe("RUM_TABS / rumTabFromParam", () => {
   it("has the tabs this build ships, in display order", () => {
-    expect(RUM_TABS.map((t) => t.id)).toEqual(["overview", "setup"]);
+    expect(RUM_TABS.map((t) => t.id)).toEqual(["overview", "network", "setup"]);
   });
 
   it("recognizes a known tab", () => {

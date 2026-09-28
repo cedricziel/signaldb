@@ -1,8 +1,7 @@
 // The Real users page (`/rum/{tab}`): an app switcher, a tab strip, and one
-// tab body per selected tab. This group ships Overview and Setup only —
-// Pages/Sessions/Errors/Network/Interactions are later groups (tasks.md
-// groups 4-8) and are not rendered as placeholders here (per group 3's
-// scope note).
+// tab body per selected tab. This group ships Overview, Network and Setup —
+// Pages/Sessions/Errors/Interactions are later groups (tasks.md groups
+// 2-4) and are not rendered as placeholders here.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { rangeScopeKey, resolveRange } from "../../lib/time";
@@ -13,6 +12,7 @@ import { NavIcon } from "../shell/NavIcon";
 import { useRumApps } from "./useRumData";
 import type { RumApp } from "../../api/rum";
 import { RUM_TABS, type RumTab } from "./rumModel";
+import { NetworkTab } from "./NetworkTab";
 import { OverviewTab } from "./OverviewTab";
 import { SetupTab } from "./SetupTab";
 import "./rum.css";
@@ -117,6 +117,8 @@ export function RealUsersView({ state, update, tab, onTabChange }: Props) {
               Open Setup
             </button>
           </EmptyState>
+        ) : tab === "network" ? (
+          <NetworkTab scope={scope} onOpenSetup={() => onTabChange("setup")} />
         ) : (
           <OverviewTab scope={scope} onOpenSetup={() => onTabChange("setup")} />
         )}

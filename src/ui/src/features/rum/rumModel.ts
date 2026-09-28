@@ -268,7 +268,7 @@ export function isSdkExportPath(path: string): boolean {
 
 // ---- Tabs ------------------------------------------------------------
 
-export type RumTab = "overview" | "setup";
+export type RumTab = "overview" | "network" | "setup";
 
 /** The tabs this build ships, in display order — the page's tab strip and
  * the command palette both map over this (`explore-ui-rum`'s "Real users
@@ -276,6 +276,7 @@ export type RumTab = "overview" | "setup";
  * adding only here. */
 export const RUM_TABS: { id: RumTab; label: string }[] = [
   { id: "overview", label: "Overview" },
+  { id: "network", label: "Network" },
   { id: "setup", label: "Setup" },
 ];
 
