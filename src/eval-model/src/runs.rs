@@ -377,8 +377,8 @@ pub fn latest_run_document(
 ) -> Document {
     let mut pipeline: Vec<Stage> = [
         eq("event_name", EVALUATION_RESULT_EVENT),
-        eq(AGENT_NAME, agent),
-        eq(AGENT_VERSION, version),
+        with_fallback(AGENT_NAME, SERVICE_NAME, agent),
+        with_fallback(AGENT_VERSION, SERVICE_VERSION, version),
         eq(SET, set),
     ]
     .into_iter()
@@ -1575,7 +1575,9 @@ mod tests {
             .iter()
             .find(|d| d["pipeline"].as_array().is_some_and(|p| p.len() == 6))
             .expect("latest resolution document");
-        assert_eq!(latest["pipeline"][1]["where"]["value"], "support-triage");
+        // The agent filter falls back to service.name, like the rest of the model.
+        let agent = latest["pipeline"][1]["where"].to_string();
+        assert!(agent.contains(r#""field":"service.name","op":"eq","value":"support-triage""#));
         assert_eq!(latest["pipeline"][4]["where"]["value"], "cand");
     }
 

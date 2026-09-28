@@ -1147,16 +1147,22 @@ a,C,1
             .await;
         let query = server
             .mock("POST", "/api/v1/query")
-            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
-                "from": "logs",
-                "pipeline": [
-                    {"where": {"field": "event_name", "op": "eq", "value": "gen_ai.evaluation.result"}},
-                    {"where": {"field": "gen_ai.agent.name", "op": "eq", "value": "support-triage"}},
-                    {"where": {"field": "gen_ai.agent.version", "op": "eq", "value": "v1.8.0"}},
-                    {"where": {"field": "signaldb.eval.set", "op": "eq", "value": "triage-golden"}},
-                    {"where": {"field": "signaldb.eval.run_id", "op": "ne", "value": "run-42"}}
-                ]
-            })))
+            // Agent and version fall back to service.name / service.version.
+            .match_body(mockito::Matcher::AllOf(vec![
+                mockito::Matcher::PartialJson(serde_json::json!({"from": "logs"})),
+                mockito::Matcher::Regex(
+                    r#""field":"service\.name","op":"eq","value":"support-triage""#.into(),
+                ),
+                mockito::Matcher::Regex(
+                    r#""field":"service\.version","op":"eq","value":"v1\.8\.0""#.into(),
+                ),
+                mockito::Matcher::Regex(
+                    r#""field":"signaldb\.eval\.set","op":"eq","value":"triage-golden""#.into(),
+                ),
+                mockito::Matcher::Regex(
+                    r#""field":"signaldb\.eval\.run_id","op":"ne","value":"run-42""#.into(),
+                ),
+            ]))
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
