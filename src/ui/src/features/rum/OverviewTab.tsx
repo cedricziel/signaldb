@@ -27,11 +27,16 @@ import {
   type VitalFigure,
   type VitalName,
 } from "./rumModel";
+import { formatDurationMs } from "../../lib/waterfall";
+import type { RumRequestRow } from "../../api/rum";
+import { SplitBar } from "./NetworkTab";
 import {
   useRumBreakdown,
   useRumKpis,
+  useRumNetworkRequests,
   useRumSessionsOverTime,
   useRumTopErrors,
+  useRumTracedShare,
   useRumVitals,
   type RumScope,
 } from "./useRumData";
@@ -39,16 +44,20 @@ import {
 interface Props {
   scope: RumScope;
   onOpenSetup: () => void;
+  onOpenNetwork: () => void;
 }
 
-export function OverviewTab({ scope }: Props) {
+export function OverviewTab({ scope, onOpenNetwork }: Props) {
   const kpis = useRumKpis(scope);
   const sessions = kpis.data?.sessions;
+  const users = kpis.data?.users;
   const errors = kpis.data?.sessionsWithErrors;
   const pageViews = kpis.data?.pageViews;
+  const tracedShare = useRumTracedShare(scope);
   const vitals = useRumVitals(scope);
   const sessionsOverTime = useRumSessionsOverTime(scope);
   const topErrors = useRumTopErrors(scope);
+  const network = useRumNetworkRequests(scope);
   const browser = useRumBreakdown(scope, "resource.browser.brands", {
     requireField: true,
     limit: 8,
@@ -83,6 +92,26 @@ export function OverviewTab({ scope }: Props) {
         >
           <Sparkline
             points={(sessions?.series ?? []).map((p) => ({
+              x: p.tMs,
+              v: p.value,
+            }))}
+            width="100%"
+            height={28}
+            showTooltip={false}
+          />
+        </KpiCard>
+        <KpiCard
+          label="Users"
+          value={kpis.isPending ? "–" : compactCount(users?.value ?? 0)}
+          change={
+            users?.previous !== undefined
+              ? relChange(users.value, users.previous, false)
+              : undefined
+          }
+          detail="distinct user.id"
+        >
+          <Sparkline
+            points={(users?.series ?? []).map((p) => ({
               x: p.tMs,
               v: p.value,
             }))}
@@ -133,8 +162,39 @@ export function OverviewTab({ scope }: Props) {
             showTooltip={false}
           />
         </KpiCard>
+        <KpiCard
+          label="Traced requests"
+          value={
+            tracedShare.isPending || !tracedShare.data?.hasData
+              ? "–"
+              : `${Math.round(tracedShare.data.value * 100)}%`
+          }
+          change={
+            tracedShare.data?.previous !== undefined
+              ? relChange(
+                  tracedShare.data.value,
+                  tracedShare.data.previous,
+                  true,
+                )
+              : undefined
+          }
+          detail="client spans with a server child"
+        >
+          <Sparkline
+            points={(tracedShare.data?.series ?? []).map((p) => ({
+              x: p.tMs,
+              v: p.value,
+            }))}
+            width="100%"
+            height={28}
+            showTooltip={false}
+          />
+        </KpiCard>
       </div>
       {kpis.isError && <QueryError what="RUM KPIs" error={kpis.error} />}
+      {tracedShare.isError && (
+        <QueryError what="traced-request share" error={tracedShare.error} />
+      )}
 
       <div className="rum-grid-2-1">
         <Panel
@@ -165,9 +225,8 @@ export function OverviewTab({ scope }: Props) {
         </Panel>
       </div>
 
-      {/* BackendPanel (Frontend → backend) and "Slowest pages" are later
-          groups; this row ships with only the two panels below, same as
-          the prototype's own rum-grid-3 before those land. */}
+      {/* "Slowest pages" is a later group (tasks.md group 2); this row
+          ships with the two panels below plus Frontend → backend. */}
       <div className="rum-grid-3">
         <Panel title="Top errors">
           {topErrors.isError ? (
@@ -196,6 +255,29 @@ export function OverviewTab({ scope }: Props) {
                 </div>
               ))}
             </div>
+          )}
+        </Panel>
+
+        <Panel
+          title="Frontend → backend"
+          meta="top requests · client+network vs backend p75"
+          actions={
+            <button type="button" className="btn-ghost" onClick={onOpenNetwork}>
+              View all
+            </button>
+          }
+        >
+          {network.isError ? (
+            <QueryError
+              what="frontend → backend requests"
+              error={network.error}
+            />
+          ) : network.isPending ? (
+            <div className="rum-placeholder">Loading…</div>
+          ) : (network.data?.length ?? 0) === 0 ? (
+            <EmptyState title="No client HTTP spans in this window" />
+          ) : (
+            <FrontendBackendList rows={network.data!} />
           )}
         </Panel>
 
@@ -494,6 +576,32 @@ function MiniBars({
             />
           </span>
           <span className="mono dim rum-minibars-value">{r.pct}%</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+/** The Overview panel's top 5 requests by call volume, reusing the Network
+ * tab's own split bar — the row list stays compact (no header, no origin
+ * column); "View all" opens the full table. */
+function FrontendBackendList({ rows }: { rows: RumRequestRow[] }) {
+  const top = rows.slice(0, 5);
+  const maxP75 = Math.max(1, ...top.map((r) => r.totalP75Ms ?? 0));
+  return (
+    <div className="rum-fe-be-list">
+      {top.map((r) => (
+        <div
+          key={`${r.method}\u0000${r.origin}\u0000${r.template}`}
+          className="rum-fe-be-row"
+        >
+          <span className="mono ell rum-fe-be-name">
+            <span className="dim">{r.method}</span> {r.template}
+          </span>
+          <SplitBar row={r} maxP75={maxP75} />
+          <span className="mono num dim">
+            {r.totalP75Ms !== null ? formatDurationMs(r.totalP75Ms) : "—"}
+          </span>
         </div>
       ))}
     </div>

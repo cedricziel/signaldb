@@ -6,7 +6,7 @@ proposal — Why).
 
 - [x] 1.1 Failing tests for the `correlate`-based client/backend split and traced-share decoders.
 - [x] 1.2 Network tab (requests table, untraced-origin callout, resources by initiator type) and the Overview "Frontend → backend" panel.
-- [ ] 1.3 Overview: users and traced-request KPIs; Setup: "Requests joined to traces" checklist step.
+- [x] 1.3 Overview: users and traced-request KPIs; Setup: "Requests joined to traces" checklist step.
 
 ## 2. Pages + Interactions
 

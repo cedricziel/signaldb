@@ -19,6 +19,7 @@ vi.mock("../../api/rum", async (orig) => ({
   fetchBreakdown: vi.fn().mockResolvedValue([]),
   fetchNetworkRequests: vi.fn().mockResolvedValue([]),
   fetchResources: vi.fn().mockResolvedValue([]),
+  fetchTracedShare: vi.fn().mockResolvedValue({ traced: [], total: [] }),
 }));
 vi.mock("../../api/errors", async (orig) => ({
   ...(await orig<typeof import("../../api/errors")>()),

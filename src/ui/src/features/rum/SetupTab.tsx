@@ -7,7 +7,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { connectionInfo } from "../../api/connection";
 import { CopyValueButton } from "../../components/CopyValueButton";
-import { useRumKpis, useRumVitals, type RumScope } from "./useRumData";
+import {
+  useRumKpis,
+  useRumTracedShare,
+  useRumVitals,
+  type RumScope,
+} from "./useRumData";
 import { Panel } from "./Panel";
 
 interface Props {
@@ -44,11 +49,16 @@ export function SetupTab({ app, scope }: Props) {
   const serviceName = app || "my-frontend-app";
   const kpis = useRumKpis(scope);
   const vitals = useRumVitals(scope);
+  const tracedShare = useRumTracedShare(scope);
 
   const hasSession = app !== "" && (kpis.data?.sessions.value ?? 0) > 0;
   const hasVitals =
     app !== "" && Array.from(vitals.data?.values() ?? []).length > 0;
   const hasPageViews = app !== "" && (kpis.data?.pageViews.value ?? 0) > 0;
+  const tracedSharePct =
+    app !== "" && tracedShare.data?.hasData
+      ? Math.round(tracedShare.data.value * 100)
+      : null;
 
   const installSnippet = `npm install @opentelemetry/sdk-trace-web @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http @opentelemetry/instrumentation-document-load`;
 
@@ -184,6 +194,16 @@ Access-Control-Allow-Headers: traceparent, tracestate, content-type`;
               label="Vitals received"
               detail="browser.web_vital records"
               done={hasVitals}
+              disabled={app === ""}
+            />
+            <ChecklistItem
+              label="Requests joined to backend traces"
+              detail={
+                tracedSharePct !== null
+                  ? `${tracedSharePct}% of client spans have a server child`
+                  : "client spans with a server child, via correlate"
+              }
+              done={(tracedSharePct ?? 0) > 0}
               disabled={app === ""}
             />
           </ul>

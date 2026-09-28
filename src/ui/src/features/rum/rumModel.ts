@@ -222,6 +222,53 @@ export function splitKpiSeries(
   };
 }
 
+// ---- KPI share (traced requests) ------------------------------------------
+
+export interface KpiShareFigure {
+  /** sum(traced) / sum(total) over the current half — exact, not an average
+   * of per-bucket ratios (a bucket with zero client spans has an undefined
+   * ratio, which would skew a mean). `0` when the half has no client spans
+   * at all — check `hasData` to tell "0% traced" from "nothing to measure". */
+  value: number;
+  /** Same ratio for the equal-length window before; undefined when that
+   * half has no client spans to divide by. */
+  previous?: number;
+  /** Per-bucket traced/total for the current half, buckets with no client
+   * spans omitted (an undefined ratio, not a `0`, would misdraw the
+   * sparkline) — what the card's sparkline draws. */
+  series: KpiSeriesPoint[];
+  /** Whether the current half saw any client span at all — false makes
+   * `value`'s `0` a "no data" reading rather than a genuine 0% traced. */
+  hasData: boolean;
+}
+
+/** Splits a traced-count and a total-count series (design.md decision 3a's
+ * "one bucketed read over twice the window", applied to a ratio metric) via
+ * `splitKpiSeries` on each operand, then divides sums rather than averaging
+ * per-bucket ratios — see `KpiShareFigure`. */
+export function splitTracedShare(
+  traced: KpiSeriesPoint[],
+  total: KpiSeriesPoint[],
+  midMs: number,
+): KpiShareFigure {
+  const tracedFigure = splitKpiSeries(traced, midMs);
+  const totalFigure = splitKpiSeries(total, midMs);
+  const totalByT = new Map(totalFigure.series.map((p) => [p.tMs, p.value]));
+  const series = tracedFigure.series.flatMap((p): KpiSeriesPoint[] => {
+    const t = totalByT.get(p.tMs);
+    return t !== undefined && t > 0 ? [{ tMs: p.tMs, value: p.value / t }] : [];
+  });
+  return {
+    value: totalFigure.value > 0 ? tracedFigure.value / totalFigure.value : 0,
+    previous:
+      totalFigure.previous !== undefined && totalFigure.previous > 0
+        ? (tracedFigure.previous ?? 0) / totalFigure.previous
+        : undefined,
+    series,
+    hasData: totalFigure.value > 0,
+  };
+}
+
 // ---- Network: URL templates and SDK export detection ----------------------
 
 export interface UrlTemplate {

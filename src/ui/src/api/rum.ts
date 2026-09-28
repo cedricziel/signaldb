@@ -963,4 +963,90 @@ export async function fetchResources(
   return resourcesFromResponse(await runIrQuery(buildResourcesDoc(app, range)));
 }
 
+// ---- Traced-share KPI (Overview + Setup) ------------------------------
+
+/** Same "one bucketed read over twice the window" shape as `buildKpisDoc`
+ * (design.md decision 3a), but the metric itself is a ratio: the share of
+ * the app's client spans with a server child, via `correlate` — the
+ * verified-working shape from `docs/users/querying-ir.md`'s "Joining spans
+ * to their parents", `count_distinct` of `parent.span_id` over `count` of
+ * every client span. */
+export function buildTracedShareDoc(
+  app: string,
+  range: ResolvedRange,
+  bucketCount: number,
+): MultiQueryIrRequest {
+  const span = range.toMs - range.fromMs;
+  const stepMs = Math.max(1000, Math.round(span / bucketCount));
+  const doubled = { fromMs: range.fromMs - span, toMs: range.toMs };
+  const step = `${Math.round(stepMs / 1000)}s`;
+  const totalQuery: QueryIrRequest = {
+    irVersion: 9,
+    from: "traces",
+    range: rangeDoc(doubled),
+    result: "series",
+    pipeline: [
+      clientSpanWhere(app),
+      { aggregate: { aggs: [{ fn: "count", as: "n" }], step } },
+    ],
+  };
+  const tracedQuery: QueryIrRequest = {
+    irVersion: 9,
+    from: "traces",
+    range: rangeDoc(doubled),
+    result: "series",
+    pipeline: [
+      ...correlatedServerChildOfAppClient(app),
+      {
+        aggregate: {
+          aggs: [{ fn: "count_distinct", of: "parent.span_id", as: "n" }],
+          step,
+        },
+      },
+    ],
+  };
+  return {
+    queries: { traced: tracedQuery, total: totalQuery },
+    // Identity formulas expose each operand's own series (same trick as
+    // `buildKpisDoc`) — `splitTracedShare` divides their summed halves
+    // itself rather than trusting a per-bucket `traced / total` average,
+    // which a bucket with no client spans would turn into a division by
+    // zero.
+    formulas: [
+      { name: "traced", expr: "traced" },
+      { name: "total", expr: "total" },
+    ],
+    result: "series",
+  };
+}
+
+export interface RumTracedShareSeries {
+  traced: RumKpiSeriesPoint[];
+  total: RumKpiSeriesPoint[];
+}
+
+export function tracedShareFromResponse(
+  res: QueryIrResponse,
+): RumTracedShareSeries {
+  const byFormula = new Map<string, RumKpiSeriesPoint[]>();
+  for (const s of res.series ?? []) {
+    const f = s.labels?.formula;
+    if (typeof f === "string") byFormula.set(f, decodePoints(s.points));
+  }
+  return {
+    traced: byFormula.get("traced") ?? [],
+    total: byFormula.get("total") ?? [],
+  };
+}
+
+export async function fetchTracedShare(
+  app: string,
+  range: ResolvedRange,
+  bucketCount = 30,
+): Promise<RumTracedShareSeries> {
+  return tracedShareFromResponse(
+    await runIrQuery(buildTracedShareDoc(app, range, bucketCount)),
+  );
+}
+
 export type { VitalName, VitalRating };
