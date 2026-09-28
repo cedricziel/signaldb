@@ -18,8 +18,8 @@ use axum::{
 };
 use common::auth::TenantContext;
 use common::eval_sets::{
-    AppendCasesOutcome, EvalCase, EvalCaseSource, EvalSetRecord, EvalSetSpec, EvalSetSummary,
-    MAX_CASES_PER_SET, StoreError,
+    AppendCasesOutcome, EvalCase, EvalCaseSource, EvalCaseSourceCounts, EvalSetListing,
+    EvalSetRecord, EvalSetSpec, EvalSetSummary, MAX_CASES_PER_SET, StoreError,
 };
 use serde::{Deserialize, Serialize};
 
@@ -93,11 +93,13 @@ pub struct EvalSetResponse {
     pub links: EvalSetLinks,
 }
 
-/// An eval set as listed, without its cases.
+/// An eval set as listed, without its cases but with how many of them came
+/// from each source kind.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EvalSetSummaryResponse {
     #[serde(flatten)]
     pub summary: EvalSetSummary,
+    pub sources: EvalCaseSourceCounts,
     #[serde(rename = "_links")]
     pub links: EvalSetLinks,
 }
@@ -234,17 +236,20 @@ pub async fn list_eval_sets(
     EvalsRead(ctx): EvalsRead,
 ) -> Result<Json<EvalSetListResponse>, ApiError> {
     let can_write = ctx.can_write_evals();
-    let summaries = state
+    let listed = state
         .catalog()
         .list_eval_sets(&ctx.tenant_id, &ctx.dataset_id)
         .await?;
     Ok(Json(EvalSetListResponse {
-        items: summaries
+        items: listed
             .into_iter()
-            .map(|summary| EvalSetSummaryResponse {
-                links: set_links(&summary.name, can_write),
-                summary,
-            })
+            .map(
+                |EvalSetListing { summary, sources }| EvalSetSummaryResponse {
+                    links: set_links(&summary.name, can_write),
+                    summary,
+                    sources,
+                },
+            )
             .collect(),
         links: EvalSetListLinks {
             self_: Link::get(collection_href()),
@@ -878,6 +883,10 @@ mod tests {
         assert_eq!(items[0]["name"], "refund-edge-cases-40");
         assert_eq!(items[0]["agent"], "support-triage");
         assert_eq!(items[0]["case_count"], 2);
+        assert_eq!(
+            items[0]["sources"],
+            json!({"trace": 2, "upload": 0, "hand_written": 0})
+        );
         assert!(items[0].get("cases").is_none(), "list omits cases");
         assert!(
             items[0]["_links"].get("delete").is_none(),

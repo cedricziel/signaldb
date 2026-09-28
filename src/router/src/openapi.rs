@@ -323,6 +323,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::processors::TestStatementResult,
         common::eval_sets::EvalCase,
         common::eval_sets::EvalCaseSource,
+        common::eval_sets::EvalCaseSourceCounts,
         common::eval_sets::EvalSetSpec,
         common::eval_sets::EvalSetRecord,
         common::eval_sets::EvalSetSummary,

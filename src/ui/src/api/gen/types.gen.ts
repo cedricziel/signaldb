@@ -837,6 +837,15 @@ export type EvalCaseSource = {
 };
 
 /**
+ * How many of a set's cases came from each [`EvalCaseSource`] kind.
+ */
+export type EvalCaseSourceCounts = {
+    hand_written: number;
+    trace: number;
+    upload: number;
+};
+
+/**
  * The format of an uploaded results file.
  */
 export type EvalResultsFormat = 'csv' | 'jsonl';
@@ -947,10 +956,12 @@ export type EvalSetSummary = {
 };
 
 /**
- * An eval set as listed, without its cases.
+ * An eval set as listed, without its cases but with how many of them came
+ * from each source kind.
  */
 export type EvalSetSummaryResponse = EvalSetSummary & {
     _links: EvalSetLinks;
+    sources: EvalCaseSourceCounts;
 };
 
 /**
