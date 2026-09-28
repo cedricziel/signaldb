@@ -340,9 +340,14 @@ describe("precedingFailedRequest", () => {
   it("finds the closest preceding error span", () => {
     const exception = exceptionEvent({ tsNs: "100" });
     const events: SessionEvent[] = [
-      spanEvent({ spanId: "far", isError: true, tsNs: "10" }),
-      spanEvent({ spanId: "near", isError: true, tsNs: "80" }),
-      spanEvent({ spanId: "after", isError: true, tsNs: "150" }),
+      spanEvent({ spanId: "far", isError: true, tsNs: "10", durationNs: "5" }),
+      spanEvent({ spanId: "near", isError: true, tsNs: "80", durationNs: "5" }),
+      spanEvent({
+        spanId: "after",
+        isError: true,
+        tsNs: "150",
+        durationNs: "5",
+      }),
       exception,
     ];
     expect(precedingFailedRequest(events, exception)?.spanId).toBe("near");
@@ -351,7 +356,7 @@ describe("precedingFailedRequest", () => {
   it("ignores non-error spans", () => {
     const exception = exceptionEvent({ tsNs: "100" });
     const events: SessionEvent[] = [
-      spanEvent({ spanId: "ok", isError: false, tsNs: "50" }),
+      spanEvent({ spanId: "ok", isError: false, tsNs: "50", durationNs: "5" }),
       exception,
     ];
     expect(precedingFailedRequest(events, exception)).toBeUndefined();
@@ -362,10 +367,62 @@ describe("precedingFailedRequest", () => {
     expect(precedingFailedRequest([exception], exception)).toBeUndefined();
   });
 
+  it("considers only client spans", () => {
+    const exception = exceptionEvent({ tsNs: "100" });
+    const events: SessionEvent[] = [
+      spanEvent({
+        spanId: "client",
+        isError: true,
+        tsNs: "10",
+        durationNs: "5",
+      }),
+      spanEvent({
+        spanId: "server",
+        spanKind: "Server",
+        isError: true,
+        tsNs: "60",
+        durationNs: "5",
+      }),
+      exception,
+    ];
+    expect(precedingFailedRequest(events, exception)?.spanId).toBe("client");
+  });
+
+  it("ranks by completion and skips a request still running at the exception", () => {
+    const exception = exceptionEvent({ tsNs: "100" });
+    const events: SessionEvent[] = [
+      spanEvent({
+        spanId: "slow",
+        isError: true,
+        tsNs: "10",
+        durationNs: "80",
+      }),
+      spanEvent({
+        spanId: "quick",
+        isError: true,
+        tsNs: "40",
+        durationNs: "5",
+      }),
+      spanEvent({
+        spanId: "open",
+        isError: true,
+        tsNs: "70",
+        durationNs: "50",
+      }),
+      exception,
+    ];
+    expect(precedingFailedRequest(events, exception)?.spanId).toBe("slow");
+  });
+
   it("doesn't attribute a failed request from an earlier page view", () => {
     const exception = exceptionEvent({ tsNs: "100" });
     const events: SessionEvent[] = [
-      spanEvent({ spanId: "before-nav", isError: true, tsNs: "10" }),
+      spanEvent({
+        spanId: "before-nav",
+        isError: true,
+        tsNs: "10",
+        durationNs: "5",
+      }),
       navEvent({ tsNs: "50" }),
       exception,
     ];

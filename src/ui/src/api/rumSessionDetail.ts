@@ -376,12 +376,20 @@ export function precedingFailedRequest(
     if (ns < exceptionNs && ns > viewStartNs) viewStartNs = ns;
   }
 
+  // Only a client request that had already completed can have caused it;
+  // the most recently completed one wins.
   let best: SessionSpanEvent | undefined;
+  let bestEndNs = 0n;
   for (const event of events) {
     if (event.kind !== "span" || !event.isError) continue;
-    const ns = BigInt(event.tsNs || "0");
-    if (ns >= exceptionNs || ns < viewStartNs) continue;
-    if (!best || ns > BigInt(best.tsNs || "0")) best = event;
+    if (event.spanKind !== "Client") continue;
+    const startNs = BigInt(event.tsNs || "0");
+    const endNs = startNs + BigInt(event.durationNs || "0");
+    if (startNs < viewStartNs || endNs >= exceptionNs) continue;
+    if (!best || endNs > bestEndNs) {
+      best = event;
+      bestEndNs = endNs;
+    }
   }
   return best;
 }
