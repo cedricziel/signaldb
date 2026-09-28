@@ -69,7 +69,7 @@ go wire-to-physical directly).
 
 Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in the current physical format. On the wire, a `WriteMetrics` batch still carries `data_json` unchanged; the writer turns it into both the `metrics` and `metric_exemplars` rows, and one WAL entry commits to both tables (replay-safe via per-table idempotency markers).
 
-Non-finite metric doubles (NaN, ±Inf) are carried in `data_json` as the strings `"NaN"`/`"+Inf"`/`"-Inf"` (`common::flight::conversion::{f64_to_json, json_to_f64}`), never `null`; the writer maps them back and stores a value-less point as NaN, so the non-nullable `metrics.value` column never sees a null for a gauge/sum row (#1061). The querier's histogram bounds parser accepts the same sentinels.
+Non-finite metric doubles (NaN, ±Inf) are carried in `data_json` as the strings `"NaN"`/`"+Inf"`/`"-Inf"` (`common::flight::conversion::{f64_to_json, json_to_f64}`), never `null`, so a NaN reading stays distinct from a JSON `null` (which the writer leaves as a null `metrics.value`, nullable in `physical-v4`) (#1061). The querier's histogram bounds parser accepts the same sentinels.
 
 `service_name` is non-nullable in every Iceberg table. A resource without `service.name` (OTLP allows it; a Collector hostmetrics pipeline without a resource processor is the classic producer) is stored as `common::flight::conversion::UNKNOWN_SERVICE_NAME` (`"unknown"`) — the acceptor's OTLP conversion does this for traces and logs (their v1 batches carry `service_name`), the writer's `extract_resource_context` for the metrics transforms, which re-derive `service_name` from `resource_json` — so such batches are never dead-lettered with "Column 'service_name' is declared as non-nullable but contains null values".
 
@@ -137,9 +137,10 @@ per-type ones:
   stable digest of the metric name, `metric_type`, resource identity,
   instrumentation scope, and record attributes.
 - `transform_metric_exemplars` fans the same batch's exemplars into one
-  `metric_exemplars` row each, carrying `series_id` (linking it to its
-  `metrics` row), `point_timestamp`, `value`, and flat hex `trace_id`/
-  `span_id` (same encoding as traces).
+  `metric_exemplars` row each, carrying `series_id` and `point_timestamp`
+  (together identifying the `metrics` row it belongs to — `series_id` alone
+  identifies only the series), `value`, and flat hex `trace_id`/`span_id`
+  (same encoding as traces).
 
 Both are typed-attribute-layout tables from creation (`attributes`/
 `resource_attributes`/`scope_attributes` and `filtered_attributes` are each

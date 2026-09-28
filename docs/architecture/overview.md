@@ -53,7 +53,7 @@ SignalDB maintains two distinct catalog systems:
 Apache Iceberg provides ACID transactions and structured metadata management:
 
 - **ACID transactions** with commit/rollback for data integrity
-- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all eight built-in table types (traces, logs, and all five metrics representations plus profiles), not only traces/logs
+- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all five built-in table types (traces, logs, metrics, metric_exemplars, profiles), not only traces/logs
 - **Hour-based partitioning** on `timestamp` for all table types
 - **Declared sort order** per signal table, time-leading (traces `(timestamp, trace_id)`, logs `(timestamp, service_name, severity_text)`, metrics `(timestamp, metric_name, service_name)`, profiles `(timestamp, service_name)`) — declared at creation and added to pre-existing tables on load. Both file producers honor it: ingest sorts each commit group before writing, and compaction sorts by the table's declaration rather than a key list of its own. A file is only claimed as ordered when it attests the order in its own Parquet footer, so mixed populations of sorted and unsorted files stay correct and legacy files converge through compaction; see [Storage Layout](storage-layout.md#declared-sort-order)
 - **Namespace isolation**: Tables namespaced as `[tenant_slug, dataset_slug]`
@@ -308,15 +308,16 @@ reachable via `signaldb-sdk`, `signaldb-cli profiles`, and the MCP
 
 **Prometheus API Endpoints** (metrics, nested at `/prometheus`; see epic #328):
 
-| Endpoint                                                           | Status                                                                                                                                       |
-| ------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| `GET\|POST /prometheus/api/v1/query_range`                         | Implemented -- PromQL over the `metrics` table (`metric_type` gauge/sum), `date_bin(step)` matrix                                            |
-| `GET\|POST /prometheus/api/v1/query`                               | Implemented -- instant vector (latest sample per series)                                                                                     |
-| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier                                                            |
-| `GET /prometheus/api/v1/label_stats`                               | Implemented -- SignalDB extension: per-label cardinality from the catalog's `attribute_stats` (no Querier)                                   |
-| PromQL `rate`/`increase`                                           | Implemented -- counter delta over `date_bin` buckets                                                                                         |
-| PromQL `histogram_quantile(phi, metric)`                           | Implemented -- interpolated per series from the `metrics` table's typed histogram buckets (`metric_type = histogram`); a summary is rejected |
-| PromQL `histogram_quantile` over `rate()`, binary ops, `topk`      | Not implemented yet (#335)                                                                                                                   |
+| Endpoint                                                                              | Status                                                                                                                                                                 |
+| ------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET\|POST /prometheus/api/v1/query_range`                                            | Implemented -- PromQL over the `metrics` table (`metric_type` gauge/sum), `date_bin(step)` matrix                                                                      |
+| `GET\|POST /prometheus/api/v1/query`                                                  | Implemented -- instant vector (latest sample per series)                                                                                                               |
+| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series`                    | Implemented -- metric label names/values and `{__name__, job}` series via Querier                                                                                      |
+| `GET /prometheus/api/v1/label_stats`                                                  | Implemented -- SignalDB extension: per-label cardinality from the catalog's `attribute_stats` (no Querier)                                                             |
+| PromQL `rate`/`increase`                                                              | Implemented -- counter delta over `date_bin` buckets                                                                                                                   |
+| PromQL `histogram_quantile(phi, metric)`, `histogram_quantile(phi, rate(metric[5m]))` | Implemented -- interpolated per series from the `metrics` table's typed histogram buckets; a summary returns a typed error, exponential_histogram is not yet supported |
+| PromQL `histogram_count`/`histogram_sum`                                              | Implemented -- sum the stored `count`/`sum` columns, including summary and exponential_histogram rows                                                                  |
+| PromQL `histogram_quantile` over other aggregations, binary ops, `topk`               | Not implemented yet (#335)                                                                                                                                             |
 
 **Native Query IR** (`POST /api/v1/query`, `src/router/src/endpoints/query.rs`):
 the first-party structured query surface the UI and CLI build against. The

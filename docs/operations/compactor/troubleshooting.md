@@ -335,7 +335,7 @@ it does not classify is invisible to every lifecycle job.
 Compare per-table snapshot counts to spot the outlier:
 
 ```bash
-for t in traces logs metrics profiles; do
+for t in traces logs metrics metric_exemplars profiles; do
   echo -n "$t: "
   jq '.snapshots | length' \
     .data/storage/<tenant>/<dataset>/$t/metadata/*.metadata.json 2>/dev/null | tail -1

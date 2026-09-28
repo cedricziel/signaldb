@@ -411,11 +411,11 @@ Metric values that JSON cannot carry — NaN (Prometheus's staleness marker,
 `0/0` rates) and ±Inf — travel in the wire `data_json` as the strings `"NaN"`,
 `"+Inf"`, `"-Inf"` (`common::flight::conversion::f64_to_json` /
 `json_to_f64`), never as `null`; the writer maps them back to the same
-non-finite doubles, and a data point with no value at all lands as NaN. This
-keeps the non-nullable `metrics.value` column satisfiable for a gauge/sum
-row, so one such point can no longer make the writer reject a whole
-batch and pin its WAL entry forever (#1061). Histogram `explicit_bounds` keep
-a `+Inf` bound for the same reason.
+non-finite doubles, distinct from a JSON `null`, which lands as a null
+`metrics.value` (nullable in `physical-v4`). This distinction means a NaN or
+Inf reading can no longer make the writer reject a whole batch and pin its
+WAL entry forever (#1061). Histogram `explicit_bounds` keep a `+Inf` bound
+for the same reason.
 The reverse direction, OTLP → Prometheus series
 (`conversion_prometheus::from_otel`), downsamples exponential histograms to
 classic `_bucket`/`_count`/`_sum` series: bucket `i` of scale `s` gets upper

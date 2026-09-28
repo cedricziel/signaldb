@@ -69,12 +69,12 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 
 ## Histograms
 
-| Function                                    | Status                                                                                                          |
-| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
-| `histogram_quantile(phi, metric)`           | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series) |
-| `histogram_quantile(phi, rate(metric[5m]))` | ✅ (interpolates over the per-bucket count delta)                                                               |
-| `histogram_count`, `histogram_sum`          | ✅ (sum the stored count/sum columns)                                                                           |
-| `histogram_fraction(lower, upper, metric)`  | ✅ (fraction of observations in `(lower, upper]`)                                                               |
+| Function                                    | Status                                                                                                                                                                                              |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `histogram_quantile(phi, metric)`           | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series; a summary metric returns a typed error, exponential_histogram is not yet supported) |
+| `histogram_quantile(phi, rate(metric[5m]))` | ✅ (interpolates over the per-bucket count delta; same summary/exponential_histogram handling)                                                                                                      |
+| `histogram_count`, `histogram_sum`          | ✅ (sum the stored `count`/`sum` columns, including summary and exponential_histogram rows)                                                                                                         |
+| `histogram_fraction(lower, upper, metric)`  | ✅ (fraction of observations in `(lower, upper]`; same summary/exponential_histogram handling as `histogram_quantile`)                                                                              |
 
 ## Binary operators
 
