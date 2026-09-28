@@ -18,8 +18,17 @@ use common::config::{Configuration, WriterConfig};
 use common::schema::type_authority::TypeAuthority;
 use common::schema_registry::SchemaResolver;
 use common::wal::manager::WalManager;
+use datafusion::arrow::record_batch::RecordBatch;
 use std::sync::Arc;
 use writer::{IcebergTableWriter, IcebergWriterFlightService, WalProcessor};
+
+/// A wire-format gauge metrics batch, built from a real OTLP request via
+/// [`common::flight::conversion::otlp_metrics_to_arrow`].
+pub fn metrics_gauge_wire_batch(values: &[f64]) -> Result<RecordBatch> {
+    let request =
+        common::testing::gauge_metrics_request_with_values("cpu.usage", "test-service", values);
+    Ok(common::flight::conversion::otlp_metrics_to_arrow(&request)?)
+}
 
 /// Same signature as [`IcebergTableWriter::new`], but with a fresh
 /// in-memory-catalog-backed `TypeAuthority` attached.

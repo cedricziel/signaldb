@@ -1880,7 +1880,7 @@ mod tests {
         globex
             .append(
                 WalOperation::WriteMetrics,
-                metrics_gauge_bytes(3),
+                metrics_wire_bytes(3),
                 Some(r#"{"tenant_id":"globex","dataset_id":"production"}"#.to_string()),
             )
             .await
@@ -2333,7 +2333,7 @@ mod tests {
         let good_before = wal
             .append(
                 WalOperation::WriteMetrics,
-                metrics_gauge_bytes(1),
+                metrics_wire_bytes(1),
                 meta.clone(),
             )
             .await
@@ -2341,13 +2341,13 @@ mod tests {
         let victim = wal
             .append(
                 WalOperation::WriteMetrics,
-                metrics_gauge_bytes(2),
+                metrics_wire_bytes(2),
                 meta.clone(),
             )
             .await
             .unwrap();
         let good_after = wal
-            .append(WalOperation::WriteMetrics, metrics_gauge_bytes(3), meta)
+            .append(WalOperation::WriteMetrics, metrics_wire_bytes(3), meta)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2420,7 +2420,7 @@ mod tests {
         let good_before = wal
             .append(
                 WalOperation::WriteMetrics,
-                metrics_gauge_bytes(1),
+                metrics_wire_bytes(1),
                 meta.clone(),
             )
             .await
@@ -2434,7 +2434,7 @@ mod tests {
             .await
             .unwrap();
         let good_after = wal
-            .append(WalOperation::WriteMetrics, metrics_gauge_bytes(2), meta)
+            .append(WalOperation::WriteMetrics, metrics_wire_bytes(2), meta)
             .await
             .unwrap();
         wal.flush().await.unwrap();
@@ -2583,7 +2583,7 @@ mod tests {
         assert!(result.is_ok());
     }
 
-    use crate::test_support::metrics_gauge_bytes;
+    use crate::test_support::{metrics_gauge_bytes, metrics_wire_bytes};
 
     fn coalescing_wal_config(dir: &std::path::Path) -> WalConfig {
         WalConfig {

@@ -15,6 +15,7 @@ use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
 use std::sync::Arc;
 use tempfile::tempdir;
+use tests_integration::test_support::metrics_gauge_wire_batch;
 
 /// Integration test demonstrating the Iceberg table writer functionality
 #[tokio::test]
@@ -37,74 +38,6 @@ async fn test_iceberg_writer_integration() -> Result<()> {
     assert_eq!(writer.table_identifier().name(), "traces");
 
     Ok(())
-}
-
-/// Build a batch in the `metrics_gauge` storage schema (the same shape the
-/// writer expects on the WAL→Iceberg commit path).
-fn metrics_gauge_batch(values: &[f64]) -> Result<RecordBatch> {
-    use datafusion::arrow::array::{Date32Array, Float64Array, Int32Array};
-    use datafusion::arrow::datatypes::TimeUnit;
-
-    let n = values.len();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]));
-
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(
-                (0..n).map(|i| 1_000_000_000 + i as i64).collect::<Vec<_>>(),
-            )),
-            Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(
-                vec![None::<i64>; n],
-            )),
-            Arc::new(StringArray::from(vec!["test-service"; n])),
-            Arc::new(StringArray::from(vec!["cpu.usage"; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![Some("%"); n])),
-            Arc::new(Float64Array::from(values.to_vec())),
-            Arc::new(Int32Array::from(vec![None::<i32>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(Int32Array::from(vec![None::<i32>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(Date32Array::from(vec![19000; n])),
-            Arc::new(Int32Array::from(vec![10; n])),
-        ],
-    )?;
-    Ok(batch)
 }
 
 /// Count rows in a table by loading it fresh from the catalog and running
@@ -155,7 +88,7 @@ async fn test_wal_processor_integration() -> Result<()> {
     .await?;
 
     // Serialize a schema-correct metrics batch and write it to WAL.
-    let batch = metrics_gauge_batch(&[1.0, 2.0])?;
+    let batch = metrics_gauge_wire_batch(&[1.0, 2.0])?;
     let batch_bytes = record_batch_to_bytes(&batch)?;
     wal.append(WalOperation::WriteMetrics, batch_bytes, None)
         .await?;

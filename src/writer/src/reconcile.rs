@@ -312,7 +312,7 @@ mod tests {
     }
 
     fn all_signal_tables() -> usize {
-        8
+        common::iceberg::schemas::TableSchema::all().len()
     }
 
     // Task 4.1 — the reconciler must see database-created tenants, not only
