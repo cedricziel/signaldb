@@ -299,16 +299,32 @@ impl LogicalSchema {
             LogicalField::record_metadata("traces", "duration", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "duration_nano", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "status.code", LogicalType::String),
-            // Metrics: gauge/sum only (see ir_planner.rs's `metrics`
-            // SourcePlan) — a scalar numeric point per row, not an OTel
-            // record with resource/scope/record attribute levels the way
-            // logs/traces/profiles are, so it isn't part of the shared loop
-            // below. `metric.value`'s type must be registered (not left to
-            // the alias fallback's naive String default) or a `sum`/`avg`
-            // aggregate over it is rejected as non-numeric.
             LogicalField::record_metadata("metrics", "timestamp", LogicalType::TimestampNs),
             LogicalField::record_metadata("metrics", "metric.name", LogicalType::String),
             LogicalField::record_metadata("metrics", "metric.value", LogicalType::Float64),
+            LogicalField::record_metadata("metrics", "metric.type", LogicalType::String),
+            LogicalField::record_metadata("metrics", "metric.temporality", LogicalType::Int64),
+            LogicalField::record_metadata("metrics", "metric.monotonic", LogicalType::Bool),
+            LogicalField::record_metadata("metrics", "metric.count", LogicalType::Int64),
+            LogicalField::record_metadata("metrics", "metric.sum", LogicalType::Float64),
+            LogicalField::record_metadata("metrics", "metric.min", LogicalType::Float64),
+            LogicalField::record_metadata("metrics", "metric.max", LogicalType::Float64),
+            LogicalField::record_metadata(
+                "metrics",
+                "metric.explicit_bounds",
+                LogicalType::AnyValue,
+            )
+            .retrieval_only(),
+            LogicalField::record_metadata("metrics", "metric.bucket_counts", LogicalType::AnyValue)
+                .retrieval_only(),
+            LogicalField::record_metadata("metrics", "metric.quantiles", LogicalType::AnyValue)
+                .retrieval_only(),
+            LogicalField::record_metadata(
+                "metrics",
+                "metric.quantile_values",
+                LogicalType::AnyValue,
+            )
+            .retrieval_only(),
             // metrics_histogram: a whole bucketed histogram per row, not a
             // scalar — only reachable via the `histogram_quantile` stage
             // (ir_planner.rs), which reads bucket_counts/explicit_bounds by
@@ -414,7 +430,7 @@ impl LogicalSchema {
     /// `logical_schema_version` in `schemas.toml` together whenever
     /// `core()`'s field set changes; `tests::FIELD_SET_FINGERPRINT` fails
     /// until you do.
-    pub const VERSION: &'static str = "otel-2026-08";
+    pub const VERSION: &'static str = "otel-2026-09";
 }
 
 #[cfg(test)]
@@ -587,6 +603,38 @@ mod tests {
     }
 
     #[test]
+    fn metrics_is_one_model_with_type_temporality_and_monotonicity_as_fields() {
+        let schema = LogicalSchema::core();
+        let expect = |name: &str, value_type, filterability| {
+            let field = schema
+                .resolve("metrics", name)
+                .unwrap_or_else(|| panic!("metrics.{name} is registered"));
+            assert_eq!(field.value_type, value_type, "{name}");
+            assert_eq!(field.filterability, filterability, "{name}");
+            assert_eq!(field.kind, LogicalFieldKind::RecordMetadata, "{name}");
+        };
+        for (name, value_type) in [
+            ("metric.type", LogicalType::String),
+            ("metric.temporality", LogicalType::Int64),
+            ("metric.monotonic", LogicalType::Bool),
+            ("metric.count", LogicalType::Int64),
+            ("metric.sum", LogicalType::Float64),
+            ("metric.min", LogicalType::Float64),
+            ("metric.max", LogicalType::Float64),
+        ] {
+            expect(name, value_type, Filterability::Filterable);
+        }
+        for name in [
+            "metric.explicit_bounds",
+            "metric.bucket_counts",
+            "metric.quantiles",
+            "metric.quantile_values",
+        ] {
+            expect(name, LogicalType::AnyValue, Filterability::RetrievalOnly);
+        }
+    }
+
+    #[test]
     fn fields_iterates_every_registered_field_and_agrees_with_resolve() {
         let schema = LogicalSchema::core();
         let all: Vec<_> = schema.fields().collect();
@@ -618,7 +666,7 @@ mod tests {
     }
 
     const FIELD_SET_FINGERPRINT: &str =
-        "94245d2d1ae753c97c2c94cf692ced9871a87da645a172ff1bc601a3b4052cd7";
+        "41a9b6be7746f73d27fb6c99b08a5860b45ddd9e58f01f2aa7f7e839184185d3";
 
     fn fingerprint() -> String {
         use sha2::{Digest, Sha256};

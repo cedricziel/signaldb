@@ -94,7 +94,7 @@ pub(crate) struct SourcePlan {
     /// The physical table scanned for this source.
     table: &'static str,
     /// The `metric_type`s this source reads from the `metrics` table — empty
-    /// (no filter) for every source that isn't `metrics`/`metrics_histogram`.
+    /// (no filter) for every source except `metrics_histogram`.
     metric_types: &'static [&'static str],
     /// The column carrying the row's primary timestamp.
     time_col: &'static str,
@@ -254,13 +254,8 @@ impl SourcePlan {
             }),
             "metrics" => Some(SourcePlan {
                 name: "metrics",
-                // Gauge + sum only — both share the same scalar `value`
-                // column shape. Histograms have a bucketed row shape with no
-                // IR aggregate equivalent yet (no `histogram_quantile`
-                // stage), so they're deliberately excluded here rather than
-                // scanned and misinterpreted as plain values.
                 table: "metrics",
-                metric_types: &["gauge", "sum"],
+                metric_types: &[],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
@@ -269,6 +264,7 @@ impl SourcePlan {
                     "timestamp",
                     "service_name",
                     "metric_name",
+                    "metric_type",
                     "value",
                     "attributes",
                     "resource_attributes",
@@ -283,6 +279,17 @@ impl SourcePlan {
                     // distinct logical name, same reasoning as traces'
                     // `duration` → `duration_nanos`.
                     ("metric.value", "value"),
+                    ("metric.type", "metric_type"),
+                    ("metric.temporality", "aggregation_temporality"),
+                    ("metric.monotonic", "is_monotonic"),
+                    ("metric.count", "count"),
+                    ("metric.sum", "sum"),
+                    ("metric.min", "min"),
+                    ("metric.max", "max"),
+                    ("metric.explicit_bounds", "explicit_bounds"),
+                    ("metric.bucket_counts", "bucket_counts"),
+                    ("metric.quantiles", "quantiles"),
+                    ("metric.quantile_values", "quantile_values"),
                     ("resource.identity", "resource_identity"),
                 ],
             }),
@@ -4755,8 +4762,8 @@ mod tests {
 
     /// Gauge (2 rows) and sum (1 row) points in the `metrics` table, plus an
     /// unrelated `summary`-typed row sharing the queried `metric_name` (but a
-    /// different `service_name`) so only `metric_type` filtering can exclude
-    /// it from a `metrics` scan.
+    /// different `service_name`) so only a `metric.type` filter can exclude
+    /// it from a `metrics` query.
     fn metrics_ctx_with_summary_leak() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -4825,13 +4832,16 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metrics_reads_gauge_and_sum_filters_by_name_and_aggregates() {
+    async fn metrics_filtered_to_gauge_and_sum_filters_by_name_and_aggregates() {
         let svc = IrService::new(metrics_ctx_with_summary_leak());
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
-                { "where": { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" } },
+                { "where": { "and": [
+                    { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" },
+                    { "field": "metric.type", "op": "in", "value": ["gauge", "sum"] }
+                ] } },
                 { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "1ms" } }
             ]
         }));
@@ -4852,7 +4862,7 @@ mod tests {
         assert!(plan.contains("Filter"), "plan:\n{plan}");
         assert!(plan.contains("date_bin"), "plan:\n{plan}");
         // 5 + 7 (gauge) + 3 (sum) = 15. The `summary` row's 999.0 would
-        // corrupt this total if the `metric_type` filter failed.
+        // corrupt this total if the `metric.type` filter failed.
         let batches = df.collect().await.unwrap();
         let total: f64 = batches
             .iter()
@@ -4867,6 +4877,236 @@ mod tests {
             })
             .sum();
         assert_eq!(total, 15.0);
+    }
+
+    /// One point per metric type in the wide `metrics` table, named after
+    /// its type: `sum` is cumulative (temporality 2) and monotonic, the
+    /// histogram and summary carry their typed bucket/quantile lists.
+    fn metric_model_ctx() -> SessionContext {
+        use datafusion::arrow::array::{BooleanArray, Int32Array, ListArray};
+        use datafusion::arrow::datatypes::{Float64Type, Int64Type};
+
+        const N: Option<f64> = None;
+        let f64s = |v: [Option<f64>; 5]| -> ArrayRef { Arc::new(Float64Array::from(v.to_vec())) };
+        let f64_list = |at: usize, v: &[f64]| -> ArrayRef {
+            let rows =
+                (0..5).map(|i| (i == at).then(|| v.iter().copied().map(Some).collect::<Vec<_>>()));
+            Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(rows))
+        };
+        let types = [
+            "gauge",
+            "sum",
+            "histogram",
+            "exponential_histogram",
+            "summary",
+        ];
+        let no_attrs = || build_map(&[&[] as &[(&str, &str)]; 5]);
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20, 30, 40, 50])),
+            ),
+            ("service_name", Arc::new(StringArray::from(vec!["svc"; 5]))),
+            ("metric_name", Arc::new(StringArray::from(types.to_vec()))),
+            ("metric_type", Arc::new(StringArray::from(types.to_vec()))),
+            ("value", f64s([Some(0.5), Some(42.0), N, N, N])),
+            (
+                "count",
+                Arc::new(Int64Array::from(vec![
+                    None,
+                    None,
+                    Some(4),
+                    Some(3),
+                    Some(10),
+                ])),
+            ),
+            ("sum", f64s([N, N, Some(1.2), Some(3.0), Some(5.0)])),
+            ("min", f64s([N, N, Some(0.1), N, N])),
+            ("max", f64s([N, N, Some(0.9), N, N])),
+            ("explicit_bounds", f64_list(2, &[0.1, 0.5, 1.0])),
+            (
+                "bucket_counts",
+                Arc::new(ListArray::from_iter_primitive::<Int64Type, _, _>(
+                    (0..5).map(|i| (i == 2).then(|| vec![Some(1), Some(2), Some(1), Some(0)])),
+                )),
+            ),
+            ("quantiles", f64_list(4, &[0.5, 0.99])),
+            ("quantile_values", f64_list(4, &[0.4, 0.9])),
+            (
+                "aggregation_temporality",
+                Arc::new(Int32Array::from(vec![
+                    None,
+                    Some(2),
+                    Some(2),
+                    Some(1),
+                    None,
+                ])),
+            ),
+            (
+                "is_monotonic",
+                Arc::new(BooleanArray::from(vec![None, Some(true), None, None, None])),
+            ),
+            ("attributes", no_attrs()),
+            ("resource_attributes", no_attrs()),
+        ];
+        let batch = RecordBatch::try_from_iter(columns).unwrap();
+        single_table_ctx("metrics", batch.schema(), batch)
+    }
+
+    async fn metric_model_query(
+        result: &str,
+        fields: Option<&[&str]>,
+        pipeline: serde_json::Value,
+    ) -> Result<RecordBatch, QuerierError> {
+        let svc = IrService::new(metric_model_ctx());
+        let mut d = serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": result, "pipeline": pipeline
+        });
+        if let Some(fields) = fields {
+            d["fields"] = serde_json::json!(fields);
+        }
+        let (df, _) = svc
+            .plan(&doc(d), "t", "d", 0)
+            .await?
+            .expect("the metrics table is registered");
+        let batches = df.collect().await.unwrap();
+        Ok(datafusion::arrow::compute::concat_batches(&batches[0].schema(), &batches).unwrap())
+    }
+
+    fn strings_of(batch: &RecordBatch, name: &str) -> Vec<String> {
+        let col =
+            datafusion::arrow::compute::cast(batch.column_by_name(name).unwrap(), &DataType::Utf8)
+                .unwrap();
+        let col = col.as_any().downcast_ref::<StringArray>().unwrap();
+        col.iter()
+            .map(|v| v.unwrap_or("null").to_string())
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn metrics_source_covers_every_metric_type_as_a_groupable_field() {
+        let batch = metric_model_query(
+            "table",
+            None,
+            serde_json::json!([
+                { "aggregate": { "by": ["metric.type"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "order": [{ "of": "metric.type", "dir": "asc" }] }
+            ]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            strings_of(&batch, "metric_type"),
+            vec![
+                "exponential_histogram",
+                "gauge",
+                "histogram",
+                "sum",
+                "summary"
+            ]
+        );
+        assert_eq!(strings_of(&batch, "n"), vec!["1"; 5]);
+    }
+
+    #[tokio::test]
+    async fn unfiltered_metrics_rows_include_non_scalar_types_with_null_value() {
+        let batch = metric_model_query(
+            "rows",
+            Some(&["metric.name", "metric.value"]),
+            serde_json::json!([{ "order": [{ "of": "timestamp", "dir": "asc" }] }]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            strings_of(&batch, "value"),
+            vec!["0.5", "42.0", "null", "null", "null"]
+        );
+    }
+
+    #[tokio::test]
+    async fn metrics_filter_by_metric_type_returns_histogram_fields() {
+        let batch = metric_model_query(
+            "rows",
+            Some(&[
+                "metric.count",
+                "metric.sum",
+                "metric.min",
+                "metric.max",
+                "metric.explicit_bounds",
+                "metric.bucket_counts",
+            ]),
+            serde_json::json!([{ "where": { "field": "metric.type", "op": "eq", "value": "histogram" } }]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        for (column, expected) in [
+            ("count", "4"),
+            ("sum", "1.2"),
+            ("min", "0.1"),
+            ("max", "0.9"),
+            ("explicit_bounds", "[0.1, 0.5, 1.0]"),
+            ("bucket_counts", "[1, 2, 1, 0]"),
+        ] {
+            assert_eq!(strings_of(&batch, column), vec![expected], "{column}");
+        }
+    }
+
+    #[tokio::test]
+    async fn summary_quantiles_are_returned_as_stored() {
+        let batch = metric_model_query(
+            "rows",
+            Some(&["metric.name", "metric.quantiles", "metric.quantile_values"]),
+            serde_json::json!([{ "where": { "field": "metric.type", "op": "eq", "value": "summary" } }]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(strings_of(&batch, "quantiles"), vec!["[0.5, 0.99]"]);
+        assert_eq!(strings_of(&batch, "quantile_values"), vec!["[0.4, 0.9]"]);
+    }
+
+    #[tokio::test]
+    async fn temporality_and_monotonic_are_typed_filterable_fields() {
+        let batch = metric_model_query(
+            "rows",
+            Some(&["metric.name", "metric.temporality", "metric.monotonic"]),
+            serde_json::json!([{ "where": { "and": [
+                { "field": "metric.temporality", "op": "eq", "value": 2 },
+                { "field": "metric.monotonic", "op": "eq", "value": true }
+            ] } }]),
+        )
+        .await
+        .unwrap();
+        assert_eq!(strings_of(&batch, "metric_name"), vec!["sum"]);
+
+        let err = metric_model_query(
+            "rows",
+            None,
+            serde_json::json!([{ "where": { "field": "metric.temporality", "op": "eq", "value": "cumulative" } }]),
+        )
+        .await
+        .unwrap_err();
+        assert!(matches!(err, QuerierError::InvalidInput(_)), "{err}");
+    }
+
+    #[tokio::test]
+    async fn bucket_and_quantile_lists_are_retrieval_only() {
+        for field in [
+            "metric.quantiles",
+            "metric.quantile_values",
+            "metric.explicit_bounds",
+            "metric.bucket_counts",
+        ] {
+            let err = metric_model_query(
+                "rows",
+                None,
+                serde_json::json!([{ "where": { "field": field, "op": "exists" } }]),
+            )
+            .await
+            .unwrap_err();
+            assert!(format!("{err}").contains(field), "{field}: {err}");
+        }
     }
 
     /// Two gauge points and one sum point in the typed-layout `metrics` table,

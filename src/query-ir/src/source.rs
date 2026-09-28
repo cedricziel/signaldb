@@ -58,8 +58,7 @@ impl SourceRegistry {
             "metrics".to_string(),
             SourceDef {
                 name: "metrics".to_string(),
-                // One raw metric data point per row — gauge/sum only; see
-                // ir_planner.rs's `metrics` SourcePlan arm for what's scanned.
+                // One raw metric data point per row, of any metric type.
                 grain: Grain::Event,
                 allows_extract: false,
             },
