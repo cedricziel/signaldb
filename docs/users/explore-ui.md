@@ -409,8 +409,7 @@ empty state: mobile vitals aren't supported yet.
   app](instrument-browser-app.md) guide covers the walkthrough and
   troubleshooting. A live checklist tracks the first session, first page
   view, first vitals record and the share of client requests joined to a
-  backend trace for the selected app. Step by step: [Instrument a browser
-  app](instrument-browser-app.md).
+  backend trace for the selected app.
 - **Command palette.** The Real users tabs and every frontend app with RUM
   data are palette entries; picking an app opens `/rum/overview?app=`.
   Pasting a session id (a UUID, or a bare hex string of 12 or more
