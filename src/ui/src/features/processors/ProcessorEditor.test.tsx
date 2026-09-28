@@ -5,8 +5,8 @@ import { MemoryRouter, Route, Routes } from "react-router";
 import { setTenantContext } from "../../api/http";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ProcessorEditor } from "./ProcessorEditor";
+import { REDACT_EMAILS_TEST_RESPONSE } from "./testResponse.fixture";
 import {
-  TEST_RESPONSE,
   VALIDATION_ERROR,
   VALIDATION_OK,
   shellOutlet,
@@ -130,7 +130,7 @@ describe("ProcessorEditor", () => {
   it("renders the test panel diff and per-statement counts", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_TENANT_ADMIN },
-      { match: "/api/v1/processors:test", body: TEST_RESPONSE },
+      { match: "/api/v1/processors:test", body: REDACT_EMAILS_TEST_RESPONSE },
     ]);
     renderEditor();
     const user = userEvent.setup();

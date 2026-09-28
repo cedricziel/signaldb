@@ -1,8 +1,7 @@
 import { useMutation } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { testProcessor, type ProcessorSpec, type TestResponse } from "./api";
-import { diffLines, type DiffLine } from "./lineDiff";
-import { canonicalOtlpJson } from "./otlpJson";
+import { diffLines } from "./lineDiff";
 import { SAMPLE_PAYLOADS } from "./samples";
 import { toErrorMessage } from "../../api/http";
 import { LineDiffView } from "../../components/LineDiffView";
@@ -26,14 +25,13 @@ export function TestPanel({ signal, dataset, spec }: Props) {
     JSON.stringify(SAMPLE_PAYLOADS[signal], null, 2),
   );
   const [result, setResult] = useState<TestResponse | null>(null);
-  const [diff, setDiff] = useState<DiffLine[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // A run's callbacks only apply their result if they're still the latest
   // submission by the time the response arrives: the textarea stays
   // editable while a request is pending, and resetting the sample or
   // changing the signal must not let a slow, now-superseded response
-  // overwrite the panel with a stale result/error/diff base.
+  // overwrite the panel with a stale result/error.
   const revisionRef = useRef(0);
   const bumpRevision = () => {
     revisionRef.current += 1;
@@ -64,15 +62,9 @@ export function TestPanel({ signal, dataset, spec }: Props) {
         payload,
       });
     },
-    onSuccess: (response, { revision, submittedPayload }) => {
+    onSuccess: (response, { revision }) => {
       if (revision !== revisionRef.current) return;
       setResult(response);
-      setDiff(
-        diffLines(
-          canonicalOtlpJson(JSON.parse(submittedPayload)),
-          canonicalOtlpJson(response.payload),
-        ),
-      );
       setError(null);
     },
     onError: (e, { revision }) => {
@@ -81,6 +73,17 @@ export function TestPanel({ signal, dataset, spec }: Props) {
       setError(toErrorMessage(e));
     },
   });
+
+  const diff = useMemo(
+    () =>
+      result
+        ? diffLines(
+            JSON.stringify(result.input, null, 2),
+            JSON.stringify(result.payload, null, 2),
+          )
+        : [],
+    [result],
+  );
 
   const runTest = () => {
     const revision = bumpRevision();

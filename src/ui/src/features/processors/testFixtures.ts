@@ -2,7 +2,6 @@
 // generated types in `api/gen/types.gen.ts`.
 import { outletContextRoute } from "../../test/render";
 import { DEFAULT_STATE } from "../../lib/urlState";
-import { REDACTED_LOGS_ECHO } from "./serverEcho.fixture";
 
 export function shellOutlet(tenant = "acme", dataset = "") {
   return outletContextRoute({ ...DEFAULT_STATE, tenant, dataset });
@@ -69,8 +68,3 @@ export const VALIDATION_ERROR = {
 };
 
 export const VALIDATION_OK = { errors: [] };
-
-export const TEST_RESPONSE = {
-  payload: REDACTED_LOGS_ECHO,
-  statements: [{ processor: "redact-emails", index: 0, matched: 1, errors: 0 }],
-};
