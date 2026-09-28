@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { EvalRun } from "../../api/evals";
 import evalVerdictsFixture from "../../../../../testdata/eval_verdicts.json";
+import evalCompareFixture from "../../../../../testdata/eval_compare.json";
 import {
   baselinesOf,
   classifyCase,
@@ -15,7 +16,9 @@ import {
   toolDiff,
   verdictOfLabel,
   verdictOfResult,
+  type CaseScores,
   type EvalStats,
+  type ToolStep,
 } from "./evalModel";
 
 function stats(p: Partial<EvalStats>): EvalStats {
@@ -277,5 +280,97 @@ describe("statsDelta", () => {
       statsDelta(stats({ pass: 3, fail: 1 }), stats({ pass: 1, fail: 1 })),
     ).toEqual({ d: -0.25, unit: "pp" });
     expect(statsDelta(stats({}), stats({ pass: 1 }))).toBeNull();
+  });
+});
+
+// The shared comparison fixture, also loaded by `common::evals::compare`, so
+// the Rust and TypeScript comparison rules can't drift apart.
+type FixtureStats = Partial<{
+  results: number;
+  errors: number;
+  pass: number;
+  fail: number;
+  score_sum: number;
+  scored: number;
+}>;
+type FixtureScores = Record<string, FixtureStats>;
+
+function fixtureScores(scores: FixtureScores): CaseScores {
+  return new Map(
+    Object.entries(scores).map(([name, s]) => [
+      name,
+      stats({
+        results: s.results ?? 0,
+        errors: s.errors ?? 0,
+        pass: s.pass ?? 0,
+        fail: s.fail ?? 0,
+        scoreSum: s.score_sum ?? 0,
+        scored: s.scored ?? 0,
+      }),
+    ]),
+  );
+}
+
+function fixtureRun(cases: Record<string, FixtureScores>) {
+  return new Map(
+    Object.entries(cases).map(([id, scores]) => [id, fixtureScores(scores)]),
+  );
+}
+
+describe("shared comparison fixture", () => {
+  const fixture = evalCompareFixture as unknown as {
+    cases: Array<{
+      name: string;
+      baseline: FixtureScores | null;
+      candidate: FixtureScores;
+      kind: string;
+      no_baseline: boolean;
+      evaluators: Record<string, string>;
+      delta: number;
+    }>;
+    compare: Array<{
+      name: string;
+      baseline: Record<string, FixtureScores>;
+      candidate: Record<string, FixtureScores>;
+      order: Array<[string, string]>;
+    }>;
+    tool_diffs: Array<{
+      baseline: string[];
+      candidate: string[];
+      steps: ToolStep[];
+    }>;
+  };
+
+  it("classifies every case as common::evals does", () => {
+    expect(fixture.cases.length).toBeGreaterThan(0);
+    for (const c of fixture.cases) {
+      const got = classifyCase(
+        c.baseline ? fixtureScores(c.baseline) : undefined,
+        fixtureScores(c.candidate),
+      );
+      expect([c.name, got.kind, got.noBaseline]).toEqual([
+        c.name,
+        c.kind,
+        c.no_baseline,
+      ]);
+      expect(Object.fromEntries(got.evaluators)).toEqual(c.evaluators);
+      expect(got.delta).toBeCloseTo(c.delta, 9);
+    }
+  });
+
+  it("orders compared cases as common::evals does", () => {
+    for (const c of fixture.compare) {
+      const rows = compareCases(
+        fixtureRun(c.baseline),
+        fixtureRun(c.candidate),
+      );
+      expect(rows.map((r) => [r.caseId, r.kind])).toEqual(c.order);
+    }
+  });
+
+  it("diffs tool trajectories as common::evals does", () => {
+    for (const t of fixture.tool_diffs) {
+      expect(toolDiff(t.baseline, t.candidate)).toEqual(t.steps);
+    }
   });
 });

@@ -1305,6 +1305,7 @@ dependencies = [
  "csv",
  "dashmap",
  "datafusion",
+ "eval-model",
  "figment",
  "futures",
  "hex",
@@ -2949,6 +2950,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "eval-model"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "opentelemetry-semantic-conventions",
+ "query-ir",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4496,6 +4511,7 @@ dependencies = [
  "clap",
  "common",
  "dashmap",
+ "eval-model",
  "futures",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -7395,6 +7411,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
+ "eval-model",
  "futures",
  "insta",
  "mockito",
@@ -9762,8 +9779,10 @@ dependencies = [
  "foldhash 0.2.0",
  "form_urlencoded",
  "futures-channel",
+ "futures-core",
  "futures-executor",
  "futures-io",
+ "futures-sink",
  "futures-task",
  "futures-util",
  "generic-array",
