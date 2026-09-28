@@ -123,8 +123,10 @@ span.add_event(
 If the event has no `gen_ai.agent.name` or `gen_ai.agent.version`, the
 record takes it from the span's attributes. A value on the event wins.
 
-The record goes through the tenant's log processors, not its trace
-processors, just like a log record you send. If the log write fails, the
+The record goes through the tenant's log processors, just like a log
+record you send. It is derived after the tenant's trace processors ran,
+so any attribute they redacted or rewrote on the span, resource or scope
+arrives that way on the record too. If the log write fails, the
 trace export still succeeds: the span is kept and the acceptor logs a
 warning, but that result is not stored. A resent trace export does not
 store its results twice.
