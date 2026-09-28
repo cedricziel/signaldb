@@ -189,7 +189,7 @@ What the mechanism columns say:
 
 The write-path cost of the sort that makes attestation possible is
 `iceberg_benchmarks`'s `ingest_sort` group: the columnar sort of one commit
-group by the table's key, on the same `metrics_gauge` batches
+group by the table's key, on the same `metrics` batches
 `single_batch_writes` appends. Ingest's usual input arrives close to time
 order, which is the cheap case; a shuffled group is the expensive one.
 
