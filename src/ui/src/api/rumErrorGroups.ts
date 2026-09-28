@@ -31,7 +31,9 @@ import {
 } from "./queryIr";
 import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
 import { serviceWhere } from "./rum";
+import { parseBrowserFromUserAgent } from "../features/rum/rumModel";
 import type { ErrorGroup } from "./errors";
+import type { TempoSpan } from "./traceTypes";
 
 /** Groups shown before the list would need its own truncation notice. */
 const GROUP_LIMIT = 200;
@@ -357,4 +359,184 @@ export async function fetchRumErrorGroupsWithBackendCause(
     return groups;
   }
   return joinBackendCause(groups, failedRequests);
+}
+
+// ---- Selected-group detail: by-browser breakdown and release -------------
+//
+// Both are single-group reads, issued only for the group the tab has open
+// (never per row) — the same "trace fetched only for the selected group"
+// principle design.md decision 3 states for backend cause.
+
+/** A field pinned to an exact value, or — absent on the group — pinned to
+ * "not exists", mirroring `api/errors.ts`'s own `pin` (private there, so
+ * duplicated here rather than exported from a module that treats it as an
+ * internal decoding detail). */
+function pin(field: string, value: string | null): Record<string, unknown> {
+  return {
+    where:
+      value == null
+        ? { not: { field, op: "exists" } }
+        : { field, op: "eq", value },
+  };
+}
+
+function pinnedGroupWhere(
+  group: RumErrorGroup,
+  app: string,
+): Record<string, unknown>[] {
+  return [
+    serviceWhere(app),
+    {
+      where: {
+        field: "exception.type",
+        op: "eq",
+        value: group.exceptionType ?? "",
+      },
+    },
+    pin("exception.message", group.exceptionMessage),
+    pin("exception.escaped", group.escaped),
+  ];
+}
+
+export interface RumErrorBrowserRow {
+  browser: string;
+  count: number;
+}
+
+/** Browsers shown before the detail panel's bar list would need truncating. */
+const BROWSER_BREAKDOWN_LIMIT = 12;
+
+export function buildErrorGroupBrowserBreakdownDoc(
+  app: string,
+  range: ResolvedRange,
+  group: RumErrorGroup,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      ...pinnedGroupWhere(group, app),
+      {
+        aggregate: {
+          by: ["resource.browser.brands", "resource.user_agent.original"],
+          aggs: [{ fn: "count", as: "n" }],
+        },
+      },
+      { order: [{ of: "n", dir: "desc" }] },
+      // Raw (brand, UA) pairs before they're merged by resolved browser name
+      // below — several UAs can share a brand, so this asks for more than
+      // the display limit.
+      { limit: BROWSER_BREAKDOWN_LIMIT * 4 },
+    ],
+  };
+}
+
+/** Merges raw (brand, UA) rows into one count per resolved browser name —
+ * `resource.browser.brands` when the record carries it, else parsed from
+ * the UA string (see `api/rum.ts`'s own note on `browser.brands` being
+ * empty in many deployments today). */
+export function errorGroupBrowserBreakdownFromResponse(
+  res: QueryIrResponse,
+): RumErrorBrowserRow[] {
+  const byBrowser = new Map<string, number>();
+  for (const row of res.rows ?? []) {
+    const [brands, ua, n] = row as [string | null, string | null, number];
+    const browser =
+      brands && brands.trim() !== ""
+        ? brands
+        : (parseBrowserFromUserAgent(ua) ?? "Unknown");
+    const count = typeof n === "number" ? n : 0;
+    byBrowser.set(browser, (byBrowser.get(browser) ?? 0) + count);
+  }
+  return Array.from(byBrowser.entries())
+    .map(([browser, count]) => ({ browser, count }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, BROWSER_BREAKDOWN_LIMIT);
+}
+
+export async function fetchErrorGroupBrowserBreakdown(
+  app: string,
+  range: ResolvedRange,
+  group: RumErrorGroup,
+): Promise<RumErrorBrowserRow[]> {
+  return errorGroupBrowserBreakdownFromResponse(
+    await runIrQuery(buildErrorGroupBrowserBreakdownDoc(app, range, group)),
+  );
+}
+
+export function buildErrorGroupReleaseDoc(
+  app: string,
+  range: ResolvedRange,
+  group: RumErrorGroup,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      ...pinnedGroupWhere(group, app),
+      {
+        aggregate: {
+          by: [],
+          aggs: [
+            {
+              fn: "last",
+              of: "resource.service.version",
+              as: "release",
+            },
+          ],
+        },
+      },
+    ],
+  };
+}
+
+/** The group's own last-seen `resource.service.version` — the detail
+ * panel's "release" stat; `null` when no occurrence carries one. */
+export function errorGroupReleaseFromResponse(
+  res: QueryIrResponse,
+): string | null {
+  const row = res.rows?.[0] as unknown[] | undefined;
+  const v = row?.[0];
+  return typeof v === "string" && v !== "" ? v : null;
+}
+
+export async function fetchErrorGroupRelease(
+  app: string,
+  range: ResolvedRange,
+  group: RumErrorGroup,
+): Promise<string | null> {
+  return errorGroupReleaseFromResponse(
+    await runIrQuery(buildErrorGroupReleaseDoc(app, range, group)),
+  );
+}
+
+// ---- Backend cause: naming the erroring backend service -------------------
+
+/** The first descendant of `rootSpanId` (breadth-first, so the closest one
+ * wins) whose own status is "error" — the spec's "naming the erroring
+ * backend service (first span with status Error below the client span)",
+ * distinct from `sessionTraceSplit.ts`'s `clientServerSplit`, whose backend
+ * service is simply the first server-kind child regardless of status. */
+export function erroringDescendantService(
+  spans: TempoSpan[],
+  rootSpanId: string,
+): string | undefined {
+  const byParent = new Map<string, TempoSpan[]>();
+  for (const s of spans) {
+    if (s.parentSpanId === null) continue;
+    const list = byParent.get(s.parentSpanId);
+    if (list) list.push(s);
+    else byParent.set(s.parentSpanId, [s]);
+  }
+  const queue = [...(byParent.get(rootSpanId) ?? [])];
+  while (queue.length > 0) {
+    const span = queue.shift()!;
+    if (span.status === "error") return span.serviceName;
+    queue.push(...(byParent.get(span.spanId) ?? []));
+  }
+  return undefined;
 }

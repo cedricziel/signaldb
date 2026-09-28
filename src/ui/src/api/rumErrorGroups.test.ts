@@ -3,8 +3,13 @@ import type { QueryIrResponse } from "./gen";
 import {
   BACKEND_CAUSE_WINDOW_MS,
   buildBackendCauseRequestsDoc,
+  buildErrorGroupBrowserBreakdownDoc,
+  buildErrorGroupReleaseDoc,
   buildRumErrorGroupsDoc,
+  errorGroupBrowserBreakdownFromResponse,
+  erroringDescendantService,
   errorGroupKey,
+  errorGroupReleaseFromResponse,
   errorGroupsFromResponse,
   failedRequestsFromResponse,
   joinBackendCause,
@@ -12,6 +17,7 @@ import {
   type RumErrorGroup,
   type RumFailedRequest,
 } from "./rumErrorGroups";
+import type { TempoSpan } from "./traceTypes";
 import { resolveRange } from "../lib/time";
 
 const range = resolveRange(
@@ -348,5 +354,148 @@ describe("toErrorsPageGroup", () => {
       firstNs: "1000000000000",
       lastNs: "1010000000000",
     });
+  });
+});
+
+describe("buildErrorGroupBrowserBreakdownDoc / buildErrorGroupReleaseDoc", () => {
+  it("pins the group's own type/message/escaped and the app", () => {
+    const pinned = { ...group, exceptionMessage: "boom", escaped: "true" };
+    for (const doc of [
+      buildErrorGroupBrowserBreakdownDoc("storefront-web", range, pinned),
+      buildErrorGroupReleaseDoc("storefront-web", range, pinned),
+    ]) {
+      const pipeline = (doc as { pipeline: Record<string, unknown>[] })
+        .pipeline;
+      expect(pipeline).toContainEqual({
+        where: { field: "service.name", op: "eq", value: "storefront-web" },
+      });
+      expect(pipeline).toContainEqual({
+        where: { field: "exception.type", op: "eq", value: "TypeError" },
+      });
+      expect(pipeline).toContainEqual({
+        where: { field: "exception.message", op: "eq", value: "boom" },
+      });
+      expect(pipeline).toContainEqual({
+        where: { field: "exception.escaped", op: "eq", value: "true" },
+      });
+    }
+  });
+
+  it("pins an absent field to 'not exists', not a literal null", () => {
+    const doc = buildErrorGroupReleaseDoc("storefront-web", range, group);
+    const pipeline = (doc as { pipeline: Record<string, unknown>[] }).pipeline;
+    expect(pipeline).toContainEqual({
+      where: { not: { field: "exception.message", op: "exists" } },
+    });
+  });
+});
+
+describe("errorGroupBrowserBreakdownFromResponse", () => {
+  it("prefers resource.browser.brands over a parsed user agent", () => {
+    const res = table([["Chromium", "Mozilla/5.0 Firefox/128.0", 40]]);
+    expect(errorGroupBrowserBreakdownFromResponse(res)).toEqual([
+      { browser: "Chromium", count: 40 },
+    ]);
+  });
+
+  it("falls back to parsing the user agent when brands is absent", () => {
+    const res = table([
+      [
+        null,
+        "Mozilla/5.0 (Windows NT 10.0) Chrome/128.0.0.0 Safari/537.36",
+        25,
+      ],
+    ]);
+    expect(errorGroupBrowserBreakdownFromResponse(res)).toEqual([
+      { browser: "Chrome", count: 25 },
+    ]);
+  });
+
+  it("merges rows that resolve to the same browser name", () => {
+    const res = table([
+      ["Chromium", "ua-a", 10],
+      ["Chromium", "ua-b", 5],
+    ]);
+    expect(errorGroupBrowserBreakdownFromResponse(res)).toEqual([
+      { browser: "Chromium", count: 15 },
+    ]);
+  });
+});
+
+describe("errorGroupReleaseFromResponse", () => {
+  it("decodes the group's last-seen release", () => {
+    expect(errorGroupReleaseFromResponse(table([["2026.09.26-3"]]))).toBe(
+      "2026.09.26-3",
+    );
+  });
+
+  it("is null with no release recorded", () => {
+    expect(errorGroupReleaseFromResponse(table([[null]]))).toBeNull();
+    expect(errorGroupReleaseFromResponse(table([]))).toBeNull();
+  });
+});
+
+function span(overrides: Partial<TempoSpan> = {}): TempoSpan {
+  return {
+    spanId: "span",
+    parentSpanId: null,
+    name: "span",
+    serviceName: "svc",
+    status: "unset",
+    startNs: "0",
+    durNs: "0",
+    attributes: {},
+    events: [],
+    ...overrides,
+  };
+}
+
+describe("erroringDescendantService", () => {
+  it("finds the closest error-status span below the root, breadth-first", () => {
+    const spans: TempoSpan[] = [
+      span({ spanId: "root", parentSpanId: null }),
+      span({
+        spanId: "child-ok",
+        parentSpanId: "root",
+        serviceName: "cart-svc",
+        status: "ok",
+      }),
+      span({
+        spanId: "child-error",
+        parentSpanId: "root",
+        serviceName: "checkout-svc",
+        status: "error",
+      }),
+      // A deeper error under the ok child shouldn't win over the closer one.
+      span({
+        spanId: "grandchild-error",
+        parentSpanId: "child-ok",
+        serviceName: "payments-svc",
+        status: "error",
+      }),
+    ];
+    expect(erroringDescendantService(spans, "root")).toBe("checkout-svc");
+  });
+
+  it("looks past a non-erroring child to find an erroring grandchild", () => {
+    const spans: TempoSpan[] = [
+      span({ spanId: "root", parentSpanId: null }),
+      span({ spanId: "child", parentSpanId: "root", status: "ok" }),
+      span({
+        spanId: "grandchild",
+        parentSpanId: "child",
+        serviceName: "payments-svc",
+        status: "error",
+      }),
+    ];
+    expect(erroringDescendantService(spans, "root")).toBe("payments-svc");
+  });
+
+  it("is undefined with no erroring descendant", () => {
+    const spans: TempoSpan[] = [
+      span({ spanId: "root", parentSpanId: null }),
+      span({ spanId: "child", parentSpanId: "root", status: "ok" }),
+    ];
+    expect(erroringDescendantService(spans, "root")).toBeUndefined();
   });
 });
