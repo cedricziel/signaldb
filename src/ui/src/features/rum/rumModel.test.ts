@@ -6,6 +6,7 @@ import {
   loadBreakdownPhases,
   routeUrlRegex,
   NO_VITAL_DATA,
+  parseBrowserFromUserAgent,
   rateVital,
   ratingSwatchColorVar,
   ratingTextColorVar,
@@ -242,6 +243,7 @@ describe("RUM_TABS / rumTabFromParam", () => {
     expect(RUM_TABS.map((t) => t.id)).toEqual([
       "overview",
       "pages",
+      "sessions",
       "network",
       "interactions",
       "setup",
@@ -369,5 +371,41 @@ describe("ratingTextColorVar / ratingSwatchColorVar", () => {
     expect(ratingSwatchColorVar("good")).toBe("var(--ok)");
     expect(ratingSwatchColorVar("poor")).toBe("var(--err)");
     expect(ratingSwatchColorVar("needs-improvement")).toBe("var(--warn)");
+  });
+});
+
+describe("parseBrowserFromUserAgent", () => {
+  it("recognizes Chrome ahead of the generic Safari token it also carries", () => {
+    const ua =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+      "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36";
+    expect(parseBrowserFromUserAgent(ua)).toBe("Chrome");
+  });
+
+  it("recognizes Edge ahead of the Chrome token it also carries", () => {
+    const ua =
+      "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 " +
+      "(KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36 Edg/128.0.0.0";
+    expect(parseBrowserFromUserAgent(ua)).toBe("Edge");
+  });
+
+  it("recognizes genuine Safari", () => {
+    const ua =
+      "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 " +
+      "(KHTML, like Gecko) Version/17.4 Safari/605.1.15";
+    expect(parseBrowserFromUserAgent(ua)).toBe("Safari");
+  });
+
+  it("recognizes Firefox", () => {
+    expect(
+      parseBrowserFromUserAgent(
+        "Mozilla/5.0 (X11; Linux x86_64; rv:128.0) Gecko/20100101 Firefox/128.0",
+      ),
+    ).toBe("Firefox");
+  });
+
+  it("returns null for a missing or unrecognized UA", () => {
+    expect(parseBrowserFromUserAgent(null)).toBeNull();
+    expect(parseBrowserFromUserAgent("SomeBot/1.0")).toBeNull();
   });
 });

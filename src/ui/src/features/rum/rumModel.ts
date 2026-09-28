@@ -407,20 +407,49 @@ export function loadBreakdownPhases(p75: NavTimingP75): LoadPhase[] {
   );
 }
 
+// ---- Sessions: browser detection ------------------------------------
+
+/** Substring/pattern → display name, checked in order (most specific
+ * engines first, since e.g. Edge and Opera also carry "Chrome/" in their
+ * UA string). Parses `resource.user_agent.original` directly: the verified
+ * session-list query (module doc in `api/rumSessions.ts`) doesn't request
+ * `resource.browser.brands` — that attribute is empty in real data today
+ * (design.md — Context), so there is no non-GREASE-brand path to prefer it
+ * over yet. */
+const BROWSER_UA_PATTERNS: [RegExp, string][] = [
+  [/edg\//i, "Edge"],
+  [/opr\/|opera/i, "Opera"],
+  [/(chrome|crios)\//i, "Chrome"],
+  [/(firefox|fxios)\//i, "Firefox"],
+  [/version\/.*safari/i, "Safari"],
+];
+
+/** The session list's Browser column: a short display name parsed from
+ * `user_agent.original`, or `null` when it doesn't match a known browser
+ * (an unrecognized or missing UA string). */
+export function parseBrowserFromUserAgent(ua: string | null): string | null {
+  if (!ua) return null;
+  for (const [pattern, name] of BROWSER_UA_PATTERNS) {
+    if (pattern.test(ua)) return name;
+  }
+  return null;
+}
+
 // ---- Tabs ------------------------------------------------------------
 
 export type RumTab =
-  "overview" | "pages" | "network" | "interactions" | "setup";
+  "overview" | "pages" | "sessions" | "network" | "interactions" | "setup";
 
 /** The tabs this build ships, in display order — the page's tab strip and
  * the command palette both map over this (`explore-ui-rum`'s "Real users
  * command palette entries" requirement), so a later group's new tab needs
  * adding only here. Final order per `rum-explore-tabs`: Overview, Pages,
- * Sessions, Errors, Network, Interactions, Setup — Sessions and Errors ship
- * in later groups. */
+ * Sessions, Errors, Network, Interactions, Setup — Errors ships in a later
+ * group. */
 export const RUM_TABS: { id: RumTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "pages", label: "Pages" },
+  { id: "sessions", label: "Sessions" },
   { id: "network", label: "Network" },
   { id: "interactions", label: "Interactions" },
   { id: "setup", label: "Setup" },

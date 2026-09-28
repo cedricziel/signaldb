@@ -79,7 +79,9 @@ function rumEventWhere(): Record<string, unknown> {
   };
 }
 
-function serviceWhere(app: string): Record<string, unknown> {
+/** Scopes a pipeline to one app's `service.name` — shared with
+ * `api/rumSessions.ts`. */
+export function serviceWhere(app: string): Record<string, unknown> {
   return { where: { field: "service.name", op: "eq", value: app } };
 }
 
