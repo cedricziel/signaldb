@@ -108,6 +108,35 @@ pub fn create_profiles_schema() -> Result<Schema> {
     create_profiles_schema_with(&materialized_labels_for("profiles"))
 }
 
+/// Create Iceberg schema for the wide metrics table (otel-native-schema
+/// layer 7, D10) using TOML definitions, plus any configured
+/// materialized-label columns. Declaration only -- not yet reachable through
+/// [`TableSchema::all`]/table creation.
+pub fn create_metrics_schema_with(labels: &[String]) -> Result<Schema> {
+    TableSchema::Metrics
+        .resolved_schema()?
+        .to_iceberg_schema_with_labels(labels)
+}
+
+/// Global-config variant of [`create_metrics_schema_with`].
+pub fn create_metrics_schema() -> Result<Schema> {
+    create_metrics_schema_with(&materialized_labels_for("metrics"))
+}
+
+/// Create Iceberg schema for the metric exemplars table paired with
+/// [`create_metrics_schema_with`]. Declaration only, same inert status as
+/// [`create_metrics_schema_with`].
+pub fn create_metric_exemplars_schema_with(labels: &[String]) -> Result<Schema> {
+    TableSchema::MetricExemplars
+        .resolved_schema()?
+        .to_iceberg_schema_with_labels(labels)
+}
+
+/// Global-config variant of [`create_metric_exemplars_schema_with`].
+pub fn create_metric_exemplars_schema() -> Result<Schema> {
+    create_metric_exemplars_schema_with(&materialized_labels_for("metrics"))
+}
+
 /// The configured materialized labels for a signal, read from the global
 /// config (empty when the config is not initialized, e.g. in unit tests).
 fn materialized_labels_for(signal: &str) -> Vec<String> {
@@ -210,6 +239,25 @@ pub fn create_profiles_partition_spec() -> Result<PartitionSpec> {
     create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
+/// Create partition specification for the wide metrics table.
+/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
+pub fn create_metrics_partition_spec_v4() -> Result<PartitionSpec> {
+    let schema = create_metrics_schema()?;
+    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
+}
+
+/// Create partition specification for the metric exemplars table.
+/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
+pub fn create_metric_exemplars_partition_spec() -> Result<PartitionSpec> {
+    let schema = create_metric_exemplars_schema()?;
+    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
+}
+
+/// The only version of the typed `metrics`/`metric_exemplars` tables. Pinned
+/// here instead of read from `current_metric_version`, which still names the
+/// legacy per-type tables' version until the cutover.
+const TYPED_METRIC_VERSION: &str = "physical-v4";
+
 /// All available table schemas
 #[derive(Debug, Clone)]
 pub enum TableSchema {
@@ -221,6 +269,13 @@ pub enum TableSchema {
     MetricsExponentialHistogram,
     MetricsSummary,
     Profiles,
+    /// The wide metrics table (otel-native-schema layer 7, D10). Not yet
+    /// created anywhere: absent from [`Self::all`]/[`Self::all_from_config`]
+    /// until the cutover PR switches ingestion and the table reconciler over
+    /// to it.
+    Metrics,
+    /// The exemplars table paired with [`Self::Metrics`]. Same inert status.
+    MetricExemplars,
     Custom(String), // For custom schemas from configuration
 }
 
@@ -260,7 +315,9 @@ impl TableSchema {
             | TableSchema::MetricsSum
             | TableSchema::MetricsHistogram
             | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary => Some(AttributeTypeSignal::Metrics),
+            | TableSchema::MetricsSummary
+            | TableSchema::Metrics
+            | TableSchema::MetricExemplars => Some(AttributeTypeSignal::Metrics),
             TableSchema::Profiles => Some(AttributeTypeSignal::Profiles),
             TableSchema::Custom(_) => None,
         }
@@ -300,6 +357,10 @@ impl TableSchema {
                 &SCHEMA_DEFINITIONS.profiles,
                 &SCHEMA_DEFINITIONS.metadata.current_profile_version,
             ),
+            TableSchema::Metrics => SCHEMA_DEFINITIONS
+                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics, TYPED_METRIC_VERSION),
+            TableSchema::MetricExemplars => SCHEMA_DEFINITIONS
+                .resolve_table_schema(&SCHEMA_DEFINITIONS.metric_exemplars, TYPED_METRIC_VERSION),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom schemas must be loaded from configuration"
             )),
@@ -321,7 +382,9 @@ impl TableSchema {
             | TableSchema::MetricsSum
             | TableSchema::MetricsHistogram
             | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary => &m.metrics,
+            | TableSchema::MetricsSummary
+            | TableSchema::Metrics
+            | TableSchema::MetricExemplars => &m.metrics,
             TableSchema::Profiles => &m.profiles,
             TableSchema::Custom(_) => &[],
         }
@@ -339,6 +402,8 @@ impl TableSchema {
             }
             TableSchema::MetricsSummary => create_metrics_summary_schema(),
             TableSchema::Profiles => create_profiles_schema(),
+            TableSchema::Metrics => create_metrics_schema(),
+            TableSchema::MetricExemplars => create_metric_exemplars_schema(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom schemas must be loaded from configuration"
             )),
@@ -356,6 +421,8 @@ impl TableSchema {
             | TableSchema::MetricsExponentialHistogram
             | TableSchema::MetricsSummary => create_metrics_partition_spec(),
             TableSchema::Profiles => create_profiles_partition_spec(),
+            TableSchema::Metrics => create_metrics_partition_spec_v4(),
+            TableSchema::MetricExemplars => create_metric_exemplars_partition_spec(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom partition specs must be defined in configuration"
             )),
@@ -378,6 +445,8 @@ impl TableSchema {
             "metrics_exponential_histogram" => Some(TableSchema::MetricsExponentialHistogram),
             "metrics_summary" => Some(TableSchema::MetricsSummary),
             "profiles" => Some(TableSchema::Profiles),
+            "metrics" => Some(TableSchema::Metrics),
+            "metric_exemplars" => Some(TableSchema::MetricExemplars),
             _ => None,
         }
     }
@@ -403,6 +472,8 @@ impl TableSchema {
             | TableSchema::MetricsExponentialHistogram
             | TableSchema::MetricsSummary => &["timestamp", "metric_name", "service_name"],
             TableSchema::Profiles => &["timestamp", "service_name"],
+            TableSchema::Metrics => &["timestamp", "metric_name", "service_name"],
+            TableSchema::MetricExemplars => &["timestamp", "trace_id"],
             TableSchema::Custom(_) => &[],
         }
     }
@@ -465,6 +536,8 @@ impl TableSchema {
             TableSchema::MetricsExponentialHistogram => "metrics_exponential_histogram",
             TableSchema::MetricsSummary => "metrics_summary",
             TableSchema::Profiles => "profiles",
+            TableSchema::Metrics => "metrics",
+            TableSchema::MetricExemplars => "metric_exemplars",
             TableSchema::Custom(name) => name,
         }
     }
@@ -908,5 +981,31 @@ mod sort_order_tests {
             assert_eq!(resolved.table_name(), table.table_name());
         }
         assert!(TableSchema::from_table_name("not_a_signal_table").is_none());
+    }
+
+    #[test]
+    fn metrics_and_metric_exemplars_round_trip_but_are_excluded_from_all() {
+        // otel-native-schema layer 7 (D10): declared and resolvable by name,
+        // but not yet part of the created-table surface until the cutover PR.
+        for name in ["metrics", "metric_exemplars"] {
+            let resolved = TableSchema::from_table_name(name)
+                .unwrap_or_else(|| panic!("{name} does not resolve"));
+            assert_eq!(resolved.table_name(), name);
+            assert!(resolved.schema().is_ok(), "{name} schema should build");
+        }
+        assert!(
+            !TableSchema::all()
+                .iter()
+                .any(|t| t.table_name() == "metrics" || t.table_name() == "metric_exemplars"),
+            "metrics/metric_exemplars must stay out of TableSchema::all() before cutover"
+        );
+    }
+
+    #[test]
+    fn current_metric_version_is_still_v3() {
+        assert_eq!(
+            SCHEMA_DEFINITIONS.metadata.current_metric_version,
+            "physical-v3"
+        );
     }
 }
