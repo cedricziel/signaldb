@@ -53,7 +53,9 @@ const SERVICE_NAME: &str = "fresh-service";
 const LOG_BODY: &str = "first telemetry into a pre-provisioned dataset";
 
 /// Every signal table the deployment default enables.
-const ALL_SIGNAL_TABLES: usize = 8;
+fn all_signal_tables() -> usize {
+    common::iceberg::schemas::TableSchema::all().len()
+}
 
 struct TestServices {
     flight_transport: Arc<InMemoryFlightTransport>,
@@ -450,7 +452,7 @@ async fn fresh_tenant_answers_every_signal_with_empty_results() {
 
     assert_eq!(
         tables_in(&services, DATASET).await.len(),
-        ALL_SIGNAL_TABLES,
+        all_signal_tables(),
         "the tenant's default dataset must be provisioned from the tenant row alone"
     );
     for ticket in metadata_tickets(DATASET) {
@@ -473,7 +475,7 @@ async fn reconciled_dataset_accepts_a_later_write_into_its_tables() {
     let reconciler = TableReconciler::new(services.catalog_manager.clone());
     reconciler.run_pass().await.expect("reconcile pass");
     let provisioned = tables_in(&services, DATASET).await;
-    assert_eq!(provisioned.len(), ALL_SIGNAL_TABLES);
+    assert_eq!(provisioned.len(), all_signal_tables());
 
     send_test_log(&services).await;
     common::testing::flush_storage_writers(&services.flight_transport, TENANT, None)
@@ -528,10 +530,10 @@ async fn dataset_created_after_startup_converges_and_is_queryable() {
 
     // No restart: the next periodic pass picks it up.
     let summary = reconciler.run_pass().await.expect("later pass");
-    assert_eq!(summary.tables_created, ALL_SIGNAL_TABLES);
+    assert_eq!(summary.tables_created, all_signal_tables());
     assert_eq!(
         tables_in(&services, LATE_DATASET).await.len(),
-        ALL_SIGNAL_TABLES
+        all_signal_tables()
     );
 
     // ...and the querier — already running, never restarted — serves it.

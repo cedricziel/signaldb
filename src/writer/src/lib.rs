@@ -70,6 +70,20 @@ pub(crate) mod test_support {
         common::wal::record_batch_to_bytes(&batch).unwrap()
     }
 
+    /// A wire-format gauge metrics batch, built from a real OTLP request via
+    /// [`common::flight::conversion::otlp_metrics_to_arrow`] -- unlike
+    /// [`metrics_gauge_bytes`], valid input for any metrics table version.
+    pub(crate) fn metrics_wire_bytes(num_rows: usize) -> Vec<u8> {
+        let values: Vec<f64> = (0..num_rows).map(|i| i as f64).collect();
+        let request = common::testing::gauge_metrics_request_with_values(
+            "test.metric",
+            "coalesce-test",
+            &values,
+        );
+        let batch = common::flight::conversion::otlp_metrics_to_arrow(&request).unwrap();
+        common::wal::record_batch_to_bytes(&batch).unwrap()
+    }
+
     /// An Arrow-valid batch whose schema matches no target table, so committing
     /// it fails during schema coercion — used to exercise commit-failure paths.
     pub(crate) fn schema_mismatched_bytes() -> Vec<u8> {
