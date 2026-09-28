@@ -10,6 +10,7 @@
 
 use opentelemetry_semantic_conventions::attribute;
 
+pub mod span_events;
 pub mod upload;
 
 /// `event_name` of an evaluator result log record. The semconv crate has no
