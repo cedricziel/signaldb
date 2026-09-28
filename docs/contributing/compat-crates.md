@@ -56,8 +56,10 @@ Not by review. Two CI checks in `Check & Lint`:
 
 - **`./scripts/check-leaf-purity.sh`** reads `cargo metadata` and fails if a
   leaf crate depends on a workspace member, a `path`/`git` source, or the FDAP
-  stack. It covers `logql-parser`, `traceql-parser`, and `query-ir` — the same
-  invariant for all three, whether or not the crate is published.
+  stack. It covers `logql-parser`, `traceql-parser`, `query-ir`, and
+  `eval-model` — the same invariant for all four, whether or not the crate is
+  published, except that an unpublished one may depend on another of them
+  (`eval-model` builds its documents with `query-ir`).
 - **`cargo publish --dry-run`** fails on missing metadata or packaging problems.
 
 Both are needed. The dry-run is _not_ a purity check — it accepts
