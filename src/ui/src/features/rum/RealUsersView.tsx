@@ -151,6 +151,7 @@ export function RealUsersView({
         ) : tab === "errors" ? (
           <ErrorsTab
             scope={scope}
+            state={state}
             currentVersion={current?.version ?? null}
             selected={state.rumErrorGroup}
             onSelectGroup={(groupKey) => update({ rumErrorGroup: groupKey })}

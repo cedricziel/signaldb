@@ -8,15 +8,18 @@ import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { compactCount } from "../../lib/vizFormat";
 import { formatTimestamp } from "../../lib/time";
+import type { ExploreState } from "../../lib/urlState";
 import {
   errorGroupKey,
   type RumErrorGroupWithCause,
 } from "../../api/rumErrorGroups";
+import { ErrorDetailView } from "./ErrorDetailView";
 import { Panel } from "./Panel";
 import { useRumErrorGroups, type RumScope } from "./useRumData";
 
 interface Props {
   scope: RumScope;
+  state: ExploreState;
   currentVersion: string | null;
   selected: string;
   onSelectGroup: (groupKey: string) => void;
@@ -24,12 +27,14 @@ interface Props {
 
 export function ErrorsTab({
   scope,
+  state,
   currentVersion,
   selected,
   onSelectGroup,
 }: Props) {
   const groups = useRumErrorGroups(scope, currentVersion);
   const rows = groups.data ?? [];
+  const selectedGroup = rows.find((g) => errorGroupKey(g) === selected);
 
   return (
     <div className="rum-stack">
@@ -52,6 +57,10 @@ export function ErrorsTab({
           />
         )}
       </Panel>
+
+      {selectedGroup && (
+        <ErrorDetailView scope={scope} state={state} group={selectedGroup} />
+      )}
     </div>
   );
 }

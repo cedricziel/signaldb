@@ -10,6 +10,7 @@ import type { RumSessionRow } from "../../api/rumSessions";
 import * as rumSessionDetailApi from "../../api/rumSessionDetail";
 import type { SessionEvent } from "../../api/rumSessionDetail";
 import * as traceDetailApi from "../../api/traceDetail";
+import * as errorsApi from "../../api/errors";
 import type { TempoTrace } from "../../api/traceTypes";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { createAppRouter } from "../../routes";
@@ -36,6 +37,13 @@ vi.mock("../../api/rum", async (orig) => ({
 vi.mock("../../api/rumErrorGroups", async (orig) => ({
   ...(await orig<typeof import("../../api/rumErrorGroups")>()),
   fetchRumErrorGroupsWithBackendCause: vi.fn().mockResolvedValue([]),
+  fetchErrorGroupBrowserBreakdown: vi.fn().mockResolvedValue([]),
+  fetchErrorGroupRelease: vi.fn().mockResolvedValue(null),
+}));
+vi.mock("../../api/errors", async (orig) => ({
+  ...(await orig<typeof import("../../api/errors")>()),
+  fetchErrorOccurrences: vi.fn().mockResolvedValue([]),
+  fetchErrorGroupVolume: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../api/rumSessions", async (orig) => ({
   ...(await orig<typeof import("../../api/rumSessions")>()),
@@ -525,6 +533,86 @@ describe("Errors tab", () => {
     await user.click(await screen.findByRole("button", { name: /TypeError/ }));
 
     await waitFor(() => expect(window.location.search).toContain("errgroup="));
+  });
+
+  it("shows the selected group's stats, stack frames and backend-cause trace when ?errgroup= is set", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    const group = errorGroupRow({
+      backendCause: {
+        sessionId: "sess-1",
+        startMs: 1_700_000_050_000,
+        traceId: "trace-cause",
+        spanId: "client-cause",
+        method: "POST",
+        urlFull: "https://api.storefront.example.com/checkout",
+        statusCode: 502,
+        durationNs: "500000000",
+      },
+    });
+    vi.mocked(
+      rumErrorGroupsApi.fetchRumErrorGroupsWithBackendCause,
+    ).mockResolvedValue([group]);
+    vi.mocked(errorsApi.fetchErrorOccurrences).mockResolvedValue([
+      {
+        timestampNs: "1700000060000000000",
+        traceId: null,
+        stacktrace: "TypeError: boom\n  at checkout.js:1",
+      },
+    ]);
+    const trace: TempoTrace = {
+      traceId: "trace-cause",
+      rootServiceName: "storefront-web",
+      rootTraceName: "POST /checkout",
+      startNs: "1700000000000000000",
+      durationMs: 500,
+      rootAttributes: {},
+      rootError: true,
+      profiles: [],
+      spans: [
+        {
+          spanId: "client-cause",
+          parentSpanId: null,
+          name: "POST",
+          serviceName: "storefront-web",
+          status: "unset",
+          kind: "Client",
+          startNs: "1700000000000000000",
+          durNs: "500000000",
+          attributes: {},
+          events: [],
+        },
+        {
+          spanId: "server-cause",
+          parentSpanId: "client-cause",
+          name: "checkout",
+          serviceName: "checkout-svc",
+          status: "error",
+          kind: "Server",
+          startNs: "1700000000010000000",
+          durNs: "300000000",
+          attributes: {},
+          events: [],
+        },
+      ],
+    };
+    vi.mocked(traceDetailApi.fetchTraceDetail).mockResolvedValue(trace);
+
+    renderRum(
+      `/rum/errors?app=storefront-web&errgroup=${encodeURIComponent(
+        rumErrorGroupsApi.errorGroupKey(group),
+      )}`,
+    );
+
+    expect(await screen.findByText(/TypeError: boom/)).toBeInTheDocument();
+    expect((await screen.findAllByText(/checkout-svc/)).length).toBeGreaterThan(
+      0,
+    );
+    expect(
+      screen.getByRole("link", { name: /Latest session/ }),
+    ).toHaveAttribute("href", expect.stringContaining("session=sess-1"));
   });
 });
 
