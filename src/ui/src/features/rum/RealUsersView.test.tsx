@@ -744,14 +744,24 @@ describe("Sessions tab", () => {
     });
     renderRum("/rum/sessions?app=storefront-web&session=sess-1");
 
-    const timeline = await screen.findByTestId("rum-session-timeline");
+    // Generous waits: under coverage instrumentation the detail's chained
+    // renders can take over the default 1 s.
+    const timeline = await screen.findByTestId(
+      "rum-session-timeline",
+      {},
+      { timeout: 5000 },
+    );
     const exceptionMark = within(timeline).getByRole("button", {
       name: /TypeError/,
     });
     const user = userEvent.setup();
     await user.click(exceptionMark);
 
-    const cause = await screen.findByText(/Likely cause/);
+    const cause = await screen.findByText(
+      /Likely cause/,
+      {},
+      { timeout: 5000 },
+    );
     expect(cause.textContent).toContain("502");
   });
 });
