@@ -1,7 +1,5 @@
 use crate::schema_transform::{
     LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg, transform_metric_exemplars,
-    transform_metrics_exponential_histogram_v1_to_iceberg,
-    transform_metrics_histogram_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
     transform_metrics_to_wide, transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2,
     warm_trace_v1_to_v2_plan,
 };
@@ -358,15 +356,6 @@ impl IcebergTableWriter {
                 transform_logs_v1_to_iceberg(batch, labels)
             }
             // Wire-format metrics carry the raw "data_json" payload column.
-            "metrics_histogram" if has_field("data_json") => {
-                transform_metrics_histogram_v1_to_iceberg(batch, labels)
-            }
-            "metrics_exponential_histogram" if has_field("data_json") => {
-                transform_metrics_exponential_histogram_v1_to_iceberg(batch, labels)
-            }
-            "metrics_summary" if has_field("data_json") => {
-                transform_metrics_summary_v1_to_iceberg(batch, labels)
-            }
             "metrics" if has_field("data_json") => transform_metrics_to_wide(batch, labels),
             "metric_exemplars" if has_field("data_json") => transform_metric_exemplars(batch),
             // Wire-format profiles carry raw OTLP "time_unix_nano"; the
@@ -387,10 +376,7 @@ impl IcebergTableWriter {
             "traces" => &self.materialized.traces,
             "logs" => &self.materialized.logs,
             "profiles" => &self.materialized.profiles,
-            "metrics_histogram"
-            | "metrics_exponential_histogram"
-            | "metrics_summary"
-            | "metrics" => &self.materialized.metrics,
+            "metrics" => &self.materialized.metrics,
             _ => &[],
         }
     }
