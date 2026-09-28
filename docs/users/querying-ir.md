@@ -827,18 +827,37 @@ first frame seen under that name when the profiler recorded a source file,
 
 ## Metrics
 
-`metrics` reads the gauge and sum rows of the `metrics` table (filtered by
-`metric_type`) — a scalar `value` per point, filtered/grouped/aggregated the
-same way as any other source. `metrics_histogram` reads the histogram rows of
-the same table and is a separate source (see [Histograms](#histograms))
-since its row shape — a whole bucketed histogram per point, not a scalar
-value — has no equivalent in the generic `where`/`aggregate` pipeline.
+`metrics` reads one row per data point across every metric type — gauge,
+sum, histogram, exponential histogram and summary. The metric type is a
+field, not a separate source: filter or group by `metric.type` to pick the
+types you want. An unfiltered `metrics` query returns every type, with
+`metric.value` null on the histogram, exponential-histogram and summary rows.
+`metrics_histogram` reads only the histogram rows and feeds the
+`histogram_quantile` stage (see [Histograms](#histograms)).
 
-The registered scalar fields are `timestamp` (the data point's time),
-`metric.name`, `metric.value`, and `service.name`, plus resource attributes
-(`resource.*`). `metric.value` has its own logical name rather than reusing
-the physical `value` column directly — a document names a _logical_ field,
-never storage, even where the spellings would otherwise coincide.
+| Field                    | Type    | Meaning                                                                   |
+| ------------------------ | ------- | ------------------------------------------------------------------------- |
+| `timestamp`              | time    | the data point's time                                                     |
+| `metric.name`            | string  | the metric name                                                           |
+| `metric.type`            | string  | `gauge`, `sum`, `histogram`, `exponential_histogram` or `summary`         |
+| `metric.value`           | float64 | the gauge/sum point; null on other types                                  |
+| `metric.temporality`     | int64   | the OTLP aggregation temporality as stored (1 delta, 2 cumulative)        |
+| `metric.monotonic`       | bool    | whether a sum is monotonic; null on other types                           |
+| `metric.count`           | int64   | observation count (histogram types, summary)                              |
+| `metric.sum`             | float64 | sum of observations (histogram types, summary)                            |
+| `metric.min`/`.max`      | float64 | observed extremes (histogram types)                                       |
+| `metric.explicit_bounds` | list    | a histogram's bucket bounds; retrieval-only                               |
+| `metric.bucket_counts`   | list    | a histogram's per-bucket counts; retrieval-only                           |
+| `metric.quantiles`       | list    | a summary's quantiles as stored (e.g. `[0.5, 0.99]`); retrieval-only      |
+| `metric.quantile_values` | list    | the summary's value at each of those quantiles, as stored; retrieval-only |
+| `service.name`           | string  | the emitting service                                                      |
+
+Resource attributes (`resource.*`) and point attributes resolve the same way
+as on other sources. `metric.value` has its own logical name rather than
+reusing the physical `value` column directly — a document names a _logical_
+field, never storage, even where the spellings would otherwise coincide. The
+list fields can be selected in `fields` but not filtered, grouped or ordered
+on. The default `rows` projection includes `metric_type`.
 
 Every scalar source registers its primary time column as a logical field —
 `timestamp` on `logs`, `metrics`, `metrics_histogram`, and `profiles`,

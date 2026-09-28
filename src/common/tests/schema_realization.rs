@@ -55,10 +55,21 @@ fn alias_table(source: &str) -> &'static [(&'static str, &'static str)] {
             // as the logical name it actually realizes.
             ("events", "span_events"),
         ],
-        "metrics_gauge" | "metrics_sum" => &[
+        "metrics" => &[
             ("service_name", "service.name"),
             ("metric_name", "metric.name"),
             ("value", "metric.value"),
+            ("metric_type", "metric.type"),
+            ("aggregation_temporality", "metric.temporality"),
+            ("is_monotonic", "metric.monotonic"),
+            ("count", "metric.count"),
+            ("sum", "metric.sum"),
+            ("min", "metric.min"),
+            ("max", "metric.max"),
+            ("explicit_bounds", "metric.explicit_bounds"),
+            ("bucket_counts", "metric.bucket_counts"),
+            ("quantiles", "metric.quantiles"),
+            ("quantile_values", "metric.quantile_values"),
             ("resource_identity", "resource.identity"),
         ],
         "metrics_histogram" => &[
@@ -109,7 +120,7 @@ fn containers(source: &str) -> &'static [&'static str] {
             "scope_attributes",
             "resource_attributes",
         ],
-        "metrics_gauge" | "metrics_sum" | "metrics_histogram" => {
+        "metrics" | "metrics_histogram" => {
             &["attributes", "resource_attributes", "scope_attributes"]
         }
         _ => &[],
@@ -136,16 +147,13 @@ fn is_attribute_container_column(source: &str, physical: &str) -> bool {
 /// - `traces.links`: the span's links list. No logical field exists for it
 ///   (only `span_events` was modeled, #1280); `get_trace` reads it directly
 ///   by physical name, bypassing the logical schema entirely.
-/// - metrics gauge/sum/histogram columns not yet covered by the (deferred)
-///   one-metric-model logical schema: `start_timestamp`, `metric_description`,
-///   `metric_unit`, `flags`, `resource_schema_url`, `scope_name`,
-///   `scope_version`, `scope_schema_url`, `scope_dropped_attr_count`,
-///   `exemplars`, plus sum's `aggregation_temporality`/`is_monotonic` and
-///   histogram's `count`/`sum`/`min`/`max`/`bucket_counts`/`explicit_bounds`/
-///   `aggregation_temporality`. These carry real meaning; they're just not
-///   modeled in the logical schema yet (deferred to the one-metric-model
-///   layer per the task), so marking them `physical_only` would misstate
-///   that they're computed/partition artifacts.
+/// - `metrics` columns the one metric model does not expose yet:
+///   `start_timestamp`, `metric_description`, `metric_unit`, `series_id`,
+///   `flags`, the resource/scope metadata, and the exponential histogram's
+///   scale/zero/offset/bucket columns (layer 8 adds exp-histogram
+///   quantiles). They carry real meaning, so marking them `physical_only`
+///   would misstate that they're computed/partition artifacts.
+/// - legacy `metrics_histogram` columns, for the same reason.
 fn known_gap(source: &str, physical: &str) -> bool {
     let names: &[&str] = match source {
         "traces" => &["links"],
@@ -166,19 +174,24 @@ fn known_gap(source: &str, physical: &str) -> bool {
             "trace_id",
             "span_id",
         ],
-        "metrics_gauge" | "metrics_sum" => &[
+        "metrics" => &[
             "start_timestamp",
             "metric_description",
             "metric_unit",
+            "series_id",
             "flags",
             "resource_schema_url",
             "scope_name",
             "scope_version",
             "scope_schema_url",
             "scope_dropped_attr_count",
-            "exemplars",
-            "aggregation_temporality",
-            "is_monotonic",
+            "scale",
+            "zero_count",
+            "zero_threshold",
+            "positive_offset",
+            "positive_bucket_counts",
+            "negative_offset",
+            "negative_bucket_counts",
         ],
         "metrics_histogram" => &[
             "start_timestamp",
@@ -223,15 +236,8 @@ fn schemas_for(
         "logs" => (&d.logs, &m.current_log_version),
         "traces" => (&d.traces, &m.current_trace_version),
         "profiles" => (&d.profiles, &m.current_profile_version),
+        "metrics" => (&d.metrics, &m.current_metric_version),
         // Pinned to the legacy per-type version, not `current_metric_version`.
-        "metrics_gauge" => (
-            &d.metrics_gauge,
-            common::iceberg::schemas::LEGACY_METRIC_VERSION,
-        ),
-        "metrics_sum" => (
-            &d.metrics_sum,
-            common::iceberg::schemas::LEGACY_METRIC_VERSION,
-        ),
         "metrics_histogram" => (
             &d.metrics_histogram,
             common::iceberg::schemas::LEGACY_METRIC_VERSION,
@@ -245,7 +251,7 @@ fn schemas_for(
 fn typed_layout_version(source: &str) -> &'static str {
     match source {
         "traces" => "physical-v5",
-        "logs" => "physical-v4",
+        "logs" | "metrics" => "physical-v4",
         _ => "physical-v3",
     }
 }
@@ -264,22 +270,12 @@ fn layouts_of(source: &str) -> [(&'static str, Vec<ResolvedField>); 2] {
 }
 
 /// Every physical table whose current version this test checks.
-const PHYSICAL_SOURCES: [&str; 6] = [
-    "logs",
-    "traces",
-    "profiles",
-    "metrics_gauge",
-    "metrics_sum",
-    "metrics_histogram",
-];
+const PHYSICAL_SOURCES: [&str; 5] = ["logs", "traces", "profiles", "metrics", "metrics_histogram"];
 
 /// The logical source name a physical table resolves fields against.
-/// `metrics_gauge`/`metrics_sum` share the `metrics` logical source (see
-/// `SourcePlan::for_source("metrics")`, which unions both tables);
-/// `metrics_histogram` is its own logical source.
 fn logical_source_for(physical_source: &str) -> &'static str {
     match physical_source {
-        "metrics_gauge" | "metrics_sum" => "metrics",
+        "metrics" => "metrics",
         "logs" => "logs",
         "traces" => "traces",
         "profiles" => "profiles",
