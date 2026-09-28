@@ -36,6 +36,10 @@ pub struct ReconcilePassSummary {
     pub tables_created: usize,
     /// Tables that could not be provisioned; retried on the next pass.
     pub tables_failed: usize,
+    /// Legacy per-type metric tables dropped this pass (otel-native-schema
+    /// layer 7, D10 cutover). Always zero under
+    /// [`common::iceberg::schemas::MetricsLayout::Legacy`].
+    pub legacy_metric_tables_dropped: usize,
 }
 
 /// Converges datasets on their enabled signal tables.
@@ -111,6 +115,12 @@ impl TableReconciler {
                 summary.tables_created += report.created.len();
                 summary.tables_failed += report.failed.len();
                 record_provisioning_metrics(&tenant.id, &dataset, &report);
+
+                let dropped = self
+                    .catalog_manager
+                    .purge_legacy_metric_tables(&tenant.id, &dataset)
+                    .await;
+                summary.legacy_metric_tables_dropped += dropped.len();
 
                 let mut ensured = self.ensured.lock().await;
                 for table in report.created.iter().chain(report.already_present.iter()) {
@@ -493,6 +503,7 @@ mod tests {
                 datasets_skipped: 1,
                 tables_created: 0,
                 tables_failed: 0,
+                legacy_metric_tables_dropped: 0,
             },
             "a converged dataset must not be re-checked against the catalog"
         );
@@ -556,6 +567,26 @@ mod tests {
     // names declared in the `registry.signaldb.tenancy` semconv group
     // (`signaldb.tenant.id` / `signaldb.dataset.id`), not bare `tenant` /
     // `dataset`, or `weaver registry live-check` flags them as unregistered.
+    // otel-native-schema layer 7, D10 cutover prep. `MetricsLayout::current()`
+    // reads the embedded `schemas.toml`'s `current_metric_version`, a
+    // process-global static that a unit test cannot flip to Wide -- the
+    // layout-gated drop itself is exercised directly, parameterized by
+    // layout, in `common::catalog_manager`'s
+    // `purge_legacy_metric_tables_with_layout` tests. This only proves the
+    // reconciler's wiring stays a no-op under today's Legacy layout.
+    #[tokio::test]
+    async fn run_pass_drops_no_legacy_metric_tables_under_the_legacy_layout() {
+        let manager = Arc::new(
+            CatalogManager::new(config_with(vec![config_tenant("acme", &["production"])]))
+                .await
+                .unwrap(),
+        );
+
+        let summary = TableReconciler::new(manager).run_pass().await.unwrap();
+
+        assert_eq!(summary.legacy_metric_tables_dropped, 0);
+    }
+
     #[test]
     fn provisioning_attrs_uses_registry_attribute_names() {
         let attrs = provisioning_attrs("acme", "production");
