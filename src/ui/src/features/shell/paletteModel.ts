@@ -44,10 +44,11 @@ const SESSION_ID_UUID =
 const SESSION_ID_HEX = /^[0-9a-f]{12,}$/i;
 
 /** A UUID, or a bare hex string of at least 12 characters — the spec's own
- * "session id (UUID or ≥12 hex chars)" — checked only once a query has
- * already failed the (higher-priority) trace/span id check. */
+ * "session id (UUID or ≥12 hex chars)" — excluding trace/span ids, which
+ * take priority. */
 export function isSessionIdLike(query: string): boolean {
   const q = query.trim();
+  if (isTraceOrSpanId(q)) return false;
   return SESSION_ID_UUID.test(q) || SESSION_ID_HEX.test(q);
 }
 

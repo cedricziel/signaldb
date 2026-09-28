@@ -133,4 +133,9 @@ describe("isSessionIdLike", () => {
   it("rejects non-hex text", () => {
     expect(isSessionIdLike("checkout-service")).toBe(false);
   });
+
+  it("rejects trace and span ids, which take priority", () => {
+    expect(isSessionIdLike("0123456789abcdef")).toBe(false);
+    expect(isSessionIdLike("0123456789abcdef0123456789abcdef")).toBe(false);
+  });
 });
