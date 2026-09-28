@@ -291,8 +291,9 @@ and Interactions follow in later changes and are not shown as placeholders.
 
 - **Overview.** Sessions, users, sessions-with-errors and traced requests
   (distinct `session.id`/`user.id`, the error share scoped to a session
-  carrying an `exception` record, the traced share the app's client HTTP
-  spans with a server child span in the same trace), each with the change
+  carrying an `exception` record, and the traced share, which is the share
+  of the app's client HTTP spans with a server child span in the same
+  trace), each with the change
   against the equal-length window before it and a sparkline computed from
   one bucketed read spanning both windows. **Core Web Vitals** shows LCP,
   INP, CLS, FCP and TTFB: the p75 of `browser.web_vital.value` per
