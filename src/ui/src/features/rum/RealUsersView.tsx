@@ -126,14 +126,14 @@ export function RealUsersView({ state, update, tab, onTabChange }: Props) {
 }
 
 /** The app's platform, from `resource.telemetry.sdk.language` — browser
- * only for now (per the spec's "Platform-aware labels" requirement, other
- * platforms are a later change), so anything else reads as "Unknown". */
+ * only for now (other platforms are the `rum-explore-tabs` change's
+ * "Platform-aware labels" requirement), so anything else reads as "Unknown". */
 function platformLabel(sdkLanguage: string | null): string {
   return sdkLanguage === "webjs" ? "Browser · JS" : "Unknown platform";
 }
 
 /** A plain globe glyph standing in for a per-platform icon (iOS/Android
- * icons are a later change — see the spec's platform-aware labels). */
+ * icons are a later change — see `rum-explore-tabs`). */
 function PlatformIcon() {
   return (
     <svg

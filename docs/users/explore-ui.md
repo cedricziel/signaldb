@@ -280,8 +280,8 @@ that sent at least one RUM event (a `browser.web_vital`,
 `browser.navigation`, `browser.user_action.click` or
 `browser.resource_timing` record, or any record carrying `session.id`) in
 the window. The app switcher lists every such app, busiest first, and
-defaults to the busiest; picking one writes `?app=` and clears any
-route/error/session selection. With no frontend app yet, the page shows an
+defaults to the busiest; picking one writes `?app=` and keeps the
+current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
 the **Overview** and **Setup** tabs; Pages, Sessions, Errors, Network and
 Interactions follow in later changes and are not shown as placeholders.
