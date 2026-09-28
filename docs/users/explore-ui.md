@@ -317,8 +317,13 @@ placeholders.
   an error share (`exception` records carrying that route's own
   `url.template`, divided by views — an exception with no route
   attribution isn't counted), sorted by the worst vital's poor share.
-  Picking a route writes `?route=`. Page views with no attributable route
-  raise a callout explaining `url.template` and linking to Setup.
+  Picking a route writes `?route=` and opens its detail: the same Web
+  Vitals cards as Overview, a **load breakdown** (p75 of DNS, connect+TLS,
+  request→first byte, response, DOM processing, DOMContentLoaded and load,
+  from `browser.navigation_timing`/`browser.resource_timing`), and
+  **backend calls** — `fetch`/`xhr` requests from that route, joined to the
+  Network tab's own backend service names. Page views with no attributable
+  route raise a callout explaining `url.template` and linking to Setup.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced

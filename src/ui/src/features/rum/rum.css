@@ -702,6 +702,48 @@ a.rum-row:hover {
   text-align: right;
 }
 
+.rum-load-wrap {
+  position: relative;
+}
+.rum-load-bar {
+  display: flex;
+  height: 22px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.rum-load-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.rum-load-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+.rum-backend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rum-backend-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 70px 64px minmax(80px, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rum-backend-row:last-child {
+  border-bottom: 0;
+}
+
 .rum-kv-row {
   display: grid;
   grid-column: 1 / -1;

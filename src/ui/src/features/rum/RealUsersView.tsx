@@ -135,6 +135,7 @@ export function RealUsersView({
             route={state.rumRoute}
             onSelectRoute={(route) => update({ rumRoute: route })}
             onOpenSetup={() => onTabChange("setup")}
+            onOpenNetwork={() => onTabChange("network")}
           />
         ) : (
           <OverviewTab
