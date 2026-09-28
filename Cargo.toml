@@ -5,6 +5,7 @@ members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/eval-model",
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
@@ -38,6 +39,7 @@ default-members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/eval-model",
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
@@ -67,6 +69,7 @@ license = "AGPL-3.0"
 [workspace.dependencies]
 acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
+eval-model = { path = "src/eval-model" }
 query-ir = { path = "src/query-ir" }
 ql-ir = { path = "src/ql-ir" }
 compactor = { path = "src/compactor" }
@@ -238,6 +241,9 @@ twox-hash = "2.1.4"
 humantime-serde = "1.1.1"
 
 hex = "0.4"
+
+# RFC 4180 CSV reader for eval results uploads (change: agent-offline-evals).
+csv = "1.4"
 base64 = "0.23"
 argon2 = { version = "0.5.3", features = ["std"] }
 tower = "0.5.2"

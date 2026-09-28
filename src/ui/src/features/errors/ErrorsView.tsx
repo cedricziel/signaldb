@@ -1,8 +1,9 @@
-// Errors & Exceptions: exceptions grouped by (type, message, service) across
+// Errors: exceptions grouped by (type, message, service) across
 // both places SignalDB can find them (see api/errors.ts) — an issue-list
 // style view built entirely on Query IR, no dedicated backend endpoint.
 import { useQuery } from "@tanstack/react-query";
 import { Fragment, useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import {
   fetchErrorGroupVolume,
   fetchErrorGroups,
@@ -42,7 +43,9 @@ import {
   stepForRange,
 } from "../../lib/time";
 import { formatValue } from "../../lib/vizFormat";
+import { compositeKey } from "../../lib/traceGroups";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+import { serviceHref } from "../overview/links";
 // `.catalog-headline`/`.catalog-title`/`.catalog-sub`/`.catalog-main`
 // (the section headings) and `.trace-open`/`.backbtn` (the drill-in and
 // back-navigation buttons) are shared button/heading styles this view
@@ -265,7 +268,7 @@ export function ErrorsView({ state, update }: Props) {
     <div className="errors-view">
       <div className="errors-head">
         <div className="catalog-headline">
-          <span className="catalog-title">Errors &amp; Exceptions</span>
+          <span className="catalog-title">Errors</span>
           <span className="catalog-sub">
             grouped from span exception events and log exception attributes
           </span>
@@ -454,6 +457,20 @@ export function ErrorsView({ state, update }: Props) {
                   {selected.exceptionType ?? "Exception"}
                 </span>
                 <span className="catalog-sub">
+                  {selected.serviceName && (
+                    <>
+                      in{" "}
+                      <Link
+                        to={serviceHref(
+                          compositeKey([selected.serviceName]),
+                          state,
+                        )}
+                      >
+                        {selected.serviceName}
+                      </Link>{" "}
+                      ·{" "}
+                    </>
+                  )}
                   individual occurrences — click one to view its stacktrace
                 </span>
               </div>

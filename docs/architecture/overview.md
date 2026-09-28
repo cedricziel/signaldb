@@ -97,6 +97,7 @@ Parquet storage with DataFusion query processing:
 | **logql**             | `src/logql/`                 | Library    | LogQL lexer, AST, and parser — syntax only, no product dependency; published as `logql-parser`                                                                                                 |
 | **traceql**           | `src/traceql/`               | Library    | TraceQL parser for the supported equality subset — syntax only, no product dependency; published as `traceql-parser`                                                                           |
 | **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                          |
+| **eval-model**        | `src/eval-model/`            | Library    | Eval run/comparison model: attribute names, pass rule, run stats, Query IR reads behind `evals runs\|compare` — leaf crate, not published; re-exported as `common::evals`                      |
 | **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                          |
 | **ottl**              | `src/ottl/`                  | Library    | In-house bounded OTTL subset (pest grammar): parser, compiler, evaluator over `opentelemetry-proto` request structs — backs tenant telemetry processors ([Processors](../users/processors.md)) |
 | **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                      |
@@ -182,6 +183,7 @@ flowchart LR
   - Metrics: 5000 entries, 10s flush
 - Converts OTLP protobuf to Arrow RecordBatches using `FlightSchemas`
 - Discovers Writers via `Storage` capability and sends data via Flight `do_put`
+- Fans each `gen_ai.evaluation.result` span event out into a log record (`common::evals::span_events`) written through the log handler after the trace batch is durable, so span-event eval results land in `logs` like OTLP ones; a failed log write is logged and does not fail the trace export ([Evaluating AI agents](../users/evaluations.md#results-as-span-events))
 
 ### Writer
 
@@ -402,7 +404,7 @@ noted):
 - The four lifecycle cycles — compaction, lease expiry, retention, orphan cleanup — each run on their own task at their own cadence, so none can postpone another. Three of the four then take turns per table: a lock registry keyed by `(tenant, dataset, table)` serializes compaction commits, retention partition drops, and snapshot expiration, so those actors never act on one table at once while different tables proceed independently. Lease expiry and orphan cleanup's deletion pass do not take the lock — the former touches no table metadata, and the latter is guarded instead by its live-set check and its unconditional pre-delete re-validation. Compaction acquires it inside `execute_candidate`, which covers both the background cycle and the `compact_now` Flight action; retention acquires it across drop-plus-expire, which covers both the retention cycle and the orphan-cleanup pass that pre-expires snapshots through the same enforcer. This is an in-process ordering that removes the compactor's self-conflicts; across instances, safety still rests on catalog CAS and on the delta commit validating its own input files. Every iteration is also guarded with `catch_unwind` — a panic is caught, counted (`compactor_cycle_panics_total`/`compactor_cycle_down`), and retried with backoff instead of ending its cycle's task permanently; `/health` stays a pure liveness probe (`200` regardless) so a recovering cycle never trips a container restart, but the guard only fires under an unwinding panic strategy — this workspace's `[profile.release]` sets `panic = "abort"`, so it is not yet load-bearing in a release build
 - Flight admin interface exposes only `do_action` commands (`compact_now`, `compact_status`, `compact_dry_run`) and `list_actions`; all other Flight RPCs return `unimplemented`
 - Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`. Orphan detection derives its live-file set from the union of the retained snapshots' manifests, never from snapshot age; a re-validation pass rebuilds that set immediately before each real deletion batch, unconditionally (a dry run still identifies candidates but skips the pass, because it deletes nothing). Building that set is bounded work: manifests are deduplicated across retained snapshots so each manifest file is read once, entries are streamed rather than collected, and the set itself keeps a 64-bit fingerprint per live path instead of the path — a collision can only make an orphan look live, never hide a live file. The object-store listing is streamed too, so the compactor's peak memory tracks live-file and candidate counts rather than the size of the listing
-- Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality, persists the statistics to the catalog's `attribute_stats` table, and — when `[compactor.attr_promotion]` is enabled — computes a promotion/demotion decision (demand × presence under a schema-width budget with streak hysteresis; epic #737 Layer 4). With `dry_run = false` (default is `true`, log-only) promotions are acted on at rewrite: the table schema is evolved to add the `label_<key>` columns, then the rewrite backfills them from the attributes map and commits via the normal partition delta path
+- Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality, persists the statistics to the catalog's `attribute_stats` table, and — when `[compactor.attr_promotion]` is enabled — computes a promotion/demotion decision (demand × presence under a schema-width budget with streak hysteresis; epic #737 Layer 4). Promotion works per (attribute level, key) from the catalog's `attribute_level_stats`. With `dry_run = false` (default is `true`, log-only) decisions are acted on at rewrite: the table schema is evolved to add or drop typed `attr_<level>_<key>` copy columns, then the rewrite backfills them from each level's typed map and commits via the normal partition delta path. Idle or over-budget promoted columns are demoted by a metadata-only drop; see [Attribute Promotion](../operations/compactor/operations.md#attribute-promotion)
 - Orphan cleanup logs one `DEBUG` line per deleted file and `INFO` per-batch/per-run summaries (a backlog pass can delete tens of thousands of files at startup)
 - Enabled by default (retention enforcement with 30d for each of traces, logs, metrics and profiles, and orphan-file cleanup — data files and unreferenced metadata files alike); disable with `[compactor].enabled = false`, or `[compactor.orphan_cleanup].enabled = false` / `dry_run = true` for cleanup alone
 
@@ -443,7 +445,18 @@ audience-bound to the configured MCP resource. See `docs/users/mcp.md` and the
 **Eval sets** (`/api/v1/eval-sets`, `endpoints/eval_sets.rs`) store
 tenant- and dataset-scoped lists of test cases for offline agent
 evaluation in the catalog (`common::eval_sets`), guarded by the
-`evals:read` / `evals:write` scopes. See [Eval sets](../users/eval-sets.md).
+`evals:read` / `evals:write` scopes. Building cases from traces
+(`cases/from-traces`) runs Query IR documents server-side through the same
+querier ticket path as `/api/v1/query`, and applies the shared pass rule
+(`common::evals`). See [Eval sets](../users/eval-sets.md). **Results
+upload** (`POST /api/v1/evals/results`, `endpoints/evals.rs`) turns a
+JSONL/CSV file into `gen_ai.evaluation.result` log records and reuses two
+pieces of the acceptor's ingest path from `common`: the tenant processor loop
+(`common::processors::apply`) and the writer `DoPut`
+(`common::flight::forward`). The router has no WAL of its own; the writer's
+WAL makes the upload durable before the router answers, and a retry with the
+same run id and file is deduplicated by the writer's ingest-id check. See
+[Evaluating AI agents](../users/evaluations.md#upload-a-results-file).
 
 The tenant management API (`/api/v1/*`, `endpoints/management.rs`)
 accepts a human principal (session or OAuth) with the tenant-admin role or

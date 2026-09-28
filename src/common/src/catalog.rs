@@ -1037,6 +1037,31 @@ impl Catalog {
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
 
+                // Per-level attribute statistics (change: otel-native-schema
+                // layer 6, D4/D5): the same advisory presence/demand
+                // tracking as `attribute_stats`, but keyed per
+                // (level, key) rather than per key, so demand-driven
+                // promotion can tell a resource-level key from a
+                // record-level key of the same name apart and demote by
+                // recency (`last_queried_at`) under a per-table budget.
+                // `attribute_stats` and its readers are untouched.
+                let create_attribute_level_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_level_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    present_rows BIGINT NOT NULL DEFAULT 0,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    query_hits BIGINT NOT NULL DEFAULT 0,
+                    last_queried_at TEXT,
+                    promote_streak BIGINT NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_level_stats).execute(pool).await?;
+
                 // Attribute type authority (change: otel-native-schema layer
                 // 3): the one canonical type per (tenant, dataset, signal,
                 // level, key), written once by first-seen/config/semconv and
@@ -1585,6 +1610,25 @@ impl Catalog {
                     PRIMARY KEY (tenant_id, dataset_id, signal, attr_key)
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
+
+                // Per-level attribute statistics (change: otel-native-schema
+                // layer 6, D4/D5): see the SQLite branch.
+                let create_attribute_level_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_level_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    present_rows BIGINT NOT NULL DEFAULT 0,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    query_hits BIGINT NOT NULL DEFAULT 0,
+                    last_queried_at TIMESTAMPTZ,
+                    promote_streak BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_level_stats).execute(pool).await?;
 
                 // Attribute type authority (change: otel-native-schema layer
                 // 3): see the SQLite branch.
@@ -3601,6 +3645,291 @@ impl Catalog {
                 .await?
                 .iter()
                 .map(stat)
+                .collect()),
+        }
+    }
+}
+
+/// A per-(attribute level, key) statistics row (change: otel-native-schema
+/// layer 6, D4/D5): the same scan-side presence and query-demand tracking as
+/// [`AttributeStatsRecord`], keyed per [`AttributeLevel`] so promotion can
+/// demote by per-level recency under a per-table budget.
+#[derive(Debug, Clone)]
+pub struct AttributeLevelStatsRecord {
+    pub tenant_id: String,
+    pub dataset_id: String,
+    pub signal: String,
+    pub level: crate::schema::logical::AttributeLevel,
+    pub attr_key: String,
+    pub present_rows: i64,
+    pub total_rows: i64,
+    pub query_hits: i64,
+    /// When this key was last observed in query demand, for LRU demotion.
+    /// `None` for a key that has scan presence but no recorded demand yet.
+    pub last_queried_at: Option<String>,
+    pub promote_streak: i64,
+    pub updated_at: String,
+}
+
+/// Per-level advisory attribute-statistics methods (change:
+/// otel-native-schema layer 6, D4/D5). Mirrors the per-key methods above,
+/// keyed additionally by [`AttributeLevel`].
+impl Catalog {
+    /// Upsert the scan-side statistics for one (level, key), replacing the
+    /// previous presence observation. `query_hits`, `last_queried_at`, and
+    /// `promote_streak` are left untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_attribute_level_scan_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        present_rows: i64,
+        total_rows: i64,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                     total_rows, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    present_rows = excluded.present_rows,
+                    total_rows = excluded.total_rows,
+                    updated_at = datetime('now')
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(present_rows)
+                .bind(total_rows)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                     total_rows, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    present_rows = EXCLUDED.present_rows,
+                    total_rows = EXCLUDED.total_rows,
+                    updated_at = NOW()
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(present_rows)
+                .bind(total_rows)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Add query-demand hits for one (level, key), accumulating the counter
+    /// and moving `last_queried_at` forward to the later of the stored and
+    /// given time. Scan-side columns are left untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_attribute_level_query_hits(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        hits: i64,
+        queried_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, query_hits,
+                     last_queried_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    query_hits = attribute_level_stats.query_hits + excluded.query_hits,
+                    last_queried_at = CASE
+                        WHEN attribute_level_stats.last_queried_at IS NULL
+                             OR excluded.last_queried_at > attribute_level_stats.last_queried_at
+                        THEN excluded.last_queried_at
+                        ELSE attribute_level_stats.last_queried_at
+                    END,
+                    updated_at = datetime('now')
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(hits)
+                .bind(queried_at.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, query_hits,
+                     last_queried_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    query_hits = attribute_level_stats.query_hits + EXCLUDED.query_hits,
+                    last_queried_at = CASE
+                        WHEN attribute_level_stats.last_queried_at IS NULL
+                             OR EXCLUDED.last_queried_at > attribute_level_stats.last_queried_at
+                        THEN EXCLUDED.last_queried_at
+                        ELSE attribute_level_stats.last_queried_at
+                    END,
+                    updated_at = NOW()
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(hits)
+                .bind(queried_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store the new promotion streak for one (level, key) (LRU/hysteresis
+    /// state for demand-driven promotion).
+    pub async fn set_attribute_level_promote_streak(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        streak: i64,
+    ) -> Result<(), sqlx::Error> {
+        let sql_sqlite = "UPDATE attribute_level_stats SET promote_streak = ? \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND level = ? AND attr_key = ?";
+        let sql_pg = "UPDATE attribute_level_stats SET promote_streak = $1 \
+             WHERE tenant_id = $2 AND dataset_id = $3 AND signal = $4 AND level = $5 AND attr_key = $6";
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(sql_sqlite)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(level.as_str())
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(sql_pg)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(level.as_str())
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The stored per-level statistics for one (tenant, dataset, signal),
+    /// sorted by level then attribute key. A row whose stored `level` string
+    /// doesn't map to a known [`AttributeLevel`] is skipped with a warning
+    /// rather than failing the whole read.
+    pub async fn list_attribute_level_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) -> Result<Vec<AttributeLevelStatsRecord>, sqlx::Error> {
+        let sql_sqlite = r#"
+            SELECT tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                   total_rows, query_hits, CAST(last_queried_at AS TEXT) AS last_queried_at,
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_level_stats
+            WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
+            ORDER BY level, attr_key
+        "#;
+        let sql_pg = r#"
+            SELECT tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                   total_rows, query_hits, CAST(last_queried_at AS TEXT) AS last_queried_at,
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_level_stats
+            WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
+            ORDER BY level, attr_key
+        "#;
+        fn record<R: Row>(row: &R) -> Option<AttributeLevelStatsRecord>
+        where
+            for<'a> &'a str: sqlx::ColumnIndex<R>,
+            for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> Option<String>: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+        {
+            let level_str: String = row.get("level");
+            let Some(level) = crate::schema::logical::AttributeLevel::parse(&level_str) else {
+                tracing::warn!(
+                    level = %level_str,
+                    "attribute_level_stats row has an unrecognized level; skipping"
+                );
+                return None;
+            };
+            Some(AttributeLevelStatsRecord {
+                tenant_id: row.get("tenant_id"),
+                dataset_id: row.get("dataset_id"),
+                signal: row.get("signal"),
+                level,
+                attr_key: row.get("attr_key"),
+                present_rows: row.get("present_rows"),
+                total_rows: row.get("total_rows"),
+                query_hits: row.get("query_hits"),
+                last_queried_at: row.get("last_queried_at"),
+                promote_streak: row.get("promote_streak"),
+                updated_at: row.get("updated_at"),
+            })
+        }
+        match self {
+            Catalog::Sqlite(pool) => Ok(query(sql_sqlite)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .filter_map(record)
+                .collect()),
+            Catalog::Postgres(pool) => Ok(query(sql_pg)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .filter_map(record)
                 .collect()),
         }
     }
@@ -8472,6 +8801,191 @@ mod multi_tenancy_tests {
         assert!(
             catalog
                 .get_attribute_stats("t", "d", "traces")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn attribute_level_stats_hits_accumulate_and_last_queried_at_only_moves_forward() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let earlier: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        let later: DateTime<Utc> = "2026-01-02T00:00:00Z".parse().unwrap();
+
+        catalog
+            .add_attribute_level_query_hits(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Record,
+                "namespace",
+                3,
+                later,
+            )
+            .await
+            .unwrap();
+        // An older hit still accumulates the counter but must not move
+        // last_queried_at backwards.
+        catalog
+            .add_attribute_level_query_hits(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Record,
+                "namespace",
+                2,
+                earlier,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].query_hits, 5);
+        assert_eq!(
+            stats[0].last_queried_at.as_deref().unwrap(),
+            later.to_rfc3339()
+        );
+    }
+
+    #[tokio::test]
+    async fn attribute_level_scan_upsert_does_not_clobber_query_hits() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let queried_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+
+        catalog
+            .add_attribute_level_query_hits(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Resource,
+                "namespace",
+                4,
+                queried_at,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Resource,
+                "namespace",
+                90,
+                120,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].present_rows, 90);
+        assert_eq!(stats[0].total_rows, 120);
+        assert_eq!(stats[0].query_hits, 4, "scan upsert must not touch hits");
+    }
+
+    #[tokio::test]
+    async fn attribute_level_stats_are_distinct_rows_per_level_for_the_same_key() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Resource,
+                "environment",
+                10,
+                100,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Record,
+                "environment",
+                40,
+                100,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 2, "one row per level, same key");
+        let resource_row = stats
+            .iter()
+            .find(|s| s.level == AttributeLevel::Resource)
+            .expect("resource-level row");
+        assert_eq!(resource_row.present_rows, 10);
+        let record_row = stats
+            .iter()
+            .find(|s| s.level == AttributeLevel::Record)
+            .expect("record-level row");
+        assert_eq!(record_row.present_rows, 40);
+    }
+
+    #[tokio::test]
+    async fn attribute_level_stats_list_round_trips_the_level_and_promote_streak() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Scope,
+                "instrumentation.name",
+                5,
+                100,
+            )
+            .await
+            .unwrap();
+        catalog
+            .set_attribute_level_promote_streak(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Scope,
+                "instrumentation.name",
+                3,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].level, AttributeLevel::Scope);
+        assert_eq!(stats[0].attr_key, "instrumentation.name");
+        assert_eq!(stats[0].promote_streak, 3);
+
+        assert!(
+            catalog
+                .list_attribute_level_stats("t", "d", "traces")
                 .await
                 .unwrap()
                 .is_empty()

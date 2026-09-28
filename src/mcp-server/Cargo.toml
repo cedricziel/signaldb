@@ -31,6 +31,7 @@ reqwest.workspace = true
 # `discover_datasets`/`server_info` fan out one request per granted tenant
 # for a multi-tenant OAuth credential; `join_all` runs them concurrently.
 futures.workspace = true
+uuid.workspace = true
 workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [package.metadata.cargo-machete]
@@ -38,6 +39,8 @@ workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 ignored = ["workspace-hack"]
 
 [dev-dependencies]
+# `test_util::FakeIr`, the Query IR stand-in shared with the CLI's tests.
+eval-model = { workspace = true, features = ["testing"] }
 tower.workspace = true
 opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }

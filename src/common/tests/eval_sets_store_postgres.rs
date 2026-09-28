@@ -1,7 +1,7 @@
 //! Eval-set catalog storage on Postgres — the SQLite suite lives in
 //! `tests/eval_sets_store.rs` (change: agent-offline-evals, task 5.1).
 
-use common::eval_sets::{EvalCase, EvalCaseSource, EvalSetSpec, StoreError};
+use common::eval_sets::{EvalCase, EvalCaseSource, EvalCaseSourceCounts, EvalSetSpec, StoreError};
 use common::testing::{connect_catalog_with_retry, start_container_with_retry};
 use testcontainers_modules::postgres::Postgres;
 
@@ -91,6 +91,15 @@ async fn eval_sets_round_trip_append_and_cascade_on_postgres() {
         .expect("exists");
     assert_eq!(ids(&fetched.cases), vec!["c", "a", "b", "d"]);
     assert_eq!(fetched.summary.created_at, created.summary.created_at);
+    let listed = catalog.list_eval_sets("acme", "prod").await.expect("list");
+    assert_eq!(
+        listed[0].sources,
+        EvalCaseSourceCounts {
+            trace: 1,
+            upload: 1,
+            hand_written: 2
+        }
+    );
 
     let replaced = catalog
         .replace_eval_set("acme", "prod", "golden", spec("golden", &["z"]))
@@ -110,7 +119,7 @@ async fn eval_sets_round_trip_append_and_cascade_on_postgres() {
         .expect("insert staging");
     let summaries = catalog.list_eval_sets("acme", "prod").await.expect("list");
     assert_eq!(summaries.len(), 1);
-    assert_eq!(summaries[0].case_count, 1);
+    assert_eq!(summaries[0].summary.case_count, 1);
 
     let prod_id = catalog
         .get_datasets("acme")

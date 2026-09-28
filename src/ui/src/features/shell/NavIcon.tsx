@@ -8,6 +8,7 @@ export type NavIconName =
   | "overview"
   | "errors"
   | "catalog"
+  | "rum"
   | "logs"
   | "traces"
   | "metrics"
@@ -18,9 +19,12 @@ export type NavIconName =
   | "instrumentation"
   | "evals"
   | "compare"
+  | "sets"
   | "runs"
   | "evaluators"
   | "manage"
+  | "api-keys"
+  | "integrations"
   | "search"
   | "collapse"
   | "updown"
@@ -67,6 +71,12 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
           <line x1="6" y1={y} x2="14" y2={y} />
         </g>
       ))}
+    </>
+  ),
+  rum: (
+    <>
+      <circle cx="8" cy="4.5" r="2.5" />
+      <path d="M2.5 14 C2.5 10 5 8.5 8 8.5 C11 8.5 13.5 10 13.5 14" />
     </>
   ),
   logs: (
@@ -127,6 +137,13 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
       <polyline points="8,10 11,13 14,10" {...round} />
     </>
   ),
+  sets: (
+    <>
+      <rect x="2" y="2.5" width="12" height="3" rx=".75" />
+      <rect x="2" y="6.5" width="12" height="3" rx=".75" />
+      <rect x="2" y="10.5" width="12" height="3" rx=".75" />
+    </>
+  ),
   runs: (
     <>
       <circle cx="8" cy="8" r="5.5" />
@@ -145,6 +162,19 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
       <circle cx="10" cy="5" r="1.8" fill="var(--surface)" />
       <line x1="2" y1="11" x2="14" y2="11" />
       <circle cx="6" cy="11" r="1.8" fill="var(--surface)" />
+    </>
+  ),
+  "api-keys": (
+    <>
+      <circle cx="5.5" cy="10.5" r="3" />
+      <path d="M7.6 8.4 L13.5 2.5 M11.5 4.5 L13 6 M10 6 L11.5 7.5" {...round} />
+    </>
+  ),
+  integrations: (
+    <>
+      <path d="M6.5 9.5 L9.5 6.5" {...round} />
+      <path d="M7 4.5 L8.8 2.7 A2.6 2.6 0 0 1 13.3 7.2 L11.5 9" {...round} />
+      <path d="M9 11.5 L7.2 13.3 A2.6 2.6 0 0 1 2.7 8.8 L4.5 7" {...round} />
     </>
   ),
   search: (

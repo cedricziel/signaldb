@@ -1,0 +1,241 @@
+/**
+ * Pure model helpers behind the Real users page: Web Vitals thresholds,
+ * formatting and rating (`explore-ui-rum`'s "Web Vitals from
+ * browser.web_vital events" requirement), distribution shares for the
+ * good/needs-improvement/poor bar, the KPI bucketed-series split, and the
+ * page's tab list (shared by the tab strip and the command palette). No
+ * fetching, no React — see `api/rum.ts` and `useRumData.ts` for those. The
+ * KPI change indicator itself is `lib/relChange.ts`, shared with
+ * `features/overview`.
+ */
+
+/** `browser.web_vital.name` values, lowercase as the SDK emits them. */
+export type VitalName = "lcp" | "inp" | "cls" | "fcp" | "ttfb";
+
+export const VITAL_NAMES: readonly VitalName[] = [
+  "lcp",
+  "inp",
+  "cls",
+  "fcp",
+  "ttfb",
+];
+
+export type VitalRating = "good" | "needs-improvement" | "poor";
+
+/** Web Vitals thresholds (good ≤ first, poor > second), in the value's own
+ * unit — ms for every vital but CLS, which is unitless. */
+const THRESHOLDS: Record<VitalName, [number, number]> = {
+  lcp: [2500, 4000],
+  inp: [200, 500],
+  cls: [0.1, 0.25],
+  fcp: [1800, 3000],
+  ttfb: [800, 1800],
+};
+
+export const VITAL_LABELS: Record<VitalName, string> = {
+  lcp: "LCP",
+  inp: "INP",
+  cls: "CLS",
+  fcp: "FCP",
+  ttfb: "TTFB",
+};
+
+export const VITAL_TITLES: Record<VitalName, string> = {
+  lcp: "Largest Contentful Paint",
+  inp: "Interaction to Next Paint",
+  cls: "Cumulative Layout Shift",
+  fcp: "First Contentful Paint",
+  ttfb: "Time to First Byte",
+};
+
+const RATING_LABELS: Record<VitalRating, string> = {
+  good: "Good",
+  "needs-improvement": "Needs improvement",
+  poor: "Poor",
+};
+
+export function ratingLabel(rating: VitalRating): string {
+  return RATING_LABELS[rating];
+}
+
+/** Rates a p75 value against the vital's thresholds — used when a rating
+ * needs deriving from a raw number (e.g. the aggregated p75), independent
+ * of the per-record `browser.web_vital.rating` the distribution bar reads. */
+export function rateVital(name: VitalName, p75: number): VitalRating {
+  const [good, poor] = THRESHOLDS[name];
+  if (p75 <= good) return "good";
+  if (p75 <= poor) return "needs-improvement";
+  return "poor";
+}
+
+/** LCP/FCP/TTFB in seconds, INP in milliseconds, CLS unitless — per the
+ * spec's display units. `value` is in the record's own unit (ms, or
+ * unitless for CLS). */
+export function formatVitalValue(name: VitalName, value: number): string {
+  switch (name) {
+    case "lcp":
+    case "fcp":
+    case "ttfb":
+      return `${(value / 1000).toFixed(value >= 10000 ? 0 : 1)} s`;
+    case "inp":
+      return `${Math.round(value)} ms`;
+    case "cls":
+      return value.toFixed(2);
+  }
+}
+
+/** `—` for a vital with no records in the window, never `0`. */
+export const NO_VITAL_DATA = "—";
+
+export interface VitalShare {
+  rating: VitalRating;
+  count: number;
+  share: number;
+  threshold: string;
+}
+
+const THRESHOLD_TEXT: Record<VitalName, string> = {
+  lcp: "≤2.5s good · >4s poor",
+  inp: "≤200ms good · >500ms poor",
+  cls: "≤0.1 good · >0.25 poor",
+  fcp: "≤1.8s good · >3s poor",
+  ttfb: "≤0.8s good · >1.8s poor",
+};
+
+export function vitalThresholdText(name: VitalName): string {
+  return THRESHOLD_TEXT[name];
+}
+
+/** The good/poor threshold bound, formatted in the vital's own display
+ * unit — for the distribution tooltip's "Good ≤ 2.5 s" / "Poor > 4 s" rows
+ * (the prototype's `VitalDist`). */
+export function vitalThresholdBound(
+  name: VitalName,
+  which: "good" | "poor",
+): string {
+  const [good, poor] = THRESHOLDS[name];
+  return formatVitalValue(name, which === "good" ? good : poor);
+}
+
+/** CSS colour token for a rating's *text* (the word "Good"/"Poor"), distinct
+ * from `RATING_COLOR`-style swatch colours used for the distribution bar —
+ * matches the prototype's `ok-text`/`warn-banner-text`/`err` choice, which
+ * reads better as inline text than the bar's saturated `--ok`/`--warn`. */
+export function ratingTextColorVar(rating: VitalRating): string {
+  return rating === "good"
+    ? "var(--ok-text)"
+    : rating === "poor"
+      ? "var(--err)"
+      : "var(--warn-banner-text)";
+}
+
+/** CSS colour token for a rating's *swatch* (the distribution bar segment
+ * and its tooltip row) — matches the prototype's `RATE_COLOR`. */
+export function ratingSwatchColorVar(rating: VitalRating): string {
+  return rating === "good"
+    ? "var(--ok)"
+    : rating === "poor"
+      ? "var(--err)"
+      : "var(--warn)";
+}
+
+/** The good/needs-improvement/poor distribution bar's shares, always in
+ * that order, summing to 1 (or all zero when there are no records). */
+export function vitalShares(
+  counts: Partial<Record<VitalRating, number>>,
+): VitalShare[] {
+  const order: VitalRating[] = ["good", "needs-improvement", "poor"];
+  const total = order.reduce((s, r) => s + (counts[r] ?? 0), 0);
+  return order.map((rating) => {
+    const count = counts[rating] ?? 0;
+    return {
+      rating,
+      count,
+      share: total > 0 ? count / total : 0,
+      threshold: "",
+    };
+  });
+}
+
+export interface VitalFigure {
+  name: VitalName;
+  /** Undefined when the window holds no record for this vital — render
+   * `NO_VITAL_DATA`, not `0`. */
+  p75?: number;
+  rating?: VitalRating;
+  formatted: string;
+  shares: VitalShare[];
+}
+
+/** One vital card's figures from its p75 and per-rating counts. */
+export function vitalFigure(
+  name: VitalName,
+  p75: number | undefined,
+  counts: Partial<Record<VitalRating, number>>,
+): VitalFigure {
+  const hasData = p75 !== undefined && !Number.isNaN(p75);
+  return {
+    name,
+    p75: hasData ? p75 : undefined,
+    rating: hasData ? rateVital(name, p75) : undefined,
+    formatted: hasData ? formatVitalValue(name, p75) : NO_VITAL_DATA,
+    shares: vitalShares(counts),
+  };
+}
+
+// ---- KPI delta / sparkline -----------------------------------------------
+
+export interface KpiSeriesPoint {
+  tMs: number;
+  value: number;
+}
+
+export interface KpiFigure {
+  /** Sum (or, for a share KPI, the ratio) over the current half of the
+   * bucketed window. */
+  value: number;
+  /** Same figure for the equal-length window immediately before; undefined
+   * when that half has no data to compare against. */
+  previous?: number;
+  /** The current half's points only — what the card's sparkline draws. */
+  series: KpiSeriesPoint[];
+}
+
+/** Splits one bucketed series spanning `[from, from + 2*span)` into the
+ * earlier and later halves at their midpoint, and sums each half — the "one
+ * bucketed read over twice the window" pattern (design.md decision 3a):
+ * the later half is this window's value and sparkline, the earlier half is
+ * the previous-window comparison. */
+export function splitKpiSeries(
+  points: KpiSeriesPoint[],
+  midMs: number,
+): KpiFigure {
+  const previous = points.filter((p) => p.tMs < midMs);
+  const current = points.filter((p) => p.tMs >= midMs);
+  return {
+    value: current.reduce((s, p) => s + p.value, 0),
+    previous:
+      previous.length > 0
+        ? previous.reduce((s, p) => s + p.value, 0)
+        : undefined,
+    series: current,
+  };
+}
+
+// ---- Tabs ------------------------------------------------------------
+
+export type RumTab = "overview" | "setup";
+
+/** The tabs this build ships, in display order — the page's tab strip and
+ * the command palette both map over this (`explore-ui-rum`'s "Real users
+ * command palette entries" requirement), so a later group's new tab needs
+ * adding only here. */
+export const RUM_TABS: { id: RumTab; label: string }[] = [
+  { id: "overview", label: "Overview" },
+  { id: "setup", label: "Setup" },
+];
+
+/** An unknown tab settles on Overview, matching the route's own fallback. */
+export function rumTabFromParam(value: string | undefined): RumTab {
+  return RUM_TABS.some((t) => t.id === value) ? (value as RumTab) : "overview";
+}

@@ -37,25 +37,25 @@
 - [x] 5.3 Router handler tests: CRUD, append cases, tenant isolation, privilege checks (`cargo test -p router`). Appending from a trace query follows in its own task (5.6).
 - [x] 5.4 `router/src/endpoints/eval_sets.rs`, `evals:read`/`evals:write` scopes, and OpenAPI registration; `cargo xtask generate`.
 - [x] 5.5 Regenerate the Rust SDK (`src/signaldb-sdk`) and the TypeScript client (`src/ui/src/api/gen`).
-- [ ] 5.6 Append cases from a trace query (`invoke_agent` spans by filter, run through the Query IR), with tests.
+- [x] 5.6 Append cases from a trace query (`invoke_agent` spans by filter, run through the Query IR), with tests.
 
 ## 6. Results upload
 
-- [ ] 6.1 Parser tests for JSONL/CSV rows, column errors and run-level rows (`cargo test -p common`).
-- [ ] 6.2 Results parser and conversion to `gen_ai.evaluation.result` log records.
-- [ ] 6.3 `POST /api/v1/evals/results` handler tests, then the handler writing through the log ingest path; OpenAPI and both clients regenerated.
-- [ ] 6.4 Integration test in `tests-integration`: upload → the run is queryable over the IR with the right pass rate.
+- [x] 6.1 Parser tests for JSONL/CSV rows, column errors and run-level rows (`cargo test -p common`).
+- [x] 6.2 Results parser and conversion to `gen_ai.evaluation.result` log records.
+- [x] 6.3 `POST /api/v1/evals/results` handler tests, then the handler writing through the log ingest path; OpenAPI and both clients regenerated.
+- [x] 6.4 Integration test in `tests-integration`: upload → the run is queryable over the IR with the right pass rate.
 
 ## 7. Span-event results
 
-- [ ] 7.1 Acceptor test: a `gen_ai.evaluation.result` span event becomes a log record with the span's trace context (`cargo test -p acceptor`).
-- [ ] 7.2 Fan-out in the acceptor's trace ingest path.
+- [x] 7.1 Acceptor test: a `gen_ai.evaluation.result` span event becomes a log record with the span's trace context (`cargo test -p acceptor`).
+- [x] 7.2 Fan-out in the acceptor's trace ingest path.
 
 ## 8. Surfaces
 
 - [x] 8.1a CLI: eval sets — `signaldb-cli eval-sets list|get|export` and `signaldb-cli admin eval-sets create|replace|delete|append`, with tests.
-- [ ] 8.1b CLI: `evals upload` with `--compare-to` / `--fail-if`, with tests.
-- [ ] 8.2 UI: Eval sets list and detail, New eval set dialog, Add traces panel, Upload results dialog, "Save regressed cases as eval set".
+- [x] 8.1b CLI: `evals upload` with `--compare-to` / `--fail-if`, with tests.
+- [x] 8.2 UI: Eval sets list and detail, New eval set dialog, Add traces panel, Upload results dialog, "Save regressed cases as eval set".
 - [x] 8.3a MCP: eval set tools `list_eval_sets`, `get_eval_set`, `create_eval_set`, `replace_eval_set`, `delete_eval_set`, `append_eval_cases` (`mcp-server`), with tests.
-- [ ] 8.3b MCP: read tools for runs and comparisons (`mcp-server`), with tests.
-- [ ] 8.4 Docs: eval sets, results file format, CI gate; update the `http-api` and `crate-map` skills if their described behaviour changes.
+- [x] 8.3b MCP: read tools for runs and comparisons (`mcp-server`), with tests.
+- [x] 8.4 Docs: eval sets, results file format, CI gate; update the `http-api` and `crate-map` skills if their described behaviour changes.

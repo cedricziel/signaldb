@@ -148,7 +148,8 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   neither source alone is the whole picture. A facet sidebar (type, service,
   source, handled) narrows the list. Selecting a group shows a
   count-over-time chart for that exact group (labelled with the window's
-  start, middle and end times) plus its individual
+  start, middle and end times), its service (a link to that service's
+  [catalog](#the-catalog) entry), and its individual
   occurrences (up to 25, newest first); each occurrence independently offers
   a link into the trace waterfall when it carries a trace id — occurrences
   of the same group don't all share one trace outcome — and expands to its
@@ -210,8 +211,8 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   or Forward re-seeds the builder from the
   URL, the formula box is cleared with it, so a formula never refers to
   query letters that are no longer there. The tenant/dataset context rides along as
-  `?tenant=&dataset=`; links that omit it (the user menu, deep links inside
-  the schema hub) keep the last context you were in, and the last context is
+  `?tenant=&dataset=`; links that omit it (the Configure and Settings
+  pages, deep links inside the schema hub) keep the last context you were in, and the last context is
   also remembered in the browser (cleared on sign-out) so a bookmark or a new
   tab opening a bare `/schema/storage`, `/api-keys`, or `/manage` resumes
   there instead of turning into a tenant-less request. Tenant/dataset
@@ -272,11 +273,66 @@ window, 30 buckets wide, and every row links into the view that explains it
   step is done; the palette's **Open setup checklist** opens it directly
   (`/overview?setup`).
 
+### Real users
+
+`/rum/{tab}` shows browser telemetry per frontend app — a `service.name`
+that sent at least one RUM event (a `browser.web_vital`,
+`browser.navigation`, `browser.user_action.click` or
+`browser.resource_timing` record, or any record carrying `session.id`) in
+the window. The app switcher lists every such app, busiest first, and
+defaults to the busiest; picking one writes `?app=` and clears any
+route/error/session selection. With no frontend app yet, the page shows an
+empty state pointing at **Setup** instead of empty panels. This build ships
+the **Overview** and **Setup** tabs; Pages, Sessions, Errors, Network and
+Interactions follow in later changes and are not shown as placeholders.
+
+- **Overview.** Sessions and sessions-with-errors (distinct `session.id`,
+  the latter scoped to a session carrying an `exception` record) and page
+  views, each with the change against the equal-length window before it and
+  a sparkline computed from one bucketed read spanning both windows.
+  **Core Web Vitals** shows LCP, INP, CLS, FCP and TTFB: the p75 of
+  `browser.web_vital.value` per `browser.web_vital.name` (values are
+  lowercase, in milliseconds except CLS), rated against the Web Vitals
+  thresholds and shown by shape and colour; a vital with no records in the
+  window reads `—`, never `0`. Each card's good/needs-improvement/poor
+  distribution bar's tooltip lists every share and its threshold. **Sessions
+  over time** stacks sessions with and without errors. **Top errors** reuses
+  the Errors grouping, scoped to the app. **Sessions by browser** and **by
+  device** break down the window's records by `browser.brands` (when the SDK
+  sends it — many deployments don't yet, so this can read empty) and
+  `browser.mobile`.
+- **Setup.** Copyable snippets for instrumenting a browser app with the
+  upstream OpenTelemetry SDK: install, initialize with the app's
+  `service.name`, and export to an OpenTelemetry Collector or the app's own
+  backend — never a SignalDB API key in browser code, since SignalDB keys
+  are bearer credentials with no origin restriction and any key shipped to a
+  browser is public. The collector/backend then forwards to SignalDB holding
+  the key server-side. A live checklist tracks the first session, first page
+  view and first vitals record received for the selected app.
+- **Command palette.** The Real users tabs and every frontend app with RUM
+  data are palette entries; picking an app opens `/rum/overview?app=`.
+
 ### Agent evaluations
 
 The **Evaluate** group reads evaluator results for AI agents — offline eval
 runs first — and compares agent versions case by case. What to send and how
 each page reads it is in [Evaluating AI agents](evaluations.md).
+
+- **Eval sets** (`/evals/sets`) lists the dataset's eval sets with what
+  their cases were built from and how the newest run of each scored. **New
+  eval set…** starts a set from a JSONL file of cases, from real agent
+  traces, or empty. A set's page (`/evals/sets/{name}`) shows its cases
+  with each case's score in the newest run, **Export JSONL**, an **Add
+  traces** panel that appends cases from matching agent traces, the Runs of
+  the set, and a Settings tab to delete it. Details:
+  [Eval sets in the Explore UI](eval-sets.md#in-the-explore-ui).
+- **Upload results…** on Runs uploads a JSONL or CSV results file as one
+  run, previewing its cases, evaluators and columns first; the dialog also
+  holds the CLI command for CI and the OTLP log-record form. Details:
+  [From the Explore UI](evaluations.md#from-the-explore-ui).
+- **Save N regressed cases as eval set** on Compare turns the regressions
+  into a new eval set, copying each case's input, expected tools and
+  reference from the set the runs replayed.
 
 ### The catalog
 
@@ -880,8 +936,8 @@ that page. The OAuth consent screen redirects the same way on its own
 unauthenticated check.
 
 Any URL — including the site root (`/`) with `?tenant=&dataset=`
-attached — that doesn't match a known route redirects to `/logs`,
-preserving its query string, so a tenant/dataset carried on a deep link or
+attached — that doesn't match a known route redirects home to
+[`/overview`](#the-overview), preserving its query string, so a tenant/dataset carried on a deep link or
 external redirect survives the trip instead of landing on an empty,
 tenant-less page.
 
@@ -918,15 +974,16 @@ Every page sits in one shell: a navigation sidebar on the left, and a page
 header across the top of the main column.
 
 - **Sidebar.** The signaldb wordmark, the tenant/dataset switcher, then the
-  pages in four groups — **Monitor** (Overview, Errors, Catalog),
+  pages in groups — **Monitor** (Overview, Errors, Catalog),
   **Investigate** (Logs, Traces, Metrics, Profiles, Query), **Evaluate**
-  (Agents & scores, Compare, Runs, Evaluators — see
-  [Evaluating AI agents](evaluations.md)) and **Configure** (Schema,
-  Processors, Instrumentation). At the bottom are **Manage** (tenant and
-  instance admins only), your account (which opens the
-  [user menu](#user-menu)) and **Collapse**. Links to explore pages carry
-  the current time range and tenant/dataset; filters and search stay with
-  the page you left.
+  (Agents & scores, Compare, Eval sets, Runs, Evaluators — see
+  [Evaluating AI agents](evaluations.md)), **Configure** (Schema,
+  Processors, Send data) and, for tenant and instance admins only,
+  **Settings** (Manage, API keys, Integrations). The read-only demo account
+  doesn't see Schema or Processors. At the bottom are your account (which
+  opens the [user menu](#user-menu)) and **Collapse**. Links to explore
+  pages carry the current time range and tenant/dataset; filters and search
+  stay with the page you left.
 - **Collapsing.** **Collapse** (or the `[` key, outside text fields) shrinks
   the sidebar to icons. It starts collapsed below 1024px and expanded above;
   once you toggle it, your choice is remembered in this browser at every
@@ -937,16 +994,23 @@ header across the top of the main column.
   it. The choice goes into the URL (`?tenant=&dataset=`) and becomes the
   sticky context described above.
 - **Page header.** A "Group / Page" breadcrumb, and a search field that
-  opens the command palette.
+  opens the command palette. On a detail page the breadcrumb gains the item
+  you're looking at, and the page crumb links back to its list: a trace
+  shows its short id ("Investigate / Traces / 4bf92f35"), a catalog entity
+  its name, an eval case its id, a schema registry `namespace@version`
+  (**Edit …** or **New registry** in the editor), and a processor its name
+  (**New processor** while creating one).
 - **Phones.** Below 720px the sidebar gives way to a 48px top bar (menu,
-  wordmark, current page, search, account); the menu button opens the
+  wordmark, current page — or the detail item on a detail page — search,
+  account); the menu button opens the
   pages in a drawer, which closes on navigation, backdrop tap or Escape.
 
 ### Command palette
 
 **⌘K** (**Ctrl+K**), the header's search field, or the phone top bar's
 search button opens a palette centered over the page. With nothing typed it
-lists your recent queries, pages and a few actions. Typing filters pages,
+lists every page you can open, grouped as in the sidebar (Settings only for
+admins), then your recent queries and a few actions. Typing filters pages,
 the catalog's services (jumping to their catalog entry), recent queries and
 actions (Invite members, Create API key, Instrument a service, Connect
 GitHub, Switch tenant, Open setup checklist). Pasting a 32- or 16-digit hex trace id offers a
@@ -961,17 +1025,11 @@ clears them.
 ## User menu
 
 Once signed in, your account at the bottom of the sidebar (the avatar in the
-phone top bar) opens a user menu:
+phone top bar) opens a user menu. It holds account items only; pages live in
+the sidebar.
 
 - **Appearance** — toggle between light and dark theme; the choice is
   persisted in `localStorage` and restored on reload.
-- **Send data** — opens the Instrumentation page (see below).
-- **API keys** — opens the API Keys page (see below); shown only to tenant
-  admins and instance admins, the same rule as the **Manage** link.
-- **GitHub** — opens the GitHub integration page (see below); same
-  admin-only rule as **API keys**.
-- **Schema** — opens the Schema hub (see below).
-- **Processors** — opens the Processors page (see below).
 - **Docs** — opens the SignalDB documentation in a new tab.
 - **Switch tenant** — opens the Tenant Selection page (see below).
 - **Sign out** — deletes the session, clears the query cache, and
@@ -990,20 +1048,22 @@ range.
 Tenant-admin-only. A deep-linkable panel (not ad hoc component state, so it
 survives a bookmark or browser back/forward) covering the tenant's
 self-service surface in one place: **Datasets** (create, delete non-default
-ones), **API keys** (create with a scope picker, revoke; the secret shows
-once), **Members** (add or update a role by email, remove), **Tables**
+ones), **API keys** (the count of active keys and a link to the
+[API keys page](#api-keys-api-keys), the one place keys are created, scoped
+and revoked), **Members** (add or update a role by email, remove), **Tables**
 (the tenant's provisioned signal tables, grouped by dataset with one heading
 per dataset, refetched immediately after provisioning; a **Provision tables**
 action calls the manual-trigger endpoint — see
 [table provisioning](../operations/table-provisioning.md)), and, for
 instance administrators only, **New tenant**. Destructive actions (delete a
-dataset, revoke a key, remove a member) swap the button for an inline
+dataset, remove a member) swap the button for an inline
 confirmation first; Escape or Cancel backs out. Close, Escape, and a
 backdrop click step back to the page the panel was opened from, or to the
-Logs view when the panel was the first page of the tab (a bookmark or a
+Overview when the panel was the first page of the tab (a bookmark or a
 new-tab link). A whoami failure that isn't a 401 shows an inline error with
-the message instead of silently bouncing to Logs; only a resolved
-non-admin role redirects. All of it consumes the
+the message instead of silently bouncing home; only a resolved
+non-admin role redirects (to the Overview, as do the API keys and GitHub
+pages). All of it consumes the
 generated client (`src/ui/src/api/management.ts`), never raw `fetch`.
 The tenant's default dataset carries a **Default** badge instead of a delete
 button — it can't be deleted — rather than silently omitting the button with
@@ -1038,7 +1098,7 @@ one repository (see below).
 
 ### GitHub (`/integrations/github`)
 
-Tenant-admin-only page for connecting SignalDB's GitHub App to the
+Tenant-admin-only page (**Settings → Integrations**) for connecting SignalDB's GitHub App to the
 repositories that produce the tenant's telemetry. **Connect GitHub** asks
 the server for an install URL (`POST
 /api/v1/tenants/{id}/github-installations/link`) and sends the
@@ -1061,10 +1121,10 @@ model: [Connecting GitHub](../operations/github-app.md).
 
 ### API keys (`/api-keys`)
 
-Tenant-admin-only page for managing API keys. The same API functions
-used by the admin management panel (`listApiKeys`, `createApiKey`,
-`updateApiKey`, `revokeApiKey`) power this page, but it is scoped to
-the current tenant rather than requiring instance-admin privileges.
+Tenant-admin-only page (**Settings → API keys**) and the one place API keys
+are created, scoped, edited and revoked, through the generated management
+client (`listApiKeys`, `createApiKey`, `updateApiKey`, `revokeApiKey`),
+scoped to the current tenant.
 
 Every key carries explicit scopes chosen in a picker grouped into
 **Ingestion** (`metrics:write`, `logs:write`, `traces:write`,
@@ -1083,7 +1143,7 @@ the secret; the change applies to the key's next request.
 Creating a key shows the secret once in a modal with a copy button;
 revoking is immediate and irreversible, and revoked keys cannot be edited.
 
-### Instrumentation (`/instrumentation`)
+### Send data (`/instrumentation`)
 
 Guided, source-specific instructions for sending telemetry to
 SignalDB. A sidebar lets the user pick one of six sources:
@@ -1166,7 +1226,7 @@ changed, and removed definitions against the stored document, and
 **Delete** with confirmation. Bundled registries never expose these
 actions. Unsaved edits are guarded everywhere: any in-app navigation away
 from a dirty form (the editor's crumb links, the sidebar, the command
-palette, the user menu, browser Back or Forward) opens an "Unsaved changes" dialog
+palette, browser Back or Forward) opens an "Unsaved changes" dialog
 with **Stay** and **Leave**, and reload or tab close still gets the
 browser's own warning. The same guard covers the API-key form, the consent
 dialog and the allowed-origins picker, since they register as dirty forms

@@ -34,6 +34,7 @@ import {
   useComparedRuns,
 } from "./useEvalData";
 import "./evals.css";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 const MODES: [EvalCaseMode, string][] = [
   ["candidate", "Candidate"],
@@ -170,6 +171,7 @@ export function CaseView(shell: ShellContext) {
   const { scope, runs, baseline, candidate, base, cand } =
     useComparedRuns(state);
   const caseId = state.evals.case;
+  useBreadcrumbLeaf(caseId);
   const mode = state.evals.mode;
   const baseTraceId = base.data?.traces.get(caseId);
   const candTraceId = cand.data?.traces.get(caseId);

@@ -46,7 +46,7 @@
   height: 24px;
   border-radius: 6px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;
@@ -91,7 +91,7 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow) 25%, transparent);
   overflow: hidden;
 }
 
@@ -191,7 +191,7 @@
 }
 
 .user-menu-signout:hover {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* Ensure internal links look consistent */

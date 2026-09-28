@@ -1,6 +1,7 @@
 import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { MemoryRouter } from "react-router";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ManagementPanel } from "./ManagementPanel";
 import type { WhoamiResponse } from "../../api/session";
@@ -20,7 +21,13 @@ const WHO: WhoamiResponse = {
 
 function renderPanel() {
   return renderWithClient(
-    <ManagementPanel who={WHO} onClose={() => {}} onTenantCreated={() => {}} />,
+    <MemoryRouter>
+      <ManagementPanel
+        who={WHO}
+        onClose={() => {}}
+        onTenantCreated={() => {}}
+      />
+    </MemoryRouter>,
   );
 }
 
@@ -34,11 +41,13 @@ const WHO_WITH_TWO_DATASETS: WhoamiResponse = {
 
 function renderPanelWithTwoDatasets() {
   return renderWithClient(
-    <ManagementPanel
-      who={WHO_WITH_TWO_DATASETS}
-      onClose={() => {}}
-      onTenantCreated={() => {}}
-    />,
+    <MemoryRouter>
+      <ManagementPanel
+        who={WHO_WITH_TWO_DATASETS}
+        onClose={() => {}}
+        onTenantCreated={() => {}}
+      />
+    </MemoryRouter>,
   );
 }
 
@@ -56,90 +65,14 @@ afterEach(() => {
 
 const TABLES_PATH = "/api/v1/tenants/acme/tables";
 
-describe("ManagementPanel API key creation form", () => {
-  it("pre-checks all four ingestion scopes by default", async () => {
-    stubFetchRoutes([
-      { match: "/api/v1/tenants/acme/api-keys", body: [] },
-      { match: "/api/v1/tenants/acme/memberships", body: [] },
-      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
-    ]);
-
-    renderPanel();
-
-    for (const scope of [
-      "metrics:write",
-      "logs:write",
-      "traces:write",
-      "profiles:write",
-    ]) {
-      await waitFor(() =>
-        expect(
-          document.querySelector<HTMLInputElement>(`input[name="${scope}"]`),
-        ).toBeChecked(),
-      );
-    }
-  });
-
-  it("offers a dataset multi-select and creates a key restricted to the checked datasets", async () => {
-    const fetchMock = stubFetchRoutes([
-      {
-        match: "/api/v1/tenants/acme/api-keys",
-        method: "GET",
-        body: [],
-      },
-      {
-        match: "/api/v1/tenants/acme/api-keys",
-        method: "POST",
-        body: { key: "sdbk_x" },
-      },
-      { match: "/api/v1/tenants/acme/memberships", body: [] },
-      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
-    ]);
-
-    renderPanel();
-
-    await waitFor(() =>
-      expect(screen.getByLabelText("production")).toBeInTheDocument(),
-    );
-    expect(screen.getByLabelText("production")).not.toBeChecked();
-    await userEvent.click(screen.getByLabelText("production"));
-    await userEvent.click(screen.getByText("Create API key"));
-
-    await waitFor(() => {
-      const post = fetchMock.mock.calls
-        .map((call) => call[0])
-        .filter((req): req is Request => req instanceof Request)
-        .find((req) => req.url.includes("/api-keys") && req.method === "POST");
-      expect(post).toBeDefined();
-    });
-    const post = fetchMock.mock.calls
-      .map((call) => call[0])
-      .filter((req): req is Request => req instanceof Request)
-      .find((req) => req.url.includes("/api-keys") && req.method === "POST")!;
-    expect(await post.clone().json()).toMatchObject({
-      dataset_ids: ["production"],
-    });
-  });
-
-  it("shows a key's dataset restriction, or 'unrestricted' when there is none", async () => {
+describe("ManagementPanel API keys section", () => {
+  it("points to the API keys page instead of offering a second create form", async () => {
     stubFetchRoutes([
       {
         match: "/api/v1/tenants/acme/api-keys",
         body: [
-          {
-            id: "k1",
-            name: "restricted",
-            dataset_ids: ["production"],
-            scopes: ["metrics:write"],
-            revoked: false,
-          },
-          {
-            id: "k2",
-            name: "open",
-            dataset_ids: null,
-            scopes: ["metrics:write"],
-            revoked: false,
-          },
+          { id: "k1", name: "collector", revoked: false, created_at: "" },
+          { id: "k2", name: "old", revoked: true, created_at: "" },
         ],
       },
       { match: "/api/v1/tenants/acme/memberships", body: [] },
@@ -148,62 +81,13 @@ describe("ManagementPanel API key creation form", () => {
 
     renderPanel();
 
-    await waitFor(() =>
-      expect(screen.getByText("restricted")).toBeInTheDocument(),
-    );
+    const link = await screen.findByRole("link", { name: /api keys/i });
+    expect(link).toHaveAttribute("href", "/api-keys");
+    expect(await screen.findByText(/1 active key\b/)).toBeInTheDocument();
+    expect(screen.queryByText("Create API key")).not.toBeInTheDocument();
     expect(
-      screen.getByText((content) =>
-        content.startsWith("production · Any origin · metrics:write"),
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText((content) =>
-        content.startsWith("unrestricted · Any origin · metrics:write"),
-      ),
-    ).toBeInTheDocument();
-  });
-
-  it("offers an allowed-origins picker and creates a key restricted to the typed origin", async () => {
-    const fetchMock = stubFetchRoutes([
-      {
-        match: "/api/v1/tenants/acme/api-keys",
-        method: "GET",
-        body: [],
-      },
-      {
-        match: "/api/v1/tenants/acme/api-keys",
-        method: "POST",
-        body: { key: "sdbk_origin" },
-      },
-      { match: "/api/v1/tenants/acme/memberships", body: [] },
-      { match: TABLES_PATH, body: { tenant_id: "acme", tables: [] } },
-    ]);
-
-    renderPanel();
-
-    await waitFor(() =>
-      expect(screen.getByLabelText("Add allowed origin")).toBeInTheDocument(),
-    );
-    await userEvent.type(
-      screen.getByLabelText("Add allowed origin"),
-      "https://a.example{Enter}",
-    );
-    await userEvent.click(screen.getByText("Create API key"));
-
-    await waitFor(() => {
-      const post = fetchMock.mock.calls
-        .map((call) => call[0])
-        .filter((req): req is Request => req instanceof Request)
-        .find((req) => req.url.includes("/api-keys") && req.method === "POST");
-      expect(post).toBeDefined();
-    });
-    const post = fetchMock.mock.calls
-      .map((call) => call[0])
-      .filter((req): req is Request => req instanceof Request)
-      .find((req) => req.url.includes("/api-keys") && req.method === "POST")!;
-    expect(await post.clone().json()).toMatchObject({
-      allowed_origins: ["https://a.example"],
-    });
+      document.querySelector('input[name="logs:write"]'),
+    ).not.toBeInTheDocument();
   });
 });
 

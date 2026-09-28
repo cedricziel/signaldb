@@ -3,7 +3,7 @@
 //! twin lives in `tests/eval_sets_store_postgres.rs`.
 
 use common::catalog::Catalog;
-use common::eval_sets::{EvalCase, EvalCaseSource, EvalSetSpec, StoreError};
+use common::eval_sets::{EvalCase, EvalCaseSource, EvalCaseSourceCounts, EvalSetSpec, StoreError};
 
 const TRACE_ID: &str = "4bf92f3577b34da6a3ce929d0e0e4736";
 
@@ -113,25 +113,52 @@ async fn insert_get_replace_delete_round_trip_keeps_case_order() {
 }
 
 #[tokio::test]
-async fn list_returns_summaries_with_case_counts_sorted_by_name() {
-    let catalog = catalog_with("acme", &["prod"]).await;
+async fn list_returns_summaries_with_case_and_source_counts_sorted_by_name() {
+    let catalog = catalog_with("acme", &["prod", "staging"]).await;
+    let mut triage = spec("triage-golden", &["a", "b", "c", "d"]);
+    triage.cases[0].source = EvalCaseSource::Trace {
+        trace_id: TRACE_ID.to_string(),
+    };
+    triage.cases[1].source = EvalCaseSource::Trace {
+        trace_id: TRACE_ID.to_string(),
+    };
+    triage.cases[2].source = EvalCaseSource::Upload;
     catalog
-        .insert_eval_set("acme", "prod", spec("triage-golden", &["a", "b", "c"]))
+        .insert_eval_set("acme", "prod", triage)
         .await
         .expect("insert triage");
     catalog
         .insert_eval_set("acme", "prod", spec("empty-set", &[]))
         .await
         .expect("insert empty");
+    // Same set name in another dataset: its cases must not be counted.
+    catalog
+        .insert_eval_set("acme", "staging", spec("triage-golden", &["x", "y"]))
+        .await
+        .expect("insert staging");
 
-    let summaries = catalog.list_eval_sets("acme", "prod").await.expect("list");
-    let rows: Vec<(&str, u64)> = summaries
+    let listed = catalog.list_eval_sets("acme", "prod").await.expect("list");
+    let rows: Vec<(&str, u64, EvalCaseSourceCounts)> = listed
         .iter()
-        .map(|s| (s.name.as_str(), s.case_count))
+        .map(|l| (l.summary.name.as_str(), l.summary.case_count, l.sources))
         .collect();
-    assert_eq!(rows, vec![("empty-set", 0), ("triage-golden", 3)]);
-    assert_eq!(summaries[1].agent, "support-triage");
-    assert_eq!(summaries[1].description.as_deref(), Some("edge cases"));
+    assert_eq!(
+        rows,
+        vec![
+            ("empty-set", 0, EvalCaseSourceCounts::default()),
+            (
+                "triage-golden",
+                4,
+                EvalCaseSourceCounts {
+                    trace: 2,
+                    upload: 1,
+                    hand_written: 1
+                }
+            ),
+        ]
+    );
+    assert_eq!(listed[1].summary.agent, "support-triage");
+    assert_eq!(listed[1].summary.description.as_deref(), Some("edge cases"));
 }
 
 #[tokio::test]

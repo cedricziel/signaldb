@@ -27,7 +27,7 @@ ignored = [
     "datafusion-expr", "datafusion-functions", "datafusion-optimizer",
     "datafusion-physical-expr", "datafusion-physical-optimizer", "deranged",
     "digest", "either", "errno", "figment", "flate2", "foldhash",
-    "form_urlencoded", "futures-channel", "futures-executor", "futures-io",
+    "form_urlencoded", "futures-channel", "futures-core", "futures-executor", "futures-io", "futures-sink",
     "futures-task", "futures-util", "generic-array",
     "getrandom-468e82937335b1c9", "hashbrown-3575ec1268b04181", "hyper",
     "hyper-rustls", "hyper-util", "indexmap", "itertools", "itertools-582f2526e08bb6a0", "lazy_static",
@@ -83,8 +83,10 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 form_urlencoded = { version = "1" }
 futures-channel = { version = "0.3", features = ["sink"] }
+futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
 futures-io = { version = "0.3" }
+futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 generic-array = { version = "0.14", default-features = false, features = ["more_lengths", "zeroize"] }
@@ -124,6 +126,7 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
 sha2 = { version = "0.10", features = ["oid"] }
+slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 spin = { version = "0.9" }
 sqlparser = { version = "0.62", features = ["visitor"] }
@@ -183,8 +186,10 @@ flate2 = { version = "1", features = ["zlib-rs"] }
 foldhash = { version = "0.2" }
 form_urlencoded = { version = "1" }
 futures-channel = { version = "0.3", features = ["sink"] }
+futures-core = { version = "0.3" }
 futures-executor = { version = "0.3" }
 futures-io = { version = "0.3" }
+futures-sink = { version = "0.3" }
 futures-task = { version = "0.3", default-features = false, features = ["std"] }
 futures-util = { version = "0.3", features = ["channel", "io", "sink"] }
 generic-array = { version = "0.14", default-features = false, features = ["more_lengths", "zeroize"] }
@@ -224,6 +229,7 @@ serde = { version = "1", features = ["alloc", "derive", "rc"] }
 serde_core = { version = "1", features = ["alloc", "rc"] }
 serde_json = { version = "1", features = ["alloc", "preserve_order", "raw_value"] }
 sha2 = { version = "0.10", features = ["oid"] }
+slab = { version = "0.4" }
 smallvec = { version = "1", default-features = false, features = ["const_new", "serde"] }
 spin = { version = "0.9" }
 sqlparser = { version = "0.62", features = ["visitor"] }
@@ -266,7 +272,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -288,7 +293,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -310,7 +314,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -332,7 +335,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -354,7 +356,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -376,7 +377,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -398,7 +398,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -420,7 +419,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -443,7 +441,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -466,7 +463,6 @@ pyroscope = { version = "2", features = ["backend-jemalloc", "backend-pprof-rs"]
 rustix = { version = "1", features = ["fs", "stdio", "termios"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 stable_deref_trait = { version = "1" }
 tikv-jemalloc-sys = { version = "0.7", features = ["profiling", "unprefixed_malloc_on_supported_platforms"] }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
@@ -481,7 +477,6 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }
@@ -496,7 +491,6 @@ hyper-rustls = { version = "0.27", default-features = false, features = ["aws-lc
 hyper-util = { version = "0.1", default-features = false, features = ["client-proxy", "client-proxy-system"] }
 rustls = { version = "0.23", default-features = false, features = ["aws-lc-rs", "aws_lc_rs"] }
 rustls-webpki = { version = "0.103", default-features = false, features = ["aws-lc-rs", "ring", "std"] }
-slab = { version = "0.4" }
 tokio-rustls = { version = "0.26", default-features = false, features = ["aws-lc-rs", "ring", "tls12"] }
 tokio-util = { version = "0.7", features = ["codec", "io"] }
 tower = { version = "0.5", default-features = false, features = ["retry", "timeout"] }

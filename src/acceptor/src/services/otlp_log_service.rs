@@ -37,6 +37,21 @@ impl LogHandlerTrait for LogHandler {
     }
 }
 
+/// Lets the gRPC log service run on the same `Arc<LogHandler>` the trace
+/// handler's evaluation-result fan-out shares (see `handler::otlp_grpc`).
+#[async_trait::async_trait]
+impl LogHandlerTrait for Arc<LogHandler> {
+    async fn handle_grpc_otlp_logs(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportLogsServiceRequest,
+    ) -> Result<(), IngestError> {
+        self.as_ref()
+            .handle_grpc_otlp_logs(tenant_context, request)
+            .await
+    }
+}
+
 pub struct LogAcceptorService<H: LogHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,

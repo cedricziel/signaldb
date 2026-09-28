@@ -42,7 +42,7 @@ use tonic::transport::Server;
 use tower::ServiceExt;
 
 /// A base timestamp (2023-11-14T22:13:20Z) shared by the ingested signals.
-const BASE_NS: i64 = 1_700_000_000_000_000_000;
+pub(crate) const BASE_NS: i64 = 1_700_000_000_000_000_000;
 
 pub(crate) struct TestServices {
     pub(crate) flight_transport: Arc<InMemoryFlightTransport>,
@@ -279,11 +279,14 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         wal_manager.clone(),
         processor_registry.clone(),
     ));
-    let trace_handler = Arc::new(TraceHandler::new(
-        flight_transport.clone(),
-        wal_manager,
-        processor_registry.clone(),
-    ));
+    let trace_handler = Arc::new(
+        TraceHandler::new(
+            flight_transport.clone(),
+            wal_manager,
+            processor_registry.clone(),
+        )
+        .with_evaluation_logs(log_handler.clone()),
+    );
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {
@@ -313,7 +316,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
     }
 }
 
-fn string_value(s: &str) -> AnyValue {
+pub(crate) fn string_value(s: &str) -> AnyValue {
     AnyValue {
         value: Some(Value::StringValue(s.to_string())),
     }
@@ -438,7 +441,8 @@ pub(crate) fn traces_request(service: &str, spans: Vec<Span>) -> ExportTraceServ
     }
 }
 
-/// Build the router with the native IR endpoint and test auth.
+/// Build the router with the native IR, processors, eval-sets and eval-results endpoints
+/// and test auth.
 pub(crate) async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
@@ -465,6 +469,8 @@ pub(crate) async fn build_router(services: &TestServices) -> Router {
             "/api/v1",
             endpoints::query::router()
                 .merge(endpoints::processors::router())
+                .merge(endpoints::eval_sets::router())
+                .merge(endpoints::evals::router())
                 .with_state(state),
         )
         .merge(traces_http)

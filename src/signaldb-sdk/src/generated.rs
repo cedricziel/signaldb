@@ -33,6 +33,11 @@ pub mod types {
     response of every rate-limited operation.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct ApiErrorBody {
+        /**The individual problems behind the error, when the endpoint reports
+        them one by one (e.g. the invalid rows of an uploaded results file).
+        Absent otherwise.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub details: ::std::option::Option<::std::vec::Vec<ApiErrorDetail>>,
         pub error: ::std::string::String,
         #[serde(rename = "errorType")]
         pub error_type: ::std::string::String,
@@ -48,6 +53,86 @@ pub mod types {
     }
     impl ApiErrorBody {
         pub fn builder() -> builder::ApiErrorBody {
+            Default::default()
+        }
+    }
+    ///One problem behind an [`ApiErrorBody`]: where it is and why.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct ApiErrorDetail {
+        ///The column or field at fault, when there is one.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub column: ::std::option::Option<::std::string::String>,
+        pub reason: ::std::string::String,
+        /**1-based line of the request body the problem starts on; absent for
+        a problem with the body as a whole.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub row: ::std::option::Option<i64>,
+    }
+    impl ApiErrorDetail {
+        pub fn builder() -> builder::ApiErrorDetail {
+            Default::default()
+        }
+    }
+    ///Result of appending cases from traces.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct AppendCasesFromTracesOutcome {
+        pub added: i64,
+        ///Ids of the new cases, in the order they now appear in the set.
+        pub added_ids: ::std::vec::Vec<::std::string::String>,
+        ///Matching traces the set already holds a case for.
+        pub already_present: i64,
+        /**Distinct matching traces (after the `failing_evaluator` filter), at
+        most 10,000.*/
+        pub matches: i64,
+    }
+    impl AppendCasesFromTracesOutcome {
+        pub fn builder() -> builder::AppendCasesFromTracesOutcome {
+            Default::default()
+        }
+    }
+    /**Body of `POST /api/v1/eval-sets/{name}/cases/from-traces`.
+
+    Unknown keys are rejected: every option narrows or shapes the query, so
+    a misspelt one silently widening it would add the wrong cases.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct AppendCasesFromTracesRequest {
+        /**`gen_ai.agent.name` of the agent span (a span without one matches on
+        `service.name`). Defaults to the eval set's agent.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub agent: ::std::option::Option<::std::string::String>,
+        /**Set each case's expected tools to the trace's `execute_tool` spans'
+        `gen_ai.tool.name`s in call order.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub expected_tools: ::std::option::Option<bool>,
+        /**Keep only traces holding at least one failing result
+        (`gen_ai.evaluation.result`) of the evaluator with this
+        `gen_ai.evaluation.name` in the same window. Evaluator errors never
+        count as failures.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub failing_evaluator: ::std::option::Option<::std::string::String>,
+        /**Extra Query IR predicates the agent span must satisfy (logical field
+        names, e.g. `{"field": "deployment.environment", "op": "eq", "value":
+        "prod"}`).*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub filters: ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        ///`gen_ai.operation.name` of the agent span. Default `invoke_agent`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub operation: ::std::option::Option<::std::string::String>,
+        pub range: QueryRange,
+        /**Set each case's reference to the agent's answer (the last text of
+        the agent span's `gen_ai.output.messages`).*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub reference_from_answer: ::std::option::Option<bool>,
+        ///How many new cases to add, 1-1000. Default 50.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub sample: ::std::option::Option<::std::num::NonZeroU32>,
+        ///Tags put on every new case.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub tags: ::std::vec::Vec<::std::string::String>,
+    }
+    impl AppendCasesFromTracesRequest {
+        pub fn builder() -> builder::AppendCasesFromTracesRequest {
             Default::default()
         }
     }
@@ -1007,12 +1092,113 @@ pub mod types {
         #[serde(rename = "hand_written")]
         HandWritten,
     }
+    ///How many of a set's cases came from each [`EvalCaseSource`] kind.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalCaseSourceCounts {
+        pub hand_written: i64,
+        pub trace: i64,
+        pub upload: i64,
+    }
+    impl EvalCaseSourceCounts {
+        pub fn builder() -> builder::EvalCaseSourceCounts {
+            Default::default()
+        }
+    }
+    ///The format of an uploaded results file.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum EvalResultsFormat {
+        #[serde(rename = "csv")]
+        Csv,
+        #[serde(rename = "jsonl")]
+        Jsonl,
+    }
+    impl ::std::fmt::Display for EvalResultsFormat {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Csv => f.write_str("csv"),
+                Self::Jsonl => f.write_str("jsonl"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for EvalResultsFormat {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "csv" => Ok(Self::Csv),
+                "jsonl" => Ok(Self::Jsonl),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for EvalResultsFormat {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for EvalResultsFormat {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///Links on an upload response.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalResultsUploadLinks {
+        pub query: Link,
+        pub runs: Link,
+    }
+    impl EvalResultsUploadLinks {
+        pub fn builder() -> builder::EvalResultsUploadLinks {
+            Default::default()
+        }
+    }
+    ///The run an upload wrote, with its per-evaluator summary.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalResultsUploadResponse {
+        pub agent: ::std::string::String,
+        ///Distinct case ids.
+        pub cases: i64,
+        ///Per evaluator, ordered by name.
+        pub evaluators: ::std::vec::Vec<EvaluatorSummary>,
+        #[serde(rename = "_links")]
+        pub links: EvalResultsUploadLinks,
+        ///Result rows written.
+        pub rows: i64,
+        pub run_id: ::std::string::String,
+        ///Rows without a `trace_id` (run-level results).
+        pub run_level: i64,
+        pub set: ::std::string::String,
+        ///Rows with a `trace_id`.
+        pub span_linked: i64,
+        pub version: ::std::string::String,
+    }
+    impl EvalResultsUploadResponse {
+        pub fn builder() -> builder::EvalResultsUploadResponse {
+            Default::default()
+        }
+    }
     /**Links on one eval set. The mutation links appear only when the caller
     may write.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EvalSetLinks {
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub append_cases: ::std::option::Option<Link>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub append_cases_from_traces: ::std::option::Option<Link>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub delete: ::std::option::Option<Link>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -1127,7 +1313,8 @@ pub mod types {
             Default::default()
         }
     }
-    ///An eval set as listed, without its cases.
+    /**An eval set as listed, without its cases but with how many of them came
+    from each source kind.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EvalSetSummaryResponse {
         pub agent: ::std::string::String,
@@ -1138,10 +1325,33 @@ pub mod types {
         #[serde(rename = "_links")]
         pub links: EvalSetLinks,
         pub name: ::std::string::String,
+        pub sources: EvalCaseSourceCounts,
         pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
     }
     impl EvalSetSummaryResponse {
         pub fn builder() -> builder::EvalSetSummaryResponse {
+            Default::default()
+        }
+    }
+    ///Figures for one evaluator of an upload.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvaluatorSummary {
+        ///Rows with an `error`: never counted as failures.
+        pub errors: i64,
+        ///Mean score over the rows with a score and no error; `null` when none.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub mean: ::std::option::Option<f64>,
+        ///`gen_ai.evaluation.name`.
+        pub name: ::std::string::String,
+        /**Passes / (passes + fails) under the pass rule; `null` when no row
+        has a verdict.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub pass_rate: ::std::option::Option<f64>,
+        ///Result rows, evaluator errors included.
+        pub results: i64,
+    }
+    impl EvaluatorSummary {
+        pub fn builder() -> builder::EvaluatorSummary {
             Default::default()
         }
     }
@@ -3591,6 +3801,25 @@ pub mod types {
             Default::default()
         }
     }
+    ///What an upload holds.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct UploadSummary {
+        ///Distinct case ids.
+        pub cases: i64,
+        ///Per evaluator, ordered by name.
+        pub evaluators: ::std::vec::Vec<EvaluatorSummary>,
+        ///Result rows written.
+        pub rows: i64,
+        ///Rows without a `trace_id` (run-level results).
+        pub run_level: i64,
+        ///Rows with a `trace_id`.
+        pub span_linked: i64,
+    }
+    impl UploadSummary {
+        pub fn builder() -> builder::UploadSummary {
+            Default::default()
+        }
+    }
     ///`UpsertMembershipRequest`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct UpsertMembershipRequest {
@@ -3815,6 +4044,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct ApiErrorBody {
+            details: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<super::ApiErrorDetail>>,
+                ::std::string::String,
+            >,
             error: ::std::result::Result<::std::string::String, ::std::string::String>,
             error_type: ::std::result::Result<::std::string::String, ::std::string::String>,
             retry_after_ms:
@@ -3824,6 +4057,7 @@ pub mod types {
         impl ::std::default::Default for ApiErrorBody {
             fn default() -> Self {
                 Self {
+                    details: Ok(Default::default()),
                     error: Err("no value supplied for error".to_string()),
                     error_type: Err("no value supplied for error_type".to_string()),
                     retry_after_ms: Ok(Default::default()),
@@ -3832,6 +4066,18 @@ pub mod types {
             }
         }
         impl ApiErrorBody {
+            pub fn details<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<super::ApiErrorDetail>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.details = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for details: {e}"));
+                self
+            }
             pub fn error<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::string::String>,
@@ -3879,6 +4125,7 @@ pub mod types {
                 value: ApiErrorBody,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    details: value.details?,
                     error: value.error?,
                     error_type: value.error_type?,
                     retry_after_ms: value.retry_after_ms?,
@@ -3889,10 +4136,343 @@ pub mod types {
         impl ::std::convert::From<super::ApiErrorBody> for ApiErrorBody {
             fn from(value: super::ApiErrorBody) -> Self {
                 Self {
+                    details: Ok(value.details),
                     error: Ok(value.error),
                     error_type: Ok(value.error_type),
                     retry_after_ms: Ok(value.retry_after_ms),
                     status: Ok(value.status),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct ApiErrorDetail {
+            column: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            reason: ::std::result::Result<::std::string::String, ::std::string::String>,
+            row: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+        }
+        impl ::std::default::Default for ApiErrorDetail {
+            fn default() -> Self {
+                Self {
+                    column: Ok(Default::default()),
+                    reason: Err("no value supplied for reason".to_string()),
+                    row: Ok(Default::default()),
+                }
+            }
+        }
+        impl ApiErrorDetail {
+            pub fn column<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.column = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for column: {e}"));
+                self
+            }
+            pub fn reason<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.reason = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for reason: {e}"));
+                self
+            }
+            pub fn row<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.row = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for row: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<ApiErrorDetail> for super::ApiErrorDetail {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: ApiErrorDetail,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    column: value.column?,
+                    reason: value.reason?,
+                    row: value.row?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::ApiErrorDetail> for ApiErrorDetail {
+            fn from(value: super::ApiErrorDetail) -> Self {
+                Self {
+                    column: Ok(value.column),
+                    reason: Ok(value.reason),
+                    row: Ok(value.row),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AppendCasesFromTracesOutcome {
+            added: ::std::result::Result<i64, ::std::string::String>,
+            added_ids: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            already_present: ::std::result::Result<i64, ::std::string::String>,
+            matches: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for AppendCasesFromTracesOutcome {
+            fn default() -> Self {
+                Self {
+                    added: Err("no value supplied for added".to_string()),
+                    added_ids: Err("no value supplied for added_ids".to_string()),
+                    already_present: Err("no value supplied for already_present".to_string()),
+                    matches: Err("no value supplied for matches".to_string()),
+                }
+            }
+        }
+        impl AppendCasesFromTracesOutcome {
+            pub fn added<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.added = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for added: {e}"));
+                self
+            }
+            pub fn added_ids<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.added_ids = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for added_ids: {e}"));
+                self
+            }
+            pub fn already_present<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.already_present = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for already_present: {e}")
+                });
+                self
+            }
+            pub fn matches<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.matches = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for matches: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AppendCasesFromTracesOutcome> for super::AppendCasesFromTracesOutcome {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AppendCasesFromTracesOutcome,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    added: value.added?,
+                    added_ids: value.added_ids?,
+                    already_present: value.already_present?,
+                    matches: value.matches?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AppendCasesFromTracesOutcome> for AppendCasesFromTracesOutcome {
+            fn from(value: super::AppendCasesFromTracesOutcome) -> Self {
+                Self {
+                    added: Ok(value.added),
+                    added_ids: Ok(value.added_ids),
+                    already_present: Ok(value.already_present),
+                    matches: Ok(value.matches),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct AppendCasesFromTracesRequest {
+            agent: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            expected_tools:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            failing_evaluator: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            filters: ::std::result::Result<
+                ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+                ::std::string::String,
+            >,
+            operation: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            range: ::std::result::Result<super::QueryRange, ::std::string::String>,
+            reference_from_answer:
+                ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            sample: ::std::result::Result<
+                ::std::option::Option<::std::num::NonZeroU32>,
+                ::std::string::String,
+            >,
+            tags: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for AppendCasesFromTracesRequest {
+            fn default() -> Self {
+                Self {
+                    agent: Ok(Default::default()),
+                    expected_tools: Ok(Default::default()),
+                    failing_evaluator: Ok(Default::default()),
+                    filters: Ok(Default::default()),
+                    operation: Ok(Default::default()),
+                    range: Err("no value supplied for range".to_string()),
+                    reference_from_answer: Ok(Default::default()),
+                    sample: Ok(Default::default()),
+                    tags: Ok(Default::default()),
+                }
+            }
+        }
+        impl AppendCasesFromTracesRequest {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn expected_tools<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.expected_tools = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for expected_tools: {e}")
+                });
+                self
+            }
+            pub fn failing_evaluator<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.failing_evaluator = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for failing_evaluator: {e}")
+                });
+                self
+            }
+            pub fn filters<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::vec::Vec<
+                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.filters = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for filters: {e}"));
+                self
+            }
+            pub fn operation<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.operation = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for operation: {e}"));
+                self
+            }
+            pub fn range<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::QueryRange>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.range = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for range: {e}"));
+                self
+            }
+            pub fn reference_from_answer<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.reference_from_answer = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for reference_from_answer: {e}")
+                });
+                self
+            }
+            pub fn sample<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::num::NonZeroU32>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample: {e}"));
+                self
+            }
+            pub fn tags<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tags = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tags: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<AppendCasesFromTracesRequest> for super::AppendCasesFromTracesRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: AppendCasesFromTracesRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    expected_tools: value.expected_tools?,
+                    failing_evaluator: value.failing_evaluator?,
+                    filters: value.filters?,
+                    operation: value.operation?,
+                    range: value.range?,
+                    reference_from_answer: value.reference_from_answer?,
+                    sample: value.sample?,
+                    tags: value.tags?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::AppendCasesFromTracesRequest> for AppendCasesFromTracesRequest {
+            fn from(value: super::AppendCasesFromTracesRequest) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    expected_tools: Ok(value.expected_tools),
+                    failing_evaluator: Ok(value.failing_evaluator),
+                    filters: Ok(value.filters),
+                    operation: Ok(value.operation),
+                    range: Ok(value.range),
+                    reference_from_answer: Ok(value.reference_from_answer),
+                    sample: Ok(value.sample),
+                    tags: Ok(value.tags),
                 }
             }
         }
@@ -7810,8 +8390,301 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct EvalCaseSourceCounts {
+            hand_written: ::std::result::Result<i64, ::std::string::String>,
+            trace: ::std::result::Result<i64, ::std::string::String>,
+            upload: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalCaseSourceCounts {
+            fn default() -> Self {
+                Self {
+                    hand_written: Err("no value supplied for hand_written".to_string()),
+                    trace: Err("no value supplied for trace".to_string()),
+                    upload: Err("no value supplied for upload".to_string()),
+                }
+            }
+        }
+        impl EvalCaseSourceCounts {
+            pub fn hand_written<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hand_written = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hand_written: {e}"));
+                self
+            }
+            pub fn trace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.trace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for trace: {e}"));
+                self
+            }
+            pub fn upload<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.upload = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for upload: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalCaseSourceCounts> for super::EvalCaseSourceCounts {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalCaseSourceCounts,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    hand_written: value.hand_written?,
+                    trace: value.trace?,
+                    upload: value.upload?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalCaseSourceCounts> for EvalCaseSourceCounts {
+            fn from(value: super::EvalCaseSourceCounts) -> Self {
+                Self {
+                    hand_written: Ok(value.hand_written),
+                    trace: Ok(value.trace),
+                    upload: Ok(value.upload),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalResultsUploadLinks {
+            query: ::std::result::Result<super::Link, ::std::string::String>,
+            runs: ::std::result::Result<super::Link, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalResultsUploadLinks {
+            fn default() -> Self {
+                Self {
+                    query: Err("no value supplied for query".to_string()),
+                    runs: Err("no value supplied for runs".to_string()),
+                }
+            }
+        }
+        impl EvalResultsUploadLinks {
+            pub fn query<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Link>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.query = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for query: {e}"));
+                self
+            }
+            pub fn runs<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::Link>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.runs = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for runs: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalResultsUploadLinks> for super::EvalResultsUploadLinks {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalResultsUploadLinks,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    query: value.query?,
+                    runs: value.runs?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalResultsUploadLinks> for EvalResultsUploadLinks {
+            fn from(value: super::EvalResultsUploadLinks) -> Self {
+                Self {
+                    query: Ok(value.query),
+                    runs: Ok(value.runs),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvalResultsUploadResponse {
+            agent: ::std::result::Result<::std::string::String, ::std::string::String>,
+            cases: ::std::result::Result<i64, ::std::string::String>,
+            evaluators: ::std::result::Result<
+                ::std::vec::Vec<super::EvaluatorSummary>,
+                ::std::string::String,
+            >,
+            links: ::std::result::Result<super::EvalResultsUploadLinks, ::std::string::String>,
+            rows: ::std::result::Result<i64, ::std::string::String>,
+            run_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            run_level: ::std::result::Result<i64, ::std::string::String>,
+            set: ::std::result::Result<::std::string::String, ::std::string::String>,
+            span_linked: ::std::result::Result<i64, ::std::string::String>,
+            version: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalResultsUploadResponse {
+            fn default() -> Self {
+                Self {
+                    agent: Err("no value supplied for agent".to_string()),
+                    cases: Err("no value supplied for cases".to_string()),
+                    evaluators: Err("no value supplied for evaluators".to_string()),
+                    links: Err("no value supplied for links".to_string()),
+                    rows: Err("no value supplied for rows".to_string()),
+                    run_id: Err("no value supplied for run_id".to_string()),
+                    run_level: Err("no value supplied for run_level".to_string()),
+                    set: Err("no value supplied for set".to_string()),
+                    span_linked: Err("no value supplied for span_linked".to_string()),
+                    version: Err("no value supplied for version".to_string()),
+                }
+            }
+        }
+        impl EvalResultsUploadResponse {
+            pub fn agent<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.agent = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for agent: {e}"));
+                self
+            }
+            pub fn cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cases: {e}"));
+                self
+            }
+            pub fn evaluators<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvaluatorSummary>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.evaluators = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for evaluators: {e}"));
+                self
+            }
+            pub fn links<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::EvalResultsUploadLinks>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.links = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for links: {e}"));
+                self
+            }
+            pub fn rows<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.rows = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for rows: {e}"));
+                self
+            }
+            pub fn run_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.run_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for run_id: {e}"));
+                self
+            }
+            pub fn run_level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.run_level = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for run_level: {e}"));
+                self
+            }
+            pub fn set<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.set = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for set: {e}"));
+                self
+            }
+            pub fn span_linked<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.span_linked = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for span_linked: {e}"));
+                self
+            }
+            pub fn version<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.version = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for version: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalResultsUploadResponse> for super::EvalResultsUploadResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalResultsUploadResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    agent: value.agent?,
+                    cases: value.cases?,
+                    evaluators: value.evaluators?,
+                    links: value.links?,
+                    rows: value.rows?,
+                    run_id: value.run_id?,
+                    run_level: value.run_level?,
+                    set: value.set?,
+                    span_linked: value.span_linked?,
+                    version: value.version?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalResultsUploadResponse> for EvalResultsUploadResponse {
+            fn from(value: super::EvalResultsUploadResponse) -> Self {
+                Self {
+                    agent: Ok(value.agent),
+                    cases: Ok(value.cases),
+                    evaluators: Ok(value.evaluators),
+                    links: Ok(value.links),
+                    rows: Ok(value.rows),
+                    run_id: Ok(value.run_id),
+                    run_level: Ok(value.run_level),
+                    set: Ok(value.set),
+                    span_linked: Ok(value.span_linked),
+                    version: Ok(value.version),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct EvalSetLinks {
             append_cases:
+                ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
+            append_cases_from_traces:
                 ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
             delete:
                 ::std::result::Result<::std::option::Option<super::Link>, ::std::string::String>,
@@ -7823,6 +8696,7 @@ pub mod types {
             fn default() -> Self {
                 Self {
                     append_cases: Ok(Default::default()),
+                    append_cases_from_traces: Ok(Default::default()),
                     delete: Ok(Default::default()),
                     replace: Ok(Default::default()),
                     self_: Err("no value supplied for self_".to_string()),
@@ -7838,6 +8712,16 @@ pub mod types {
                 self.append_cases = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for append_cases: {e}"));
+                self
+            }
+            pub fn append_cases_from_traces<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::Link>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.append_cases_from_traces = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for append_cases_from_traces: {e}")
+                });
                 self
             }
             pub fn delete<T>(mut self, value: T) -> Self
@@ -7878,6 +8762,7 @@ pub mod types {
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
                     append_cases: value.append_cases?,
+                    append_cases_from_traces: value.append_cases_from_traces?,
                     delete: value.delete?,
                     replace: value.replace?,
                     self_: value.self_?,
@@ -7888,6 +8773,7 @@ pub mod types {
             fn from(value: super::EvalSetLinks) -> Self {
                 Self {
                     append_cases: Ok(value.append_cases),
+                    append_cases_from_traces: Ok(value.append_cases_from_traces),
                     delete: Ok(value.delete),
                     replace: Ok(value.replace),
                     self_: Ok(value.self_),
@@ -8560,6 +9446,7 @@ pub mod types {
             >,
             links: ::std::result::Result<super::EvalSetLinks, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sources: ::std::result::Result<super::EvalCaseSourceCounts, ::std::string::String>,
             updated_at: ::std::result::Result<
                 ::chrono::DateTime<::chrono::offset::Utc>,
                 ::std::string::String,
@@ -8574,6 +9461,7 @@ pub mod types {
                     description: Ok(Default::default()),
                     links: Err("no value supplied for links".to_string()),
                     name: Err("no value supplied for name".to_string()),
+                    sources: Err("no value supplied for sources".to_string()),
                     updated_at: Err("no value supplied for updated_at".to_string()),
                 }
             }
@@ -8639,6 +9527,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
+            pub fn sources<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::EvalCaseSourceCounts>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sources = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sources: {e}"));
+                self
+            }
             pub fn updated_at<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
@@ -8662,6 +9560,7 @@ pub mod types {
                     description: value.description?,
                     links: value.links?,
                     name: value.name?,
+                    sources: value.sources?,
                     updated_at: value.updated_at?,
                 })
             }
@@ -8675,7 +9574,104 @@ pub mod types {
                     description: Ok(value.description),
                     links: Ok(value.links),
                     name: Ok(value.name),
+                    sources: Ok(value.sources),
                     updated_at: Ok(value.updated_at),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct EvaluatorSummary {
+            errors: ::std::result::Result<i64, ::std::string::String>,
+            mean: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            pass_rate: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            results: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvaluatorSummary {
+            fn default() -> Self {
+                Self {
+                    errors: Err("no value supplied for errors".to_string()),
+                    mean: Ok(Default::default()),
+                    name: Err("no value supplied for name".to_string()),
+                    pass_rate: Ok(Default::default()),
+                    results: Err("no value supplied for results".to_string()),
+                }
+            }
+        }
+        impl EvaluatorSummary {
+            pub fn errors<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.errors = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for errors: {e}"));
+                self
+            }
+            pub fn mean<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mean = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mean: {e}"));
+                self
+            }
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn pass_rate<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.pass_rate = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for pass_rate: {e}"));
+                self
+            }
+            pub fn results<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.results = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for results: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvaluatorSummary> for super::EvaluatorSummary {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvaluatorSummary,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    errors: value.errors?,
+                    mean: value.mean?,
+                    name: value.name?,
+                    pass_rate: value.pass_rate?,
+                    results: value.results?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvaluatorSummary> for EvaluatorSummary {
+            fn from(value: super::EvaluatorSummary) -> Self {
+                Self {
+                    errors: Ok(value.errors),
+                    mean: Ok(value.mean),
+                    name: Ok(value.name),
+                    pass_rate: Ok(value.pass_rate),
+                    results: Ok(value.results),
                 }
             }
         }
@@ -16957,6 +17953,105 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct UploadSummary {
+            cases: ::std::result::Result<i64, ::std::string::String>,
+            evaluators: ::std::result::Result<
+                ::std::vec::Vec<super::EvaluatorSummary>,
+                ::std::string::String,
+            >,
+            rows: ::std::result::Result<i64, ::std::string::String>,
+            run_level: ::std::result::Result<i64, ::std::string::String>,
+            span_linked: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for UploadSummary {
+            fn default() -> Self {
+                Self {
+                    cases: Err("no value supplied for cases".to_string()),
+                    evaluators: Err("no value supplied for evaluators".to_string()),
+                    rows: Err("no value supplied for rows".to_string()),
+                    run_level: Err("no value supplied for run_level".to_string()),
+                    span_linked: Err("no value supplied for span_linked".to_string()),
+                }
+            }
+        }
+        impl UploadSummary {
+            pub fn cases<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cases = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cases: {e}"));
+                self
+            }
+            pub fn evaluators<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::EvaluatorSummary>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.evaluators = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for evaluators: {e}"));
+                self
+            }
+            pub fn rows<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.rows = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for rows: {e}"));
+                self
+            }
+            pub fn run_level<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.run_level = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for run_level: {e}"));
+                self
+            }
+            pub fn span_linked<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.span_linked = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for span_linked: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<UploadSummary> for super::UploadSummary {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: UploadSummary,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cases: value.cases?,
+                    evaluators: value.evaluators?,
+                    rows: value.rows?,
+                    run_level: value.run_level?,
+                    span_linked: value.span_linked?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::UploadSummary> for UploadSummary {
+            fn from(value: super::UploadSummary) -> Self {
+                Self {
+                    cases: Ok(value.cases),
+                    evaluators: Ok(value.evaluators),
+                    rows: Ok(value.rows),
+                    run_level: Ok(value.run_level),
+                    span_linked: Ok(value.span_linked),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct UpsertMembershipRequest {
             email: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
@@ -17765,6 +18860,57 @@ impl Client {
     ```*/
     pub fn append_eval_cases(&self) -> builder::AppendEvalCases<'_> {
         builder::AppendEvalCases::new(self)
+    }
+    /**Append one case per matching agent trace not already in the set
+
+    Runs a trace query through the Query IR and appends one case per matching agent trace the set does not hold yet, newest traces first, up to `sample` (default 50, at most 1000). See docs/users/eval-sets.md ("Build cases from traces") for the full matching, selection and case-building rules.
+
+    Sends a `POST` request to `/api/v1/eval-sets/{name}/cases/from-traces`
+
+    Arguments:
+    - `name`: Eval set name
+    - `body`
+    ```ignore
+    let response = client.append_eval_cases_from_traces()
+        .name(name)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn append_eval_cases_from_traces(&self) -> builder::AppendEvalCasesFromTraces<'_> {
+        builder::AppendEvalCasesFromTraces::new(self)
+    }
+    /**Upload a JSONL or CSV file of evaluator results as one offline run
+
+    One row per evaluator result: `case_id` and `name` required; `score`, `label`, `explanation`, `trace_id`, `span_id`, `evaluator`, `error` and `trial` optional. The whole file is validated first: any invalid row rejects it with a `400` listing every problem in `details` (at most 100), and nothing is written. Each row becomes a `gen_ai.evaluation.result` log record carrying the run attributes, written through the log ingest path. See docs/users/evaluations.md ("Upload a results file").
+
+    Sends a `POST` request to `/api/v1/evals/results`
+
+    Arguments:
+    - `agent`: The agent the run evaluated (`gen_ai.agent.name`, and the records'
+    `service.name`).
+    - `format`: File format. Overrides the `Content-Type` (`text/csv` for CSV,
+    `application/x-ndjson` or `application/jsonl` for JSONL); one of the
+    two must name the format.
+    - `run_id`: Run id (`signaldb.eval.run_id`); a UUID is generated when absent.
+    Re-using a run id adds the file's results to that run.
+    - `set`: The eval set the run replayed: a valid eval set name; the set need
+    not exist.
+    - `version`: The agent version (`gen_ai.agent.version`, and `service.version`).
+    - `body`: The results file: JSONL (one JSON object per line) or CSV with a header row. Sent as `text/csv` or `application/x-ndjson`, or with any type plus the `format` parameter.
+    ```ignore
+    let response = client.upload_eval_results()
+        .agent(agent)
+        .format(format)
+        .run_id(run_id)
+        .set(set)
+        .version(version)
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn upload_eval_results(&self) -> builder::UploadEvalResults<'_> {
+        builder::UploadEvalResults::new(self)
     }
     /**POST /api/v1/ops/compact — trigger a compaction pass now
 
@@ -19752,6 +20898,286 @@ pub mod builder {
                     ResponseValue::from_response(response).await?,
                 )),
                 500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::append_eval_cases_from_traces`]
+
+    [`Client::append_eval_cases_from_traces`]: super::Client::append_eval_cases_from_traces*/
+    #[derive(Debug, Clone)]
+    pub struct AppendEvalCasesFromTraces<'a> {
+        client: &'a super::Client,
+        name: Result<::std::string::String, String>,
+        body: Result<types::builder::AppendCasesFromTracesRequest, String>,
+    }
+    impl<'a> AppendEvalCasesFromTraces<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                name: Err("name was not initialized".to_string()),
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn name<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.name = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for name failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::AppendCasesFromTracesRequest>,
+            <V as std::convert::TryInto<types::AppendCasesFromTracesRequest>>::Error:
+                std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `AppendCasesFromTracesRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::AppendCasesFromTracesRequest,
+                ) -> types::builder::AppendCasesFromTracesRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/eval-sets/{name}/cases/from-traces`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::AppendCasesFromTracesOutcome>, Error<types::ApiErrorBody>>
+        {
+            let Self { client, name, body } = self;
+            let name = name.map_err(Error::InvalidRequest)?;
+            let body = body
+                .and_then(|v| {
+                    types::AppendCasesFromTracesRequest::try_from(v).map_err(|e| e.to_string())
+                })
+                .map_err(Error::InvalidRequest)?;
+            let url = format!(
+                "{}/api/v1/eval-sets/{}/cases/from-traces",
+                client.baseurl,
+                encode_path(&name.to_string()),
+            );
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "append_eval_cases_from_traces",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                404u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                503u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::upload_eval_results`]
+
+    [`Client::upload_eval_results`]: super::Client::upload_eval_results*/
+    #[derive(Debug)]
+    pub struct UploadEvalResults<'a> {
+        client: &'a super::Client,
+        agent: Result<::std::string::String, String>,
+        format: Result<Option<types::EvalResultsFormat>, String>,
+        run_id: Result<Option<::std::string::String>, String>,
+        set: Result<::std::string::String, String>,
+        version: Result<::std::string::String, String>,
+        body: Result<reqwest::Body, String>,
+    }
+    impl<'a> UploadEvalResults<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                agent: Err("agent was not initialized".to_string()),
+                format: Ok(None),
+                run_id: Ok(None),
+                set: Err("set was not initialized".to_string()),
+                version: Err("version was not initialized".to_string()),
+                body: Err("body was not initialized".to_string()),
+            }
+        }
+        pub fn agent<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.agent = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for agent failed".to_string()
+            });
+            self
+        }
+        pub fn format<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::EvalResultsFormat>,
+        {
+            self.format = value
+                .try_into()
+                .map(Some)
+                .map_err(|_| "conversion to `EvalResultsFormat` for format failed".to_string());
+            self
+        }
+        pub fn run_id<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.run_id = value.try_into().map(Some).map_err(|_| {
+                "conversion to `:: std :: string :: String` for run_id failed".to_string()
+            });
+            self
+        }
+        pub fn set<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.set = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for set failed".to_string()
+            });
+            self
+        }
+        pub fn version<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<::std::string::String>,
+        {
+            self.version = value.try_into().map_err(|_| {
+                "conversion to `:: std :: string :: String` for version failed".to_string()
+            });
+            self
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<String>,
+        {
+            self.body = value
+                .try_into()
+                .map_err(|_| "conversion to `String` for body failed".to_string())
+                .map(|v| v.into());
+            self
+        }
+        ///Sends a `POST` request to `/api/v1/evals/results`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::EvalResultsUploadResponse>, Error<types::ApiErrorBody>>
+        {
+            let Self {
+                client,
+                agent,
+                format,
+                run_id,
+                set,
+                version,
+                body,
+            } = self;
+            let agent = agent.map_err(Error::InvalidRequest)?;
+            let format = format.map_err(Error::InvalidRequest)?;
+            let run_id = run_id.map_err(Error::InvalidRequest)?;
+            let set = set.map_err(Error::InvalidRequest)?;
+            let version = version.map_err(Error::InvalidRequest)?;
+            let body = body.map_err(Error::InvalidRequest)?;
+            let url = format!("{}/api/v1/evals/results", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .header(
+                    ::reqwest::header::CONTENT_TYPE,
+                    ::reqwest::header::HeaderValue::from_static("text/plain"),
+                )
+                .body(body)
+                .query(&progenitor_client::QueryParam::new("agent", &agent))
+                .query(&progenitor_client::QueryParam::new("format", &format))
+                .query(&progenitor_client::QueryParam::new("run_id", &run_id))
+                .query(&progenitor_client::QueryParam::new("set", &set))
+                .query(&progenitor_client::QueryParam::new("version", &version))
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "upload_eval_results",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                201u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                413u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                503u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                504u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
                 _ => Err(Error::UnexpectedResponse(response)),
@@ -26419,6 +27845,7 @@ pub mod prelude {
 /// Regenerated by `cargo xtask generate`; see `client-surface-parity`.
 pub const OPERATIONS: &[&str] = &[
     "append_eval_cases",
+    "append_eval_cases_from_traces",
     "attach_github_installation",
     "connection_info",
     "create_api_key",
@@ -26503,6 +27930,7 @@ pub const OPERATIONS: &[&str] = &[
     "start_github_link",
     "update_api_key",
     "update_tenant",
+    "upload_eval_results",
     "upsert_membership",
     "whoami",
 ];

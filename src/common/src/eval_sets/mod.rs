@@ -11,7 +11,7 @@ pub mod store;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 
-pub use store::{AppendCasesOutcome, MAX_CASES_PER_SET, StoreError};
+pub use store::{AppendCasesOutcome, MAX_CASES_PER_SET, StoreError, validate_name};
 
 /// Where a case came from.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
@@ -73,6 +73,22 @@ pub struct EvalSetSummary {
     pub case_count: u64,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
+}
+
+/// How many of a set's cases came from each [`EvalCaseSource`] kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EvalCaseSourceCounts {
+    pub trace: u64,
+    pub upload: u64,
+    pub hand_written: u64,
+}
+
+/// An eval set as the list returns it: the summary plus its cases' sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EvalSetListing {
+    #[serde(flatten)]
+    pub summary: EvalSetSummary,
+    pub sources: EvalCaseSourceCounts,
 }
 
 /// A stored eval set with its cases in order.

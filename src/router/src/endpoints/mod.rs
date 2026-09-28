@@ -2,6 +2,7 @@ pub mod api_error;
 pub mod authz;
 pub mod discovery;
 pub mod eval_sets;
+pub mod evals;
 pub mod flight;
 mod flight_decode;
 pub mod github;

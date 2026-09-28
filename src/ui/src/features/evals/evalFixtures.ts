@@ -198,6 +198,185 @@ const CASES: CaseFixture[] = [
   }),
 ];
 
+// ---- eval sets (`/api/v1/eval-sets…`) ----------------------------------------
+
+const REFERENCES: Record<string, string> = {
+  "case-117": "Decline the refund, open a warranty claim",
+  "case-088": "Resend the confirmation, share the order status",
+  "case-064": "30 days, unused, with receipt; opened electronics excluded",
+};
+
+/** A W3C trace id for the fixture's `n`th trace-sourced case. */
+const hexTrace = (n: number) =>
+  `4bf92f3577b34da6a3ce929d0e0e${(0x4700 + n).toString(16)}`;
+
+/** triage-golden-200's cases: every scenario case, its baseline tools as
+ * the expected trajectory; the named cases came from traces, the filler
+ * cases were written by hand. */
+function triageCases() {
+  return CASES.map((c, i) => ({
+    id: c.id,
+    input: c.input,
+    expected_tools: c.baseline.tools,
+    ...(REFERENCES[c.id] ? { reference: REFERENCES[c.id] } : {}),
+    source:
+      i < 3
+        ? { kind: "trace" as const, trace_id: hexTrace(i) }
+        : { kind: "hand_written" as const },
+  }));
+}
+
+const setLinks = (name: string) => ({
+  self: { href: `/api/v1/eval-sets/${name}` },
+  replace: { href: `/api/v1/eval-sets/${name}`, method: "PUT" },
+  delete: { href: `/api/v1/eval-sets/${name}`, method: "DELETE" },
+  append_cases: { href: `/api/v1/eval-sets/${name}/cases`, method: "POST" },
+  append_cases_from_traces: {
+    href: `/api/v1/eval-sets/${name}/cases/from-traces`,
+    method: "POST",
+  },
+});
+
+interface FixtureSet {
+  name: string;
+  agent: string;
+  description: string;
+  createdMs: number;
+  updatedMs: number;
+  cases: {
+    id: string;
+    input: string;
+    expected_tools?: string[];
+    reference?: string;
+    tags?: string[];
+    source?:
+      | { kind: "trace"; trace_id: string }
+      | { kind: "upload" }
+      | { kind: "hand_written" };
+  }[];
+}
+
+const FIXTURE_SETS: FixtureSet[] = [
+  {
+    name: "billing-golden-80",
+    agent: "billing-assist",
+    description: "Invoices, plan changes, tax questions",
+    createdMs: Date.UTC(2026, 8, 10, 9),
+    updatedMs: Date.UTC(2026, 8, 12, 14),
+    cases: [
+      {
+        id: "trace-71ac0e92a1b2c3d4",
+        input: "Why was I charged tax on my March invoice?",
+        expected_tools: ["lookup_invoice", "explain_tax"],
+        source: { kind: "trace", trace_id: hexTrace(10) },
+      },
+      {
+        id: "trace-c30d8b14e5f60718",
+        input: "Move me to the annual plan",
+        expected_tools: ["lookup_account", "change_plan"],
+        source: { kind: "trace", trace_id: hexTrace(11) },
+      },
+    ],
+  },
+  {
+    name: "refund-edge-cases-40",
+    agent: AGENT,
+    description: "Out-of-window, partial and duplicate refunds",
+    createdMs: Date.UTC(2026, 8, 20, 11),
+    updatedMs: Date.UTC(2026, 8, 22, 16),
+    cases: [
+      {
+        id: "edge-01",
+        input: "Refund order #71002, delivered 35 days ago",
+        expected_tools: ["lookup_order", "check_policy"],
+        reference: "Decline: outside the 30-day window",
+        source: { kind: "upload" },
+      },
+      {
+        id: "edge-02",
+        input: "Refund half of order #71118, one item broke",
+        expected_tools: ["lookup_order", "check_policy", "issue_refund"],
+        reference: "Partial refund for the broken item",
+        source: { kind: "upload" },
+      },
+      {
+        id: "edge-03",
+        input: "You refunded me twice, is that ok?",
+        expected_tools: ["lookup_payments"],
+        source: { kind: "upload" },
+      },
+    ],
+  },
+  {
+    name: "regressions-0927",
+    agent: AGENT,
+    description: "Cases that regressed in v1.8.0 against v1.7.3",
+    createdMs: Date.UTC(2026, 8, 27, 12),
+    updatedMs: Date.UTC(2026, 8, 27, 12),
+    cases: [
+      {
+        id: "case-117",
+        input: "Refund order #88213, it arrived broken",
+        expected_tools: ["lookup_order", "check_policy", "issue_refund"],
+        reference: REFERENCES["case-117"],
+        tags: ["saved-from-compare"],
+        source: { kind: "trace", trace_id: hexTrace(20) },
+      },
+    ],
+  },
+  {
+    name: EVAL_SET,
+    agent: AGENT,
+    description: "Core support flows: refunds, tracking, account",
+    createdMs: Date.UTC(2026, 8, 1, 9),
+    updatedMs: Date.UTC(2026, 8, 25, 15),
+    cases: triageCases(),
+  },
+];
+
+function setSummary(s: FixtureSet) {
+  return {
+    name: s.name,
+    agent: s.agent,
+    description: s.description,
+    case_count: s.cases.length,
+    created_at: new Date(s.createdMs).toISOString(),
+    updated_at: new Date(s.updatedMs).toISOString(),
+    _links: setLinks(s.name),
+  };
+}
+
+function sourceCounts(s: FixtureSet) {
+  const counts = { trace: 0, upload: 0, hand_written: 0 };
+  for (const c of s.cases) counts[c.source?.kind ?? "hand_written"]++;
+  return counts;
+}
+
+/** `GET /api/v1/eval-sets`. */
+export const EVAL_SET_LIST = {
+  items: FIXTURE_SETS.map((s) => ({
+    ...setSummary(s),
+    sources: sourceCounts(s),
+  })),
+  _links: {
+    self: { href: "/api/v1/eval-sets" },
+    create: { href: "/api/v1/eval-sets", method: "POST" },
+  },
+};
+
+/** `GET /api/v1/eval-sets/{name}` for each fixture set. */
+export const EVAL_SET_DETAILS = Object.fromEntries(
+  FIXTURE_SETS.map((s) => [
+    s.name,
+    {
+      ...setSummary(s),
+      tenant_id: "acme",
+      dataset: "production",
+      cases: s.cases,
+    },
+  ]),
+);
+
 /** Every case id run in both the baseline and the candidate. */
 const CASE_IDS = CASES.map((c) => c.id);
 
@@ -345,6 +524,10 @@ function answer(raw: unknown): unknown {
   // fetchSpanOperations
   if (doc.from === "traces" && doc.fields?.includes(F.operation)) {
     return table(EVALUATORS.map((e) => [`span-${e.name}`, e.operation]));
+  }
+  // fetchTraceVersions (Upload dialog): the linked traces' version.
+  if (doc.from === "traces" && by.length === 1 && by[0] === "service.version") {
+    return table([[CANDIDATE_VERSION, CASES.length]]);
   }
   // coverage: invoke_agent count
   if (doc.from === "traces" && by.length === 0) {

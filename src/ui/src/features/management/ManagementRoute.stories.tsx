@@ -1,5 +1,6 @@
 import { QueryClientProvider } from "@tanstack/react-query";
 import type { Meta, StoryObj } from "@storybook/react-vite";
+import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import {
   irCatchAll,
@@ -109,11 +110,13 @@ function ManagePage() {
   return (
     <StoryFetchStub routes={routes}>
       <QueryClientProvider client={testQueryClient()}>
-        <ManagementPanel
-          who={who}
-          onClose={() => {}}
-          onTenantCreated={() => {}}
-        />
+        <MemoryRouter initialEntries={["/manage"]}>
+          <ManagementPanel
+            who={who}
+            onClose={() => {}}
+            onTenantCreated={() => {}}
+          />
+        </MemoryRouter>
       </QueryClientProvider>
     </StoryFetchStub>
   );

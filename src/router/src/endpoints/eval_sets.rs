@@ -6,7 +6,8 @@
 //! tenant or dataset sees `404`. Reads require `evals:read`; writes require
 //! `evals:write` and, for a user session, the tenant-admin role, checked by
 //! the [`EvalsRead`] / [`EvalsWrite`] extractors before any body is read.
-//! Errors use the shared [`ApiError`] envelope.
+//! Errors use the shared [`ApiError`] envelope. Cases can also be appended
+//! from a trace query run through the Query IR ([`from_traces`]).
 
 use axum::{
     Json, Router,
@@ -17,13 +18,19 @@ use axum::{
 };
 use common::auth::TenantContext;
 use common::eval_sets::{
-    AppendCasesOutcome, EvalCase, EvalSetRecord, EvalSetSpec, EvalSetSummary, StoreError,
+    AppendCasesOutcome, EvalCase, EvalCaseSource, EvalCaseSourceCounts, EvalSetListing,
+    EvalSetRecord, EvalSetSpec, EvalSetSummary, MAX_CASES_PER_SET, StoreError,
 };
 use serde::{Deserialize, Serialize};
 
 use crate::RouterAppState;
 use crate::endpoints::api_error::{ApiError, ApiErrorBody, ApiJson};
 use crate::endpoints::links::{API_V1, Link};
+
+mod from_traces;
+
+pub use from_traces::{AppendCasesFromTracesOutcome, AppendCasesFromTracesRequest};
+use from_traces::{Options, Row, invalid};
 
 /// Request-body cap for this API. A set holds up to
 /// [`common::eval_sets::MAX_CASES_PER_SET`] cases, and a few thousand
@@ -43,6 +50,10 @@ pub fn router() -> Router<RouterAppState> {
                 .delete(delete_eval_set),
         )
         .route("/eval-sets/{name}/cases", post(append_eval_cases))
+        .route(
+            "/eval-sets/{name}/cases/from-traces",
+            post(append_eval_cases_from_traces),
+        )
         .layer(DefaultBodyLimit::max(EVAL_SET_BODY_LIMIT))
 }
 
@@ -60,6 +71,8 @@ pub struct EvalSetLinks {
     pub delete: Option<Link>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub append_cases: Option<Link>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub append_cases_from_traces: Option<Link>,
 }
 
 /// Links on the eval-set collection.
@@ -80,11 +93,13 @@ pub struct EvalSetResponse {
     pub links: EvalSetLinks,
 }
 
-/// An eval set as listed, without its cases.
+/// An eval set as listed, without its cases but with how many of them came
+/// from each source kind.
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct EvalSetSummaryResponse {
     #[serde(flatten)]
     pub summary: EvalSetSummary,
+    pub sources: EvalCaseSourceCounts,
     #[serde(rename = "_links")]
     pub links: EvalSetLinks,
 }
@@ -120,6 +135,8 @@ fn set_links(name: &str, can_write: bool) -> EvalSetLinks {
         replace: can_write.then(|| Link::with_method(href.clone(), "PUT")),
         delete: can_write.then(|| Link::with_method(href.clone(), "DELETE")),
         append_cases: can_write.then(|| Link::with_method(format!("{href}/cases"), "POST")),
+        append_cases_from_traces: can_write
+            .then(|| Link::with_method(format!("{href}/cases/from-traces"), "POST")),
     }
 }
 
@@ -219,17 +236,20 @@ pub async fn list_eval_sets(
     EvalsRead(ctx): EvalsRead,
 ) -> Result<Json<EvalSetListResponse>, ApiError> {
     let can_write = ctx.can_write_evals();
-    let summaries = state
+    let listed = state
         .catalog()
         .list_eval_sets(&ctx.tenant_id, &ctx.dataset_id)
         .await?;
     Ok(Json(EvalSetListResponse {
-        items: summaries
+        items: listed
             .into_iter()
-            .map(|summary| EvalSetSummaryResponse {
-                links: set_links(&summary.name, can_write),
-                summary,
-            })
+            .map(
+                |EvalSetListing { summary, sources }| EvalSetSummaryResponse {
+                    links: set_links(&summary.name, can_write),
+                    summary,
+                    sources,
+                },
+            )
             .collect(),
         links: EvalSetListLinks {
             self_: Link::get(collection_href()),
@@ -430,6 +450,161 @@ pub async fn append_eval_cases(
     Ok(Json(outcome))
 }
 
+/// Runs one IR document for the caller; a document the query engine
+/// rejects (e.g. a filter naming an unknown or physical field) is a `422`
+/// on this endpoint's options.
+async fn run_trace_query(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    document: &common::query_ir::Document,
+    now_ns: i64,
+) -> Result<(Vec<super::query::ResultColumn>, Vec<Vec<serde_json::Value>>), ApiError> {
+    super::query::execute_document_rows(state, ctx, document, now_ns)
+        .await
+        .map_err(|e| match e.status {
+            StatusCode::BAD_REQUEST => invalid(format!("trace query rejected: {}", e.message)),
+            _ => e,
+        })
+}
+
+/// Runs one IR document and decodes its rows, so a "run → rows → decode"
+/// query is one call at the use site.
+async fn run_and_decode<T>(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    document: &common::query_ir::Document,
+    now_ns: i64,
+    decode: impl FnOnce(&[Row<'_>]) -> T,
+) -> Result<T, ApiError> {
+    let (columns, rows) = run_trace_query(state, ctx, document, now_ns).await?;
+    Ok(decode(&Row::all(&columns, &rows)))
+}
+
+#[utoipa::path(
+    post,
+    path = "/api/v1/eval-sets/{name}/cases/from-traces",
+    tag = "eval-sets",
+    operation_id = "append_eval_cases_from_traces",
+    summary = "Append one case per matching agent trace not already in the set",
+    description = "Runs a trace query through the Query IR and appends one case per matching \
+agent trace the set does not hold yet, newest traces first, up to `sample` (default 50, at most \
+1000). See docs/users/eval-sets.md (\"Build cases from traces\") for the full matching, \
+selection and case-building rules.",
+    params(("name" = String, Path, description = "Eval set name")),
+    request_body = AppendCasesFromTracesRequest,
+    responses(
+        (status = 200, description = "Matching, already-present and added counts, with the new case ids", body = AppendCasesFromTracesOutcome),
+        (status = 400, description = "Malformed JSON body", body = ApiErrorBody),
+        (status = 403, description = "Missing evals:write scope (or, for a session, the tenant-admin role), or missing traces:read (logs:read with failing_evaluator)", body = ApiErrorBody),
+        (status = 404, description = "No such eval set in the caller's dataset", body = ApiErrorBody),
+        (status = 422, description = "Invalid options or range, a filter the query engine rejects, or the set would exceed its case limit", body = ApiErrorBody),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 500, description = "Internal error", body = ApiErrorBody),
+        (status = 503, description = "No querier service available", body = ApiErrorBody),
+    ),
+    security(("bearerAuth" = []))
+)]
+pub async fn append_eval_cases_from_traces(
+    State(state): State<RouterAppState>,
+    EvalsWrite(ctx): EvalsWrite,
+    Path(name): Path<String>,
+    ApiJson(request): ApiJson<AppendCasesFromTracesRequest>,
+) -> Result<Json<AppendCasesFromTracesOutcome>, ApiError> {
+    let now = super::now_ns();
+    let window = super::query::resolve_window(&request.range, now)
+        .map_err(|e| invalid(format!("`range`: {}", e.message)))?;
+    if window.start_ns >= window.end_ns {
+        return Err(invalid("`range.from` must be before `range.to`"));
+    }
+    let mut options = Options::new(request)?;
+    super::query::source_read_scope(&ctx, "traces")?;
+    if options.failing_evaluator.is_some() {
+        super::query::source_read_scope(&ctx, "logs")?;
+    }
+    let record = state
+        .catalog()
+        .get_eval_set(&ctx.tenant_id, &ctx.dataset_id, &name)
+        .await?
+        .ok_or_else(|| StoreError::NotFound(name.clone()))?;
+    options
+        .agent
+        .get_or_insert_with(|| record.summary.agent.clone());
+    let present: std::collections::HashSet<String> = record
+        .cases
+        .iter()
+        .filter_map(|c| match &c.source {
+            EvalCaseSource::Trace { trace_id } => Some(trace_id.clone()),
+            _ => None,
+        })
+        .collect();
+    let (start, end) = (window.start_ns, window.end_ns);
+
+    // Independent reads: run them concurrently rather than one after the
+    // other.
+    let matches_document = from_traces::matches_document(&options, start, end);
+    let matches_fut = run_and_decode(
+        &state,
+        &ctx,
+        &matches_document,
+        now,
+        from_traces::decode_candidates,
+    );
+    let failing_fut = async {
+        match &options.failing_evaluator {
+            Some(evaluator) => {
+                let document = from_traces::results_document(evaluator, start, end);
+                let failing =
+                    run_and_decode(&state, &ctx, &document, now, from_traces::failing_traces)
+                        .await?;
+                Ok(Some(failing))
+            }
+            None => Ok(None),
+        }
+    };
+    let (candidates, failing) = tokio::try_join!(matches_fut, failing_fut)?;
+    let selection = from_traces::select(&candidates, failing.as_ref(), &present, options.sample);
+    if record.cases.len() + selection.trace_ids.len() > MAX_CASES_PER_SET {
+        return Err(invalid(format!(
+            "adding {} cases to {} would exceed the limit of {MAX_CASES_PER_SET} per set",
+            selection.trace_ids.len(),
+            record.cases.len()
+        )));
+    }
+
+    let mut outcome = AppendCasesFromTracesOutcome {
+        matches: selection.matches,
+        already_present: selection.already_present,
+        added: 0,
+        added_ids: Vec::new(),
+    };
+    if !selection.trace_ids.is_empty() {
+        let document = from_traces::spans_document(&options, &selection.trace_ids, start, end);
+        let cases = run_and_decode(&state, &ctx, &document, now, |rows| {
+            from_traces::build_cases(rows, &selection.trace_ids, &options)
+        })
+        .await?;
+        let appended = state
+            .catalog()
+            .append_eval_cases(&ctx.tenant_id, &ctx.dataset_id, &name, cases)
+            .await?;
+        // A derived id the set already holds under another source.
+        outcome.already_present += appended.already_present;
+        outcome.added = appended.added;
+        outcome.added_ids = appended.added_ids;
+    }
+    tracing::info!(
+        tenant_id = %ctx.tenant_id,
+        dataset = %ctx.dataset_id,
+        name = %name,
+        matches = outcome.matches,
+        added = outcome.added,
+        already_present = outcome.already_present,
+        failing_evaluator = options.failing_evaluator.is_some(),
+        "eval cases appended from traces"
+    );
+    Ok(Json(outcome))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::body::Body;
@@ -469,8 +644,9 @@ mod tests {
 
     /// App with two tenants. `acme-key`/`globex-key` are legacy unscoped
     /// keys; scoped keys `sk-read` (evals:read), `sk-write` (evals:read +
-    /// evals:write), `sk-other` (processors:read + processors:write) belong
-    /// to acme; sessions: alice (Admin), vera (Viewer).
+    /// evals:write), `sk-other` (processors:read + processors:write) and
+    /// `sk-traces` (evals read/write + traces:read + logs:read) belong to
+    /// acme; sessions: alice (Admin), vera (Viewer).
     async fn app() -> axum::Router {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let config = Configuration {
@@ -485,6 +661,10 @@ mod tests {
             ("sk-read", vec!["evals:read"]),
             ("sk-write", vec!["evals:read", "evals:write"]),
             ("sk-other", vec!["processors:read", "processors:write"]),
+            (
+                "sk-traces",
+                vec!["evals:read", "evals:write", "traces:read", "logs:read"],
+            ),
         ] {
             let scopes: Vec<String> = scopes.into_iter().map(String::from).collect();
             catalog
@@ -703,6 +883,10 @@ mod tests {
         assert_eq!(items[0]["name"], "refund-edge-cases-40");
         assert_eq!(items[0]["agent"], "support-triage");
         assert_eq!(items[0]["case_count"], 2);
+        assert_eq!(
+            items[0]["sources"],
+            json!({"trace": 2, "upload": 0, "hand_written": 0})
+        );
         assert!(items[0].get("cases").is_none(), "list omits cases");
         assert!(
             items[0]["_links"].get("delete").is_none(),
@@ -925,6 +1109,11 @@ mod tests {
                 "/api/v1/eval-sets/golden/cases",
                 Some(json!({"cases": [case("b")]})),
             ),
+            (
+                "POST",
+                "/api/v1/eval-sets/golden/cases/from-traces",
+                Some(from_traces_body()),
+            ),
         ] {
             let r = call(&app, READER, method, uri, body).await;
             assert_eq!(r.status, 403, "{method} {uri}: {}", r.body);
@@ -1026,6 +1215,100 @@ mod tests {
         )
         .await;
         assert_eq!(r.status, 204);
+    }
+
+    fn from_traces_body() -> Value {
+        json!({
+            "range": {"from": "now-7d", "to": "now"},
+            "failing_evaluator": "Correctness",
+            "sample": 50,
+            "expected_tools": true,
+        })
+    }
+
+    const TRACES: Auth<'static> = Auth::Key("sk-traces", "acme", None);
+    const FROM_TRACES: &str = "/api/v1/eval-sets/golden/cases/from-traces";
+
+    #[tokio::test]
+    async fn from_traces_needs_an_existing_set_and_trace_read_access() {
+        let app = app().await;
+
+        let r = call(
+            &app,
+            TRACES,
+            "POST",
+            "/api/v1/eval-sets/missing/cases/from-traces",
+            Some(from_traces_body()),
+        )
+        .await;
+        assert_eq!(r.status, 404, "{}", r.body);
+        assert_eq!(r.body["errorType"], "not_found");
+
+        create(&app, WRITER, "golden", &["a"]).await;
+        let r = call(&app, WRITER, "POST", FROM_TRACES, Some(from_traces_body())).await;
+        assert_eq!(
+            r.status, 403,
+            "evals:write alone cannot read traces: {}",
+            r.body
+        );
+        assert!(
+            r.body["error"].as_str().unwrap().contains("traces:read"),
+            "{}",
+            r.body
+        );
+
+        let set = call(&app, READER, "GET", "/api/v1/eval-sets/golden", None).await;
+        assert_eq!(set.body["_links"].get("append_cases_from_traces"), None);
+        let set = call(&app, WRITER, "GET", "/api/v1/eval-sets/golden", None).await;
+        assert_eq!(
+            set.body["_links"]["append_cases_from_traces"],
+            json!({"href": FROM_TRACES, "method": "POST"})
+        );
+
+        // Every check passes; with no querier registered the trace query
+        // itself is what fails.
+        let r = call(&app, TRACES, "POST", FROM_TRACES, Some(from_traces_body())).await;
+        assert_eq!(r.status, 503, "{}", r.body);
+        let r = call(&app, READER, "GET", "/api/v1/eval-sets/golden", None).await;
+        assert_eq!(case_ids(&r.body), vec!["a"], "nothing appended");
+    }
+
+    #[tokio::test]
+    async fn from_traces_rejects_invalid_options_with_422() {
+        let app = app().await;
+        create(&app, WRITER, "golden", &[]).await;
+
+        let with = |extra: Value| {
+            let mut body = json!({"range": {"from": "now-7d", "to": "now"}});
+            body.as_object_mut()
+                .unwrap()
+                .extend(extra.as_object().unwrap().clone());
+            body
+        };
+        for (body, why) in [
+            (with(json!({"sample": 0})), "sample 0"),
+            (with(json!({"sample": 1001})), "sample over 1000"),
+            (with(json!({"agent": ""})), "empty agent"),
+            (with(json!({"failing_evaluator": " "})), "blank evaluator"),
+            (with(json!({"failing_evaluater": "x"})), "unknown option"),
+            (
+                with(json!({"filters": [{"field": "a", "op": "near", "value": 1}]})),
+                "unknown predicate op",
+            ),
+            (
+                json!({"range": {"from": "yesterday", "to": "now"}}),
+                "unparseable range",
+            ),
+            (
+                json!({"range": {"from": "now", "to": "now-7d"}}),
+                "inverted range",
+            ),
+            (json!({"sample": 5}), "missing range"),
+        ] {
+            let r = call(&app, TRACES, "POST", FROM_TRACES, Some(body)).await;
+            assert_eq!(r.status, 422, "{why}: {}", r.body);
+            assert_eq!(r.body["errorType"], "invalid", "{why}");
+        }
     }
 
     #[tokio::test]

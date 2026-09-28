@@ -1946,6 +1946,277 @@ struct AppendEvalCasesParams {
     cases: Vec<signaldb_sdk::types::EvalCase>,
 }
 
+fn default_eval_traces_from() -> String {
+    "now-7d".to_string()
+}
+
+/// Parameters for `append_eval_cases_from_traces`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct AppendEvalCasesFromTracesParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set and the traces live in. Required: one MCP
+    /// session may span several datasets, so there is no implicit session
+    /// default; see `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Window start: RFC3339, a relative anchor (`now-7d`) or epoch
+    /// nanoseconds. Defaults to `now-7d`.
+    #[serde(default = "default_eval_traces_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// `gen_ai.agent.name` of the agent span. Defaults to the set's agent.
+    #[serde(default)]
+    agent: Option<String>,
+    /// `gen_ai.operation.name` of the agent span. Defaults to `invoke_agent`.
+    #[serde(default)]
+    operation: Option<String>,
+    /// Extra Query IR predicates the agent span must satisfy, e.g.
+    /// `{"field": "deployment.environment", "op": "eq", "value": "prod"}`.
+    #[serde(default)]
+    filters: Vec<serde_json::Map<String, serde_json::Value>>,
+    /// Keep only traces with at least one failing result of this evaluator
+    /// (`gen_ai.evaluation.name`) in the window. Evaluator errors never
+    /// count as failures.
+    #[serde(default)]
+    failing_evaluator: Option<String>,
+    /// How many new cases to add, 1-1000. Defaults to 50.
+    #[serde(default)]
+    sample: Option<std::num::NonZeroU32>,
+    /// Use each trace's `execute_tool` calls, in order, as the case's
+    /// expected tools.
+    #[serde(default)]
+    expected_tools: bool,
+    /// Use the agent's answer as the case's reference.
+    #[serde(default)]
+    reference_from_answer: bool,
+    /// Tags put on every new case.
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl From<AppendEvalCasesFromTracesParams> for signaldb_sdk::types::AppendCasesFromTracesRequest {
+    fn from(p: AppendEvalCasesFromTracesParams) -> Self {
+        signaldb_sdk::types::AppendCasesFromTracesRequest {
+            range: signaldb_sdk::types::QueryRange {
+                from: p.from,
+                to: p.to,
+            },
+            agent: p.agent,
+            operation: p.operation,
+            filters: p.filters,
+            failing_evaluator: p.failing_evaluator,
+            sample: p.sample,
+            expected_tools: Some(p.expected_tools),
+            reference_from_answer: Some(p.reference_from_answer),
+            tags: p.tags,
+        }
+    }
+}
+
+/// File format of `upload_eval_results`.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum EvalResultsFormatParam {
+    /// CSV with a header row.
+    Csv,
+    /// One JSON object per line.
+    Jsonl,
+}
+
+impl From<EvalResultsFormatParam> for signaldb_sdk::types::EvalResultsFormat {
+    fn from(format: EvalResultsFormatParam) -> Self {
+        match format {
+            EvalResultsFormatParam::Csv => Self::Csv,
+            EvalResultsFormatParam::Jsonl => Self::Jsonl,
+        }
+    }
+}
+
+/// Parameters for `upload_eval_results`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct UploadEvalResultsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to write the results to. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// The results file's text: one row per evaluator result. Columns
+    /// (CSV header or JSONL keys): `case_id`, `name` (the evaluator)
+    /// required; `score`, `label`, `explanation`, `trace_id` (32 hex),
+    /// `span_id` (16 hex), `evaluator`, `error`, `trial` optional; each row
+    /// needs a score, a label or an error.
+    content: String,
+    /// `csv` or `jsonl`.
+    format: EvalResultsFormatParam,
+    /// The agent the run evaluated (`gen_ai.agent.name`).
+    agent: String,
+    /// The agent version under test (`gen_ai.agent.version`).
+    version: String,
+    /// The eval set the run replayed (a valid eval set name; the set need
+    /// not exist).
+    set: String,
+    /// Run id. Generated when omitted (and named in an error). Re-using one
+    /// with a different file adds to that run; re-sending the same file
+    /// under the same run id (a retry) is not written twice.
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+fn default_eval_runs_from() -> String {
+    "now-7d".to_string()
+}
+
+fn default_eval_compare_from() -> String {
+    common::evals::runs::LATEST_LOOKBACK.to_string()
+}
+
+/// Default and ceiling for the `limit` of `list_eval_runs` (runs) and
+/// `compare_eval_runs` (regressed cases).
+const EVAL_RUNS_DEFAULT_LIMIT: usize = 50;
+const EVAL_RUNS_MAX_LIMIT: usize = 500;
+
+/// Parameters for `list_eval_runs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListEvalRunsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval results live in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Window start: RFC3339, a relative anchor (`now-7d`) or epoch
+    /// nanoseconds. Defaults to `now-7d`.
+    #[serde(default = "default_eval_runs_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Only runs of this agent (`gen_ai.agent.name`, or `service.name` when
+    /// a result doesn't name its agent).
+    #[serde(default)]
+    agent: Option<String>,
+    /// Only runs of this agent version (`gen_ai.agent.version`, or
+    /// `service.version`).
+    #[serde(default)]
+    version: Option<String>,
+    /// Only runs of this eval set (`signaldb.eval.set`).
+    #[serde(default)]
+    set: Option<String>,
+    /// Most runs to return, newest first. Default 50, at most 500.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Parameters for `compare_eval_runs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CompareEvalRunsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval results live in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// The run to compare against: a run id, or `latest:<version>` for the
+    /// newest run of that agent version on the same eval set.
+    baseline: String,
+    /// The run under test: a run id, or `latest:<version>`.
+    candidate: String,
+    /// Agent for resolving `latest:<version>`. Defaults to the other side's
+    /// run's agent; needed when both sides are `latest:`.
+    #[serde(default)]
+    agent: Option<String>,
+    /// Eval set for resolving `latest:<version>`. Defaults to the other
+    /// side's run's set; needed when both sides are `latest:`.
+    #[serde(default)]
+    set: Option<String>,
+    /// Window both runs' results are read from: RFC3339, a relative anchor
+    /// or epoch nanoseconds. Defaults to `now-30d`.
+    #[serde(default = "default_eval_compare_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Most regressed cases to list, largest drop first. Default 50, at
+    /// most 500. The counts always cover every case.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Add each listed regression's tool trajectory: the candidate's
+    /// `execute_tool` calls marked against the baseline's (`same`,
+    /// `skipped`, `reordered`, `repeated`, `new`). Reads the runs' traces,
+    /// so it needs `traces:read` too.
+    #[serde(default)]
+    include_tools: bool,
+}
+
+/// `common::evals::runs`'s Query IR reads, sent through the router as the
+/// caller (`POST /api/v1/query`).
+struct RouterIr<'a> {
+    client: &'a signaldb_sdk::Client,
+    what: &'static str,
+}
+
+impl common::evals::runs::IrSource for RouterIr<'_> {
+    type Error = ErrorData;
+
+    async fn query(
+        &self,
+        document: &common::evals::runs::Document,
+    ) -> Result<common::evals::runs::IrTable, ErrorData> {
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::to_value(document)
+            .and_then(serde_json::from_value)
+            .map_err(|e| {
+                ErrorData::internal_error(format!("{}: bad IR document: {e}", self.what), None)
+            })?;
+        let response = self
+            .client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, self.what))?
+            .into_inner();
+        Ok(common::evals::runs::IrTable {
+            columns: response.columns.into_iter().map(|c| c.name).collect(),
+            rows: response.rows,
+        })
+    }
+}
+
+/// A run read failure as a tool error: the IR request's own error, or an
+/// invalid-params error naming what could not be resolved.
+fn map_eval_read_err(err: common::evals::runs::ReadError<ErrorData>) -> ErrorData {
+    match err {
+        common::evals::runs::ReadError::Query(e) => e,
+        other => ErrorData::invalid_params(other.to_string(), None),
+    }
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -4302,6 +4573,152 @@ impl McpServer {
             .map_err(|e| map_api_error_body(e, "append_eval_cases"))?;
         json_result(&resp.into_inner())
     }
+
+    #[tool(
+        description = "Build eval cases from production traces: append one case per matching agent trace (a `gen_ai.operation.name` = `invoke_agent` span of the agent, in the window, matching `filters`) that the eval set does not hold yet, newest first, up to `sample` (default 50). With `failing_evaluator`, only traces holding a failing result of that evaluator count. A case's input is the agent span's last user message, its source the trace; optionally its expected tools are the trace's tool calls and its reference the agent's answer. Returns `matches`, `already_present`, `added` and `added_ids`. Requires the `evals:write` and `traces:read` scopes (plus `logs:read` with `failing_evaluator`).",
+        annotations(destructive_hint = false)
+    )]
+    async fn append_eval_cases_from_traces(
+        &self,
+        Parameters(p): Parameters<AppendEvalCasesFromTracesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let name = p.name.clone();
+        let resp = client
+            .append_eval_cases_from_traces()
+            .name(&name)
+            .body(signaldb_sdk::types::AppendCasesFromTracesRequest::from(p))
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "append_eval_cases_from_traces"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Upload agent eval results as one offline run, for harnesses that do not export OpenTelemetry: `content` is a JSONL or CSV file with one row per evaluator result. The whole file is validated first; any invalid row rejects it and every problem is listed (row, column, reason), nothing written. Each row becomes a `gen_ai.evaluation.result` log record with the run attributes, so the run appears on the Evaluate pages and in `query_ir` like one sent over OTLP (queryable once the writer commits, typically within seconds). Returns the run id and, per evaluator, results, errors, mean and pass rate. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn upload_eval_results(
+        &self,
+        Parameters(p): Parameters<UploadEvalResultsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        // Chosen here rather than by the server so the error can name it: a
+        // retry with the same run id and content is deduplicated.
+        let run_id = p
+            .run_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let resp = client
+            .upload_eval_results()
+            .agent(p.agent)
+            .version(p.version)
+            .set(p.set)
+            .run_id(&run_id)
+            .format(signaldb_sdk::types::EvalResultsFormat::from(p.format))
+            .body(p.content)
+            .send()
+            .await
+            .map_err(|e| {
+                // A 4xx wrote nothing; anything else may have landed.
+                let rejected = matches!(&e, signaldb_sdk::Error::ErrorResponse(r)
+                    if r.status().is_client_error());
+                let mut err = map_api_error_body(e, "upload_eval_results");
+                if !rejected {
+                    err.message = format!(
+                        "{} (run_id `{run_id}`: retrying with the same run_id and content is safe)",
+                        err.message
+                    )
+                    .into();
+                }
+                err
+            })?;
+        json_result(&resp.into_inner())
+    }
+    #[tool(
+        description = "List offline agent eval runs (one run = the results sharing a `signaldb.eval.run_id`), newest first: run_id, eval set, agent, version, started_at/last_result_at, status (`running` while results arrived in the last 10 minutes, then `complete`, or `partial` with evaluator errors or results without trace context), results, cases, errors, unlinked, overall pass rate, per-evaluator mean and pass rate, and `previous_run_id` (the newest earlier run of the same eval set: the natural baseline for `compare_eval_runs`). Use it to find the runs to compare, or to answer \"how did version X score\". Window defaults to the last 7 days; filter by `agent`, `version`, `set`; at most `limit` runs (default 50, max 500) with `total_runs` and `truncated` saying when more matched. Reads `gen_ai.evaluation.result` log records through the Query IR, so it needs the `logs:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_eval_runs(
+        &self,
+        Parameters(p): Parameters<ListEvalRunsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let source = RouterIr {
+            client: &client,
+            what: "list_eval_runs",
+        };
+        let window = common::evals::runs::Window {
+            from: p.from,
+            to: p.to,
+        };
+        let filter = common::evals::runs::RunFilter {
+            agent: p.agent.filter(|a| !a.is_empty()),
+            version: p.version.filter(|v| !v.is_empty()),
+            set: p.set.filter(|s| !s.is_empty()),
+            run_ids: Vec::new(),
+        };
+        let limit = p
+            .limit
+            .unwrap_or(EVAL_RUNS_DEFAULT_LIMIT)
+            .clamp(1, EVAL_RUNS_MAX_LIMIT);
+        let runs = common::evals::runs::list_runs(
+            &source,
+            &window,
+            &filter,
+            limit,
+            common::evals::runs::now_ms(),
+        )
+        .await
+        .map_err(map_eval_read_err)?;
+        json_result(&runs)
+    }
+
+    #[tool(
+        description = "Compare two offline agent eval runs case by case — \"did version B get worse than A, where and why\". Give `baseline` and `candidate` as run ids (see `list_eval_runs`) or `latest:<version>` (the newest run of that version of the same agent on the same eval set). Cases join on `signaldb.eval.case_id`; per evaluator a case got worse on pass→fail or a mean drop of at least 0.05 (better the other way); a case is a regression if any evaluator got worse, else an improvement if any got better, else unchanged; a candidate-only case that fails is a regression with `no_baseline`. Returns both runs' summaries, per-evaluator baseline/candidate mean and pass rate with the delta and how many cases moved, counts of regressions/improvements/unchanged, and the regressed cases (largest drop first, at most `limit`, default 50) with the evaluators that got worse (baseline and candidate mean, pass rate, verdict) and both trace ids for `get_trace`. `include_tools=true` adds each listed regression's tool-call diff (skipped, reordered, repeated, new calls). Reads through the Query IR: needs `logs:read`, plus `traces:read` with `include_tools`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn compare_eval_runs(
+        &self,
+        Parameters(p): Parameters<CompareEvalRunsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let invalid = |e: String| ErrorData::invalid_params(e, None);
+        let request = common::evals::runs::CompareRequest {
+            baseline: common::evals::runs::RunRef::parse_named("baseline", &p.baseline)
+                .map_err(invalid)?,
+            candidate: common::evals::runs::RunRef::parse_named("candidate", &p.candidate)
+                .map_err(invalid)?,
+            agent: p.agent.filter(|a| !a.is_empty()),
+            set: p.set.filter(|s| !s.is_empty()),
+            window: common::evals::runs::Window {
+                from: p.from,
+                to: p.to,
+            },
+            limit: p
+                .limit
+                .unwrap_or(EVAL_RUNS_DEFAULT_LIMIT)
+                .clamp(1, EVAL_RUNS_MAX_LIMIT),
+            include_tools: p.include_tools,
+        };
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let source = RouterIr {
+            client: &client,
+            what: "compare_eval_runs",
+        };
+        let comparison =
+            common::evals::runs::compare_runs(&source, &request, common::evals::runs::now_ms())
+                .await
+                .map_err(map_eval_read_err)?;
+        json_result(&comparison)
+    }
 }
 
 /// One page of an eval set for `get_eval_set`: the set header with
@@ -4328,7 +4745,7 @@ fn eval_set_page(
     let offset = offset.unwrap_or(0).min(total_cases);
     let limit = limit
         .unwrap_or(EVAL_CASES_DEFAULT_LIMIT)
-        .min(EVAL_CASES_MAX_LIMIT);
+        .clamp(1, EVAL_CASES_MAX_LIMIT);
     let page: Vec<_> = cases.into_iter().skip(offset).take(limit).collect();
     let returned = page.len();
     serde_json::json!({
@@ -5177,7 +5594,23 @@ fn map_api_error_body(
         .and_then(|ms| u64::try_from(ms).ok())
         .map(std::time::Duration::from_millis)
         .or(header_wait);
-    status_to_error(status, what, format!("{what}: {}", body.error), retry_after)
+    // Problems the router listed one by one (e.g. an upload's invalid rows).
+    let details: String = body
+        .details
+        .iter()
+        .flatten()
+        .map(|d| match (d.row, &d.column) {
+            (Some(row), Some(column)) => format!("\n- row {row}, `{column}`: {}", d.reason),
+            (Some(row), None) => format!("\n- row {row}: {}", d.reason),
+            (None, _) => format!("\n- {}", d.reason),
+        })
+        .collect();
+    status_to_error(
+        status,
+        what,
+        format!("{what}: {}{details}", body.error),
+        retry_after,
+    )
 }
 
 /// The status mapping shared by the typed-body mappers: `message` carries
@@ -7595,6 +8028,7 @@ mod tests {
                      `metrics`, `metrics_histogram`, `profiles`"
                 .to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,
@@ -7617,6 +8051,7 @@ mod tests {
             error_type: "payload_too_large".to_string(),
             error: "result exceeds the row limit".to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,
@@ -7635,6 +8070,7 @@ mod tests {
             error_type: "conflict".to_string(),
             error: "eval set `refunds` already exists".to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,

@@ -30,6 +30,8 @@ pub struct ApiError {
     /// [`common::ratelimit::retry_headers`] — the same helper the acceptor
     /// uses, so every SignalDB 429 answers identically.
     rate_limit: Option<RateLimitExceeded>,
+    /// Rendered as `details`; set with [`Self::with_details`].
+    details: Option<Vec<ApiErrorDetail>>,
 }
 
 impl ApiError {
@@ -38,7 +40,15 @@ impl ApiError {
             status,
             message: message.into(),
             rate_limit: None,
+            details: None,
         }
+    }
+
+    /// Attach the individual problems behind this error (e.g. the invalid
+    /// rows of an uploaded file), rendered as the body's `details`.
+    pub fn with_details(mut self, details: Vec<ApiErrorDetail>) -> Self {
+        self.details = Some(details);
+        self
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
@@ -54,6 +64,7 @@ impl ApiError {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: err.to_string(),
             rate_limit: Some(err.clone()),
+            details: None,
         }
     }
 
@@ -113,6 +124,7 @@ impl From<StatusCode> for ApiError {
             status,
             message,
             rate_limit: None,
+            details: None,
         }
     }
 }
@@ -134,6 +146,24 @@ pub struct ApiErrorBody {
     /// `errorType` is `"rate_limited"`.
     #[serde(rename = "retryAfterMs", skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
+    /// The individual problems behind the error, when the endpoint reports
+    /// them one by one (e.g. the invalid rows of an uploaded results file).
+    /// Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<ApiErrorDetail>>,
+}
+
+/// One problem behind an [`ApiErrorBody`]: where it is and why.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ApiErrorDetail {
+    /// 1-based line of the request body the problem starts on; absent for
+    /// a problem with the body as a whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<u64>,
+    /// The column or field at fault, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    pub reason: String,
 }
 
 /// Shared OpenAPI `429` response for every rate-limited query operation:
@@ -205,6 +235,7 @@ impl IntoResponse for ApiError {
                 .rate_limit
                 .as_ref()
                 .map(|err| err.retry_after_secs().saturating_mul(1_000)),
+            details: self.details,
         };
         let mut response = (self.status, Json(body)).into_response();
         if let Some(err) = &self.rate_limit {

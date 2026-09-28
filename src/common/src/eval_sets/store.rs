@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use sqlx::{Row, query};
 
 use crate::catalog::{Catalog, parse_rfc3339};
-use crate::eval_sets::{EvalCase, EvalCaseSource, EvalSetRecord, EvalSetSpec, EvalSetSummary};
+use crate::eval_sets::{
+    EvalCase, EvalCaseSource, EvalCaseSourceCounts, EvalSetListing, EvalSetRecord, EvalSetSpec,
+    EvalSetSummary,
+};
 
 /// Most cases one set may hold.
 pub const MAX_CASES_PER_SET: usize = 10_000;
@@ -52,7 +55,9 @@ pub struct AppendCasesOutcome {
     pub already_present_ids: Vec<String>,
 }
 
-fn validate_name(name: &str) -> Result<(), StoreError> {
+/// Checks an eval set name: a slug of lowercase letters, digits, `-`, `_`
+/// and `.`, starting with a letter or digit, at most 128 characters.
+pub fn validate_name(name: &str) -> Result<(), StoreError> {
     let mut chars = name.chars();
     let is_slug = matches!(chars.next(), Some(c) if c.is_ascii_lowercase() || c.is_ascii_digit())
         && name.len() <= MAX_NAME_LEN
@@ -188,12 +193,44 @@ where
     })
 }
 
-/// Set columns plus the case count, shared by the list and get queries;
-/// callers append the `WHERE` clause.
+/// Set columns plus the case count for one set; callers append the `WHERE`
+/// clause.
 const SUMMARY_SELECT: &str = "SELECT s.name, s.agent, s.description, s.created_at, s.updated_at, \
      (SELECT COUNT(*) FROM eval_cases c WHERE c.tenant_id = s.tenant_id \
       AND c.dataset = s.dataset AND c.set_name = s.name) AS case_count \
      FROM eval_sets s";
+
+/// Every set of a tenant's dataset with its case count per source kind, in
+/// one grouped pass over the dataset's cases, ordered by name. `$1` is the
+/// tenant id and `$2` the dataset (numbered parameters work in SQLite too).
+const LISTING_SELECT: &str = "SELECT s.name, s.agent, s.description, s.created_at, s.updated_at, \
+     COALESCE(c.case_count, 0) AS case_count, \
+     COALESCE(c.trace_cases, 0) AS trace_cases, \
+     COALESCE(c.upload_cases, 0) AS upload_cases, \
+     COALESCE(c.hand_written_cases, 0) AS hand_written_cases \
+     FROM eval_sets s LEFT JOIN ( \
+       SELECT set_name, COUNT(*) AS case_count, \
+         SUM(CASE WHEN source_kind = 'trace' THEN 1 ELSE 0 END) AS trace_cases, \
+         SUM(CASE WHEN source_kind = 'upload' THEN 1 ELSE 0 END) AS upload_cases, \
+         SUM(CASE WHEN source_kind = 'hand_written' THEN 1 ELSE 0 END) AS hand_written_cases \
+       FROM eval_cases WHERE tenant_id = $1 AND dataset = $2 GROUP BY set_name \
+     ) c ON c.set_name = s.name \
+     WHERE s.tenant_id = $1 AND s.dataset = $2 ORDER BY s.name";
+
+fn source_counts<R: Row>(row: &R) -> Result<EvalCaseSourceCounts, StoreError>
+where
+    for<'a> &'a str: sqlx::ColumnIndex<R>,
+    for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+{
+    let count = |column: &str| -> Result<u64, StoreError> {
+        Ok(u64::try_from(row.try_get::<i64, _>(column)?).unwrap_or(0))
+    };
+    Ok(EvalCaseSourceCounts {
+        trace: count("trace_cases")?,
+        upload: count("upload_cases")?,
+        hand_written: count("hand_written_cases")?,
+    })
+}
 
 fn sqlite_summary(row: &sqlx::sqlite::SqliteRow) -> Result<EvalSetSummary, StoreError> {
     Ok(EvalSetSummary {
@@ -285,39 +322,40 @@ const CASE_COLS: &str =
     "case_id, input, expected_tools, reference, tags, source_kind, source_trace_id";
 
 impl Catalog {
-    /// Every eval set of a tenant's dataset, without cases, ordered by name.
+    /// Every eval set of a tenant's dataset, without cases but with their
+    /// case counts per source kind, ordered by name.
     pub async fn list_eval_sets(
         &self,
         tenant_id: &str,
         dataset: &str,
-    ) -> Result<Vec<EvalSetSummary>, StoreError> {
+    ) -> Result<Vec<EvalSetListing>, StoreError> {
         match self {
-            Catalog::Sqlite(pool) => {
-                let sql = format!(
-                    "{SUMMARY_SELECT} WHERE s.tenant_id = ? AND s.dataset = ? ORDER BY s.name"
-                );
-                query(&sql)
-                    .bind(tenant_id)
-                    .bind(dataset)
-                    .fetch_all(pool)
-                    .await?
-                    .iter()
-                    .map(sqlite_summary)
-                    .collect()
-            }
-            Catalog::Postgres(pool) => {
-                let sql = format!(
-                    "{SUMMARY_SELECT} WHERE s.tenant_id = $1 AND s.dataset = $2 ORDER BY s.name"
-                );
-                query(&sql)
-                    .bind(tenant_id)
-                    .bind(dataset)
-                    .fetch_all(pool)
-                    .await?
-                    .iter()
-                    .map(pg_summary)
-                    .collect()
-            }
+            Catalog::Sqlite(pool) => query(LISTING_SELECT)
+                .bind(tenant_id)
+                .bind(dataset)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(|row| {
+                    Ok(EvalSetListing {
+                        summary: sqlite_summary(row)?,
+                        sources: source_counts(row)?,
+                    })
+                })
+                .collect(),
+            Catalog::Postgres(pool) => query(LISTING_SELECT)
+                .bind(tenant_id)
+                .bind(dataset)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(|row| {
+                    Ok(EvalSetListing {
+                        summary: pg_summary(row)?,
+                        sources: source_counts(row)?,
+                    })
+                })
+                .collect(),
         }
     }
 

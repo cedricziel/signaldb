@@ -3,8 +3,9 @@
 //! router's `/api/v1/eval-sets*` API (`src/router/src/endpoints/eval_sets.rs`).
 //!
 //! - `signaldb-cli eval-sets list|get|export` — reads, `evals:read`
-//! - `signaldb-cli admin eval-sets create|replace|delete|append` — mutations,
-//!   `evals:write`
+//! - `signaldb-cli admin eval-sets create|replace|delete|append|add-traces` —
+//!   mutations, `evals:write` (`add-traces` also reads traces: `traces:read`,
+//!   plus `logs:read` with `--failing-evaluator`)
 //!
 //! A set belongs to the credential's tenant and dataset (`--dataset-id`, or
 //! the tenant's default dataset).
@@ -16,7 +17,9 @@ use std::path::{Path, PathBuf};
 use anyhow::Context;
 use clap::Subcommand;
 use signaldb_sdk::types::{
-    AppendCasesOutcome, EvalCase, EvalCaseSource, EvalSetListResponse, EvalSetResponse, EvalSetSpec,
+    AppendCasesFromTracesOutcome, AppendCasesFromTracesRequest, AppendCasesOutcome, EvalCase,
+    EvalCaseSource, EvalCaseSourceCounts, EvalSetListResponse, EvalSetResponse, EvalSetSpec,
+    QueryRange,
 };
 
 use super::OutputArgs;
@@ -87,6 +90,78 @@ pub enum AdminEvalSetsAction {
         #[command(flatten)]
         connect: ConnectArgs,
     },
+    /// Append one case per matching agent trace the set does not hold yet,
+    /// newest first. A case's input is the agent span's last user message
+    /// and its source the trace.
+    AddTraces {
+        /// Eval set name
+        name: String,
+        #[command(flatten)]
+        query: AddTracesArgs,
+        #[command(flatten)]
+        connect: ConnectArgs,
+    },
+}
+
+/// The trace query of `admin eval-sets add-traces`.
+#[derive(clap::Args, Debug)]
+pub struct AddTracesArgs {
+    /// How far back to look, ending now: a bare duration (`7d`, `24h`, `30m`)
+    #[arg(long, value_name = "DURATION", default_value = "7d")]
+    range: String,
+    /// `gen_ai.agent.name` of the agent span [default: the set's agent]
+    #[arg(long)]
+    agent: Option<String>,
+    /// `gen_ai.operation.name` of the agent span [default: invoke_agent]
+    #[arg(long)]
+    operation: Option<String>,
+    /// Extra Query IR predicate on the agent span, as JSON (repeatable), e.g.
+    /// '{"field":"deployment.environment","op":"eq","value":"prod"}'
+    #[arg(long = "filter", value_name = "JSON")]
+    filters: Vec<String>,
+    /// Keep only traces with a failing result of this evaluator
+    /// (`gen_ai.evaluation.name`) in the window
+    #[arg(long, value_name = "NAME")]
+    failing_evaluator: Option<String>,
+    /// How many new cases to add, 1-1000 [default: 50]
+    #[arg(long, value_name = "N")]
+    sample: Option<std::num::NonZeroU32>,
+    /// Use the trace's tool calls (in order) as the expected tools
+    #[arg(long)]
+    expected_tools: bool,
+    /// Use the agent's answer as the reference
+    #[arg(long)]
+    reference_from_answer: bool,
+    /// Tag put on every new case (repeatable)
+    #[arg(long = "tag", value_name = "TAG")]
+    tags: Vec<String>,
+}
+
+impl AddTracesArgs {
+    fn request(self) -> anyhow::Result<AppendCasesFromTracesRequest> {
+        let filters = self
+            .filters
+            .iter()
+            .map(|f| {
+                serde_json::from_str::<serde_json::Map<String, serde_json::Value>>(f)
+                    .with_context(|| format!("--filter `{f}` is not a JSON object"))
+            })
+            .collect::<anyhow::Result<Vec<_>>>()?;
+        Ok(AppendCasesFromTracesRequest {
+            range: QueryRange {
+                from: format!("now-{}", self.range),
+                to: "now".to_string(),
+            },
+            agent: self.agent,
+            operation: self.operation,
+            filters,
+            failing_evaluator: self.failing_evaluator,
+            sample: self.sample,
+            expected_tools: Some(self.expected_tools),
+            reference_from_answer: Some(self.reference_from_answer),
+            tags: self.tags,
+        })
+    }
 }
 
 impl EvalSetsAction {
@@ -202,6 +277,26 @@ impl AdminEvalSetsAction {
                 println!("{}", format_append_outcome(&name, &outcome));
                 Ok(())
             }
+            AdminEvalSetsAction::AddTraces {
+                name,
+                query,
+                connect,
+            } => {
+                let request = query.request()?;
+                let outcome = connect
+                    .build_client()?
+                    .append_eval_cases_from_traces()
+                    .name(&name)
+                    .body(request)
+                    .send()
+                    .await
+                    .map_err(|e| {
+                        anyhow::Error::new(e).context("admin eval-sets add-traces failed")
+                    })?
+                    .into_inner();
+                println!("{}", format_traces_outcome(&name, &outcome));
+                Ok(())
+            }
         }
     }
 }
@@ -288,7 +383,27 @@ fn format_timestamp(t: &chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// Render `NAME  AGENT  CASES  UPDATED  DESCRIPTION` rows.
+/// `200 (trace 162, hand_written 38)`: a set's case count and the source
+/// kinds its cases came from.
+fn format_case_count(count: i64, c: &EvalCaseSourceCounts) -> String {
+    let parts: Vec<String> = [
+        ("trace", c.trace),
+        ("upload", c.upload),
+        ("hand_written", c.hand_written),
+    ]
+    .into_iter()
+    .filter(|(_, n)| *n > 0)
+    .map(|(kind, n)| format!("{kind} {n}"))
+    .collect();
+    if parts.is_empty() {
+        count.to_string()
+    } else {
+        format!("{count} ({})", parts.join(", "))
+    }
+}
+
+/// Render `NAME  AGENT  CASES  UPDATED  DESCRIPTION` rows; CASES carries the
+/// per-source split.
 fn format_eval_set_list(v: &EvalSetListResponse) -> String {
     let rows: Vec<(String, String, String, String, String)> = v
         .items
@@ -297,7 +412,7 @@ fn format_eval_set_list(v: &EvalSetListResponse) -> String {
             (
                 s.name.clone(),
                 s.agent.clone(),
-                s.case_count.to_string(),
+                format_case_count(s.case_count, &s.sources),
                 format_timestamp(&s.updated_at),
                 s.description.clone().unwrap_or_default(),
             )
@@ -376,6 +491,17 @@ fn format_append_outcome(name: &str, o: &AppendCasesOutcome) -> String {
             "\nAlready present: {}",
             o.already_present_ids.join(", ")
         );
+    }
+    out
+}
+
+fn format_traces_outcome(name: &str, o: &AppendCasesFromTracesOutcome) -> String {
+    let mut out = format!(
+        "Added {} cases to '{name}': {} matching traces, {} already present.",
+        o.added, o.matches, o.already_present
+    );
+    if !o.added_ids.is_empty() {
+        let _ = write!(out, "\nAdded: {}", o.added_ids.join(", "));
     }
     out
 }
@@ -460,6 +586,7 @@ mod tests {
     fn human_output_lists_sets_and_cases() {
         let list: EvalSetListResponse = serde_json::from_str(
             r#"{"items": [{"name": "refunds", "agent": "support-triage", "case_count": 2,
+                "sources": {"trace": 1, "upload": 0, "hand_written": 1},
                 "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
                 "_links": {"self": {"href": "/api/v1/eval-sets/refunds"}}}],
                "_links": {"self": {"href": "/api/v1/eval-sets"}}}"#,
@@ -468,6 +595,7 @@ mod tests {
         let table = format_eval_set_list(&list);
         assert!(table.starts_with("NAME"), "{table}");
         assert!(table.contains("refunds") && table.contains("support-triage"));
+        assert!(table.contains("2 (trace 1, hand_written 1)"), "{table}");
 
         let set: EvalSetResponse = serde_json::from_str(SET_BODY).expect("set parses");
         let out = format_eval_set(&set);
@@ -541,6 +669,111 @@ mod tests {
         .await
         .expect("admin eval-sets create succeeds");
         mock.assert_async().await;
+    }
+
+    fn add_traces_args(args: &[&str]) -> AddTracesArgs {
+        #[derive(clap::Parser)]
+        struct Cli {
+            #[command(flatten)]
+            args: AddTracesArgs,
+        }
+        let argv = std::iter::once("add-traces").chain(args.iter().copied());
+        <Cli as clap::Parser>::try_parse_from(argv)
+            .expect("flags parse")
+            .args
+    }
+
+    #[test]
+    fn add_traces_flags_become_the_request_body() {
+        let request = add_traces_args(&[
+            "--range",
+            "24h",
+            "--agent",
+            "support-triage",
+            "--failing-evaluator",
+            "Correctness",
+            "--sample",
+            "20",
+            "--expected-tools",
+            "--tag",
+            "prod",
+            "--tag",
+            "regression",
+            "--filter",
+            r#"{"field": "deployment.environment", "op": "eq", "value": "prod"}"#,
+        ])
+        .request()
+        .expect("valid flags");
+        let body = serde_json::to_value(&request).expect("serializes");
+        assert_eq!(
+            body,
+            serde_json::json!({
+                "range": {"from": "now-24h", "to": "now"},
+                "agent": "support-triage",
+                "failing_evaluator": "Correctness",
+                "sample": 20,
+                "expected_tools": true,
+                "reference_from_answer": false,
+                "tags": ["prod", "regression"],
+                "filters": [{"field": "deployment.environment", "op": "eq", "value": "prod"}],
+            })
+        );
+
+        let defaults = add_traces_args(&["--range", "7d"])
+            .request()
+            .expect("defaults");
+        assert_eq!(defaults.range.from, "now-7d");
+        assert!(defaults.sample.is_none() && defaults.agent.is_none());
+
+        let err = add_traces_args(&["--filter", "[1]"])
+            .request()
+            .expect_err("a filter must be an object");
+        assert!(err.to_string().contains("--filter"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn add_traces_posts_the_trace_query() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/eval-sets/refunds/cases/from-traces")
+            .match_header("x-dataset-id", "production")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "range": {"from": "now-7d", "to": "now"},
+                "failing_evaluator": "Correctness",
+                "sample": 50,
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"matches": 214, "already_present": 12, "added": 1,
+                    "added_ids": ["trace-4bf92f3577b34da6"]}"#,
+            )
+            .create_async()
+            .await;
+
+        AdminEvalSetsAction::AddTraces {
+            name: "refunds".to_string(),
+            query: add_traces_args(&["--failing-evaluator", "Correctness", "--sample", "50"]),
+            connect: connect(&server.url()),
+        }
+        .run()
+        .await
+        .expect("admin eval-sets add-traces succeeds");
+        mock.assert_async().await;
+
+        let out = format_traces_outcome(
+            "refunds",
+            &AppendCasesFromTracesOutcome {
+                matches: 214,
+                already_present: 12,
+                added: 50,
+                added_ids: vec!["trace-4bf92f3577b34da6".to_string()],
+            },
+        );
+        assert!(
+            out.contains("Added 50 cases to 'refunds': 214 matching traces, 12 already present."),
+            "{out}"
+        );
     }
 
     #[tokio::test]

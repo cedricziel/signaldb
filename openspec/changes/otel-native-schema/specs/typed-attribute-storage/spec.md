@@ -93,12 +93,14 @@ themselves SHALL NOT be claimed to prune.
 
 Promotion of a field to a typed column SHALL affect only performance: for any
 query, the result set AND the result types SHALL be identical whether the field is
-promoted or served from the cold typed home. Because there is one canonical home,
-this holds without cross-home coalescing. Promotion SHALL use Iceberg
+promoted or served from the cold typed home. A promoted column SHALL be a
+redundant typed copy of one (attribute level, key) home, named per level
+(`attr_<level>_<key>`) and typed as the key's canonical type; the typed map SHALL
+remain the key's canonical home and keep every value. Promotion SHALL use Iceberg
 schema-evolution field-id assignment, SHALL be bounded by an explicit
-promoted-column budget per table, and SHALL support demotion (a cold field folds
-back into the typed map on next compaction) so live-schema width does not grow
-unbounded as the hot-key set drifts.
+promoted-column budget per table, and SHALL support demotion as a metadata-only
+column drop that loses no value, so live-schema width does not grow unbounded as
+the hot-key set drifts.
 
 #### Scenario: Same result and type before and after promotion
 
@@ -110,8 +112,16 @@ unbounded as the hot-key set drifts.
 #### Scenario: Promotion budget bounds live-schema width
 
 - **WHEN** the demand-hot key set drifts over time beyond the promoted-column budget
-- **THEN** cold promoted columns are demoted (folded back into the typed map on
-  compaction) so the number of live promoted columns stays within budget
+- **THEN** idle or least recently queried promoted columns are dropped so the
+  number of live promoted columns stays within budget, and queries over the
+  demoted keys return the same results from the typed map
+
+#### Scenario: A key at two levels is promoted per level
+
+- **WHEN** a key is present at both the resource and the record level and is
+  promoted at both
+- **THEN** each level gets its own typed column, and the IR resolves the key with
+  the same level precedence as when neither column exists
 
 ### Requirement: Physical attribute growth is bounded by query patterns, not cardinality
 

@@ -10,10 +10,35 @@ import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
-import { evalsIrResponse } from "./evalFixtures";
+import {
+  EVAL_SET_DETAILS,
+  EVAL_SET_LIST,
+  evalsIrResponse,
+} from "./evalFixtures";
 
 const SCENARIO_ROUTES: JsonRoute[] = [
   { match: "/api/v1/query", body: {}, bodyFor: evalsIrResponse },
+  { match: /\/api\/v1\/eval-sets(\?|$)/, method: "GET", body: EVAL_SET_LIST },
+  ...Object.entries(EVAL_SET_DETAILS).map(([name, body]) => ({
+    match: new RegExp(`/api/v1/eval-sets/${name}(\\?|$)`),
+    method: "GET",
+    body,
+  })),
+  {
+    match: /\/cases\/from-traces$/,
+    method: "POST",
+    body: { matches: 214, already_present: 12, added: 50, added_ids: [] },
+  },
+];
+
+/** No eval sets and no results: the eval-set pages' empty states. */
+export const NO_SETS_ROUTES: JsonRoute[] = [
+  irCatchAll,
+  {
+    match: /\/api\/v1\/eval-sets(\?|$)/,
+    method: "GET",
+    body: { ...EVAL_SET_LIST, items: [] },
+  },
 ];
 
 /** Every query answers empty: the pages' "nothing yet" states. */

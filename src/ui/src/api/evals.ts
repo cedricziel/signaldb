@@ -593,6 +593,29 @@ export async function fetchAgentSpans(
   );
 }
 
+/** The `service.version`s the agent spans of `traceIds` ran on, most
+ * common first: how an upload's run version is prefilled from the traces
+ * its rows link to. */
+export async function fetchTraceVersions(
+  range: ResolvedRange,
+  traceIds: string[],
+): Promise<string[]> {
+  if (traceIds.length === 0) return [];
+  const res = await runIrQuery(
+    irDoc("traces", "table", range, [
+      { where: { field: "trace_id", op: "in", value: traceIds } },
+      { where: eq(F.operation, "invoke_agent") },
+      { aggregate: { by: ["service.version"], aggs: [COUNT_N] } },
+      { order: [{ of: "n", dir: "desc" }] },
+      { limit: 20 },
+    ]),
+  );
+  return namedRows(res).flatMap((row) => {
+    const v = str(row[col("service.version")]);
+    return v ? [v] : [];
+  });
+}
+
 /** The last text part of a GenAI messages attribute (`gen_ai.input.messages`
  * / `gen_ai.output.messages`, a JSON array of `{role, parts}`), or the raw
  * string when it isn't that shape. */

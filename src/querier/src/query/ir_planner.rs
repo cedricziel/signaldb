@@ -26,12 +26,14 @@
 //!   limit before it is lowered, so a pathological pattern is rejected rather
 //!   than executed.
 
-use std::collections::HashMap;
+use std::cell::RefCell;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 
 use common::attrs::expr::typed_compat_attr_expr;
 use common::attrs::expr::typed_home_expr;
+use common::attrs::expr::typed_home_filter_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, ComparisonOp, Correlate, CorrelateTarget, Document, Extract, FieldResolver, Heatmap,
@@ -61,8 +63,8 @@ use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
-    ColumnarValue, Expr, ExprFunctionExt, JoinType, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl,
-    Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
+    ColumnarValue, Expr, ExprFunctionExt, JoinType, Operator, ScalarFunctionArgs, ScalarUDF,
+    ScalarUDFImpl, Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
 use datafusion::physical_expr::PhysicalExpr;
 use datafusion::physical_expr::expressions::{CastExpr, Column as PhysicalColumn};
@@ -836,6 +838,58 @@ impl SchemaResolver {
         self.logical_schema.resolve(&self.source, field).is_some()
     }
 
+    /// The distinct attribute levels (among this source's containers) that
+    /// have a committed canonical type for `key` — the "exactly one level"
+    /// test a legacy `label_<key>` column must pass before it's trusted (see
+    /// [`Self::promoted_for`]): the compactor backfills `label_<key>`
+    /// resource→scope→record while an unqualified read coalesces
+    /// record→scope→resource, so a `label_<key>` shared by more than one
+    /// level can silently hold a different level's value than the one being
+    /// read.
+    fn attribute_levels_with_type(
+        &self,
+        types: &CanonicalTypes,
+        key: &str,
+    ) -> std::collections::HashSet<AttributeLevel> {
+        self.containers
+            .iter()
+            .map(|c| typed_attributes::container_level(c))
+            .filter(|level| types.get(*level, key).is_some())
+            .collect()
+    }
+
+    /// The promoted column backing one typed home (`container` at `level`,
+    /// canonical type `canonical`, attribute `key`), if any: a per-level
+    /// `attr_<level>_<key>` column, when it's present in the scanned schema
+    /// with the canonical type's own Arrow type — a mismatched-type column
+    /// (e.g. left over from a repinned type) is never trusted. Falling that,
+    /// a legacy `label_<key>` column stands in for a `String`-canonical home
+    /// but only when `single_level` (the key is recorded at exactly one
+    /// level) — see [`Self::attribute_levels_with_type`].
+    fn promoted_for(
+        &self,
+        level: AttributeLevel,
+        canonical: CanonicalType,
+        key: &str,
+        single_level: bool,
+    ) -> Option<String> {
+        let column = common::schema::promoted_attr_column(level, key);
+        let expected = logical_to_value_type(canonical.into());
+        if self.columns.get(&column) == Some(&expected) {
+            return Some(column);
+        }
+        if canonical != CanonicalType::String || !single_level {
+            return None;
+        }
+        let materialized = common::schema::materialized_column_name(key);
+        (self.columns.contains_key(&materialized)
+            && !common::schema::has_colliding_materialized_variant(
+                &materialized,
+                self.columns.keys().map(String::as_str),
+            ))
+        .then_some(materialized)
+    }
+
     /// Resolve an unpromoted attribute against the typed layout's committed
     /// canonical homes (task 4.4), or `None` when there's nothing typed to
     /// resolve against — no `with_typed` types, or `field`'s container isn't
@@ -843,15 +897,6 @@ impl SchemaResolver {
     /// `JsonPath` coalesce.
     fn typed_attribute(&self, field: &str) -> Option<Resolved> {
         let types = self.typed.as_ref()?;
-        let promoted_label = |canonical: CanonicalType, key: &str| -> Option<String> {
-            if canonical != CanonicalType::String {
-                return None;
-            }
-            let materialized = common::schema::materialized_column_name(key);
-            self.columns
-                .contains_key(&materialized)
-                .then_some(materialized)
-        };
 
         if let Some((container, bare)) = strip_scope_qualifier(self.attr_prefixes, field) {
             if !has_typed_container(self.physical_names.iter().map(String::as_str), container) {
@@ -859,15 +904,18 @@ impl SchemaResolver {
             }
             let level = typed_attributes::container_level(container);
             return Some(match types.get(level, bare) {
-                Some(canonical) => Resolved::TypedAttribute {
-                    homes: vec![home_column(container, canonical)],
-                    promoted: promoted_label(canonical, bare),
-                    key: bare.to_string(),
-                    value_type: logical_to_value_type(canonical.into()),
-                },
+                Some(canonical) => {
+                    let single_level = self.attribute_levels_with_type(types, bare).len() == 1;
+                    Resolved::TypedAttribute {
+                        homes: vec![home_column(container, canonical)],
+                        promoted: vec![self.promoted_for(level, canonical, bare, single_level)],
+                        key: bare.to_string(),
+                        value_type: logical_to_value_type(canonical.into()),
+                    }
+                }
                 None => Resolved::TypedAttribute {
                     homes: Vec::new(),
-                    promoted: None,
+                    promoted: Vec::new(),
                     key: bare.to_string(),
                     value_type: ValueType::String,
                 },
@@ -890,19 +938,25 @@ impl SchemaResolver {
         else {
             return Some(Resolved::TypedAttribute {
                 homes: Vec::new(),
-                promoted: None,
+                promoted: Vec::new(),
                 key: field.to_string(),
                 value_type: ValueType::String,
             });
         };
-        let homes = by_level
+        let single_level = self.attribute_levels_with_type(types, field).len() == 1;
+        let (homes, promoted): (Vec<String>, Vec<Option<String>>) = by_level
             .iter()
             .filter(|(_, level)| types.get(*level, field) == Some(canonical))
-            .map(|(container, _)| home_column(container, canonical))
-            .collect();
+            .map(|(container, level)| {
+                (
+                    home_column(container, canonical),
+                    self.promoted_for(*level, canonical, field, single_level),
+                )
+            })
+            .unzip();
         Some(Resolved::TypedAttribute {
             homes,
-            promoted: promoted_label(canonical, field),
+            promoted,
             key: field.to_string(),
             value_type: logical_to_value_type(canonical.into()),
         })
@@ -1315,6 +1369,12 @@ pub(crate) async fn plan_document(
         now_ns,
         aggregated: false,
         series_shaped: false,
+        demand: common::discovery::signal_for_source(source.name).map(|signal| AttrDemandScope {
+            tenant_slug,
+            dataset_slug,
+            signal,
+            seen: RefCell::new(HashSet::new()),
+        }),
         col_of: HashMap::new(),
         derived_types: HashMap::new(),
         schema_cols: base
@@ -1467,6 +1527,11 @@ use datafusion::arrow::array::RecordBatch;
 /// parsed as a qualifier.
 const PARENT_COLUMN_PREFIX: &str = "parent.";
 
+/// A `TypedAttribute`'s `(homes, promoted, key, prefix)` — the arguments
+/// `typed_home_filter_expr` needs to lower a filter comparison through the
+/// OR-rewrite (see `promoted_typed_attribute`, `ordered`).
+type TypedAttrFilterParts = (Vec<String>, Vec<Option<String>>, String, &'static str);
+
 /// A collision-free rename applied to the parent-side scan before the join —
 /// see [`Lowering::lower_correlate`] for why a flat rename is used instead
 /// of a `DataFrame::alias` table qualifier.
@@ -1558,10 +1623,30 @@ struct CorrelateScan<'a> {
     correlate_max_rows: usize,
 }
 
+/// Where to record per-level attribute-promotion demand for one document
+/// (change: otel-native-schema layer 6) — the tenant/dataset slugs and
+/// signal the compactor's analyzer keys `attribute_level_stats` by, plus
+/// this document's own dedup set so a key hit more than once (e.g. the same
+/// filter repeated, or a key used in both a filter and a group-by) counts
+/// once, mirroring the compat paths' flat demand counters.
+struct AttrDemandScope<'a> {
+    tenant_slug: &'a str,
+    dataset_slug: &'a str,
+    signal: &'static str,
+    seen: RefCell<HashSet<(AttributeLevel, String)>>,
+}
+
 struct Lowering<'a> {
     source: &'a SourcePlan,
     resolver: &'a SchemaResolver,
     now_ns: i64,
+    /// Tenant/dataset slugs — the same ones the compactor's analyzer keys
+    /// `attribute_level_stats` by — for recording per-level attribute
+    /// demand (change: otel-native-schema layer 6). `None` for a caller
+    /// that constructs a `Lowering` directly rather than through
+    /// `plan_document` (a `correlate` unit test): demand is simply not
+    /// recorded then.
+    demand: Option<AttrDemandScope<'a>>,
     aggregated: bool,
     series_shaped: bool,
     /// Logical name → current DataFrame column name (extract-derived and
@@ -1658,6 +1743,7 @@ impl Lowering<'_> {
                 let sort = keys
                     .iter()
                     .map(|k| {
+                        self.record_field_demand(&k.of);
                         let ascending = matches!(k.dir, common::query_ir::Direction::Asc);
                         Ok(self.value_expr(&k.of)?.sort(ascending, true))
                     })
@@ -1846,7 +1932,7 @@ impl Lowering<'_> {
                 key,
                 value_type,
             }) => Ok((
-                self.typed_attribute_expr(&homes, promoted.as_deref(), &key, PARENT_COLUMN_PREFIX),
+                self.typed_attribute_expr(&homes, &promoted, &key, PARENT_COLUMN_PREFIX),
                 value_type,
                 false,
             )),
@@ -1935,6 +2021,7 @@ impl Lowering<'_> {
         n: i64,
         ascending: bool,
     ) -> Result<DataFrame, QuerierError> {
+        self.record_field_demand(of);
         // `value_expr`, not `df_col` — see `Stage::Order`'s comment above.
         df.sort(vec![self.value_expr(of)?.sort(ascending, false)])
             .map_err(QuerierError::QueryFailed)?
@@ -1976,6 +2063,7 @@ impl Lowering<'_> {
             group_exprs.push(date_bin(stride, ts_ns, origin).alias("bucket"));
         }
         for by in &agg.by {
+            self.record_field_demand(by);
             let alias = safe_ident(by);
             group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
             new_col_of.insert(by.clone(), alias);
@@ -2256,6 +2344,7 @@ impl Lowering<'_> {
         let mut group_exprs = vec![ident("bucket").alias("bucket")];
         let mut new_col_of = HashMap::new();
         for by in &agg.by {
+            self.record_field_demand(by);
             let alias = safe_ident(by);
             group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
             new_col_of.insert(by.clone(), alias);
@@ -2749,7 +2838,7 @@ impl Lowering<'_> {
                 promoted,
                 key,
                 ..
-            }) => Ok(self.typed_attribute_expr(&homes, promoted.as_deref(), &key, "")),
+            }) => Ok(self.typed_attribute_expr(&homes, &promoted, &key, "")),
             // Retrieval-only, like `SpanEvents`; `is_filterable` rejects it
             // as a value position at validation time, so unreachable here.
             Some(Resolved::AttributeBag { container }) => Err(QuerierError::InvalidInput(format!(
@@ -2844,11 +2933,80 @@ impl Lowering<'_> {
     fn typed_attribute_expr(
         &self,
         homes: &[String],
-        promoted: Option<&str>,
+        promoted: &[Option<String>],
         key: &str,
         prefix: &str,
     ) -> Expr {
         typed_home_expr(homes, promoted, key, prefix)
+    }
+
+    /// `resolved`'s typed-attribute parts, when it has at least one promoted
+    /// column — the shape [`lower_leaf`] needs to rewrite a filter
+    /// comparison through [`typed_home_filter_expr`] instead of the plain
+    /// coalesce. `None` for every other resolution, or a promoted-free
+    /// `TypedAttribute` (the coalesce form is already pushdown-friendly
+    /// there).
+    fn promoted_typed_attribute(
+        resolved: Option<Resolved>,
+        prefix: &'static str,
+    ) -> Option<TypedAttrFilterParts> {
+        match resolved {
+            Some(Resolved::TypedAttribute {
+                homes,
+                promoted,
+                key,
+                ..
+            }) if promoted.iter().any(Option::is_some) => Some((homes, promoted, key, prefix)),
+            _ => None,
+        }
+    }
+
+    /// [`typed_home_filter_expr`] over `parts`' unpacked homes/promoted/key/
+    /// prefix — the one-line call every OR-rewrite site in [`Self::lower_leaf`]
+    /// and [`Self::ordered`] shares.
+    fn typed_attr_filter_expr(parts: &TypedAttrFilterParts, op: Operator, literal: Expr) -> Expr {
+        let (homes, promoted, key, prefix) = parts;
+        typed_home_filter_expr(homes, promoted, key, prefix, op, literal)
+    }
+
+    /// Record per-level attribute-promotion demand for a field used in a
+    /// filter or grouping position (change: otel-native-schema layer 6):
+    /// only a [`Resolved::TypedAttribute`] with at least one committed home
+    /// counts — a key with no committed type has nothing to promote. One
+    /// hit per (level, key) per document, whichever level(s) the resolved
+    /// homes actually read (an unqualified reference coalescing more than
+    /// one level counts each of them).
+    fn record_attr_demand(&self, resolved: &Resolved) {
+        let Some(scope) = &self.demand else { return };
+        let Resolved::TypedAttribute { homes, key, .. } = resolved else {
+            return;
+        };
+        for home in homes {
+            let Some((container, _)) = typed_attributes::canonical_of_home_column(home) else {
+                continue;
+            };
+            let level = typed_attributes::container_level(container);
+            if scope.seen.borrow_mut().insert((level, key.clone())) {
+                common::attr_demand::record_level(
+                    scope.tenant_slug,
+                    scope.dataset_slug,
+                    scope.signal,
+                    level,
+                    key,
+                );
+            }
+        }
+    }
+
+    /// Resolve `logical` and record its attribute demand, for a grouping or
+    /// ordering position ([`Self::lower_aggregate`], [`Self::lower_rank`],
+    /// `Stage::Order`) — the filter path ([`Self::lower_leaf`]) already has
+    /// its `Resolved` in hand and calls [`Self::record_attr_demand`]
+    /// directly.
+    fn record_field_demand(&self, logical: &str) {
+        if let Some(resolved) = self.resolver.resolve("", logical) {
+            self.record_attr_demand(&resolved);
+        }
     }
 
     /// Extract one attribute from a named span event (see
@@ -2898,7 +3056,7 @@ impl Lowering<'_> {
     fn lower_leaf(&self, leaf: &Leaf) -> Result<Expr, QuerierError> {
         // An extract-derived or aggregate-output column takes precedence over
         // registry resolution (it is a real DataFrame column now).
-        let (is_json, value_type, field_expr, is_body, untyped) = if let Some(alias) =
+        let (is_json, value_type, field_expr, is_body, untyped, typed_attr) = if let Some(alias) =
             self.col_of.get(&leaf.field)
         {
             let ty = self
@@ -2906,10 +3064,14 @@ impl Lowering<'_> {
                 .get(&leaf.field)
                 .cloned()
                 .unwrap_or(ValueType::String);
-            (false, ty, ident(alias.clone()), false, false)
+            (false, ty, ident(alias.clone()), false, false, None)
         } else if let Some(stripped) = leaf.field.strip_prefix("parent.") {
             let (expr, ty, advisory) = self.parent_field(stripped)?;
-            (advisory, ty, expr, false, advisory)
+            let typed_attr = Self::promoted_typed_attribute(
+                self.resolver.resolve("", stripped),
+                PARENT_COLUMN_PREFIX,
+            );
+            (advisory, ty, expr, false, advisory, typed_attr)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
                 QuerierError::InvalidInput(format!("unknown field '{}'", leaf.field))
@@ -2928,6 +3090,7 @@ impl Lowering<'_> {
             // committed canonical type, not a permissive-fallback default.
             let untyped = !self.resolver.has_declared_type(&leaf.field)
                 && !matches!(&resolved, Resolved::TypedAttribute { .. });
+            self.record_attr_demand(&resolved);
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -2954,12 +3117,13 @@ impl Lowering<'_> {
                     promoted,
                     key,
                     ..
-                } => self.typed_attribute_expr(homes, promoted.as_deref(), key, ""),
+                } => self.typed_attribute_expr(homes, promoted, key, ""),
                 // Retrieval-only, unreachable for a validated document (see
                 // the `value_expr` arm above); a NULL literal, not a panic.
                 Resolved::AttributeBag { .. } => lit(ScalarValue::Utf8(None)),
             };
-            (is_json, ty, expr, is_body, untyped)
+            let typed_attr = Self::promoted_typed_attribute(Some(resolved), "");
+            (is_json, ty, expr, is_body, untyped, typed_attr)
         };
         // The decoded form of `field_expr`, used by every operator except
         // `eq`/`ne`/`in` (which compare against the encoded literal instead,
@@ -2984,6 +3148,12 @@ impl Lowering<'_> {
                 let literal = coerce_val(v, &value_type)?;
                 if is_body {
                     field_expr.in_list(body_eq_candidates(&string_of(&literal)), false)
+                } else if let Some(parts) = &typed_attr {
+                    Self::typed_attr_filter_expr(
+                        parts,
+                        Operator::Eq,
+                        self.value_lit(&literal, is_json),
+                    )
                 } else {
                     field_expr.eq(self.value_lit(&literal, is_json))
                 }
@@ -2993,13 +3163,25 @@ impl Lowering<'_> {
                 let literal = coerce_val(v, &value_type)?;
                 if is_body {
                     field_expr.in_list(body_eq_candidates(&string_of(&literal)), true)
+                } else if let Some(parts) = &typed_attr {
+                    Self::typed_attr_filter_expr(
+                        parts,
+                        Operator::NotEq,
+                        self.value_lit(&literal, is_json),
+                    )
                 } else {
                     field_expr.not_eq(self.value_lit(&literal, is_json))
                 }
             }
-            ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => {
-                self.ordered(leaf, decoded_field_expr(), &value_type, is_json, untyped)?
-            }
+            ComparisonOp::Gt | ComparisonOp::Gte | ComparisonOp::Lt | ComparisonOp::Lte => self
+                .ordered(
+                    leaf,
+                    decoded_field_expr(),
+                    &value_type,
+                    is_json,
+                    untyped,
+                    typed_attr.as_ref(),
+                )?,
             ComparisonOp::Contains => {
                 let v = self.require_value(leaf)?;
                 let s = coerce_val(v, &ValueType::String)?;
@@ -3066,6 +3248,7 @@ impl Lowering<'_> {
         value_type: &ValueType,
         is_json: bool,
         untyped: bool,
+        typed_attr: Option<&TypedAttrFilterParts>,
     ) -> Result<Expr, QuerierError> {
         let field = leaf.field.as_str();
         let op = leaf.op;
@@ -3117,6 +3300,21 @@ impl Lowering<'_> {
                 .map_err(|e| QuerierError::InvalidInput(format!("field '{field}': {e}")))?;
             (field_expr, self.value_lit(&literal, is_json))
         };
+        // A promoted `TypedAttribute` is never `is_json`/`untyped` (see
+        // `lower_leaf`), so `lhs` above is always the plain `field_expr`
+        // (the coalesce `typed_attribute_expr` built) — safe to discard in
+        // favor of the homes-based rewrite, which gives DataFusion a
+        // prunable disjunct on the promoted column instead.
+        if let Some(parts) = typed_attr {
+            let df_op = match op {
+                ComparisonOp::Gt => Operator::Gt,
+                ComparisonOp::Gte => Operator::GtEq,
+                ComparisonOp::Lt => Operator::Lt,
+                ComparisonOp::Lte => Operator::LtEq,
+                _ => unreachable!(),
+            };
+            return Ok(Self::typed_attr_filter_expr(parts, df_op, rhs));
+        }
         Ok(match op {
             ComparisonOp::Gt => lhs.gt(rhs),
             ComparisonOp::Gte => lhs.gt_eq(rhs),
@@ -3204,7 +3402,7 @@ impl Lowering<'_> {
                                 key,
                                 ..
                             }) => self
-                                .typed_attribute_expr(&homes, promoted.as_deref(), &key, "")
+                                .typed_attribute_expr(&homes, &promoted, &key, "")
                                 .alias(safe_ident(f)),
                             None => ident(safe_ident(f)),
                         }
@@ -6163,7 +6361,7 @@ mod tests {
                     "same-typed levels coalesce in container order, the \
                      differently-typed resource level is excluded"
                 );
-                assert_eq!(promoted, None);
+                assert_eq!(promoted, vec![None, None]);
                 assert_eq!(key, "priority");
                 assert_eq!(value_type, ValueType::Int64);
             }
@@ -6194,7 +6392,7 @@ mod tests {
                 ..
             }) => {
                 assert!(homes.is_empty());
-                assert_eq!(promoted, None);
+                assert!(promoted.is_empty());
                 assert_eq!(value_type, ValueType::String);
             }
             other => panic!("expected a typed null, got {other:?}"),
@@ -6278,6 +6476,52 @@ mod tests {
         );
     }
 
+    /// An `eq` filter on a typed attribute with no promoted column keeps the
+    /// plain coalesce shape (a bare `get_field(...) = <literal>`, the shape
+    /// the warm-index probe recognizes); one with a promoted column lowers
+    /// to the `IS NOT NULL`/`OR` disjunction that gives DataFusion a
+    /// prunable predicate on it instead.
+    #[tokio::test]
+    async fn eq_filter_lowers_to_the_or_form_only_when_promoted() {
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["service.tier"],
+            "pipeline": [{ "where": { "field": "service.tier", "op": "eq", "value": "gold" } }]
+        }));
+
+        let unpromoted = typed_attribute_logs_ctx();
+        let unpromoted_types = canonical_types(&[(
+            "service.tier",
+            AttributeLevel::Record,
+            CanonicalType::String,
+        )]);
+        let plan_text = plan_typed(&unpromoted, &d, unpromoted_types)
+            .await
+            .logical_plan()
+            .to_string();
+        assert!(!plan_text.contains("IS NOT NULL"), "{plan_text}");
+        assert!(!plan_text.contains(" OR "), "{plan_text}");
+
+        let promoted = typed_promotion_logs_ctx([
+            vec![Some("gold"), Some("silver")],
+            vec![Some("legacy"), Some("legacy")],
+        ]);
+        let promoted_types = canonical_types(&[(
+            "service.tier",
+            AttributeLevel::Record,
+            CanonicalType::String,
+        )]);
+        let plan_text = plan_typed(&promoted, &d, promoted_types)
+            .await
+            .logical_plan()
+            .to_string();
+        assert!(
+            plan_text.contains("label_service_tier IS NOT NULL"),
+            "{plan_text}"
+        );
+        assert!(plan_text.contains(" OR "), "{plan_text}");
+    }
+
     /// An off-type value (a string on an `Int64`-declared key) reads as NULL
     /// through the typed home — `exists` is false for that row — but the
     /// value itself is never lost: the raw `log.attributes` bag still shows
@@ -6336,6 +6580,146 @@ mod tests {
         assert_eq!(
             decoded.get("http.status_code"),
             Some(&serde_json::json!("pending"))
+        );
+    }
+
+    /// A `logs` table on the typed layout with all three attribute
+    /// containers (`log_attributes`, `scope_attributes`,
+    /// `resource_attributes`) so a per-level attribute-demand test can
+    /// exercise a record-level filter, a `resource.`-qualified filter, and
+    /// an unqualified key recorded at two levels — registered under
+    /// `tenant`/`dataset` rather than the fixed `"t"`/`"d"` most tests share,
+    /// so a parallel test's demand hits never land in this one's drain.
+    fn attr_demand_logs_ctx(tenant: &str, dataset: &str) -> SessionContext {
+        let mut fields = vec![Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        )];
+        let mut columns: Vec<ArrayRef> =
+            vec![Arc::new(TimestampNanosecondArray::from(vec![10_i64]))];
+
+        for (container, row_pairs) in [
+            (
+                "log_attributes",
+                vec![
+                    ("http.status_code", serde_json::json!(200)),
+                    ("priority", serde_json::json!(7)),
+                    ("region", serde_json::json!("eu")),
+                ],
+            ),
+            ("scope_attributes", vec![("priority", serde_json::json!(7))]),
+            (
+                "resource_attributes",
+                vec![("environment", serde_json::json!("prod"))],
+            ),
+        ] {
+            extend_typed_container(
+                &mut fields,
+                &mut columns,
+                "logs",
+                "physical-v4",
+                container,
+                &[row(&row_pairs)],
+                |_, observed| standard_placement(observed),
+            );
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema(dataset, sp).unwrap();
+        ctx.register_catalog(tenant, cat);
+        ctx
+    }
+
+    /// A document filtering on a duplicated record-level attribute, a
+    /// `resource.`-qualified one negated (`not`), an unqualified key
+    /// committed at two levels, and a key with no committed type at all —
+    /// plus a `group by` on a fifth key — must record exactly the (level,
+    /// key) pairs that have a committed type, once each, no matter how many
+    /// times a document repeats them (change: otel-native-schema layer 6).
+    #[tokio::test]
+    async fn ir_query_records_per_level_attribute_demand_from_filters_and_grouping() {
+        let tenant = "attr-demand-tenant";
+        let dataset = "attr-demand-dataset";
+        let ctx = attr_demand_logs_ctx(tenant, dataset);
+        let types = canonical_types(&[
+            (
+                "http.status_code",
+                AttributeLevel::Record,
+                CanonicalType::Int64,
+            ),
+            ("priority", AttributeLevel::Record, CanonicalType::Int64),
+            ("priority", AttributeLevel::Scope, CanonicalType::Int64),
+            (
+                "environment",
+                AttributeLevel::Resource,
+                CanonicalType::String,
+            ),
+            ("region", AttributeLevel::Record, CanonicalType::String),
+        ]);
+        let lookup: Arc<dyn CanonicalTypeLookup> = Arc::new(StaticLookup(types));
+
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+            "result": "table", "fields": ["region", "n"],
+            "pipeline": [
+                { "where": { "and": [
+                    { "field": "http.status_code", "op": "eq", "value": 200 },
+                    { "field": "http.status_code", "op": "eq", "value": 200 },
+                    { "not": { "field": "resource.environment", "op": "eq", "value": "staging" } },
+                    { "field": "priority", "op": "eq", "value": 7 },
+                    { "field": "nope.attr", "op": "exists" }
+                ]}},
+                { "aggregate": { "by": ["region"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        }));
+
+        let (df, ..) = plan_document(
+            &ctx,
+            &d,
+            PlanRequest::new(tenant, dataset, 0)
+                .with_attribute_type_request(AttributeTypeRequest::Resolve(Some(lookup))),
+        )
+        .await
+        .unwrap()
+        .expect("typed table scans");
+        df.collect().await.unwrap();
+
+        let drained: Vec<((AttributeLevel, String), u64)> = common::attr_demand::drain_level()
+            .into_iter()
+            .filter(|((t, d, s, _, _), _)| t == tenant && d == dataset && s == "logs")
+            .map(|((_, _, _, level, key), count)| ((level, key), count))
+            .collect();
+        let recorded: HashMap<(AttributeLevel, String), u64> = drained.into_iter().collect();
+
+        for (level, key) in [
+            (AttributeLevel::Record, "http.status_code"),
+            (AttributeLevel::Resource, "environment"),
+            (AttributeLevel::Record, "priority"),
+            (AttributeLevel::Scope, "priority"),
+            (AttributeLevel::Record, "region"),
+        ] {
+            assert_eq!(
+                recorded.get(&(level, key.to_string())),
+                Some(&1),
+                "expected exactly one hit for {level:?}/{key}, got {recorded:?}"
+            );
+        }
+        assert!(
+            !recorded.keys().any(|(_, key)| key == "nope.attr"),
+            "a key with no committed type has nothing to promote: {recorded:?}"
+        );
+        assert_eq!(
+            recorded.len(),
+            5,
+            "no unexpected demand entries: {recorded:?}"
         );
     }
 
@@ -6469,6 +6853,485 @@ mod tests {
         .await;
         assert_eq!(span_ids, vec![Some("c0".to_string())]);
         assert_eq!(parent_routes, vec![Some("/checkout".to_string())]);
+    }
+
+    // otel-native-schema layer 6, task 6.1: promotion demote-and-still-correct
+    // invariant, extended to per-level `attr_<level>_<key>` promoted columns
+    // (D5). `Row` = (str_field, int_field, double_field, bool_field,
+    // env_record, env_resource, tier): every scalar type at record level,
+    // `env` at both record and resource level (row 3 has no record-level
+    // `env`, falling through to resource), `tier` — single-level, only
+    // promoted via the legacy `label_tier` column.
+    mod typed_promotion_invariant {
+        use super::*;
+        use AttributeLevel::{Record, Resource};
+        use common::schema::promoted_attr_column;
+        use datafusion::arrow::array::{BooleanArray, Float64Array};
+
+        type Row = (
+            &'static str,
+            i64,
+            f64,
+            bool,
+            Option<&'static str>,
+            &'static str,
+            Option<&'static str>,
+        );
+
+        const ROWS: [Row; 4] = [
+            ("apple", 1, 1.0, true, Some("prod"), "us", Some("gold")),
+            ("apple", 2, 2.0, false, Some("stg"), "us", Some("silver")),
+            ("banana", 3, 3.0, true, Some("prod"), "eu", None),
+            ("banana", 4, 4.0, false, None, "eu", Some("bronze")),
+        ];
+
+        fn fixture_types() -> CanonicalTypes {
+            canonical_types(&[
+                ("str_field", Record, CanonicalType::String),
+                ("int_field", Record, CanonicalType::Int64),
+                ("double_field", Record, CanonicalType::Float64),
+                ("bool_field", Record, CanonicalType::Bool),
+                ("env", Record, CanonicalType::String),
+                ("env", Resource, CanonicalType::String),
+                ("tier", Record, CanonicalType::String),
+            ])
+        }
+
+        /// `timestamp` plus the three typed attribute containers. `offset`
+        /// is `rows`'s starting position within [`ROWS`], so a `timestamp`
+        /// derived from it stays the same whether `rows` is the whole
+        /// fixture or one slice of a multi-batch table (otherwise a split
+        /// batch would repeat `timestamp` values a single-batch one never
+        /// does, making the two layouts hold different data).
+        fn typed_container_fields_and_columns(
+            rows: &[Row],
+            offset: usize,
+        ) -> (Vec<Field>, Vec<ArrayRef>) {
+            let n = rows.len();
+            let mut fields = vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            )];
+            let mut columns: Vec<ArrayRef> = vec![Arc::new(TimestampNanosecondArray::from(
+                (0..n)
+                    .map(|i| 10 * (offset + i + 1) as i64)
+                    .collect::<Vec<_>>(),
+            ))];
+            let record_rows = rows
+                .iter()
+                .map(|&(s, i, d, b, env, _, tier)| {
+                    let mut m = serde_json::json!({
+                        "str_field": s, "int_field": i, "double_field": d, "bool_field": b,
+                    });
+                    let obj = m.as_object_mut().unwrap();
+                    if let Some(env) = env {
+                        obj.insert("env".to_string(), serde_json::json!(env));
+                    }
+                    if let Some(tier) = tier {
+                        obj.insert("tier".to_string(), serde_json::json!(tier));
+                    }
+                    Some(obj.clone())
+                })
+                .collect::<Vec<_>>();
+            let resource_rows = rows
+                .iter()
+                .map(|&(.., env_resource, _)| {
+                    serde_json::json!({ "env": env_resource })
+                        .as_object()
+                        .cloned()
+                })
+                .collect::<Vec<_>>();
+            for (container, container_rows) in [
+                ("log_attributes", record_rows),
+                ("scope_attributes", vec![None; n]),
+                ("resource_attributes", resource_rows),
+            ] {
+                extend_typed_container(
+                    &mut fields,
+                    &mut columns,
+                    "logs",
+                    "physical-v4",
+                    container,
+                    &container_rows,
+                    |_, observed| standard_placement(observed),
+                );
+            }
+            (fields, columns)
+        }
+
+        /// Every promoted column, plus legacy `label_tier` (single-level,
+        /// trusted) and `label_env` (multi-level, must be ignored — WRONG).
+        fn promoted_fields_and_columns(rows: &[Row]) -> (Vec<Field>, Vec<ArrayRef>) {
+            let name = |level, key| promoted_attr_column(level, key);
+            let fields = vec![
+                Field::new(name(Record, "str_field"), DataType::Utf8, true),
+                Field::new(name(Record, "int_field"), DataType::Int64, true),
+                Field::new(name(Record, "double_field"), DataType::Float64, true),
+                Field::new(name(Record, "bool_field"), DataType::Boolean, true),
+                Field::new(name(Record, "env"), DataType::Utf8, true),
+                Field::new(name(Resource, "env"), DataType::Utf8, true),
+                Field::new("label_tier", DataType::Utf8, true),
+                Field::new("label_env", DataType::Utf8, true),
+            ];
+            macro_rules! arr {
+                ($ty:ty, $get:expr) => {
+                    Arc::new(<$ty>::from(rows.iter().map($get).collect::<Vec<_>>())) as ArrayRef
+                };
+            }
+            let columns: Vec<ArrayRef> = vec![
+                arr!(StringArray, |r| Some(r.0)),
+                arr!(Int64Array, |r| Some(r.1)),
+                arr!(Float64Array, |r| Some(r.2)),
+                arr!(BooleanArray, |r| Some(r.3)),
+                arr!(StringArray, |r| r.4),
+                arr!(StringArray, |r| Some(r.5)),
+                arr!(StringArray, |r| r.6),
+                arr!(StringArray, |_| Some("WRONG")),
+            ];
+            (fields, columns)
+        }
+
+        /// A batch's promoted-column shape: none; all-NULL (pre-backfill);
+        /// populated; or only `env`'s record-level home promoted.
+        enum Promotion {
+            Off,
+            Unbackfilled,
+            Backfilled,
+            RecordEnvOnly,
+        }
+
+        fn typed_batch(rows: &[Row], offset: usize, promotion: Promotion) -> RecordBatch {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(rows, offset);
+            match promotion {
+                Promotion::Off => {}
+                Promotion::RecordEnvOnly => {
+                    fields.push(Field::new(
+                        promoted_attr_column(Record, "env"),
+                        DataType::Utf8,
+                        true,
+                    ));
+                    columns.push(Arc::new(StringArray::from(
+                        rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                    )) as ArrayRef);
+                }
+                Promotion::Backfilled | Promotion::Unbackfilled => {
+                    let (pf, pc) = promoted_fields_and_columns(rows);
+                    fields.extend(pf);
+                    columns.extend(if matches!(promotion, Promotion::Unbackfilled) {
+                        pc.iter()
+                            .map(|c| {
+                                datafusion::arrow::array::new_null_array(c.data_type(), rows.len())
+                            })
+                            .collect()
+                    } else {
+                        pc
+                    });
+                }
+            }
+            RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+        }
+
+        fn ctx(rows: &[Row], promotion: Promotion) -> SessionContext {
+            let batch = typed_batch(rows, 0, promotion);
+            single_table_ctx("logs", batch.schema(), batch)
+        }
+
+        /// Registers `batches` as one table across several files/row-groups.
+        fn multi_batch_table_ctx(schema: Arc<Schema>, batches: Vec<RecordBatch>) -> SessionContext {
+            let ctx = SessionContext::new();
+            let table = MemTable::try_new(schema, vec![batches]).unwrap();
+            let sp = Arc::new(MemorySchemaProvider::new());
+            sp.register_table("logs".to_string(), Arc::new(table))
+                .unwrap();
+            let cat = Arc::new(MemoryCatalogProvider::new());
+            cat.register_schema("d", sp).unwrap();
+            ctx.register_catalog("t", cat);
+            ctx
+        }
+
+        /// Promotion on, over two files: rows 0-1 unbackfilled, 2-3 backfilled.
+        fn promotion_on_ctx() -> SessionContext {
+            let batch1 = typed_batch(&ROWS[0..2], 0, Promotion::Unbackfilled);
+            let batch2 = typed_batch(&ROWS[2..4], 2, Promotion::Backfilled);
+            multi_batch_table_ctx(batch1.schema(), vec![batch1, batch2])
+        }
+
+        /// Asserts `d` (identified by `name`) plans to identical schema
+        /// (name/type/nullability, not incidental metadata) and rows with
+        /// promotion off vs on.
+        async fn assert_promotion_invariant(d: &Document, name: &str) {
+            fn shape(schema: &Schema) -> Vec<(String, DataType, bool)> {
+                schema
+                    .fields()
+                    .iter()
+                    .map(|f| (f.name().clone(), f.data_type().clone(), f.is_nullable()))
+                    .collect()
+            }
+            let off = plan_typed(&ctx(&ROWS, Promotion::Off), d, fixture_types()).await;
+            let on = plan_typed(&promotion_on_ctx(), d, fixture_types()).await;
+            assert_eq!(
+                shape(off.schema().as_arrow()),
+                shape(on.schema().as_arrow()),
+                "'{name}': promotion must not change the result schema"
+            );
+            let off_rows = sorted_rows(off.collect().await.unwrap());
+            let on_rows = sorted_rows(on.collect().await.unwrap());
+            assert!(
+                !off_rows.is_empty(),
+                "'{name}': the fixture must actually return rows"
+            );
+            assert_eq!(off_rows, on_rows, "'{name}': promotion changed the rows");
+        }
+
+        /// Every row of `batches`, debug-rendered and sorted.
+        fn sorted_rows(batches: Vec<RecordBatch>) -> Vec<String> {
+            let mut rows: Vec<String> = batches
+                .iter()
+                .flat_map(|b| (0..b.num_rows()).map(move |i| row_debug(b, i)))
+                .collect();
+            rows.sort();
+            rows
+        }
+
+        fn row_debug(batch: &RecordBatch, i: usize) -> String {
+            (0..batch.num_columns())
+                .map(|c| {
+                    datafusion::arrow::util::display::array_value_to_string(batch.column(c), i)
+                        .unwrap_or_else(|_| "<err>".to_string())
+                })
+                .collect::<Vec<_>>()
+                .join("|")
+        }
+
+        fn rows_doc(fields: &[&str], pipeline: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": fields, "pipeline": pipeline
+            })
+        }
+
+        fn where_doc(field: &str, op: &str, value: serde_json::Value) -> serde_json::Value {
+            rows_doc(
+                &[field],
+                serde_json::json!([{ "where": { "field": field, "op": op, "value": value } }]),
+            )
+        }
+
+        fn not_where_doc(field: &str, op: &str, value: serde_json::Value) -> serde_json::Value {
+            rows_doc(
+                &[field],
+                serde_json::json!([{
+                    "where": { "not": { "field": field, "op": op, "value": value } }
+                }]),
+            )
+        }
+
+        fn table_doc(pipeline: serde_json::Value) -> serde_json::Value {
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table", "pipeline": pipeline
+            })
+        }
+
+        /// `sum`/`avg`/`min`/`max` of `int_field` and `double_field`.
+        fn scalar_aggs() -> Vec<serde_json::Value> {
+            ["int_field", "double_field"]
+                .iter()
+                .flat_map(|field| {
+                    let suffix = if *field == "int_field" { "i" } else { "d" };
+                    ["sum", "avg", "min", "max"].iter().map(move |func| {
+                        serde_json::json!({ "fn": func, "of": field, "as": format!("{func}_{suffix}") })
+                    })
+                })
+                .collect()
+        }
+
+        /// Documents this invariant must hold over: projections, filters
+        /// per scalar type, aggregates, and the multi-level `env` key.
+        fn scenarios() -> Vec<(&'static str, serde_json::Value)> {
+            let all_fields = [
+                "str_field",
+                "int_field",
+                "double_field",
+                "bool_field",
+                "env",
+                "log.env",
+                "resource.env",
+                "tier",
+            ];
+            let mut docs = vec![
+                (
+                    "project every field",
+                    rows_doc(&all_fields, serde_json::json!([])),
+                ),
+                (
+                    "count by str_field",
+                    table_doc(serde_json::json!([{ "aggregate": {
+                        "by": ["str_field"], "aggs": [{ "fn": "count", "as": "n" }]
+                    } }])),
+                ),
+                (
+                    "numeric aggregates",
+                    table_doc(
+                        serde_json::json!([{ "aggregate": { "by": [], "aggs": scalar_aggs() } }]),
+                    ),
+                ),
+                (
+                    "count by bool_field",
+                    table_doc(serde_json::json!([{ "aggregate": {
+                        "by": ["bool_field"], "aggs": [{ "fn": "count", "as": "n" }]
+                    } }])),
+                ),
+                (
+                    "multi-level env unqualified and qualified",
+                    rows_doc(&["env", "log.env", "resource.env"], serde_json::json!([])),
+                ),
+                (
+                    "ordered by timestamp",
+                    rows_doc(
+                        &["timestamp", "str_field"],
+                        serde_json::json!([{ "order": [{ "of": "timestamp", "dir": "asc" }] }]),
+                    ),
+                ),
+            ];
+            for (name, field, op, value) in [
+                ("eq string", "str_field", "eq", serde_json::json!("apple")),
+                ("eq int", "int_field", "eq", serde_json::json!(3)),
+                ("eq double", "double_field", "eq", serde_json::json!(3.0)),
+                ("eq bool", "bool_field", "eq", serde_json::json!(true)),
+                ("ne string", "str_field", "ne", serde_json::json!("apple")),
+                ("gt int", "int_field", "gt", serde_json::json!(2)),
+                ("lte double", "double_field", "lte", serde_json::json!(2.0)),
+            ] {
+                docs.push((name, where_doc(field, op, value)));
+            }
+            docs.push((
+                "not eq string",
+                not_where_doc("str_field", "eq", serde_json::json!("apple")),
+            ));
+            docs
+        }
+
+        #[tokio::test]
+        async fn promotion_is_invariant_across_scenarios() {
+            for (name, doc_json) in scenarios() {
+                assert_promotion_invariant(&doc(doc_json), name).await;
+            }
+        }
+
+        /// `env` stays invariant whether only its record-level home is
+        /// promoted, or both are.
+        #[tokio::test]
+        async fn multi_level_key_partial_and_full_promotion_agree() {
+            let d = doc(rows_doc(&["env"], serde_json::json!([])));
+            let expected = vec![
+                Some("prod".to_string()),
+                Some("stg".to_string()),
+                Some("prod".to_string()),
+                Some("eu".to_string()),
+            ];
+            for session in [promotion_on_ctx(), ctx(&ROWS, Promotion::RecordEnvOnly)] {
+                let values = column_values(
+                    plan_typed(&session, &d, fixture_types()).await,
+                    &safe_ident("env"),
+                )
+                .await;
+                assert_eq!(values, expected);
+            }
+        }
+
+        /// `env` is committed at both `Record` and `Resource`, so a legacy
+        /// `label_env` column must never stand in for it — even when it's
+        /// the only promoted column present, with no per-level
+        /// `attr_*_env` column to make `promoted_for` return early. Proves
+        /// the `single_level` guard actually rejects a multi-level key's
+        /// legacy label, the counterpart to `label_tier`'s single-level
+        /// key, which `promotion_on_ctx` already trusts throughout
+        /// [`scenarios`].
+        #[tokio::test]
+        async fn multi_level_legacy_label_is_ignored_without_attr_columns() {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(&ROWS, 0);
+            fields.push(Field::new("label_env", DataType::Utf8, true));
+            columns.push(Arc::new(StringArray::from(vec![Some("WRONG"); ROWS.len()])) as ArrayRef);
+            let schema = Arc::new(Schema::new(fields));
+            let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+            let with_label = single_table_ctx("logs", schema, batch);
+
+            let d = doc(rows_doc(&["env"], serde_json::json!([])));
+            let with_label_values = column_values(
+                plan_typed(&with_label, &d, fixture_types()).await,
+                &safe_ident("env"),
+            )
+            .await;
+            let off_values = column_values(
+                plan_typed(&ctx(&ROWS, Promotion::Off), &d, fixture_types()).await,
+                &safe_ident("env"),
+            )
+            .await;
+            assert_eq!(
+                with_label_values, off_values,
+                "label_env must be ignored for a key recorded at more than one level"
+            );
+        }
+
+        /// The invariant holds on genuinely redundant data, but that alone
+        /// can't tell a promoted column that's actually read apart from one
+        /// silently skipped (e.g. always NULL, or equal to the home by
+        /// coincidence): assert the backfilled context's plan text
+        /// references `attr_record_str_field` for both a projection and a
+        /// filter, the way `promotion_invariance_same_result` and
+        /// `scope_qualified_attribute_resolves_to_promoted_column` already
+        /// do for the legacy `label_*` columns.
+        #[tokio::test]
+        async fn promoted_columns_are_referenced_in_the_plan() {
+            let backfilled = ctx(&ROWS, Promotion::Backfilled);
+            let promoted_str_field = promoted_attr_column(Record, "str_field");
+
+            for (name, d) in [
+                (
+                    "projection",
+                    doc(rows_doc(&["str_field"], serde_json::json!([]))),
+                ),
+                (
+                    "filter",
+                    doc(where_doc("str_field", "eq", serde_json::json!("apple"))),
+                ),
+            ] {
+                let plan = format!(
+                    "{}",
+                    plan_typed(&backfilled, &d, fixture_types())
+                        .await
+                        .logical_plan()
+                        .display_indent()
+                );
+                assert!(
+                    plan.contains(&promoted_str_field),
+                    "expected the promoted column in the {name} plan:\n{plan}"
+                );
+            }
+        }
+
+        /// A type-mismatched promoted column (`Utf8`, not `Int64`) is ignored.
+        #[tokio::test]
+        async fn a_type_mismatched_promoted_column_is_ignored() {
+            let (mut fields, mut columns) = typed_container_fields_and_columns(&ROWS, 0);
+            let mismatched = promoted_attr_column(Record, "int_field");
+            fields.push(Field::new(&mismatched, DataType::Utf8, true));
+            columns.push(Arc::new(StringArray::from(vec![Some("999"); ROWS.len()])) as ArrayRef);
+            let schema = Arc::new(Schema::new(fields));
+            let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+            let ctx = single_table_ctx("logs", schema, batch);
+
+            let d = doc(rows_doc(&["int_field"], serde_json::json!([])));
+            let values =
+                column_values_i64(plan_typed(&ctx, &d, fixture_types()).await, "int_field").await;
+            assert_eq!(
+                values,
+                vec![Some(1), Some(2), Some(3), Some(4)],
+                "the type-mismatched promoted column must be ignored"
+            );
+        }
     }
 
     // --- IR-5: typed predicates compare against the field's canonical type
@@ -8154,6 +9017,7 @@ mod tests {
                     source,
                     resolver,
                     now_ns: 0,
+                    demand: None,
                     aggregated: false,
                     series_shaped: false,
                     col_of: HashMap::new(),

@@ -27,6 +27,12 @@ export type ApiError = {
  * response of every rate-limited operation.
  */
 export type ApiErrorBody = {
+    /**
+     * The individual problems behind the error, when the endpoint reports
+     * them one by one (e.g. the invalid rows of an uploaded results file).
+     * Absent otherwise.
+     */
+    details?: Array<ApiErrorDetail> | null;
     error: string;
     errorType: string;
     /**
@@ -38,6 +44,98 @@ export type ApiErrorBody = {
      * Always `"error"`.
      */
     status: string;
+};
+
+/**
+ * One problem behind an [`ApiErrorBody`]: where it is and why.
+ */
+export type ApiErrorDetail = {
+    /**
+     * The column or field at fault, when there is one.
+     */
+    column?: string | null;
+    reason: string;
+    /**
+     * 1-based line of the request body the problem starts on; absent for
+     * a problem with the body as a whole.
+     */
+    row?: number | null;
+};
+
+/**
+ * Result of appending cases from traces.
+ */
+export type AppendCasesFromTracesOutcome = {
+    added: number;
+    /**
+     * Ids of the new cases, in the order they now appear in the set.
+     */
+    added_ids: Array<string>;
+    /**
+     * Matching traces the set already holds a case for.
+     */
+    already_present: number;
+    /**
+     * Distinct matching traces (after the `failing_evaluator` filter), at
+     * most 10,000.
+     */
+    matches: number;
+};
+
+/**
+ * Body of `POST /api/v1/eval-sets/{name}/cases/from-traces`.
+ *
+ * Unknown keys are rejected: every option narrows or shapes the query, so
+ * a misspelt one silently widening it would add the wrong cases.
+ */
+export type AppendCasesFromTracesRequest = {
+    /**
+     * `gen_ai.agent.name` of the agent span (a span without one matches on
+     * `service.name`). Defaults to the eval set's agent.
+     */
+    agent?: string | null;
+    /**
+     * Set each case's expected tools to the trace's `execute_tool` spans'
+     * `gen_ai.tool.name`s in call order.
+     */
+    expected_tools?: boolean;
+    /**
+     * Keep only traces holding at least one failing result
+     * (`gen_ai.evaluation.result`) of the evaluator with this
+     * `gen_ai.evaluation.name` in the same window. Evaluator errors never
+     * count as failures.
+     */
+    failing_evaluator?: string | null;
+    /**
+     * Extra Query IR predicates the agent span must satisfy (logical field
+     * names, e.g. `{"field": "deployment.environment", "op": "eq", "value":
+     * "prod"}`).
+     */
+    filters?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * `gen_ai.operation.name` of the agent span. Default `invoke_agent`.
+     */
+    operation?: string | null;
+    /**
+     * Time window of the agent spans, as in a Query IR document (e.g.
+     * `{"from": "now-7d", "to": "now"}`).
+     */
+    range: QueryRange;
+    /**
+     * Set each case's reference to the agent's answer (the last text of
+     * the agent span's `gen_ai.output.messages`).
+     */
+    reference_from_answer?: boolean;
+    /**
+     * How many new cases to add, 1-1000. Default 50.
+     */
+    sample?: number | null;
+    /**
+     * Tags put on every new case.
+     */
+    tags?: Array<string>;
 };
 
 /**
@@ -739,11 +837,52 @@ export type EvalCaseSource = {
 };
 
 /**
+ * How many of a set's cases came from each [`EvalCaseSource`] kind.
+ */
+export type EvalCaseSourceCounts = {
+    hand_written: number;
+    trace: number;
+    upload: number;
+};
+
+/**
+ * The format of an uploaded results file.
+ */
+export type EvalResultsFormat = 'csv' | 'jsonl';
+
+/**
+ * Links on an upload response.
+ */
+export type EvalResultsUploadLinks = {
+    /**
+     * The Query IR endpoint to read the run back: `logs` where
+     * `signaldb.eval.run_id` is the run id.
+     */
+    query: Link;
+    /**
+     * The Explore UI's Runs page (a UI path, not an API resource).
+     */
+    runs: Link;
+};
+
+/**
+ * The run an upload wrote, with its per-evaluator summary.
+ */
+export type EvalResultsUploadResponse = UploadSummary & {
+    _links: EvalResultsUploadLinks;
+    agent: string;
+    run_id: string;
+    set: string;
+    version: string;
+};
+
+/**
  * Links on one eval set. The mutation links appear only when the caller
  * may write.
  */
 export type EvalSetLinks = {
     append_cases?: null | Link;
+    append_cases_from_traces?: null | Link;
     delete?: null | Link;
     replace?: null | Link;
     self: Link;
@@ -817,10 +956,39 @@ export type EvalSetSummary = {
 };
 
 /**
- * An eval set as listed, without its cases.
+ * An eval set as listed, without its cases but with how many of them came
+ * from each source kind.
  */
 export type EvalSetSummaryResponse = EvalSetSummary & {
     _links: EvalSetLinks;
+    sources: EvalCaseSourceCounts;
+};
+
+/**
+ * Figures for one evaluator of an upload.
+ */
+export type EvaluatorSummary = {
+    /**
+     * Rows with an `error`: never counted as failures.
+     */
+    errors: number;
+    /**
+     * Mean score over the rows with a score and no error; `null` when none.
+     */
+    mean?: number | null;
+    /**
+     * `gen_ai.evaluation.name`.
+     */
+    name: string;
+    /**
+     * Passes / (passes + fails) under the pass rule; `null` when no row
+     * has a verdict.
+     */
+    pass_rate?: number | null;
+    /**
+     * Result rows, evaluator errors included.
+     */
+    results: number;
 };
 
 /**
@@ -2224,6 +2392,32 @@ export type UpdateTenantRequest = {
     name?: string | null;
 };
 
+/**
+ * What an upload holds.
+ */
+export type UploadSummary = {
+    /**
+     * Distinct case ids.
+     */
+    cases: number;
+    /**
+     * Per evaluator, ordered by name.
+     */
+    evaluators: Array<EvaluatorSummary>;
+    /**
+     * Result rows written.
+     */
+    rows: number;
+    /**
+     * Rows without a `trace_id` (run-level results).
+     */
+    run_level: number;
+    /**
+     * Rows with a `trace_id`.
+     */
+    span_linked: number;
+};
+
 export type UpsertMembershipRequest = {
     email: string;
     role: MembershipRole;
@@ -2366,6 +2560,12 @@ export type ProfilesByTraceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2412,6 +2612,12 @@ export type ConnectionInfoErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2458,6 +2664,12 @@ export type ListEvalSetsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2524,6 +2736,12 @@ export type CreateEvalSetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2583,6 +2801,12 @@ export type DeleteEvalSetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2642,6 +2866,12 @@ export type GetEvalSetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2713,6 +2943,12 @@ export type ReplaceEvalSetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2784,6 +3020,12 @@ export type AppendEvalCasesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2812,6 +3054,188 @@ export type AppendEvalCasesResponses = {
 };
 
 export type AppendEvalCasesResponse = AppendEvalCasesResponses[keyof AppendEvalCasesResponses];
+
+export type AppendEvalCasesFromTracesData = {
+    body: AppendCasesFromTracesRequest;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}/cases/from-traces';
+};
+
+export type AppendEvalCasesFromTracesErrors = {
+    /**
+     * Malformed JSON body
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope (or, for a session, the tenant-admin role), or missing traces:read (logs:read with failing_evaluator)
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * Invalid options or range, a filter the query engine rejects, or the set would exceed its case limit
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+    /**
+     * No querier service available
+     */
+    503: ApiErrorBody;
+};
+
+export type AppendEvalCasesFromTracesError = AppendEvalCasesFromTracesErrors[keyof AppendEvalCasesFromTracesErrors];
+
+export type AppendEvalCasesFromTracesResponses = {
+    /**
+     * Matching, already-present and added counts, with the new case ids
+     */
+    200: AppendCasesFromTracesOutcome;
+};
+
+export type AppendEvalCasesFromTracesResponse = AppendEvalCasesFromTracesResponses[keyof AppendEvalCasesFromTracesResponses];
+
+export type UploadEvalResultsData = {
+    /**
+     * The results file: JSONL (one JSON object per line) or CSV with a header row. Sent as `text/csv` or `application/x-ndjson`, or with any type plus the `format` parameter.
+     */
+    body: string;
+    path?: never;
+    query: {
+        /**
+         * The agent the run evaluated (`gen_ai.agent.name`, and the records'
+         * `service.name`).
+         */
+        agent: string;
+        /**
+         * The agent version (`gen_ai.agent.version`, and `service.version`).
+         */
+        version: string;
+        /**
+         * The eval set the run replayed: a valid eval set name; the set need
+         * not exist.
+         */
+        set: string;
+        /**
+         * Run id (`signaldb.eval.run_id`); a UUID is generated when absent.
+         * Re-using a run id adds the file's results to that run.
+         */
+        run_id?: string;
+        /**
+         * File format. Overrides the `Content-Type` (`text/csv` for CSV,
+         * `application/x-ndjson` or `application/jsonl` for JSONL); one of the
+         * two must name the format.
+         */
+        format?: EvalResultsFormat;
+    };
+    url: '/api/v1/evals/results';
+};
+
+export type UploadEvalResultsErrors = {
+    /**
+     * Invalid run metadata, unknown format, a file that is not UTF-8, or invalid rows (listed in `details`)
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * A tenant log processor rejected the results
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+    /**
+     * No writer service available
+     */
+    503: ApiErrorBody;
+    /**
+     * The writer did not accept the results in time
+     */
+    504: ApiErrorBody;
+};
+
+export type UploadEvalResultsError = UploadEvalResultsErrors[keyof UploadEvalResultsErrors];
+
+export type UploadEvalResultsResponses = {
+    /**
+     * Results written; the run and its per-evaluator summary
+     */
+    201: EvalResultsUploadResponse;
+};
+
+export type UploadEvalResultsResponse = UploadEvalResultsResponses[keyof UploadEvalResultsResponses];
 
 export type OpsCompactData = {
     body?: never;
@@ -2921,6 +3345,12 @@ export type ProcessorsListErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2979,6 +3409,12 @@ export type ProcessorsCreateErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3034,6 +3470,12 @@ export type ProcessorsDeleteErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3089,6 +3531,12 @@ export type ProcessorsGetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3152,6 +3600,12 @@ export type ProcessorsReplaceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3210,6 +3664,12 @@ export type ProcessorsTestErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3260,6 +3720,12 @@ export type ProcessorsValidateErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3314,6 +3780,12 @@ export type QueryIrErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3364,6 +3836,12 @@ export type QuerySourcesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3414,6 +3892,12 @@ export type GetSchemaErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3474,6 +3958,12 @@ export type SchemaSearchAttributesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3525,6 +4015,12 @@ export type SchemaResolveAttributeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3580,6 +4076,12 @@ export type SchemaSearchEntitiesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3631,6 +4133,12 @@ export type SchemaResolveEntityErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3691,6 +4199,12 @@ export type SchemaSearchMetricsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3742,6 +4256,12 @@ export type SchemaResolveMetricErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3788,6 +4308,12 @@ export type SchemaListRegistriesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3851,6 +4377,12 @@ export type SchemaCreateRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3914,6 +4446,12 @@ export type SchemaDeleteRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3973,6 +4511,12 @@ export type SchemaGetRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4049,6 +4593,12 @@ export type SchemaReplaceRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4108,6 +4658,12 @@ export type SchemaValidateRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4207,6 +4763,12 @@ export type CreateTenantErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4384,6 +4946,12 @@ export type ListApiKeysErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4455,6 +5023,12 @@ export type CreateApiKeyErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4522,6 +5096,12 @@ export type RevokeApiKeyErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4601,6 +5181,12 @@ export type UpdateApiKeyErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4660,6 +5246,12 @@ export type ListDatasetsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4727,6 +5319,12 @@ export type CreateDatasetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4794,6 +5392,12 @@ export type DeleteDatasetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4849,6 +5453,12 @@ export type ListGithubInstallationsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4908,6 +5518,12 @@ export type AttachGithubInstallationErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4971,6 +5587,12 @@ export type StartGithubLinkErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5034,6 +5656,12 @@ export type RemoveGithubInstallationErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5097,6 +5725,12 @@ export type ListMembershipsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5164,6 +5798,12 @@ export type UpsertMembershipErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5239,6 +5879,12 @@ export type RemoveMembershipErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5326,6 +5972,12 @@ export type SourceContextAvailabilityErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5385,6 +6037,12 @@ export type SourceContextErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5565,6 +6223,12 @@ export type WhoamiErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5621,6 +6285,12 @@ export type LogqlLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5670,6 +6340,12 @@ export type LogqlLabelsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5727,6 +6403,12 @@ export type LogqlQueryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5792,6 +6474,12 @@ export type LogqlQueryRangeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5909,6 +6597,12 @@ export type PromqlLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5958,6 +6652,12 @@ export type PromqlLabelsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6007,6 +6707,12 @@ export type PromqlQueryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6064,6 +6770,12 @@ export type PromqlQueryRangeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6117,6 +6829,12 @@ export type PyroscopeLabelNamesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6172,6 +6890,12 @@ export type PyroscopeLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6227,6 +6951,12 @@ export type PyroscopeProfileTypesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6298,6 +7028,12 @@ export type PyroscopeRenderErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6369,6 +7105,12 @@ export type PyroscopeRenderDiffErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6424,6 +7166,12 @@ export type SearchErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6484,6 +7232,12 @@ export type SearchTagValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6539,6 +7293,12 @@ export type SearchTagsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6597,6 +7357,12 @@ export type QuerySingleTraceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**

@@ -1,5 +1,5 @@
-// User menu dropdown for the top bar. Shows avatar with initials, user info,
-// theme toggle, navigation items, and sign-out action.
+// The account menu: avatar with initials, user info, theme toggle, docs,
+// switch tenant and sign out. Pages live in the sidebar, not here.
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
@@ -14,9 +14,6 @@ import "./UserMenu.css";
 interface Props {
   /** The signed-in identity; nothing renders without a user. */
   who: WhoamiResponse | undefined;
-  canManage: boolean;
-  /** Hides mutating surfaces in the read-only demo account. */
-  isDemo: boolean;
   /**
    * `topbar` (the default): avatar + name + caret, the popover dropping
    * below. `sidebar`: the nav sidebar's footer row — avatar, then name over
@@ -30,8 +27,6 @@ interface Props {
 
 export function UserMenu({
   who,
-  canManage,
-  isDemo,
   variant = "topbar",
   expanded = true,
 }: Props) {
@@ -80,13 +75,7 @@ export function UserMenu({
         </button>
       )}
       {open && (
-        <UserMenuPopover
-          who={who}
-          role={role}
-          canManage={canManage}
-          isDemo={isDemo}
-          onClose={close}
-        />
+        <UserMenuPopover who={who} role={role} onClose={close} />
       )}
     </span>
   );
@@ -95,21 +84,10 @@ export function UserMenu({
 interface PopoverProps {
   who: WhoamiResponse;
   role: string | undefined;
-  canManage: boolean;
-  /** Hides mutating surfaces (change: demo-mode): schema/processor editing
-   * is reachable by every role today, so this is checked independently of
-   * `canManage`. */
-  isDemo: boolean;
   onClose: () => void;
 }
 
-function UserMenuPopover({
-  who,
-  role,
-  canManage,
-  isDemo,
-  onClose,
-}: PopoverProps) {
+function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const backdropRef = useRef<HTMLSpanElement>(null);
@@ -170,42 +148,6 @@ function UserMenuPopover({
             <span>Appearance</span>
             <span className="user-menu-hint">{isDark ? "Dark" : "Light"}</span>
           </button>
-          <Link
-            className="user-menu-item"
-            to="/instrumentation"
-            onClick={onClose}
-          >
-            <span>Send data</span>
-            <span className="user-menu-hint">instrumentation</span>
-          </Link>
-          {canManage && (
-            <Link className="user-menu-item" to="/api-keys" onClick={onClose}>
-              <span>API keys</span>
-              <span className="user-menu-hint">{who.tenant.id}</span>
-            </Link>
-          )}
-          {canManage && (
-            <Link
-              className="user-menu-item"
-              to="/integrations/github"
-              onClick={onClose}
-            >
-              <span>GitHub</span>
-              <span className="user-menu-hint">integration</span>
-            </Link>
-          )}
-          {!isDemo && (
-            <Link className="user-menu-item" to="/schema" onClick={onClose}>
-              <span>Schema</span>
-              <span className="user-menu-hint">conventions</span>
-            </Link>
-          )}
-          {!isDemo && (
-            <Link className="user-menu-item" to="/processors" onClick={onClose}>
-              <span>Processors</span>
-              <span className="user-menu-hint">OTTL</span>
-            </Link>
-          )}
           <a
             className="user-menu-item"
             href="https://signaldb.dev/docs"

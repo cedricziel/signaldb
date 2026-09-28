@@ -264,13 +264,15 @@ pub async fn serve_otlp_grpc(
     // integration. Authentication is a single tower layer applied once
     // around the whole server below (crate::middleware::GrpcAuthLayer),
     // not a per-service interceptor.
-    let log_handler = LogHandler::new(
-        flight_transport.clone(),
-        wal_manager.clone(),
-        processor_registry.clone(),
-    )
-    .with_retry_dedup(retry_dedup.clone());
-    let log_service = LogAcceptorService::new(log_handler)
+    let log_handler = Arc::new(
+        LogHandler::new(
+            flight_transport.clone(),
+            wal_manager.clone(),
+            processor_registry.clone(),
+        )
+        .with_retry_dedup(retry_dedup.clone()),
+    );
+    let log_service = LogAcceptorService::new(log_handler.clone())
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone())
         .with_type_snapshots(type_snapshots.clone());
@@ -279,12 +281,16 @@ pub async fn serve_otlp_grpc(
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
+    // Shares `log_handler` so a `gen_ai.evaluation.result` span event is
+    // written through the same log ingest path (WAL, forward, dedup) as an
+    // ordinary OTLP log export.
     let trace_handler = TraceHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
         processor_registry.clone(),
     )
-    .with_retry_dedup(retry_dedup.clone());
+    .with_retry_dedup(retry_dedup.clone())
+    .with_evaluation_logs(log_handler.clone());
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
         .with_storage_quota(storage_usage.clone())
@@ -1025,16 +1031,6 @@ pub async fn serve_otlp_http(
             .with_retry_dedup(config.retry_dedup.clone()),
     );
 
-    // Create trace handler with shared resources (same WAL + Flight path as gRPC)
-    let trace_handler = Arc::new(
-        TraceHandler::new(
-            config.flight_transport.clone(),
-            config.wal_manager.clone(),
-            config.processor_registry.clone(),
-        )
-        .with_retry_dedup(config.retry_dedup.clone()),
-    );
-
     // Create log handler with shared resources (same WAL + Flight path as gRPC)
     let log_handler = Arc::new(
         LogHandler::new(
@@ -1043,6 +1039,20 @@ pub async fn serve_otlp_http(
             config.processor_registry.clone(),
         )
         .with_retry_dedup(config.retry_dedup.clone()),
+    );
+
+    // Create trace handler with shared resources (same WAL + Flight path as
+    // gRPC), sharing `log_handler` so a `gen_ai.evaluation.result` span
+    // event is written through the same log ingest path as an ordinary
+    // OTLP log export.
+    let trace_handler = Arc::new(
+        TraceHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone())
+        .with_evaluation_logs(log_handler.clone()),
     );
 
     // Create metrics handler with shared resources (same WAL + Flight path as gRPC)

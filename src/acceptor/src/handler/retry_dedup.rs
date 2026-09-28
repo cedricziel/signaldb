@@ -24,26 +24,19 @@ use common::ingest_dedup::IngestDedup;
 use common::wal::WalOperation;
 use uuid::Uuid;
 
-/// The fingerprint of one WAL-bound batch, used as its `ingest_id`. Each part
-/// is length-prefixed so no two distinct inputs concatenate to the same byte
-/// stream.
+/// The fingerprint of one WAL-bound batch, used as its `ingest_id`.
 pub fn batch_fingerprint(
     tenant_id: &str,
     dataset_id: &str,
     operation: &WalOperation,
     batch_bytes: &[u8],
 ) -> Uuid {
-    let mut hasher = twox_hash::XxHash3_128::new();
-    for part in [
+    common::ingest_dedup::fingerprint(&[
         tenant_id.as_bytes(),
         dataset_id.as_bytes(),
         operation.signal().as_bytes(),
         batch_bytes,
-    ] {
-        hasher.write(&(part.len() as u64).to_le_bytes());
-        hasher.write(part);
-    }
-    Uuid::from_u128(hasher.finish_128())
+    ])
 }
 
 /// Fingerprint a WAL-bound batch and record the result as `ingest_id` in its

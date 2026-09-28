@@ -9,6 +9,7 @@ import type { Deploy, VersionSighting } from "../../api/overview";
 import type { VolumeSeries } from "../../components/SignalHistogram";
 import { compactCount, errorRateSeverity } from "../../lib/vizFormat";
 import { compositeKey } from "../../lib/traceGroups";
+import { relChange } from "../../lib/relChange";
 
 export type Health = "critical" | "degraded" | "healthy";
 
@@ -108,22 +109,6 @@ export function rateFigure(perSec: number): { value: string; unit: string } {
 export function durationFigure(ms: number): { value: string; unit: string } {
   if (ms >= 1000) return { value: (ms / 1000).toFixed(2), unit: "s" };
   return { value: String(Math.round(ms)), unit: "ms" };
-}
-
-/** Relative change; `upIsBad` picks which direction reads red. */
-function relChange(
-  current: number,
-  previous: number,
-  upIsBad: boolean,
-): KpiFigure["change"] {
-  if (previous === 0) return undefined;
-  const pct = Math.round(((current - previous) / previous) * 100);
-  if (pct === 0) return { text: "±0%", tone: "neutral" };
-  const up = pct > 0;
-  return {
-    text: `${up ? "+" : "−"}${Math.abs(pct)}%`,
-    tone: up === upIsBad ? "bad" : "good",
-  };
 }
 
 /** Error-rate change in percentage points, to two decimals — error rates
@@ -305,7 +290,7 @@ export function setupSteps({
   const withLogs = traced.filter((r) => r.sources.has("logs"));
   const withProfiles = traced.filter((r) => r.sources.has("profiles"));
   const instrument = {
-    label: "Open Instrumentation",
+    label: "Send data",
     href: "/instrumentation",
   };
 

@@ -10,6 +10,7 @@ import {
   fetchEvaluators,
   fetchRunCases,
   fetchRuns,
+  fetchTraceVersions,
   messageText,
   resultsWhere,
 } from "./evals";
@@ -314,6 +315,33 @@ describe("fetchRunCases", () => {
     const scores = cases.get("case-117")!;
     expect(scores.get("ToolTrajectory")?.pass).toBe(1);
     expect(scores.get("Correctness")?.pass).toBe(1);
+  });
+});
+
+// ---- fetchTraceVersions ------------------------------------------------------
+
+describe("fetchTraceVersions", () => {
+  it("reads the agent spans' service.version, most common first", async () => {
+    answer(() =>
+      table([
+        ["v1.9.0", 12],
+        [null, 3],
+      ]),
+    );
+    expect(await fetchTraceVersions(RANGE, ["t1", "t2"])).toEqual(["v1.9.0"]);
+    const doc = mockRunIrQuery.mock.calls[0]![0] as {
+      from: string;
+      pipeline: Record<string, unknown>[];
+    };
+    expect(doc.from).toBe("traces");
+    expect(doc.pipeline[0]).toEqual({
+      where: { field: "trace_id", op: "in", value: ["t1", "t2"] },
+    });
+  });
+
+  it("skips the query without trace ids", async () => {
+    expect(await fetchTraceVersions(RANGE, [])).toEqual([]);
+    expect(mockRunIrQuery).not.toHaveBeenCalled();
   });
 });
 

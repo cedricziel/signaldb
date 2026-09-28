@@ -120,14 +120,23 @@ describe("App", () => {
     ).toHaveAttribute("aria-current", "page");
   });
 
-  it("redirects an unknown path to /logs", async () => {
+  it("redirects an unknown path home to /overview, keeping the query string", async () => {
     stubFetchRoutes([
       { match: "query_range", body: emptyStreams },
       { match: "/api/v1/query", body: emptyIrLogs },
     ]);
-    renderApp("/bogus");
-    await screen.findByText(/No log lines in this range/);
-    expect(window.location.pathname).toBe("/logs");
+    renderApp("/bogus?range=15m");
+    await waitFor(() => expect(window.location.pathname).toBe("/overview"));
+    expect(window.location.search).toBe("?range=15m");
+  });
+
+  it("redirects an unknown nested path home to /overview", async () => {
+    stubFetchRoutes([
+      { match: "query_range", body: emptyStreams },
+      { match: "/api/v1/query", body: emptyIrLogs },
+    ]);
+    renderApp("/no/such/page");
+    await waitFor(() => expect(window.location.pathname).toBe("/overview"));
   });
 
   it("changes the tenant and dataset from the sidebar switcher", async () => {
@@ -426,7 +435,10 @@ describe("App", () => {
     // "POST /api/checkout" is ambiguous once the waterfall renders (it's
     // also the root span's name and its detail-panel heading) — the
     // trace-id chip in the header is unique.
-    expect(await screen.findByText("t1cafe")).toBeInTheDocument();
+    // The id shows in the trace header (and as the breadcrumb's leaf).
+    expect(
+      await within(screen.getByRole("main")).findByText("t1cafe"),
+    ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/traces/t1cafe");
   });
 
@@ -449,7 +461,7 @@ describe("App", () => {
     renderApp("/traces/t1cafe");
     const user = (await import("@testing-library/user-event")).default;
 
-    await screen.findByText("t1cafe");
+    await within(screen.getByRole("main")).findByText("t1cafe");
     await user.click(navLink("Traces"));
 
     expect(await screen.findByLabelText("Trace ID")).toBeInTheDocument();
@@ -480,7 +492,9 @@ describe("App", () => {
 
     await user.type(await screen.findByLabelText("Trace ID"), "a%b{enter}");
 
-    expect(await screen.findByText("a%b")).toBeInTheDocument();
+    expect(
+      await within(screen.getByRole("main")).findByText("a%b"),
+    ).toBeInTheDocument();
     expect(window.location.pathname).toBe("/traces/a%25b");
   });
 
@@ -534,7 +548,7 @@ describe("App", () => {
     expect(window.location.pathname).toBe("/logs");
   });
 
-  it("redirects /manage to /logs for non-admins", async () => {
+  it("redirects /manage home to /overview for non-admins", async () => {
     const WHOAMI = {
       user: {
         id: "user-1",
@@ -553,8 +567,8 @@ describe("App", () => {
       { match: "/api/v1/whoami", body: WHOAMI },
     ]);
     renderApp("/manage?tenant=acme&dataset=production");
-    await screen.findByText(/No log lines in this range/);
-    expect(window.location.pathname).toBe("/logs");
+    await waitFor(() => expect(window.location.pathname).toBe("/overview"));
+    expect(window.location.search).toContain("tenant=acme");
   });
 
   // `/ui/session` (GET, currentSession) and `/ui/session/config`

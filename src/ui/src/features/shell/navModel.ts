@@ -9,6 +9,7 @@ export type PageId =
   | "overview"
   | "errors"
   | "catalog"
+  | "rum"
   | "logs"
   | "traces"
   | "metrics"
@@ -19,20 +20,27 @@ export type PageId =
   | "instrumentation"
   | "evals"
   | "compare"
+  | "sets"
   | "runs"
   | "evaluators"
-  | "manage";
+  | "manage"
+  | "api-keys"
+  | "integrations";
 
 export interface NavPage {
   id: PageId;
   label: string;
   /** Route path, without search. */
   path: string;
+  /** Hidden in the read-only demo account: the page's purpose is editing. */
+  mutating?: boolean;
 }
 
 export interface NavGroup {
-  title: "Monitor" | "Investigate" | "Evaluate" | "Configure";
+  title: "Monitor" | "Investigate" | "Evaluate" | "Configure" | "Settings";
   pages: NavPage[];
+  /** Shown only to tenant and instance admins. */
+  adminOnly?: boolean;
 }
 
 export const NAV_GROUPS: NavGroup[] = [
@@ -42,6 +50,7 @@ export const NAV_GROUPS: NavGroup[] = [
       { id: "overview", label: "Overview", path: "/overview" },
       { id: "errors", label: "Errors", path: "/errors" },
       { id: "catalog", label: "Catalog", path: "/catalog" },
+      { id: "rum", label: "Real users", path: "/rum" },
     ],
   },
   {
@@ -59,6 +68,7 @@ export const NAV_GROUPS: NavGroup[] = [
     pages: [
       { id: "evals", label: "Agents & scores", path: "/evals" },
       { id: "compare", label: "Compare", path: "/evals/compare" },
+      { id: "sets", label: "Eval sets", path: "/evals/sets" },
       { id: "runs", label: "Runs", path: "/evals/runs" },
       { id: "evaluators", label: "Evaluators", path: "/evals/evaluators" },
     ],
@@ -66,27 +76,50 @@ export const NAV_GROUPS: NavGroup[] = [
   {
     title: "Configure",
     pages: [
-      { id: "schema", label: "Schema", path: "/schema" },
-      { id: "processors", label: "Processors", path: "/processors" },
+      { id: "schema", label: "Schema", path: "/schema", mutating: true },
       {
-        id: "instrumentation",
-        label: "Instrumentation",
-        path: "/instrumentation",
+        id: "processors",
+        label: "Processors",
+        path: "/processors",
+        mutating: true,
+      },
+      { id: "instrumentation", label: "Send data", path: "/instrumentation" },
+    ],
+  },
+  {
+    title: "Settings",
+    adminOnly: true,
+    pages: [
+      { id: "manage", label: "Manage", path: "/manage" },
+      { id: "api-keys", label: "API keys", path: "/api-keys" },
+      {
+        id: "integrations",
+        label: "Integrations",
+        path: "/integrations/github",
       },
     ],
   },
 ];
 
-export const MANAGE_PAGE: NavPage = {
-  id: "manage",
-  label: "Manage",
-  path: "/manage",
-};
+const ALL_PAGES: NavPage[] = NAV_GROUPS.flatMap((g) => g.pages);
 
-const ALL_PAGES: NavPage[] = [
-  ...NAV_GROUPS.flatMap((g) => g.pages),
-  MANAGE_PAGE,
-];
+/** The groups and pages this viewer gets: Settings only for admins, and no
+ * editing pages in the read-only demo account. Every nav surface (sidebar,
+ * drawer, palette) lists this, so they can't disagree. */
+export function visibleNavGroups({
+  canManage,
+  isDemo,
+}: {
+  canManage: boolean;
+  isDemo: boolean;
+}): NavGroup[] {
+  return NAV_GROUPS.filter((g) => canManage || !g.adminOnly)
+    .map((g) => ({
+      ...g,
+      pages: g.pages.filter((p) => !(isDemo && p.mutating)),
+    }))
+    .filter((g) => g.pages.length > 0);
+}
 
 export function pageById(id: PageId): NavPage | undefined {
   return ALL_PAGES.find((p) => p.id === id);
@@ -96,12 +129,13 @@ export function pageById(id: PageId): NavPage | undefined {
 export const HOME_PATH = "/overview";
 
 /** Explore pages share the URL-backed window and tenant context; their
- * links carry it over (see `crossSignalSearch`). Configure/admin pages
- * don't read the range, and the tenant context is sticky in `App` anyway. */
+ * links carry it over (see `crossSignalSearch`). Configure and Settings
+ * pages don't read the range, and the tenant context is sticky in `App`
+ * anyway. */
 const EXPLORE_PAGES = new Set<PageId>(
-  NAV_GROUPS.filter((g) => g.title !== "Configure").flatMap((g) =>
-    g.pages.map((p) => p.id),
-  ),
+  NAV_GROUPS.filter(
+    (g) => g.title !== "Configure" && g.title !== "Settings",
+  ).flatMap((g) => g.pages.map((p) => p.id)),
 );
 
 export function pageHref(page: NavPage, state: ExploreState): string {
@@ -110,12 +144,8 @@ export function pageHref(page: NavPage, state: ExploreState): string {
     : page.path;
 }
 
-/** Admin-only routes that live outside the sidebar groups but still need
- * a breadcrumb. */
-const ADMIN_PATHS: Record<string, string> = {
-  manage: "Manage",
-  "api-keys": "API keys",
-  integrations: "GitHub",
+/** Routes outside the sidebar that still need a breadcrumb. */
+const UNLISTED_PATHS: Record<string, string> = {
   "select-tenant": "Switch tenant",
 };
 
@@ -143,14 +173,6 @@ export function currentPageFor(pathname: string): CurrentPage {
     }
   }
   if (best) return best;
-  const first = pathname.split("/")[1] ?? "";
-  const admin = ADMIN_PATHS[first];
-  if (admin) {
-    return {
-      id: first === "manage" ? "manage" : null,
-      group: "Admin",
-      label: admin,
-    };
-  }
-  return { id: null, group: "", label: "" };
+  const label = UNLISTED_PATHS[pathname.split("/")[1] ?? ""];
+  return { id: null, group: "", label: label ?? "" };
 }

@@ -594,6 +594,275 @@
         ]
       }
     },
+    "/api/v1/eval-sets/{name}/cases/from-traces": {
+      "post": {
+        "tags": [
+          "eval-sets"
+        ],
+        "summary": "Append one case per matching agent trace not already in the set",
+        "description": "Runs a trace query through the Query IR and appends one case per matching agent trace the set does not hold yet, newest traces first, up to `sample` (default 50, at most 1000). See docs/users/eval-sets.md (\"Build cases from traces\") for the full matching, selection and case-building rules.",
+        "operationId": "append_eval_cases_from_traces",
+        "parameters": [
+          {
+            "name": "name",
+            "in": "path",
+            "description": "Eval set name",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AppendCasesFromTracesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Matching, already-present and added counts, with the new case ids",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AppendCasesFromTracesOutcome"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed JSON body",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:write scope (or, for a session, the tenant-admin role), or missing traces:read (logs:read with failing_evaluator)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such eval set in the caller's dataset",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Invalid options or range, a filter the query engine rejects, or the set would exceed its case limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No querier service available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
+    "/api/v1/evals/results": {
+      "post": {
+        "tags": [
+          "evals"
+        ],
+        "summary": "Upload a JSONL or CSV file of evaluator results as one offline run",
+        "description": "One row per evaluator result: `case_id` and `name` required; `score`, `label`, `explanation`, `trace_id`, `span_id`, `evaluator`, `error` and `trial` optional. The whole file is validated first: any invalid row rejects it with a `400` listing every problem in `details` (at most 100), and nothing is written. Each row becomes a `gen_ai.evaluation.result` log record carrying the run attributes, written through the log ingest path. See docs/users/evaluations.md (\"Upload a results file\").",
+        "operationId": "upload_eval_results",
+        "parameters": [
+          {
+            "name": "agent",
+            "in": "query",
+            "description": "The agent the run evaluated (`gen_ai.agent.name`, and the records'\n`service.name`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "version",
+            "in": "query",
+            "description": "The agent version (`gen_ai.agent.version`, and `service.version`).",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "set",
+            "in": "query",
+            "description": "The eval set the run replayed: a valid eval set name; the set need\nnot exist.",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "run_id",
+            "in": "query",
+            "description": "Run id (`signaldb.eval.run_id`); a UUID is generated when absent.\nRe-using a run id adds the file's results to that run.",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "name": "format",
+            "in": "query",
+            "description": "File format. Overrides the `Content-Type` (`text/csv` for CSV,\n`application/x-ndjson` or `application/jsonl` for JSONL); one of the\ntwo must name the format.",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/EvalResultsFormat"
+            }
+          }
+        ],
+        "requestBody": {
+          "description": "The results file: JSONL (one JSON object per line) or CSV with a header row. Sent as `text/csv` or `application/x-ndjson`, or with any type plus the `format` parameter.",
+          "content": {
+            "text/plain": {
+              "schema": {
+                "type": "string"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "description": "Results written; the run and its per-evaluator summary",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/EvalResultsUploadResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Invalid run metadata, unknown format, a file that is not UTF-8, or invalid rows (listed in `details`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Missing evals:write scope, or a session without the tenant-admin role",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "413": {
+            "description": "Body exceeds the 32 MiB limit",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "A tenant log processor rejected the results",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No writer service available",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "504": {
+            "description": "The writer did not accept the results in time",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ]
+      }
+    },
     "/api/v1/ops/compact": {
       "post": {
         "tags": [
@@ -5669,6 +5938,16 @@
           "error"
         ],
         "properties": {
+          "details": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/ApiErrorDetail"
+            },
+            "description": "The individual problems behind the error, when the endpoint reports\nthem one by one (e.g. the invalid rows of an uploaded results file).\nAbsent otherwise."
+          },
           "error": {
             "type": "string"
           },
@@ -5689,6 +5968,137 @@
             "description": "Always `\"error\"`."
           }
         }
+      },
+      "ApiErrorDetail": {
+        "type": "object",
+        "description": "One problem behind an [`ApiErrorBody`]: where it is and why.",
+        "required": [
+          "reason"
+        ],
+        "properties": {
+          "column": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The column or field at fault, when there is one."
+          },
+          "reason": {
+            "type": "string"
+          },
+          "row": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "1-based line of the request body the problem starts on; absent for\na problem with the body as a whole.",
+            "minimum": 0
+          }
+        }
+      },
+      "AppendCasesFromTracesOutcome": {
+        "type": "object",
+        "description": "Result of appending cases from traces.",
+        "required": [
+          "matches",
+          "already_present",
+          "added",
+          "added_ids"
+        ],
+        "properties": {
+          "added": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "added_ids": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Ids of the new cases, in the order they now appear in the set."
+          },
+          "already_present": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Matching traces the set already holds a case for.",
+            "minimum": 0
+          },
+          "matches": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct matching traces (after the `failing_evaluator` filter), at\nmost 10,000.",
+            "minimum": 0
+          }
+        }
+      },
+      "AppendCasesFromTracesRequest": {
+        "type": "object",
+        "description": "Body of `POST /api/v1/eval-sets/{name}/cases/from-traces`.\n\nUnknown keys are rejected: every option narrows or shapes the query, so\na misspelt one silently widening it would add the wrong cases.",
+        "required": [
+          "range"
+        ],
+        "properties": {
+          "agent": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`gen_ai.agent.name` of the agent span (a span without one matches on\n`service.name`). Defaults to the eval set's agent."
+          },
+          "expected_tools": {
+            "type": "boolean",
+            "description": "Set each case's expected tools to the trace's `execute_tool` spans'\n`gen_ai.tool.name`s in call order."
+          },
+          "failing_evaluator": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Keep only traces holding at least one failing result\n(`gen_ai.evaluation.result`) of the evaluator with this\n`gen_ai.evaluation.name` in the same window. Evaluator errors never\ncount as failures."
+          },
+          "filters": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "Extra Query IR predicates the agent span must satisfy (logical field\nnames, e.g. `{\"field\": \"deployment.environment\", \"op\": \"eq\", \"value\":\n\"prod\"}`)."
+          },
+          "operation": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`gen_ai.operation.name` of the agent span. Default `invoke_agent`."
+          },
+          "range": {
+            "$ref": "#/components/schemas/QueryRange",
+            "description": "Time window of the agent spans, as in a Query IR document (e.g.\n`{\"from\": \"now-7d\", \"to\": \"now\"}`)."
+          },
+          "reference_from_answer": {
+            "type": "boolean",
+            "description": "Set each case's reference to the agent's answer (the last text of\nthe agent span's `gen_ai.output.messages`)."
+          },
+          "sample": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "How many new cases to add, 1-1000. Default 50.",
+            "maximum": 1000,
+            "minimum": 1
+          },
+          "tags": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Tags put on every new case."
+          }
+        },
+        "additionalProperties": false
       },
       "AppendCasesOutcome": {
         "type": "object",
@@ -7033,6 +7443,93 @@
         ],
         "description": "Where a case came from."
       },
+      "EvalCaseSourceCounts": {
+        "type": "object",
+        "description": "How many of a set's cases came from each [`EvalCaseSource`] kind.",
+        "required": [
+          "trace",
+          "upload",
+          "hand_written"
+        ],
+        "properties": {
+          "hand_written": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "trace": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upload": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
+      "EvalResultsFormat": {
+        "type": "string",
+        "description": "The format of an uploaded results file.",
+        "enum": [
+          "csv",
+          "jsonl"
+        ]
+      },
+      "EvalResultsUploadLinks": {
+        "type": "object",
+        "description": "Links on an upload response.",
+        "required": [
+          "query",
+          "runs"
+        ],
+        "properties": {
+          "query": {
+            "$ref": "#/components/schemas/Link",
+            "description": "The Query IR endpoint to read the run back: `logs` where\n`signaldb.eval.run_id` is the run id."
+          },
+          "runs": {
+            "$ref": "#/components/schemas/Link",
+            "description": "The Explore UI's Runs page (a UI path, not an API resource)."
+          }
+        }
+      },
+      "EvalResultsUploadResponse": {
+        "allOf": [
+          {
+            "$ref": "#/components/schemas/UploadSummary"
+          },
+          {
+            "type": "object",
+            "required": [
+              "run_id",
+              "agent",
+              "version",
+              "set",
+              "_links"
+            ],
+            "properties": {
+              "_links": {
+                "$ref": "#/components/schemas/EvalResultsUploadLinks"
+              },
+              "agent": {
+                "type": "string"
+              },
+              "run_id": {
+                "type": "string"
+              },
+              "set": {
+                "type": "string"
+              },
+              "version": {
+                "type": "string"
+              }
+            }
+          }
+        ],
+        "description": "The run an upload wrote, with its per-evaluator summary."
+      },
       "EvalSetLinks": {
         "type": "object",
         "description": "Links on one eval set. The mutation links appear only when the caller\nmay write.",
@@ -7041,6 +7538,16 @@
         ],
         "properties": {
           "append_cases": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/Link"
+              }
+            ]
+          },
+          "append_cases_from_traces": {
             "oneOf": [
               {
                 "type": "null"
@@ -7243,16 +7750,63 @@
           {
             "type": "object",
             "required": [
+              "sources",
               "_links"
             ],
             "properties": {
               "_links": {
                 "$ref": "#/components/schemas/EvalSetLinks"
+              },
+              "sources": {
+                "$ref": "#/components/schemas/EvalCaseSourceCounts"
               }
             }
           }
         ],
-        "description": "An eval set as listed, without its cases."
+        "description": "An eval set as listed, without its cases but with how many of them came\nfrom each source kind."
+      },
+      "EvaluatorSummary": {
+        "type": "object",
+        "description": "Figures for one evaluator of an upload.",
+        "required": [
+          "name",
+          "results",
+          "errors"
+        ],
+        "properties": {
+          "errors": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows with an `error`: never counted as failures.",
+            "minimum": 0
+          },
+          "mean": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Mean score over the rows with a score and no error; `null` when none."
+          },
+          "name": {
+            "type": "string",
+            "description": "`gen_ai.evaluation.name`."
+          },
+          "pass_rate": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Passes / (passes + fails) under the pass rule; `null` when no row\nhas a verdict."
+          },
+          "results": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Result rows, evaluator errors included.",
+            "minimum": 0
+          }
+        }
       },
       "FieldOrigin": {
         "type": "string",
@@ -10070,6 +10624,50 @@
           }
         }
       },
+      "UploadSummary": {
+        "type": "object",
+        "description": "What an upload holds.",
+        "required": [
+          "rows",
+          "cases",
+          "span_linked",
+          "run_level",
+          "evaluators"
+        ],
+        "properties": {
+          "cases": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Distinct case ids.",
+            "minimum": 0
+          },
+          "evaluators": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/EvaluatorSummary"
+            },
+            "description": "Per evaluator, ordered by name."
+          },
+          "rows": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Result rows written.",
+            "minimum": 0
+          },
+          "run_level": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows without a `trace_id` (run-level results).",
+            "minimum": 0
+          },
+          "span_linked": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Rows with a `trace_id`.",
+            "minimum": 0
+          }
+        }
+      },
       "UpsertMembershipRequest": {
         "type": "object",
         "required": [
@@ -10369,6 +10967,16 @@
                 "error"
               ],
               "properties": {
+                "details": {
+                  "type": [
+                    "array",
+                    "null"
+                  ],
+                  "items": {
+                    "$ref": "#/components/schemas/ApiErrorDetail"
+                  },
+                  "description": "The individual problems behind the error, when the endpoint reports\nthem one by one (e.g. the invalid rows of an uploaded results file).\nAbsent otherwise."
+                },
                 "error": {
                   "type": "string"
                 },
@@ -10487,6 +11095,10 @@
     {
       "name": "eval-sets",
       "description": "Named lists of test cases for offline agent evaluation"
+    },
+    {
+      "name": "evals",
+      "description": "Offline agent evaluation results"
     }
   ]
 }
