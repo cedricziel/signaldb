@@ -125,6 +125,33 @@ describe("RealUsersView", () => {
     expect(await screen.findByText("Core Web Vitals")).toBeInTheDocument();
   });
 
+  it("colours a rising traced-request share as good", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    const now = Date.now();
+    const previous = now - 3 * 3_600_000;
+    const current = now - 60_000;
+    vi.mocked(rumApi.fetchTracedShare).mockResolvedValue({
+      traced: [
+        { tMs: previous, value: 5 },
+        { tMs: current, value: 9 },
+      ],
+      total: [
+        { tMs: previous, value: 10 },
+        { tMs: current, value: 10 },
+      ],
+    });
+    renderRum("/rum/overview?app=storefront-web");
+    const card = (await screen.findByText("Traced requests")).closest(
+      ".kpi-card",
+    )!;
+    await waitFor(() =>
+      expect(card.querySelector(".kpi-change-good")).not.toBeNull(),
+    );
+  });
+
   it("issues a new request for every RUM query when the app switches, not stale data under the same key", async () => {
     stubFetchRoutes([
       { match: "/api/v1/connection", body: connectionInfoBody() },

@@ -174,7 +174,7 @@ export function OverviewTab({ scope, onOpenNetwork }: Props) {
               ? relChange(
                   tracedShare.data.value,
                   tracedShare.data.previous,
-                  true,
+                  false,
                 )
               : undefined
           }
