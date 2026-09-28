@@ -11,7 +11,9 @@ sources:
   - src/signaldb-cli/src/commands/evals.rs
   - src/mcp-server/src/server.rs
   - testdata/eval_compare.json
-  - openspec/changes/agent-offline-evals/**
+  - openspec/specs/agent-evaluation-results/**
+  - openspec/specs/agent-eval-results-upload/**
+  - openspec/specs/explore-ui-evaluate/**
 ---
 
 # Evaluating AI agents

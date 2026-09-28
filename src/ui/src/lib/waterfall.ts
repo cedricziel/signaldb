@@ -118,3 +118,18 @@ export function formatDurationMs(ms: number): string {
   if (ms >= 1) return `${ms.toFixed(ms < 10 ? 1 : 0)} ms`;
   return `${(ms * 1000).toFixed(0)} µs`;
 }
+
+export interface RulerTick {
+  /** Position along the track, as a percentage of the trace duration. */
+  pct: number;
+  label: string;
+}
+
+/** Time-ruler ticks above the waterfall bars: 0, ¼, ½, ¾ and the total. */
+export function rulerTicks(traceDurationNs: bigint): RulerTick[] {
+  const totalMs = Number(traceDurationNs) / 1e6;
+  return [0, 25, 50, 75, 100].map((pct) => ({
+    pct,
+    label: pct === 0 ? "0" : formatDurationMs((totalMs * pct) / 100),
+  }));
+}

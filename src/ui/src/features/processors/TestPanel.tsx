@@ -1,7 +1,8 @@
 import { useMutation } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 import { testProcessor, type ProcessorSpec, type TestResponse } from "./api";
-import { diffLines } from "./lineDiff";
+import { diffLines, type DiffLine } from "./lineDiff";
+import { canonicalOtlpJson } from "./otlpJson";
 import { SAMPLE_PAYLOADS } from "./samples";
 import { toErrorMessage } from "../../api/http";
 import { LineDiffView } from "../../components/LineDiffView";
@@ -25,7 +26,7 @@ export function TestPanel({ signal, dataset, spec }: Props) {
     JSON.stringify(SAMPLE_PAYLOADS[signal], null, 2),
   );
   const [result, setResult] = useState<TestResponse | null>(null);
-  const [before, setBefore] = useState("");
+  const [diff, setDiff] = useState<DiffLine[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   // A run's callbacks only apply their result if they're still the latest
@@ -66,7 +67,12 @@ export function TestPanel({ signal, dataset, spec }: Props) {
     onSuccess: (response, { revision, submittedPayload }) => {
       if (revision !== revisionRef.current) return;
       setResult(response);
-      setBefore(submittedPayload);
+      setDiff(
+        diffLines(
+          canonicalOtlpJson(JSON.parse(submittedPayload)),
+          canonicalOtlpJson(response.payload),
+        ),
+      );
       setError(null);
     },
     onError: (e, { revision }) => {
@@ -95,9 +101,6 @@ export function TestPanel({ signal, dataset, spec }: Props) {
     bumpRevision();
     setPayloadText(text);
   };
-
-  const afterText = result ? JSON.stringify(result.payload, null, 2) : null;
-  const diff = afterText ? diffLines(before, afterText) : null;
 
   return (
     <div className="processors-test-panel">
@@ -144,7 +147,7 @@ export function TestPanel({ signal, dataset, spec }: Props) {
           </ul>
 
           <h3>Diff</h3>
-          <LineDiffView diff={diff!} />
+          <LineDiffView diff={diff} />
         </>
       )}
     </div>

@@ -490,8 +490,8 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
                 limits.memory_pool_fraction,
             ));
             tracing::info!(
-                memory_limit_mb = mb,
-                memory_pool_fraction = limits.memory_pool_fraction,
+                signaldb.querier.memory_limit_mb = mb as i64,
+                signaldb.querier.memory_pool_fraction = limits.memory_pool_fraction,
                 "Querier memory pool configured"
             );
         }
@@ -554,9 +554,9 @@ fn register_dataset_object_store(
         }
         Err(e) => {
             tracing::warn!(
-                dsn = %url_str,
-                tenant_id = %tenant_id,
-                dataset_id = %dataset_id,
+                url.full = %url_str,
+                signaldb.tenant.id = %tenant_id,
+                signaldb.dataset.id = %dataset_id,
                 error = %e,
                 "Skipping invalid storage DSN"
             );
@@ -675,8 +675,8 @@ impl QuerierFlightService {
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
             registered_tenants.insert(tenant.slug.clone());
             tracing::info!(
-                catalog = %tenant.slug,
-                tenant_id = %tenant.id,
+                signaldb.catalog.name = %tenant.slug,
+                signaldb.tenant.id = %tenant.id,
                 "Registered DataFusion catalog"
             );
         }
@@ -787,8 +787,8 @@ impl QuerierFlightService {
             .register_catalog(&tenant.slug, Arc::new(tenant_catalog));
         self.registered_tenants.insert(tenant.slug.clone());
         tracing::info!(
-            catalog = %tenant.slug,
-            tenant_id = %tenant.id,
+            signaldb.catalog.name = %tenant.slug,
+            signaldb.tenant.id = %tenant.id,
             "Registered DataFusion catalog on demand"
         );
         Ok(())
@@ -814,8 +814,8 @@ impl QuerierFlightService {
             Ok(permit) => Ok(Some(permit)),
             Err(_) => {
                 tracing::warn!(
-                    tenant_id = %tenant,
-                    limit = cap,
+                    signaldb.tenant.id = %tenant,
+                    signaldb.querier.max_concurrent_queries = cap as i64,
                     "Rejecting query: tenant is at its concurrent-query limit"
                 );
                 Err(Status::resource_exhausted(format!(

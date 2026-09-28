@@ -171,8 +171,12 @@ describe("MetricsView", () => {
       "chart:2",
     );
     const legend = screen.getByRole("list", { name: "Series" });
-    expect(legend).toHaveTextContent('service_name="checkout"');
-    expect(legend).toHaveTextContent('service_name="payments"');
+    expect(legend).toHaveTextContent("checkout");
+    expect(legend).toHaveTextContent("payments");
+    expect(legend).not.toHaveTextContent("service_name");
+    expect(
+      screen.getByRole("button", { name: "Copy series selectors" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the shared empty state for zero series", async () => {

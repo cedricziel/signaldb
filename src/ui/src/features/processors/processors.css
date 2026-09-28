@@ -40,8 +40,11 @@
   font-size: 13px;
 }
 
-.processors-row-disabled {
-  opacity: 0.55;
+/* Dimmed text, not opacity: opacity also fades the status and pushes the
+   dark theme's red "invalid" below AA contrast. */
+.processors-row-disabled td,
+.processors-row-disabled a {
+  color: var(--dim);
 }
 
 .processors-row-actions {
@@ -63,6 +66,9 @@
   padding: 8px 10px;
   border-bottom: 1px solid var(--border);
   vertical-align: top;
+  /* Names like "redact-emails" must not break at the hyphen; the
+     .table-scroll wrapper scrolls instead. */
+  white-space: nowrap;
 }
 
 .processors-table th {
@@ -117,10 +123,17 @@
   padding: 6px 8px;
 }
 
-.processors-statements-textarea,
-.processors-test-textarea {
-  font-family: monospace;
+.processors-page .processors-statements-textarea,
+.processors-page .processors-test-textarea {
+  font-family: var(--mono);
+  font-size: 12px;
   width: 100%;
+  resize: vertical;
+}
+
+/* One width for the whole editor, form and test panel alike. */
+.processors-editor {
+  max-width: 960px;
 }
 
 .processors-editor-actions {
@@ -133,7 +146,6 @@
   display: flex;
   flex-direction: column;
   gap: 14px;
-  max-width: 560px;
 }
 
 .processors-field {
@@ -142,9 +154,16 @@
   gap: 4px;
 }
 
-.processors-field label {
+.processors-field label,
+.processors-test-panel label {
   color: var(--dim);
   font-size: 12px;
+}
+
+.processors-field label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
 }
 
 .processors-statements-actions {
@@ -168,6 +187,17 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
+}
+
+.processors-test-panel h2,
+.processors-test-panel h3 {
+  font-size: var(--text-section);
+  font-weight: 600;
+  margin: 0.5rem 0 0;
+}
+
+.processors-test-panel > .btn {
+  align-self: flex-start;
 }
 
 .processors-statement-results {

@@ -37,7 +37,7 @@
   border-radius: 6px 6px 0 0;
   padding: 4px 14px;
   font-size: 12px;
-  color: var(--faint);
+  color: var(--dim);
   background: transparent;
 }
 
@@ -69,7 +69,7 @@
 }
 
 .qrow-kw {
-  color: var(--faint);
+  color: var(--dim);
 }
 
 .qrow input,
@@ -81,25 +81,33 @@
   font-size: 12px;
 }
 
+.builder-query > .qrow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .qrow-metric,
 .qrow-groupby {
   font-family: var(--mono);
-  /* Grow with typed content up to the row's own width instead of clipping a
-     long metric/group-by name inside a fixed-width box with no ellipsis;
-     `.qrow`'s own `flex-wrap: wrap` lets the row itself wrap once these (and
-     its other children) no longer fit on one line. */
+}
+
+/* Grow with typed content up to the row's own width instead of clipping a
+   long group-by list inside a fixed-width box with no ellipsis; `.qrow`'s
+   own `flex-wrap: wrap` lets the row itself wrap once it no longer fits. */
+.qrow-groupby {
   flex: 1 1 168px;
   min-width: 168px;
 }
 
 /* Anchors the metric-name suggestion list (`.chip-suggest`, shared with
-   `AttributeKeyInput`) below the input; grows the same way `.qrow-metric`
-   itself would as a bare child. */
+   `AttributeKeyInput`) below the input. The input's `size` tracks the
+   metric name, so the box fits it without stretching across the row. */
 .qrow-metric-combobox {
   position: relative;
   display: inline-flex;
-  flex: 1 1 168px;
+  flex: 0 1 auto;
   min-width: 168px;
+  max-width: min(100%, 560px);
 }
 
 .qrow-metric-combobox .qrow-metric {
@@ -155,7 +163,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
-  color: var(--faint);
+  color: var(--dim);
   padding: 3px 8px;
   font-size: 11px;
 }
@@ -175,7 +183,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
-  color: var(--faint);
+  color: var(--dim);
   padding: 3px 8px;
   font-size: 11px;
   margin-top: 2px;
@@ -240,16 +248,24 @@
   border-color: var(--dim);
 }
 
+.mlegend-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 8px var(--gutter) 14px;
+}
+
 .mlegend {
   list-style: none;
   margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
-  padding: 8px 18px 14px;
   font-size: 11.5px;
   color: var(--dim);
-  font-family: var(--mono);
 }
 
 .mlegend li {
@@ -260,7 +276,15 @@
   max-width: 100%;
 }
 
+.mlegend-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mlegend i {
+  flex: none;
   width: 14px;
   height: 3px;
   border-radius: 2px;
@@ -268,10 +292,16 @@
 }
 
 @media (max-width: 600px) {
-  /* Ref badge, keyword, metric picker, filters, group-by all stack full
-     width rather than squeeze onto one line. */
-  .qrow > * {
+  /* The ref badge, metric picker and "from" share the first line; filters,
+     aggregation and function each take a full line below. */
+  .qrow > :not(.qrow-ref, .qrow-kw, .qrow-metric-combobox) {
     flex: 1 1 100%;
+  }
+
+  .qrow > .qrow-metric-combobox {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: none;
   }
 
   /* The formula input and query preview otherwise clip their content at

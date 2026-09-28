@@ -139,6 +139,28 @@ groups:
         brief: >
           Files an orphan-cleanup pass failed to delete. Non-zero means the
           reclaim is incomplete and will be retried next cycle.
+      - id: signaldb.job.tables_skipped
+        type: int
+        stability: development
+        brief: >
+          Tables an orphan-cleanup pass skipped because their estimated live
+          files exceeded `signaldb.job.live_files_threshold`.
+      - id: signaldb.job.datasets_checked
+        type: int
+        stability: development
+        brief: Datasets a signal-table reconcile pass examined.
+      - id: signaldb.job.datasets_skipped
+        type: int
+        stability: development
+        brief: Datasets a signal-table reconcile pass skipped because an earlier pass already confirmed all their enabled tables.
+      - id: signaldb.job.tables_created
+        type: int
+        stability: development
+        brief: Signal tables a reconcile pass created because they were missing for an enabled dataset.
+      - id: signaldb.job.tables_failed
+        type: int
+        stability: development
+        brief: Signal tables a reconcile pass failed to create; retried on the next pass.
       - id: signaldb.job.attempt
         type: int
         stability: development
@@ -177,6 +199,7 @@ groups:
           Debug-formatted manifest partition value for a field whose type
           didn't match what the reader expected (e.g. `timestamp_hour` stored
           as something other than an int).
+        examples: ['String("2024-01-15-10")']
 
   - id: registry.signaldb.wal
     type: attribute_group
@@ -215,6 +238,70 @@ groups:
           file. Names which directory's signaldb.wal.entries_pending gauge a
           drift correction applies to.
         examples: ["3f9c2b1a7e4d4c8a9b0f1a2b3c4d5e6f"]
+      - id: signaldb.wal.dir
+        type: string
+        stability: development
+        brief: The root directory a WAL manager was initialized against.
+        examples: [".data/wal/acceptor"]
+
+  - id: registry.signaldb.service
+    type: attribute_group
+    display_name: SignalDB Service Attributes
+    brief: >
+      Service identity and network address, logged at service bootstrap,
+      discovery registration, and listener startup.
+    attributes:
+      - id: signaldb.service.type
+        type: string
+        stability: development
+        brief: The SignalDB service kind registering with or reachable through the catalog.
+        examples: ["acceptor", "writer", "querier"]
+      - id: signaldb.service.address
+        type: string
+        stability: development
+        brief: The network address a service listens on or registers for discovery.
+        examples: ["0.0.0.0:4317", "127.0.0.1:50051"]
+
+  - id: registry.signaldb.catalog
+    type: attribute_group
+    display_name: SignalDB Catalog Attributes
+    brief: SQL catalog connection and DataFusion catalog naming.
+    attributes:
+      - id: signaldb.catalog.dsn
+        type: string
+        stability: development
+        brief: >
+          The catalog database DSN, with any embedded credentials redacted
+          (see common::config::redact_dsn).
+        examples:
+          ["sqlite://.data/signaldb.db", "postgres://***@db:5432/signaldb"]
+      - id: signaldb.catalog.name
+        type: string
+        stability: development
+        brief: The DataFusion catalog name registered for a tenant, i.e. the tenant slug.
+        examples: ["acme"]
+
+  - id: registry.signaldb.querier
+    type: attribute_group
+    display_name: SignalDB Querier Attributes
+    brief: Querier memory-pool sizing decisions.
+    attributes:
+      - id: signaldb.querier.memory_limit_mb
+        type: int
+        stability: development
+        brief: The resolved querier memory pool limit, in megabytes.
+      - id: signaldb.querier.memory_pool_fraction
+        type: double
+        stability: development
+        brief: Fraction of the querier memory limit that query operators may use before they spill or fail.
+      - id: signaldb.querier.host_memory_bytes
+        type: int
+        stability: development
+        brief: Total system memory detected on the host, in bytes, used to resolve the default monolith memory limit.
+      - id: signaldb.querier.max_concurrent_queries
+        type: int
+        stability: development
+        brief: The per-tenant concurrent-query limit a rejected query ran into.
 
   - id: registry.signaldb.query
     type: attribute_group
