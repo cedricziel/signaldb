@@ -258,6 +258,26 @@ pub fn create_metric_exemplars_partition_spec() -> Result<PartitionSpec> {
 /// legacy per-type tables' version until the cutover.
 pub const TYPED_METRIC_VERSION: &str = "physical-v4";
 
+/// Which physical layout the metrics tables are stored in: the legacy
+/// per-type tables (`metrics_gauge`/`metrics_sum`/`metrics_histogram`/...),
+/// or the single wide `metrics` table (D10) with a `metric_type`
+/// discriminator column.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum MetricsLayout {
+    Legacy,
+    Wide,
+}
+
+impl MetricsLayout {
+    pub fn current() -> Self {
+        if SCHEMA_DEFINITIONS.metadata.current_metric_version == TYPED_METRIC_VERSION {
+            MetricsLayout::Wide
+        } else {
+            MetricsLayout::Legacy
+        }
+    }
+}
+
 /// All available table schemas
 #[derive(Debug, Clone)]
 pub enum TableSchema {
@@ -1007,5 +1027,10 @@ mod sort_order_tests {
             SCHEMA_DEFINITIONS.metadata.current_metric_version,
             "physical-v3"
         );
+    }
+
+    #[test]
+    fn metrics_layout_defaults_to_legacy() {
+        assert_eq!(MetricsLayout::current(), MetricsLayout::Legacy);
     }
 }
