@@ -9,6 +9,7 @@ import {
   RUM_TABS,
   rumTabFromParam,
   splitKpiSeries,
+  splitTracedShare,
   urlTemplate,
   vitalFigure,
   vitalShares,
@@ -109,6 +110,76 @@ describe("splitKpiSeries", () => {
 
   it("has no previous figure when the earlier half is empty", () => {
     const figure = splitKpiSeries([{ tMs: 20, value: 5 }], 20);
+    expect(figure.previous).toBeUndefined();
+  });
+});
+
+describe("splitTracedShare", () => {
+  it("divides summed halves, not an average of per-bucket ratios", () => {
+    // Current half: 10 traced of 20 total, then 30 of 30 — sum(traced)/sum(total)
+    // = 40/50 = 0.8, not the mean of the per-bucket ratios (0.5, 1.0) = 0.75.
+    const traced = [
+      { tMs: 0, value: 5 },
+      { tMs: 10, value: 5 },
+      { tMs: 20, value: 10 },
+      { tMs: 30, value: 30 },
+    ];
+    const total = [
+      { tMs: 0, value: 10 },
+      { tMs: 10, value: 10 },
+      { tMs: 20, value: 20 },
+      { tMs: 30, value: 30 },
+    ];
+    const figure = splitTracedShare(traced, total, 20);
+    expect(figure.value).toBeCloseTo(0.8);
+    expect(figure.previous).toBeCloseTo(0.5);
+    expect(figure.series).toEqual([
+      { tMs: 20, value: 0.5 },
+      { tMs: 30, value: 1.0 },
+    ]);
+    expect(figure.hasData).toBe(true);
+  });
+
+  it("skips a bucket with zero total client spans rather than dividing by zero", () => {
+    const traced = [{ tMs: 20, value: 0 }];
+    const total = [{ tMs: 20, value: 0 }];
+    const figure = splitTracedShare(traced, total, 20);
+    expect(figure.series).toEqual([]);
+    expect(figure.value).toBe(0);
+    expect(figure.hasData).toBe(false);
+  });
+
+  it("plots a bucket with client spans but nothing traced as 0%", () => {
+    const figure = splitTracedShare(
+      [{ tMs: 20, value: 4 }],
+      [
+        { tMs: 20, value: 4 },
+        { tMs: 30, value: 6 },
+      ],
+      20,
+    );
+    expect(figure.series).toEqual([
+      { tMs: 20, value: 1 },
+      { tMs: 30, value: 0 },
+    ]);
+  });
+
+  it("clamps a bucket whose traced count exceeds its total to 100%", () => {
+    const figure = splitTracedShare(
+      [{ tMs: 20, value: 12 }],
+      [{ tMs: 20, value: 10 }],
+      20,
+    );
+    expect(figure.series).toEqual([{ tMs: 20, value: 1 }]);
+    expect(figure.value).toBe(1);
+  });
+
+  it("has no previous figure when the earlier half has no client spans", () => {
+    const figure = splitTracedShare(
+      [{ tMs: 20, value: 5 }],
+      [{ tMs: 20, value: 10 }],
+      20,
+    );
     expect(figure.previous).toBeUndefined();
   });
 });

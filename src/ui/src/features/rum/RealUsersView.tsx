@@ -120,7 +120,11 @@ export function RealUsersView({ state, update, tab, onTabChange }: Props) {
         ) : tab === "network" ? (
           <NetworkTab scope={scope} onOpenSetup={() => onTabChange("setup")} />
         ) : (
-          <OverviewTab scope={scope} onOpenSetup={() => onTabChange("setup")} />
+          <OverviewTab
+            scope={scope}
+            onOpenSetup={() => onTabChange("setup")}
+            onOpenNetwork={() => onTabChange("network")}
+          />
         )}
       </div>
     </div>

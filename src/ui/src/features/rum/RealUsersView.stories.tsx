@@ -279,8 +279,23 @@ function seriesPointsForDoc(b: IrDoc): [number, number][] {
   const isUsers = firstAgg.of === "user.id";
   const isErrors = firstAgg.where?.value === "exception";
   const isViews = firstAgg.where?.value === "browser.navigation";
-  const base = isUsers ? 900 : isErrors ? 60 : isViews ? 2100 : 3200;
-  const amp = isErrors ? 20 : base * 0.25;
+  // buildTracedShareDoc's two named queries — traces-sourced, unlike every
+  // other multi-query doc here — with the traced count ~83% of the total,
+  // so the KPI's derived share reads as a plausible "mostly traced" figure.
+  const isTracedCount = firstAgg.of === "parent.span_id";
+  const isClientTotal = b.from === "traces" && !isTracedCount;
+  const base = isTracedCount
+    ? 290
+    : isClientTotal
+      ? 350
+      : isUsers
+        ? 900
+        : isErrors
+          ? 60
+          : isViews
+            ? 2100
+            : 3200;
+  const amp = isTracedCount || isClientTotal ? 12 : isErrors ? 20 : base * 0.25;
   return seriesPoints(fromMs, toMs, wave(2, base, amp, n));
 }
 

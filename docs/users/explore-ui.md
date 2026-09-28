@@ -289,29 +289,37 @@ empty state pointing at **Setup** instead of empty panels. This build ships
 the **Overview**, **Network** and **Setup** tabs; Pages, Sessions, Errors
 and Interactions follow in later changes and are not shown as placeholders.
 
-- **Overview.** Sessions and sessions-with-errors (distinct `session.id`,
-  the latter scoped to a session carrying an `exception` record) and page
-  views, each with the change against the equal-length window before it and
-  a sparkline computed from one bucketed read spanning both windows.
-  **Core Web Vitals** shows LCP, INP, CLS, FCP and TTFB: the p75 of
-  `browser.web_vital.value` per `browser.web_vital.name` (values are
-  lowercase, in milliseconds except CLS), rated against the Web Vitals
-  thresholds and shown by shape and colour; a vital with no records in the
-  window reads `—`, never `0`. Each card's good/needs-improvement/poor
-  distribution bar's tooltip lists every share and its threshold. **Sessions
-  over time** stacks sessions with and without errors. **Top errors** reuses
-  the Errors grouping, scoped to the app. **Sessions by browser** and **by
-  device** break down the window's records by `browser.brands` (when the SDK
-  sends it — many deployments don't yet, so this can read empty) and
-  `browser.mobile`.
+- **Overview.** Sessions, users, sessions-with-errors and traced requests
+  (distinct `session.id`/`user.id`, the error share scoped to a session
+  carrying an `exception` record, and the traced share, which is the share
+  of the app's client HTTP spans with a server child span in the same
+  trace), each with the change
+  against the equal-length window before it and a sparkline computed from
+  one bucketed read spanning both windows. **Core Web Vitals** shows LCP,
+  INP, CLS, FCP and TTFB: the p75 of `browser.web_vital.value` per
+  `browser.web_vital.name` (values are lowercase, in milliseconds except
+  CLS), rated against the Web Vitals thresholds and shown by shape and
+  colour; a vital with no records in the window reads `—`, never `0`. Each
+  card's good/needs-improvement/poor distribution bar's tooltip lists every
+  share and its threshold. **Sessions over time** stacks sessions with and
+  without errors. **Top errors** reuses the Errors grouping, scoped to the
+  app. **Frontend → backend** shows the app's top requests split into
+  client+network and backend time (see Network below), linking to the full
+  table. **Sessions by browser** and **by device** break down the window's
+  records by `browser.brands` (when the SDK sends it — many deployments
+  don't yet, so this can read empty) and `browser.mobile`.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
-  `url.template`), each with calls, a p75 split into client+network and
-  backend time, error share and traced share (a server-kind child span in
-  the same trace, found via the `correlate` stage). An origin with zero
-  traced calls raises a callout explaining `traceparent` propagation and
-  CORS, linking to Setup; requests to the telemetry export endpoint itself
-  are marked "SDK export" rather than counted there. A **Resources** table
+  `url.template`), each with calls, p75 duration, error share and traced
+  share (a server-kind child span in the same trace, found via the
+  `correlate` stage). The split bar shows the backend p75 (the server
+  child's duration, over traced calls only) against the p75 of all calls;
+  the client+network part is the difference of those two separate
+  aggregates, so it's an estimate. An origin whose calls have a known
+  tracing status and none joined to a backend trace raises a callout
+  listing what to check (`traceparent` propagation, CORS, backend
+  instrumentation), linking to Setup; requests to the telemetry export
+  endpoint itself are marked "SDK export" rather than counted there. A **Resources** table
   summarises `browser.resource_timing` by initiator type: count, transfer
   size, p75 duration and the largest transfer.
 - **Setup.** Copyable snippets for instrumenting a browser app with the
@@ -321,7 +329,8 @@ and Interactions follow in later changes and are not shown as placeholders.
   are bearer credentials with no origin restriction and any key shipped to a
   browser is public. The collector/backend then forwards to SignalDB holding
   the key server-side. A live checklist tracks the first session, first page
-  view and first vitals record received for the selected app.
+  view, first vitals record and the share of client requests joined to a
+  backend trace for the selected app.
 - **Command palette.** The Real users tabs and every frontend app with RUM
   data are palette entries; picking an app opens `/rum/overview?app=`.
 

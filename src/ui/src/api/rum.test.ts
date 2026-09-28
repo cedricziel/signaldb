@@ -9,11 +9,13 @@ import {
   buildResourcesDoc,
   buildRumAppsDoc,
   buildSessionsOverTimeDoc,
+  buildTracedShareDoc,
   kpisFromResponse,
   networkRowsFromResponses,
   resourcesFromResponse,
   rumAppsFromResponse,
   sessionsOverTimeFromResponse,
+  tracedShareFromResponse,
   vitalRowsFromResponse,
   vitalsByName,
 } from "./rum";
@@ -450,6 +452,65 @@ describe("buildResourcesDoc / resourcesFromResponse", () => {
         maxTransferBytes: 812_000,
       },
     ]);
+  });
+});
+
+describe("buildTracedShareDoc / tracedShareFromResponse", () => {
+  it("leaves SDK export requests out of both operands", () => {
+    const doc = buildTracedShareDoc("storefront-web", range, 30);
+    const pipelineOf = (name: string) =>
+      JSON.stringify((doc.queries[name] as { pipeline: unknown }).pipeline);
+    expect(pipelineOf("total")).toContain(
+      '{"not":{"field":"url.full","op":"regex"',
+    );
+    expect(pipelineOf("traced")).toContain(
+      '{"not":{"field":"parent.url.full","op":"regex"',
+    );
+  });
+
+  it("bundles a client-span total and a correlate-joined traced count behind identity formulas", () => {
+    const doc = buildTracedShareDoc("storefront-web", range, 30);
+    expect(Object.keys(doc.queries)).toEqual(["traced", "total"]);
+    expect(doc.formulas).toEqual([
+      { name: "traced", expr: "traced" },
+      { name: "total", expr: "total" },
+    ]);
+    const tracedPipeline = (
+      doc.queries.traced as { pipeline: { correlate?: unknown }[] }
+    ).pipeline;
+    expect(tracedPipeline[0]!.correlate).toEqual({
+      to: "parent",
+      kind: "inner",
+    });
+  });
+
+  it("counts distinct parent spans for the traced query", () => {
+    const doc = buildTracedShareDoc("storefront-web", range, 30);
+    const agg = (
+      doc.queries.traced as {
+        pipeline: { aggregate?: { aggs: { fn?: string; of?: string }[] } }[];
+      }
+    ).pipeline.find((s) => s.aggregate)!.aggregate!;
+    expect(agg.aggs[0]).toMatchObject({
+      fn: "count_distinct",
+      of: "parent.span_id",
+    });
+  });
+
+  it("decodes each operand's own series by its formula label", () => {
+    const res = multiSeries([
+      ["traced", [[1_700_000_000_000_000_000, 41]]],
+      ["total", [[1_700_000_000_000_000_000, 50]]],
+    ]);
+    expect(tracedShareFromResponse(res)).toEqual({
+      traced: [{ tMs: 1_700_000_000_000, value: 41 }],
+      total: [{ tMs: 1_700_000_000_000, value: 50 }],
+    });
+  });
+
+  it("gives an operand with no matching series an empty array", () => {
+    const res = multiSeries([["traced", [[1_700_000_000_000_000_000, 41]]]]);
+    expect(tracedShareFromResponse(res).total).toEqual([]);
   });
 });
 

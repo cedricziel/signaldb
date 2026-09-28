@@ -84,6 +84,9 @@
   font-size: 12px;
   color: var(--dim);
 }
+.rum-panel-actions {
+  margin-left: auto;
+}
 .rum-vitals {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
@@ -588,7 +591,6 @@ a.rum-row:hover {
   align-items: center;
   padding: 8px var(--gutter-sm);
   border-bottom: 1px solid var(--border);
-  min-width: 0;
 }
 .rum-network-row:last-child {
   border-bottom: 0;
@@ -623,6 +625,21 @@ a.rum-row:hover {
 }
 .rum-splitbar-backend {
   background: var(--dim);
+}
+
+.rum-fe-be-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rum-fe-be-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(60px, 1fr) 56px;
+  gap: 10px;
+  align-items: center;
+}
+.rum-fe-be-name {
+  font-size: 12px;
 }
 
 .rum-kv-row {

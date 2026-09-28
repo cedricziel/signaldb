@@ -11,6 +11,7 @@ import {
   fetchResources,
   fetchRumApps,
   fetchSessionsOverTime,
+  fetchTracedShare,
   fetchVitals,
   type RumBreakdownOptions,
   type RumKpiMetric,
@@ -21,7 +22,7 @@ import {
   stepForRange,
   type ResolvedRange,
 } from "../../lib/time";
-import { splitKpiSeries, type KpiFigure } from "./rumModel";
+import { splitKpiSeries, splitTracedShare, type KpiFigure } from "./rumModel";
 
 const STALE = 30_000;
 
@@ -49,12 +50,14 @@ export function useRumApps(range: ResolvedRange, rangeKey: string) {
 
 export interface RumKpis {
   sessions: KpiFigure;
+  users: KpiFigure;
   sessionsWithErrors: KpiFigure;
   pageViews: KpiFigure;
 }
 
 const OVERVIEW_KPI_METRICS: readonly RumKpiMetric[] = [
   "sessions",
+  "users",
   "sessions_with_errors",
   "page_views",
 ];
@@ -76,6 +79,7 @@ export function useRumKpis(scope: RumScope) {
       );
       return {
         sessions: splitKpiSeries(byMetric.sessions ?? [], range.fromMs),
+        users: splitKpiSeries(byMetric.users ?? [], range.fromMs),
         sessionsWithErrors: splitKpiSeries(
           byMetric.sessions_with_errors ?? [],
           range.fromMs,
@@ -118,6 +122,27 @@ export function useRumTopErrors(scope: RumScope) {
   return useQuery({
     queryKey: ["rum-top-errors", rangeKey, app],
     queryFn: () => fetchErrorGroups(range, app),
+    enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Overview KPI strip's and Setup checklist's traced-request share
+ * (value, previous-window delta, sparkline) from the one `correlate`-backed
+ * formula document `api/rum.ts`'s `fetchTracedShare` bundles (see its
+ * module doc). */
+export function useRumTracedShare(scope: RumScope) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-traced-share", rangeKey, app],
+    queryFn: async () => {
+      const { traced, total } = await fetchTracedShare(
+        app,
+        range,
+        RUM_KPI_BUCKETS,
+      );
+      return splitTracedShare(traced, total, range.fromMs);
+    },
     enabled: app !== "",
     staleTime: STALE,
   });
