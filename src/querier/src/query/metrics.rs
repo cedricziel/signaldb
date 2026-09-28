@@ -10,7 +10,7 @@
 //! `bucket` timestamp, `metric_name`, the grouping columns, and a
 //! `value`. The router shapes that into Prometheus matrix JSON.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt::Debug;
 use std::sync::Arc;
 
@@ -1186,10 +1186,6 @@ impl MetricsService {
         // first/last counts (rate). BTreeMap keeps output sorted.
         let mut merged: BTreeMap<(i64, String, String), HistogramAcc> = BTreeMap::new();
         let mut rated: BTreeMap<(i64, String, String), RateHistAcc> = BTreeMap::new();
-        // `explicit_bounds` is typically identical across every row of a
-        // series, so cache its parse instead of re-running `serde_json`
-        // once per data point.
-        let mut bounds_cache: HashMap<String, Vec<f64>> = HashMap::new();
         for batch in &batches {
             let bucket = batch
                 .column_by_name("bucket")
@@ -1211,9 +1207,7 @@ impl MetricsService {
                 if bucket.is_null(i) {
                     continue;
                 }
-                let Some((row_counts, row_bounds)) =
-                    decode_bucket_row(counts, bounds, i, &mut bounds_cache)
-                else {
+                let Some((row_counts, row_bounds)) = decode_bucket_row(counts, bounds, i) else {
                     continue;
                 };
                 // OTLP invariant: one more bucket count than bound.
