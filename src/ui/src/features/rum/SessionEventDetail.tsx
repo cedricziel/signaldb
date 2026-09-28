@@ -136,38 +136,42 @@ function NetworkEventPanel({
       )}
 
       <div className="rum-mini-waterfall">
-        <div className="rum-mini-waterfall-ruler">
-          {ticks.map((t) => (
-            <span key={t.pct} style={{ left: `${t.pct}%` }}>
-              {t.label}
-            </span>
-          ))}
-        </div>
-        {waterfall.rows.map((row) => (
-          <div
-            className="rum-mini-waterfall-row"
-            key={row.span.spanId}
-            style={{ paddingLeft: `${row.depth * 10}px` }}
-          >
-            <span className="mono dim ell rum-mini-waterfall-label">
-              {row.span.serviceName} · {row.span.name}
-            </span>
+        <div className="rum-mini-waterfall-content">
+          <div className="rum-mini-waterfall-row rum-mini-waterfall-ruler">
+            <span />
             <span className="rum-mini-waterfall-track">
-              <span
-                className={
-                  row.span.status === "error"
-                    ? "rum-mini-waterfall-bar err"
-                    : "rum-mini-waterfall-bar"
-                }
-                style={{
-                  left: `${row.leftPct}%`,
-                  width: `${row.widthPct}%`,
-                }}
-                title={`${row.span.serviceName} · ${row.span.name} · ${formatDurationMs(row.durationMs)}`}
-              />
+              {ticks.map((t) => (
+                <span key={t.pct} style={{ left: `${t.pct}%` }}>
+                  {t.label}
+                </span>
+              ))}
             </span>
           </div>
-        ))}
+          {waterfall.rows.map((row) => (
+            <div className="rum-mini-waterfall-row" key={row.span.spanId}>
+              <span
+                className="mono dim ell rum-mini-waterfall-label"
+                style={{ paddingLeft: `${row.depth * 10}px` }}
+              >
+                {row.span.serviceName} · {row.span.name}
+              </span>
+              <span className="rum-mini-waterfall-track">
+                <span
+                  className={
+                    row.span.status === "error"
+                      ? "rum-mini-waterfall-bar err"
+                      : "rum-mini-waterfall-bar"
+                  }
+                  style={{
+                    left: `${row.leftPct}%`,
+                    width: `${row.widthPct}%`,
+                  }}
+                  title={`${row.span.serviceName} · ${row.span.name} · ${formatDurationMs(row.durationMs)}`}
+                />
+              </span>
+            </div>
+          ))}
+        </div>
       </div>
     </div>
   );

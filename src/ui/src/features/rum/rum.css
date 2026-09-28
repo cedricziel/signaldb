@@ -932,19 +932,21 @@ a.rum-row:hover {
 }
 
 .rum-mini-waterfall {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.rum-mini-waterfall-content {
   display: flex;
   flex-direction: column;
   gap: 2px;
   min-width: 480px;
-  overflow-x: auto;
 }
 .rum-mini-waterfall-ruler {
-  position: relative;
   height: 16px;
   font-size: 10px;
   color: var(--dim);
 }
-.rum-mini-waterfall-ruler span {
+.rum-mini-waterfall-ruler .rum-mini-waterfall-track > span {
   position: absolute;
 }
 .rum-mini-waterfall-row {

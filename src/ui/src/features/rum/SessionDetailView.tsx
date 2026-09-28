@@ -96,17 +96,21 @@ export function SessionDetailView({ scope, state, sessionId }: Props) {
         </Panel>
       )}
 
-      {selected && selected.kind === "span" && (
-        <Panel title="Selected event">
-          <SessionEventDetail
-            scope={scope}
-            state={state}
-            event={selected}
-            events={detail.events}
-            onSelectEvent={setSelected}
-          />
-        </Panel>
-      )}
+      {selected &&
+        selected.kind === "span" &&
+        detail.events.some(
+          (e) => e.kind === "span" && e.spanId === selected.spanId,
+        ) && (
+          <Panel title="Selected event">
+            <SessionEventDetail
+              scope={scope}
+              state={state}
+              event={selected}
+              events={detail.events}
+              onSelectEvent={setSelected}
+            />
+          </Panel>
+        )}
 
       {Object.keys(attributes).length > 0 && (
         <Panel
