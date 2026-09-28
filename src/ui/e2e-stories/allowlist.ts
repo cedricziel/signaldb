@@ -29,12 +29,6 @@ export const ALLOWLIST: AllowEntry[] = [
     reason: PROCESSORS,
   },
   {
-    story: "pages-processors--dark",
-    check: "color-contrast",
-    nodes: 2,
-    reason: PROCESSORS,
-  },
-  {
     story: "pages-api-keys--default",
     check: "color-contrast",
     nodes: 2,
