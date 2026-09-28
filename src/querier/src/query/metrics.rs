@@ -1139,7 +1139,7 @@ impl MetricsService {
     /// (step bucket, series) from stored OTLP histogram buckets.
     ///
     /// SignalDB stores whole histograms per row — `bucket_counts` and
-    /// `explicit_bounds` as JSON arrays — rather than Prometheus `_bucket`
+    /// `explicit_bounds` as typed lists — rather than Prometheus `_bucket`
     /// series keyed by `le`. Data points that fall in the same step bucket
     /// are merged by summing their bucket counts element-wise (exact for a
     /// single point per bucket and for delta temporality), then the quantile
