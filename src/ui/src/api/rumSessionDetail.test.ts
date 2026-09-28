@@ -3,9 +3,12 @@ import type { QueryIrResponse } from "./gen";
 import {
   buildSessionLogsDoc,
   buildSessionSpansDoc,
+  precedingFailedRequest,
   sessionDetailFromResponses,
   SESSION_DETAIL_CAP,
   type SessionEvent,
+  type SessionLogEvent,
+  type SessionSpanEvent,
 } from "./rumSessionDetail";
 import { resolveRange } from "../lib/time";
 
@@ -262,5 +265,110 @@ describe("sessionDetailFromResponses", () => {
     );
     expect(page.hasMore).toBe(true);
     expect(page.moreCount).toBeUndefined();
+  });
+});
+
+function spanEvent(
+  overrides: Partial<SessionSpanEvent> = {},
+): SessionSpanEvent {
+  return {
+    kind: "span",
+    tsNs: "1",
+    lane: "network",
+    traceId: "t1",
+    spanId: "s1",
+    parentSpanId: null,
+    name: "GET",
+    spanKind: "Client",
+    serviceName: "storefront-web",
+    durationNs: "1000000",
+    isError: false,
+    httpMethod: "GET",
+    urlFull: null,
+    httpStatusCode: 200,
+    ...overrides,
+  };
+}
+
+function exceptionEvent(
+  overrides: Partial<SessionLogEvent> = {},
+): SessionLogEvent {
+  return {
+    kind: "log",
+    tsNs: "100",
+    lane: "errors",
+    eventName: "exception",
+    traceId: null,
+    urlTemplate: null,
+    urlFull: null,
+    vitalName: null,
+    vitalRating: null,
+    vitalValue: null,
+    cssSelector: null,
+    tagName: null,
+    exceptionType: "TypeError",
+    exceptionMessage: "boom",
+    exceptionStacktrace: null,
+    resourceAttributes: {},
+    ...overrides,
+  };
+}
+
+function navEvent(overrides: Partial<SessionLogEvent> = {}): SessionLogEvent {
+  return {
+    kind: "log",
+    tsNs: "1",
+    lane: "views",
+    eventName: "browser.navigation",
+    traceId: null,
+    urlTemplate: "/checkout",
+    urlFull: null,
+    vitalName: null,
+    vitalRating: null,
+    vitalValue: null,
+    cssSelector: null,
+    tagName: null,
+    exceptionType: null,
+    exceptionMessage: null,
+    exceptionStacktrace: null,
+    resourceAttributes: {},
+    ...overrides,
+  };
+}
+
+describe("precedingFailedRequest", () => {
+  it("finds the closest preceding error span", () => {
+    const exception = exceptionEvent({ tsNs: "100" });
+    const events: SessionEvent[] = [
+      spanEvent({ spanId: "far", isError: true, tsNs: "10" }),
+      spanEvent({ spanId: "near", isError: true, tsNs: "80" }),
+      spanEvent({ spanId: "after", isError: true, tsNs: "150" }),
+      exception,
+    ];
+    expect(precedingFailedRequest(events, exception)?.spanId).toBe("near");
+  });
+
+  it("ignores non-error spans", () => {
+    const exception = exceptionEvent({ tsNs: "100" });
+    const events: SessionEvent[] = [
+      spanEvent({ spanId: "ok", isError: false, tsNs: "50" }),
+      exception,
+    ];
+    expect(precedingFailedRequest(events, exception)).toBeUndefined();
+  });
+
+  it("is undefined with no preceding error span", () => {
+    const exception = exceptionEvent({ tsNs: "100" });
+    expect(precedingFailedRequest([exception], exception)).toBeUndefined();
+  });
+
+  it("doesn't attribute a failed request from an earlier page view", () => {
+    const exception = exceptionEvent({ tsNs: "100" });
+    const events: SessionEvent[] = [
+      spanEvent({ spanId: "before-nav", isError: true, tsNs: "10" }),
+      navEvent({ tsNs: "50" }),
+      exception,
+    ];
+    expect(precedingFailedRequest(events, exception)).toBeUndefined();
   });
 });

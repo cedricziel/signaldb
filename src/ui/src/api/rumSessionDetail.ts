@@ -354,3 +354,34 @@ export async function fetchSessionDetail(
 export function sessionEventTimeMs(event: SessionEvent): number {
   return nanosToMs(event.tsNs || "0");
 }
+
+/** The failed request (a span in the Errors lane) that most recently
+ * preceded `exception` — the spec's "when a failed request preceded it in
+ * the same view, that request as the likely cause". `undefined` when
+ * nothing errored beforehand. */
+export function precedingFailedRequest(
+  events: SessionEvent[],
+  exception: SessionLogEvent,
+): SessionSpanEvent | undefined {
+  const exceptionNs = BigInt(exception.tsNs || "0");
+
+  // Don't scan past the page view's own start: a failed request from an
+  // earlier view isn't the cause of this exception.
+  let viewStartNs = 0n;
+  for (const event of events) {
+    if (event.kind !== "log" || event.eventName !== "browser.navigation") {
+      continue;
+    }
+    const ns = BigInt(event.tsNs || "0");
+    if (ns < exceptionNs && ns > viewStartNs) viewStartNs = ns;
+  }
+
+  let best: SessionSpanEvent | undefined;
+  for (const event of events) {
+    if (event.kind !== "span" || !event.isError) continue;
+    const ns = BigInt(event.tsNs || "0");
+    if (ns >= exceptionNs || ns < viewStartNs) continue;
+    if (!best || ns > BigInt(best.tsNs || "0")) best = event;
+  }
+  return best;
+}
