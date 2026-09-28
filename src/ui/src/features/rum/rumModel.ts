@@ -319,6 +319,25 @@ export function isSdkExportPath(path: string): boolean {
   return SDK_EXPORT_SUFFIXES.some((suffix) => path.endsWith(suffix));
 }
 
+// ---- Pages: route resolution -----------------------------------------
+
+/** No `url.template` and no parseable `url.full` — the Pages tab's
+ * missing-route bucket (design decision 3/3a). */
+export const MISSING_ROUTE = null;
+
+/** The route a page-scoped record belongs to: `url.template` when the app
+ * set it, else the path template derived from `url.full`, else
+ * `MISSING_ROUTE`. Shared by every Pages-tab query decoder so they all
+ * bucket the same way. */
+export function resolveRoute(
+  template: string | null | undefined,
+  full: string | null | undefined,
+): string | null {
+  if (template) return template;
+  if (full) return urlTemplate(full)?.template ?? null;
+  return MISSING_ROUTE;
+}
+
 // ---- Tabs ------------------------------------------------------------
 
 export type RumTab = "overview" | "network" | "setup";

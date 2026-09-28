@@ -45,7 +45,9 @@ import { decodePoints, rangeDoc, runIrQuery, type IrPoint } from "./queryIr";
 import type { ResolvedRange } from "../lib/time";
 import {
   isSdkExportPath,
+  resolveRoute,
   urlTemplate,
+  vitalShares,
   type VitalName,
   type VitalRating,
 } from "../features/rum/rumModel";
@@ -1055,6 +1057,264 @@ export async function fetchTracedShare(
   return tracedShareFromResponse(
     await runIrQuery(buildTracedShareDoc(app, range, bucketCount)),
   );
+}
+
+// ---- Pages: per-route views, vitals and error share -----------------
+//
+// Three reads, merged client-side by route (design.md decision 3/3a): views
+// group `browser.navigation` by (url.template, url.full) so a route with no
+// `url.template` still resolves via `resolveRoute`'s `url.full` fallback;
+// vitals group `browser.web_vital` the same way, split into a per-rating
+// count read (for the distribution bars) and a plain per-route p75 read
+// (a per-rating quantile isn't the route's own p75 — same reasoning as
+// `fetchVitals`); errors count `exception` records that carry `url.template`
+// explicitly — an exception record with no route attribution can't be
+// merged into a bucket, so it's excluded rather than guessed at (the Pages
+// tab labels this share accordingly).
+
+const PAGE_GROUP_LIMIT = 500;
+
+export interface RumPageRow {
+  /** `null` for the aggregate "missing route" bucket. */
+  route: string | null;
+  views: number;
+  vitals: Map<VitalName, RumVitalData>;
+  /** `exception` count ÷ views, for routes with an explicit `url.template`
+   * on their exception records only — `null` when there's no attributable
+   * exception data for this route. */
+  errorShare: number | null;
+}
+
+function buildPageViewsDoc(app: string, range: ResolvedRange): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      { where: { field: "event_name", op: "eq", value: "browser.navigation" } },
+      {
+        aggregate: {
+          by: ["url.template", "url.full"],
+          aggs: [{ fn: "count", as: "n" }],
+        },
+      },
+      { order: [{ of: "n", dir: "desc" }] },
+      { limit: PAGE_GROUP_LIMIT },
+    ],
+  };
+}
+
+function buildPageVitalRatingsDoc(
+  app: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      { where: { field: "event_name", op: "eq", value: "browser.web_vital" } },
+      {
+        aggregate: {
+          by: [
+            "url.template",
+            "url.full",
+            "browser.web_vital.name",
+            "browser.web_vital.rating",
+          ],
+          aggs: [{ fn: "count", as: "n" }],
+        },
+      },
+      { limit: PAGE_GROUP_LIMIT },
+    ],
+  };
+}
+
+function buildPageVitalP75Doc(
+  app: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      { where: { field: "event_name", op: "eq", value: "browser.web_vital" } },
+      {
+        aggregate: {
+          by: ["url.template", "url.full", "browser.web_vital.name"],
+          aggs: [
+            {
+              fn: "quantile",
+              of: "browser.web_vital.value",
+              arg: 0.75,
+              as: "p75",
+            },
+          ],
+        },
+      },
+      { limit: PAGE_GROUP_LIMIT },
+    ],
+  };
+}
+
+function buildPageErrorsDoc(app: string, range: ResolvedRange): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      { where: { field: "event_name", op: "eq", value: "exception" } },
+      { where: { field: "url.template", op: "exists" } },
+      {
+        aggregate: {
+          by: ["url.template"],
+          aggs: [{ fn: "count", as: "n" }],
+        },
+      },
+      { limit: PAGE_GROUP_LIMIT },
+    ],
+  };
+}
+
+/** Merges the Pages tab's four reads into one row per resolved route (see
+ * the module doc above). */
+export function pagesFromResponses(
+  viewsRes: QueryIrResponse,
+  vitalRatingsRes: QueryIrResponse,
+  vitalP75Res: QueryIrResponse,
+  errorsRes: QueryIrResponse,
+): RumPageRow[] {
+  const byRoute = new Map<
+    string | null,
+    { views: number; vitals: Map<VitalName, RumVitalData> }
+  >();
+
+  function entry(route: string | null) {
+    let e = byRoute.get(route);
+    if (!e) {
+      e = { views: 0, vitals: new Map() };
+      byRoute.set(route, e);
+    }
+    return e;
+  }
+
+  for (const row of viewsRes.rows ?? []) {
+    const [template, full, n] = row as [string | null, string | null, number];
+    const route = resolveRoute(template, full);
+    entry(route).views += typeof n === "number" ? n : 0;
+  }
+
+  for (const row of vitalRatingsRes.rows ?? []) {
+    const [template, full, name, rating, n] = row as [
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      number,
+    ];
+    if (!name) continue;
+    const route = resolveRoute(template, full);
+    const vitalName = name.toLowerCase() as VitalName;
+    const vitals = entry(route).vitals;
+    const data = vitals.get(vitalName) ?? { counts: {} };
+    if (
+      rating === "good" ||
+      rating === "needs-improvement" ||
+      rating === "poor"
+    ) {
+      data.counts[rating] =
+        (data.counts[rating] ?? 0) + (typeof n === "number" ? n : 0);
+    }
+    vitals.set(vitalName, data);
+  }
+
+  for (const row of vitalP75Res.rows ?? []) {
+    const [template, full, name, p75] = row as [
+      string | null,
+      string | null,
+      string | null,
+      number | null,
+    ];
+    if (!name || typeof p75 !== "number") continue;
+    const route = resolveRoute(template, full);
+    const vitalName = name.toLowerCase() as VitalName;
+    const vitals = entry(route).vitals;
+    const data = vitals.get(vitalName) ?? { counts: {} };
+    data.p75 = p75;
+    vitals.set(vitalName, data);
+  }
+
+  const errorsByRoute = new Map<string, number>();
+  for (const row of errorsRes.rows ?? []) {
+    const [template, n] = row as [string | null, number];
+    if (!template) continue;
+    errorsByRoute.set(
+      template,
+      (errorsByRoute.get(template) ?? 0) + (typeof n === "number" ? n : 0),
+    );
+  }
+
+  return Array.from(byRoute.entries()).map(([route, e]) => {
+    const errors = route !== null ? errorsByRoute.get(route) : undefined;
+    return {
+      route,
+      views: e.views,
+      vitals: e.vitals,
+      errorShare: errors !== undefined && e.views > 0 ? errors / e.views : null,
+    };
+  });
+}
+
+/** The worst rating a route's own Web Vitals earn — the highest poor-share
+ * across every vital with data — used to sort the Pages tab's route list
+ * (`explore-ui-rum`'s "sorted by share of poor ratings"; a route needs one
+ * number to sort by, not five). A vital with no records at all contributes
+ * 0, not a missing comparison. */
+export function routePoorShare(row: RumPageRow): number {
+  let max = 0;
+  for (const data of row.vitals.values()) {
+    const poor = vitalShares(data.counts).find((s) => s.rating === "poor");
+    if (poor && poor.share > max) max = poor.share;
+  }
+  return max;
+}
+
+export function sortPagesByPoorShare(rows: RumPageRow[]): RumPageRow[] {
+  return [...rows].sort((a, b) => routePoorShare(b) - routePoorShare(a));
+}
+
+/** A `RumPageRow` known to have a route — the Pages table and the Overview's
+ * Slowest pages panel both need this narrowing (missing-route rows aren't
+ * selectable), so it's a shared type/filter rather than each callsite
+ * writing its own type-guard predicate. */
+export type RoutedPageRow = RumPageRow & { route: string };
+
+export function routedPages(rows: RumPageRow[]): RoutedPageRow[] {
+  return rows.filter((r): r is RoutedPageRow => r.route !== null);
+}
+
+export async function fetchPages(
+  app: string,
+  range: ResolvedRange,
+): Promise<RumPageRow[]> {
+  const [viewsRes, vitalRatingsRes, vitalP75Res, errorsRes] = await Promise.all(
+    [
+      runIrQuery(buildPageViewsDoc(app, range)),
+      runIrQuery(buildPageVitalRatingsDoc(app, range)),
+      runIrQuery(buildPageVitalP75Doc(app, range)),
+      runIrQuery(buildPageErrorsDoc(app, range)),
+    ],
+  );
+  return pagesFromResponses(viewsRes, vitalRatingsRes, vitalP75Res, errorsRes);
 }
 
 export type { VitalName, VitalRating };

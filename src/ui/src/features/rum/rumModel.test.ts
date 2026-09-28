@@ -6,6 +6,7 @@ import {
   rateVital,
   ratingSwatchColorVar,
   ratingTextColorVar,
+  resolveRoute,
   RUM_TABS,
   rumTabFromParam,
   splitKpiSeries,
@@ -253,6 +254,24 @@ describe("vitalThresholdBound", () => {
     expect(vitalThresholdBound("lcp", "good")).toBe("2.5 s");
     expect(vitalThresholdBound("lcp", "poor")).toBe("4.0 s");
     expect(vitalThresholdBound("cls", "good")).toBe("0.10");
+  });
+});
+
+describe("resolveRoute", () => {
+  it("prefers an explicit url.template", () => {
+    expect(resolveRoute("/orders/:id", "https://x.example.com/orders/1")).toBe(
+      "/orders/:id",
+    );
+  });
+
+  it("derives the route from url.full when no template is set", () => {
+    expect(resolveRoute(null, "https://x.example.com/orders/48213")).toBe(
+      "/orders/:id",
+    );
+  });
+
+  it("is null with neither field", () => {
+    expect(resolveRoute(null, null)).toBeNull();
   });
 });
 
