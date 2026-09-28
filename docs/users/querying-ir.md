@@ -502,9 +502,17 @@ the IR, independent of the execution engine.
 Fields resolve through the logical schema (`LogicalSchema::core()`, which
 declares the canonical client-visible OTel fields independent of the physical
 Iceberg layout) and then through the attribute type authority to a physical
-location — a promoted column or a typed-home retrieval — at plan time. The
-**result of a query does not depend on whether a field is currently
-promoted**; promotion is pure performance upside. An attribute's canonical
+location at plan time. An attribute's home is its typed map at each level it
+was sent at; a promoted column (`attr_<level>_<key>`) is only a copy of one
+level's home. A typed attribute reads `coalesce(promoted, home)` per level in
+record → scope → resource order, and a promoted column is used only when it
+exists with the canonical type. The **result set and result types of a query
+do not depend on whether a field is currently promoted**; a test holds this
+for every scalar canonical type, filters, aggregations, and a key sent at two
+levels. Promotion is pure performance upside: `=`, `!=`, `<`, `<=`, `>`, `>=`
+filters on a promoted attribute let the engine skip row groups using the
+column's statistics, which works where the key is present in every row of a
+row group. `in` and `between` do not use this rewrite. An attribute's canonical
 type is picked, in order: a config pin, else a semantic-convention type hint
 (from the resource/scope `schema_url`'s semconv registry), else the type of
 the first value ever observed for it — and never changes once established.

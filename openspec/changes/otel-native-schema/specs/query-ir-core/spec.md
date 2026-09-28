@@ -10,8 +10,10 @@ retrieval rather than by reconstructing the type from a stringified value. The
 canonical type SHALL be the same one enforced at ingest (write) as at query (read).
 The result of a query — set and types — SHALL NOT depend on whether a field is
 currently promoted; promotion state SHALL affect only performance. This holds
-because a field has exactly one canonical home, so resolution never coalesces
-across competing typed homes.
+because a field has exactly one canonical home and a promoted column is only a
+per-level copy of it, read as `coalesce(promoted, home)` for each level in
+precedence order; a promoted column whose type is not the canonical type SHALL be
+ignored.
 
 Resolution SHALL distinguish two performance properties that are NOT implied by
 typing alone: (a) **cast-free retrieval** — always available from the typed store
@@ -33,6 +35,13 @@ the typed map itself, since Parquet keeps no per-key statistics inside a map.
   physical column
 - **THEN** both executions return the same result set with the same field types,
   differing only in performance
+
+#### Scenario: A key present at two levels keeps its precedence when promoted
+
+- **WHEN** a key is present at both the record and the resource level and one or
+  both levels are promoted
+- **THEN** the IR returns the record-level value where present and the
+  resource-level value otherwise, exactly as with no promotion
 
 #### Scenario: Typed retrieval does not reconstruct from a string
 
