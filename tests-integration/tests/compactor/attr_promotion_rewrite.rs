@@ -1,11 +1,12 @@
 //! Rewrite-coupled attribute auto-promotion (epic #737, #734)
 //!
-//! End-to-end test of the active (non-dry-run) promotion path: a table
-//! with map-typed attributes and query demand for one key runs through a
-//! compaction, which must evolve the schema (add the `label_<key>`
-//! column via AddSchema + SetCurrentSchema), backfill the column for the
-//! pre-existing rows during the rewrite, and leave the data queryable.
-//! With `dry_run = true` the same setup must change nothing.
+//! Legacy label promotion no longer decides new columns
+//! (otel-native-schema layer 6 promotes typed `attr_<level>_<key>` columns
+//! instead): this is now a regression test that a table with map-typed
+//! attributes and recorded query demand for a key does *not* grow a new
+//! `label_<key>` column through a compaction, in either the active
+//! (non-dry-run) or the dry-run path. Existing label demotion is
+//! unaffected and stays covered by `attr_demotion_rewrite.rs`.
 
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
@@ -380,72 +381,8 @@ async fn count_rows(ctx: &SessionContext, sql: &str) -> Result<usize> {
     Ok(rows.iter().map(|b| b.num_rows()).sum())
 }
 
-/// A rewrite that evolves the schema must still read the snapshot its
-/// caller pinned, not a freshly loaded one.
-///
-/// The promotion pass commits AddSchema/SetCurrentSchema, after which the
-/// rewrite reloads the table to write under the new schema. If it also
-/// *read* from that reload it would pick up any snapshot committed since
-/// — including a late write into this very partition — and rewrite rows
-/// the delta commit does not remove. The row-parity check turns that into
-/// an abort on every cycle that evolves the schema.
 #[tokio::test]
-async fn schema_evolution_does_not_sweep_in_a_late_write() -> Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_test_writer()
-        .try_init();
-    let (catalog_manager, service_catalog, identifier) = setup(false).await?;
-    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
-
-    // Pin the table the way the executor does, *before* the late write.
-    let pinned = load_table(&catalog_manager, &identifier).await?;
-
-    // A late write lands in the same hour partition after pinning.
-    write_file(
-        &catalog_manager,
-        &identifier,
-        &[(
-            5_000_000,
-            "late",
-            "arrived after pinning",
-            &[("env", "prod")],
-        )],
-    )
-    .await?;
-
-    let mut rewriter = compactor::rewriter::ParquetRewriter::new(catalog_manager.clone());
-    rewriter.set_service_catalog(service_catalog);
-
-    let outcome = rewriter
-        .rewrite_partition(&pinned, partition, 128 * 1024 * 1024)
-        .await?
-        .expect("partition has data to rewrite");
-
-    // The schema did evolve — otherwise this test would pass for the
-    // wrong reason (no reload, so no way to read the wrong snapshot).
-    let reloaded = load_table(&catalog_manager, &identifier).await?;
-    assert!(
-        reloaded
-            .current_schema()?
-            .fields()
-            .iter()
-            .any(|f| f.name == "label_env"),
-        "fixture must actually evolve the schema"
-    );
-
-    assert_eq!(
-        outcome.rows_written, 4,
-        "the rewrite must cover only the 4 rows in the pinned snapshot; \
-         reading the reloaded table would sweep in the late 5th row, which \
-         the delta commit does not remove"
-    );
-
-    Ok(())
-}
-
-#[tokio::test]
-async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()> {
+async fn active_promotion_no_longer_creates_new_label_columns() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
         .with_test_writer()
@@ -454,23 +391,19 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
-    // Schema evolved: `label_env` exists (and only it — `pod` had no
-    // query demand and must not be promoted).
+    // No schema evolution at all: `env` has recorded query demand and
+    // would have been promoted under the old scoring, but legacy label
+    // promotion no longer decides new columns.
     let table = load_table(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
-        schema.fields().iter().any(|f| f.name == "label_env"),
-        "promoted column must exist in the current schema"
+        !schema.fields().iter().any(|f| f.name.starts_with("label_")),
+        "no new label column must be created regardless of demand"
     );
-    assert!(
-        !schema.fields().iter().any(|f| f.name == "label_pod"),
-        "unqueried key must not be promoted"
-    );
-    assert_eq!(table.metadata().current_schema_id, 1);
-    assert_eq!(table.metadata().schemas.len(), 2);
+    assert_eq!(table.metadata().schemas.len(), 1);
 
-    // The rewrite backfilled the column for the pre-existing rows and the
-    // data is queryable through the promoted column.
+    // Compaction itself still worked and preserved the data, queryable via
+    // the attributes map.
     let provider = Arc::new(datafusion_iceberg::DataFusionTable::new(
         Tabular::Table(table),
         None,
@@ -481,21 +414,6 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
     ctx.register_table("logs", provider)?;
 
     assert_eq!(count_rows(&ctx, "SELECT body FROM logs").await?, 4);
-    assert_eq!(
-        count_rows(&ctx, "SELECT body FROM logs WHERE label_env = 'prod'").await?,
-        2,
-        "pre-existing rows must be backfilled from the attributes map"
-    );
-    assert_eq!(
-        count_rows(&ctx, "SELECT body FROM logs WHERE label_env = 'staging'").await?,
-        1
-    );
-    assert_eq!(
-        count_rows(&ctx, "SELECT body FROM logs WHERE label_env IS NULL").await?,
-        1,
-        "rows without the attribute stay null"
-    );
-    // The source attributes are still intact after the rewrite.
     assert_eq!(
         count_rows(
             &ctx,

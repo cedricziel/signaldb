@@ -602,67 +602,22 @@ impl ParquetRewriter {
                 Vec::new()
             }
         };
-        let typed_string_keys = crate::attr_promotion::string_only_keys(&types);
         // Keyed per (level, key): the repin check below needs the canonical
         // type at the exact level a promoted column was created for, not
-        // folded across levels the way `string_only_keys` does.
+        // folded across levels the way legacy label promotion did.
         let canonical_types = crate::attr_promotion::canonical_types_by_level(&types);
-        let (decision, new_streaks) = crate::attr_promotion::decide(
-            &stats,
-            &materialized,
-            pinned,
-            promotion,
-            &typed_string_keys,
-        );
+        let decision = crate::attr_promotion::decide(&stats, &materialized, pinned);
         crate::attr_promotion::log_decision(table_name, &decision, promotion.dry_run);
-        for (key, streak) in new_streaks {
-            if let Err(e) = catalog
-                .set_attribute_promote_streak(tenant, dataset, signal, &key, streak)
-                .await
-            {
-                tracing::warn!(error = %e, attr_key = %key, "Failed to persist promotion streak");
-            }
-        }
 
-        // Act on the decision when the pass is out of dry-run: evolve the
-        // schema before the rewrite so the new files carry the promoted
-        // columns. An evolution failure is logged and the compaction
-        // continues under the old schema — promotion must never fail a
-        // rewrite.
+        // Act on the decision when the pass is out of dry-run.
         if promotion.dry_run {
             return outcome;
-        }
-        if !decision.promote.is_empty() {
-            match common::iceberg::evolution::add_label_columns(
-                self.catalog_manager.catalog(),
-                table.identifier(),
-                &decision.promote,
-            )
-            .await
-            {
-                Ok(evolved) => {
-                    outcome.evolved = true;
-                    current_schema = evolved;
-                    // TODO(#731): set bloom-filter table properties for the
-                    // newly promoted label columns once the
-                    // `bloom_filter_properties_for_labels` helper lands in
-                    // common.
-                }
-                Err(e) => {
-                    tracing::warn!(
-                        error = %e,
-                        table = %table_name,
-                        keys = ?decision.promote,
-                        "Failed to evolve schema for attribute promotion; continuing compaction without it"
-                    );
-                }
-            }
         }
 
         // Demotion (#734 P3): drop the long-unqueried auto-promoted
         // columns before the rewrite so the new files stop carrying
-        // them. Like promotion, a failure is logged and the compaction
-        // continues — at worst the column lives until the next cycle.
+        // them. A failure is logged and the compaction continues — at
+        // worst the column lives until the next cycle.
         let mut demoted: Vec<String> = Vec::new();
         if !decision.demote.is_empty() {
             // Snapshot the pre-call schema so the actually-dropped columns
@@ -705,24 +660,17 @@ impl ParquetRewriter {
             }
         }
 
-        // Backfill plan: the freshly promoted keys plus every label column
-        // whose source key is still known (already-materialized keys from
-        // the stats, and the pinned allowlist), minus what was just
-        // demoted. Recomputing existing columns heals rows the writer
-        // left null during the transition window. Each key's column is
-        // resolved from the freshly-evolved schema via its origin-key
-        // `doc` (#814); a key with no column yet (e.g. pinned but never
-        // promoted, or an evolution that failed) is skipped rather than
-        // guessing a name. Deduplicated by column name.
+        // Backfill plan: every label column whose source key is still
+        // known (already-materialized keys from the stats, and the pinned
+        // allowlist), minus what was just demoted. Recomputing existing
+        // columns heals rows the writer left null during the transition
+        // window. Each key's column is resolved from the freshly-evolved
+        // schema via its origin-key `doc` (#814); a key with no column yet
+        // (e.g. pinned but never promoted) is skipped rather than guessing
+        // a name. Deduplicated by column name.
         let mut seen_columns = HashSet::new();
-        let promoted: &[String] = if outcome.evolved {
-            &decision.promote
-        } else {
-            &[]
-        };
-        for key in promoted
+        for key in materialized
             .iter()
-            .chain(materialized.iter())
             .chain(pinned)
             .filter(|key| !demoted.contains(key))
         {
