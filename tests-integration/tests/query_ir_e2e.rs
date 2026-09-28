@@ -279,11 +279,14 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         wal_manager.clone(),
         processor_registry.clone(),
     ));
-    let trace_handler = Arc::new(TraceHandler::new(
-        flight_transport.clone(),
-        wal_manager,
-        processor_registry.clone(),
-    ));
+    let trace_handler = Arc::new(
+        TraceHandler::new(
+            flight_transport.clone(),
+            wal_manager,
+            processor_registry.clone(),
+        )
+        .with_evaluation_logs(log_handler.clone()),
+    );
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {

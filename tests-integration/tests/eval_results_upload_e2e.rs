@@ -2,6 +2,7 @@
 //! task 6.4): `POST /api/v1/evals/results` writes the rows through the log
 //! ingest path (writer WAL → Iceberg), and the run reads back over the Query
 //! IR like one sent over OTLP, with the pass rate the shared pass rule gives.
+//! A result sent as a span event (task 7.x) reads back from `logs` the same way.
 
 use axum::{
     Router,
@@ -12,7 +13,9 @@ use common::evals::{EvalResult, Verdict, verdict_of_result};
 use serde_json::{Value, json};
 use tower::ServiceExt;
 
-use crate::query_ir_e2e::{build_router, post_ir_until_rows, setup};
+use crate::query_ir_e2e::{
+    BASE_NS, build_router, post_ir_until_rows, range, setup, span, string_value, traces_request,
+};
 
 const RUN_ID: &str = "run-upload-e2e";
 const TRACE_1: &str = "0af7651916cd43dd8448eb211c80319c";
@@ -180,4 +183,76 @@ async fn an_invalid_file_writes_nothing() {
     let (status, body) = upload(&app, "name,score\nCorrectness,0.5\n".to_string()).await;
     assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     assert_eq!(body["details"][0]["column"], "case_id", "{body}");
+}
+
+/// Task 7.1/7.2: a result sent as a `gen_ai.evaluation.result` span event
+/// over `/v1/traces` is stored as a log record, so it reads back over the IR
+/// from `logs` with the span's trace id and the agent identity copied from
+/// the span.
+#[tokio::test]
+async fn a_span_event_result_is_queryable_from_logs_with_the_span_trace_id() {
+    use opentelemetry_proto::tonic::common::v1::KeyValue;
+    use opentelemetry_proto::tonic::trace::v1::span::Event;
+
+    let services = setup().await;
+    let app = build_router(&services).await;
+
+    let kv = |key: &str, value: &str| KeyValue {
+        key: key.to_string(),
+        value: Some(string_value(value)),
+        ..Default::default()
+    };
+    let mut agent_span = span("invoke_agent triage", 7, 2_000_000_000);
+    agent_span.attributes = vec![
+        kv(common::evals::AGENT_NAME, "support-triage"),
+        kv(common::evals::AGENT_VERSION, "v2.0.0"),
+    ];
+    agent_span.events = vec![Event {
+        time_unix_nano: (BASE_NS + 1_000_000_000) as u64,
+        name: common::evals::EVALUATION_RESULT_EVENT.to_string(),
+        attributes: vec![
+            kv(common::evals::EVALUATION_NAME, "Correctness"),
+            kv(common::evals::EVALUATION_SCORE_LABEL, "pass"),
+        ],
+        dropped_attributes_count: 0,
+    }];
+    let trace_id_hex = hex_id(&agent_span.trace_id);
+
+    let export = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header("Authorization", "Bearer test-key-123")
+        .header("X-Tenant-ID", "test-tenant")
+        .header("Content-Type", "application/json")
+        .body(Body::from(
+            serde_json::to_vec(&traces_request("support-triage", vec![agent_span])).expect("json"),
+        ))
+        .expect("request");
+    let response = app.clone().oneshot(export).await.expect("response");
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "rows",
+            "fields": ["trace_id", "gen_ai.evaluation.name", "gen_ai.agent.version"],
+            "pipeline": [
+                {"where": {"field": "event_name", "op": "eq", "value": "gen_ai.evaluation.result"}}
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let rows = body["rows"].as_array().expect("rows");
+    assert_eq!(rows.len(), 1, "{body}");
+    assert_eq!(rows[0][0], trace_id_hex, "{body}");
+    assert_eq!(rows[0][1], "Correctness", "{body}");
+    assert_eq!(rows[0][2], "v2.0.0", "{body}");
+}
+
+fn hex_id(bytes: &[u8]) -> String {
+    bytes.iter().map(|b| format!("{b:02x}")).collect()
 }

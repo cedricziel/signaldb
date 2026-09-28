@@ -157,11 +157,15 @@ async fn setup_traces_test_with_limits(
     ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    let trace_handler = Arc::new(TraceHandler::new(
-        flight_transport,
+    let log_handler = Arc::new(acceptor::handler::otlp_log_handler::LogHandler::new(
+        flight_transport.clone(),
         wal_manager.clone(),
-        processor_registry,
+        processor_registry.clone(),
     ));
+    let trace_handler = Arc::new(
+        TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry)
+            .with_evaluation_logs(log_handler),
+    );
 
     let app = traces_http_router(authenticator, trace_handler, rate_limiter, storage_usage);
 
@@ -639,4 +643,67 @@ async fn propagate_error_mode_rejects_and_writes_nothing_to_wal() {
         0,
         "nothing must reach the WAL when a propagate-mode processor rejects the export"
     );
+}
+
+/// Change agent-offline-evals, task 7.1: a `gen_ai.evaluation.result` span
+/// event sent over OTLP/HTTP is also written to the logs WAL as a log
+/// record carrying the span's trace context; the span still lands in traces.
+#[tokio::test]
+async fn evaluation_span_event_is_also_written_as_a_log_record() {
+    use datafusion::arrow::array::{Array, BinaryArray, StringArray};
+
+    let (app, wal_manager, _temp_dir) = setup_traces_test().await;
+    let mut export = sample_trace_request();
+    let span = &mut export.resource_spans[0].scope_spans[0].spans[0];
+    span.events.push(span::Event {
+        time_unix_nano: 1_700_000_000_500_000_000,
+        name: common::evals::EVALUATION_RESULT_EVENT.to_string(),
+        attributes: vec![KeyValue {
+            key: common::evals::EVALUATION_NAME.to_string(),
+            value: Some(AnyValue {
+                value: Some(any_value::Value::StringValue("Correctness".to_string())),
+            }),
+            ..Default::default()
+        }],
+        dropped_attributes_count: 0,
+    });
+    let trace_id = span.trace_id.clone();
+
+    let request = Request::builder()
+        .method("POST")
+        .uri("/v1/traces")
+        .header(header::CONTENT_TYPE, "application/x-protobuf")
+        .header("Authorization", format!("Bearer {TEST_API_KEY}"))
+        .header("X-Tenant-ID", TEST_TENANT)
+        .body(Body::from(export.encode_to_vec()))
+        .unwrap();
+    let response = app.oneshot(request).await.unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(traces_wal_entry_count(&wal_manager).await, 1);
+
+    let wal = wal_manager
+        .get_wal(TEST_TENANT, TEST_DATASET, "logs")
+        .await
+        .expect("Failed to open logs WAL");
+    let entries = wal.get_entries().await.expect("Failed to read WAL entries");
+    assert_eq!(entries.len(), 1, "one derived logs batch");
+    assert!(matches!(entries[0].operation, WalOperation::WriteLogs));
+    let bytes = wal.read_entry_data(&entries[0]).await.unwrap();
+    let batch = bytes_to_record_batch(&bytes).unwrap();
+    assert_eq!(batch.num_rows(), 1);
+    let trace_ids = batch
+        .column_by_name("trace_id")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<BinaryArray>()
+        .unwrap();
+    assert_eq!(trace_ids.value(0), trace_id.as_slice());
+    let event_names = batch
+        .column_by_name("event_name")
+        .unwrap()
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .unwrap();
+    assert_eq!(event_names.value(0), common::evals::EVALUATION_RESULT_EVENT);
 }
