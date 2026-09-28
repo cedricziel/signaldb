@@ -48,6 +48,7 @@ import {
   useEvalSets,
   useRuns,
 } from "./useEvalData";
+import { pluralCount } from "../../lib/vizFormat";
 import "./evals.css";
 
 /** Each filter: kind, button label, swatch, caption after the case count,
@@ -405,7 +406,8 @@ export function CompareView(shell: ShellContext) {
           <div className="evals-card-head">
             <h2>Cases</h2>
             <span className="evals-caption">
-              {shown.length} cases{caption}
+              {pluralCount(shown.length, "case")}
+              {caption}
               {withoutBaseline > 0 && ` · ${withoutBaseline} without baseline`}
             </span>
             <span className="evals-bar-fill" />

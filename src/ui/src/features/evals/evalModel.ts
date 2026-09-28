@@ -64,10 +64,20 @@ export interface EvalStats {
   scoreSum: number;
   /** Non-error results carrying a numeric score. */
   scored: number;
+  /** Non-error results per `score.label`. */
+  labels: Record<string, number>;
 }
 
 export function emptyStats(): EvalStats {
-  return { results: 0, errors: 0, pass: 0, fail: 0, scoreSum: 0, scored: 0 };
+  return {
+    results: 0,
+    errors: 0,
+    pass: 0,
+    fail: 0,
+    scoreSum: 0,
+    scored: 0,
+    labels: {},
+  };
 }
 
 /** One aggregated group of results sharing a label and error type:
@@ -90,6 +100,8 @@ export function foldStats(acc: EvalStats, g: ResultGroup): EvalStats {
   }
   out.scoreSum += g.scoreSum;
   out.scored += g.scored;
+  if (g.label !== null)
+    out.labels = { ...out.labels, [g.label]: (out.labels[g.label] ?? 0) + g.n };
   const verdict = verdictOfLabel(g.label);
   if (verdict === "pass") out.pass += g.n;
   else if (verdict === "fail") out.fail += g.n;
@@ -108,7 +120,30 @@ export function mergeStats(a: EvalStats, b: EvalStats): EvalStats {
     fail: a.fail + b.fail,
     scoreSum: a.scoreSum + b.scoreSum,
     scored: a.scored + b.scored,
+    labels: mergeCounts(a.labels, b.labels),
   };
+}
+
+function mergeCounts(
+  a: Record<string, number>,
+  b: Record<string, number>,
+): Record<string, number> {
+  const out = { ...a };
+  for (const [k, n] of Object.entries(b)) out[k] = (out[k] ?? 0) + n;
+  return out;
+}
+
+/** The most common label and its share of the labelled results. */
+export function topLabelOf(
+  s: EvalStats,
+): { label: string; share: number } | null {
+  let total = 0;
+  let best: [string, number] | null = null;
+  for (const [label, n] of Object.entries(s.labels)) {
+    total += n;
+    if (!best || n > best[1]) best = [label, n];
+  }
+  return best && total ? { label: best[0], share: best[1] / total } : null;
 }
 
 export function passRateOf(s: EvalStats): number | null {
@@ -155,6 +190,11 @@ export function verdictOf(s: EvalStats): Verdict | null {
  * long. */
 const RUN_QUIET_MS = 10 * 60_000;
 
+/** Results still arriving: the last one landed within `RUN_QUIET_MS`. */
+export function isReceiving(lastMs: number, nowMs: number): boolean {
+  return nowMs - lastMs < RUN_QUIET_MS;
+}
+
 export interface RunStatus {
   kind: "running" | "complete" | "partial";
   reasons: string[];
@@ -164,8 +204,7 @@ export function runStatus(
   run: { lastMs: number; errors: number; unlinked: number },
   nowMs: number,
 ): RunStatus {
-  if (nowMs - run.lastMs < RUN_QUIET_MS)
-    return { kind: "running", reasons: [] };
+  if (isReceiving(run.lastMs, nowMs)) return { kind: "running", reasons: [] };
   const reasons: string[] = [];
   if (run.errors) reasons.push(`${run.errors} not scored`);
   if (run.unlinked) reasons.push(`${run.unlinked} unmatched`);

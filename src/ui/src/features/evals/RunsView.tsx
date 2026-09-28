@@ -25,6 +25,7 @@ import {
   useAgents,
   useRuns,
 } from "./useEvalData";
+import { pluralCount } from "../../lib/vizFormat";
 import "./evals.css";
 
 export function RunsView(shell: ShellContext) {
@@ -90,7 +91,9 @@ export function RunsView(shell: ShellContext) {
               onChange={(v) => setEvals({ set: v })}
             />
             <span className="evals-bar-fill" />
-            <span className="evals-bar-note">{shown.length} runs</span>
+            <span className="evals-bar-note">
+              {pluralCount(shown.length, "run")}
+            </span>
             <TimeRangePicker
               range={evalRange(state)}
               onChange={(r) => update({ range: r })}
@@ -182,7 +185,7 @@ function RunStatusCell({
 }) {
   if (kind === "running")
     return (
-      <span className="mono dim strong" style={{ fontSize: 11 }}>
+      <span className="mono good strong" style={{ fontSize: 11 }}>
         receiving results
       </span>
     );
@@ -190,7 +193,7 @@ function RunStatusCell({
   return (
     <>
       <ScoreBadge tone="partial">partial</ScoreBadge>
-      <div className="dim" style={{ fontSize: 12, marginTop: 3 }}>
+      <div className="warn" style={{ fontSize: 12, marginTop: 3 }}>
         {reasons.join(" · ")}
       </div>
     </>

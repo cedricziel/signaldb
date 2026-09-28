@@ -57,7 +57,7 @@ import {
   repositoryHints,
 } from "../../lib/sourceLocation";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
-import { formatErrorRate } from "../../lib/vizFormat";
+import { formatErrorRate, pluralCount } from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
@@ -209,10 +209,6 @@ function traceGraphView(spans: TempoSpan[]): {
 }
 
 type TraceViewMode = "waterfall" | "map" | "both";
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
 
 /** A stable string for a filter set, used only as a react-query cache key
  * (the queries below take `filters` directly — see api/traceGroups.ts,
@@ -934,7 +930,7 @@ function GroupDetail({
         emptyMessage={`No ${memberNoun}s in this range`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
-        footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
+        footnote={`Showing up to ${pluralCount(state.limit, memberNoun)}, newest first.`}
         onOpenTrace={(traceId) => update({ trace: traceId }, { push: true })}
       />
     </>
@@ -1069,12 +1065,12 @@ function TraceDetail({ state, update }: Props) {
               ? traceData.durationMs
               : Number(waterfall.traceDurationNs) / 1e6,
           )}{" "}
-          · {plural(waterfall.rows.length, "span")} ·{" "}
-          {plural(waterfall.services.length, "service")}
+          · {pluralCount(waterfall.rows.length, "span")} ·{" "}
+          {pluralCount(waterfall.services.length, "service")}
           {waterfall.errorCount > 0 && (
             <em className="tmeta-err error-text">
               {" "}
-              · {plural(waterfall.errorCount, "error")}
+              · {pluralCount(waterfall.errorCount, "error")}
             </em>
           )}
         </span>

@@ -1,5 +1,5 @@
 // Display rules shared by the Evaluate pages.
-import { meanOf, verdictOf, type EvalStats } from "./evalModel";
+import { meanOf, topLabelOf, verdictOf, type EvalStats } from "./evalModel";
 
 export function fmtScore(v: number | null): string {
   return v === null ? "—" : v.toFixed(2);
@@ -11,6 +11,15 @@ export function fmtPct(v: number | null, digits = 0): string {
 
 export function fmtCount(n: number): string {
   return n.toLocaleString("en-US");
+}
+
+/** An evaluator's mean score, or for a label-only evaluator its most
+ * common label with that label's share. */
+export function fmtMeanOrLabel(s: EvalStats): string {
+  const mean = meanOf(s);
+  if (mean !== null) return fmtScore(mean);
+  const top = topLabelOf(s);
+  return top ? `${top.label} ${fmtPct(top.share)}` : "—";
 }
 
 /** `▼ 0.07` / `▲ 0.01` / `0.00` (or `−0.07` / `+0.01` when `signed`),

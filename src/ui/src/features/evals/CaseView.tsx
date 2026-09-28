@@ -509,10 +509,12 @@ function TrajectoryPane({
               <span title={r.span.name}>{r.span.name}</span>
             </div>
             <div className="evals-timing">
-              <i
-                className={OP_KIND.get(r.op)}
-                style={{ left: `${r.leftPct}%`, width: `${r.widthPct}%` }}
-              />
+              <div className="evals-timing-track">
+                <i
+                  className={OP_KIND.get(r.op)}
+                  style={{ left: `${r.leftPct}%`, width: `${r.widthPct}%` }}
+                />
+              </div>
               <span>{formatDurationMs(r.durMs)}</span>
             </div>
             <div className="evals-traj-scores">

@@ -13,6 +13,7 @@ import {
   resolveStep,
   secondsToDuration,
   stepForRange,
+  thinnedTimeAxisLabels,
   timeAxisLabels,
   stepOptionsForRange,
 } from "./time";
@@ -258,5 +259,36 @@ describe("timeAxisLabels", () => {
   it("drops the time of day at a step of a day or more", () => {
     const ticks = [at(14, 0, 0), at(15, 0, 0)];
     expect(timeAxisLabels(ticks, 86_400_000)).toEqual(["11-14", "11-15"]);
+  });
+});
+
+describe("thinnedTimeAxisLabels", () => {
+  const at = (mo: number, d: number, h: number) =>
+    new Date(2026, mo - 1, d, h).getTime();
+
+  // The Agents & scores chart read "09-24, 09-24" with ticks ~14h apart.
+  it("keeps the hour when points are less than a day apart", () => {
+    const step = (4 * 86_400_000) / 14;
+    const points = Array.from(
+      { length: 14 },
+      (_, i) => at(9, 24, 9) + i * step,
+    );
+    const labels = thinnedTimeAxisLabels(points, 8, 86_400_000).filter(Boolean);
+    expect(labels).toHaveLength(7);
+    expect(labels[0]).toBe("09-24 09:00");
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("labels daily points with the date alone, blanking all but maxTicks", () => {
+    const points = Array.from({ length: 30 }, (_, i) => at(9, 1 + i, 0));
+    const labels = thinnedTimeAxisLabels(points, 6, 86_400_000);
+    expect(labels.filter(Boolean)).toEqual([
+      "09-01",
+      "09-06",
+      "09-11",
+      "09-16",
+      "09-21",
+      "09-26",
+    ]);
   });
 });

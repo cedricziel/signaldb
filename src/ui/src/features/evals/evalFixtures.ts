@@ -400,7 +400,7 @@ export interface IrDoc {
   range?: { from?: string; to?: string };
   pipeline?: {
     where?: { field?: string; op?: string; value?: unknown };
-    aggregate?: { by?: string[]; aggs?: { as: string }[] };
+    aggregate?: { by?: string[]; aggs?: { as: string }[]; step?: string };
   }[];
 }
 
@@ -540,8 +540,9 @@ function answer(raw: unknown): unknown {
   }
   // fetchMeanSeries
   if (doc.result === "series") {
-    const buckets = 14;
-    const step = (toMs - fromMs) / buckets;
+    const agg = doc.pipeline?.find((s) => s.aggregate)?.aggregate;
+    const step = agg?.step === "1h" ? 3_600_000 : DAY_MS;
+    const buckets = Math.max(2, Math.ceil((toMs - fromMs) / step));
     return {
       result: "series",
       window: { start_ns: 0, end_ns: 0 },
