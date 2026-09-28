@@ -120,6 +120,46 @@ const RESOURCE_ROWS: (string | number)[][] = [
   ["fetch", 210000, 9_800_000_000, 140, 480_000],
 ];
 
+/** Fixture rows for the Pages tab: `/orders/:id` is the worst-poor-share
+ * route (a plausible slow product page), `/checkout` is mostly good; a
+ * third, unrouted view exercises the missing-route callout. */
+const ORDERS_ROUTE = "/orders/:id";
+const CHECKOUT_ROUTE = "/checkout";
+const ORDERS_URLS = [
+  "https://shop.example.com/orders/48213",
+  "https://shop.example.com/orders/91820",
+];
+const CHECKOUT_URL = "https://shop.example.com/checkout";
+
+const PAGE_VIEWS_ROWS: (string | number | null)[][] = [
+  [ORDERS_ROUTE, ORDERS_URLS[0]!, 4200],
+  [ORDERS_ROUTE, ORDERS_URLS[1]!, 3800],
+  [CHECKOUT_ROUTE, CHECKOUT_URL, 3000],
+  [null, "not-a-real-url", 40],
+];
+
+const PAGE_VITALS: Record<
+  string,
+  Record<string, { p75: number; good: number; ni: number; poor: number }>
+> = {
+  [ORDERS_ROUTE]: {
+    lcp: { p75: 4300, good: 4000, ni: 0, poor: 4000 },
+    inp: { p75: 420, good: 6000, ni: 0, poor: 2000 },
+    cls: { p75: 0.18, good: 7000, ni: 0, poor: 1000 },
+    fcp: { p75: 1900, good: 6500, ni: 0, poor: 1500 },
+    ttfb: { p75: 900, good: 6000, ni: 0, poor: 2000 },
+  },
+  [CHECKOUT_ROUTE]: {
+    lcp: { p75: 2100, good: 2800, ni: 0, poor: 200 },
+    inp: { p75: 150, good: 2900, ni: 0, poor: 100 },
+    cls: { p75: 0.05, good: 2950, ni: 0, poor: 50 },
+    fcp: { p75: 1200, good: 2850, ni: 0, poor: 150 },
+    ttfb: { p75: 500, good: 2900, ni: 0, poor: 100 },
+  },
+};
+
+const PAGE_ERRORS_ROWS: (string | number)[][] = [[ORDERS_ROUTE, 640]];
+
 /** A deterministic wobble around `base`, one value per bucket. */
 function wave(seed: number, base: number, amp: number, n: number): number[] {
   return Array.from({ length: n }, (_, i) =>
@@ -223,6 +263,43 @@ function singleDocResponse(b: IrDoc): unknown {
         [true, 33010],
       ],
     };
+  }
+
+  // Pages: views, per-route vital ratings/p75 and errors — all grouped by
+  // (url.template, url.full), disambiguated by `by.length` alone (no
+  // event_name collision yet at these lengths).
+  if (by[0] === "url.template") {
+    if (by.length === 1) {
+      return { result: "table", rows: PAGE_ERRORS_ROWS };
+    }
+    if (by.length === 2) {
+      return { result: "table", rows: PAGE_VIEWS_ROWS };
+    }
+    if (by.length === 3) {
+      return {
+        result: "table",
+        rows: Object.entries(PAGE_VITALS).flatMap(([route, vitals]) =>
+          Object.entries(vitals).map(([name, v]) => [
+            route,
+            ORDERS_URLS[0]!,
+            name,
+            v.p75,
+          ]),
+        ),
+      };
+    }
+    if (by.length === 4) {
+      return {
+        result: "table",
+        rows: Object.entries(PAGE_VITALS).flatMap(([route, vitals]) =>
+          Object.entries(vitals).flatMap(([name, v]) => [
+            [route, ORDERS_URLS[0]!, name, "good", v.good],
+            [route, ORDERS_URLS[0]!, name, "needs-improvement", v.ni],
+            [route, ORDERS_URLS[0]!, name, "poor", v.poor],
+          ]),
+        ),
+      };
+    }
   }
 
   // Network: totals (buildNetworkRequestsDoc), the correlate join
@@ -426,4 +503,8 @@ export const Setup: Story = {
 
 export const Network: Story = {
   render: () => <RealUsersPage path="/rum/network?app=storefront-web" />,
+};
+
+export const Pages: Story = {
+  render: () => <RealUsersPage path="/rum/pages?app=storefront-web" />,
 };

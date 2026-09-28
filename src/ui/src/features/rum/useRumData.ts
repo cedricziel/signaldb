@@ -8,6 +8,7 @@ import {
   fetchBreakdown,
   fetchKpis,
   fetchNetworkRequests,
+  fetchPages,
   fetchResources,
   fetchRumApps,
   fetchSessionsOverTime,
@@ -166,6 +167,17 @@ export function useRumResources(scope: RumScope) {
   return useQuery({
     queryKey: ["rum-resources", rangeKey, app],
     queryFn: () => fetchResources(app, range),
+    enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+/** The Pages tab's route list — views, per-route vitals and error share. */
+export function useRumPages(scope: RumScope) {
+  const { range, rangeKey, app } = scope;
+  return useQuery({
+    queryKey: ["rum-pages", rangeKey, app],
+    queryFn: () => fetchPages(app, range),
     enabled: app !== "",
     staleTime: STALE,
   });

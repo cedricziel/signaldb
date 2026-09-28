@@ -28,12 +28,19 @@ import {
   type VitalName,
 } from "./rumModel";
 import { formatDurationMs } from "../../lib/waterfall";
-import type { RumRequestRow } from "../../api/rum";
+import {
+  routedPages,
+  routePoorShare,
+  sortPagesByPoorShare,
+  type RumPageRow,
+  type RumRequestRow,
+} from "../../api/rum";
 import { SplitBar } from "./NetworkTab";
 import {
   useRumBreakdown,
   useRumKpis,
   useRumNetworkRequests,
+  useRumPages,
   useRumSessionsOverTime,
   useRumTopErrors,
   useRumTracedShare,
@@ -45,9 +52,10 @@ interface Props {
   scope: RumScope;
   onOpenSetup: () => void;
   onOpenNetwork: () => void;
+  onOpenPages: (route: string) => void;
 }
 
-export function OverviewTab({ scope, onOpenNetwork }: Props) {
+export function OverviewTab({ scope, onOpenNetwork, onOpenPages }: Props) {
   const kpis = useRumKpis(scope);
   const sessions = kpis.data?.sessions;
   const users = kpis.data?.users;
@@ -58,6 +66,7 @@ export function OverviewTab({ scope, onOpenNetwork }: Props) {
   const sessionsOverTime = useRumSessionsOverTime(scope);
   const topErrors = useRumTopErrors(scope);
   const network = useRumNetworkRequests(scope);
+  const pages = useRumPages(scope);
   const browser = useRumBreakdown(scope, "resource.browser.brands", {
     requireField: true,
     limit: 8,
@@ -225,8 +234,21 @@ export function OverviewTab({ scope, onOpenNetwork }: Props) {
         </Panel>
       </div>
 
-      {/* "Slowest pages" is a later group (tasks.md group 2); this row
-          ships with the two panels below plus Frontend → backend. */}
+      <Panel
+        title="Slowest pages"
+        meta="top 5 routes by worst Web Vital's poor share"
+      >
+        {pages.isError ? (
+          <QueryError what="pages" error={pages.error} />
+        ) : pages.isPending ? (
+          <div className="rum-placeholder">Loading…</div>
+        ) : (pages.data?.length ?? 0) === 0 ? (
+          <EmptyState title="No page views in this window" />
+        ) : (
+          <SlowestPagesList rows={pages.data!} onSelect={onOpenPages} />
+        )}
+      </Panel>
+
       <div className="rum-grid-3">
         <Panel title="Top errors">
           {topErrors.isError ? (
@@ -603,6 +625,44 @@ function FrontendBackendList({ rows }: { rows: RumRequestRow[] }) {
             {r.totalP75Ms !== null ? formatDurationMs(r.totalP75Ms) : "—"}
           </span>
         </div>
+      ))}
+    </div>
+  );
+}
+
+/** Routes with no explicit `url.template` are excluded: they'd open the
+ * Pages tab to nothing selectable. */
+function SlowestPagesList({
+  rows,
+  onSelect,
+}: {
+  rows: RumPageRow[];
+  onSelect: (route: string) => void;
+}) {
+  const top = sortPagesByPoorShare(routedPages(rows)).slice(0, 5);
+  if (top.length === 0) {
+    return <EmptyState title="No routed page views in this window" />;
+  }
+  return (
+    <div className="rum-fe-be-list">
+      {top.map((r) => (
+        <button
+          key={r.route}
+          type="button"
+          className="rum-slowest-page-row"
+          onClick={() => onSelect(r.route!)}
+        >
+          <span className="mono ell rum-fe-be-name">{r.route}</span>
+          <span className="mono dim">{compactCount(r.views)} views</span>
+          <span
+            className="mono num"
+            style={{
+              color: routePoorShare(r) > 0 ? "var(--err)" : "var(--ok-text)",
+            }}
+          >
+            {Math.round(routePoorShare(r) * 100)}% poor
+          </span>
+        </button>
       ))}
     </div>
   );

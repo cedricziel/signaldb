@@ -137,6 +137,10 @@ export interface ExploreState {
    * writes it here). Only `/rum` reads it; like `env` it isn't carried to
    * other pages. */
   rumApp: string;
+  /** The Real users Pages tab's selected route (a resolved `url.template`)
+   * — "" means no route is selected, showing the route list only. Like
+   * `rumApp`, only `/rum` reads it. */
+  rumRoute: string;
 }
 
 export type EvalSource = "offline" | "production" | "both";
@@ -228,6 +232,7 @@ export const DEFAULT_STATE: ExploreState = {
   env: "",
   evals: DEFAULT_EVAL_PARAMS,
   rumApp: "",
+  rumRoute: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -403,6 +408,7 @@ export function parseExploreState(search: string): ExploreState {
     env: p.get("env") ?? "",
     evals: parseEvalParams(p),
     rumApp: p.get("app") ?? "",
+    rumRoute: p.get("route") ?? "",
   };
 }
 
@@ -493,6 +499,7 @@ export function buildSearch(state: ExploreState): string {
   if (ev.source !== DEFAULT_EVAL_PARAMS.source) p.set("source", ev.source);
   if (ev.mode !== DEFAULT_EVAL_PARAMS.mode) p.set("mode", ev.mode);
   if (state.rumApp) p.set("app", state.rumApp);
+  if (state.rumRoute) p.set("route", state.rumRoute);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

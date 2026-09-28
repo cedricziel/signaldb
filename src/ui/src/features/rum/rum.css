@@ -642,6 +642,66 @@ a.rum-row:hover {
   font-size: 12px;
 }
 
+.rum-slowest-page-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(60px, 0.8fr) 70px;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.rum-slowest-page-row:last-child {
+  border-bottom: 0;
+}
+.rum-slowest-page-row:hover {
+  background: var(--surface2);
+}
+
+.rum-pages-table {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-pages-head,
+.rum-pages-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.6fr) 70px repeat(4, 64px) 74px;
+  gap: 10px;
+  align-items: center;
+  min-width: 620px;
+}
+.rum-pages-head {
+  padding: 6px var(--gutter-sm);
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.rum-pages-row {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 8px var(--gutter-sm);
+}
+.rum-pages-row:last-child {
+  border-bottom: 0;
+}
+.rum-pages-row:hover,
+.rum-pages-row.on {
+  background: var(--surface2);
+}
+.rum-pages-row .num,
+.rum-pages-head .num {
+  text-align: right;
+}
+
 .rum-kv-row {
   display: grid;
   grid-column: 1 / -1;

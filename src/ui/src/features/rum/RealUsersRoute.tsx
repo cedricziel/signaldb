@@ -4,6 +4,7 @@
 // every other explore page via outlet context.
 import { Navigate, useLocation, useNavigate, useParams } from "react-router";
 import { useOutletState } from "../../lib/outletState";
+import { buildSearch } from "../../lib/urlState";
 import { RealUsersView } from "./RealUsersView";
 import { rumTabFromParam, type RumTab } from "./rumModel";
 
@@ -25,12 +26,23 @@ export function RealUsersRoute() {
     navigate(`/rum/${next}${location.search}`);
   }
 
+  // Switching tab *and* setting a search param (the Overview "Slowest
+  // pages" row opening the Pages tab with a route already selected) can't
+  // go through `onTabChange` + `update()` separately: both build their
+  // navigation from the same pre-navigation `location`/`state` snapshot, so
+  // whichever runs second clobbers the first. Building the combined URL
+  // once from `state` avoids the race.
+  function onTabChangeWith(next: RumTab, patch: Partial<typeof state>) {
+    navigate(`/rum/${next}${buildSearch({ ...state, ...patch })}`);
+  }
+
   return (
     <RealUsersView
       state={state}
       update={update}
       tab={known}
       onTabChange={onTabChange}
+      onTabChangeWith={onTabChangeWith}
     />
   );
 }
