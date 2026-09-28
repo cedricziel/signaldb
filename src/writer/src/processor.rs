@@ -3269,7 +3269,7 @@ mod tests {
                 &wal,
                 "acme",
                 "production",
-                "metrics_gauge",
+                "metrics",
                 entries.clone(),
                 Vec::new(),
             )
@@ -3282,14 +3282,7 @@ mod tests {
         {
             let _guard = probe.install();
             processor
-                .process_batch_for_table(
-                    &wal,
-                    "acme",
-                    "production",
-                    "metrics_gauge",
-                    entries,
-                    Vec::new(),
-                )
+                .process_batch_for_table(&wal, "acme", "production", "metrics", entries, Vec::new())
                 .await
                 .unwrap();
         }
