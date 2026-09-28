@@ -26,30 +26,9 @@ Each numbered group is one PR in a stack (under ~500 changed lines each).
 - [x] 3.6 Command palette: Real users tabs and frontend apps.
 - [x] 3.7 e2e: sidebar → Real users → Overview renders (mocked IR responses, no live backend — matches `e2e/navigation.spec.ts`'s existing pattern).
 
-## 4. Network + frontend → backend
+## 4. Remaining tabs (moved)
 
-- [ ] 4.1 Failing tests for the `correlate`-based client/backend split and traced-share decoders.
-- [ ] 4.2 Network tab (requests table, untraced-origin callout, resources by initiator type) and the Overview "Frontend → backend" panel.
-
-## 5. Pages + Interactions
-
-- [ ] 5.1 Failing tests for per-route vitals, navigation-timing breakdown and click-target aggregation.
-- [ ] 5.2 Pages tab (route list sorted by poor share, route detail, load breakdown, backend calls) with `?route=`; missing-route callout.
-- [ ] 5.3 Interactions tab (clicks by target, INP p75 of the page).
-
-## 6. Sessions + session detail
-
-- [ ] 6.1 Failing tests for session list aggregation/filters and for merging a session's spans and logs into lanes and events.
-- [ ] 6.2 Sessions tab with quick filters and attribute filter; `?session=` detail with lane timeline, event list, inline trace waterfall (reusing `lib/waterfall.ts`), exception panel with preceding failed request, attributes.
-- [ ] 6.3 Palette: jump to a pasted session id.
-
-## 7. Errors
-
-- [ ] 7.1 Failing tests for app-scoped error groups, "new in release" and the preceding-failed-request lookup (one batched read for the list, not per row).
-- [ ] 7.2 Errors tab reusing `api/errors.ts` scoped by `service.name`, stack frames, by-browser breakdown, backend cause, latest session link.
-
-## 8. Platform labels + docs
-
-- [ ] 8.1 Failing tests for platform detection from `telemetry.sdk.language`; relabel tabs and hide browser-only panels for mobile.
-- [ ] 8.2 Docs: "Real users" section in `docs/users/explore-ui.md`; a user guide for instrumenting a browser app (routed via the docs skill), linked from the Setup tab.
-- [ ] 8.3 Surface parity: HTTP API is the IR (covered by 1.x); CLI runs IR documents already — no RUM CLI view (scoped out in the proposal).
+Network, Pages, Interactions, Sessions, Errors, platform labels and the
+instrumentation guide, with their requirements, moved unbuilt to the
+follow-up change `rum-explore-tabs`; this change archives only what
+shipped.
