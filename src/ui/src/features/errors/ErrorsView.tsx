@@ -314,7 +314,10 @@ export function ErrorsView({ state, update }: Props) {
             <QueryError what="exceptions" error={groupsQuery.error} />
           )}
           {!pending && !groupsQuery.isError && allGroups.length === 0 && (
-            <EmptyState title="No exceptions in this range" />
+            <EmptyState title="No exceptions in this range">
+              Widen the time range, or check that traces and logs are arriving
+              on <Link to="/instrumentation">Send data</Link>.
+            </EmptyState>
           )}
           {!pending &&
             !groupsQuery.isError &&

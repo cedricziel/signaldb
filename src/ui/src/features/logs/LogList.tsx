@@ -1,5 +1,6 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import type { LogRow } from "../../api/ir/logs";
 import {
   AttributeSection,
@@ -76,7 +77,12 @@ export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
   });
 
   if (rows.length === 0) {
-    return <EmptyState title="No log lines in this range" />;
+    return (
+      <EmptyState title="No log lines in this range">
+        Widen the time range, or check that logs are arriving on{" "}
+        <Link to="/instrumentation">Send data</Link>.
+      </EmptyState>
+    );
   }
 
   return (

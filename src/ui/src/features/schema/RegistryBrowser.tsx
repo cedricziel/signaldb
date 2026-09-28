@@ -185,7 +185,7 @@ function RegistryView({
         </span>
         {canEdit && (
           <div className="schema-actions">
-            <Link className="schema-button" to={editorPath(namespace, version)}>
+            <Link className="btn" to={editorPath(namespace, version)}>
               Edit
             </Link>
           </div>

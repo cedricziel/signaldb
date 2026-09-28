@@ -102,6 +102,10 @@ describe("ErrorsView", () => {
     expect(
       await screen.findByText(/No exceptions in this range/),
     ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Send data" })).toHaveAttribute(
+      "href",
+      "/instrumentation",
+    );
   });
 
   it("lists exception groups ranked by count, across both sources", async () => {

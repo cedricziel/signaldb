@@ -278,11 +278,10 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
           onSubmit={handleCreate}
           onChange={handleCreateFormChange}
         >
-          <input
-            name="name"
-            placeholder="collector-production"
-            aria-label="Key name (optional)"
-          />
+          <label className="api-keys-field">
+            <span>Name (optional)</span>
+            <input name="name" placeholder="collector-production" />
+          </label>
           <DatasetPicker
             idPrefix="create"
             datasets={datasets}

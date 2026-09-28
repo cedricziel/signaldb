@@ -1,5 +1,6 @@
 import { render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { MemoryRouter } from "react-router";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { LogRow } from "../../api/ir/logs";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
@@ -165,17 +166,23 @@ describe("LogList", () => {
     expect(onOpenTrace).toHaveBeenCalledWith("cafe1234beef");
   });
 
-  it("shows the shared empty state", () => {
+  it("shows the shared empty state with a next step", () => {
     render(
-      <LogList
-        rows={[]}
-        onAddFilter={() => {}}
-        onOpenTrace={() => {}}
-        update={vi.fn()}
-      />,
+      <MemoryRouter>
+        <LogList
+          rows={[]}
+          onAddFilter={() => {}}
+          onOpenTrace={() => {}}
+          update={vi.fn()}
+        />
+      </MemoryRouter>,
     );
     const status = screen.getByRole("status");
     expect(status).toHaveTextContent(/No log lines/);
+    expect(screen.getByRole("link", { name: "Send data" })).toHaveAttribute(
+      "href",
+      "/instrumentation",
+    );
   });
 
   it("keeps a row expanded when a newer row is prepended and shifts its index", async () => {

@@ -164,6 +164,26 @@ describe("LoginMethods", () => {
     expect(screen.getByLabelText("Email")).toBeInTheDocument();
   });
 
+  it("demo config: the password form keeps the one primary button", () => {
+    renderWithClient(
+      <LoginMethods
+        config={{
+          password_enabled: true,
+          oidc: null,
+          demo: { username: "demo", password: "demo" },
+        }}
+        redirect="/logs"
+        onAuthenticated={vi.fn()}
+      />,
+    );
+    expect(
+      screen.getByRole("button", { name: "Explore the demo" }),
+    ).not.toHaveClass("btn-primary");
+    expect(screen.getByRole("button", { name: "Sign in" })).toHaveClass(
+      "btn-primary",
+    );
+  });
+
   it("demo button signs in with the demo credentials", async () => {
     stubFetchRoutes([
       {
