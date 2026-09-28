@@ -20,6 +20,9 @@ use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
+use datafusion::assert_batches_eq;
+use datafusion::prelude::SessionContext;
+use datafusion_iceberg::DataFusionTable;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
@@ -46,6 +49,7 @@ struct TestServices {
     object_store: Arc<dyn object_store::ObjectStore>,
     flight_transport: Arc<InMemoryFlightTransport>,
     metrics_handler: MetricsHandler,
+    catalog_manager: Arc<CatalogManager>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -173,7 +177,7 @@ async fn setup() -> TestServices {
 
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
-        catalog_manager,
+        catalog_manager.clone(),
         common::config::QuerierConfig::default(),
     )
     .await
@@ -233,6 +237,7 @@ async fn setup() -> TestServices {
         object_store,
         flight_transport,
         metrics_handler,
+        catalog_manager,
         config,
         _temp_dir: temp_dir,
     }
@@ -1265,4 +1270,232 @@ fn matrix_all_values_near(body: &serde_json::Value, expected: f64, epsilon: f64)
                 .and_then(|v| v.parse::<f64>().ok())
                 .is_some_and(|v| (v - expected).abs() < epsilon)
         })
+}
+
+/// Exponential histogram + summary in one resource -- the two OTel metric
+/// types [`gauge_metrics_named`]/[`sum_metrics`]/[`histogram_metrics`] don't
+/// cover -- for the cutover test below.
+fn exp_histogram_and_summary_metrics() -> ExportMetricsServiceRequest {
+    use opentelemetry_proto::tonic::metrics::v1::{
+        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Summary,
+        SummaryDataPoint, exponential_histogram_data_point::Buckets,
+        summary_data_point::ValueAtQuantile,
+    };
+
+    let exp_histogram_metric = Metric {
+        name: "cutover_exphist".to_string(),
+        description: String::new(),
+        unit: "s".to_string(),
+        data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+            aggregation_temporality: AggregationTemporality::Cumulative.into(),
+            data_points: vec![ExponentialHistogramDataPoint {
+                attributes: vec![],
+                start_time_unix_nano: BASE_NS,
+                time_unix_nano: BASE_NS,
+                count: 6,
+                sum: Some(12.0),
+                scale: 2,
+                zero_count: 1,
+                positive: Some(Buckets {
+                    offset: 0,
+                    bucket_counts: vec![1, 2],
+                }),
+                negative: None,
+                flags: 0,
+                exemplars: vec![],
+                min: Some(0.1),
+                max: Some(5.0),
+                zero_threshold: 0.0,
+            }],
+        })),
+        metadata: vec![],
+    };
+
+    let summary_metric = Metric {
+        name: "cutover_summary".to_string(),
+        description: String::new(),
+        unit: "ms".to_string(),
+        data: Some(Data::Summary(Summary {
+            data_points: vec![SummaryDataPoint {
+                attributes: vec![],
+                start_time_unix_nano: BASE_NS,
+                time_unix_nano: BASE_NS,
+                count: 5,
+                sum: 10.0,
+                quantile_values: vec![ValueAtQuantile {
+                    quantile: 0.5,
+                    value: 2.0,
+                }],
+                flags: 0,
+            }],
+        })),
+        metadata: vec![],
+    };
+
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value("cutover")),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![exp_histogram_metric, summary_metric],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
+/// otel-native-schema layer 7 (D10) cutover: every OTel metric type lands
+/// as typed rows in the wide tables, and PromQL agrees with them.
+#[tokio::test]
+async fn cutover_ingests_every_metric_type_into_the_wide_tables() {
+    use opentelemetry_proto::tonic::metrics::v1::{Exemplar, exemplar};
+
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    // A histogram with one exemplar carrying trace/span correlation,
+    // reusing the shared `histogram_metrics` fixture (name "latency").
+    let mut histogram_request = histogram_metrics("cutover");
+    let Data::Histogram(histogram) = histogram_request.resource_metrics[0].scope_metrics[0].metrics
+        [0]
+    .data
+    .as_mut()
+    .unwrap() else {
+        unreachable!()
+    };
+    histogram.data_points[0].exemplars.push(Exemplar {
+        filtered_attributes: vec![],
+        time_unix_nano: BASE_NS,
+        span_id: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        trace_id: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        value: Some(exemplar::Value::AsDouble(3.0)),
+    });
+
+    for request in [
+        gauge_metrics_named("cutover_gauge", "cutover", 42.0, "200"),
+        sum_metrics("cutover", "cutover_sum", 7.0),
+        histogram_request,
+        exp_histogram_and_summary_metrics(),
+    ] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(&ctx, request)
+            .await
+            .expect("ingest metric");
+    }
+
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let metrics_table = tests_integration::compaction_helpers::load_table(
+        &services.catalog_manager,
+        "test-tenant",
+        "test-dataset",
+        "metrics",
+    )
+    .await
+    .expect("metrics table");
+    let exemplars_table = tests_integration::compaction_helpers::load_table(
+        &services.catalog_manager,
+        "test-tenant",
+        "test-dataset",
+        "metric_exemplars",
+    )
+    .await
+    .expect("metric_exemplars table");
+
+    let ctx_sql = SessionContext::new();
+    ctx_sql
+        .register_table("m", Arc::new(DataFusionTable::from(metrics_table)))
+        .unwrap();
+    ctx_sql
+        .register_table("e", Arc::new(DataFusionTable::from(exemplars_table)))
+        .unwrap();
+
+    // One typed row per ingested metric, discriminated by `metric_type`,
+    // with each shape's own columns populated and the rest null.
+    let metrics_rows = ctx_sql
+        .sql(
+            "SELECT metric_name, metric_type, value, count, sum, \
+             aggregation_temporality, is_monotonic, \
+             bucket_counts IS NOT NULL AS has_bucket_counts, \
+             positive_bucket_counts IS NOT NULL AS has_positive_buckets, \
+             quantile_values IS NOT NULL AS has_quantiles \
+             FROM m ORDER BY metric_name",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_batches_eq!(
+        [
+            "+-----------------+-----------------------+-------+-------+------+-------------------------+--------------+-------------------+----------------------+---------------+",
+            "| metric_name     | metric_type           | value | count | sum  | aggregation_temporality | is_monotonic | has_bucket_counts | has_positive_buckets | has_quantiles |",
+            "+-----------------+-----------------------+-------+-------+------+-------------------------+--------------+-------------------+----------------------+---------------+",
+            "| cutover_exphist | exponential_histogram |       | 6     | 12.0 | 2                       |              | false             | true                 | false         |",
+            "| cutover_gauge   | gauge                 | 42.0  |       |      |                         |              | false             | false                | false         |",
+            "| cutover_sum     | sum                   | 7.0   |       |      | 2                       | true         | false             | false                | false         |",
+            "| cutover_summary | summary               |       | 5     | 10.0 |                         |              | false             | false                | true          |",
+            "| latency         | histogram             |       | 10    | 20.0 | 1                       |              | true              | false                | false         |",
+            "+-----------------+-----------------------+-------+-------+------+-------------------------+--------------+-------------------+----------------------+---------------+",
+        ],
+        &metrics_rows
+    );
+
+    // The histogram exemplar lands in `metric_exemplars`, correlated back to
+    // its owning `metrics` row by `series_id` via the join, with its
+    // trace/span ids intact.
+    let exemplar_rows = ctx_sql
+        .sql(
+            "SELECT e.metric_name, e.trace_id, e.span_id \
+             FROM e JOIN m ON e.series_id = m.series_id \
+             WHERE m.metric_type = 'histogram'",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_batches_eq!(
+        [
+            "+-------------+----------------------------------+------------------+",
+            "| metric_name | trace_id                         | span_id          |",
+            "+-------------+----------------------------------+------------------+",
+            "| latency     | 0102030405060708090a0b0c0d0e0f10 | 0102030405060708 |",
+            "+-------------+----------------------------------+------------------+",
+        ],
+        &exemplar_rows
+    );
+
+    // The Query IR (via the PromQL compat surface) agrees with the tables.
+    let app = build_router(&services).await;
+    let at = at_timestamp();
+
+    let (status, values) = instant_query_values(&app, "cutover_gauge", at).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(values, vec![42.0], "gauge instant query");
+
+    let (status, values) = instant_query_values(&app, "cutover_sum", at).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(values, vec![7.0], "sum instant query");
+
+    let (status, values) = instant_query_values(&app, "histogram_quantile(0.5,latency)", at).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(values.len(), 1, "histogram_quantile instant query");
+    assert!(
+        (values[0] - 10.0 / 3.0).abs() < 1e-6,
+        "expected the 0.5-quantile to interpolate to 10/3, got {:?}",
+        values[0]
+    );
 }
