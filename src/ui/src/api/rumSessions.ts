@@ -11,9 +11,17 @@
  * from the aggregated `errors`/`slow` counts already in the row — filtering
  * them server-side on `event_name = exception` would drop every
  * non-exception record from the aggregate and corrupt the other columns.
- * The free-text filter is a later addition to this module (a separate
- * change): it needs its own bounded read to narrow which *sessions* this
- * list aggregates, not a `where` on this aggregate itself.
+ * The free-text filter (`session.id`/`user.id` equality, or `key=value` for
+ * an arbitrary attribute) is server-side, since it narrows which sessions
+ * are aggregated at all — but it can't be a `where` stage on the *list*
+ * aggregate itself: a `where` there filters records, not sessions, so a
+ * session with only some records carrying the matched attribute would lose
+ * its other records from the aggregate (wrong views/duration/entry/exit/
+ * error counts). Instead a filter runs as a first, separate bounded read —
+ * the same shape as the list read but aggregating down to just the matching
+ * `session.id`s — and the list read then scopes to `session.id in [...]`,
+ * with no attribute `where` of its own. One request when no filter is set,
+ * two when one is.
  */
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { rangeDoc, runIrQuery } from "./queryIr";
@@ -42,9 +50,79 @@ export interface RumSessionRow {
   mobile: boolean | null;
 }
 
+/** `session.id` / `user.id` equality, or `key=value` for an arbitrary
+ * attribute — the spec's "free-text filter SHALL accept `session.id`,
+ * `user.id` or `attribute=value`". Empty/blank text has no filter. */
+export function sessionsTextFilterWhere(
+  text: string,
+): Record<string, unknown> | null {
+  const trimmed = text.trim();
+  if (trimmed === "") return null;
+  const eq = trimmed.indexOf("=");
+  if (eq > 0) {
+    const field = trimmed.slice(0, eq).trim();
+    const value = trimmed.slice(eq + 1).trim();
+    if (field !== "" && value !== "") {
+      return { where: { field, op: "eq", value } };
+    }
+  }
+  return {
+    where: {
+      or: [
+        { field: "session.id", op: "eq", value: trimmed },
+        { field: "user.id", op: "eq", value: trimmed },
+      ],
+    },
+  };
+}
+
+/** `topk`'s `n` for the free-text filter's own id lookup — same budget as
+ * the list itself, since a filter can never surface more sessions than an
+ * unfiltered list would show anyway. */
+const SESSION_ID_LOOKUP_LIMIT = SESSION_LIST_LIMIT;
+
+/** The free-text filter's own read: which sessions have at least one
+ * matching record, ranked and capped the same way the list is (see the
+ * module doc). `null` for blank filter text — nothing to look up, so
+ * `fetchSessions` skips this read entirely and goes straight to the list. */
+export function buildSessionIdLookupDoc(
+  app: string,
+  range: ResolvedRange,
+  filterText: string,
+): QueryIrRequest | null {
+  const textWhere = sessionsTextFilterWhere(filterText);
+  if (!textWhere) return null;
+  return {
+    irVersion: 9,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      { where: { field: "session.id", op: "exists" } },
+      textWhere,
+      {
+        aggregate: {
+          by: ["session.id"],
+          aggs: [{ fn: "max", of: "timestamp", as: "last_ts" }],
+        },
+      },
+      { topk: { n: SESSION_ID_LOOKUP_LIMIT, of: "last_ts" } },
+    ],
+  };
+}
+
+/** The `session.id` column of a `buildSessionIdLookupDoc` response, busiest
+ * (most recently active) first — the list read's `session.id in [...]`
+ * scope. */
+export function sessionIdsFromResponse(res: QueryIrResponse): string[] {
+  return (res.rows ?? []).map((row) => (row as unknown[])[0] as string);
+}
+
 export function buildSessionsListDoc(
   app: string,
   range: ResolvedRange,
+  sessionIds?: string[],
 ): QueryIrRequest {
   return {
     irVersion: 9,
@@ -54,6 +132,9 @@ export function buildSessionsListDoc(
     pipeline: [
       serviceWhere(app),
       { where: { field: "session.id", op: "exists" } },
+      ...(sessionIds
+        ? [{ where: { field: "session.id", op: "in", value: sessionIds } }]
+        : []),
       {
         aggregate: {
           by: ["session.id"],
@@ -179,8 +260,17 @@ export function filterSessionsRows(
 export async function fetchSessions(
   app: string,
   range: ResolvedRange,
+  filterText = "",
 ): Promise<RumSessionRow[]> {
+  const lookupDoc = buildSessionIdLookupDoc(app, range, filterText);
+  if (!lookupDoc) {
+    return sessionsFromResponse(
+      await runIrQuery(buildSessionsListDoc(app, range)),
+    );
+  }
+  const sessionIds = sessionIdsFromResponse(await runIrQuery(lookupDoc));
+  if (sessionIds.length === 0) return [];
   return sessionsFromResponse(
-    await runIrQuery(buildSessionsListDoc(app, range)),
+    await runIrQuery(buildSessionsListDoc(app, range, sessionIds)),
   );
 }
