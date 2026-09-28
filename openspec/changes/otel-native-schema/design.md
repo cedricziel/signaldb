@@ -252,6 +252,42 @@ the _registry_ names exactly one canonical home at any version; "old home" rows 
 a migration artifact the read-path unifies, not a second live home. A type change is
 therefore a forward-only, version-gated event, not a free toggle.
 
+### D10 — Typed metric substrate: one wide `metrics` table plus `metric_exemplars`
+
+The JSON that layer 7 replaces is in storage, not on the wire: the writer
+already explodes the wire's `data_json` into one row per point, but keeps
+`bucket_counts`, `explicit_bounds`, the exponential-histogram bucket counts,
+`quantile_values` and `exemplars` as JSON strings. Layer 7 replaces those
+columns; `data_json` stays on the Flight/WAL wire until the typed wire (12.2),
+so the WAL stays byte-unchanged (D6).
+
+- **One wide physical table.** The five per-type tables (`metrics_gauge`,
+  `_sum`, `_histogram`, `_exponential_histogram`, `_summary`) are replaced by
+  one `metrics` table carrying `metric_type` and sparse per-type columns:
+  `value`; `count`/`sum`/`min`/`max`; `explicit_bounds` `list<double>` and
+  `bucket_counts` `list<int64>`; `scale`, `zero_count`, `zero_threshold`,
+  `positive_offset`/`negative_offset` and `list<int64>` bucket counts; the
+  Summary's `quantiles`/`quantile_values` as parallel `list<double>`.
+  `aggregation_temporality` and `is_monotonic` exist on every row, null where
+  OTLP does not define them for the type. The physical layout then matches
+  the one logical metric model (7.5) instead of being hidden behind a union.
+- **Exemplars in their own table.** `metric_exemplars` holds one row per
+  exemplar with flat `trace_id`/`span_id` columns (the hex encoding traces
+  use), the exemplar time and value, and `filtered_attributes` as a typed
+  attribute container. A `series_id` digest (metric name, resource identity,
+  record attributes), stored on both tables, links an exemplar to its series.
+  Flat keys make `trace_id` filterable and prunable, which the correlate stage
+  (layer 9) joins on. One WAL entry commits to both tables; each table keeps
+  its own idempotency marker, so a replay stays duplicate-free.
+- **Query surface.** The IR `metrics` source covers every metric type, with
+  `metric.type`, `metric.temporality` and `metric.monotonic` as fields; the
+  `metrics_histogram` source is removed. Exemplars are a sibling IR source,
+  `exemplars` — a sub-entity of the metric model, as span events are of spans,
+  not a per-type surface.
+- **Cutover.** The new tables are created under new names, so no recreate gate
+  is needed. The writer's table reconciler drops (with purge) the five legacy
+  tables; their data is not migrated.
+
 ## Risks / Trade-offs
 
 - **Warm tier is unpruned without the derived index** → the typed map is cast-free
