@@ -21,7 +21,7 @@ import {
   type RumBreakdownOptions,
   type RumKpiMetric,
 } from "../../api/rum";
-import { fetchErrorGroups } from "../../api/errors";
+import { fetchRumErrorGroupsWithBackendCause } from "../../api/rumErrorGroups";
 import { fetchSessions } from "../../api/rumSessions";
 import {
   fetchSessionDetail,
@@ -127,11 +127,19 @@ export function useRumSessionsOverTime(scope: RumScope) {
   });
 }
 
-export function useRumTopErrors(scope: RumScope) {
+/** The Errors tab's group list, and the Overview "Top errors" panel's same
+ * data (same query key — one shared cache entry, not two requests, when
+ * both are on screen) — `fetchRumErrorGroupsWithBackendCause` batches the
+ * list read and the backend-cause read into one call (see its module doc). */
+export function useRumErrorGroups(
+  scope: RumScope,
+  currentVersion: string | null,
+) {
   const { range, rangeKey, app } = scope;
   return useQuery({
-    queryKey: ["rum-top-errors", rangeKey, app],
-    queryFn: () => fetchErrorGroups(range, app),
+    queryKey: ["rum-error-groups", rangeKey, app, currentVersion ?? ""],
+    queryFn: () =>
+      fetchRumErrorGroupsWithBackendCause(app, range, currentVersion),
     enabled: app !== "",
     staleTime: STALE,
   });

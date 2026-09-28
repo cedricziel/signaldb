@@ -487,18 +487,23 @@ export function parseBrowserFromUserAgent(ua: string | null): string | null {
 // ---- Tabs ------------------------------------------------------------
 
 export type RumTab =
-  "overview" | "pages" | "sessions" | "network" | "interactions" | "setup";
+  | "overview"
+  | "pages"
+  | "sessions"
+  | "errors"
+  | "network"
+  | "interactions"
+  | "setup";
 
 /** The tabs this build ships, in display order — the page's tab strip and
  * the command palette both map over this (`explore-ui-rum`'s "Real users
- * command palette entries" requirement), so a later group's new tab needs
- * adding only here. Final order per `rum-explore-tabs`: Overview, Pages,
- * Sessions, Errors, Network, Interactions, Setup — Errors ships in a later
- * group. */
+ * command palette entries" requirement). Final order per `rum-explore-tabs`:
+ * Overview, Pages, Sessions, Errors, Network, Interactions, Setup. */
 export const RUM_TABS: { id: RumTab; label: string }[] = [
   { id: "overview", label: "Overview" },
   { id: "pages", label: "Pages" },
   { id: "sessions", label: "Sessions" },
+  { id: "errors", label: "Errors" },
   { id: "network", label: "Network" },
   { id: "interactions", label: "Interactions" },
   { id: "setup", label: "Setup" },

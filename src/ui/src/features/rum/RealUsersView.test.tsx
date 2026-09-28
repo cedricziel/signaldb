@@ -3,6 +3,8 @@ import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import * as rumApi from "../../api/rum";
 import type { RumApp, RumPageRow, RumRequestRow } from "../../api/rum";
+import * as rumErrorGroupsApi from "../../api/rumErrorGroups";
+import type { RumErrorGroupWithCause } from "../../api/rumErrorGroups";
 import * as rumSessionsApi from "../../api/rumSessions";
 import type { RumSessionRow } from "../../api/rumSessions";
 import * as rumSessionDetailApi from "../../api/rumSessionDetail";
@@ -31,9 +33,9 @@ vi.mock("../../api/rum", async (orig) => ({
   fetchBackendCalls: vi.fn().mockResolvedValue([]),
   fetchInteractions: vi.fn().mockResolvedValue([]),
 }));
-vi.mock("../../api/errors", async (orig) => ({
-  ...(await orig<typeof import("../../api/errors")>()),
-  fetchErrorGroups: vi.fn().mockResolvedValue({ groups: [], truncated: false }),
+vi.mock("../../api/rumErrorGroups", async (orig) => ({
+  ...(await orig<typeof import("../../api/rumErrorGroups")>()),
+  fetchRumErrorGroupsWithBackendCause: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../api/rumSessions", async (orig) => ({
   ...(await orig<typeof import("../../api/rumSessions")>()),
@@ -437,6 +439,92 @@ describe("Overview tab's Slowest pages panel", () => {
 
     await waitFor(() => expect(window.location.pathname).toBe("/rum/pages"));
     expect(window.location.search).toContain("route=%2Forders%2F%3Aid");
+  });
+});
+
+function errorGroupRow(
+  overrides: Partial<RumErrorGroupWithCause> = {},
+): RumErrorGroupWithCause {
+  return {
+    exceptionType: "TypeError",
+    exceptionMessage: "Cannot read properties of null",
+    escaped: "true",
+    count: 42,
+    firstMs: 1_700_000_000_000,
+    lastMs: 1_700_000_060_000,
+    lastSessionId: "sess-1",
+    users: 12,
+    sessions: 18,
+    newInCurrentRelease: false,
+    ...overrides,
+  };
+}
+
+describe("Overview tab's Top errors panel", () => {
+  it("opens the Errors tab with the clicked group selected", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(
+      rumErrorGroupsApi.fetchRumErrorGroupsWithBackendCause,
+    ).mockResolvedValue([errorGroupRow()]);
+    renderRum("/rum/overview?app=storefront-web");
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /TypeError/ }));
+
+    await waitFor(() => expect(window.location.pathname).toBe("/rum/errors"));
+    expect(window.location.search).toContain("errgroup=");
+  });
+});
+
+describe("Errors tab", () => {
+  it("lists error groups with their new-release and backend-cause pills", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({ version: "2026.09.26-3" }),
+    ]);
+    vi.mocked(
+      rumErrorGroupsApi.fetchRumErrorGroupsWithBackendCause,
+    ).mockResolvedValue([
+      errorGroupRow({
+        newInCurrentRelease: true,
+        backendCause: {
+          sessionId: "sess-1",
+          startMs: 1_700_000_050_000,
+          traceId: "trace-1",
+          spanId: "span-1",
+          method: "GET",
+          urlFull: "https://api.example.com/orders",
+          statusCode: 500,
+          durationNs: "12000000",
+        },
+      }),
+    ]);
+    renderRum("/rum/errors?app=storefront-web");
+
+    expect(await screen.findByText(/TypeError/)).toBeInTheDocument();
+    expect(await screen.findByText("new in 2026.09.26-3")).toBeInTheDocument();
+    expect(await screen.findByText("backend cause")).toBeInTheDocument();
+  });
+
+  it("writes ?errgroup= when a row is picked", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(
+      rumErrorGroupsApi.fetchRumErrorGroupsWithBackendCause,
+    ).mockResolvedValue([errorGroupRow()]);
+    renderRum("/rum/errors?app=storefront-web");
+
+    const user = userEvent.setup();
+    await user.click(await screen.findByRole("button", { name: /TypeError/ }));
+
+    await waitFor(() => expect(window.location.search).toContain("errgroup="));
   });
 });
 

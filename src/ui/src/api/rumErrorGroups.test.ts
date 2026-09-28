@@ -4,9 +4,11 @@ import {
   BACKEND_CAUSE_WINDOW_MS,
   buildBackendCauseRequestsDoc,
   buildRumErrorGroupsDoc,
+  errorGroupKey,
   errorGroupsFromResponse,
   failedRequestsFromResponse,
   joinBackendCause,
+  toErrorsPageGroup,
   type RumErrorGroup,
   type RumFailedRequest,
 } from "./rumErrorGroups";
@@ -227,20 +229,20 @@ describe("failedRequestsFromResponse", () => {
   });
 });
 
-describe("joinBackendCause", () => {
-  const group: RumErrorGroup = {
-    exceptionType: "TypeError",
-    exceptionMessage: null,
-    escaped: null,
-    count: 3,
-    firstMs: 1_000_000,
-    lastMs: 1_010_000,
-    lastSessionId: "session-1",
-    users: 1,
-    sessions: 1,
-    newInCurrentRelease: undefined,
-  };
+const group: RumErrorGroup = {
+  exceptionType: "TypeError",
+  exceptionMessage: null,
+  escaped: null,
+  count: 3,
+  firstMs: 1_000_000,
+  lastMs: 1_010_000,
+  lastSessionId: "session-1",
+  users: 1,
+  sessions: 1,
+  newInCurrentRelease: undefined,
+};
 
+describe("joinBackendCause", () => {
   function request(
     overrides: Partial<RumFailedRequest> = {},
   ): RumFailedRequest {
@@ -294,5 +296,51 @@ describe("joinBackendCause", () => {
       [request()],
     );
     expect(joined!.backendCause).toBeUndefined();
+  });
+});
+
+describe("errorGroupKey", () => {
+  it("is stable for the same (type, message, escaped) and distinct otherwise", () => {
+    const a: RumErrorGroup = { ...group, exceptionMessage: "boom" };
+    const b: RumErrorGroup = { ...group, exceptionMessage: "boom" };
+    const c: RumErrorGroup = { ...group, exceptionMessage: "other" };
+    expect(errorGroupKey(a)).toBe(errorGroupKey(b));
+    expect(errorGroupKey(a)).not.toBe(errorGroupKey(c));
+  });
+
+  it("is stable for a group with no message or escaped value", () => {
+    const a: RumErrorGroup = {
+      ...group,
+      exceptionMessage: null,
+      escaped: null,
+    };
+    const b: RumErrorGroup = {
+      ...group,
+      exceptionMessage: null,
+      escaped: null,
+    };
+    expect(errorGroupKey(a)).toBe(errorGroupKey(b));
+    expect(errorGroupKey(a)).not.toBe(
+      errorGroupKey({ ...a, exceptionMessage: "boom" }),
+    );
+  });
+});
+
+describe("toErrorsPageGroup", () => {
+  it("adapts a RUM group into api/errors.ts's ErrorGroup shape", () => {
+    const adapted = toErrorsPageGroup(
+      { ...group, exceptionMessage: "boom" },
+      "storefront-web",
+    );
+    expect(adapted).toEqual({
+      source: "logs",
+      exceptionType: "TypeError",
+      exceptionMessage: "boom",
+      serviceName: "storefront-web",
+      escaped: null,
+      count: 3,
+      firstNs: "1000000000000",
+      lastNs: "1010000000000",
+    });
   });
 });

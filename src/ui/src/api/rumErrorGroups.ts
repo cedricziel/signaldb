@@ -29,8 +29,10 @@ import {
   runIrQuery,
   type IrRow,
 } from "./queryIr";
-import { nanosToMs, type ResolvedRange } from "../lib/time";
+import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
 import { serviceWhere } from "./rum";
+import { compositeKey } from "../lib/traceGroups";
+import type { ErrorGroup } from "./errors";
 
 /** Groups shown before the list would need its own truncation notice. */
 const GROUP_LIMIT = 200;
@@ -169,6 +171,41 @@ export async function fetchRumErrorGroups(
   return errorGroupsFromResponse(
     await runIrQuery(buildRumErrorGroupsDoc(app, range, currentVersion)),
   );
+}
+
+/** A stable, URL-safe identity for a group — the same `compositeKey`
+ * encoding the catalog and trace grouping already use for a multi-field
+ * selection in one search param (`?errgroup=`). */
+export function errorGroupKey(
+  group: Pick<RumErrorGroup, "exceptionType" | "exceptionMessage" | "escaped">,
+): string {
+  return compositeKey([
+    group.exceptionType,
+    group.exceptionMessage,
+    group.escaped,
+  ]);
+}
+
+/** Adapts a RUM group to `api/errors.ts`'s `ErrorGroup` shape so the Errors
+ * tab's detail panel can reuse that module's already-shipped occurrences and
+ * volume queries instead of re-implementing them — the two only disagree on
+ * ns-vs-ms timestamps and on always being a `logs` group here (RUM
+ * exceptions are logs, not traced span events — see `api/rum.ts`'s module
+ * doc). */
+export function toErrorsPageGroup(
+  group: RumErrorGroup,
+  app: string,
+): ErrorGroup {
+  return {
+    source: "logs",
+    exceptionType: group.exceptionType,
+    exceptionMessage: group.exceptionMessage,
+    serviceName: app,
+    escaped: group.escaped,
+    count: group.count,
+    firstNs: msToNanos(group.firstMs),
+    lastNs: msToNanos(group.lastMs),
+  };
 }
 
 // ---- Backend cause: one batched read over every listed group's session --

@@ -1,6 +1,5 @@
 // The Real users page (`/rum/{tab}`): an app switcher, a tab strip, and one
-// tab body per selected tab. Sessions and Errors are later groups (tasks.md
-// groups 3-4) and are not rendered as placeholders here.
+// tab body per selected tab.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { rangeScopeKey, resolveRange } from "../../lib/time";
@@ -11,6 +10,7 @@ import { NavIcon } from "../shell/NavIcon";
 import { useRumApps } from "./useRumData";
 import type { RumApp } from "../../api/rum";
 import { RUM_TABS, type RumTab } from "./rumModel";
+import { ErrorsTab } from "./ErrorsTab";
 import { InteractionsTab } from "./InteractionsTab";
 import { NetworkTab } from "./NetworkTab";
 import { OverviewTab } from "./OverviewTab";
@@ -148,13 +148,24 @@ export function RealUsersView({
             session={state.rumSession}
             onSelectSession={(session) => update({ rumSession: session })}
           />
+        ) : tab === "errors" ? (
+          <ErrorsTab
+            scope={scope}
+            currentVersion={current?.version ?? null}
+            selected={state.rumErrorGroup}
+            onSelectGroup={(groupKey) => update({ rumErrorGroup: groupKey })}
+          />
         ) : (
           <OverviewTab
             scope={scope}
+            currentVersion={current?.version ?? null}
             onOpenSetup={() => onTabChange("setup")}
             onOpenNetwork={() => onTabChange("network")}
             onOpenPages={(route) =>
               onTabChangeWith("pages", { rumRoute: route })
+            }
+            onOpenErrors={(groupKey) =>
+              onTabChangeWith("errors", { rumErrorGroup: groupKey })
             }
           />
         )}
