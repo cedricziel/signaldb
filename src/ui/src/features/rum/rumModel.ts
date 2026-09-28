@@ -8,6 +8,7 @@
  * KPI change indicator itself is `lib/relChange.ts`, shared with
  * `features/overview`.
  */
+import type { SessionEvent, SessionLane } from "../../api/rumSessionDetail";
 
 /** `browser.web_vital.name` values, lowercase as the SDK emits them. */
 export type VitalName = "lcp" | "inp" | "cls" | "fcp" | "ttfb";
@@ -405,6 +406,54 @@ export function loadBreakdownPhases(p75: NavTimingP75): LoadPhase[] {
       ? []
       : [{ label, ms: Math.max(0, end - start) }],
   );
+}
+
+// ---- Sessions: detail timeline event labels ---------------------------
+
+/** Display name per lane, in the spec's own order — the timeline's lane
+ * headers and the session-detail event list both use this. */
+export const SESSION_LANE_LABELS: Record<SessionLane, string> = {
+  views: "Views",
+  actions: "Actions",
+  network: "Network",
+  perf: "Perf",
+  errors: "Errors",
+  logs: "Logs",
+};
+
+export const SESSION_LANES: readonly SessionLane[] = [
+  "views",
+  "actions",
+  "network",
+  "perf",
+  "errors",
+  "logs",
+];
+
+/** The event list's one-line description for a session timeline event —
+ * shared by the ordered list and a lane mark's hover title. */
+export function sessionEventLabel(event: SessionEvent): string {
+  if (event.kind === "span") {
+    const status =
+      event.httpStatusCode !== null ? ` → ${event.httpStatusCode}` : "";
+    return `${event.httpMethod ?? event.spanKind ?? "span"} ${event.urlFull ?? event.name}${status}`;
+  }
+  switch (event.eventName) {
+    case "browser.navigation":
+      return `Navigated to ${event.urlTemplate ?? event.urlFull ?? "—"}`;
+    case "browser.user_action.click":
+      return `Clicked ${event.cssSelector ?? event.tagName ?? "—"}`;
+    case "browser.web_vital":
+      return `${(event.vitalName ?? "vital").toUpperCase()}: ${
+        event.vitalValue !== null ? event.vitalValue : "—"
+      } (${event.vitalRating ?? "unrated"})`;
+    case "browser.navigation_timing":
+      return "Navigation timing recorded";
+    case "exception":
+      return `${event.exceptionType ?? "Exception"}: ${event.exceptionMessage ?? ""}`;
+    default:
+      return event.eventName ?? "Log record";
+  }
 }
 
 // ---- Sessions: browser detection ------------------------------------

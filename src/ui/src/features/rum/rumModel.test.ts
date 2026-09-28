@@ -13,6 +13,7 @@ import {
   resolveRoute,
   RUM_TABS,
   rumTabFromParam,
+  sessionEventLabel,
   splitKpiSeries,
   splitTracedShare,
   urlTemplate,
@@ -20,6 +21,7 @@ import {
   vitalShares,
   vitalThresholdBound,
 } from "./rumModel";
+import type { SessionEvent } from "../../api/rumSessionDetail";
 
 describe("rateVital", () => {
   it("rates LCP against the Web Vitals thresholds (ms)", () => {
@@ -407,5 +409,73 @@ describe("parseBrowserFromUserAgent", () => {
   it("returns null for a missing or unrecognized UA", () => {
     expect(parseBrowserFromUserAgent(null)).toBeNull();
     expect(parseBrowserFromUserAgent("SomeBot/1.0")).toBeNull();
+  });
+});
+
+describe("sessionEventLabel", () => {
+  it("labels a client span with its method, URL and status", () => {
+    const event: SessionEvent = {
+      kind: "span",
+      tsNs: "1",
+      lane: "errors",
+      traceId: "t1",
+      spanId: "s1",
+      parentSpanId: null,
+      name: "POST",
+      spanKind: "Client",
+      serviceName: "storefront-web",
+      durationNs: "1000000",
+      isError: true,
+      httpMethod: "POST",
+      urlFull: "https://api.example.com/checkout",
+      httpStatusCode: 502,
+    };
+    expect(sessionEventLabel(event)).toBe(
+      "POST https://api.example.com/checkout → 502",
+    );
+  });
+
+  it("labels a navigation log event by its route", () => {
+    const event: SessionEvent = {
+      kind: "log",
+      tsNs: "1",
+      lane: "views",
+      eventName: "browser.navigation",
+      traceId: null,
+      urlTemplate: "/checkout",
+      urlFull: null,
+      vitalName: null,
+      vitalRating: null,
+      vitalValue: null,
+      cssSelector: null,
+      tagName: null,
+      exceptionType: null,
+      exceptionMessage: null,
+      exceptionStacktrace: null,
+    };
+    expect(sessionEventLabel(event)).toBe("Navigated to /checkout");
+  });
+
+  it("labels an exception log event with its type and message", () => {
+    const event: SessionEvent = {
+      kind: "log",
+      tsNs: "1",
+      lane: "errors",
+      eventName: "exception",
+      traceId: null,
+      urlTemplate: null,
+      urlFull: null,
+      vitalName: null,
+      vitalRating: null,
+      vitalValue: null,
+      cssSelector: null,
+      tagName: null,
+      exceptionType: "TypeError",
+      exceptionMessage: "Cannot read properties of undefined",
+      exceptionStacktrace: null,
+    };
+    expect(sessionEventLabel(event)).toBe(
+      "TypeError: Cannot read properties of undefined",
+    );
   });
 });
