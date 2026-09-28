@@ -286,8 +286,8 @@ the window. The app switcher lists every such app, busiest first, and
 defaults to the busiest; picking one writes `?app=` and keeps the
 current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
-the **Overview**, **Pages**, **Network** and **Setup** tabs; Sessions,
-Errors and Interactions follow in later changes and are not shown as
+the **Overview**, **Pages**, **Network**, **Interactions** and **Setup**
+tabs; Sessions and Errors follow in later changes and are not shown as
 placeholders.
 
 - **Overview.** Sessions, users, sessions-with-errors and traced requests
@@ -338,6 +338,13 @@ placeholders.
   endpoint itself are marked "SDK export" rather than counted there. A **Resources** table
   summarises `browser.resource_timing` by initiator type: count, transfer
   size, p75 duration and the largest transfer.
+- **Interactions.** `browser.user_action.click` records grouped by target
+  (`browser.css_selector`, showing its last few path segments — the full
+  selector is in the row's title — or `browser.tag_name` when no selector
+  was captured) and page, with a click count and a bar of that page's own
+  INP p75 (joined from the Pages tab's data, not a second read). Rows link
+  toward the Sessions tab; until Sessions ships, that link lands back on
+  Overview.
 - **Setup.** Copyable snippets for instrumenting a browser app with the
   upstream OpenTelemetry SDK: install, initialize with the app's
   `service.name`, and export to an OpenTelemetry Collector or the app's own

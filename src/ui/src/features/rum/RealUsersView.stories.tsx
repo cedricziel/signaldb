@@ -241,6 +241,25 @@ function routeFilterOf(
   return undefined;
 }
 
+/** `[template, full, css_selector, tag_name, n]` for the Interactions tab. */
+const INTERACTION_ROWS: (string | number | null)[][] = [
+  [
+    ORDERS_ROUTE,
+    ORDERS_URLS[0]!,
+    "html > body > div.app > div.product > button.buy",
+    "button",
+    812,
+  ],
+  [ORDERS_ROUTE, ORDERS_URLS[0]!, null, "a", 340],
+  [
+    CHECKOUT_ROUTE,
+    CHECKOUT_URL,
+    "html > body > form > button.submit",
+    "button",
+    640,
+  ],
+];
+
 function eventNameOf(pipe: NonNullable<IrDoc["pipeline"]>): string | undefined {
   for (const stage of pipe) {
     if (
@@ -408,6 +427,9 @@ function singleDocResponse(b: IrDoc): unknown {
           ]),
         ),
       };
+    }
+    if (by.length === 4 && eventName === "browser.user_action.click") {
+      return { result: "table", rows: INTERACTION_ROWS };
     }
   }
 
@@ -624,4 +646,8 @@ export const PagesRouteDetail: Story = {
       path={`/rum/pages?app=storefront-web&route=${encodeURIComponent(ORDERS_ROUTE)}`}
     />
   ),
+};
+
+export const Interactions: Story = {
+  render: () => <RealUsersPage path="/rum/interactions?app=storefront-web" />,
 };

@@ -1592,4 +1592,84 @@ export async function fetchBackendCalls(
   );
 }
 
+// ---- Interactions: clicks by target, joined to page INP -----------------
+//
+// One read: `browser.user_action.click` grouped by (target, page) — the
+// target is `browser.css_selector` when present, else `browser.tag_name`
+// (design.md decision 3a). The per-page INP p75 used for each row's bar
+// comes from `fetchPages`'s own vitals, joined client-side — no second
+// read.
+
+export interface RumInteractionRow {
+  target: string;
+  route: string | null;
+  clicks: number;
+}
+
+function buildInteractionsDoc(
+  app: string,
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      {
+        where: {
+          field: "event_name",
+          op: "eq",
+          value: "browser.user_action.click",
+        },
+      },
+      {
+        aggregate: {
+          by: [
+            "url.template",
+            "url.full",
+            "browser.css_selector",
+            "browser.tag_name",
+          ],
+          aggs: [{ fn: "count", as: "n" }],
+        },
+      },
+      { order: [{ of: "n", dir: "desc" }] },
+      { limit: PAGE_GROUP_LIMIT },
+    ],
+  };
+}
+
+export function interactionsFromResponse(
+  res: QueryIrResponse,
+): RumInteractionRow[] {
+  const byKey = new Map<string, RumInteractionRow>();
+  for (const row of res.rows ?? []) {
+    const [template, full, selector, tag, n] = row as [
+      string | null,
+      string | null,
+      string | null,
+      string | null,
+      number,
+    ];
+    const target = selector || tag || "unknown";
+    const route = resolveRoute(template, full);
+    const key = `${route ?? ""}\u0000${target}`;
+    const entry = byKey.get(key) ?? { target, route, clicks: 0 };
+    entry.clicks += typeof n === "number" ? n : 0;
+    byKey.set(key, entry);
+  }
+  return Array.from(byKey.values()).sort((a, b) => b.clicks - a.clicks);
+}
+
+export async function fetchInteractions(
+  app: string,
+  range: ResolvedRange,
+): Promise<RumInteractionRow[]> {
+  return interactionsFromResponse(
+    await runIrQuery(buildInteractionsDoc(app, range)),
+  );
+}
+
 export type { VitalName, VitalRating };
