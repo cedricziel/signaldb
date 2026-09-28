@@ -6,6 +6,7 @@ sources:
   - src/ui/src/api/evals.ts
   - src/ui/src/features/evals/**
   - src/common/src/evals/**
+  - src/acceptor/src/handler/otlp_grpc.rs
   - src/router/src/endpoints/evals.rs
   - src/signaldb-cli/src/commands/evals.rs
   - openspec/changes/agent-offline-evals/**
@@ -53,10 +54,11 @@ carrying the trace id and span id of the span it scores:
 The `signaldb.eval.*` attributes are SignalDB's own: the OTel conventions
 score single responses and have no notion of runs or eval sets yet.
 
-Why a log record and not a span event? Judges usually run after the agent
-span has ended, when events can no longer be added to it; a log record with
-explicit trace context can be sent any time, and several evaluators scoring
-one span stay separate results.
+Why a log record? Judges usually run after the agent span has ended, when
+events can no longer be added to it; a log record with explicit trace
+context can be sent any time, and several evaluators scoring one span stay
+separate results. A harness that scores while the span is still open can
+send span events instead; see [Results as span events](#results-as-span-events).
 
 With the OpenTelemetry Python SDK (a release whose `LogRecord` takes `event_name`):
 
@@ -91,6 +93,41 @@ Export logs to SignalDB's OTLP endpoint as described in
 whole-run judgements (correctness, trajectory) and individual
 `execute_tool` or `chat` spans for per-step checks (valid tool arguments,
 toxicity) — the case page shows each result on the span it scored.
+
+### Results as span events
+
+The GenAI conventions also allow a result as a span event on the span it
+scores. SignalDB accepts that form: when a trace export carries a span
+event named `gen_ai.evaluation.result`, the acceptor also stores it as one
+log record per event, with the event's time and attributes, the span's
+trace id and span id, and the span's resource and scope. The span itself is
+stored unchanged. These results appear on the same pages and in the same
+`logs` queries as ones sent as log records.
+
+```python
+from opentelemetry import trace
+
+span = trace.get_current_span()  # the invoke_agent span, still open
+span.add_event(
+    "gen_ai.evaluation.result",
+    attributes={
+        "gen_ai.evaluation.name": "Correctness",
+        "gen_ai.evaluation.score.value": 0.92,
+        "signaldb.eval.run_id": RUN_ID,
+        "signaldb.eval.set": "triage-golden-200",
+        "signaldb.eval.case_id": case_id,
+    },
+)
+```
+
+If the event has no `gen_ai.agent.name` or `gen_ai.agent.version`, the
+record takes it from the span's attributes. A value on the event wins.
+
+The record goes through the tenant's log processors, not its trace
+processors, just like a log record you send. If the log write fails, the
+trace export still succeeds: the span is kept and the acceptor logs a
+warning, but that result is not stored. A resent trace export does not
+store its results twice.
 
 ## How results are read
 
@@ -344,5 +381,5 @@ reference answers) per tenant and dataset, behind an HTTP API. See
 
 ## Coming next
 
-Eval sets and the Upload results dialog in the UI, and accepting results
-sent as span events. See the `agent-offline-evals` OpenSpec change.
+Eval sets and the Upload results dialog in the UI, and MCP tools for runs
+and comparisons. See the `agent-offline-evals` OpenSpec change.

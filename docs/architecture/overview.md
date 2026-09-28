@@ -182,6 +182,7 @@ flowchart LR
   - Metrics: 5000 entries, 10s flush
 - Converts OTLP protobuf to Arrow RecordBatches using `FlightSchemas`
 - Discovers Writers via `Storage` capability and sends data via Flight `do_put`
+- Fans each `gen_ai.evaluation.result` span event out into a log record (`common::evals::span_events`) written through the log handler after the trace batch is durable, so span-event eval results land in `logs` like OTLP ones; a failed log write is logged and does not fail the trace export ([Evaluating AI agents](../users/evaluations.md#results-as-span-events))
 
 ### Writer
 

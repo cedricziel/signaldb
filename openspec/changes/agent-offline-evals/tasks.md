@@ -48,8 +48,8 @@
 
 ## 7. Span-event results
 
-- [ ] 7.1 Acceptor test: a `gen_ai.evaluation.result` span event becomes a log record with the span's trace context (`cargo test -p acceptor`).
-- [ ] 7.2 Fan-out in the acceptor's trace ingest path.
+- [x] 7.1 Acceptor test: a `gen_ai.evaluation.result` span event becomes a log record with the span's trace context (`cargo test -p acceptor`).
+- [x] 7.2 Fan-out in the acceptor's trace ingest path.
 
 ## 8. Surfaces
 

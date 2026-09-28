@@ -77,6 +77,7 @@ This is the shared foundation. Key modules:
 | `eval_sets`                | `src/common/src/eval_sets/mod.rs`     | `eval_sets`/`eval_cases` catalog CRUD for offline agent evals, scoped per tenant + dataset; `evals:read/write` scopes live in `auth`                                              |
 | `evals`                    | `src/common/src/evals.rs`             | `gen_ai.evaluation.result` / GenAI span attribute names and the eval pass rule (design D3), mirroring the UI's `evalModel.ts`                                                     |
 | `evals/upload.rs`          | `src/common/src/evals/upload.rs`      | Eval results file (JSONL/CSV) parser with whole-file row errors, per-evaluator summary, conversion to `gen_ai.evaluation.result` OTLP log records                                 |
+| `evals/span_events.rs`     | `src/common/src/evals/span_events.rs` | `gen_ai.evaluation.result` span events → OTLP log records (span trace context, agent identity from the span); the acceptor's trace handler writes them through the log handler    |
 
 ## The `writer` Crate
 
