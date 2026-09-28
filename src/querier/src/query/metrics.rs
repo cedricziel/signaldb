@@ -44,6 +44,7 @@ use super::{
         LABEL_SCAN_LIMIT, column, distinct_non_empty, optional_table, string_column, time_window,
     },
 };
+use common::iceberg::schemas::MetricsLayout;
 use common::schema::materialized_column_name;
 
 /// The metrics tables a PromQL query scans (gauge + sum cover counters
@@ -92,23 +93,19 @@ fn check_group_cardinality(group_count: usize, limit: usize) -> Result<(), Queri
 }
 
 /// Executes PromQL queries against the metrics tables.
+#[derive(Clone)]
 pub struct MetricsService {
     session_context: Arc<SessionContext>,
+    metrics_layout: MetricsLayout,
 }
 
+// `SessionContext` isn't `Debug`, so `#[derive(Debug)]` doesn't apply here.
 impl Debug for MetricsService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MetricsService")
             .field("session_context", &"set")
+            .field("metrics_layout", &self.metrics_layout)
             .finish()
-    }
-}
-
-impl Clone for MetricsService {
-    fn clone(&self) -> Self {
-        Self {
-            session_context: Arc::clone(&self.session_context),
-        }
     }
 }
 
@@ -116,6 +113,7 @@ impl MetricsService {
     pub fn new(session_context: SessionContext) -> Self {
         Self {
             session_context: Arc::new(session_context),
+            metrics_layout: MetricsLayout::current(),
         }
     }
 
@@ -1171,14 +1169,7 @@ impl MetricsService {
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         // No histogram table yet → empty result. A catalog failure still errors.
-        let Some(df) = optional_table(
-            &self.session_context,
-            tenant_slug,
-            dataset_slug,
-            "metrics_histogram",
-        )
-        .await?
-        else {
+        let Some(df) = self.histogram_table(tenant_slug, dataset_slug).await? else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1338,14 +1329,7 @@ impl MetricsService {
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         // No histogram table yet → empty result. A catalog failure still errors.
-        let Some(df) = optional_table(
-            &self.session_context,
-            tenant_slug,
-            dataset_slug,
-            "metrics_histogram",
-        )
-        .await?
-        else {
+        let Some(df) = self.histogram_table(tenant_slug, dataset_slug).await? else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1551,6 +1535,11 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Option<DataFrame>, QuerierError> {
+        if self.metrics_layout == MetricsLayout::Wide {
+            return self
+                .scan_wide_metrics(tenant_slug, dataset_slug, &["gauge", "sum"])
+                .await;
+        }
         let mut tables: Vec<DataFrame> = Vec::with_capacity(METRIC_TABLES.len());
         for table in METRIC_TABLES {
             // A missing table (e.g. no sum metrics ingested yet) is not an
@@ -1590,6 +1579,51 @@ impl MetricsService {
             });
         }
         Ok(union)
+    }
+
+    /// Scans the wide `metrics` table (D10) filtered to `metric_type IN
+    /// (metric_types)`, so a table also holding other metric types (summary,
+    /// exponential histogram) never leaks into a gauge/sum or histogram
+    /// read. `None` when the dataset has no `metrics` table.
+    async fn scan_wide_metrics(
+        &self,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        metric_types: &[&str],
+    ) -> Result<Option<DataFrame>, QuerierError> {
+        let Some(df) =
+            optional_table(&self.session_context, tenant_slug, dataset_slug, "metrics").await?
+        else {
+            return Ok(None);
+        };
+        let type_list = metric_types.iter().map(|t| lit(*t)).collect();
+        Ok(Some(
+            df.filter(col("metric_type").in_list(type_list, false))
+                .map_err(QuerierError::QueryFailed)?,
+        ))
+    }
+
+    /// Resolves the histogram source: the legacy `metrics_histogram` table,
+    /// or the wide `metrics` table filtered to `metric_type = 'histogram'` —
+    /// selected by [`Self::metrics_layout`]. `None` when the dataset holds
+    /// neither.
+    async fn histogram_table(
+        &self,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Option<DataFrame>, QuerierError> {
+        if self.metrics_layout == MetricsLayout::Wide {
+            return self
+                .scan_wide_metrics(tenant_slug, dataset_slug, &["histogram"])
+                .await;
+        }
+        optional_table(
+            &self.session_context,
+            tenant_slug,
+            dataset_slug,
+            "metrics_histogram",
+        )
+        .await
     }
 
     /// List the Prometheus label names present in the window: the
@@ -3860,6 +3894,241 @@ mod tests {
         let service = service_with_data();
         let out = matrix(&service, "histogram_quantile(0.9, latency)", 1000).await;
         assert!(out.is_empty());
+    }
+
+    /// The wide `metrics` table (D10) counterpart of [`service_with_data`]'s
+    /// three gauge samples, built via [`common::testing::to_wide`] — plus, under
+    /// [`MetricsLayout::Wide`] only, an unrelated `summary`-typed row
+    /// sharing `reqs`'s `metric_name` so only `metric_type` filtering (not
+    /// `metric_name`) can exclude it from a gauge/sum scan.
+    fn gauge_service_for_layout(layout: MetricsLayout) -> MetricsService {
+        let fields: Vec<Field> = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, true),
+            Field::new(LOG_ATTRIBUTES, DataType::Utf8, true),
+            Field::new(RESOURCE_ATTRIBUTES, DataType::Utf8, true),
+        ];
+        let columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            Arc::new(StringArray::from(vec!["api", "api", "web"])),
+            Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
+            Arc::new(Float64Array::from(vec![1.0, 3.0, 5.0])),
+            Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+            Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+        ];
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+
+        let ctx = SessionContext::new();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        match layout {
+            MetricsLayout::Legacy => {
+                let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+                schema_provider
+                    .register_table("metrics_gauge".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+            MetricsLayout::Wide => {
+                let leak = RecordBatch::try_new(
+                    schema,
+                    vec![
+                        Arc::new(TimestampNanosecondArray::from(vec![100])),
+                        Arc::new(StringArray::from(vec!["leak"])),
+                        Arc::new(StringArray::from(vec!["reqs"])),
+                        Arc::new(Float64Array::from(vec![999.0])),
+                        Arc::new(StringArray::from(vec!["{}"])),
+                        Arc::new(StringArray::from(vec!["{}"])),
+                    ],
+                )
+                .unwrap();
+                let main = common::testing::to_wide(&batch, "gauge");
+                let leak = common::testing::to_wide(&leak, "summary");
+                let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
+                schema_provider
+                    .register_table("metrics".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+        }
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        match layout {
+            MetricsLayout::Legacy => MetricsService::new(ctx),
+            MetricsLayout::Wide => MetricsService {
+                session_context: Arc::new(ctx),
+                metrics_layout: MetricsLayout::Wide,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn bare_selector_last_value_per_series_matches_across_layouts() {
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let service = gauge_service_for_layout(layout);
+            let out = matrix(&service, "reqs", 1000).await;
+            let api = out
+                .iter()
+                .find(|(_, s, _)| s.as_deref() == Some("api"))
+                .unwrap_or_else(|| panic!("{layout:?}: {out:?}"));
+            let web = out
+                .iter()
+                .find(|(_, s, _)| s.as_deref() == Some("web"))
+                .unwrap_or_else(|| panic!("{layout:?}: {out:?}"));
+            assert_eq!(api.2, 3.0, "{layout:?}");
+            assert_eq!(web.2, 5.0, "{layout:?}");
+            // The `summary` row must not leak into a gauge/sum scan.
+            assert!(
+                out.iter().all(|(_, s, _)| s.as_deref() != Some("leak")),
+                "{layout:?}: {out:?}"
+            );
+        }
+    }
+
+    /// [`service_with_histogram`]'s merged-series `latency` data, built via
+    /// [`common::testing::to_wide`], plus a `latency_inf` series whose top `explicit_bounds`
+    /// entry is the JSON `"+Inf"` sentinel (a real `f64::INFINITY` once
+    /// converted to the wide table's typed list columns) and — under
+    /// [`MetricsLayout::Wide`] only — an unrelated `summary`-typed row
+    /// sharing `latency`'s `metric_name` so only `metric_type` filtering can
+    /// exclude it.
+    fn histogram_service_for_layout(layout: MetricsLayout) -> MetricsService {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("count", DataType::Int64, false),
+            Field::new("sum", DataType::Float64, true),
+            Field::new("bucket_counts", DataType::Utf8, true),
+            Field::new("explicit_bounds", DataType::Utf8, true),
+            Field::new("attributes", DataType::Utf8, true),
+            Field::new("resource_attributes", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 0])),
+                Arc::new(StringArray::from(vec!["api", "api", "api"])),
+                Arc::new(StringArray::from(vec!["latency", "latency", "latency_inf"])),
+                Arc::new(datafusion::arrow::array::Int64Array::from(vec![10, 10, 10])),
+                Arc::new(Float64Array::from(vec![55.0, 55.0, 55.0])),
+                Arc::new(StringArray::from(vec![
+                    "[1,2,3,4]",
+                    "[2,4,6,8]",
+                    "[1,2,3,4]",
+                ])),
+                Arc::new(StringArray::from(vec![
+                    "[1,2,4]",
+                    "[1,2,4]",
+                    r#"[1,2,"+Inf"]"#,
+                ])),
+                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+                Arc::new(StringArray::from(vec!["{}", "{}", "{}"])),
+            ],
+        )
+        .unwrap();
+
+        let ctx = SessionContext::new();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        match layout {
+            MetricsLayout::Legacy => {
+                let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+                schema_provider
+                    .register_table("metrics_histogram".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+            MetricsLayout::Wide => {
+                let leak = RecordBatch::try_new(
+                    schema.clone(),
+                    vec![
+                        Arc::new(TimestampNanosecondArray::from(vec![100])),
+                        Arc::new(StringArray::from(vec!["leak"])),
+                        Arc::new(StringArray::from(vec!["latency"])),
+                        Arc::new(datafusion::arrow::array::Int64Array::from(vec![10])),
+                        Arc::new(Float64Array::from(vec![55.0])),
+                        Arc::new(StringArray::from(vec!["[100,100,100,100]"])),
+                        Arc::new(StringArray::from(vec!["[1,2,4]"])),
+                        Arc::new(StringArray::from(vec!["{}"])),
+                        Arc::new(StringArray::from(vec!["{}"])),
+                    ],
+                )
+                .unwrap();
+                let main = common::testing::to_wide(&batch, "histogram");
+                let leak = common::testing::to_wide(&leak, "summary");
+                let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
+                schema_provider
+                    .register_table("metrics".to_string(), Arc::new(table))
+                    .unwrap();
+            }
+        }
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        match layout {
+            MetricsLayout::Legacy => MetricsService::new(ctx),
+            MetricsLayout::Wide => MetricsService {
+                session_context: Arc::new(ctx),
+                metrics_layout: MetricsLayout::Wide,
+            },
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_instant_mode_matches_across_layouts() {
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let service = histogram_service_for_layout(layout);
+            let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
+            assert_eq!(out.len(), 1, "{layout:?}: {out:?}");
+            let (name, svc, value) = &out[0];
+            assert_eq!(name, "latency", "{layout:?}");
+            assert_eq!(svc.as_deref(), Some("api"), "{layout:?}");
+            assert!(
+                (value - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+                "{layout:?}: got {value}"
+            );
+            // The `summary` row must not leak into a histogram scan.
+            assert!(
+                out.iter().all(|(_, s, _)| s.as_deref() != Some("leak")),
+                "{layout:?}: {out:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_rate_mode_matches_across_layouts() {
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let service = histogram_service_for_layout(layout);
+            let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
+            assert_eq!(out.len(), 1, "{layout:?}");
+            assert!(
+                (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+                "{layout:?}: got {}",
+                out[0].2
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_with_real_infinite_bound_clamps_to_infinity() {
+        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
+            let service = histogram_service_for_layout(layout);
+            // rank = 0.99 * 10 = 9.9, landing in the open `+Inf` bucket →
+            // clamps to the top bound — a real `f64::INFINITY` under Wide,
+            // the legacy JSON `"+Inf"` sentinel parsed to the same value
+            // under Legacy.
+            let out = matrix(&service, "histogram_quantile(0.99, latency_inf)", 1000).await;
+            assert_eq!(out.len(), 1, "{layout:?}: {out:?}");
+            assert_eq!(out[0].2, f64::INFINITY, "{layout:?}");
+        }
     }
 
     #[tokio::test]
