@@ -566,6 +566,18 @@ impl IcebergTableWriter {
     /// with it (W2). The remaining failure modes here (catalog/object-store
     /// I/O) are whole-call: they apply equally to every survivor, so an
     /// `Err` still aborts everything, exactly as before.
+    pub async fn append_batches_with_marker(
+        &mut self,
+        wal_writer_id: &str,
+        entries: Vec<(uuid::Uuid, RecordBatch)>,
+    ) -> Result<CommitOutcome> {
+        self.append_batches_with_marker_carrying(wal_writer_id, entries, &[])
+            .await
+    }
+
+    /// [`Self::append_batches_with_marker`], with `carried` ids (already
+    /// committed to this table, not re-sent in `entries`) kept in the marker
+    /// it writes. They are not part of the returned [`CommitOutcome`].
     #[tracing::instrument(
         skip_all,
         fields(
@@ -574,10 +586,11 @@ impl IcebergTableWriter {
             signaldb.wal.entry_count = entries.len() as i64
         )
     )]
-    pub async fn append_batches_with_marker(
+    pub async fn append_batches_with_marker_carrying(
         &mut self,
         wal_writer_id: &str,
         entries: Vec<(uuid::Uuid, RecordBatch)>,
+        carried: &[uuid::Uuid],
     ) -> Result<CommitOutcome> {
         // The Parquet writer requires batches in the table's exact Arrow
         // schema (derived from the Iceberg schema, e.g. microsecond
@@ -749,8 +762,9 @@ impl IcebergTableWriter {
         }
 
         let marker_key = wal_marker_key(wal_writer_id);
-        let marker_value = encode_marker_ids(&committed_ids);
-        let id_set: HashSet<uuid::Uuid> = committed_ids.iter().copied().collect();
+        let marker_ids: Vec<uuid::Uuid> = committed_ids.iter().chain(carried).copied().collect();
+        let marker_value = encode_marker_ids(&marker_ids);
+        let id_set: HashSet<uuid::Uuid> = marker_ids.into_iter().collect();
 
         let mut attempt = 0;
         let mut delay = self.retry_config.initial_delay;

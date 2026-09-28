@@ -384,6 +384,11 @@ pub struct WalProcessor {
     /// (W9) can be exercised without a real stalled catalog/object-store call.
     #[cfg(test)]
     injected_commit_delay: tokio::sync::Mutex<Option<Duration>>,
+    /// Test-only fault injector: when set, every exemplar batch loses its
+    /// required `series_id` column before the `metric_exemplars` commit, so
+    /// that commit rejects the entry the way it would any malformed batch.
+    #[cfg(test)]
+    injected_exemplar_rejection: std::sync::atomic::AtomicBool,
 }
 
 impl WalProcessor {
@@ -419,6 +424,8 @@ impl WalProcessor {
             injected_commit_failure: tokio::sync::Mutex::new(None),
             #[cfg(test)]
             injected_commit_delay: tokio::sync::Mutex::new(None),
+            #[cfg(test)]
+            injected_exemplar_rejection: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -444,6 +451,29 @@ impl WalProcessor {
     #[cfg(test)]
     async fn inject_commit_delay(&self, delay: Option<Duration>) {
         *self.injected_commit_delay.lock().await = delay;
+    }
+
+    /// See [`Self::injected_exemplar_rejection`].
+    #[cfg(test)]
+    fn poison_exemplars_if_injected(
+        &self,
+        entries: Vec<(Uuid, RecordBatch)>,
+    ) -> Vec<(Uuid, RecordBatch)> {
+        if !self
+            .injected_exemplar_rejection
+            .load(std::sync::atomic::Ordering::SeqCst)
+        {
+            return entries;
+        }
+        entries
+            .into_iter()
+            .map(|(id, mut batch)| {
+                if let Ok(index) = batch.schema().index_of("series_id") {
+                    batch.remove_column(index);
+                }
+                (id, batch)
+            })
+            .collect()
     }
 
     /// Every writer id this process owns — one per cached WAL directory.
@@ -1260,18 +1290,49 @@ impl WalProcessor {
             .load_committed_marker(wal_writer_id)
             .await
             .map_err(transient)?;
-        let remaining: Vec<(Uuid, RecordBatch)> = exemplar_entries
+        let (already_committed, remaining): (Vec<_>, Vec<_>) = exemplar_entries
             .into_iter()
-            .filter(|(id, _)| !committed.contains(id))
-            .collect();
+            .partition(|(id, _)| committed.contains(id));
         if remaining.is_empty() {
             return Ok(());
         }
+        #[cfg(test)]
+        let remaining = self.poison_exemplars_if_injected(remaining);
 
-        exemplars_writer
-            .append_batches_with_marker(wal_writer_id, remaining)
+        // Nothing marks these ids processed before this commit replaces the
+        // marker (the WAL is marked only after the metrics commit), so they
+        // must ride along in it or a replay would insert their exemplars again.
+        let carried: Vec<Uuid> = already_committed.into_iter().map(|(id, _)| id).collect();
+        let outcome = exemplars_writer
+            .append_batches_with_marker_carrying(wal_writer_id, remaining, &carried)
             .await
             .map_err(transient)?;
+
+        for (entry_id, error) in outcome.rejected {
+            common::self_monitoring::app_metrics()
+                .writer_commit_failures
+                .add(
+                    1,
+                    &[
+                        opentelemetry::KeyValue::new("signaldb.tenant.id", tenant_id.to_string()),
+                        opentelemetry::KeyValue::new(
+                            "kind",
+                            CommitFailureKind::Permanent.as_attr(),
+                        ),
+                        opentelemetry::KeyValue::new(
+                            "signaldb.table",
+                            TableSchema::MetricExemplars.table_name(),
+                        ),
+                    ],
+                );
+            tracing::warn!(
+                entry_id = %entry_id,
+                tenant_id = %tenant_id,
+                dataset_id = %dataset_id,
+                error = %error,
+                "Exemplars rejected by the metric_exemplars commit; the entry's metrics still commit without them"
+            );
+        }
 
         Ok(())
     }
@@ -3519,7 +3580,7 @@ mod tests {
     /// A wire-format (`data_json`) metrics batch with one gauge point,
     /// optionally carrying one exemplar -- the schema the acceptor produces
     /// before the wide-table transforms run.
-    fn metrics_wire_batch(with_exemplar: bool) -> RecordBatch {
+    fn metrics_wire_batch(name: &str, with_exemplar: bool) -> RecordBatch {
         use datafusion::arrow::array::{BooleanArray, Int32Array, UInt64Array};
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
 
@@ -3549,7 +3610,7 @@ mod tests {
         RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(StringArray::from(vec!["exemplar.test.metric"])),
+                Arc::new(StringArray::from(vec![name])),
                 Arc::new(StringArray::from(vec![Some("desc")])),
                 Arc::new(StringArray::from(vec![Some("1")])),
                 Arc::new(UInt64Array::from(vec![Some(1_700_000_000_000_000_000u64)])),
@@ -3609,7 +3670,8 @@ mod tests {
         );
         wal.append(
             WalOperation::WriteMetrics,
-            common::wal::record_batch_to_bytes(&metrics_wire_batch(true)).unwrap(),
+            common::wal::record_batch_to_bytes(&metrics_wire_batch("exemplar.test.metric", true))
+                .unwrap(),
             None,
         )
         .await
@@ -3698,7 +3760,8 @@ mod tests {
         );
         wal.append(
             WalOperation::WriteMetrics,
-            common::wal::record_batch_to_bytes(&metrics_wire_batch(false)).unwrap(),
+            common::wal::record_batch_to_bytes(&metrics_wire_batch("exemplar.test.metric", false))
+                .unwrap(),
             None,
         )
         .await
@@ -3752,7 +3815,8 @@ mod tests {
         );
         wal.append(
             WalOperation::WriteMetrics,
-            common::wal::record_batch_to_bytes(&metrics_wire_batch(true)).unwrap(),
+            common::wal::record_batch_to_bytes(&metrics_wire_batch("exemplar.test.metric", true))
+                .unwrap(),
             None,
         )
         .await
@@ -3828,5 +3892,197 @@ mod tests {
         .map(|b| b.num_rows())
         .sum();
         assert_eq!(metrics_row_count, 1);
+    }
+
+    /// Appends one metrics entry per name, returning each entry's id and
+    /// deserialized batch in append order.
+    async fn append_metrics_entries(
+        wal: &Arc<Wal>,
+        names: &[&str],
+        with_exemplar: bool,
+    ) -> Vec<(Uuid, RecordBatch)> {
+        for name in names {
+            wal.append(
+                WalOperation::WriteMetrics,
+                common::wal::record_batch_to_bytes(&metrics_wire_batch(name, with_exemplar))
+                    .unwrap(),
+                None,
+            )
+            .await
+            .unwrap();
+        }
+        wal.flush().await.unwrap();
+        let mut entries = Vec::new();
+        for entry in wal.get_unprocessed_entries().await.unwrap() {
+            let batch = WalProcessor::deserialize_entry_data(wal, &entry)
+                .await
+                .unwrap();
+            entries.push((entry.id, batch));
+        }
+        entries
+    }
+
+    /// Committed `metric_exemplars` row count per `metric_name`.
+    async fn exemplar_rows_per_metric(catalog_manager: &CatalogManager) -> HashMap<String, usize> {
+        let mut counts = HashMap::new();
+        for batch in scan_table_rows(
+            catalog_manager,
+            "acme",
+            "production",
+            TableSchema::MetricExemplars.table_name(),
+        )
+        .await
+        {
+            let names = batch
+                .column_by_name("metric_name")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for name in names.iter().flatten() {
+                *counts.entry(name.to_string()).or_default() += 1;
+            }
+        }
+        counts
+    }
+
+    /// A `MakeWriter` that appends every formatted log line to a shared
+    /// buffer, for asserting on what was logged.
+    #[derive(Clone, Default)]
+    struct CapturedLogs(Arc<std::sync::Mutex<Vec<u8>>>);
+
+    impl std::io::Write for CapturedLogs {
+        fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+            self.0.lock().unwrap().extend_from_slice(buf);
+            Ok(buf.len())
+        }
+        fn flush(&mut self) -> std::io::Result<()> {
+            Ok(())
+        }
+    }
+
+    impl CapturedLogs {
+        fn contents(&self) -> String {
+            String::from_utf8_lossy(&self.0.lock().unwrap()).into_owned()
+        }
+    }
+
+    /// An entry the `metric_exemplars` commit rejects must not hold back its
+    /// metrics commit, and the rejection is logged at warn with the entry id.
+    #[tokio::test]
+    async fn rejected_exemplar_entry_is_logged_and_its_metrics_still_commit() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        let entries = append_metrics_entries(&wal, &["metric.a"], true).await;
+        let entry_id = entries[0].0;
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
+            .with_type_authority(test_type_authority().await);
+        processor
+            .injected_exemplar_rejection
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+
+        let logs = CapturedLogs::default();
+        let subscriber = tracing_subscriber::fmt()
+            .with_max_level(tracing::Level::WARN)
+            .with_ansi(false)
+            .with_writer({
+                let logs = logs.clone();
+                move || logs.clone()
+            })
+            .finish();
+        {
+            let _guard = tracing::subscriber::set_default(subscriber);
+            processor
+                .process_batch_for_table(
+                    &wal,
+                    "acme",
+                    "production",
+                    TableSchema::Metrics.table_name(),
+                    entries,
+                    Vec::new(),
+                )
+                .await
+                .unwrap();
+        }
+
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+        let metrics_row_count: usize = scan_table_rows(
+            &catalog_manager,
+            "acme",
+            "production",
+            TableSchema::Metrics.table_name(),
+        )
+        .await
+        .iter()
+        .map(|b| b.num_rows())
+        .sum();
+        assert_eq!(metrics_row_count, 1);
+        assert!(exemplar_rows_per_metric(&catalog_manager).await.is_empty());
+
+        let logs = logs.contents();
+        assert!(
+            logs.lines()
+                .any(|line| line.contains("WARN") && line.contains(&entry_id.to_string())),
+            "expected a warn line naming entry {entry_id}, got:\n{logs}"
+        );
+    }
+
+    /// A chunk whose exemplar commit skips an id already in the exemplars
+    /// marker must keep that id in the marker it writes. Otherwise a crash
+    /// before the metrics commit leaves the skipped id unprotected, and the
+    /// replay inserts its exemplars a second time.
+    #[tokio::test]
+    async fn exemplar_commit_keeps_already_committed_ids_in_its_marker() {
+        let temp_dir = tempdir().unwrap();
+        let wal = Arc::new(
+            Wal::new(WalConfig::with_defaults(temp_dir.path().to_path_buf()))
+                .await
+                .unwrap(),
+        );
+        let entries = append_metrics_entries(&wal, &["metric.a", "metric.b"], true).await;
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let processor = WalProcessor::new(manager_for(&wal).await, catalog_manager.clone())
+            .with_type_authority(test_type_authority().await);
+
+        // A's exemplars landed in an earlier attempt whose metrics commit
+        // never happened.
+        processor
+            .commit_metric_exemplars_for_chunk(
+                wal.writer_id(),
+                "acme",
+                "production",
+                &entries[..1],
+                &[],
+            )
+            .await
+            .unwrap();
+        // The retry commits the chunk [A, B]'s exemplars, then crashes
+        // before the metrics commit again.
+        processor
+            .commit_metric_exemplars_for_chunk(wal.writer_id(), "acme", "production", &entries, &[])
+            .await
+            .unwrap();
+
+        processor
+            .process_batch_for_table(
+                &wal,
+                "acme",
+                "production",
+                TableSchema::Metrics.table_name(),
+                entries,
+                Vec::new(),
+            )
+            .await
+            .unwrap();
+
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+        let counts = exemplar_rows_per_metric(&catalog_manager).await;
+        assert_eq!(counts.get("metric.a"), Some(&1), "{counts:?}");
+        assert_eq!(counts.get("metric.b"), Some(&1), "{counts:?}");
     }
 }
