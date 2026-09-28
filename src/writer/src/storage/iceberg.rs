@@ -2,8 +2,8 @@ use crate::schema_transform::{
     LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg,
     transform_metrics_exponential_histogram_v1_to_iceberg, transform_metrics_gauge_v1_to_iceberg,
     transform_metrics_histogram_v1_to_iceberg, transform_metrics_sum_v1_to_iceberg,
-    transform_metrics_summary_v1_to_iceberg, transform_profiles_v1_to_iceberg,
-    transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
+    transform_metrics_summary_v1_to_iceberg, transform_metrics_to_wide,
+    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
 };
 use anyhow::{Context, Result};
 use common::CatalogManager;
@@ -373,6 +373,7 @@ impl IcebergTableWriter {
             "metrics_summary" if has_field("data_json") => {
                 transform_metrics_summary_v1_to_iceberg(batch, labels)
             }
+            "metrics" if has_field("data_json") => transform_metrics_to_wide(batch, labels),
             // Wire-format profiles carry raw OTLP "time_unix_nano"; the
             // storage schema uses computed "timestamp"/"date_day"/"hour".
             "profiles" if has_field("time_unix_nano") => {
@@ -395,7 +396,8 @@ impl IcebergTableWriter {
             | "metrics_sum"
             | "metrics_histogram"
             | "metrics_exponential_histogram"
-            | "metrics_summary" => &self.materialized.metrics,
+            | "metrics_summary"
+            | "metrics" => &self.materialized.metrics,
             _ => &[],
         }
     }

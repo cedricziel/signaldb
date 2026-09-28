@@ -1,16 +1,18 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
+use common::iceberg::schemas::TYPED_METRIC_VERSION;
 use common::schema::SCHEMA_DEFINITIONS;
 use common::schema::resource_identity::resource_identity_from_json;
 use common::schema::schema_parser::ResolvedSchema;
+use common::schema::series_id::{SeriesKey, metric_series_id};
 use datafusion::arrow::{
     array::{
         Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array,
         Int64Array, ListArray, StringArray, StructArray, TimestampNanosecondArray, UInt32Array,
         UInt64Array,
     },
-    datatypes::{DataType, Field, Schema, TimeUnit},
+    datatypes::{ArrowPrimitiveType, DataType, Field, Float64Type, Int64Type, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
 use std::collections::HashMap;
@@ -2100,6 +2102,338 @@ pub fn transform_metrics_summary_v1_to_iceberg(
     })
 }
 
+/// The Arrow schema a transform emits for `resolved`, with each typed
+/// attribute container collapsed back to one JSON-string column: placement
+/// in `storage/iceberg.rs` splits it into the typed columns at commit.
+fn create_wide_transform_schema(resolved: ResolvedSchema) -> Result<Arc<Schema>> {
+    use common::schema::schema_parser::ResolvedField;
+    use common::schema::typed_attributes;
+
+    let mut collapsed: Vec<ResolvedField> = Vec::new();
+    let mut containers_seen: Vec<&str> = Vec::new();
+    for field in &resolved.fields {
+        let container = field
+            .name
+            .strip_suffix("_residue")
+            .or_else(|| typed_attributes::canonical_of_home_column(&field.name).map(|(c, _)| c));
+        let Some(container) = container else {
+            collapsed.push(field.clone());
+            continue;
+        };
+        if containers_seen.contains(&container) {
+            continue;
+        }
+        containers_seen.push(container);
+        collapsed.push(ResolvedField {
+            name: container.to_string(),
+            field_type: "string".to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: field.field_id,
+        });
+    }
+
+    create_arrow_schema_from_resolved(&ResolvedSchema {
+        fields: collapsed,
+        ..resolved
+    })
+}
+
+fn json_array_of<T>(
+    value: Option<&serde_json::Value>,
+    decode: impl Fn(Option<&serde_json::Value>) -> Option<T>,
+) -> Option<Vec<Option<T>>> {
+    let array = value?.as_array()?;
+    Some(array.iter().map(|v| decode(Some(v))).collect())
+}
+
+#[derive(Default)]
+struct WidePointFields {
+    value: Option<f64>,
+    count: Option<i64>,
+    sum: Option<f64>,
+    min: Option<f64>,
+    max: Option<f64>,
+    explicit_bounds: Option<Vec<Option<f64>>>,
+    bucket_counts: Option<Vec<Option<i64>>>,
+    scale: Option<i32>,
+    zero_count: Option<i64>,
+    zero_threshold: Option<f64>,
+    positive_offset: Option<i32>,
+    positive_bucket_counts: Option<Vec<Option<i64>>>,
+    negative_offset: Option<i32>,
+    negative_bucket_counts: Option<Vec<Option<i64>>>,
+    quantiles: Option<Vec<Option<f64>>>,
+    quantile_values: Option<Vec<Option<f64>>>,
+    aggregation_temporality: Option<i32>,
+    is_monotonic: Option<bool>,
+}
+
+/// The wire carries temporality and monotonicity on every row; only the
+/// types OTLP defines them for keep them (temporality: sum and both
+/// histograms, monotonicity: sum).
+fn wide_point_fields(
+    metric_type: &str,
+    point: &serde_json::Value,
+    aggregation_temporality: Option<i32>,
+    is_monotonic: Option<bool>,
+) -> WidePointFields {
+    match metric_type {
+        "gauge" => WidePointFields {
+            value: Some(point_value(point)),
+            ..Default::default()
+        },
+        "sum" => WidePointFields {
+            value: Some(point_value(point)),
+            aggregation_temporality,
+            is_monotonic,
+            ..Default::default()
+        },
+        "histogram" => WidePointFields {
+            count: json_to_i64(point.get("count")),
+            sum: json_to_f64(point.get("sum")),
+            min: json_to_f64(point.get("min")),
+            max: json_to_f64(point.get("max")),
+            explicit_bounds: json_array_of(point.get("explicit_bounds"), json_to_f64),
+            bucket_counts: json_array_of(point.get("bucket_counts"), json_to_i64),
+            aggregation_temporality,
+            ..Default::default()
+        },
+        _ => WidePointFields {
+            value: json_to_f64(point.get("value")),
+            ..Default::default()
+        },
+    }
+}
+
+fn primitive_list_column<'a, T: ArrowPrimitiveType>(
+    values: impl Iterator<Item = &'a Option<Vec<Option<T::Native>>>>,
+) -> ArrayRef {
+    use datafusion::arrow::array::{ListBuilder, PrimitiveBuilder};
+    let mut builder = ListBuilder::new(PrimitiveBuilder::<T>::new());
+    for value in values {
+        match value {
+            Some(list) => {
+                builder.values().extend(list.iter().copied());
+                builder.append(true);
+            }
+            None => builder.append(false),
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+fn str_column<'a, T>(items: &'a [T], f: impl Fn(&'a T) -> Option<&'a str>) -> ArrayRef {
+    Arc::new(items.iter().map(f).collect::<StringArray>())
+}
+
+fn point_series_id(key: &SeriesKey<'_>, point: &serde_json::Value) -> String {
+    static EMPTY_ATTRS: std::sync::LazyLock<serde_json::Map<String, serde_json::Value>> =
+        std::sync::LazyLock::new(serde_json::Map::new);
+    let attrs = point
+        .get("attributes")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&EMPTY_ATTRS);
+    metric_series_id(key, attrs)
+}
+
+struct WideMetric {
+    name: String,
+    description: Option<String>,
+    unit: Option<String>,
+    metric_type: String,
+    resource: ResourceContext,
+    scope: ScopeContext,
+}
+
+impl WideMetric {
+    fn series_key(&self) -> SeriesKey<'_> {
+        SeriesKey {
+            metric_name: &self.name,
+            metric_type: &self.metric_type,
+            resource_identity: self.resource.resource_identity.as_deref(),
+            scope_name: self.scope.scope_name.as_deref(),
+            scope_version: self.scope.scope_version.as_deref(),
+        }
+    }
+}
+
+struct WidePoint {
+    metric: usize,
+    timestamp: Option<i64>,
+    start_timestamp: Option<i64>,
+    date_day: Option<i32>,
+    hour: Option<i32>,
+    series_id: String,
+    flags: Option<i32>,
+    attributes: Option<String>,
+    fields: WidePointFields,
+}
+
+static METRICS_WIDE_SCHEMA: std::sync::LazyLock<Result<Arc<Schema>, String>> =
+    std::sync::LazyLock::new(|| {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics, TYPED_METRIC_VERSION)
+            .map_err(|e| e.to_string())?;
+        create_wide_transform_schema(resolved).map_err(|e| e.to_string())
+    });
+
+/// A wire metrics batch of any mix of metric types -> one `metrics` row per
+/// data point.
+pub fn transform_metrics_to_wide(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
+    let output_schema = METRICS_WIDE_SCHEMA
+        .clone()
+        .map_err(|e| anyhow!("failed to build the metrics wide schema: {e}"))?;
+
+    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
+    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
+    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
+    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
+    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
+    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
+    let metric_type_array = get_typed_column::<StringArray>(&batch, "metric_type")?;
+    let aggregation_temporality_array =
+        get_typed_column::<Int32Array>(&batch, "aggregation_temporality")?;
+    let is_monotonic_array = get_typed_column::<BooleanArray>(&batch, "is_monotonic")?;
+
+    let mut metrics: Vec<WideMetric> = Vec::with_capacity(batch.num_rows());
+    let mut points: Vec<WidePoint> = Vec::new();
+    for row in 0..batch.num_rows() {
+        let metric = WideMetric {
+            name: string_value(name_array, row).unwrap_or_default(),
+            description: string_value(description_array, row),
+            unit: string_value(unit_array, row),
+            metric_type: string_value(metric_type_array, row).unwrap_or_default(),
+            resource: extract_resource_context(string_value_ref(resource_json_array, row)),
+            scope: extract_scope_context(string_value_ref(scope_json_array, row)),
+        };
+        let aggregation_temporality = int32_value(aggregation_temporality_array, row);
+        let is_monotonic = bool_value(is_monotonic_array, row);
+
+        for point in parse_data_points(string_value_ref(data_json_array, row)) {
+            let (timestamp, date_day, hour) =
+                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
+            let (start_timestamp, _, _) =
+                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
+            points.push(WidePoint {
+                metric: metrics.len(),
+                timestamp,
+                start_timestamp,
+                date_day,
+                hour,
+                series_id: point_series_id(&metric.series_key(), &point),
+                flags: json_to_i32(point.get("flags")),
+                attributes: serialize_json(point.get("attributes")),
+                fields: wide_point_fields(
+                    &metric.metric_type,
+                    &point,
+                    aggregation_temporality,
+                    is_monotonic,
+                ),
+            });
+        }
+        metrics.push(metric);
+    }
+
+    let f64s = |f: fn(&WidePointFields) -> Option<f64>| -> ArrayRef {
+        Arc::new(
+            points
+                .iter()
+                .map(|p| f(&p.fields))
+                .collect::<Float64Array>(),
+        )
+    };
+    let i64s = |f: fn(&WidePointFields) -> Option<i64>| -> ArrayRef {
+        Arc::new(points.iter().map(|p| f(&p.fields)).collect::<Int64Array>())
+    };
+    let i32s = |f: &dyn Fn(&WidePoint) -> Option<i32>| -> ArrayRef {
+        Arc::new(points.iter().map(f).collect::<Int32Array>())
+    };
+    let owned = |f: &dyn Fn(&WidePoint) -> Option<String>| -> Vec<Option<String>> {
+        points.iter().map(f).collect()
+    };
+    let resource_attributes = owned(&|p| metrics[p.metric].resource.resource_attributes.clone());
+    let scope_attributes = owned(&|p| metrics[p.metric].scope.scope_attributes.clone());
+    let attributes = owned(&|p| p.attributes.clone());
+
+    let (label_fields, label_columns) = materialized_label_columns_from_json(
+        &resource_attributes,
+        &scope_attributes,
+        &attributes,
+        labels,
+    );
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(
+            points
+                .iter()
+                .map(|p| p.timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        Arc::new(
+            points
+                .iter()
+                .map(|p| p.start_timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        str_column(&points, |p| {
+            metrics[p.metric].resource.service_name.as_deref()
+        }),
+        str_column(&points, |p| Some(metrics[p.metric].name.as_str())),
+        str_column(&points, |p| metrics[p.metric].description.as_deref()),
+        str_column(&points, |p| metrics[p.metric].unit.as_deref()),
+        str_column(&points, |p| Some(metrics[p.metric].metric_type.as_str())),
+        str_column(&points, |p| Some(p.series_id.as_str())),
+        f64s(|f| f.value),
+        i64s(|f| f.count),
+        f64s(|f| f.sum),
+        f64s(|f| f.min),
+        f64s(|f| f.max),
+        primitive_list_column::<Float64Type>(points.iter().map(|p| &p.fields.explicit_bounds)),
+        primitive_list_column::<Int64Type>(points.iter().map(|p| &p.fields.bucket_counts)),
+        i32s(&|p| p.fields.scale),
+        i64s(|f| f.zero_count),
+        f64s(|f| f.zero_threshold),
+        i32s(&|p| p.fields.positive_offset),
+        primitive_list_column::<Int64Type>(points.iter().map(|p| &p.fields.positive_bucket_counts)),
+        i32s(&|p| p.fields.negative_offset),
+        primitive_list_column::<Int64Type>(points.iter().map(|p| &p.fields.negative_bucket_counts)),
+        primitive_list_column::<Float64Type>(points.iter().map(|p| &p.fields.quantiles)),
+        primitive_list_column::<Float64Type>(points.iter().map(|p| &p.fields.quantile_values)),
+        i32s(&|p| p.flags),
+        i32s(&|p| p.fields.aggregation_temporality),
+        Arc::new(
+            points
+                .iter()
+                .map(|p| p.fields.is_monotonic)
+                .collect::<BooleanArray>(),
+        ),
+        str_column(&points, |p| {
+            metrics[p.metric].resource.resource_schema_url.as_deref()
+        }),
+        Arc::new(StringArray::from(resource_attributes)),
+        str_column(&points, |p| metrics[p.metric].scope.scope_name.as_deref()),
+        str_column(&points, |p| {
+            metrics[p.metric].scope.scope_version.as_deref()
+        }),
+        str_column(&points, |p| {
+            metrics[p.metric].scope.scope_schema_url.as_deref()
+        }),
+        Arc::new(StringArray::from(scope_attributes)),
+        i32s(&|p| Some(metrics[p.metric].scope.scope_dropped_attr_count)),
+        Arc::new(StringArray::from(attributes)),
+        str_column(&points, |p| {
+            metrics[p.metric].resource.resource_identity.as_deref()
+        }),
+        Arc::new(points.iter().map(|p| p.date_day).collect::<Date32Array>()),
+        i32s(&|p| p.hour),
+    ];
+    let out_schema =
+        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
+    RecordBatch::try_new(out_schema, columns)
+        .map_err(|e| anyhow!("Failed to create transformed metrics RecordBatch: {}", e))
+}
+
 /// Target Arrow schema for the profiles Iceberg table
 pub fn create_profiles_arrow_schema() -> Arc<Schema> {
     Arc::new(Schema::new(vec![
@@ -3800,6 +4134,156 @@ mod tests {
             .downcast_ref::<Int64Array>()
             .unwrap();
         assert_eq!(dropped_attributes_count.value(0), 3);
+    }
+
+    fn metrics_v1_batch_mixed_types() -> RecordBatch {
+        use datafusion::arrow::array::{BooleanArray, Int32Array};
+
+        let rows: [(&str, &str, &str); 3] = [
+            (
+                "requests.gauge",
+                "gauge",
+                r#"[{"time_unix_nano":1,"value":1.5,"attributes":{"host":"a"}},{"time_unix_nano":2,"value":1.7,"attributes":{"host":"a"}}]"#,
+            ),
+            (
+                "requests.sum",
+                "sum",
+                r#"[{"time_unix_nano":1,"value":2.5,"attributes":{"host":"a"}}]"#,
+            ),
+            (
+                "requests.duration",
+                "histogram",
+                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"min":1.0,"max":3.0,"bucket_counts":[1,2,0],"explicit_bounds":[1.0,"+Inf"],"attributes":{"host":"a"}}]"#,
+            ),
+        ];
+        let n = rows.len();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("start_time_unix_nano", DataType::UInt64, true),
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("metric_type", DataType::Utf8, false),
+            Field::new("data_json", DataType::Utf8, false),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(vec![Some("desc"); n])),
+                Arc::new(StringArray::from(vec![Some("1"); n])),
+                Arc::new(UInt64Array::from(vec![Some(0u64); n])),
+                Arc::new(UInt64Array::from(vec![0u64; n])),
+                Arc::new(StringArray::from(vec![Some("{}"); n])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"service.name":"svc"}"#);
+                    n
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"name":"hostmetrics"}"#);
+                    n
+                ])),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int32Array::from(vec![Some(2); n])),
+                Arc::new(BooleanArray::from(vec![Some(true); n])),
+            ],
+        )
+        .unwrap()
+    }
+
+    fn wide_row(batch: &RecordBatch, want: &str) -> usize {
+        let types = wide_col::<StringArray>(batch, "metric_type");
+        (0..batch.num_rows())
+            .find(|&row| types.value(row) == want)
+            .unwrap_or_else(|| panic!("no row for metric_type {want}"))
+    }
+
+    fn wide_col<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
+        batch
+            .column_by_name(name)
+            .unwrap_or_else(|| panic!("missing column {name}"))
+            .as_any()
+            .downcast_ref::<T>()
+            .unwrap_or_else(|| panic!("column {name} has an unexpected type"))
+    }
+
+    fn f64_list_at(batch: &RecordBatch, name: &str, row: usize) -> Vec<f64> {
+        let list = wide_col::<ListArray>(batch, name).value(row);
+        list.as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap()
+            .values()
+            .to_vec()
+    }
+
+    fn i64_list_at(batch: &RecordBatch, name: &str, row: usize) -> Vec<i64> {
+        let list = wide_col::<ListArray>(batch, name).value(row);
+        list.as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap()
+            .values()
+            .to_vec()
+    }
+
+    #[test]
+    fn transform_metrics_to_wide_fans_mixed_types_into_one_row_each() {
+        let batch = metrics_v1_batch_mixed_types();
+        let wide = transform_metrics_to_wide(batch, &[]).expect("transform");
+        assert_eq!(wide.num_rows(), 4, "2 gauge points + 1 sum + 1 histogram");
+
+        let metric_types = wide_col::<StringArray>(&wide, "metric_type");
+        let gauge_rows: Vec<usize> = (0..wide.num_rows())
+            .filter(|&r| metric_types.value(r) == "gauge")
+            .collect();
+        assert_eq!(gauge_rows.len(), 2);
+        let series_ids = wide_col::<StringArray>(&wide, "series_id");
+        assert_eq!(
+            series_ids.value(gauge_rows[0]),
+            series_ids.value(gauge_rows[1])
+        );
+
+        let temporality = wide_col::<Int32Array>(&wide, "aggregation_temporality");
+        let monotonic = wide_col::<BooleanArray>(&wide, "is_monotonic");
+        for (metric_type, want_temporality, want_monotonic) in [
+            ("gauge", None, None),
+            ("sum", Some(2), Some(true)),
+            ("histogram", Some(2), None),
+        ] {
+            let row = wide_row(&wide, metric_type);
+            assert_eq!(
+                int32_value(temporality, row),
+                want_temporality,
+                "{metric_type} temporality"
+            );
+            assert_eq!(
+                bool_value(monotonic, row),
+                want_monotonic,
+                "{metric_type} monotonic"
+            );
+        }
+
+        let values = wide_col::<Float64Array>(&wide, "value");
+        assert_eq!(values.value(wide_row(&wide, "gauge")), 1.5);
+        assert_eq!(values.value(wide_row(&wide, "sum")), 2.5);
+
+        let row = wide_row(&wide, "histogram");
+        assert_eq!(
+            f64_list_at(&wide, "explicit_bounds", row),
+            [1.0, f64::INFINITY]
+        );
+        assert_eq!(i64_list_at(&wide, "bucket_counts", row), [1, 2, 0]);
     }
 }
 
