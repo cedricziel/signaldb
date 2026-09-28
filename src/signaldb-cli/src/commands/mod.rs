@@ -193,7 +193,7 @@ enum Commands {
         action: eval_sets::EvalSetsAction,
     },
     /// Agent eval results: upload a JSONL/CSV results file as a run, with
-    /// `--fail-if` gates for CI
+    /// `--fail-if` gates for CI; list runs and compare two of them
     Evals {
         #[command(subcommand)]
         action: evals::EvalsAction,
@@ -664,6 +664,25 @@ mod parse_tests {
             .is_ok()
         );
         assert!(parse(&["signaldb-cli", "evals", "upload", "r.csv", "--agent", "a"]).is_err());
+    }
+
+    #[test]
+    fn evals_runs_and_compare_parse() {
+        assert!(parse(&["signaldb-cli", "evals", "runs", "--version", "v1", "--json"]).is_ok());
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "evals",
+                "compare",
+                "latest:v1",
+                "run-2",
+                "--tools",
+                "--limit",
+                "10"
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "evals", "compare", "run-1"]).is_err());
     }
 
     #[test]

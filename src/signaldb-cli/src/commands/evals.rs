@@ -7,6 +7,10 @@
 //! `--compare-to latest:<version>` resolves to the newest other run of the
 //! same agent, version and eval set through a Query IR read
 //! (`POST /api/v1/query`, `logs:read`).
+//!
+//! `evals runs` and `evals compare` (task 8.3b) are the Runs and Compare
+//! pages as text or JSON: Query IR reads through `eval_model::runs`, the
+//! same code behind the MCP `list_eval_runs` / `compare_eval_runs` tools.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -14,9 +18,11 @@ use std::str::FromStr;
 
 use anyhow::Context;
 use clap::Subcommand;
-use signaldb_sdk::types::{
-    EvalResultsFormat, EvalResultsUploadResponse, QueryIrRequest, QueryRange,
+use eval_model::compare::{RunStatusKind, ToolMark};
+use eval_model::runs::{
+    self as eval_runs, Comparison, Document, IrSource, IrTable, ReadError, RunList, RunRef, Window,
 };
+use signaldb_sdk::types::{EvalResultsFormat, EvalResultsUploadResponse};
 
 use super::discover::ConnectArgs;
 
@@ -26,6 +32,12 @@ pub enum EvalsAction {
     /// Upload a JSONL or CSV results file as one offline run; with
     /// `--fail-if`, exit non-zero when a condition holds for the run (CI gate)
     Upload(UploadArgs),
+    /// List offline eval runs, newest first, with status and per-evaluator
+    /// mean and pass rate
+    Runs(RunsArgs),
+    /// Compare a candidate run with a baseline run case by case: per
+    /// evaluator deltas and the regressed cases
+    Compare(CompareArgs),
 }
 
 /// File format of `evals upload`.
@@ -246,74 +258,36 @@ fn runs_url(base: &str) -> String {
     format!("{}/evals/runs", base.trim_end_matches('/'))
 }
 
-/// How far back `latest:<version>` looks.
-const LATEST_LOOKBACK: &str = "now-30d";
+/// `eval_model::runs`'s Query IR reads, sent as this CLI's credential.
+struct CliIr<'a>(&'a signaldb_sdk::Client);
 
-/// The Query IR document behind `latest:<version>`: the last result time
-/// of every other run of the agent, version and eval set.
-fn latest_run_document(
-    agent: &str,
-    version: &str,
-    set: &str,
-    exclude_run: &str,
-) -> anyhow::Result<QueryIrRequest> {
-    let eq = |field: &str, value: &str| serde_json::json!({"where": {"field": field, "op": "eq", "value": value}});
-    let pipeline = [
-        eq("event_name", "gen_ai.evaluation.result"),
-        eq("gen_ai.agent.name", agent),
-        eq("gen_ai.agent.version", version),
-        eq("signaldb.eval.set", set),
-        serde_json::json!({"where": {"field": "signaldb.eval.run_id", "op": "ne", "value": exclude_run}}),
-        serde_json::json!({"aggregate": {
-            "by": ["signaldb.eval.run_id"],
-            "aggs": [{"fn": "max", "of": "timestamp", "as": "last"}]
-        }}),
-    ]
-    .into_iter()
-    .map(|stage| match stage {
-        serde_json::Value::Object(map) => Ok(map),
-        _ => anyhow::bail!("pipeline stage is not an object"),
-    })
-    .collect::<anyhow::Result<Vec<_>>>()?;
-    Ok(QueryIrRequest {
-        depth: None,
-        fields: None,
-        focus: None,
-        from: "logs".to_string(),
-        ir_version: 4,
-        pipeline,
-        range: QueryRange {
-            from: LATEST_LOOKBACK.to_string(),
-            to: "now".to_string(),
-        },
-        result: "table".to_string(),
-        trace_id: None,
-    })
+impl IrSource for CliIr<'_> {
+    type Error = anyhow::Error;
+
+    async fn query(&self, document: &Document) -> anyhow::Result<IrTable> {
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::to_value(document)
+            .and_then(serde_json::from_value)
+            .context("building the Query IR document")?;
+        let response = self
+            .0
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| anyhow::Error::new(e).context("Query IR request failed"))?
+            .into_inner();
+        Ok(IrTable {
+            columns: response.columns.into_iter().map(|c| c.name).collect(),
+            rows: response.rows,
+        })
+    }
 }
 
-/// The run id with the latest `last` in a [`latest_run_document`] result.
-fn newest_run(response: &signaldb_sdk::types::QueryIrResponse) -> Option<String> {
-    let column = |names: &[&str]| {
-        response
-            .columns
-            .iter()
-            .position(|c| names.contains(&c.name.as_str()))
-    };
-    let run_col = column(&["signaldb_eval_run_id", "signaldb.eval.run_id"])?;
-    let last_col = column(&["last"])?;
-    response
-        .rows
-        .iter()
-        .filter_map(|row| {
-            let run = row.get(run_col)?.as_str().filter(|s| !s.is_empty())?;
-            let last = row.get(last_col).and_then(|v| {
-                v.as_f64()
-                    .or_else(|| v.as_str().and_then(|s| s.parse().ok()))
-            })?;
-            Some((last, run))
-        })
-        .max_by(|a, b| a.0.total_cmp(&b.0))
-        .map(|(_, run)| run.to_string())
+fn read_error(err: ReadError<anyhow::Error>) -> anyhow::Error {
+    match err {
+        ReadError::Query(e) => e,
+        other => anyhow::anyhow!(other.to_string()),
+    }
 }
 
 impl UploadArgs {
@@ -328,15 +302,22 @@ impl UploadArgs {
         let Some(version) = target.strip_prefix("latest:") else {
             return Ok(Some(target.clone()));
         };
-        let document = latest_run_document(&run.agent, version, &run.set, &run.run_id)?;
-        let response = client
-            .query_ir()
-            .body(document)
-            .send()
+        let window = Window {
+            from: eval_runs::LATEST_LOOKBACK.to_string(),
+            to: "now".to_string(),
+        };
+        let document = eval_runs::latest_run_document(
+            &run.agent,
+            version,
+            &run.set,
+            Some(&run.run_id),
+            &window,
+        );
+        let table = CliIr(client)
+            .query(&document)
             .await
-            .map_err(|e| anyhow::Error::new(e).context(format!("resolving --compare-to {target}")))?
-            .into_inner();
-        let baseline = newest_run(&response);
+            .with_context(|| format!("resolving --compare-to {target}"))?;
+        let baseline = eval_runs::newest_run(&table);
         if baseline.is_none() {
             eprintln!(
                 "warning: no other run of {} {version} on {} in the last 30 days; not comparing",
@@ -489,10 +470,374 @@ fn format_summary(run: &EvalResultsUploadResponse) -> String {
     )
 }
 
+#[derive(clap::Args)]
+pub struct RunsArgs {
+    /// Window start: RFC3339, relative (`now-7d`) or epoch nanoseconds
+    #[arg(long, default_value = "now-7d")]
+    from: String,
+    /// Window end
+    #[arg(long, default_value = "now")]
+    to: String,
+    /// Only runs of this agent (`gen_ai.agent.name`, else `service.name`)
+    #[arg(long)]
+    agent: Option<String>,
+    /// Only runs of this agent version
+    #[arg(long)]
+    version: Option<String>,
+    /// Only runs of this eval set
+    #[arg(long)]
+    set: Option<String>,
+    /// Most runs to list, newest first
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    /// Print the runs as JSON
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    connect: ConnectArgs,
+}
+
+impl RunsArgs {
+    async fn list(&self) -> anyhow::Result<RunList> {
+        let client = self.connect.build_client()?;
+        let filter = eval_runs::RunFilter {
+            agent: self.agent.clone(),
+            version: self.version.clone(),
+            set: self.set.clone(),
+            run_ids: Vec::new(),
+        };
+        let window = Window {
+            from: self.from.clone(),
+            to: self.to.clone(),
+        };
+        eval_runs::list_runs(
+            &CliIr(&client),
+            &window,
+            &filter,
+            self.limit.max(1),
+            eval_runs::now_ms(),
+        )
+        .await
+        .map_err(read_error)
+    }
+
+    pub async fn run(self) -> anyhow::Result<()> {
+        let list = self.list().await?;
+        if self.json {
+            super::print_json(&list)
+        } else {
+            println!("{}", format_runs(&list));
+            Ok(())
+        }
+    }
+}
+
+#[derive(clap::Args)]
+pub struct CompareArgs {
+    /// Baseline: a run id, or `latest:<version>` for the newest run of that
+    /// version of the same agent on the same eval set
+    #[arg(value_name = "BASELINE")]
+    baseline: String,
+    /// Candidate: a run id, or `latest:<version>`
+    #[arg(value_name = "CANDIDATE")]
+    candidate: String,
+    /// Agent for resolving `latest:` [default: the other side's run's]
+    #[arg(long)]
+    agent: Option<String>,
+    /// Eval set for resolving `latest:` [default: the other side's run's]
+    #[arg(long)]
+    set: Option<String>,
+    /// Window both runs' results are read from
+    #[arg(long, default_value = eval_runs::LATEST_LOOKBACK)]
+    from: String,
+    /// Window end
+    #[arg(long, default_value = "now")]
+    to: String,
+    /// Most regressed cases to list, largest drop first
+    #[arg(long, default_value_t = 50)]
+    limit: usize,
+    /// Add each listed regression's tool-call diff (needs `traces:read`)
+    #[arg(long)]
+    tools: bool,
+    /// Print the comparison as JSON
+    #[arg(long)]
+    json: bool,
+    #[command(flatten)]
+    connect: ConnectArgs,
+}
+
+impl CompareArgs {
+    fn request(&self) -> anyhow::Result<eval_runs::CompareRequest> {
+        Ok(eval_runs::CompareRequest {
+            baseline: RunRef::parse_named("baseline", &self.baseline)
+                .map_err(anyhow::Error::msg)?,
+            candidate: RunRef::parse_named("candidate", &self.candidate)
+                .map_err(anyhow::Error::msg)?,
+            agent: self.agent.clone(),
+            set: self.set.clone(),
+            window: Window {
+                from: self.from.clone(),
+                to: self.to.clone(),
+            },
+            limit: self.limit.max(1),
+            include_tools: self.tools,
+        })
+    }
+
+    async fn compare(&self) -> anyhow::Result<Comparison> {
+        let request = self.request()?;
+        let client = self.connect.build_client()?;
+        eval_runs::compare_runs(&CliIr(&client), &request, eval_runs::now_ms())
+            .await
+            .map_err(read_error)
+    }
+
+    pub async fn run(self) -> anyhow::Result<()> {
+        let comparison = self.compare().await?;
+        if self.json {
+            super::print_json(&comparison)
+        } else {
+            println!("{}", format_comparison(&comparison, &self.connect.url));
+            Ok(())
+        }
+    }
+}
+
+/// Left-aligned columns under `headers`, the last left ragged.
+fn grid(headers: &[&str], rows: &[Vec<String>]) -> String {
+    let mut widths: Vec<usize> = headers.iter().map(|h| h.len()).collect();
+    for row in rows {
+        for (w, cell) in widths.iter_mut().zip(row) {
+            *w = (*w).max(cell.len());
+        }
+    }
+    let header: Vec<String> = headers.iter().map(|h| h.to_string()).collect();
+    std::iter::once(&header)
+        .chain(rows)
+        .map(|row| {
+            let last = row.len().saturating_sub(1);
+            row.iter()
+                .enumerate()
+                .map(|(i, cell)| {
+                    if i == last {
+                        cell.clone()
+                    } else {
+                        format!("{cell:w$}", w = widths[i])
+                    }
+                })
+                .collect::<Vec<_>>()
+                .join("  ")
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn opt(value: Option<&str>) -> String {
+    value.unwrap_or("-").to_string()
+}
+
+fn status_text(kind: RunStatusKind) -> &'static str {
+    match kind {
+        RunStatusKind::Running => "running",
+        RunStatusKind::Complete => "complete",
+        RunStatusKind::Partial => "partial",
+    }
+}
+
+/// `RUN  SET  AGENT  VERSION  STARTED  STATUS  CASES  ERRORS  PASS RATE
+/// PREVIOUS` rows, plus the truncation note.
+fn format_runs(list: &RunList) -> String {
+    if list.runs.is_empty() {
+        return format!(
+            "No eval runs between {} and {}.",
+            list.window.from, list.window.to
+        );
+    }
+    let rows: Vec<Vec<String>> = list
+        .runs
+        .iter()
+        .map(|r| {
+            vec![
+                r.run_id.clone(),
+                opt(r.set.as_deref()),
+                opt(r.agent.as_deref()),
+                opt(r.version.as_deref()),
+                r.started_at.clone(),
+                status_text(r.status).to_string(),
+                r.cases.to_string(),
+                r.errors.to_string(),
+                format_ratio(r.pass_rate),
+                opt(r.previous_run_id.as_deref()),
+            ]
+        })
+        .collect();
+    let mut out = grid(
+        &[
+            "RUN",
+            "SET",
+            "AGENT",
+            "VERSION",
+            "STARTED",
+            "STATUS",
+            "CASES",
+            "ERRORS",
+            "PASS RATE",
+            "PREVIOUS",
+        ],
+        &rows,
+    );
+    if let Some(note) = &list.note {
+        out.push_str(&format!("\n\nNote: {note}"));
+    }
+    out
+}
+
+fn tool_mark(kind: ToolMark) -> &'static str {
+    match kind {
+        ToolMark::Same => "",
+        ToolMark::Skipped => " (skipped)",
+        ToolMark::Reordered => " (reordered)",
+        ToolMark::Repeated => " (repeated)",
+        ToolMark::New => " (new)",
+    }
+}
+
+/// The two runs, the evaluator table, case counts, the regressed cases and
+/// a link to the Compare page.
+fn format_comparison(c: &Comparison, base_url: &str) -> String {
+    let run_line = |label: &str, r: &eval_runs::RunSummary| {
+        format!(
+            "{label} {} ({} {} on {}, {}, {} cases)",
+            r.run_id,
+            opt(r.agent.as_deref()),
+            opt(r.version.as_deref()),
+            opt(r.set.as_deref()),
+            status_text(r.status),
+            r.cases
+        )
+    };
+    let mut out = vec![
+        run_line("Baseline: ", &c.baseline),
+        run_line("Candidate:", &c.candidate),
+        String::new(),
+    ];
+    let evaluators: Vec<Vec<String>> = c
+        .evaluators
+        .iter()
+        .map(|e| {
+            let d = e.delta.as_ref();
+            vec![
+                e.name.clone(),
+                format_ratio(e.baseline.mean),
+                format_ratio(e.candidate.mean),
+                format_ratio(e.baseline.pass_rate),
+                format_ratio(e.candidate.pass_rate),
+                eval_runs::format_delta(d),
+                e.worse.to_string(),
+                e.better.to_string(),
+            ]
+        })
+        .collect();
+    out.push(grid(
+        &[
+            "EVALUATOR",
+            "MEAN (B)",
+            "MEAN (C)",
+            "PASS (B)",
+            "PASS (C)",
+            "DELTA",
+            "WORSE",
+            "BETTER",
+        ],
+        &evaluators,
+    ));
+    out.push(String::new());
+    out.push(format!(
+        "Cases: {} regressed ({} without a baseline), {} improved, {} unchanged, {} only in the baseline",
+        c.counts.regressions,
+        c.counts.no_baseline,
+        c.counts.improvements,
+        c.counts.unchanged,
+        c.counts.baseline_only
+    ));
+    if !c.regressions.is_empty() {
+        out.push(String::new());
+        out.push(if c.regressions_truncated {
+            format!(
+                "Regressions (largest drop first, {} of {}):",
+                c.regressions.len(),
+                c.counts.regressions
+            )
+        } else {
+            "Regressions (largest drop first):".to_string()
+        });
+        for case in &c.regressions {
+            let changes: Vec<String> = case
+                .evaluators
+                .iter()
+                .map(|e| {
+                    let side = |cell: Option<&eval_runs::CaseCell>| {
+                        cell.map_or_else(
+                            || "-".to_string(),
+                            |cell| {
+                                format!(
+                                    "{} {}",
+                                    cell.verdict.unwrap_or("-"),
+                                    format_ratio(cell.mean)
+                                )
+                            },
+                        )
+                    };
+                    format!(
+                        "{} {}: {} -> {}",
+                        e.name,
+                        e.change,
+                        side(e.baseline.as_ref()),
+                        side(Some(&e.candidate))
+                    )
+                })
+                .collect();
+            out.push(format!(
+                "  {}{}  {}",
+                case.case_id,
+                if case.no_baseline {
+                    " (no baseline)"
+                } else {
+                    ""
+                },
+                changes.join("; ")
+            ));
+            out.push(format!(
+                "    traces: baseline {}, candidate {}",
+                opt(case.baseline_trace_id.as_deref()),
+                opt(case.candidate_trace_id.as_deref())
+            ));
+            if let Some(tools) = &case.tools {
+                let steps: Vec<String> = tools
+                    .iter()
+                    .map(|t| format!("{}{}", t.name, tool_mark(t.kind)))
+                    .collect();
+                out.push(format!("    tools: {}", steps.join(", ")));
+            }
+        }
+    }
+    for warning in &c.warnings {
+        out.push(format!("\nWarning: {warning}"));
+    }
+    out.push(String::new());
+    out.push(format!(
+        "Compare: {}",
+        compare_url(base_url, &c.baseline.run_id, &c.candidate.run_id)
+    ));
+    out.join("\n")
+}
+
 impl EvalsAction {
     pub async fn run(self) -> anyhow::Result<()> {
         match self {
             EvalsAction::Upload(args) => args.run().await,
+            EvalsAction::Runs(args) => args.run().await,
+            EvalsAction::Compare(args) => args.run().await,
         }
     }
 }
@@ -501,6 +846,10 @@ impl EvalsAction {
 mod tests {
     use super::*;
     use crate::commands::test_support::{connect, write_temp};
+    use eval_model::test_util::{
+        FakeIr, IrRows, RunRow, case_trace, latest, run_case, stats_row, tool_span,
+    };
+    use std::sync::Arc;
 
     const RESPONSE: &str = r#"{
         "run_id": "run-42", "agent": "support-triage", "version": "v1.9.0",
@@ -616,22 +965,6 @@ mod tests {
             out.contains("Correctness") && out.contains("0.840"),
             "{out}"
         );
-    }
-
-    #[test]
-    fn the_newest_other_run_wins() {
-        let response: signaldb_sdk::types::QueryIrResponse = serde_json::from_value(serde_json::json!({
-            "result": "table",
-            "columns": [{"name": "signaldb_eval_run_id", "type": "string"}, {"name": "last", "type": "int"}],
-            "rows": [["run-a", 100], ["run-b", 300], ["", 900], ["run-c", 200]],
-            "window": {"start_ns": 0, "end_ns": 1}
-        }))
-        .expect("response parses");
-        assert_eq!(newest_run(&response).as_deref(), Some("run-b"));
-        let doc = serde_json::to_value(latest_run_document("a", "v1", "golden", "run-42").unwrap())
-            .unwrap();
-        assert_eq!(doc["pipeline"][4]["where"]["op"], "ne");
-        assert_eq!(doc["pipeline"][4]["where"]["value"], "run-42");
     }
 
     fn upload_args(file: &Path, url: &str, extra: &[&str]) -> UploadArgs {
@@ -847,5 +1180,134 @@ a,C,1
             .expect("resolves");
         assert_eq!(baseline.as_deref(), Some("run-41"));
         query.assert_async().await;
+    }
+
+    /// The Query IR stand-in for `evals runs|compare`: two runs of
+    /// `support-triage` on `triage-golden`.
+    fn ir_fake() -> FakeIr {
+        const MIN: i64 = 60_000_000_000;
+        const T0: i64 = 1_767_225_600_000_000_000;
+        let run = |run, version, error, high, score_sum, first| {
+            RunRow {
+                run,
+                set: "triage-golden",
+                agent: Some("support-triage"),
+                version,
+                evaluator: "Correctness",
+                error,
+                n: 1,
+                high,
+                score_sum,
+                first,
+                last: first + MIN,
+                ..RunRow::default()
+            }
+            .row()
+        };
+        FakeIr::new(IrRows {
+            runs: vec![
+                run("run-2", "v2", None, 0, 0.2, T0 + 10 * MIN),
+                run("run-1", "v1", Some("timeout"), 0, 0.0, T0),
+                run("run-1", "v1", None, 1, 0.9, T0),
+            ],
+            run_cases: vec![run_case("run-1", "refund"), run_case("run-2", "refund")],
+            case_stats: vec![
+                stats_row("run-1", "refund", "Correctness", "pass", 0.9),
+                stats_row("run-2", "refund", "Correctness", "fail", 0.2),
+            ],
+            case_traces: vec![
+                case_trace("run-1", "refund", "tb"),
+                case_trace("run-2", "refund", "tc"),
+            ],
+            latest: vec![latest("run-1", T0)],
+            tool_spans: vec![
+                tool_span("tb", 1, "lookup_order"),
+                tool_span("tb", 2, "check_policy"),
+                tool_span("tc", 1, "lookup_order"),
+            ],
+        })
+    }
+
+    async fn ir_server() -> (mockito::ServerGuard, mockito::Mock) {
+        let fake = Arc::new(ir_fake());
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/query")
+            .match_header("x-dataset-id", "production")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body_from_request(move |request| {
+                let body =
+                    fake.response_body(request.body().map(Vec::as_slice).unwrap_or_default());
+                serde_json::to_vec(&body).unwrap_or_default()
+            })
+            .expect_at_least(1)
+            .create_async()
+            .await;
+        (server, mock)
+    }
+
+    fn parse_args<T: clap::Args>(argv: &[&str]) -> T {
+        #[derive(clap::Parser)]
+        struct Cli<T: clap::Args> {
+            #[command(flatten)]
+            args: T,
+        }
+        <Cli<T> as clap::Parser>::try_parse_from(argv)
+            .expect("flags parse")
+            .args
+    }
+
+    #[tokio::test]
+    async fn runs_are_listed_newest_first_with_their_status() {
+        let (server, mock) = ir_server().await;
+        let mut args: RunsArgs = parse_args(&["runs", "--agent", "support-triage"]);
+        args.connect = connect(&server.url());
+        let list = args.list().await.expect("lists runs");
+        mock.assert_async().await;
+        assert_eq!(list.total_runs, 2);
+        assert_eq!(list.runs[0].run_id, "run-2");
+        assert_eq!(list.runs[1].status, RunStatusKind::Partial);
+        let out = format_runs(&list);
+        let header = out.lines().next().unwrap_or_default();
+        assert!(
+            header.starts_with("RUN") && header.ends_with("PREVIOUS"),
+            "{out}"
+        );
+        assert!(out.contains("run-2") && out.contains("partial"), "{out}");
+        assert!(
+            out.lines().nth(1).unwrap_or_default().ends_with("run-1"),
+            "{out}"
+        );
+    }
+
+    #[tokio::test]
+    async fn compare_resolves_latest_and_prints_the_regressions() {
+        let (server, mock) = ir_server().await;
+        let mut args: CompareArgs = parse_args(&["compare", "latest:v1", "run-2", "--tools"]);
+        args.connect = connect(&server.url());
+        let comparison = args.compare().await.expect("compares");
+        mock.assert_async().await;
+        assert_eq!(comparison.baseline.run_id, "run-1");
+        assert_eq!(comparison.counts.regressions, 1);
+        let out = format_comparison(&comparison, "http://sdb:3000");
+        for part in [
+            "Baseline:  run-1 (support-triage v1 on triage-golden, partial, 1 cases)",
+            "Correctness  0.900     0.200",
+            "Cases: 1 regressed",
+            "refund  Correctness worse: pass 0.900 -> fail 0.200",
+            "traces: baseline tb, candidate tc",
+            "tools: lookup_order, check_policy (skipped)",
+            "Compare: http://sdb:3000/evals/compare?baseline=run-1&candidate=run-2",
+        ] {
+            assert!(out.contains(part), "`{part}` in\n{out}");
+        }
+    }
+
+    #[test]
+    fn a_malformed_run_reference_is_rejected_before_any_request() {
+        let args: CompareArgs = parse_args(&["compare", "latest:", "run-2"]);
+        let err = args.request().expect_err("no version");
+        assert!(err.to_string().starts_with("`baseline`:"), "{err}");
     }
 }
