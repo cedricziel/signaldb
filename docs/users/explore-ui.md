@@ -348,8 +348,9 @@ placeholder.
   that trace's waterfall inline, split into time spent in the browser and
   network (the client span's own duration minus its first server child's)
   versus backend time, with links to open the full trace and its backend
-  logs. An exception panel with its preceding failed request is a later
-  addition to this tab.
+  logs. Selecting an exception shows its stack frames (with source context,
+  same as the trace and errors views) and, when a failed request preceded
+  it, names that request as the likely cause with a button that selects it.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced

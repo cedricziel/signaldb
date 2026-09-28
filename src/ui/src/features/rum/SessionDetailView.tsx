@@ -1,9 +1,9 @@
 // The Real users page's session detail (`?session=`): a header, the lane
 // timeline (`SessionTimeline`), the same events as an ordered list, the
 // selected event's own detail panel (`SessionEventDetail` — an inline trace
-// waterfall for a network event; an exception's stack frames ship in a
-// later branch), and the session's own resource attributes. Selecting an
-// event highlights it in both the timeline and the list.
+// waterfall for a network event, or an exception's stack frames), and the
+// session's own resource attributes. Selecting an event highlights it in
+// both the timeline and the list.
 import { useMemo, useState } from "react";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
@@ -97,9 +97,13 @@ export function SessionDetailView({ scope, state, sessionId }: Props) {
       )}
 
       {selected &&
-        selected.kind === "span" &&
-        detail.events.some(
-          (e) => e.kind === "span" && e.spanId === selected.spanId,
+        (selected.kind === "span" || selected.eventName === "exception") &&
+        detail.events.some((e) =>
+          e.kind === "span"
+            ? selected.kind === "span" && e.spanId === selected.spanId
+            : selected.kind !== "span" &&
+              e.tsNs === selected.tsNs &&
+              e.eventName === selected.eventName,
         ) && (
           <Panel title="Selected event">
             <SessionEventDetail

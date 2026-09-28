@@ -354,3 +354,42 @@ export async function fetchSessionDetail(
 export function sessionEventTimeMs(event: SessionEvent): number {
   return nanosToMs(event.tsNs || "0");
 }
+
+/** The failed request (a span in the Errors lane) that most recently
+ * preceded `exception` — the spec's "when a failed request preceded it in
+ * the same view, that request as the likely cause". `undefined` when
+ * nothing errored beforehand. */
+export function precedingFailedRequest(
+  events: SessionEvent[],
+  exception: SessionLogEvent,
+): SessionSpanEvent | undefined {
+  const exceptionNs = BigInt(exception.tsNs || "0");
+
+  // Don't scan past the page view's own start: a failed request from an
+  // earlier view isn't the cause of this exception.
+  let viewStartNs = 0n;
+  for (const event of events) {
+    if (event.kind !== "log" || event.eventName !== "browser.navigation") {
+      continue;
+    }
+    const ns = BigInt(event.tsNs || "0");
+    if (ns < exceptionNs && ns > viewStartNs) viewStartNs = ns;
+  }
+
+  // Only a client request that had already completed can have caused it;
+  // the most recently completed one wins.
+  let best: SessionSpanEvent | undefined;
+  let bestEndNs = 0n;
+  for (const event of events) {
+    if (event.kind !== "span" || !event.isError) continue;
+    if (event.spanKind !== "Client") continue;
+    const startNs = BigInt(event.tsNs || "0");
+    const endNs = startNs + BigInt(event.durationNs || "0");
+    if (startNs < viewStartNs || endNs >= exceptionNs) continue;
+    if (!best || endNs > bestEndNs) {
+      best = event;
+      bestEndNs = endNs;
+    }
+  }
+  return best;
+}

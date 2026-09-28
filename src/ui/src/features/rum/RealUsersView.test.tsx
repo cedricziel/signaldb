@@ -697,4 +697,71 @@ describe("Sessions tab", () => {
     ).toHaveAttribute("href", expect.stringContaining("/traces/trace-501"));
     expect(await screen.findByText(/checkout-svc/)).toBeInTheDocument();
   });
+
+  it("names the preceding failed request as the likely cause of an exception", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([sessionRow()]);
+    const failedRequest: SessionEvent = {
+      kind: "span",
+      tsNs: "1700000000000000000",
+      lane: "errors",
+      traceId: "trace-502",
+      spanId: "client-2",
+      parentSpanId: null,
+      name: "POST",
+      spanKind: "Client",
+      serviceName: "storefront-web",
+      durationNs: "100000000",
+      isError: true,
+      httpMethod: "POST",
+      urlFull: "https://api.storefront.example.com/checkout",
+      httpStatusCode: 502,
+    };
+    const exception: SessionEvent = {
+      kind: "log",
+      tsNs: "1700000002800000000",
+      lane: "errors",
+      eventName: "exception",
+      traceId: null,
+      urlTemplate: null,
+      urlFull: null,
+      vitalName: null,
+      vitalRating: null,
+      vitalValue: null,
+      cssSelector: null,
+      tagName: null,
+      exceptionType: "TypeError",
+      exceptionMessage: "boom",
+      exceptionStacktrace: "TypeError: boom\n  at checkout.js:1",
+      resourceAttributes: {},
+    };
+    vi.mocked(rumSessionDetailApi.fetchSessionDetail).mockResolvedValue({
+      events: [failedRequest, exception],
+      hasMore: false,
+    });
+    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+
+    // Generous waits: under coverage instrumentation the detail's chained
+    // renders can take over the default 1 s.
+    const timeline = await screen.findByTestId(
+      "rum-session-timeline",
+      {},
+      { timeout: 5000 },
+    );
+    const exceptionMark = within(timeline).getByRole("button", {
+      name: /TypeError/,
+    });
+    const user = userEvent.setup();
+    await user.click(exceptionMark);
+
+    const cause = await screen.findByText(
+      /Likely cause/,
+      {},
+      { timeout: 5000 },
+    );
+    expect(cause.textContent).toContain("502");
+  });
 });

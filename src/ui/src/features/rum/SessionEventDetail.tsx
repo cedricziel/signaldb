@@ -1,16 +1,22 @@
 // The session detail timeline's per-event panel: a selected Network-lane
 // event with backend children gets an inline trace waterfall (compact,
 // `lib/waterfall.ts`) split into browser+network vs backend time
-// (`sessionTraceSplit.ts`), with links to the full trace and its logs.
-// An exception panel ships in a later branch of this change.
+// (`sessionTraceSplit.ts`), with links to the full trace and its logs; a
+// selected exception gets its stack frames (`StacktraceLines`, reusing the
+// same component the trace/errors views already render frames through) and,
+// when one preceded it, the failed request named as the likely cause.
 import { useRef } from "react";
 import { Link } from "react-router";
 import { useQuery } from "@tanstack/react-query";
+import { StacktraceLines } from "../../components/StacktraceLines";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { fetchTraceDetail } from "../../api/traceDetail";
-import type { SessionEvent } from "../../api/rumSessionDetail";
+import type { SessionEvent, SessionLogEvent } from "../../api/rumSessionDetail";
+import { precedingFailedRequest } from "../../api/rumSessionDetail";
+import { repositoryHints } from "../../lib/sourceLocation";
+import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 import { rangeScopeKey } from "../../lib/time";
 import type { ExploreState } from "../../lib/urlState";
 import { viewHref } from "../../lib/urlState";
@@ -27,16 +33,31 @@ interface Props {
   scope: RumScope;
   state: ExploreState;
   event: SessionEvent;
-  /** Every event on the timeline — unused by the network panel, but the
-   * exception panel (a later branch) needs it to find its preceding failed
-   * request, so this dispatcher already takes the full list. */
+  /** Every event on the timeline — needed to find the exception panel's
+   * preceding failed request. */
   events: SessionEvent[];
   onSelectEvent: (event: SessionEvent) => void;
 }
 
-export function SessionEventDetail({ scope, state, event }: Props) {
+export function SessionEventDetail({
+  scope,
+  state,
+  event,
+  events,
+  onSelectEvent,
+}: Props) {
   if (event.kind === "span") {
     return <NetworkEventPanel scope={scope} state={state} event={event} />;
+  }
+  if (event.eventName === "exception") {
+    return (
+      <ExceptionEventPanel
+        state={state}
+        event={event}
+        events={events}
+        onSelectEvent={onSelectEvent}
+      />
+    );
   }
   return null;
 }
@@ -173,6 +194,56 @@ function NetworkEventPanel({
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+function ExceptionEventPanel({
+  state,
+  event,
+  events,
+  onSelectEvent,
+}: {
+  state: ExploreState;
+  event: SessionLogEvent;
+  events: SessionEvent[];
+  onSelectEvent: (event: SessionEvent) => void;
+}) {
+  const sourceContextEnabled = useSourceContextEnabled(state.tenant);
+  const cause = precedingFailedRequest(events, event);
+  const hints = repositoryHints(event.resourceAttributes, { prefixes: [""] });
+
+  return (
+    <div className="rum-session-detail-panel">
+      <div className="rum-session-detail-head">
+        <span className="mono ell">{sessionEventLabel(event)}</span>
+      </div>
+      {cause && (
+        <div className="rum-callout">
+          <span>
+            Likely cause: <code className="mono">{cause.httpMethod}</code>{" "}
+            <code className="mono">{cause.urlFull}</code>
+            {cause.httpStatusCode !== null && ` → ${cause.httpStatusCode}`}
+          </span>
+          <button
+            type="button"
+            className="btn"
+            onClick={() => onSelectEvent(cause)}
+          >
+            Show trace
+          </button>
+        </div>
+      )}
+      {event.exceptionStacktrace ? (
+        <StacktraceLines
+          text={event.exceptionStacktrace}
+          tenant={sourceContextEnabled ? state.tenant : undefined}
+          hints={hints}
+          variant="error"
+        />
+      ) : (
+        <EmptyState title="No stack trace recorded for this exception" />
+      )}
     </div>
   );
 }
