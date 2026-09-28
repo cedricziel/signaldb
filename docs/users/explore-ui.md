@@ -286,8 +286,9 @@ the window. The app switcher lists every such app, busiest first, and
 defaults to the busiest; picking one writes `?app=` and keeps the
 current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
-the **Overview**, **Network** and **Setup** tabs; Pages, Sessions, Errors
-and Interactions follow in later changes and are not shown as placeholders.
+the **Overview**, **Pages**, **Network** and **Setup** tabs; Sessions,
+Errors and Interactions follow in later changes and are not shown as
+placeholders.
 
 - **Overview.** Sessions, users, sessions-with-errors and traced requests
   (distinct `session.id`/`user.id`, the error share scoped to a session
@@ -307,7 +308,17 @@ and Interactions follow in later changes and are not shown as placeholders.
   client+network and backend time (see Network below), linking to the full
   table. **Sessions by browser** and **by device** break down the window's
   records by `browser.brands` (when the SDK sends it — many deployments
-  don't yet, so this can read empty) and `browser.mobile`.
+  don't yet, so this can read empty) and `browser.mobile`. **Slowest pages**
+  lists the top 5 routes by their worst Web Vital's poor share; a row opens
+  the Pages tab with that route selected.
+- **Pages.** Every route (`url.template`, or a template derived from
+  `url.full` when the record carries no `url.template`) the app's users
+  visited, with views (`browser.navigation` count), p75 LCP/INP/CLS/TTFB and
+  an error share (`exception` records carrying that route's own
+  `url.template`, divided by views — an exception with no route
+  attribution isn't counted), sorted by the worst vital's poor share.
+  Picking a route writes `?route=`. Page views with no attributable route
+  raise a callout explaining `url.template` and linking to Setup.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced

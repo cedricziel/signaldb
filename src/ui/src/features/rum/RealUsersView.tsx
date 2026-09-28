@@ -1,7 +1,6 @@
 // The Real users page (`/rum/{tab}`): an app switcher, a tab strip, and one
-// tab body per selected tab. This group ships Overview, Network and Setup —
-// Pages/Sessions/Errors/Interactions are later groups (tasks.md groups
-// 2-4) and are not rendered as placeholders here.
+// tab body per selected tab. Sessions, Errors and Interactions are later
+// groups (tasks.md groups 2-4) and are not rendered as placeholders here.
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { rangeScopeKey, resolveRange } from "../../lib/time";
@@ -14,6 +13,7 @@ import type { RumApp } from "../../api/rum";
 import { RUM_TABS, type RumTab } from "./rumModel";
 import { NetworkTab } from "./NetworkTab";
 import { OverviewTab } from "./OverviewTab";
+import { PagesTab } from "./PagesTab";
 import { SetupTab } from "./SetupTab";
 import "./rum.css";
 
@@ -24,9 +24,19 @@ interface Props {
   update: UpdateFn;
   tab: RumTab;
   onTabChange: (tab: RumTab) => void;
+  /** Switches tab and sets a search param in one navigation — see
+   * `RealUsersRoute`'s own doc comment for why `onTabChange` + `update()`
+   * can't do this safely. */
+  onTabChangeWith: (tab: RumTab, patch: Partial<ExploreState>) => void;
 }
 
-export function RealUsersView({ state, update, tab, onTabChange }: Props) {
+export function RealUsersView({
+  state,
+  update,
+  tab,
+  onTabChange,
+  onTabChangeWith,
+}: Props) {
   const rangeKey = rangeScopeKey(state);
   const range = resolveRange(state.range, Date.now());
   const apps = useRumApps(range, rangeKey);
@@ -119,11 +129,21 @@ export function RealUsersView({ state, update, tab, onTabChange }: Props) {
           </EmptyState>
         ) : tab === "network" ? (
           <NetworkTab scope={scope} onOpenSetup={() => onTabChange("setup")} />
+        ) : tab === "pages" ? (
+          <PagesTab
+            scope={scope}
+            route={state.rumRoute}
+            onSelectRoute={(route) => update({ rumRoute: route })}
+            onOpenSetup={() => onTabChange("setup")}
+          />
         ) : (
           <OverviewTab
             scope={scope}
             onOpenSetup={() => onTabChange("setup")}
             onOpenNetwork={() => onTabChange("network")}
+            onOpenPages={(route) =>
+              onTabChangeWith("pages", { rumRoute: route })
+            }
           />
         )}
       </div>

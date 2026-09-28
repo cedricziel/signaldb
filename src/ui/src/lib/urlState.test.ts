@@ -258,6 +258,13 @@ describe("buildSearch", () => {
     expect(buildSearch(state)).toContain("app=storefront-web");
     expect(parseExploreState(buildSearch(state)).rumApp).toBe("storefront-web");
   });
+
+  it("round-trips the Real users Pages tab's selected route through ?route=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("route");
+    const state = { ...DEFAULT_STATE, rumRoute: "/orders/:id" };
+    expect(buildSearch(state)).toContain("route=");
+    expect(parseExploreState(buildSearch(state)).rumRoute).toBe("/orders/:id");
+  });
 });
 
 describe("chart scale", () => {

@@ -2,7 +2,7 @@ import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import * as rumApi from "../../api/rum";
-import type { RumApp, RumRequestRow } from "../../api/rum";
+import type { RumApp, RumPageRow, RumRequestRow } from "../../api/rum";
 import { connectionInfoBody } from "../../test/connectionInfo";
 import { createAppRouter } from "../../routes";
 import { RouterProvider } from "react-router";
@@ -20,6 +20,7 @@ vi.mock("../../api/rum", async (orig) => ({
   fetchNetworkRequests: vi.fn().mockResolvedValue([]),
   fetchResources: vi.fn().mockResolvedValue([]),
   fetchTracedShare: vi.fn().mockResolvedValue({ traced: [], total: [] }),
+  fetchPages: vi.fn().mockResolvedValue([]),
 }));
 vi.mock("../../api/errors", async (orig) => ({
   ...(await orig<typeof import("../../api/errors")>()),
@@ -333,5 +334,71 @@ describe("Network tab", () => {
     expect(callout.textContent).toContain("38K");
     expect(callout.textContent).not.toContain("ingest.acme.example.com");
     expect(callout.textContent).not.toContain("cdn.capped.example.com");
+  });
+});
+
+function pageRow(overrides: Partial<RumPageRow> = {}): RumPageRow {
+  return {
+    route: "/orders/:id",
+    views: 500,
+    vitals: new Map([["lcp", { p75: 4200, counts: { good: 200, poor: 300 } }]]),
+    errorShare: 0.08,
+    ...overrides,
+  };
+}
+
+describe("Pages tab", () => {
+  it("lists routes and writes ?route= when one is picked", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([pageRow()]);
+    renderRum("/rum/pages?app=storefront-web");
+
+    const routeButton = await screen.findByRole("button", {
+      name: /\/orders\/:id/,
+    });
+    const user = userEvent.setup();
+    await user.click(routeButton);
+
+    await waitFor(() =>
+      expect(window.location.search).toContain("route=%2Forders%2F%3Aid"),
+    );
+  });
+
+  it("callouts page views with no attributable route", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([
+      pageRow(),
+      pageRow({ route: null, views: 12, errorShare: null }),
+    ]);
+    renderRum("/rum/pages?app=storefront-web");
+
+    expect(
+      await screen.findByText(/carry no/, { exact: false }),
+    ).toBeInTheDocument();
+  });
+});
+
+describe("Overview tab's Slowest pages panel", () => {
+  it("opens the Pages tab with the clicked route selected", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([pageRow()]);
+    renderRum("/rum/overview?app=storefront-web");
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: /\/orders\/:id/ }),
+    );
+
+    await waitFor(() => expect(window.location.pathname).toBe("/rum/pages"));
+    expect(window.location.search).toContain("route=%2Forders%2F%3Aid");
   });
 });

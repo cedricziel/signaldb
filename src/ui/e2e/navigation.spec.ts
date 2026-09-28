@@ -274,4 +274,10 @@ test("sidebar → Real users → Overview renders", async ({ page }) => {
     "aria-current",
     "page",
   );
+  await page.getByRole("button", { name: "Pages" }).click();
+  await expect(page).toHaveURL(/\/rum\/pages$/);
+  await expect(page.getByRole("button", { name: "Pages" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 });
