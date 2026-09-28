@@ -8,7 +8,7 @@ import type { WhoamiResponse } from "../api/session";
 
 export type JsonRoute = {
   match: string | RegExp;
-  body: unknown;
+  body?: unknown;
   status?: number;
   /** When set, only match requests with this HTTP method. */
   method?: string;
@@ -230,10 +230,15 @@ export const irCatchAll: JsonRoute = { match: "/api/v1/query", body: {} };
  * stubbed responses — the discriminator every IR-backed view's stories use
  * (see `TracesView.stories.tsx`, `ErrorsView.stories.tsx`,
  * `CatalogView.stories.tsx`). */
-export function irBody(
-  match: (body: { result?: string; from?: string }) => boolean,
-) {
-  return (b: unknown) => match((b ?? {}) as { result?: string; from?: string });
+export type IrRequestBody = {
+  result?: string;
+  from?: string;
+  fields?: unknown;
+  pipeline?: { aggregate?: { by?: string[] } }[];
+};
+
+export function irBody(match: (body: IrRequestBody) => boolean) {
+  return (b: unknown) => match((b ?? {}) as IrRequestBody);
 }
 
 /** A `describe: fields` response naming `names` as declared, filterable

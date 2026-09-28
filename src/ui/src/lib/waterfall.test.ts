@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { TempoSpan } from "../api/traceTypes";
-import { buildWaterfall, formatDurationMs } from "./waterfall";
+import { buildWaterfall, formatDurationMs, rulerTicks } from "./waterfall";
 
 const span = (over: Partial<TempoSpan>): TempoSpan => ({
   spanId: "s",
@@ -138,5 +138,28 @@ describe("formatDurationMs", () => {
     expect(formatDurationMs(412)).toBe("412 ms");
     expect(formatDurationMs(4.2)).toBe("4.2 ms");
     expect(formatDurationMs(0.25)).toBe("250 µs");
+  });
+});
+
+describe("rulerTicks", () => {
+  it("marks 0, quarter, half, three-quarter, and the total duration", () => {
+    expect(rulerTicks(412_000_000n)).toEqual([
+      { pct: 0, label: "0" },
+      { pct: 25, label: "103 ms" },
+      { pct: 50, label: "206 ms" },
+      { pct: 75, label: "309 ms" },
+      { pct: 100, label: "412 ms" },
+    ]);
+  });
+
+  it("switches units with the trace's scale", () => {
+    expect(rulerTicks(4_000_000_000n).map((t) => t.label)).toEqual([
+      "0",
+      "1.00 s",
+      "2.00 s",
+      "3.00 s",
+      "4.00 s",
+    ]);
+    expect(rulerTicks(800_000n).at(-1)?.label).toBe("800 µs");
   });
 });

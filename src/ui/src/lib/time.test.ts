@@ -163,6 +163,17 @@ describe("axisLabelFormatter", () => {
     expect(fmt(at(2026, 8, 1, 0))).toBe("08-01");
     expect(fmt(at(2026, 8, 8, 0))).toBe("08-08");
   });
+
+  it("includes the year when the window crosses a year boundary", () => {
+    const fmt = axisLabelFormatter(at(2025, 12, 31, 22), at(2026, 1, 1, 6));
+    expect(fmt(at(2025, 12, 31, 22))).toBe("2025-12-31 22:00");
+    expect(fmt(at(2026, 1, 1, 6))).toBe("2026-01-01 06:00");
+  });
+
+  it("keeps the year on date-only labels across a year boundary", () => {
+    const fmt = axisLabelFormatter(at(2025, 12, 28, 0), at(2026, 1, 4, 0));
+    expect(fmt(at(2025, 12, 28, 0))).toBe("2025-12-28");
+  });
 });
 
 describe("stepOptionsForRange", () => {
