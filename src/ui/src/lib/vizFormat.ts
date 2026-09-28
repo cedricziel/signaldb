@@ -92,6 +92,11 @@ export function compactCount(n: number, unit = "", step?: number): string {
 
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");
 
+/** `1 span` / `1,200 spans`. */
+export function pluralCount(n: number, noun: string): string {
+  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+}
+
 /**
  * An absolute timestamp at the panel's resolution: always date and time to
  * the minute, plus seconds below a minute of resolution and milliseconds

@@ -80,7 +80,8 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   one-click toggle). Drilling into a group applies the same dimension-value
   filter to the span-volume chart as to its member list, so the chart above
   the list describes that group's spans, not the whole tab. The **span.kind** facet always lists all five kinds as
-  checkboxes with their counts, several can be on at once (one `in` filter),
+  checkboxes with their counts (a dash and "Could not load counts" when the
+  count query fails, never a row of zeros), several can be on at once (one `in` filter),
   and Server, Client, Producer, and Consumer are selected by default —
   Internal spans are opted into; unchecking the last kind selects them all.
   Root spans are what the default **Traces** grain already inspects. Facets
@@ -89,7 +90,9 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   status as a coloured chip (error / ok / unset), sortable with errors
   first; duplicate trace ids in the response (a backend data issue) are
   deduped to the first occurrence, so a repeat doesn't scramble the sort; selecting a trace
-  opens a waterfall with span details and error highlighting. A parent span
+  opens a waterfall with span details and error highlighting. A time ruler
+  above the bars marks 0, ¼, ½, ¾, and the total trace duration (0, ½, and
+  the total at phone width). A parent span
   that recorded no duration (an un-ended root, for instance) is drawn as a
   dashed outline over its child spans instead of a sliver; its own duration
   still reads as recorded. Clicking a span row or bar selects it and opens
@@ -280,8 +283,8 @@ that sent at least one RUM event (a `browser.web_vital`,
 `browser.navigation`, `browser.user_action.click` or
 `browser.resource_timing` record, or any record carrying `session.id`) in
 the window. The app switcher lists every such app, busiest first, and
-defaults to the busiest; picking one writes `?app=` and clears any
-route/error/session selection. With no frontend app yet, the page shows an
+defaults to the busiest; picking one writes `?app=` and keeps the
+current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
 the **Overview** and **Setup** tabs; Pages, Sessions, Errors, Network and
 Interactions follow in later changes and are not shown as placeholders.
@@ -863,10 +866,11 @@ estimate `describe: fields` reports for each one), and grouping by a
 high-cardinality label — one that would explode into thousands of series, like
 a pod or trace id — shows a `⚠` warning before you run it.
 
-The metric and group-by boxes grow with what you type, up to the row's
-width, and the row wraps onto a second line once its parts no longer fit,
-so a long dotted metric name is neither clipped nor cut off without an
-ellipsis; each box also carries its full value as a title.
+The metric box sizes itself to the metric name, and the group-by box grows
+with what you type, up to the row's width. The row wraps onto a second line
+once its parts no longer fit, so a long dotted metric name is never clipped.
+Each box also carries its full value as a title. On a phone, the metric
+stays on one line with its query letter and the `from` keyword.
 
 **Run** compiles the row to an IR document and charts it — a dotted
 OTel-native metric name (e.g. `signaldb.wal.entries_processed`) works
@@ -874,6 +878,13 @@ directly, where PromQL's grammar can't even lex it. Series take one of
 twelve colours in order; past twelve, the colours repeat with a different
 dash pattern, so two series sharing a hue are still distinguishable in the
 chart and the legend.
+
+The legend and the chart tooltip name each series by its label values, for
+example `checkout` rather than `{service_name="checkout"}`, with several
+values joined by `·`. Hover a legend entry to see its full selector. The
+**Copy** button at the end of the legend copies every series' selector, one
+per line. The time axis shows the date only on the first tick and wherever
+the day changes.
 
 ### Formulas across multiple queries
 
@@ -1213,7 +1224,8 @@ message and column — Save is disabled while any error is present. A
 **Test** panel, preloaded with a sample OTLP JSON payload for the selected
 signal and editable, submits the current (unsaved) processor to `:test` and
 renders a before/after diff of the payload plus per-statement match and
-error counts. After a successful save the editor shows an "applies within
+error counts. Both sides of the diff list keys alphabetically and leave out
+zero-valued fields, so only what the statements changed shows up. After a successful save the editor shows an "applies within
 N seconds" hint, matching `[processors].reload_interval`. Everything goes
 through the generated TypeScript client.
 

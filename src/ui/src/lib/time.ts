@@ -187,18 +187,23 @@ export function formatTimestampForRange(
  * `formatTimestamp` is always time-of-day, which makes both ends of a 24h
  * window render as the same string. The granularity here follows the window:
  * time-only inside one calendar day, date + time once it crosses midnight,
- * and date-only past a couple of days where the time of day is noise.
+ * and date-only past a couple of days where the time of day is noise. The
+ * year joins the date only when the window crosses a year boundary.
  */
 export function axisLabelFormatter(
   fromMs: number,
   toMs: number,
 ): (ms: number) => string {
   const pad = (n: number) => String(n).padStart(2, "0");
-  const date = (d: Date) => `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const time = (d: Date) => `${pad(d.getHours())}:${pad(d.getMinutes())}`;
 
   const from = new Date(fromMs);
   const to = new Date(toMs);
+  const crossesYear = from.getFullYear() !== to.getFullYear();
+  const date = (d: Date) =>
+    crossesYear
+      ? formatDate(d.getTime())
+      : `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const sameDay =
     from.getFullYear() === to.getFullYear() &&
     from.getMonth() === to.getMonth() &&
@@ -217,6 +222,46 @@ export function axisLabelFormatter(
     const d = new Date(ms);
     return `${date(d)} ${time(d)}`;
   };
+}
+
+/**
+ * Time-axis tick labels on one line each: time of day at the step's
+ * precision, with the `MM-DD` date only on the first tick and wherever the
+ * calendar day changes. At a step of a day or more, the date alone.
+ */
+export function timeAxisLabels(splits: number[], incrMs: number): string[] {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  let prevDay = "";
+  return splits.map((ms) => {
+    const d = new Date(ms);
+    const day = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (incrMs >= DAY_MS) return day;
+    let time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    if (incrMs < 60_000) time += `:${pad(d.getSeconds())}`;
+    const label = day === prevDay ? time : `${day} ${time}`;
+    prevDay = day;
+    return label;
+  });
+}
+
+/**
+ * `timeAxisLabels` for every `every`-th of at most `maxTicks` points, the
+ * rest blank. The tick spacing comes from the points' smallest gap, so
+ * sub-daily points keep their hour whatever the window's length.
+ */
+export function thinnedTimeAxisLabels(
+  points: number[],
+  maxTicks: number,
+  fallbackStepMs: number,
+): string[] {
+  const every = Math.max(1, Math.ceil(points.length / maxTicks));
+  const gaps = points.slice(1).map((t, i) => t - points[i]!);
+  const incr = gaps.length ? Math.min(...gaps) * every : fallbackStepMs;
+  const labels = timeAxisLabels(
+    points.filter((_, i) => i % every === 0),
+    incr,
+  );
+  return points.map((_, i) => (i % every ? "" : labels[i / every]!));
 }
 
 export function formatRangeLabel(range: TimeRange): string {

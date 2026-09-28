@@ -4,25 +4,14 @@ import { fireEvent, within } from "storybook/test";
 import { MemoryRouter } from "react-router";
 import { testQueryClient } from "../../lib/queryClient";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
-import type { JsonRoute } from "../../stories/fetchStub";
+import {
+  irBody,
+  irOperationSeriesResponse,
+  type JsonRoute,
+} from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
 import { TracesView } from "./TracesView";
-
-/** Matches a Query IR request body by its `result` envelope and `from`
- * source — enough to route the traces tab's several distinct queries
- * (groups, volume, members, trace/profile detail) through one endpoint,
- * mirroring `TracesView.test.tsx`'s `isTraceDetailQuery`. */
-function irBody(
-  match: (body: {
-    result?: string;
-    from?: string;
-    fields?: unknown;
-  }) => boolean,
-) {
-  return (b: unknown) =>
-    match((b ?? {}) as { result?: string; from?: string; fields?: unknown });
-}
 
 const GROUP_ROWS = [
   [
@@ -51,28 +40,47 @@ const groupRoute: JsonRoute = {
   body: { result: "table", rows: GROUP_ROWS },
 };
 
+/** The span.kind facet's value-count query (`api/traceFacets.ts`) is a
+ * `table` too; without its own route the group rows above answer it and
+ * every kind reads 0. */
+const kindFacetRoute: JsonRoute = {
+  match: "/api/v1/query",
+  bodyMatch: irBody((b) =>
+    (b.pipeline ?? []).some(
+      (stage) => stage.aggregate?.by?.[0] === "span_kind",
+    ),
+  ),
+  body: {
+    result: "table",
+    rows: [
+      ["Internal", 1_184],
+      ["Server", 496],
+      ["Client", 412],
+      ["Producer", 38],
+    ],
+  },
+};
+
+/** One-minute buckets over the hour ending at the request's own `range.to`,
+ * so the histogram's axis spans the story's window rather than a fixed 2023
+ * timestamp far outside it. */
+function volumeFor(b: unknown) {
+  const toNs = Number((b as { range?: { to?: string } }).range?.to ?? 0);
+  const points = (value: (i: number) => number): [number, number][] =>
+    Array.from({ length: 60 }, (_, i) => [
+      toNs - (59 - i) * 60_000_000_000,
+      value(i),
+    ]);
+  return irOperationSeriesResponse("status.code", {
+    ok: points((i) => 40 + (i % 12)),
+    error: points((i) => 2 + (i % 3)),
+  });
+}
+
 const volumeRoute: JsonRoute = {
   match: "/api/v1/query",
   bodyMatch: irBody((b) => b.result === "series"),
-  body: {
-    result: "series",
-    series: [
-      {
-        labels: { "status.code": "ok" },
-        points: Array.from({ length: 12 }, (_, i) => [
-          1_700_000_000_000_000_000 + i * 60_000_000_000,
-          40 + i,
-        ]),
-      },
-      {
-        labels: { "status.code": "error" },
-        points: Array.from({ length: 12 }, (_, i) => [
-          1_700_000_000_000_000_000 + i * 60_000_000_000,
-          2 + (i % 3),
-        ]),
-      },
-    ],
-  },
+  bodyFor: volumeFor,
 };
 
 const membersRoute: JsonRoute = {
@@ -191,7 +199,12 @@ const profilesRoute: JsonRoute = {
   body: { result: "rows", columns: [], rows: [] },
 };
 
-const baseRoutes: JsonRoute[] = [groupRoute, volumeRoute, membersRoute];
+const baseRoutes: JsonRoute[] = [
+  groupRoute,
+  kindFacetRoute,
+  volumeRoute,
+  membersRoute,
+];
 const detailRoutes: JsonRoute[] = [...baseRoutes, spanRoute, profilesRoute];
 
 function TracesPage({
@@ -217,7 +230,7 @@ const meta = {
   parameters: { layout: "fullscreen" },
   decorators: [
     (Story) => (
-      <div style={{ width: 1280, height: 800 }}>
+      <div style={{ width: "100%", maxWidth: 1280, height: 800 }}>
         <Story />
       </div>
     ),

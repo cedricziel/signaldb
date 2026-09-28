@@ -183,3 +183,43 @@ here.
 
 - **WHEN** a visitor holding a valid session opens `/login?redirect=%2Ftraces`
 - **THEN** they are forwarded to `/traces` without the form being shown
+
+### Requirement: Evaluate navigation group
+
+The navigation sidebar, mobile drawer and command palette SHALL include an
+Evaluate group, placed between Investigate and Configure, with the pages
+Agents & scores (`/evals`), Compare (`/evals/compare`), Runs
+(`/evals/runs`) and Evaluators (`/evals/evaluators`); Eval sets
+(`/evals/sets`) joins the group with the `agent-eval-sets` capability. The current page SHALL be the item
+with the longest path prefix of the location, so nested Evaluate pages
+keep their own item current. Evaluate links SHALL carry the time range and
+tenant/dataset context.
+
+#### Scenario: Nested paths highlight their own item
+
+- **WHEN** a user opens `/evals/runs`
+- **THEN** "Runs" is the current page in the sidebar, not "Agents & scores"
+
+#### Scenario: The case drilldown belongs to Compare
+
+- **WHEN** a user opens `/evals/compare/case?case=case-117`
+- **THEN** "Compare" is the current page in the sidebar
+
+### Requirement: Real users page is reachable from the sidebar
+
+The sidebar's Monitor group SHALL list "Real users" after Catalog, linking
+to `/rum` with the explore context (tenant, dataset, range) carried over.
+Any `/rum/...` path SHALL highlight it and title the breadcrumb
+"Monitor / Real users". An unknown tab segment SHALL resolve to
+`/rum/overview`, preserving the query string.
+
+#### Scenario: Sidebar link
+
+- **WHEN** a user on `/logs?tenant=acme&dataset=prod` clicks "Real users"
+- **THEN** the browser navigates to `/rum?tenant=acme&dataset=prod` (plus the
+  current range) and the entry is highlighted
+
+#### Scenario: Unknown tab
+
+- **WHEN** a user opens `/rum/nope?app=storefront-web`
+- **THEN** the URL becomes `/rum/overview?app=storefront-web`

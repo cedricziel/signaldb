@@ -5,7 +5,11 @@
    the gate modal, and consent share one visual family (design decision 1). */
 
 .login-page {
-  min-height: 100%;
+  /* The viewport, not the parent: no ancestor gives this page a definite
+     height, so a percentage collapses it to its content and the background
+     (and the footer's bottom slot) stop short. */
+  min-height: 100vh;
+  min-height: 100dvh;
   display: grid;
   grid-template-rows: 1fr auto 1fr;
   justify-items: center;
@@ -65,6 +69,7 @@
 .login-foot {
   grid-row: 3;
   align-self: end;
+  padding-top: 24px;
   display: flex;
   gap: 14px;
   font-size: 11px;

@@ -104,6 +104,10 @@
   margin-top: 20px;
 }
 
+.errors-detail > .backbtn {
+  margin-bottom: 10px;
+}
+
 /* Wraps the shared `Sparkline` (bar variant); layout and colour overrides
    scoped under this class rather than the shared component's own. */
 .errors-sparkline-host {

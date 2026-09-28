@@ -11,7 +11,9 @@ sources:
   - src/signaldb-cli/src/commands/evals.rs
   - src/mcp-server/src/server.rs
   - testdata/eval_compare.json
-  - openspec/changes/agent-offline-evals/**
+  - openspec/specs/agent-evaluation-results/**
+  - openspec/specs/agent-eval-results-upload/**
+  - openspec/specs/explore-ui-evaluate/**
 ---
 
 # Evaluating AI agents
@@ -159,7 +161,8 @@ store its results twice.
   scored, the pass rate over all evaluators against the previous window,
   the evaluator that dropped most, evaluator errors, a mean-score line per
   evaluator with version markers, and the evaluators table sorted by the
-  biggest drop. The source toggle switches between offline runs (default),
+  biggest drop. An evaluator that sends only labels shows its most common
+  label and that label's share in the Mean column. The source toggle switches between offline runs (default),
   production results, or both. The page opens on the last 7 days.
 - **Eval sets** (`/evals/sets`, `/evals/sets/{name}`) — the stored
   [eval sets](eval-sets.md) with their cases, what they were built from,

@@ -4,10 +4,12 @@ import {
   buildFormulaIrDoc,
   buildMetricIrDoc,
   irSeriesToPromSeries,
+  seriesDisplayName,
+  type PromSeries,
   seriesName,
 } from "../../api/ir/metrics";
 import { runIrQuery } from "../../api/queryIr";
-import { AttributeValue } from "../../components/AttributeValue";
+import { CopyValueButton } from "../../components/CopyValueButton";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { liveRefetchInterval } from "../../lib/live";
@@ -28,6 +30,8 @@ import {
 import { MetricsChart } from "./MetricsChart";
 import { QueryRow } from "./QueryRow";
 import "./metrics.css";
+
+const legendLabel = (s: PromSeries) => seriesDisplayName(s.labels);
 
 interface Props {
   state: ExploreState;
@@ -104,6 +108,11 @@ export function MetricsView({ state, update }: Props) {
       ? queries.every((q) => q.metric.trim() !== "")
       : (queries[0]?.metric.trim() ?? "") !== "";
 
+  const selectors = useMemo(
+    () => (chart.data ?? []).map((s) => seriesName(s.labels)),
+    [chart.data],
+  );
+
   const run = () => {
     const metricQuery = JSON.stringify({ queries, formula });
     lastWritten.current = metricQuery;
@@ -177,19 +186,22 @@ export function MetricsView({ state, update }: Props) {
       {chart.data && chart.data.length > 0 && (
         <>
           <div className="mchart-wrap">
-            <MetricsChart series={chart.data} />
+            <MetricsChart series={chart.data} labelOf={legendLabel} />
           </div>
-          <ul className="mlegend" aria-label="Series">
-            {chart.data.map((s, i) => {
-              const name = seriesName(s.labels);
-              return (
-                <li key={name}>
+          <div className="mlegend-wrap">
+            <ul className="mlegend" aria-label="Series">
+              {chart.data.map((s, i) => (
+                <li key={selectors[i]} title={selectors[i]}>
                   <i style={{ background: seriesColorVar(i) }} />
-                  <AttributeValue value={name} label={`series ${name}`} />
+                  <span className="mlegend-name">{legendLabel(s)}</span>
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+            <CopyValueButton
+              value={selectors.join("\n")}
+              label="series selectors"
+            />
+          </div>
         </>
       )}
     </div>

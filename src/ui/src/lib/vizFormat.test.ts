@@ -8,6 +8,7 @@ import {
   formatTimeBucket,
   formatTimestamp,
   formatValue,
+  pluralCount,
 } from "./vizFormat";
 
 describe("compactCount", () => {
@@ -191,5 +192,13 @@ describe("errorRateSeverity", () => {
   it("is critical from 2%", () => {
     expect(errorRateSeverity(0.02)).toBe("critical");
     expect(errorRateSeverity(1)).toBe("critical");
+  });
+});
+
+describe("pluralCount", () => {
+  it("pluralises everything but one", () => {
+    expect(pluralCount(0, "case")).toBe("0 cases");
+    expect(pluralCount(1, "case")).toBe("1 case");
+    expect(pluralCount(1200, "case")).toBe("1,200 cases");
   });
 });

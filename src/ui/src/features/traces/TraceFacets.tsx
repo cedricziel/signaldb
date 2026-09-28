@@ -169,8 +169,10 @@ function FacetValues({
 
   // A multi facet with a fixed value set always offers every value — as
   // checkboxes, so several can be on at once — with the counts the data
-  // has for them (0 while absent, blank while loading).
+  // has for them. A failed query shows "–", never 0, so it can't read as
+  // an empty window.
   if (facet.multi && facet.values) {
+    const placeholder = result.isPending ? "…" : result.isError ? "–" : null;
     const counts = new Map(
       (result.data?.values ?? []).map((v) => [v.value, v.count]),
     );
@@ -200,11 +202,14 @@ function FacetValues({
               />
               <span className="facet-val-name">{value}</span>
               <span className="facet-val-count">
-                {result.isPending ? "…" : NUM.format(count ?? 0)}
+                {placeholder ?? NUM.format(count ?? 0)}
               </span>
             </label>
           );
         })}
+        {result.isError && (
+          <div className="fieldvals-note">Could not load counts</div>
+        )}
       </div>
     );
   }

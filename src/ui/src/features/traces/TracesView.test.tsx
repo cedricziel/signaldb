@@ -486,16 +486,24 @@ describe("TracesView group list", () => {
     );
   });
 
-  it("sorts the Rate column by count — the same ordering over a fixed window", async () => {
+  it("marks only the active sort column, moving the mark to Rate when clicked", async () => {
     renderView();
     await screen.findByLabelText("Group by");
+    const sorted = () =>
+      screen
+        .getAllByRole("columnheader")
+        .filter((th) => th.hasAttribute("aria-sort"))
+        .map((th) => th.textContent);
+    expect(sorted()).toEqual(["Traces"]);
+
     await userEvent.click(screen.getByRole("button", { name: "Rate" }));
+    expect(sorted()).toEqual(["Rate"]);
     expect(fetchTraceGroups).toHaveBeenLastCalledWith(
       expect.anything(),
       expect.anything(),
       expect.anything(),
       expect.anything(),
-      { key: "n", dir: "asc" },
+      { key: "n", dir: "desc" },
     );
   });
 

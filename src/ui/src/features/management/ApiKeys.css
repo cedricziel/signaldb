@@ -38,6 +38,24 @@
   font-weight: 650;
 }
 
+/* The list card has no padding of its own (its rows carry it), so its
+   heading brings the row inset with it. */
+.api-keys-create h2 {
+  margin: 0 0 12px;
+}
+
+.api-keys-list h2 {
+  margin: 0;
+  padding: 14px 14px 4px;
+}
+
+.api-keys-field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .api-keys-form {
   display: grid;
   gap: 12px;

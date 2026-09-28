@@ -19,9 +19,9 @@ import {
 } from "../../api/evals";
 import type { ShellContext } from "../../lib/outletState";
 import { seriesColorVar } from "../../lib/promSeries";
-import { axisLabelFormatter, type ResolvedRange } from "../../lib/time";
+import { thinnedTimeAxisLabels, type ResolvedRange } from "../../lib/time";
 import { viewHref, type EvalSource } from "../../lib/urlState";
-import { formatTimeBucket } from "../../lib/vizFormat";
+import { formatTimeBucket, pluralCount } from "../../lib/vizFormat";
 import {
   emptyStats,
   meanOf,
@@ -32,7 +32,13 @@ import {
   type EvalStats,
   type StatsDelta,
 } from "./evalModel";
-import { fmtCount, fmtDelta, fmtPct, fmtScore } from "./evalFormat";
+import {
+  fmtCount,
+  fmtDelta,
+  fmtMeanOrLabel,
+  fmtPct,
+  fmtScore,
+} from "./evalFormat";
 import {
   EvalsHead,
   PassBar,
@@ -349,9 +355,7 @@ export function AgentsScoresView(shell: ShellContext) {
                       <td>
                         <PassBar stats={r.current} />
                       </td>
-                      <td className="num">
-                        {r.mean === null ? "label" : fmtScore(r.mean)}
-                      </td>
+                      <td className="num">{fmtMeanOrLabel(r.current)}</td>
                       <td className={`num ${d.tone}`}>{d.text}</td>
                       <td>
                         <Sparkline
@@ -429,7 +433,7 @@ function NoEvaluations({
         <div className="evals-eyebrow">No evaluations yet</div>
         <h2>
           {agent && agentRuns
-            ? `${agent} sent ${fmtCount(agentRuns)} runs in this window. None of them has a score.`
+            ? `${agent} sent ${pluralCount(agentRuns, "run")} in this window. None of them has a score.`
             : "No evaluator results in this window."}
         </h2>
         <p>
@@ -464,6 +468,8 @@ function NoEvaluations({
   );
 }
 
+const MAX_X_TICKS = 8;
+
 /** The y axis: 0.05 steps around the data, never outside [0, 1]. */
 function scoreAxis(values: number[]): { lo: number; hi: number } {
   if (values.length === 0) return { lo: 0, hi: 1 };
@@ -489,12 +495,15 @@ function MeanChart({
   const pointer = useVizPointer(hostRef);
   const [hover, setHover] = useState<number | null>(null);
   const { step, ms: stepMs } = trendStep(range);
-  const axisLabel = axisLabelFormatter(range.fromMs, range.toMs);
   const buckets = useMemo(() => {
     const ts = new Set<number>();
     for (const s of series) for (const p of s.points) ts.add(p.tMs);
     return [...ts].sort((a, b) => a - b);
   }, [series]);
+  const axisLabels = useMemo(
+    () => thinnedTimeAxisLabels(buckets, MAX_X_TICKS, stepMs),
+    [buckets, stepMs],
+  );
   const { lo, hi } = scoreAxis(
     series.flatMap((s) => s.points.map((p) => p.value)),
   );
@@ -623,7 +632,7 @@ function MeanChart({
       </div>
       <div className="evals-plot-x">
         {buckets.map((t, i) => (
-          <span key={t}>{i % 2 ? "" : axisLabel(t)}</span>
+          <span key={t}>{axisLabels[i]}</span>
         ))}
       </div>
     </div>

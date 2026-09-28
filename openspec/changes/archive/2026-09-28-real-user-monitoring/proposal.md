@@ -63,6 +63,13 @@ Scoped out (follow-up changes):
 - The prototype's static demo data: the page shows real data or an empty
   state, never fixtures (fixtures live in stories only).
 
+Shipped here: `count_distinct`, the UI's own route template, browser
+identity and click events, and the page with its Overview and Setup tabs.
+The other tabs, the Overview panels that depend on them (users,
+traced-request share, frontend → backend, slowest pages), session lookup
+in the palette, and platform labels moved unbuilt to the follow-up change
+`rum-explore-tabs`.
+
 Not breaking: no ingest, Flight, WAL or Iceberg change; compatibility APIs
 untouched; `count_distinct` is an additive IR aggregate.
 

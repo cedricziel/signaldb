@@ -366,8 +366,8 @@ async fn main() -> Result<()> {
     let monolith_total_ram_bytes = common::self_monitoring::metrics::total_system_memory_bytes();
     querier_config.resolve_monolith_memory_limit(monolith_total_ram_bytes);
     tracing::info!(
-        memory_limit_mb = ?querier_config.memory_limit_mb,
-        total_ram_bytes = monolith_total_ram_bytes,
+        signaldb.querier.memory_limit_mb = querier_config.memory_limit_mb.map(|mb| mb as i64),
+        signaldb.querier.host_memory_bytes = monolith_total_ram_bytes as i64,
         "Resolved monolith querier memory limit"
     );
     let querier_flight_service = QuerierFlightService::new_with_catalog_manager(

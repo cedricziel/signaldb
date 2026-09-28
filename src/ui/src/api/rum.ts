@@ -1,7 +1,7 @@
 /**
  * Real user monitoring: apps, KPIs, Web Vitals, sessions-over-time and the
  * browser/device breakdown behind the Real users page (Overview tab) — see
- * `openspec/changes/real-user-monitoring/specs/explore-ui-rum/spec.md`.
+ * `openspec/specs/explore-ui-rum/spec.md`.
  *
  * RUM data is plain OTel logs, no dedicated table (design.md — Context): a
  * frontend app is a `service.name` that sent at least one RUM event, vitals

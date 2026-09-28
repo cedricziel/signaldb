@@ -1,5 +1,5 @@
 import { useQuery } from "@tanstack/react-query";
-import { useId, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useId, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   type AttrValue,
@@ -57,7 +57,11 @@ import {
   repositoryHints,
 } from "../../lib/sourceLocation";
 import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
-import { errorRateClass, formatErrorRate } from "../../lib/vizFormat";
+import {
+  errorRateClass,
+  formatErrorRate,
+  pluralCount,
+} from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
@@ -103,7 +107,11 @@ import {
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
 import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
+import {
+  buildWaterfall,
+  formatDurationMs,
+  rulerTicks,
+} from "../../lib/waterfall";
 import { traceToGraph } from "../../lib/traceToGraph";
 import {
   ServiceGraph,
@@ -205,10 +213,6 @@ function traceGraphView(spans: TempoSpan[]): {
 }
 
 type TraceViewMode = "waterfall" | "map" | "both";
-
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
-}
 
 /** A stable string for a filter set, used only as a react-query cache key
  * (the queries below take `filters` directly — see api/traceGroups.ts,
@@ -641,6 +645,12 @@ function GroupList({
     DEFAULT_GROUP_SORT.key,
     DEFAULT_GROUP_SORT.dir,
   );
+  // Rate is count over a fixed window: it keeps its own header key so the
+  // arrow follows the clicked column, but shares the count query and cache.
+  const querySort: GroupSort = {
+    key: sort.key === "rate" ? "n" : sort.key,
+    dir: sort.dir,
+  };
   const refetchInterval = liveRefetchInterval(live);
   const result = useQuery({
     queryKey: [
@@ -649,8 +659,8 @@ function GroupList({
       dims.join(","),
       grain,
       filterKey,
-      sort.key,
-      sort.dir,
+      querySort.key,
+      querySort.dir,
     ],
     // Resolved fresh on every fetch (as the volume chart does), not hoisted
     // from a render captured before this call — a live refetch of a relative
@@ -665,7 +675,7 @@ function GroupList({
         range,
         filters,
         grain,
-        sort as GroupSort,
+        querySort,
       );
       return { ...groups, range };
     },
@@ -741,11 +751,9 @@ function GroupList({
                 toggle={toggle}
                 numeric
               />
-              {/* Rate is count / a fixed window — strictly increasing in count,
-                  so it sorts identically to n; no separate sort key needed. */}
               <SortTh
                 label="Rate"
-                sortKey="n"
+                sortKey="rate"
                 sort={sort}
                 toggle={toggle}
                 numeric
@@ -928,7 +936,7 @@ function GroupDetail({
         emptyMessage={`No ${memberNoun}s in this range`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
-        footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
+        footnote={`Showing up to ${pluralCount(state.limit, memberNoun)}, newest first.`}
         onOpenTrace={(traceId) => update({ trace: traceId }, { push: true })}
       />
     </>
@@ -1063,12 +1071,12 @@ function TraceDetail({ state, update }: Props) {
               ? traceData.durationMs
               : Number(waterfall.traceDurationNs) / 1e6,
           )}{" "}
-          · {plural(waterfall.rows.length, "span")} ·{" "}
-          {plural(waterfall.services.length, "service")}
+          · {pluralCount(waterfall.rows.length, "span")} ·{" "}
+          {pluralCount(waterfall.services.length, "service")}
           {waterfall.errorCount > 0 && (
             <em className="tmeta-err error-text">
               {" "}
-              · {plural(waterfall.errorCount, "error")}
+              · {pluralCount(waterfall.errorCount, "error")}
             </em>
           )}
         </span>
@@ -1159,6 +1167,21 @@ function TraceDetail({ state, update }: Props) {
             aria-label="Spans"
             onPointerLeave={clearHover}
           >
+            <div className="wf-ruler" aria-hidden="true">
+              <span className="span-label" />
+              <span className="wf-ruler-track">
+                {rulerTicks(waterfall.traceDurationNs).map((tick) => (
+                  <span
+                    key={tick.pct}
+                    className="wf-tick"
+                    style={{ "--pct": tick.pct } as CSSProperties}
+                  >
+                    {tick.label}
+                  </span>
+                ))}
+              </span>
+              <span className="span-dur" />
+            </div>
             {visibleRows.map((row) => (
               <button
                 key={row.span.spanId}

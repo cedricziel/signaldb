@@ -343,6 +343,14 @@ select:focus-visible {
   filter: brightness(1.06);
 }
 
+/* Disabled, a primary button looks like any other disabled button rather
+   than a faded accent. */
+.btn-primary:disabled {
+  border-color: var(--border);
+  background: var(--surface2);
+  color: var(--text);
+}
+
 /* No border or background until interaction — a menu item or a quiet
    inline action, not a boxed control. */
 .btn-ghost {
@@ -831,6 +839,8 @@ td.num {
   color: inherit;
   text-transform: inherit;
   letter-spacing: inherit;
+  /* Keeps the ::after sort arrow on the label's line in a narrow column. */
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -978,9 +988,10 @@ th[aria-sort="descending"] .th-sort::after {
 }
 
 /* The panel itself is only a focus target as a fallback (no focusable
-   child); keep the ring for keyboard users, drop it for a mouse/touch
-   click on the panel background. */
-.dialog-panel:focus:not(:focus-visible) {
+   child yet, e.g. consent while its context loads — it keeps focus once the
+   form renders). Its own border already frames it; the browser's ring there
+   read as a leaked focus outline, not a cue. */
+.dialog-panel:focus {
   outline: none;
 }
 

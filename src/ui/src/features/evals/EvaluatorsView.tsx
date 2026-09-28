@@ -9,6 +9,7 @@ import type { EvaluatorInfo } from "../../api/evals";
 import type { ShellContext } from "../../lib/outletState";
 import { ago } from "../overview/overviewModel";
 import { fmtCount, fmtDay } from "./evalFormat";
+import { isReceiving } from "./evalModel";
 import { EvalsHead } from "./EvalBits";
 import { evalRange, evalScope, useEvaluators } from "./useEvalData";
 import "./evals.css";
@@ -84,7 +85,11 @@ export function EvaluatorsView({ state, update }: ShellContext) {
                   {seenIn(e)}
                 </td>
                 <td className="num">{fmtCount(e.results)}</td>
-                <td className="mono dim nowrap">{ago(now - e.lastMs)}</td>
+                <td
+                  className={`mono nowrap ${isReceiving(e.lastMs, now) ? "good" : "dim"}`}
+                >
+                  {ago(now - e.lastMs)}
+                </td>
               </tr>
             ))}
           </tbody>

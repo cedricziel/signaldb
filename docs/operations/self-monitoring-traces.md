@@ -223,10 +223,22 @@ decision. Headers are omitted when self-monitoring is disabled and on
 | span `flight_do_put`                                      | `arrow.flight.protocol.FlightService/DoPut`           |
 | span `compaction_job`                                     | `compaction`                                          |
 | field `tenant_id`                                         | `signaldb.tenant.id`                                  |
-| field `dataset_id`                                        | `signaldb.dataset.id`                                 |
+| field `dataset_id` / `dataset`                            | `signaldb.dataset.id`                                 |
 | field `table` / `table_name`                              | `signaldb.table`                                      |
 | field `entry_count`                                       | `signaldb.wal.entry_count`                            |
 | field `operation` / `data_size` / `entry_id` (WAL spans)  | `signaldb.wal.operation` / `…data_size` / `…entry_id` |
+| field `wal_dir`                                           | `signaldb.wal.dir`                                    |
+| field `address` / `addr` (listener startup)               | `signaldb.service.address`                            |
+| field `service_type` / `service_id` (bootstrap)           | `signaldb.service.type` / `service.instance.id`       |
+| field `dsn`                                               | `signaldb.catalog.dsn` (object store: `url.full`)     |
+| field `limit` (concurrent-query rejection)                | `signaldb.querier.max_concurrent_queries`             |
+| field `catalog` (querier catalog registration)            | `signaldb.catalog.name`                               |
+| field `memory_limit_mb` / `memory_pool_fraction`          | `signaldb.querier.memory_limit_mb` / `…pool_fraction` |
+| field `total_ram_bytes`                                   | `signaldb.querier.host_memory_bytes`                  |
+| field `candidates_identified` (orphan-cleanup summary)    | `signaldb.job.candidates`                             |
+| field `bytes_freed` (orphan-cleanup summary)              | `signaldb.job.bytes_reclaimed`                        |
+| field `cleanup_skipped_threshold`                         | `signaldb.job.tables_skipped`                         |
+| field `datasets_checked` / … (reconcile pass)             | `signaldb.job.datasets_checked` / …                   |
 | resource `deployment.environment` (= `"self-monitoring"`) | `deployment.environment.name` (config-sourced)        |
 
 ## Conventions registry and enforcement
@@ -253,8 +265,8 @@ whitelisted for live-check via finding filters in the repo-root
 events (stamped unconditionally by tracing-opentelemetry's event bridge),
 and the `not_stable` advice for our own `signaldb.*` attributes (the
 SignalDB registry is `development` by design). `info!`/`warn!` events
-inside instrumented spans become span events, so their fields must be
-declared in the resolved registry — `signaldb.*` for SignalDB-specific
-fields, or an upstream semconv attribute (e.g. `file.path`) where one
+become span events inside instrumented spans and OTel log records
+everywhere, so their fields must be declared in the resolved registry —
+`signaldb.*` for SignalDB-specific fields, or an upstream semconv attribute (e.g. `file.path`) where one
 fits. Per-item developer detail belongs at `debug!`, which the default
 `info` level keeps out of telemetry.
