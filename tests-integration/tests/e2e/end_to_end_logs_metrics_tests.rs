@@ -33,6 +33,7 @@ struct TestServices {
     log_handler: LogHandler,
     metrics_handler: MetricsHandler,
     flight_transport: Arc<InMemoryFlightTransport>,
+    catalog_manager: Arc<CatalogManager>,
     _temp_dir: TempDir,
 }
 
@@ -144,7 +145,7 @@ async fn setup_logs_metrics_services() -> TestServices {
             .expect("Failed to create CatalogManager for writer"),
     );
     let writer_service = tests_integration::test_support::writer_service_with_type_authority(
-        writer_catalog_manager,
+        writer_catalog_manager.clone(),
         writer_wal,
         &common::config::WriterConfig::default(),
     )
@@ -193,6 +194,7 @@ async fn setup_logs_metrics_services() -> TestServices {
         log_handler,
         metrics_handler,
         flight_transport,
+        catalog_manager: writer_catalog_manager,
         _temp_dir: temp_dir,
     }
 }
@@ -367,33 +369,40 @@ async fn wait_for_object_locations(
     }
 }
 
-/// Wait until the object store contains at least one path matching EACH of the given
-/// patterns, or until `timeout_duration` elapses. Used by the mixed-types test where
-/// multiple metric tables are written sequentially and the first table's objects
-/// would otherwise satisfy `wait_for_object_locations` before the others are committed.
-async fn wait_for_object_locations_all(
-    store: &Arc<dyn ObjectStore>,
-    required_patterns: &[&str],
-    timeout_duration: Duration,
-) -> Vec<String> {
-    let start = std::time::Instant::now();
+/// The number of `metrics` table rows whose `metric_type` column equals
+/// `metric_type`, read fresh from the catalog.
+async fn metric_type_row_count(catalog_manager: &Arc<CatalogManager>, metric_type: &str) -> i64 {
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::prelude::SessionContext;
+    use datafusion_iceberg::DataFusionTable;
 
-    loop {
-        let locations = object_locations(store).await;
-        let all_found = required_patterns
-            .iter()
-            .all(|pat| locations.iter().any(|l| l.contains(pat)));
+    let table = tests_integration::compaction_helpers::load_table(
+        catalog_manager,
+        "test-tenant",
+        "test-dataset",
+        "metrics",
+    )
+    .await
+    .expect("metrics table must exist");
 
-        if all_found {
-            return locations;
-        }
-
-        if start.elapsed() >= timeout_duration {
-            return locations;
-        }
-
-        sleep(Duration::from_millis(250)).await;
-    }
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(DataFusionTable::from(table)))
+        .unwrap();
+    let batches = ctx
+        .sql(&format!(
+            "SELECT COUNT(*) FROM t WHERE metric_type = '{metric_type}'"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0)
 }
 
 #[tokio::test]
@@ -457,13 +466,11 @@ async fn test_metrics_gauge_ingestion_and_persistence() {
         .await
         .expect("metrics export must be durably accepted");
 
-    let locations =
-        wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_gauge")),
-        "expected metrics_gauge object path, found: {locations:?}"
+    wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    assert_eq!(
+        metric_type_row_count(&services.catalog_manager, "gauge").await,
+        1,
+        "the gauge datapoint must land in the metrics table"
     );
 }
 
@@ -479,28 +486,12 @@ async fn test_metrics_mixed_types_ingestion() {
         .await
         .expect("metrics export must be durably accepted");
 
-    let locations = wait_for_object_locations_all(
-        &services.object_store,
-        &["metrics_gauge", "metrics_sum", "metrics_histogram"],
-        Duration::from_secs(20),
-    )
-    .await;
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_gauge")),
-        "expected metrics_gauge object path, found: {locations:?}"
-    );
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_sum")),
-        "expected metrics_sum object path, found: {locations:?}"
-    );
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_histogram")),
-        "expected metrics_histogram object path, found: {locations:?}"
-    );
+    wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
+    for metric_type in ["gauge", "sum", "histogram"] {
+        assert_eq!(
+            metric_type_row_count(&services.catalog_manager, metric_type).await,
+            1,
+            "expected one {metric_type} row in the metrics table"
+        );
+    }
 }

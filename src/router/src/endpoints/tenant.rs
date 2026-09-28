@@ -237,6 +237,11 @@ mod tests {
     use std::collections::HashMap;
     use tower::ServiceExt;
 
+    /// Every signal table the deployment default enables.
+    fn all_signal_tables() -> usize {
+        common::iceberg::schemas::TableSchema::all().len()
+    }
+
     async fn create_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
@@ -293,9 +298,8 @@ mod tests {
         let schema_names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(schema_names.contains(&"traces".to_string()));
         assert!(schema_names.contains(&"logs".to_string()));
-        assert!(schema_names.contains(&"metrics_gauge".to_string()));
-        assert!(schema_names.contains(&"metrics_sum".to_string()));
-        assert!(schema_names.contains(&"metrics_histogram".to_string()));
+        assert!(schema_names.contains(&"metrics".to_string()));
+        assert!(schema_names.contains(&"metric_exemplars".to_string()));
     }
 
     #[tokio::test]
@@ -437,16 +441,7 @@ mod tests {
         tables.sort();
         assert_eq!(
             tables,
-            vec![
-                "logs",
-                "metrics_exponential_histogram",
-                "metrics_gauge",
-                "metrics_histogram",
-                "metrics_sum",
-                "metrics_summary",
-                "profiles",
-                "traces",
-            ]
+            vec!["logs", "metric_exemplars", "metrics", "profiles", "traces",]
         );
     }
 
@@ -528,7 +523,12 @@ mod tests {
             .unwrap();
         let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(listed.tables.len(), 8, "{:?}", listed.tables);
+        assert_eq!(
+            listed.tables.len(),
+            all_signal_tables(),
+            "{:?}",
+            listed.tables
+        );
         assert!(listed.tables.iter().all(|t| t.dataset == "production"));
         assert!(listed.tables.iter().any(|t| t.name == "traces"));
         let profiles = listed
@@ -540,7 +540,7 @@ mod tests {
 
         assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
         assert_eq!(listed.datasets[0].dataset, "production");
-        assert_eq!(listed.datasets[0].tables.len(), 8);
+        assert_eq!(listed.datasets[0].tables.len(), all_signal_tables());
     }
 
     /// The endpoint must work for a tenant that exists ONLY in the database —
@@ -611,7 +611,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            8,
+            all_signal_tables(),
             "a database-only tenant must be provisioned too"
         );
 
@@ -630,11 +630,16 @@ mod tests {
             .await
             .unwrap();
         let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(listed.tables.len(), 8, "{:?}", listed.tables);
+        assert_eq!(
+            listed.tables.len(),
+            all_signal_tables(),
+            "{:?}",
+            listed.tables
+        );
         assert!(listed.tables.iter().all(|t| t.dataset == "production"));
         assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
         assert_eq!(listed.datasets[0].dataset, "production");
-        assert_eq!(listed.datasets[0].tables.len(), 8);
+        assert_eq!(listed.datasets[0].tables.len(), all_signal_tables());
     }
 
     /// POST /tenants/:tenant_id/tables/create requires the authenticated

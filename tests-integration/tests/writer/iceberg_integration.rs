@@ -111,9 +111,9 @@ async fn test_wal_processor_integration() -> Result<()> {
 
     // The committed batch must actually be visible as rows in the table.
     assert_eq!(
-        count_rows(&catalog_manager, "metrics_gauge").await?,
+        count_rows(&catalog_manager, "metrics").await?,
         2,
-        "force-committed WAL entry should land as rows in the metrics_gauge table"
+        "force-committed WAL entry should land as rows in the metrics table"
     );
 
     // Shutdown processor
@@ -407,12 +407,11 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
         .expect("Logs partition spec should also roundtrip correctly");
     assert!(!logs_spec.fields().is_empty());
 
-    // Also test metrics_gauge table
     let metrics_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
         "default".to_string(),
         "default".to_string(),
-        "metrics_gauge".to_string(),
+        "metrics".to_string(),
     )
     .await?;
     let metrics_metadata = metrics_writer.table_metadata();

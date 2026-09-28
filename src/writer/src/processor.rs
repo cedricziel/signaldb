@@ -2479,7 +2479,7 @@ mod tests {
             &catalog_manager,
             "acme".to_string(),
             "production".to_string(),
-            "metrics_gauge".to_string(),
+            "metrics".to_string(),
         )
         .await
         .unwrap();

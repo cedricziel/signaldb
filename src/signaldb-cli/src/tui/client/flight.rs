@@ -336,9 +336,10 @@ impl FlightSqlClient {
                 "SELECT DISTINCT metric_name, \
                  COALESCE(metric_description, '') AS metric_description, \
                  COALESCE(metric_unit, '') AS metric_unit \
-                 FROM {} \
+                 FROM metrics \
+                 WHERE metric_type = '{}' \
                  ORDER BY metric_name",
-                metric_type.table_name()
+                metric_type.metric_type_value()
             );
 
             match self.query_sql(&sql).await {
@@ -420,8 +421,8 @@ fn build_metric_sql(
     filters: &MetricFilters,
 ) -> String {
     let mut sql = format!(
-        "SELECT * FROM {} WHERE metric_name = '{}'",
-        metric_type.table_name(),
+        "SELECT * FROM metrics WHERE metric_type = '{}' AND metric_name = '{}'",
+        metric_type.metric_type_value(),
         metric_name.replace('\'', "''") // Escape single quotes
     );
 
@@ -617,7 +618,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT * FROM metrics_gauge WHERE metric_name = 'test''s metric' ORDER BY timestamp DESC LIMIT 500"
+            "SELECT * FROM metrics WHERE metric_type = 'gauge' AND metric_name = 'test''s metric' ORDER BY timestamp DESC LIMIT 500"
         );
     }
 
@@ -632,7 +633,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT * FROM metrics_sum WHERE metric_name = 'requests_total' AND service_name = 'o''reilly-svc' ORDER BY timestamp DESC LIMIT 500"
+            "SELECT * FROM metrics WHERE metric_type = 'sum' AND metric_name = 'requests_total' AND service_name = 'o''reilly-svc' ORDER BY timestamp DESC LIMIT 500"
         );
     }
 
@@ -647,7 +648,7 @@ mod tests {
 
         assert_eq!(
             sql,
-            "SELECT * FROM metrics_histogram WHERE metric_name = 'cpu_usage' ORDER BY timestamp DESC LIMIT 100"
+            "SELECT * FROM metrics WHERE metric_type = 'histogram' AND metric_name = 'cpu_usage' ORDER BY timestamp DESC LIMIT 100"
         );
     }
 }

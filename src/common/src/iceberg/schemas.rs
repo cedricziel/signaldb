@@ -1025,9 +1025,7 @@ mod sort_order_tests {
     }
 
     #[test]
-    fn metrics_and_metric_exemplars_round_trip_but_are_excluded_from_all() {
-        // otel-native-schema layer 7 (D10): declared and resolvable by name,
-        // but not yet part of the created-table surface until the cutover PR.
+    fn metrics_and_metric_exemplars_round_trip_and_are_part_of_all() {
         for name in ["metrics", "metric_exemplars"] {
             let resolved = TableSchema::from_table_name(name)
                 .unwrap_or_else(|| panic!("{name} does not resolve"));
@@ -1035,24 +1033,24 @@ mod sort_order_tests {
             assert!(resolved.schema().is_ok(), "{name} schema should build");
         }
         assert!(
-            !TableSchema::all()
+            TableSchema::all()
                 .iter()
                 .any(|t| t.table_name() == "metrics" || t.table_name() == "metric_exemplars"),
-            "metrics/metric_exemplars must stay out of TableSchema::all() before cutover"
+            "metrics/metric_exemplars must be part of TableSchema::all() after cutover"
         );
     }
 
     #[test]
-    fn current_metric_version_is_still_v3() {
+    fn current_metric_version_is_physical_v4() {
         assert_eq!(
             SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            "physical-v3"
+            "physical-v4"
         );
     }
 
     #[test]
-    fn metrics_layout_defaults_to_legacy() {
-        assert_eq!(MetricsLayout::current(), MetricsLayout::Legacy);
+    fn metrics_layout_defaults_to_wide() {
+        assert_eq!(MetricsLayout::current(), MetricsLayout::Wide);
     }
 
     #[test]
