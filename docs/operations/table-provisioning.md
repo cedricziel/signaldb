@@ -90,9 +90,10 @@ long a _newly created_ dataset waits.
    tenant whose default exists only as a column on its tenant row is
    provisioned like any other.
 3. For each dataset, load-or-create every enabled table.
-4. For each dataset, drop any of the five legacy per-type metric tables
+4. For each dataset, the reconciler drops the legacy tables on its passes
+   until the drop succeeds — the five legacy per-type metric tables
    (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
-   `metrics_exponential_histogram`, `metrics_summary`) still present — the
+   `metrics_exponential_histogram`, `metrics_summary`), part of the
    otel-native-schema layer 7 cutover to the typed `metrics`/`metric_exemplars`
    tables. Dropped data is not migrated; see
    [the metrics table](../architecture/storage-layout.md#metrics-table-physical-v4----current).
