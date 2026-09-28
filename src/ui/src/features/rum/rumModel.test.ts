@@ -1,18 +1,22 @@
 import { describe, expect, it } from "vitest";
 import {
   cssSelectorLabel,
+  detectPlatform,
   formatVitalValue,
+  isMobilePlatform,
   isSdkExportPath,
   loadBreakdownPhases,
   routeUrlRegex,
   NO_VITAL_DATA,
   parseBrowserFromUserAgent,
+  platformLabel,
   rateVital,
   ratingSwatchColorVar,
   ratingTextColorVar,
   resolveRoute,
   RUM_TABS,
   rumTabFromParam,
+  rumTabLabel,
   sessionEventLabel,
   splitKpiSeries,
   splitTracedShare,
@@ -480,5 +484,80 @@ describe("sessionEventLabel", () => {
     expect(sessionEventLabel(event)).toBe(
       "TypeError: Cannot read properties of undefined",
     );
+  });
+});
+
+describe("detectPlatform", () => {
+  it("reads webjs as browser", () => {
+    expect(detectPlatform("webjs", null)).toBe("browser");
+  });
+
+  it("reads swift as iOS", () => {
+    expect(detectPlatform("swift", null)).toBe("ios");
+  });
+
+  it("reads java or kotlin with an Android os.name as Android", () => {
+    expect(detectPlatform("java", "Android")).toBe("android");
+    expect(detectPlatform("kotlin", "Android")).toBe("android");
+  });
+
+  it("reads java without an Android os.name as browser (unknown treated as browser)", () => {
+    expect(detectPlatform("java", "Linux")).toBe("browser");
+    expect(detectPlatform("java", null)).toBe("browser");
+  });
+
+  it("reads an unrecognized or missing sdk language as browser", () => {
+    expect(detectPlatform(null, null)).toBe("browser");
+    expect(detectPlatform("dotnet", null)).toBe("browser");
+  });
+});
+
+describe("isMobilePlatform", () => {
+  it("is true for iOS and Android, false for browser", () => {
+    expect(isMobilePlatform("ios")).toBe(true);
+    expect(isMobilePlatform("android")).toBe(true);
+    expect(isMobilePlatform("browser")).toBe(false);
+  });
+});
+
+describe("platformLabel", () => {
+  it("labels a browser app", () => {
+    expect(platformLabel("webjs", null)).toBe("Browser · JS");
+  });
+
+  it("labels an iOS app", () => {
+    expect(platformLabel("swift", null)).toBe("iOS · Swift");
+  });
+
+  it("labels an Android app by its own SDK language", () => {
+    expect(platformLabel("kotlin", "Android")).toBe("Android · Kotlin");
+    expect(platformLabel("java", "Android")).toBe("Android · Java");
+  });
+
+  it("labels anything else as unknown", () => {
+    expect(platformLabel(null, null)).toBe("Unknown platform");
+    expect(platformLabel("java", "Linux")).toBe("Unknown platform");
+  });
+});
+
+describe("rumTabLabel", () => {
+  it("keeps the default labels for a browser app", () => {
+    expect(rumTabLabel("pages", "browser")).toBe("Pages");
+    expect(rumTabLabel("errors", "browser")).toBe("Errors");
+    expect(rumTabLabel("interactions", "browser")).toBe("Interactions");
+  });
+
+  it("relabels Pages/Errors/Interactions to Screens/Crashes/Taps on mobile", () => {
+    expect(rumTabLabel("pages", "ios")).toBe("Screens");
+    expect(rumTabLabel("errors", "ios")).toBe("Crashes");
+    expect(rumTabLabel("interactions", "ios")).toBe("Taps");
+    expect(rumTabLabel("pages", "android")).toBe("Screens");
+  });
+
+  it("leaves every other tab's label alone on mobile", () => {
+    expect(rumTabLabel("overview", "ios")).toBe("Overview");
+    expect(rumTabLabel("network", "ios")).toBe("Network");
+    expect(rumTabLabel("sessions", "ios")).toBe("Sessions");
+    expect(rumTabLabel("setup", "ios")).toBe("Setup");
   });
 });

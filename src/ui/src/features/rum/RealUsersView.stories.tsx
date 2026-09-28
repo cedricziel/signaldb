@@ -546,13 +546,15 @@ function singleDocResponse(b: IrDoc): unknown {
   const agg = pipe.find((s) => s.aggregate)?.aggregate;
   const by = agg?.by ?? [];
 
-  // App discovery (rumEventWhere + aggregate by service.name).
+  // App discovery (rumEventWhere + aggregate by service.name). Column order
+  // matches `rumAppsFromResponse`: name, count, sdk language, os name, env,
+  // version.
   if (by[0] === "service.name") {
     return {
       result: "table",
       rows: [
-        ["storefront-web", 184210, "webjs", "production", "2026.09.26-3"],
-        ["admin-web", 512, "webjs", "production", "2026.09.20-1"],
+        ["storefront-web", 184210, "webjs", null, "production", "2026.09.26-3"],
+        ["admin-web", 512, "webjs", null, "production", "2026.09.20-1"],
       ],
     };
   }
@@ -840,6 +842,32 @@ const emptyRoutes: JsonRoute[] = [
   { match: "/api/v1/connection", body: CONNECTION },
 ];
 
+/** Swaps the app-discovery response for a single iOS app, delegating every
+ * other read to `rumIr`'s own fixtures unchanged — the mobile panels this
+ * app's `swift` SDK language hides don't read them anyway. */
+function rumIrWithIosApp(raw: unknown): unknown {
+  const b = (raw ?? {}) as IrDoc;
+  const pipe = b.pipeline ?? [];
+  const agg = pipe.find((s) => s.aggregate)?.aggregate;
+  if (agg?.by?.[0] === "service.name") {
+    return {
+      result: "table",
+      rows: [["checkout-ios", 42000, "swift", "iOS", "production", "1.4.2"]],
+    };
+  }
+  return rumIr(raw);
+}
+
+/** A mobile (iOS/Swift) app — `rum-explore-tabs`'s "Platform-aware labels":
+ * Pages/Errors/Interactions read Screens/Crashes/Taps, and the browser-only
+ * panels (Web Vitals, Resources, load breakdown) are hidden or replaced by
+ * an empty state. */
+const iosRoutes: JsonRoute[] = [
+  irCatchAll,
+  { match: "/api/v1/query", body: {}, bodyFor: rumIrWithIosApp },
+  { match: "/api/v1/connection", body: CONNECTION },
+];
+
 const STATE: ExploreState = {
   ...DEFAULT_STATE,
   tenant: "acme",
@@ -893,6 +921,15 @@ export const Dark: Story = {
 
 export const Empty: Story = {
   render: () => <RealUsersPage stubRoutes={emptyRoutes} />,
+};
+
+export const IosApp: Story = {
+  render: () => (
+    <RealUsersPage
+      path="/rum/overview?app=checkout-ios"
+      stubRoutes={iosRoutes}
+    />
+  ),
 };
 
 export const Setup: Story = {

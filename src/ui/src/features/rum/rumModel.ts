@@ -513,3 +513,60 @@ export const RUM_TABS: { id: RumTab; label: string }[] = [
 export function rumTabFromParam(value: string | undefined): RumTab {
   return RUM_TABS.some((t) => t.id === value) ? (value as RumTab) : "overview";
 }
+
+// ---- Platform-aware labels ---------------------------------------------
+
+export type RumPlatform = "browser" | "ios" | "android";
+
+/** The app's platform from `telemetry.sdk.language` (and, for a JVM
+ * language, `os.name`) — `rum-explore-tabs`'s "Platform-aware labels"
+ * requirement. Anything this build doesn't recognize reads as `"browser"`:
+ * today's instrumentation only ships a browser and mobile SDKs, so an
+ * unmapped language is far likelier a gap here than a third platform. */
+export function detectPlatform(
+  sdkLanguage: string | null,
+  osName: string | null,
+): RumPlatform {
+  if (sdkLanguage === "swift") return "ios";
+  if (
+    (sdkLanguage === "java" || sdkLanguage === "kotlin") &&
+    osName === "Android"
+  ) {
+    return "android";
+  }
+  return "browser";
+}
+
+export function isMobilePlatform(platform: RumPlatform): boolean {
+  return platform === "ios" || platform === "android";
+}
+
+/** The app switcher's platform text — independent of `detectPlatform`'s
+ * browser-shaped fallback: a `null`/unmapped SDK language reads as "Unknown
+ * platform" here even though it's treated as browser for tab labels and
+ * panel visibility. */
+export function platformLabel(
+  sdkLanguage: string | null,
+  osName: string | null,
+): string {
+  if (sdkLanguage === "webjs") return "Browser · JS";
+  if (sdkLanguage === "swift") return "iOS · Swift";
+  if (sdkLanguage === "java" && osName === "Android") return "Android · Java";
+  if (sdkLanguage === "kotlin" && osName === "Android") {
+    return "Android · Kotlin";
+  }
+  return "Unknown platform";
+}
+
+/** Pages/Errors/Interactions read as Screens/Crashes/Taps on a mobile
+ * platform — ids and URLs are unchanged, only the display label. */
+const MOBILE_TAB_LABELS: Partial<Record<RumTab, string>> = {
+  pages: "Screens",
+  errors: "Crashes",
+  interactions: "Taps",
+};
+
+export function rumTabLabel(tab: RumTab, platform: RumPlatform): string {
+  const base = RUM_TABS.find((t) => t.id === tab)?.label ?? tab;
+  return isMobilePlatform(platform) ? (MOBILE_TAB_LABELS[tab] ?? base) : base;
+}

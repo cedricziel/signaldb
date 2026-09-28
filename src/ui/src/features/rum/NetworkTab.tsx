@@ -11,6 +11,7 @@ import { compactCount, formatShare } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
 import { Panel } from "./Panel";
 import type { RumRequestRow, RumResourceRow } from "../../api/rum";
+import { isMobilePlatform, type RumPlatform } from "./rumModel";
 import {
   useRumNetworkRequests,
   useRumResources,
@@ -19,14 +20,18 @@ import {
 
 interface Props {
   scope: RumScope;
+  /** The selected app's platform — hides the (browser-only) Resources panel
+   * on mobile (`rum-explore-tabs`'s "Platform-aware labels" requirement). */
+  platform: RumPlatform;
   onOpenSetup: () => void;
 }
 
-export function NetworkTab({ scope, onOpenSetup }: Props) {
+export function NetworkTab({ scope, platform, onOpenSetup }: Props) {
   const requests = useRumNetworkRequests(scope);
   const resources = useRumResources(scope);
   const rows = requests.data ?? [];
   const untraced = untracedOrigins(rows);
+  const mobile = isMobilePlatform(platform);
 
   return (
     <div className="rum-stack">
@@ -49,20 +54,22 @@ export function NetworkTab({ scope, onOpenSetup }: Props) {
         )}
       </Panel>
 
-      <Panel
-        title="Resources"
-        meta="browser.resource_timing · by initiator type · p75"
-      >
-        {resources.isError ? (
-          <QueryError what="resources" error={resources.error} />
-        ) : resources.isPending ? (
-          <div className="rum-placeholder">Loading…</div>
-        ) : (resources.data?.length ?? 0) === 0 ? (
-          <EmptyState title="No resource timing recorded in this window" />
-        ) : (
-          <ResourcesTable rows={resources.data!} />
-        )}
-      </Panel>
+      {!mobile && (
+        <Panel
+          title="Resources"
+          meta="browser.resource_timing · by initiator type · p75"
+        >
+          {resources.isError ? (
+            <QueryError what="resources" error={resources.error} />
+          ) : resources.isPending ? (
+            <div className="rum-placeholder">Loading…</div>
+          ) : (resources.data?.length ?? 0) === 0 ? (
+            <EmptyState title="No resource timing recorded in this window" />
+          ) : (
+            <ResourcesTable rows={resources.data!} />
+          )}
+        </Panel>
+      )}
     </div>
   );
 }

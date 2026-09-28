@@ -62,6 +62,7 @@ function rumApp(overrides: Partial<RumApp> = {}): RumApp {
   return {
     serviceName: "storefront-web",
     sdkLanguage: "webjs",
+    osName: null,
     env: null,
     version: null,
     count: 500,
@@ -270,6 +271,101 @@ describe("RealUsersView", () => {
     expect(window.location.search).toContain("tenant=acme");
   });
 });
+
+describe("Platform-aware labels", () => {
+  it("relabels Pages/Errors/Interactions to Screens/Crashes/Taps for an iOS app and shows a Web Vitals empty state", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({ serviceName: "checkout-ios", sdkLanguage: "swift" }),
+    ]);
+    renderRum("/rum/overview?app=checkout-ios");
+
+    expect(
+      await screen.findByRole("button", { name: "Screens" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Crashes" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "Taps" })).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Pages" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Errors" }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Interactions" }),
+    ).not.toBeInTheDocument();
+    expect(screen.getByText("Core Web Vitals")).toBeInTheDocument();
+    expect(
+      screen.getByText("Mobile vitals aren't supported yet"),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("LCP")).not.toBeInTheDocument();
+  });
+
+  it("keeps the browser labels and Web Vitals panel for a webjs app", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
+    renderRum("/rum/overview?app=storefront-web");
+
+    expect(
+      await screen.findByRole("button", { name: "Pages" }),
+    ).toBeInTheDocument();
+    expect(await screen.findByText("Core Web Vitals")).toBeInTheDocument();
+    expect(await screen.findByText("LCP")).toBeInTheDocument();
+  });
+
+  it("hides the Resources panel in the Network tab for an iOS app", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({ serviceName: "checkout-ios", sdkLanguage: "swift" }),
+    ]);
+    renderRum("/rum/network?app=checkout-ios");
+
+    // Waits for the app to resolve (the app switcher's platform label) before
+    // asserting an absence — "Requests" is a static Panel title that's
+    // already on screen during the pending render, before the platform is
+    // known.
+    await screen.findByText("iOS · Swift");
+    expect(screen.queryByText("Resources")).not.toBeInTheDocument();
+  });
+
+  it("hides the Load breakdown panel in a route's detail for an iOS app", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({ serviceName: "checkout-ios", sdkLanguage: "swift" }),
+    ]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([pageRow()]);
+    renderRum("/rum/pages?app=checkout-ios&route=%2Forders%2F%3Aid");
+
+    await screen.findByText("iOS · Swift");
+    await screen.findByText("Backend calls");
+    expect(screen.queryByText("Load breakdown")).not.toBeInTheDocument();
+  });
+
+  it("shows an Android app's platform label in the app switcher", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({
+        serviceName: "checkout-android",
+        sdkLanguage: "kotlin",
+        osName: "Android",
+      }),
+    ]);
+    renderRum("/rum/overview?app=checkout-android");
+
+    expect(await screen.findByText("Android · Kotlin")).toBeInTheDocument();
+  });
+});
+
 function networkRow(overrides: Partial<RumRequestRow> = {}): RumRequestRow {
   return {
     method: "GET",

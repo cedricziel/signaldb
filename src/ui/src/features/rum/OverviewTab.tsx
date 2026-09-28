@@ -16,6 +16,7 @@ import { Panel } from "./Panel";
 import { compactCount, formatShare } from "../../lib/vizFormat";
 import { relChange } from "../../lib/relChange";
 import {
+  isMobilePlatform,
   ratingLabel,
   ratingSwatchColorVar,
   ratingTextColorVar,
@@ -24,6 +25,7 @@ import {
   VITAL_LABELS,
   VITAL_NAMES,
   VITAL_TITLES,
+  type RumPlatform,
   type VitalFigure,
   type VitalName,
 } from "./rumModel";
@@ -51,6 +53,10 @@ import {
 
 interface Props {
   scope: RumScope;
+  /** The selected app's platform — hides the Core Web Vitals panel behind
+   * a "not supported yet" empty state on mobile (`rum-explore-tabs`'s
+   * "Platform-aware labels" requirement). */
+  platform: RumPlatform;
   /** The app's current `service.version`, for the same "new in release"
    * comparison the Errors tab makes — `null` when unknown. */
   currentVersion: string | null;
@@ -62,6 +68,7 @@ interface Props {
 
 export function OverviewTab({
   scope,
+  platform,
   currentVersion,
   onOpenNetwork,
   onOpenPages,
@@ -221,7 +228,9 @@ export function OverviewTab({
           title="Core Web Vitals"
           meta="p75 · share of page views good / needs improvement / poor"
         >
-          {vitals.isError ? (
+          {isMobilePlatform(platform) ? (
+            <EmptyState title="Mobile vitals aren't supported yet" />
+          ) : vitals.isError ? (
             <QueryError what="Web Vitals" error={vitals.error} />
           ) : (
             <div className="rum-vitals">
