@@ -625,7 +625,7 @@ export function buildNetworkRequestsDoc(
         },
       },
       { order: [{ of: "n", dir: "desc" }] },
-      { limit: NETWORK_GROUP_LIMIT },
+      { limit: NETWORK_GROUP_LIMIT + 1 },
     ],
   };
 }
@@ -659,7 +659,7 @@ export function buildNetworkCorrelateDoc(
         },
       },
       { order: [{ of: "n", dir: "desc" }] },
-      { limit: NETWORK_GROUP_LIMIT },
+      { limit: NETWORK_GROUP_LIMIT + 1 },
     ],
   };
 }
@@ -683,6 +683,9 @@ export interface RumRequestRow {
   /** A request to SignalDB's own telemetry export endpoint — the spec's
    * "marked as SDK export, not as untraced". */
   isSdkExport: boolean;
+  /** False when the correlate read hit its group cap before reaching this
+   * request, so `tracedCalls` may undercount rather than mean "untraced". */
+  tracedKnown: boolean;
 }
 
 const NS_PER_MS = 1_000_000;
@@ -769,9 +772,12 @@ export function networkRowsFromResponses(
   totalsRes: QueryIrResponse,
   tracedRes: QueryIrResponse,
 ): RumRequestRow[] {
+  // Both reads ask for one row over the cap, so an overflow is detectable.
+  const tracedRows = tracedFromResponse(tracedRes);
+  const tracedTruncated = tracedRows.length > NETWORK_GROUP_LIMIT;
   // One raw key can have several traced rows, one per backend service.
   const tracedByKey = new Map<string, RawTraced[]>();
-  for (const t of tracedFromResponse(tracedRes)) {
+  for (const t of tracedRows.slice(0, NETWORK_GROUP_LIMIT)) {
     const key = rawGroupKey(t);
     tracedByKey.set(key, [...(tracedByKey.get(key) ?? []), t]);
   }
@@ -786,10 +792,14 @@ export function networkRowsFromResponses(
     p75Pairs: { value: number; weight: number }[];
     backendP75Pairs: { value: number; weight: number }[];
     callsByService: Map<string, number>;
+    tracedKnown: boolean;
   }
   const buckets = new Map<string, Bucket>();
 
-  for (const total of totalsFromResponse(totalsRes)) {
+  for (const total of totalsFromResponse(totalsRes).slice(
+    0,
+    NETWORK_GROUP_LIMIT,
+  )) {
     const parsed = urlTemplate(total.urlFull);
     const origin = parsed?.origin ?? total.serverAddress ?? "unknown";
     const template = parsed?.template ?? total.urlFull;
@@ -805,13 +815,16 @@ export function networkRowsFromResponses(
       p75Pairs: [],
       backendP75Pairs: [],
       callsByService: new Map(),
+      tracedKnown: true,
     };
     bucket.calls += total.calls;
     bucket.errorCalls += total.errors;
     if (total.p75Ms !== null) {
       bucket.p75Pairs.push({ value: total.p75Ms, weight: total.calls });
     }
-    for (const traced of tracedByKey.get(rawGroupKey(total)) ?? []) {
+    const matches = tracedByKey.get(rawGroupKey(total)) ?? [];
+    if (tracedTruncated && matches.length === 0) bucket.tracedKnown = false;
+    for (const traced of matches) {
       bucket.tracedCalls += traced.tracedCalls;
       if (traced.backendService) {
         bucket.callsByService.set(
@@ -842,6 +855,7 @@ export function networkRowsFromResponses(
       backendP75Ms: weightedMean(b.backendP75Pairs),
       backendService: busiestService(b.callsByService),
       isSdkExport: isSdkExportPath(b.template),
+      tracedKnown: b.tracedKnown,
     }))
     .sort((a, b) => b.calls - a.calls);
 }

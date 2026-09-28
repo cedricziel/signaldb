@@ -389,6 +389,23 @@ describe("networkRowsFromResponses", () => {
     expect(row!.backendP75Ms).toBeCloseTo(175, 1);
   });
 
+  it("marks unmatched rows as unknown, not untraced, when the correlate read overflows its cap", () => {
+    const overflow = table(
+      Array.from({ length: 501 }, (_, i) => [
+        "GET",
+        `https://api.example.com/other/${i}`,
+        "api.example.com",
+        "other-svc",
+        1,
+        1_000_000,
+      ]),
+    );
+    const rows = networkRowsFromResponses(totals, overflow);
+    const cdn = rows.find((r) => r.origin === "reviews.partner-cdn.com")!;
+    expect(cdn.tracedKnown).toBe(false);
+    expect(networkRowsFromResponses(totals, traced)[0]!.tracedKnown).toBe(true);
+  });
+
   it("flags the telemetry export endpoint as an SDK export", () => {
     const withExport = table([
       [
