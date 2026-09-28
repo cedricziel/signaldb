@@ -13,7 +13,7 @@ sources:
   - src/ui/src/api/evalSets.ts
   - src/ui/src/features/evals/**
   - src/common/src/auth/mod.rs
-  - openspec/changes/agent-offline-evals/**
+  - openspec/specs/agent-eval-sets/**
 ---
 
 # Eval sets
