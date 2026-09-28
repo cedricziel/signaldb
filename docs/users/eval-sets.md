@@ -10,6 +10,8 @@ sources:
   - src/common/src/evals.rs
   - src/signaldb-cli/src/commands/eval_sets.rs
   - src/mcp-server/src/server.rs
+  - src/ui/src/api/evalSets.ts
+  - src/ui/src/features/evals/**
   - src/common/src/auth/mod.rs
   - openspec/changes/agent-offline-evals/**
 ---
@@ -109,7 +111,9 @@ curl -sS -X POST "$SIGNALDB/api/v1/eval-sets" \
   -d @refund-edge-cases-40.json
 ```
 
-List the sets, then pull one into a harness:
+List the sets, then pull one into a harness. Each listed set carries
+`case_count` and `sources`, how many of its cases came from each source kind
+(`{"trace": 162, "upload": 0, "hand_written": 38}`):
 
 ```bash
 curl -sS "$SIGNALDB/api/v1/eval-sets" \
@@ -222,6 +226,53 @@ empty `range`, and a filter the query engine refuses. The reads are three
 Query IR queries run on the server, bounded to 10,000 matching traces,
 50,000 evaluator results and 100,000 spans; `matches` never exceeds 10,000.
 
+## In the Explore UI
+
+The **Eval sets** page (`/evals/sets`, in the Evaluate group) lists the
+dataset's sets: name and description, agent, case count, what the cases
+were built from (the list's `sources` counts: "traces 162 · hand-written
+38", "JSONL upload", or "saved from Compare" for a set whose description is
+the one Compare writes, "Cases that regressed in …"),
+the newest run of the set in the last 30 days with its version, date and
+pass rate (a [Query IR](querying-ir.md) read; "never run" otherwise), and
+when the set last changed. **New eval set…** asks for a name and agent and
+starts the set from:
+
+- **Upload JSONL** — a file of cases in the [case format](#the-set-and-its-cases).
+  The dialog previews the first rows, counts cases without a reference
+  answer, and lists every line it can't read; it won't create the set until
+  the file reads cleanly. Cases without a `source` are stored as
+  `{"kind": "upload"}`.
+- **Real traces** — creates the set, then
+  [builds cases from traces](#build-cases-from-traces) with the agent,
+  window (24 hours, 7 days or 30 days), optional failing evaluator, sample
+  size and the two checkboxes (expected tools from the tools called, on by
+  default; the agent's answer as the reference, off).
+- **Empty** — just the name and agent.
+
+A set's page (`/evals/sets/{name}`) shows its cases (id, input, expected
+tools, reference, source — a trace link for cases built from traces — and
+the case's score in the set's newest run: _pass_ when every evaluator
+passed, _N failing_ when any failed, _P of E_ when some evaluators reached
+no verdict), 50 at a time. **Export JSONL** downloads the cases in the same
+format `signaldb-cli eval-sets export` writes. **Add traces…** opens a panel
+that [builds cases from traces](#build-cases-from-traces); the endpoint has
+no dry run, so the panel shows the matches, already-present and added
+counts it returned. The strip under the header links the two newest runs of
+the set in Compare, and the **Runs** tab opens Runs filtered to the set.
+**Settings** shows the set's fields and deletes it. Buttons that write are
+disabled when the credential may not (the set's `_links` carry no write
+actions).
+
+On **Compare**, **Save N regressed cases as eval set** creates a set (named
+`regressions-MMDD` after the candidate run's day, editable) holding the
+regressed cases' inputs, expected tools and references, copied by case id
+from the eval set the runs replayed; each case's source is the candidate's
+trace when it has one, and every case is tagged `saved-from-compare`. The
+button is disabled, with the reason, when the runs name no eval set or that
+set isn't in the dataset's list; the set's cases are read when the dialog
+opens, and the dialog says so if that read fails.
+
 ## CLI
 
 Reads use `signaldb-cli eval-sets`, writes `signaldb-cli admin eval-sets`.
@@ -230,7 +281,7 @@ optional `--dataset-id`, or the `SIGNALDB_*` environment), not the instance
 admin key.
 
 ```bash
-signaldb-cli eval-sets list                      # NAME AGENT CASES UPDATED DESCRIPTION
+signaldb-cli eval-sets list                      # NAME AGENT CASES (per source) UPDATED DESCRIPTION
 signaldb-cli eval-sets get refund-edge-cases-40  # the set, then one row per case
 signaldb-cli eval-sets export refund-edge-cases-40 > cases.jsonl
 
