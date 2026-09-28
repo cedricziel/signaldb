@@ -167,6 +167,10 @@ describe("OverviewView", () => {
     expect(
       screen.getByRole("img", { name: /Deploys in window: checkout v2 at/ }),
     ).toBeInTheDocument();
+    expect(screen.getByText(/^\d+ critical$/)).toHaveClass("critical");
+    expect(
+      await screen.findByRole("button", { name: "Zoom in" }),
+    ).toBeInTheDocument();
   });
 
   it("links the rail rows into Errors and Traces", async () => {
@@ -218,5 +222,20 @@ describe("OverviewView", () => {
     expect(
       await screen.findByText("No services in this window"),
     ).toBeInTheDocument();
+    expect(screen.getByText("0 critical")).not.toHaveClass("critical");
+  });
+
+  it("hides the zoom controls while the service map is empty", async () => {
+    vi.mocked(graphApi.fetchServiceGraph).mockResolvedValue({
+      graph: { nodes: [], edges: [] },
+      warnings: [],
+    });
+    renderOverview();
+    expect(
+      await screen.findByText("No service calls in this window"),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Zoom in" }),
+    ).not.toBeInTheDocument();
   });
 });
