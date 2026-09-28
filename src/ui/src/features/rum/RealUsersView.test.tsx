@@ -395,6 +395,9 @@ describe("Pages tab", () => {
 
     expect(await screen.findByText("Load breakdown")).toBeInTheDocument();
     expect(await screen.findByText("Backend calls")).toBeInTheDocument();
+    expect(
+      await screen.findByText("No navigation timing recorded for this route"),
+    ).toBeInTheDocument();
   });
 });
 

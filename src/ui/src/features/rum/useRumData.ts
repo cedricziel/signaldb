@@ -191,7 +191,7 @@ export function useRumLoadBreakdown(scope: RumScope, route: string) {
   const { range, rangeKey, app } = scope;
   return useQuery({
     queryKey: ["rum-load-breakdown", rangeKey, app, route],
-    queryFn: () => fetchLoadBreakdown(app, range, route),
+    queryFn: async () => (await fetchLoadBreakdown(app, range, route)) ?? null,
     enabled: app !== "" && route !== "",
     staleTime: STALE,
   });
