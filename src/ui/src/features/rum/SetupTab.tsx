@@ -198,7 +198,7 @@ service:
 
   const corsSnippet = `# The collector/backend must propagate traceparent and allow it in CORS
 # for every API origin the app calls, so client spans join their server
-# children in the same trace (see the Network tab, a later group).
+# children in the same trace (see the Network tab).
 Access-Control-Allow-Headers: traceparent, tracestate, content-type`;
 
   return (

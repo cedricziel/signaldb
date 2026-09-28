@@ -1,10 +1,6 @@
 // The Real users page's Interactions tab: clicks by target, joined to the
 // page's own INP p75 (design.md decision 3a — one read for clicks, no
-// second read for the vital: it's already in `useRumPages`'s cache). Each
-// row links toward the Sessions tab — not shipped until tasks.md group 3,
-// so the link currently redirects to Overview via `RealUsersRoute`'s
-// unknown-tab fallback; kept as a real link rather than a dead button so it
-// starts working the moment Sessions ships.
+// second read for the vital: it's already in `useRumPages`'s cache).
 import { useRef } from "react";
 import { Link } from "react-router";
 import { EmptyState } from "../../components/EmptyState";
