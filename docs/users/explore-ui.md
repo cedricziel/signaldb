@@ -396,12 +396,18 @@ empty state: mobile vitals aren't supported yet.
   to the Sessions tab, scoped to the app (not yet to sessions containing that
   click).
 - **Setup.** Copyable snippets for instrumenting a browser app with the
-  upstream OpenTelemetry SDK: install, initialize with the app's
-  `service.name`, and export to an OpenTelemetry Collector or the app's own
+  upstream OpenTelemetry SDK: install (including
+  `@opentelemetry/browser-instrumentation`, the package emitting the RUM log
+  records this page reads), initialize a tracer and a `LoggerProvider` with
+  the app's `service.name`, a `session.id` log-record processor, the Web
+  Vitals/navigation/navigation-timing/resource-timing/errors/user-action
+  instrumentations, and export to an OpenTelemetry Collector or the app's own
   backend — never a SignalDB API key in browser code, since SignalDB keys
   are bearer credentials with no origin restriction and any key shipped to a
   browser is public. The collector/backend then forwards to SignalDB holding
-  the key server-side. A live checklist tracks the first session, first page
+  the key server-side. A link to the full [Instrument a browser
+  app](instrument-browser-app.md) guide covers the walkthrough and
+  troubleshooting. A live checklist tracks the first session, first page
   view, first vitals record and the share of client requests joined to a
   backend trace for the selected app. Step by step: [Instrument a browser
   app](instrument-browser-app.md).
