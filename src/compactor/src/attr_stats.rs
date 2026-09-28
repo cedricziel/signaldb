@@ -679,5 +679,8 @@ mod tests {
         assert_eq!(super::signal_of_table("logs"), "logs");
         assert_eq!(super::signal_of_table("metrics_histogram"), "metrics");
         assert_eq!(super::signal_of_table("profiles"), "profiles");
+        // otel-native-schema layer 7 (D10) cutover prep.
+        assert_eq!(super::signal_of_table("metrics"), "metrics");
+        assert_eq!(super::signal_of_table("metric_exemplars"), "metrics");
     }
 }
