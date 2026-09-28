@@ -57,63 +57,68 @@ export function EvalSetsView({ state }: ShellContext) {
         <NoSets onCreate={canCreate ? () => setCreating(true) : undefined} />
       ) : (
         <div className="evals-card">
-          <table className="evals-table" style={{ minWidth: 900 }}>
-            <thead>
-              <tr>
-                <th>Eval set</th>
-                <th>Agent</th>
-                <th className="num">Cases</th>
-                <th>Built from</th>
-                <th>Last run</th>
-                <th className="num">Pass rate</th>
-                <th>Updated</th>
-              </tr>
-            </thead>
-            <tbody>
-              {sets.data.items.map((s) => {
-                const last = bySet.get(s.name)?.[0];
-                return (
-                  <tr key={s.name}>
-                    <td>
-                      <Link to={setHref(state, s.name)} className="mono strong">
-                        {s.name}
-                      </Link>
-                      {s.description && (
-                        <div className="dim" style={{ fontSize: 12 }}>
-                          {s.description}
-                        </div>
-                      )}
-                    </td>
-                    <td className="mono">{s.agent}</td>
-                    <td className="num">{fmtCount(s.case_count)}</td>
-                    <td className="dim" style={{ fontSize: 12 }}>
-                      {builtFrom(s)}
-                    </td>
-                    <td className="mono nowrap">
-                      {last ? (
-                        <>
-                          {last.version && (
-                            <span className="evals-tag">{last.version}</span>
-                          )}{" "}
-                          <span className="dim">{fmtDay(last.firstMs)}</span>
-                        </>
-                      ) : (
-                        <span className="faint">
-                          {runs.isPending ? "…" : "never run"}
-                        </span>
-                      )}
-                    </td>
-                    <td className="num">
-                      {last ? fmtPct(passRateOf(last.stats)) : "—"}
-                    </td>
-                    <td className="mono dim nowrap">
-                      {fmtDay(Date.parse(s.updated_at))}
-                    </td>
-                  </tr>
-                );
-              })}
-            </tbody>
-          </table>
+          <div className="table-scroll">
+            <table className="evals-table" style={{ minWidth: 900 }}>
+              <thead>
+                <tr>
+                  <th>Eval set</th>
+                  <th>Agent</th>
+                  <th className="num">Cases</th>
+                  <th>Built from</th>
+                  <th>Last run</th>
+                  <th className="num">Pass rate</th>
+                  <th>Updated</th>
+                </tr>
+              </thead>
+              <tbody>
+                {sets.data.items.map((s) => {
+                  const last = bySet.get(s.name)?.[0];
+                  return (
+                    <tr key={s.name}>
+                      <td>
+                        <Link
+                          to={setHref(state, s.name)}
+                          className="mono strong"
+                        >
+                          {s.name}
+                        </Link>
+                        {s.description && (
+                          <div className="dim" style={{ fontSize: 12 }}>
+                            {s.description}
+                          </div>
+                        )}
+                      </td>
+                      <td className="mono">{s.agent}</td>
+                      <td className="num">{fmtCount(s.case_count)}</td>
+                      <td className="dim" style={{ fontSize: 12 }}>
+                        {builtFrom(s)}
+                      </td>
+                      <td className="mono nowrap">
+                        {last ? (
+                          <>
+                            {last.version && (
+                              <span className="evals-tag">{last.version}</span>
+                            )}{" "}
+                            <span className="dim">{fmtDay(last.firstMs)}</span>
+                          </>
+                        ) : (
+                          <span className="faint">
+                            {runs.isPending ? "…" : "never run"}
+                          </span>
+                        )}
+                      </td>
+                      <td className="num">
+                        {last ? fmtPct(passRateOf(last.stats)) : "—"}
+                      </td>
+                      <td className="mono dim nowrap">
+                        {fmtDay(Date.parse(s.updated_at))}
+                      </td>
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
         </div>
       )}
       {creating && (
