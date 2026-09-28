@@ -116,20 +116,18 @@ describe("decoders", () => {
 });
 
 describe("fetchIngestVolume", () => {
-  it("sums histogram metrics into metrics and treats a failing source as empty", async () => {
+  it("counts each signal's own source and treats a failing source as empty", async () => {
     vi.spyOn(queryIr, "runIrQuery").mockImplementation(async (doc) => {
       const from = (doc as { from: string }).from;
       if (from === "profiles") throw new Error("profiles disabled");
-      const v = { logs: 10, traces: 5, metrics: 2, metrics_histogram: 3 }[
-        from
-      ]!;
+      const v = { logs: 10, traces: 5, metrics: 2 }[from]!;
       return { series: [{ labels: {}, points: [[60 * 1e6, v]] }] } as never;
     });
     const series = await fetchIngestVolume(RANGE, "", 60);
     expect(series).toEqual([
       { key: "logs", points: [[60, 10]] },
       { key: "traces", points: [[60, 5]] },
-      { key: "metrics", points: [[60, 5]] },
+      { key: "metrics", points: [[60, 2]] },
       { key: "profiles", points: [] },
     ]);
   });

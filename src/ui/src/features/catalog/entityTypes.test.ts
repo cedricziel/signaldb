@@ -66,13 +66,7 @@ describe("ENTITY_TYPES", () => {
     // signal out of this list hides any entity that only reports through it —
     // which is exactly what kept processes (`process.pid`, a metrics-only
     // attribute in practice) invisible while their data was already stored.
-    expect(RESOURCE_SOURCES).toEqual([
-      "traces",
-      "logs",
-      "metrics",
-      "metrics_histogram",
-      "profiles",
-    ]);
+    expect(RESOURCE_SOURCES).toEqual(["traces", "logs", "metrics", "profiles"]);
   });
 
   it("leaves span-attribute entity types trace-only", () => {

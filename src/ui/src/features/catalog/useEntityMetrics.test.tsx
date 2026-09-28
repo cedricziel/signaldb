@@ -103,17 +103,14 @@ describe("useEntityMetrics", () => {
     await waitFor(() =>
       expect(fetchMetricDefinitions).toHaveBeenCalledTimes(1),
     );
-    // One discovery per metric source: `metrics` and `metrics_histogram` are
-    // two IR sources for one OTel signal.
     expect(discoverObservedMetricNames.mock.calls.map((c) => c[0])).toEqual([
       "metrics",
-      "metrics_histogram",
     ]);
 
     rerender({ range: r2, key: "30m|acme|prod" });
 
     await waitFor(() =>
-      expect(discoverObservedMetricNames).toHaveBeenCalledTimes(4),
+      expect(discoverObservedMetricNames).toHaveBeenCalledTimes(2),
     );
     expect(fetchMetricDefinitions).toHaveBeenCalledTimes(1);
   });

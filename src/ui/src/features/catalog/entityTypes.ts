@@ -121,10 +121,6 @@ export interface EntityTypeDef {
  * absence was not cosmetic: `process.pid` and `container.name` appear on
  * metrics and on no other signal in a typical deployment, so the Processes
  * and Containers pages rendered empty over data that was already stored.
- *
- * `metrics_histogram` is its own Query IR source but the same OTel signal as
- * `metrics`; both are listed because an entity reporting only histograms
- * would otherwise go undiscovered.
  */
 export const RESOURCE_SOURCES = CATALOG_SOURCES;
 

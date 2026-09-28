@@ -16,7 +16,8 @@ import {
   aggFor,
   HISTOGRAM_QUANTILE,
   isHistogram,
-  METRIC_SOURCES,
+  HISTOGRAM_ROWS,
+  METRICS_SOURCE,
   type IrSeries,
 } from "./entityMetrics";
 import { spanKindWhere } from "./catalog";
@@ -57,10 +58,11 @@ export function buildSparklineDoc(
   if (isHistogram(metric.instrument)) {
     return {
       irVersion: 3,
-      from: METRIC_SOURCES.histogram,
+      from: METRICS_SOURCE,
       ...head,
       pipeline: [
         ...head.pipeline,
+        HISTOGRAM_ROWS,
         {
           histogram_quantile: {
             q: HISTOGRAM_QUANTILE,
@@ -75,7 +77,7 @@ export function buildSparklineDoc(
 
   return {
     irVersion: 1,
-    from: METRIC_SOURCES.scalar,
+    from: METRICS_SOURCE,
     ...head,
     pipeline: [
       ...head.pipeline,

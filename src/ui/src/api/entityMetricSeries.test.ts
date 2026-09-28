@@ -45,6 +45,10 @@ function alternatedNames(docs: QueryIrRequest[]): string[] {
   });
 }
 
+function isQuantileDoc(doc: QueryIrRequest): boolean {
+  return doc.pipeline!.some((stage) => "histogram_quantile" in stage);
+}
+
 describe("buildEntityMetricDocs", () => {
   it("alternates the names and pins the entity", () => {
     const [doc] = buildEntityMetricDocs(
@@ -128,11 +132,7 @@ describe("buildEntityMetricDocs", () => {
     expect(docs.every((d) => d.pipeline!.length === 3)).toBe(true);
   });
 
-  it("sends a histogram to the source that can answer for it", () => {
-    // A metrics_histogram row is a whole bucketed histogram, not a scalar —
-    // there is no value column to average, so the scalar aggregate is
-    // rejected outright. The quantile stage is the only way in, and its
-    // default rate mode is also the right reading of a cumulative histogram.
+  it("charts a histogram through the quantile stage over histogram rows", () => {
     const docs = buildEntityMetricDocs(
       [
         metric("system.cpu.utilization", "gauge"),
@@ -143,19 +143,32 @@ describe("buildEntityMetricDocs", () => {
       300,
     );
 
-    const hist = docs.find((d) => d.from === "metrics_histogram")!;
+    expect(docs.every((d) => d.from === "metrics")).toBe(true);
+    const hist = docs.find(isQuantileDoc)!;
     expect(hist).toBeDefined();
-    expect(hist.pipeline!.at(-1)).toEqual({
-      histogram_quantile: { q: 0.95, step: "300s", as: "p95" },
-    });
+    expect(hist.pipeline!.slice(-2)).toEqual([
+      { where: { field: "metric.type", op: "eq", value: "histogram" } },
+      { histogram_quantile: { q: 0.95, step: "300s", as: "p95" } },
+    ]);
     expect(alternatedNames([hist])).toEqual(["http.server.request.duration"]);
 
-    // and the scalar source never sees the histogram
-    const scalar = docs.filter((d) => d.from === "metrics");
+    // and the scalar aggregate never sees the histogram
+    const scalar = docs.filter((d) => !isQuantileDoc(d));
     expect(alternatedNames(scalar)).toEqual(["system.cpu.utilization"]);
   });
 
-  it("asks nothing of the histogram source when no metric is a histogram", () => {
+  it("keeps an exponential histogram out of the quantile query", () => {
+    const docs = buildEntityMetricDocs(
+      [metric("rpc.duration", "exponentialhistogram")],
+      pins,
+      range,
+      300,
+    );
+
+    expect(docs.some(isQuantileDoc)).toBe(false);
+  });
+
+  it("builds no quantile query when no metric is a histogram", () => {
     const docs = buildEntityMetricDocs(
       [metric("system.cpu.utilization", "gauge")],
       pins,
@@ -163,7 +176,7 @@ describe("buildEntityMetricDocs", () => {
       300,
     );
 
-    expect(docs.every((d) => d.from === "metrics")).toBe(true);
+    expect(docs.some(isQuantileDoc)).toBe(false);
   });
 
   it("asks nothing when the entity has no associated metrics", () => {

@@ -17,7 +17,7 @@ import {
   discoverObservedMetricNames,
   fetchEntityMetricNames,
   fetchMetricDefinitions,
-  METRIC_SOURCES,
+  METRICS_SOURCE,
 } from "../../api/entityMetrics";
 import type { MetricHit } from "../schema/api";
 import type { IrSeries } from "../../api/entityMetrics";
@@ -67,15 +67,11 @@ export function useEntityMetrics(
   const observed = useQuery({
     queryKey: ["entity-metric-names", rangeKey],
     queryFn: async () => {
-      const perSource = await Promise.all(
-        Object.values(METRIC_SOURCES).map((source) =>
-          discoverObservedMetricNames(source, range),
-        ),
-      );
+      const names = await discoverObservedMetricNames(METRICS_SOURCE, range);
       // Sorted so an equal set of names is an equal cache key: the querier
       // makes no ordering promise, and an unstable key would re-fetch the
       // definitions this hook exists to keep cached.
-      return [...new Set(perSource.flat())].sort();
+      return names.sort();
     },
     enabled,
     staleTime: 60_000,
