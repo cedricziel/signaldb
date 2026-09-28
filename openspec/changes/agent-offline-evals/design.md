@@ -160,9 +160,9 @@ processors still lag.
 - **Semconv churn** (Development stability): attribute names may change.
   → Names live in one UI module and one `common` module; the docs page
   tracks the semconv version.
-- **Harnesses that only emit span events** see nothing in phase 1. → The
-  empty state and docs show the log-record form; phase 2 normalises span
-  events at ingest.
+- **Harnesses that only emit span events**: the acceptor normalises each
+  `gen_ai.evaluation.result` span event into a log record at trace ingest
+  (task 7), so they land in the same read model.
 - **Large runs**: Compare fetches spans for every case's trace (`trace_id
 in [...]`). → Bounded by the eval set size (hundreds of cases); pages
   query tool spans only for the cases on screen.
