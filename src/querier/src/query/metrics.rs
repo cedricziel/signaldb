@@ -3,7 +3,7 @@
 //! DataFusion-backed execution of PromQL queries against the tenant's
 //! metrics Iceberg tables. Parses PromQL, lowers it to a
 //! [`MetricPlan`](super::promql::MetricPlan), and runs a bucketed
-//! aggregation over the union of the gauge and sum tables — the same
+//! aggregation over the gauge and sum rows of the `metrics` table — the same
 //! DataFrame-first approach as the trace/log/profile paths.
 //!
 //! The result is a matrix: one row per (time bucket, series) with a
@@ -44,22 +44,10 @@ use super::{
         LABEL_SCAN_LIMIT, column, distinct_non_empty, optional_table, string_column, time_window,
     },
 };
-use common::iceberg::schemas::MetricsLayout;
 use common::schema::materialized_column_name;
 
-/// The metrics tables a PromQL query scans (gauge + sum cover counters
-/// and gauges; histograms are handled separately with histogram_quantile).
-const METRIC_TABLES: &[&str] = &["metrics_gauge", "metrics_sum"];
-
-/// Columns projected from each metrics table before the union.
-const SCAN_COLUMNS: &[&str] = &[
-    "timestamp",
-    "service_name",
-    "metric_name",
-    "value",
-    "attributes",
-    "resource_attributes",
-];
+const GAUGE_SUM_TYPES: &[&str] = &["gauge", "sum"];
+const HISTOGRAM_TYPES: &[&str] = &["histogram"];
 
 const LOG_ATTRIBUTES: &str = "attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
@@ -96,7 +84,6 @@ fn check_group_cardinality(group_count: usize, limit: usize) -> Result<(), Queri
 #[derive(Clone)]
 pub struct MetricsService {
     session_context: Arc<SessionContext>,
-    metrics_layout: MetricsLayout,
 }
 
 // `SessionContext` isn't `Debug`, so `#[derive(Debug)]` doesn't apply here.
@@ -104,7 +91,6 @@ impl Debug for MetricsService {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("MetricsService")
             .field("session_context", &"set")
-            .field("metrics_layout", &self.metrics_layout)
             .finish()
     }
 }
@@ -113,7 +99,6 @@ impl MetricsService {
     pub fn new(session_context: SessionContext) -> Self {
         Self {
             session_context: Arc::new(session_context),
-            metrics_layout: MetricsLayout::current(),
         }
     }
 
@@ -300,7 +285,10 @@ impl MetricsService {
             }
         }
 
-        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         // The materialized `label_<key>` columns of the scanned tables widen
@@ -1169,7 +1157,10 @@ impl MetricsService {
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         // No histogram table yet → empty result. A catalog failure still errors.
-        let Some(df) = self.histogram_table(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, HISTOGRAM_TYPES)
+            .await?
+        else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1329,7 +1320,10 @@ impl MetricsService {
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
         // No histogram table yet → empty result. A catalog failure still errors.
-        let Some(df) = self.histogram_table(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, HISTOGRAM_TYPES)
+            .await?
+        else {
             return Ok(vec![]);
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1375,7 +1369,10 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let df = apply_filters(df, plan, start - plan.offset_ns, end - plan.offset_ns)?;
@@ -1522,70 +1519,11 @@ impl MetricsService {
         }
     }
 
-    /// The union of the metrics tables, each projected to [`SCAN_COLUMNS`]
-    /// plus every materialized `label_<key>` column found in any of them
-    /// (null-filled where a table lacks the column, so the union schemas
-    /// line up). Keeping the label columns in the scan is what lets
-    /// matchers and grouping use them.
-    ///
-    /// Returns `None` when the dataset holds none of them — a dataset that has
-    /// never received metrics, or a deployment with the signal disabled.
-    async fn scan_union(
-        &self,
-        tenant_slug: &str,
-        dataset_slug: &str,
-    ) -> Result<Option<DataFrame>, QuerierError> {
-        if self.metrics_layout == MetricsLayout::Wide {
-            return self
-                .scan_wide_metrics(tenant_slug, dataset_slug, &["gauge", "sum"])
-                .await;
-        }
-        let mut tables: Vec<DataFrame> = Vec::with_capacity(METRIC_TABLES.len());
-        for table in METRIC_TABLES {
-            // A missing table (e.g. no sum metrics ingested yet) is not an
-            // error — skip it. A catalog failure still is.
-            let Some(df) =
-                optional_table(&self.session_context, tenant_slug, dataset_slug, table).await?
-            else {
-                continue;
-            };
-            tables.push(df);
-        }
-        let label_cols: BTreeSet<String> = tables
-            .iter()
-            .flat_map(|df| df.schema().fields().iter().map(|f| f.name().to_string()))
-            .filter(|n| n.starts_with("label_"))
-            .collect();
-        let mut union: Option<DataFrame> = None;
-        for df in tables {
-            let scan_columns = common::attrs::expr::select_columns_for_containers(
-                Some(df.schema().as_arrow()),
-                SCAN_COLUMNS,
-            );
-            let mut proj: Vec<Expr> = scan_columns.iter().map(|c| col(c.as_str())).collect();
-            for label in &label_cols {
-                if df.schema().field_with_unqualified_name(label).is_ok() {
-                    proj.push(col(label.as_str()));
-                } else {
-                    proj.push(lit(ScalarValue::Utf8(None)).alias(label.as_str()));
-                }
-            }
-            let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
-            union = Some(match union {
-                None => projected,
-                Some(existing) => existing
-                    .union(projected)
-                    .map_err(QuerierError::QueryFailed)?,
-            });
-        }
-        Ok(union)
-    }
-
     /// Scans the wide `metrics` table (D10) filtered to `metric_type IN
     /// (metric_types)`, so a table also holding other metric types (summary,
     /// exponential histogram) never leaks into a gauge/sum or histogram
     /// read. `None` when the dataset has no `metrics` table.
-    async fn scan_wide_metrics(
+    async fn scan_metrics(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
@@ -1603,29 +1541,6 @@ impl MetricsService {
         ))
     }
 
-    /// Resolves the histogram source: the legacy `metrics_histogram` table,
-    /// or the wide `metrics` table filtered to `metric_type = 'histogram'` —
-    /// selected by [`Self::metrics_layout`]. `None` when the dataset holds
-    /// neither.
-    async fn histogram_table(
-        &self,
-        tenant_slug: &str,
-        dataset_slug: &str,
-    ) -> Result<Option<DataFrame>, QuerierError> {
-        if self.metrics_layout == MetricsLayout::Wide {
-            return self
-                .scan_wide_metrics(tenant_slug, dataset_slug, &["histogram"])
-                .await;
-        }
-        optional_table(
-            &self.session_context,
-            tenant_slug,
-            dataset_slug,
-            "metrics_histogram",
-        )
-        .await
-    }
-
     /// List the Prometheus label names present in the window: the
     /// well-known ones (`__name__`, `job`) plus attribute keys discovered
     /// in the `attributes`/`resource_attributes` documents.
@@ -1638,7 +1553,10 @@ impl MetricsService {
     ) -> Result<Vec<String>, QuerierError> {
         let mut labels: BTreeSet<String> =
             ["__name__", "job"].iter().map(|s| s.to_string()).collect();
-        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let df = time_window(df, start, end)?;
@@ -1685,7 +1603,10 @@ impl MetricsService {
                 "label name must not be empty".to_string(),
             ));
         }
-        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let df = time_window(df, start, end)?;
@@ -1749,7 +1670,10 @@ impl MetricsService {
         dataset_slug: &str,
     ) -> Result<Vec<BTreeMap<String, String>>, QuerierError> {
         let plan = plan_promql(selector.trim())?;
-        let Some(df) = self.scan_union(tenant_slug, dataset_slug).await? else {
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
+            .await?
+        else {
             return Ok(Vec::new());
         };
         let df = apply_filters(df, &plan, start, end)?;
@@ -2884,10 +2808,7 @@ mod tests {
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService {
-            session_context: Arc::new(ctx),
-            metrics_layout: MetricsLayout::Wide,
-        }
+        MetricsService::new(ctx)
     }
 
     /// A single `api` counter series with the given (timestamp, value)
@@ -2934,10 +2855,7 @@ mod tests {
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService {
-            session_context: Arc::new(ctx),
-            metrics_layout: MetricsLayout::Wide,
-        }
+        MetricsService::new(ctx)
     }
 
     /// A counter series that resets mid-window: `[10, 20, 5, 15]`. The drop
@@ -2993,10 +2911,7 @@ mod tests {
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService {
-            session_context: Arc::new(ctx),
-            metrics_layout: MetricsLayout::Wide,
-        }
+        MetricsService::new(ctx)
     }
 
     /// Collect (metric_name, service?, value) tuples from a matrix.
@@ -3086,10 +3001,7 @@ mod tests {
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService {
-            session_context: Arc::new(ctx),
-            metrics_layout: MetricsLayout::Wide,
-        }
+        MetricsService::new(ctx)
     }
 
     /// Collect (label_namespace?, value) tuples from a matrix.
@@ -3862,10 +3774,7 @@ mod tests {
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService {
-            session_context: Arc::new(ctx),
-            metrics_layout: MetricsLayout::Wide,
-        }
+        MetricsService::new(ctx)
     }
 
     #[tokio::test]
@@ -3917,12 +3826,11 @@ mod tests {
         assert!(out.is_empty());
     }
 
-    /// The wide `metrics` table (D10) counterpart of [`service_with_data`]'s
-    /// three gauge samples, built via [`common::testing::to_wide`] — plus, under
-    /// [`MetricsLayout::Wide`] only, an unrelated `summary`-typed row
-    /// sharing `reqs`'s `metric_name` so only `metric_type` filtering (not
-    /// `metric_name`) can exclude it from a gauge/sum scan.
-    fn gauge_service_for_layout(layout: MetricsLayout) -> MetricsService {
+    /// [`service_with_data`]'s three gauge samples plus an unrelated
+    /// `summary`-typed row sharing `reqs`'s `metric_name`, so only
+    /// `metric_type` filtering (not `metric_name`) can exclude it from a
+    /// gauge/sum scan.
+    fn gauge_service_with_summary_leak() -> MetricsService {
         let fields: Vec<Field> = vec![
             Field::new(
                 "timestamp",
@@ -3945,83 +3853,62 @@ mod tests {
         ];
         let schema = Arc::new(Schema::new(fields));
         let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let leak = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100])),
+                Arc::new(StringArray::from(vec!["leak"])),
+                Arc::new(StringArray::from(vec!["reqs"])),
+                Arc::new(Float64Array::from(vec![999.0])),
+                Arc::new(StringArray::from(vec!["{}"])),
+                Arc::new(StringArray::from(vec!["{}"])),
+            ],
+        )
+        .unwrap();
+        let main = common::testing::to_wide(&batch, "gauge");
+        let leak = common::testing::to_wide(&leak, "summary");
+        wide_metrics_service(vec![main, leak])
+    }
 
+    fn wide_metrics_service(batches: Vec<RecordBatch>) -> MetricsService {
         let ctx = SessionContext::new();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
-        match layout {
-            MetricsLayout::Legacy => {
-                let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-                schema_provider
-                    .register_table("metrics_gauge".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-            MetricsLayout::Wide => {
-                let leak = RecordBatch::try_new(
-                    schema,
-                    vec![
-                        Arc::new(TimestampNanosecondArray::from(vec![100])),
-                        Arc::new(StringArray::from(vec!["leak"])),
-                        Arc::new(StringArray::from(vec!["reqs"])),
-                        Arc::new(Float64Array::from(vec![999.0])),
-                        Arc::new(StringArray::from(vec!["{}"])),
-                        Arc::new(StringArray::from(vec!["{}"])),
-                    ],
-                )
-                .unwrap();
-                let main = common::testing::to_wide(&batch, "gauge");
-                let leak = common::testing::to_wide(&leak, "summary");
-                let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
-                schema_provider
-                    .register_table("metrics".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-        }
+        let table = MemTable::try_new(batches[0].schema(), vec![batches]).unwrap();
+        schema_provider
+            .register_table("metrics".to_string(), Arc::new(table))
+            .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        match layout {
-            MetricsLayout::Legacy => MetricsService {
-                session_context: Arc::new(ctx),
-                metrics_layout: MetricsLayout::Legacy,
-            },
-            MetricsLayout::Wide => MetricsService {
-                session_context: Arc::new(ctx),
-                metrics_layout: MetricsLayout::Wide,
-            },
-        }
+        MetricsService::new(ctx)
     }
 
     #[tokio::test]
-    async fn bare_selector_last_value_per_series_matches_across_layouts() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let service = gauge_service_for_layout(layout);
-            let out = matrix(&service, "reqs", 1000).await;
-            let api = out
-                .iter()
-                .find(|(_, s, _)| s.as_deref() == Some("api"))
-                .unwrap_or_else(|| panic!("{layout:?}: {out:?}"));
-            let web = out
-                .iter()
-                .find(|(_, s, _)| s.as_deref() == Some("web"))
-                .unwrap_or_else(|| panic!("{layout:?}: {out:?}"));
-            assert_eq!(api.2, 3.0, "{layout:?}");
-            assert_eq!(web.2, 5.0, "{layout:?}");
-            // The `summary` row must not leak into a gauge/sum scan.
-            assert!(
-                out.iter().all(|(_, s, _)| s.as_deref() != Some("leak")),
-                "{layout:?}: {out:?}"
-            );
-        }
+    async fn bare_selector_last_value_per_series_excludes_other_metric_types() {
+        let service = gauge_service_with_summary_leak();
+        let out = matrix(&service, "reqs", 1000).await;
+        let api = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("api"))
+            .unwrap_or_else(|| panic!("{out:?}"));
+        let web = out
+            .iter()
+            .find(|(_, s, _)| s.as_deref() == Some("web"))
+            .unwrap_or_else(|| panic!("{out:?}"));
+        assert_eq!(api.2, 3.0);
+        assert_eq!(web.2, 5.0);
+        assert!(
+            out.iter().all(|(_, s, _)| s.as_deref() != Some("leak")),
+            "{out:?}"
+        );
     }
 
-    /// [`service_with_histogram`]'s merged-series `latency` data, built via
-    /// [`common::testing::to_wide`], plus a `latency_inf` series whose top `explicit_bounds`
-    /// entry is the JSON `"+Inf"` sentinel (a real `f64::INFINITY` once
-    /// converted to the wide table's typed list columns) and — under
-    /// [`MetricsLayout::Wide`] only — an unrelated `summary`-typed row
-    /// sharing `latency`'s `metric_name` so only `metric_type` filtering can
-    /// exclude it.
-    fn histogram_service_for_layout(layout: MetricsLayout) -> MetricsService {
+    /// [`service_with_histogram`]'s merged-series `latency` data, plus a
+    /// `latency_inf` series whose top `explicit_bounds` entry is
+    /// `f64::INFINITY` and an unrelated `summary`-typed row sharing
+    /// `latency`'s `metric_name` so only `metric_type` filtering can exclude
+    /// it.
+    fn histogram_service_with_summary_leak() -> MetricsService {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -4060,102 +3947,64 @@ mod tests {
             ],
         )
         .unwrap();
-
-        let ctx = SessionContext::new();
-        let schema_provider = Arc::new(MemorySchemaProvider::new());
-        match layout {
-            MetricsLayout::Legacy => {
-                let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
-                schema_provider
-                    .register_table("metrics_histogram".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-            MetricsLayout::Wide => {
-                let leak = RecordBatch::try_new(
-                    schema.clone(),
-                    vec![
-                        Arc::new(TimestampNanosecondArray::from(vec![100])),
-                        Arc::new(StringArray::from(vec!["leak"])),
-                        Arc::new(StringArray::from(vec!["latency"])),
-                        Arc::new(datafusion::arrow::array::Int64Array::from(vec![10])),
-                        Arc::new(Float64Array::from(vec![55.0])),
-                        Arc::new(StringArray::from(vec!["[100,100,100,100]"])),
-                        Arc::new(StringArray::from(vec!["[1,2,4]"])),
-                        Arc::new(StringArray::from(vec!["{}"])),
-                        Arc::new(StringArray::from(vec!["{}"])),
-                    ],
-                )
-                .unwrap();
-                let main = common::testing::to_wide(&batch, "histogram");
-                let leak = common::testing::to_wide(&leak, "summary");
-                let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
-                schema_provider
-                    .register_table("metrics".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-        }
-        let catalog = Arc::new(MemoryCatalogProvider::new());
-        catalog.register_schema("d", schema_provider).unwrap();
-        ctx.register_catalog("t", catalog);
-        match layout {
-            MetricsLayout::Legacy => MetricsService {
-                session_context: Arc::new(ctx),
-                metrics_layout: MetricsLayout::Legacy,
-            },
-            MetricsLayout::Wide => MetricsService {
-                session_context: Arc::new(ctx),
-                metrics_layout: MetricsLayout::Wide,
-            },
-        }
+        let leak = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100])),
+                Arc::new(StringArray::from(vec!["leak"])),
+                Arc::new(StringArray::from(vec!["latency"])),
+                Arc::new(datafusion::arrow::array::Int64Array::from(vec![10])),
+                Arc::new(Float64Array::from(vec![55.0])),
+                Arc::new(StringArray::from(vec!["[100,100,100,100]"])),
+                Arc::new(StringArray::from(vec!["[1,2,4]"])),
+                Arc::new(StringArray::from(vec!["{}"])),
+                Arc::new(StringArray::from(vec!["{}"])),
+            ],
+        )
+        .unwrap();
+        let main = common::testing::to_wide(&batch, "histogram");
+        let leak = common::testing::to_wide(&leak, "summary");
+        wide_metrics_service(vec![main, leak])
     }
 
     #[tokio::test]
-    async fn histogram_quantile_instant_mode_matches_across_layouts() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let service = histogram_service_for_layout(layout);
-            let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
-            assert_eq!(out.len(), 1, "{layout:?}: {out:?}");
-            let (name, svc, value) = &out[0];
-            assert_eq!(name, "latency", "{layout:?}");
-            assert_eq!(svc.as_deref(), Some("api"), "{layout:?}");
-            assert!(
-                (value - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
-                "{layout:?}: got {value}"
-            );
-            // The `summary` row must not leak into a histogram scan.
-            assert!(
-                out.iter().all(|(_, s, _)| s.as_deref() != Some("leak")),
-                "{layout:?}: {out:?}"
-            );
-        }
+    async fn histogram_quantile_instant_mode_excludes_other_metric_types() {
+        let service = histogram_service_with_summary_leak();
+        let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        let (name, svc, value) = &out[0];
+        assert_eq!(name, "latency");
+        assert_eq!(svc.as_deref(), Some("api"));
+        assert!(
+            (value - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+            "got {value}"
+        );
+        assert!(
+            out.iter().all(|(_, s, _)| s.as_deref() != Some("leak")),
+            "{out:?}"
+        );
     }
 
     #[tokio::test]
-    async fn histogram_quantile_rate_mode_matches_across_layouts() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let service = histogram_service_for_layout(layout);
-            let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
-            assert_eq!(out.len(), 1, "{layout:?}");
-            assert!(
-                (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
-                "{layout:?}: got {}",
-                out[0].2
-            );
-        }
+    async fn histogram_quantile_rate_mode_excludes_other_metric_types() {
+        let service = histogram_service_with_summary_leak();
+        let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
+        assert_eq!(out.len(), 1);
+        assert!(
+            (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+            "got {}",
+            out[0].2
+        );
     }
 
     #[tokio::test]
     async fn histogram_quantile_with_real_infinite_bound_clamps_to_infinity() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let service = histogram_service_for_layout(layout);
-            // rank = 0.99 * 10 = 9.9, landing in the open `+Inf` bucket →
-            // clamps to the top bound — a real `f64::INFINITY` under Wide,
-            // the legacy JSON `"+Inf"` sentinel parsed to the same value
-            // under Legacy.
-            let out = matrix(&service, "histogram_quantile(0.99, latency_inf)", 1000).await;
-            assert_eq!(out.len(), 1, "{layout:?}: {out:?}");
-            assert_eq!(out[0].2, f64::INFINITY, "{layout:?}");
-        }
+        let service = histogram_service_with_summary_leak();
+        // rank = 0.99 * 10 = 9.9, landing in the open `+Inf` bucket, which
+        // clamps to the top bound.
+        let out = matrix(&service, "histogram_quantile(0.99, latency_inf)", 1000).await;
+        assert_eq!(out.len(), 1, "{out:?}");
+        assert_eq!(out[0].2, f64::INFINITY);
     }
 
     #[tokio::test]
@@ -4491,10 +4340,7 @@ mod tests {
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService {
-            session_context: Arc::new(ctx),
-            metrics_layout: MetricsLayout::Wide,
-        }
+        MetricsService::new(ctx)
     }
 
     #[tokio::test]
