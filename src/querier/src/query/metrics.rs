@@ -2771,6 +2771,25 @@ mod tests {
         CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
     };
 
+    /// Append `n` null `count`/`sum`/`bucket_counts`/`explicit_bounds`
+    /// columns to `fields`/`columns` — the wide `metrics` table (D10) has
+    /// these columns for every row regardless of `metric_type`, so a
+    /// gauge/sum-only fixture must carry them too for a histogram scan
+    /// filtered to no matching rows to still find the columns it selects.
+    fn push_null_histogram_columns(fields: &mut Vec<Field>, columns: &mut Vec<ArrayRef>, n: usize) {
+        fields.push(Field::new("count", DataType::Int64, true));
+        fields.push(Field::new("sum", DataType::Float64, true));
+        fields.push(Field::new("bucket_counts", DataType::Utf8, true));
+        fields.push(Field::new("explicit_bounds", DataType::Utf8, true));
+        columns.push(Arc::new(datafusion::arrow::array::Int64Array::from(vec![
+            None::<i64>;
+            n
+        ])));
+        columns.push(Arc::new(Float64Array::from(vec![None::<f64>; n])));
+        columns.push(Arc::new(StringArray::from(vec![None::<&str>; n])));
+        columns.push(Arc::new(StringArray::from(vec![None::<&str>; n])));
+    }
+
     /// Append `n` rows of empty typed-layout `attributes`/`resource_attributes`
     /// columns (the `metrics_gauge` `physical-v3` shape) to `fields`/`columns`.
     fn push_empty_typed_metric_attrs(
@@ -2850,20 +2869,25 @@ mod tests {
             fields.extend(typed_fields);
             columns.extend(typed_arrays);
         }
+        push_null_histogram_columns(&mut fields, &mut columns, 3);
 
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        let batch = common::testing::to_wide(&batch, "gauge");
 
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
-            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .register_table("metrics".to_string(), Arc::new(table))
             .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
+        MetricsService {
+            session_context: Arc::new(ctx),
+            metrics_layout: MetricsLayout::Wide,
+        }
     }
 
     /// A single `api` counter series with the given (timestamp, value)
@@ -2898,18 +2922,22 @@ mod tests {
         ];
         push_empty_typed_metric_attrs(&mut fields, &mut columns, n);
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        let batch = common::testing::to_wide(&batch, "sum");
 
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
-            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .register_table("metrics".to_string(), Arc::new(table))
             .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
+        MetricsService {
+            session_context: Arc::new(ctx),
+            metrics_layout: MetricsLayout::Wide,
+        }
     }
 
     /// A counter series that resets mid-window: `[10, 20, 5, 15]`. The drop
@@ -2953,18 +2981,22 @@ mod tests {
         ];
         push_empty_typed_metric_attrs(&mut fields, &mut columns, 2);
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        let batch = common::testing::to_wide(&batch, "gauge");
 
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
-            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .register_table("metrics".to_string(), Arc::new(table))
             .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
+        MetricsService {
+            session_context: Arc::new(ctx),
+            metrics_layout: MetricsLayout::Wide,
+        }
     }
 
     /// Collect (metric_name, service?, value) tuples from a matrix.
@@ -3002,10 +3034,12 @@ mod tests {
         out
     }
 
-    /// A gauge table with a materialized `label_namespace` column plus a
-    /// sum table without it, so the scan union has to null-fill.
+    /// A `gauge`-typed row group with a materialized `label_namespace`
+    /// column, plus a `sum`-typed row group where every `label_namespace` is
+    /// null (the wide table's D10 counterpart of a legacy `metrics_gauge`
+    /// table with the column and a `metrics_sum` table without it).
     fn service_with_labeled_data() -> MetricsService {
-        let mut gauge_fields = vec![
+        let mut fields = vec![
             Field::new(
                 "timestamp",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -3021,58 +3055,41 @@ mod tests {
             Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs", "reqs"])),
             Arc::new(Float64Array::from(vec![1.0, 3.0, 10.0, 5.0])),
         ];
-        push_empty_typed_metric_attrs(&mut gauge_fields, &mut gauge_columns, 4);
-        gauge_fields.push(Field::new("label_namespace", DataType::Utf8, true));
+        push_empty_typed_metric_attrs(&mut fields, &mut gauge_columns, 4);
+        fields.push(Field::new("label_namespace", DataType::Utf8, true));
         gauge_columns.push(Arc::new(StringArray::from(vec![
             "prod", "prod", "dev", "prod",
         ])));
-        let gauge_schema = Arc::new(Schema::new(gauge_fields));
-        let gauge = RecordBatch::try_new(gauge_schema.clone(), gauge_columns).unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        let gauge = RecordBatch::try_new(schema.clone(), gauge_columns).unwrap();
 
-        let mut sum_fields = vec![
-            Field::new(
-                "timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                false,
-            ),
-            Field::new(
-                "start_timestamp",
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-                true,
-            ),
-            Field::new("service_name", DataType::Utf8, false),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("value", DataType::Float64, false),
-        ];
         let mut sum_columns: Vec<ArrayRef> = vec![
             Arc::new(TimestampNanosecondArray::from(vec![500])),
-            Arc::new(TimestampNanosecondArray::from(vec![None::<i64>])),
             Arc::new(StringArray::from(vec!["api"])),
             Arc::new(StringArray::from(vec!["reqs"])),
             Arc::new(Float64Array::from(vec![100.0])),
         ];
-        push_empty_typed_metric_attrs(&mut sum_fields, &mut sum_columns, 1);
-        let sum_schema = Arc::new(Schema::new(sum_fields));
-        let sum = RecordBatch::try_new(sum_schema.clone(), sum_columns).unwrap();
+        push_empty_typed_metric_attrs(&mut Vec::new(), &mut sum_columns, 1);
+        sum_columns.push(Arc::new(StringArray::from(vec![None::<&str>])));
+        let sum = RecordBatch::try_new(schema, sum_columns).unwrap();
 
+        let gauge = common::testing::to_wide(&gauge, "gauge");
+        let sum = common::testing::to_wide(&sum, "sum");
         let ctx = SessionContext::new();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
             .register_table(
-                "metrics_gauge".to_string(),
-                Arc::new(MemTable::try_new(gauge_schema, vec![vec![gauge]]).unwrap()),
-            )
-            .unwrap();
-        schema_provider
-            .register_table(
-                "metrics_sum".to_string(),
-                Arc::new(MemTable::try_new(sum_schema, vec![vec![sum]]).unwrap()),
+                "metrics".to_string(),
+                Arc::new(MemTable::try_new(gauge.schema(), vec![vec![gauge, sum]]).unwrap()),
             )
             .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
+        MetricsService {
+            session_context: Arc::new(ctx),
+            metrics_layout: MetricsLayout::Wide,
+        }
     }
 
     /// Collect (label_namespace?, value) tuples from a matrix.
@@ -3834,17 +3851,21 @@ mod tests {
             ],
         )
         .unwrap();
+        let batch = common::testing::to_wide(&batch, "histogram");
 
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
-            .register_table("metrics_histogram".to_string(), Arc::new(table))
+            .register_table("metrics".to_string(), Arc::new(table))
             .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
+        MetricsService {
+            session_context: Arc::new(ctx),
+            metrics_layout: MetricsLayout::Wide,
+        }
     }
 
     #[tokio::test]
@@ -3959,7 +3980,10 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         match layout {
-            MetricsLayout::Legacy => MetricsService::new(ctx),
+            MetricsLayout::Legacy => MetricsService {
+                session_context: Arc::new(ctx),
+                metrics_layout: MetricsLayout::Legacy,
+            },
             MetricsLayout::Wide => MetricsService {
                 session_context: Arc::new(ctx),
                 metrics_layout: MetricsLayout::Wide,
@@ -4074,7 +4098,10 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         match layout {
-            MetricsLayout::Legacy => MetricsService::new(ctx),
+            MetricsLayout::Legacy => MetricsService {
+                session_context: Arc::new(ctx),
+                metrics_layout: MetricsLayout::Legacy,
+            },
             MetricsLayout::Wide => MetricsService {
                 session_context: Arc::new(ctx),
                 metrics_layout: MetricsLayout::Wide,
@@ -4453,17 +4480,21 @@ mod tests {
         ];
         push_empty_typed_metric_attrs(&mut fields, &mut columns, 2);
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+        let batch = common::testing::to_wide(&batch, "gauge");
         let ctx = SessionContext::new();
-        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let schema_provider = Arc::new(MemorySchemaProvider::new());
         schema_provider
-            .register_table("metrics_gauge".to_string(), Arc::new(table))
+            .register_table("metrics".to_string(), Arc::new(table))
             .unwrap();
         let catalog = Arc::new(MemoryCatalogProvider::new());
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
-        MetricsService::new(ctx)
+        MetricsService {
+            session_context: Arc::new(ctx),
+            metrics_layout: MetricsLayout::Wide,
+        }
     }
 
     #[tokio::test]
