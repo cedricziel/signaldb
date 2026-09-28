@@ -258,6 +258,10 @@ pub fn create_metric_exemplars_partition_spec() -> Result<PartitionSpec> {
 /// legacy per-type tables' version until the cutover.
 pub const TYPED_METRIC_VERSION: &str = "physical-v4";
 
+/// The legacy per-type metric tables' version, pinned so they still resolve
+/// after `current_metric_version` flips (the reconciler drops them then).
+pub const LEGACY_METRIC_VERSION: &str = "physical-v3";
+
 /// Which physical layout the metrics tables are stored in: the legacy
 /// per-type tables (`metrics_gauge`/`metrics_sum`/`metrics_histogram`/...),
 /// or the single wide `metrics` table (D10) with a `metric_type`
@@ -353,26 +357,18 @@ impl TableSchema {
             }
             TableSchema::Logs => SCHEMA_DEFINITIONS
                 .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version),
-            TableSchema::MetricsGauge => SCHEMA_DEFINITIONS.resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_gauge,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            ),
-            TableSchema::MetricsSum => SCHEMA_DEFINITIONS.resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_sum,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            ),
-            TableSchema::MetricsHistogram => SCHEMA_DEFINITIONS.resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_histogram,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            ),
+            TableSchema::MetricsGauge => SCHEMA_DEFINITIONS
+                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, LEGACY_METRIC_VERSION),
+            TableSchema::MetricsSum => SCHEMA_DEFINITIONS
+                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, LEGACY_METRIC_VERSION),
+            TableSchema::MetricsHistogram => SCHEMA_DEFINITIONS
+                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, LEGACY_METRIC_VERSION),
             TableSchema::MetricsExponentialHistogram => SCHEMA_DEFINITIONS.resolve_table_schema(
                 &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
+                LEGACY_METRIC_VERSION,
             ),
-            TableSchema::MetricsSummary => SCHEMA_DEFINITIONS.resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_summary,
-                &SCHEMA_DEFINITIONS.metadata.current_metric_version,
-            ),
+            TableSchema::MetricsSummary => SCHEMA_DEFINITIONS
+                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, LEGACY_METRIC_VERSION),
             TableSchema::Profiles => SCHEMA_DEFINITIONS.resolve_table_schema(
                 &SCHEMA_DEFINITIONS.profiles,
                 &SCHEMA_DEFINITIONS.metadata.current_profile_version,
@@ -562,8 +558,31 @@ impl TableSchema {
         }
     }
 
-    /// Get all available table schemas based on configuration
-    pub fn all_from_config(config: &DefaultSchemas) -> Vec<TableSchema> {
+    /// The metrics table(s) enabled for a tenant/dataset under `layout`:
+    /// the five legacy per-type tables under [`MetricsLayout::Legacy`], or
+    /// the wide `metrics` table plus `metric_exemplars` under
+    /// [`MetricsLayout::Wide`]. Shared by [`Self::all_from_config`] and
+    /// [`Self::all`], parameterized so tests can exercise both layouts
+    /// without depending on global config.
+    fn metrics_tables_for(layout: MetricsLayout) -> &'static [TableSchema] {
+        match layout {
+            MetricsLayout::Legacy => &[
+                TableSchema::MetricsGauge,
+                TableSchema::MetricsSum,
+                TableSchema::MetricsHistogram,
+                TableSchema::MetricsExponentialHistogram,
+                TableSchema::MetricsSummary,
+            ],
+            MetricsLayout::Wide => &[TableSchema::Metrics, TableSchema::MetricExemplars],
+        }
+    }
+
+    /// Get all available table schemas based on configuration, under the
+    /// given metrics layout.
+    pub fn all_from_config_with_layout(
+        config: &DefaultSchemas,
+        layout: MetricsLayout,
+    ) -> Vec<TableSchema> {
         let mut schemas = Vec::new();
 
         if config.traces_enabled {
@@ -575,11 +594,7 @@ impl TableSchema {
         }
 
         if config.metrics_enabled {
-            schemas.push(TableSchema::MetricsGauge);
-            schemas.push(TableSchema::MetricsSum);
-            schemas.push(TableSchema::MetricsHistogram);
-            schemas.push(TableSchema::MetricsExponentialHistogram);
-            schemas.push(TableSchema::MetricsSummary);
+            schemas.extend_from_slice(Self::metrics_tables_for(layout));
         }
 
         if config.profiles_enabled {
@@ -594,18 +609,24 @@ impl TableSchema {
         schemas
     }
 
-    /// Get all available table schemas (legacy method for backwards compatibility)
+    /// Get all available table schemas based on configuration, under
+    /// [`MetricsLayout::current`].
+    pub fn all_from_config(config: &DefaultSchemas) -> Vec<TableSchema> {
+        Self::all_from_config_with_layout(config, MetricsLayout::current())
+    }
+
+    /// Get all available table schemas (legacy method for backwards
+    /// compatibility), under the given metrics layout.
+    pub fn all_with_layout(layout: MetricsLayout) -> Vec<TableSchema> {
+        let mut schemas = vec![TableSchema::Traces, TableSchema::Logs];
+        schemas.extend_from_slice(Self::metrics_tables_for(layout));
+        schemas.push(TableSchema::Profiles);
+        schemas
+    }
+
+    /// Get all available table schemas, under [`MetricsLayout::current`].
     pub fn all() -> Vec<TableSchema> {
-        vec![
-            TableSchema::Traces,
-            TableSchema::Logs,
-            TableSchema::MetricsGauge,
-            TableSchema::MetricsSum,
-            TableSchema::MetricsHistogram,
-            TableSchema::MetricsExponentialHistogram,
-            TableSchema::MetricsSummary,
-            TableSchema::Profiles,
-        ]
+        Self::all_with_layout(MetricsLayout::current())
     }
 }
 
@@ -1032,5 +1053,92 @@ mod sort_order_tests {
     #[test]
     fn metrics_layout_defaults_to_legacy() {
         assert_eq!(MetricsLayout::current(), MetricsLayout::Legacy);
+    }
+
+    #[test]
+    fn legacy_metric_variants_resolve_pinned_to_v3() {
+        assert_eq!(LEGACY_METRIC_VERSION, "physical-v3");
+        for schema in [
+            TableSchema::MetricsGauge,
+            TableSchema::MetricsSum,
+            TableSchema::MetricsHistogram,
+            TableSchema::MetricsExponentialHistogram,
+            TableSchema::MetricsSummary,
+        ] {
+            assert!(
+                schema.schema().is_ok(),
+                "{} should still resolve at {LEGACY_METRIC_VERSION}",
+                schema.table_name()
+            );
+        }
+    }
+
+    fn table_names(schemas: &[TableSchema]) -> Vec<&str> {
+        schemas.iter().map(|t| t.table_name()).collect()
+    }
+
+    #[test]
+    fn all_with_layout_legacy_yields_five_per_type_metric_tables() {
+        let schemas = TableSchema::all_with_layout(MetricsLayout::Legacy);
+        assert_eq!(
+            table_names(&schemas),
+            vec![
+                "traces",
+                "logs",
+                "metrics_gauge",
+                "metrics_sum",
+                "metrics_histogram",
+                "metrics_exponential_histogram",
+                "metrics_summary",
+                "profiles",
+            ]
+        );
+    }
+
+    #[test]
+    fn all_with_layout_wide_yields_metrics_and_metric_exemplars() {
+        let schemas = TableSchema::all_with_layout(MetricsLayout::Wide);
+        assert_eq!(
+            table_names(&schemas),
+            vec!["traces", "logs", "metrics", "metric_exemplars", "profiles"]
+        );
+    }
+
+    #[test]
+    fn all_from_config_with_layout_wide_yields_metrics_and_metric_exemplars() {
+        let config = DefaultSchemas {
+            traces_enabled: true,
+            logs_enabled: false,
+            metrics_enabled: true,
+            profiles_enabled: false,
+            custom_schemas: Default::default(),
+        };
+        let schemas = TableSchema::all_from_config_with_layout(&config, MetricsLayout::Wide);
+        assert_eq!(
+            table_names(&schemas),
+            vec!["traces", "metrics", "metric_exemplars"]
+        );
+    }
+
+    #[test]
+    fn all_from_config_with_layout_legacy_yields_five_per_type_metric_tables() {
+        let config = DefaultSchemas {
+            traces_enabled: false,
+            logs_enabled: false,
+            metrics_enabled: true,
+            profiles_enabled: false,
+            custom_schemas: Default::default(),
+        };
+        let schemas = TableSchema::all_from_config_with_layout(&config, MetricsLayout::Legacy);
+        assert_eq!(
+            table_names(&schemas),
+            vec![
+                "metrics_gauge",
+                "metrics_sum",
+                "metrics_histogram",
+                "metrics_exponential_histogram",
+                "metrics_summary",
+            ]
+        );
     }
 }

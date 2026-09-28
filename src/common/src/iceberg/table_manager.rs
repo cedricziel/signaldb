@@ -220,27 +220,32 @@ impl IcebergTableManager {
             )),
             "metrics_gauge" => Some((
                 &SCHEMA_DEFINITIONS.metrics_gauge,
-                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+                schemas::LEGACY_METRIC_VERSION,
             )),
             "metrics_sum" => Some((
                 &SCHEMA_DEFINITIONS.metrics_sum,
-                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+                schemas::LEGACY_METRIC_VERSION,
             )),
             "metrics_histogram" => Some((
                 &SCHEMA_DEFINITIONS.metrics_histogram,
-                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+                schemas::LEGACY_METRIC_VERSION,
             )),
             "metrics_exponential_histogram" => Some((
                 &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+                schemas::LEGACY_METRIC_VERSION,
             )),
             "metrics_summary" => Some((
                 &SCHEMA_DEFINITIONS.metrics_summary,
-                SCHEMA_DEFINITIONS.metadata.current_metric_version.as_str(),
+                schemas::LEGACY_METRIC_VERSION,
             )),
             "profiles" => Some((
                 &SCHEMA_DEFINITIONS.profiles,
                 SCHEMA_DEFINITIONS.metadata.current_profile_version.as_str(),
+            )),
+            "metrics" => Some((&SCHEMA_DEFINITIONS.metrics, schemas::TYPED_METRIC_VERSION)),
+            "metric_exemplars" => Some((
+                &SCHEMA_DEFINITIONS.metric_exemplars,
+                schemas::TYPED_METRIC_VERSION,
             )),
             _ => None,
         }
@@ -788,6 +793,32 @@ mod tests {
             .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
         catalog.clone().create_table(identifier, create).await?;
         Ok(())
+    }
+
+    #[test]
+    fn schema_target_for_resolves_metrics_and_metric_exemplars_at_the_typed_version() {
+        let (_, version) = IcebergTableManager::schema_target_for("metrics")
+            .expect("metrics should be schemas.toml-sourced");
+        assert_eq!(version, schemas::TYPED_METRIC_VERSION);
+
+        let (_, version) = IcebergTableManager::schema_target_for("metric_exemplars")
+            .expect("metric_exemplars should be schemas.toml-sourced");
+        assert_eq!(version, schemas::TYPED_METRIC_VERSION);
+    }
+
+    #[test]
+    fn schema_target_for_pins_legacy_metric_tables_to_v3() {
+        for name in [
+            "metrics_gauge",
+            "metrics_sum",
+            "metrics_histogram",
+            "metrics_exponential_histogram",
+            "metrics_summary",
+        ] {
+            let (_, version) = IcebergTableManager::schema_target_for(name)
+                .unwrap_or_else(|| panic!("{name} should be schemas.toml-sourced"));
+            assert_eq!(version, schemas::LEGACY_METRIC_VERSION);
+        }
     }
 
     #[tokio::test]
