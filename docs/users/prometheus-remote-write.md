@@ -22,12 +22,12 @@ POST http://<acceptor-host>:4318/api/v1/write
 It accepts snappy-compressed protobuf (block format, not framed) with
 `Content-Type: application/x-protobuf`, remote_write protocol v1 and v2
 (v2 adds native histograms and metadata). Incoming samples are converted
-to OpenTelemetry metrics and stored in the same metrics tables as OTLP
-metrics (`metrics_gauge`, `metrics_sum`, `metrics_histogram`). Native
+to OpenTelemetry metrics and stored in the same `metrics` table as OTLP
+metrics, distinguished by `metric_type` (gauge/sum/histogram). Native
 histogram samples (v2) are converted to OpenTelemetry exponential
-histograms and stored in `metrics_exponential_histogram`; custom-bucket
-native histograms (NHCB) cannot be represented as exponential histograms
-and are dropped with a warning in the acceptor logs.
+histograms and stored with `metric_type = exponential_histogram`;
+custom-bucket native histograms (NHCB) cannot be represented as exponential
+histograms and are dropped with a warning in the acceptor logs.
 
 In the other direction, when stored metrics are rendered as Prometheus
 series, exponential histograms are downsampled to classic histograms
@@ -68,7 +68,7 @@ Reload or restart Prometheus so the new remote_write target takes effect.
 - Query the data back over SQL (see [Querying with SQL](querying-sql.md)):
 
 ```bash
-signaldb-cli query --sql "SELECT * FROM metrics_gauge LIMIT 5" \
+signaldb-cli query --sql "SELECT * FROM metrics WHERE metric_type = 'gauge' LIMIT 5" \
   --api-key sk-acme-prod-key-123 --tenant-id acme
 ```
 

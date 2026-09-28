@@ -13,7 +13,7 @@ What SignalDB's `/prometheus` query API supports today, and what it doesn't
 yet. See [Query metrics with PromQL](querying-promql.md) for usage.
 
 SignalDB lowers a parsed PromQL expression to a DataFusion plan over the
-metrics Iceberg tables (`metrics_gauge`, `metrics_sum`, `metrics_histogram`).
+`metrics` Iceberg table, filtered by `metric_type` (gauge/sum/histogram).
 Range aggregations bucket samples with `date_bin(step)` rather than a sliding
 window — exact when the query `step` equals the range, an approximation
 otherwise. Anything listed as unsupported returns a clear error rather than a
@@ -26,80 +26,80 @@ range functions fold across time within a series.
 
 ## Selectors
 
-| Feature | Status |
-|---------|--------|
-| Instant vector selector `metric{…}` | ✅ |
-| Label matchers `=`, `!=`, `=~`, `!~` | ✅ (all four operators on `service_name` and on **materialized** labels; on map-typed tables any attribute supports all four; legacy JSON tables: `=`/`!=` substring only) |
-| `__name__` matcher | ✅ (`=`, `!=`, `=~`, `!~`; regex patterns are fully anchored, as in Prometheus) |
-| Range vector selector `metric[5m]` (as a function argument) | ✅ |
-| `offset` modifier (`metric offset 5m`) | ✅ |
-| `@` modifier (`metric @ 1600000000`, `@ start()`/`@ end()`) | ✅ (pins to the instant, 5-min lookback, replicated across steps) |
-| Subqueries `expr[5m:1m]` | ✅ (under an `_over_time` reducer; inner evaluated at the resolution) |
+| Feature                                                     | Status                                                                                                                                                                     |
+| ----------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Instant vector selector `metric{…}`                         | ✅                                                                                                                                                                         |
+| Label matchers `=`, `!=`, `=~`, `!~`                        | ✅ (all four operators on `service_name` and on **materialized** labels; on map-typed tables any attribute supports all four; legacy JSON tables: `=`/`!=` substring only) |
+| `__name__` matcher                                          | ✅ (`=`, `!=`, `=~`, `!~`; regex patterns are fully anchored, as in Prometheus)                                                                                            |
+| Range vector selector `metric[5m]` (as a function argument) | ✅                                                                                                                                                                         |
+| `offset` modifier (`metric offset 5m`)                      | ✅                                                                                                                                                                         |
+| `@` modifier (`metric @ 1600000000`, `@ start()`/`@ end()`) | ✅ (pins to the instant, 5-min lookback, replicated across steps)                                                                                                          |
+| Subqueries `expr[5m:1m]`                                    | ✅ (under an `_over_time` reducer; inner evaluated at the resolution)                                                                                                      |
 
 SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pending`, `process.memory.usage`), which is what `discover_metrics` and `/prometheus/api/v1/label/__name__/values` return. A dotted name can be used bare — `signaldb.wal.entries_pending`, `process.memory.usage{service_name="signaldb"}`, `rate(signaldb.ingest.spans_received[5m])` — and SignalDB rewrites it to the quoted forms standard PromQL already supports: `{"signaldb.wal.entries_pending"}` or `{__name__="signaldb.wal.entries_pending"}`.
 
 ## Aggregation operators
 
-| Operator | Status |
-|----------|--------|
-| `sum`, `avg`, `min`, `max`, `count` (with/without `by (…)`) | ✅ |
-| `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`) | ✅ |
-| `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅ |
-| `without (…)` grouping | ✅ (over `job`/`service` and materialized labels) |
-| `quantile(phi, …)` (parameterized, with/without `by (…)`) | ✅ |
-| `count_values` | ✅ (distinct value → `service_name`; label name not materialized) |
+| Operator                                                         | Status                                                            |
+| ---------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `sum`, `avg`, `min`, `max`, `count` (with/without `by (…)`)      | ✅                                                                |
+| `topk(k, …)`, `bottomk(k, …)` (no `by`/`without`)                | ✅                                                                |
+| `stddev`, `stdvar` (population), `group` (with/without `by (…)`) | ✅                                                                |
+| `without (…)` grouping                                           | ✅ (over `job`/`service` and materialized labels)                 |
+| `quantile(phi, …)` (parameterized, with/without `by (…)`)        | ✅                                                                |
+| `count_values`                                                   | ✅ (distinct value → `service_name`; label name not materialized) |
 
 ## Range (`[range]`) functions
 
-| Function | Status |
-|----------|--------|
-| `rate` | ✅ (counter delta ÷ range seconds; a drop between consecutive samples counts as a reset, so the result is never negative) |
-| `increase` | ✅ (counter delta, reset-corrected) |
-| `delta` | ✅ (gauge delta: last − first, no reset correction) |
-| `deriv` | ✅ (per-second slope via linear regression; needs ≥2 samples) |
-| `irate`, `idelta` | ✅ (from the last two samples in the window; `irate` is reset-corrected) |
-| `avg_over_time`, `sum_over_time`, `min_over_time`, `max_over_time` | ✅ |
-| `count_over_time`, `last_over_time` | ✅ |
-| `stddev_over_time`, `stdvar_over_time` | ✅ (population) |
-| `<agg>_over_time` under an outer aggregation, e.g. `sum(avg_over_time(…))` | ✅ |
-| `resets`, `changes` | ✅ (counted over the ordered samples in each bucket) |
-| `present_over_time` | ✅ (1 per bucket with samples) |
-| `quantile_over_time(phi, …)` | ✅ (per-series phi-quantile of the bucket) |
-| `absent_over_time` | ✅ (1 per empty step bucket) |
+| Function                                                                   | Status                                                                                                                    |
+| -------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `rate`                                                                     | ✅ (counter delta ÷ range seconds; a drop between consecutive samples counts as a reset, so the result is never negative) |
+| `increase`                                                                 | ✅ (counter delta, reset-corrected)                                                                                       |
+| `delta`                                                                    | ✅ (gauge delta: last − first, no reset correction)                                                                       |
+| `deriv`                                                                    | ✅ (per-second slope via linear regression; needs ≥2 samples)                                                             |
+| `irate`, `idelta`                                                          | ✅ (from the last two samples in the window; `irate` is reset-corrected)                                                  |
+| `avg_over_time`, `sum_over_time`, `min_over_time`, `max_over_time`         | ✅                                                                                                                        |
+| `count_over_time`, `last_over_time`                                        | ✅                                                                                                                        |
+| `stddev_over_time`, `stdvar_over_time`                                     | ✅ (population)                                                                                                           |
+| `<agg>_over_time` under an outer aggregation, e.g. `sum(avg_over_time(…))` | ✅                                                                                                                        |
+| `resets`, `changes`                                                        | ✅ (counted over the ordered samples in each bucket)                                                                      |
+| `present_over_time`                                                        | ✅ (1 per bucket with samples)                                                                                            |
+| `quantile_over_time(phi, …)`                                               | ✅ (per-series phi-quantile of the bucket)                                                                                |
+| `absent_over_time`                                                         | ✅ (1 per empty step bucket)                                                                                              |
 
 ## Histograms
 
-| Function | Status |
-|----------|--------|
-| `histogram_quantile(phi, metric)` | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series) |
-| `histogram_quantile(phi, rate(metric[5m]))` | ✅ (interpolates over the per-bucket count delta) |
-| `histogram_count`, `histogram_sum` | ✅ (sum the stored count/sum columns) |
-| `histogram_fraction(lower, upper, metric)` | ✅ (fraction of observations in `(lower, upper]`) |
+| Function                                    | Status                                                                                                          |
+| ------------------------------------------- | --------------------------------------------------------------------------------------------------------------- |
+| `histogram_quantile(phi, metric)`           | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series) |
+| `histogram_quantile(phi, rate(metric[5m]))` | ✅ (interpolates over the per-bucket count delta)                                                               |
+| `histogram_count`, `histogram_sum`          | ✅ (sum the stored count/sum columns)                                                                           |
+| `histogram_fraction(lower, upper, metric)`  | ✅ (fraction of observations in `(lower, upper]`)                                                               |
 
 ## Binary operators
 
-| Operator | Status |
-|----------|--------|
-| Arithmetic `+ - * / % ^` with a scalar (`metric * 8`, `1024 / metric`) | ✅ (drops `__name__`) |
-| Comparison `== != > < >= <=` with a scalar (`metric > 5`, `5 < metric`) | ✅ (filters series; with `bool` maps to 1/0 and drops `__name__`) |
-| Nested expressions (`a + b + c`, `(a / b) * 100`) | ✅ |
-| Arithmetic `+ - * / % ^` between two vectors (`a / b`) | ✅ (one-to-one match on `job`/`service`; drops `__name__`) |
-| Comparison `== != > < >= <=` between two vectors (`a > b`, with `bool`) | ✅ (one-to-one match; filters `left` or maps to 1/0) |
-| Logical/set `and`, `or`, `unless` | ✅ (matched on `job`/`service` identity) |
-| `on` / `ignoring` / `group_left` / `group_right` matching | ✅ (accepted; resolves to the materialized `service_name` join label) |
+| Operator                                                                | Status                                                                |
+| ----------------------------------------------------------------------- | --------------------------------------------------------------------- |
+| Arithmetic `+ - * / % ^` with a scalar (`metric * 8`, `1024 / metric`)  | ✅ (drops `__name__`)                                                 |
+| Comparison `== != > < >= <=` with a scalar (`metric > 5`, `5 < metric`) | ✅ (filters series; with `bool` maps to 1/0 and drops `__name__`)     |
+| Nested expressions (`a + b + c`, `(a / b) * 100`)                       | ✅                                                                    |
+| Arithmetic `+ - * / % ^` between two vectors (`a / b`)                  | ✅ (one-to-one match on `job`/`service`; drops `__name__`)            |
+| Comparison `== != > < >= <=` between two vectors (`a > b`, with `bool`) | ✅ (one-to-one match; filters `left` or maps to 1/0)                  |
+| Logical/set `and`, `or`, `unless`                                       | ✅ (matched on `job`/`service` identity)                              |
+| `on` / `ignoring` / `group_left` / `group_right` matching               | ✅ (accepted; resolves to the materialized `service_name` join label) |
 
 ## Math & label functions
 
-| Function | Status |
-|----------|--------|
-| `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max` | ✅ (drop `__name__`, as in Prometheus) |
-| `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn` | ✅ (drop `__name__`) |
-| `sort`, `sort_desc` | ✅ (order the output by value) |
-| `label_replace`, `label_join` | ✅ (over the materialized `service_name`/`__name__` labels) |
-| `absent` | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
-| `vector`, `scalar` | ✅ (`vector(s)` constant series; `scalar(v)` single-series value) |
-| `timestamp` | ✅ (latest sample time per series, in unix seconds) |
-| `time`, `timestamp`, `day_of_week`, `day_of_month`, `day_of_year`, `days_in_month`, `hour`, `minute`, `month`, `year` | ✅ |
+| Function                                                                                                              | Status                                                            |
+| --------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
+| `abs`, `ceil`, `floor`, `round`, `clamp`, `clamp_min`, `clamp_max`                                                    | ✅ (drop `__name__`, as in Prometheus)                            |
+| `exp`, `ln`, `log2`, `log10`, `sqrt`, `sgn`                                                                           | ✅ (drop `__name__`)                                              |
+| `sort`, `sort_desc`                                                                                                   | ✅ (order the output by value)                                    |
+| `label_replace`, `label_join`                                                                                         | ✅ (over the materialized `service_name`/`__name__` labels)       |
+| `absent`                                                                                                              | ✅ (1 per empty step bucket; carries the `job`/`service` matcher) |
+| `vector`, `scalar`                                                                                                    | ✅ (`vector(s)` constant series; `scalar(v)` single-series value) |
+| `timestamp`                                                                                                           | ✅ (latest sample time per series, in unix seconds)               |
+| `time`, `timestamp`, `day_of_week`, `day_of_month`, `day_of_year`, `days_in_month`, `hour`, `minute`, `month`, `year` | ✅                                                                |
 
 ## Notes
 

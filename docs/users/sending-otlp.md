@@ -142,12 +142,12 @@ as `off_type_count` on `GET /api/v1/schema/attributes/{key}`.
 
 ## Per-signal support
 
-| Signal   | OTLP/gRPC :4317 | OTLP/HTTP :4318                      | Stored as                                                  |
-| -------- | --------------- | ------------------------------------ | ---------------------------------------------------------- |
-| Traces   | yes             | yes (`POST /v1/traces`)              | `traces` table                                             |
-| Logs     | yes             | yes (`POST /v1/logs`)                | `logs` table                                               |
-| Metrics  | yes             | yes (`POST /v1/metrics`)             | `metrics_gauge`, `metrics_sum`, `metrics_histogram` tables |
-| Profiles | yes             | yes (`POST /v1development/profiles`) | `profiles` table (see [profiles](profiles.md))             |
+| Signal   | OTLP/gRPC :4317 | OTLP/HTTP :4318                      | Stored as                                      |
+| -------- | --------------- | ------------------------------------ | ---------------------------------------------- |
+| Traces   | yes             | yes (`POST /v1/traces`)              | `traces` table                                 |
+| Logs     | yes             | yes (`POST /v1/logs`)                | `logs` table                                   |
+| Metrics  | yes             | yes (`POST /v1/metrics`)             | `metrics`, `metric_exemplars` tables           |
+| Profiles | yes             | yes (`POST /v1development/profiles`) | `profiles` table (see [profiles](profiles.md)) |
 
 ## Trace continuity into SignalDB
 
