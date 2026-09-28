@@ -170,7 +170,7 @@ export function OverviewTab({ scope, onOpenNetwork }: Props) {
               : `${Math.round(tracedShare.data.value * 100)}%`
           }
           change={
-            tracedShare.data?.previous !== undefined
+            tracedShare.data?.hasData && tracedShare.data.previous !== undefined
               ? relChange(
                   tracedShare.data.value,
                   tracedShare.data.previous,
