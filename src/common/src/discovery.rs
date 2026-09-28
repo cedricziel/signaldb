@@ -241,7 +241,7 @@ pub fn signal_for_source(source: &str) -> Option<&'static str> {
         "logs" => Some("logs"),
         "traces" => Some("traces"),
         "profiles" => Some("profiles"),
-        "metrics" => Some("metrics"),
+        "metrics" | "metric_exemplars" => Some("metrics"),
         name if name.starts_with("metrics_") => Some("metrics"),
         _ => None,
     }
