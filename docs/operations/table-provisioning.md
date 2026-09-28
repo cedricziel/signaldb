@@ -97,6 +97,9 @@ long a _newly created_ dataset waits.
    otel-native-schema layer 7 cutover to the typed `metrics`/`metric_exemplars`
    tables. Dropped data is not migrated; see
    [the metrics table](../architecture/storage-layout.md#metrics-table-physical-v4----current).
+   This runs on every pass, converged datasets included, until one purge of
+   the dataset drops everything without a failure; after that the process
+   stops checking it.
 
 Datasets created while the writer was down, datasets predating this behavior,
 and datasets added at runtime all converge on a later pass — no restart, no
