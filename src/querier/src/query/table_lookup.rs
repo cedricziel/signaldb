@@ -23,6 +23,7 @@
 use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use datafusion::common::TableReference;
 use datafusion::datasource::{TableProvider, provider_as_source};
+use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::prelude::{DataFrame, SessionContext, col, lit};
 use datafusion::scalar::ScalarValue;
@@ -158,6 +159,11 @@ pub fn scan_provider(
         .build()
         .map_err(QuerierError::QueryFailed)?;
     Ok(DataFrame::new(ctx.state(), plan))
+}
+
+/// Keeps the wide `metrics` table's rows of the given `metric_type`s.
+pub(crate) fn metric_type_filter(types: &[&str]) -> Expr {
+    col("metric_type").in_list(types.iter().map(|t| lit(*t)).collect(), false)
 }
 
 #[cfg(test)]

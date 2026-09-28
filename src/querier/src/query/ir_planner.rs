@@ -68,9 +68,14 @@ use datafusion::scalar::ScalarValue;
 
 use super::IrQueryParams;
 use super::error::QuerierError;
-use super::histogram::{BucketCol, HistogramAcc, RateHistAcc, histogram_quantile};
+use super::histogram::{
+    BucketCol, HistogramAcc, NON_SCALAR_METRIC_TYPES, RateHistAcc, histogram_quantile,
+    reject_non_histogram,
+};
 use super::profile::batch_to_models;
-use super::table_lookup::{column, optional_table_provider, scan_provider, string_column};
+use super::table_lookup::{
+    column, metric_type_filter, optional_table_provider, scan_provider, string_column,
+};
 use super::typed_attrs::{CanonicalTypeLookup, CanonicalTypes};
 use datafusion::common::TableReference;
 
@@ -2228,6 +2233,7 @@ impl Lowering<'_> {
         let mut projection = vec![
             date_bin(stride, ts_ns, origin).alias("bucket"),
             utf8(col("metric_name")).alias("metric_name"),
+            utf8(col("metric_type")).alias("metric_type"),
             // The raw-series discriminator for rate-mode delta tracking,
             // independent of `by` — see the comment on `RawKey` below.
             utf8(col("service_name")).alias("__raw_service"),
@@ -2250,7 +2256,8 @@ impl Lowering<'_> {
         );
 
         let batches = df
-            .select(projection)
+            .filter(metric_type_filter(NON_SCALAR_METRIC_TYPES))
+            .and_then(|df| df.select(projection))
             .map_err(QuerierError::QueryFailed)?
             .collect()
             .await
@@ -2283,6 +2290,7 @@ impl Lowering<'_> {
                     QuerierError::InvalidInput("bucket column is not a timestamp".to_string())
                 })?;
             let metric = string_column(batch, "metric_name")?;
+            let metric_type = string_column(batch, "metric_type")?;
             let raw_service = string_column(batch, "__raw_service")?;
             let by_cols: Vec<&StringArray> = by_aliases
                 .iter()
@@ -2306,6 +2314,7 @@ impl Lowering<'_> {
                 })?;
 
             for i in 0..batch.num_rows() {
+                reject_non_histogram("histogram_quantile", metric_type.value(i))?;
                 if bucket.is_null(i) || counts.is_null(i) || bounds.is_null(i) {
                     continue;
                 }
@@ -5385,10 +5394,8 @@ mod tests {
 
     /// The `latency` (svcA/svcB)/`reset` (svcD) slice of
     /// [`metrics_histogram_ctx`], built via [`common::testing::to_wide`],
-    /// plus an unrelated `summary`-typed row sharing `latency`'s
-    /// `metric_name` so only `metric_type` filtering can exclude it from a
-    /// histogram scan.
-    fn histogram_ctx_with_summary_leak() -> SessionContext {
+    /// plus one `leak_type` row sharing `latency`'s `metric_name`.
+    fn histogram_ctx_with_leak(leak_type: &str) -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -5449,7 +5456,7 @@ mod tests {
         )
         .unwrap();
         let main = common::testing::to_wide(&batch, "histogram");
-        let leak = common::testing::to_wide(&leak, "summary");
+        let leak = common::testing::to_wide(&leak, leak_type);
         let table = MemTable::try_new(main.schema(), vec![vec![main, leak]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("metrics".to_string(), Arc::new(table))
@@ -5463,7 +5470,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_instant_mode_merges_and_groups_by_service() {
-        let svc = IrService::new(histogram_ctx_with_summary_leak());
+        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -5489,7 +5496,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_rate_mode_clamps_counter_reset_and_inf_overflow() {
-        let svc = IrService::new(histogram_ctx_with_summary_leak());
+        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -5601,6 +5608,65 @@ mod tests {
         let batches = df.collect().await.unwrap();
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 1, "limit narrows the 2-service result to 1");
+    }
+
+    async fn histogram_quantile_over_leak(leak_type: &str) -> QuerierError {
+        let svc = IrService::new(histogram_ctx_with_leak(leak_type));
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "as": "p50" } }
+            ]
+        }));
+        match svc.plan(&d, "t", "d", 0).await {
+            Ok(Some((df, _))) => df.collect().await.map(|_| ()).map_err(QuerierError::from),
+            Ok(None) => panic!("the metrics table is registered"),
+            Err(err) => Err(err),
+        }
+        .unwrap_err()
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_over_a_summary_is_a_typed_error() {
+        let err = histogram_quantile_over_leak("summary").await;
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m)
+                if m == "histogram_quantile is not supported on summary metrics"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_over_an_exponential_histogram_is_not_yet_supported() {
+        let err = histogram_quantile_over_leak("exponential_histogram").await;
+        assert!(
+            matches!(&err, QuerierError::Unsupported(m)
+                if m == "histogram_quantile is not yet supported on exponential_histogram metrics"),
+            "{err}"
+        );
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_on_metrics_reads_only_histogram_rows() {
+        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        assert!(histogram_value(&batches, "p50", Some("leak")).is_empty());
+        let svc_a = histogram_value(&batches, "p50", Some("svcA"));
+        assert!(
+            svc_a.len() == 1 && (svc_a[0] - 0.3).abs() < 1e-9,
+            "{svc_a:?}"
+        );
     }
 
     #[tokio::test]

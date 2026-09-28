@@ -624,16 +624,16 @@ impl InferCtx<'_> {
         Ok(())
     }
 
-    /// Quantile-over-histogram-buckets — legal only on `metrics_histogram`,
+    /// Quantile-over-histogram-buckets — legal only on the metric sources,
     /// always produces a series (`metric.name` plus any extra `by` labels).
     /// Distinct from `aggregate`'s `fn: "quantile"` (an approx-percentile over
     /// independent scalar values, `check_agg` below) — different algorithm,
     /// different source shape.
     fn apply_histogram_quantile(&mut self, hq: &HistogramQuantile) -> Result<(), IrError> {
-        if self.source != "metrics_histogram" {
+        if !matches!(self.source, "metrics" | "metrics_histogram") {
             return Err(IrError::IllegalStage {
                 stage: "histogram_quantile".into(),
-                reason: "is only supported on the metrics_histogram source".into(),
+                reason: "is only supported on the metrics source".into(),
             });
         }
         if self.require_rowset("histogram_quantile")?.aggregated {
@@ -1358,19 +1358,13 @@ mod tests {
     }
 
     fn metrics_histogram_resolver() -> InMemoryResolver {
+        histogram_resolver_for("metrics_histogram")
+    }
+
+    fn histogram_resolver_for(source: &str) -> InMemoryResolver {
         logs_resolver()
-            .with_column(
-                "metrics_histogram",
-                "metric.name",
-                "metric_name",
-                ValueType::String,
-            )
-            .with_column(
-                "metrics_histogram",
-                "service.name",
-                "service_name",
-                ValueType::String,
-            )
+            .with_column(source, "metric.name", "metric_name", ValueType::String)
+            .with_column(source, "service.name", "service_name", ValueType::String)
     }
 
     fn doc(v: serde_json::Value) -> Document {
@@ -1556,6 +1550,13 @@ mod tests {
             }
             other => panic!("expected series, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn histogram_quantile_is_legal_on_the_metrics_source() {
+        let resolver = histogram_resolver_for("metrics");
+        let v = validate_json_with(histogram_quantile_doc(3, "metrics", 0.95), &resolver).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
     }
 
     #[test]

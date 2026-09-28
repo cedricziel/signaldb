@@ -3,11 +3,28 @@
 //! Shared by the PromQL `histogram_quantile`/`histogram_fraction` functions
 //! ([`metrics`](super::metrics)) and the Query IR `histogram_quantile` stage
 //! ([`ir_planner`](super::ir_planner)) — both surfaces must compute the same
-//! percentile from the same `metrics_histogram` bucket data, so the
+//! percentile from the same histogram bucket data, so the
 //! interpolation and accumulation logic lives here once rather than being
 //! reimplemented per surface.
 
 use datafusion::arrow::array::{Array, ArrayRef, Float64Array, Int64Array, ListArray};
+
+use super::error::QuerierError;
+
+pub(crate) const NON_SCALAR_METRIC_TYPES: &[&str] =
+    &["histogram", "exponential_histogram", "summary"];
+
+pub(crate) fn reject_non_histogram(function: &str, metric_type: &str) -> Result<(), QuerierError> {
+    match metric_type {
+        "summary" => Err(QuerierError::InvalidInput(format!(
+            "{function} is not supported on summary metrics"
+        ))),
+        "exponential_histogram" => Err(QuerierError::Unsupported(format!(
+            "{function} is not yet supported on exponential_histogram metrics"
+        ))),
+        _ => Ok(()),
+    }
+}
 
 /// Merges OTLP histogram data points that share a step bucket and series.
 pub(crate) struct HistogramAcc {
