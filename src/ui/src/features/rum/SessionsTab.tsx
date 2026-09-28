@@ -10,6 +10,7 @@ import { QueryError } from "../../components/QueryError";
 import { compactCount } from "../../lib/vizFormat";
 import { formatTimestamp } from "../../lib/time";
 import { formatDurationMs } from "../../lib/waterfall";
+import type { ExploreState } from "../../lib/urlState";
 import { Panel } from "./Panel";
 import { SessionDetailView } from "./SessionDetailView";
 import { filterSessionsRows, type RumSessionRow } from "../../api/rumSessions";
@@ -17,11 +18,15 @@ import { useRumSessions, type RumScope } from "./useRumData";
 
 interface Props {
   scope: RumScope;
+  /** Carries the tenant/dataset context into the detail view's "Open in
+   * Traces" / "Backend logs for trace" links (`viewHref`) — nothing else
+   * here reads explore state. */
+  state: ExploreState;
   session: string;
   onSelectSession: (sessionId: string) => void;
 }
 
-export function SessionsTab({ scope, session, onSelectSession }: Props) {
+export function SessionsTab({ scope, state, session, onSelectSession }: Props) {
   const [filterText, setFilterText] = useState("");
   const [onlyErrors, setOnlyErrors] = useState(false);
   const [onlySlow, setOnlySlow] = useState(false);
@@ -92,7 +97,12 @@ export function SessionsTab({ scope, session, onSelectSession }: Props) {
         // `key` forces a full remount on session change, so the detail
         // view's own selected-event state doesn't carry over from the
         // previous session.
-        <SessionDetailView key={session} scope={scope} sessionId={session} />
+        <SessionDetailView
+          key={session}
+          scope={scope}
+          sessionId={session}
+          state={state}
+        />
       )}
     </div>
   );
