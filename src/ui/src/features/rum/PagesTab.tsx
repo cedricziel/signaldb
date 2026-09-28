@@ -234,7 +234,12 @@ function RouteDetail({
         ) : joined.length === 0 ? (
           <EmptyState title="No backend calls recorded for this route" />
         ) : (
-          <BackendCallsList rows={joined} />
+          <>
+            {network.isError && (
+              <QueryError what="backend services" error={network.error} />
+            )}
+            <BackendCallsList rows={joined} />
+          </>
         )}
       </Panel>
     </div>
@@ -258,10 +263,7 @@ function LoadWaterfall({
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const pointer = useVizPointer(hostRef);
-  const total = Math.max(
-    1,
-    phases.reduce((s, p) => s + p.ms, 0),
-  );
+  const total = phases.reduce((s, p) => s + p.ms, 0);
   return (
     <div className="rum-load-wrap">
       <div
@@ -318,7 +320,7 @@ function BackendCallsList({ rows }: { rows: RumBackendCallRow[] }) {
           <span className="mono num">
             {r.p75Ms !== null ? formatDurationMs(r.p75Ms) : "—"}
           </span>
-          <span className="mono dim ell">{r.backendService ?? "no trace"}</span>
+          <span className="mono dim ell">{r.backendService ?? "—"}</span>
         </div>
       ))}
     </div>
