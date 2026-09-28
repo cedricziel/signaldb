@@ -1108,9 +1108,7 @@ pub struct IrService {
     /// (compat lowerings, most tests), which never reach a typed table.
     canonical_type_lookup: Option<Arc<dyn CanonicalTypeLookup>>,
     /// Which physical layout the `metrics`/`metrics_histogram` sources read
-    /// (see [`MetricsLayout`]). Defaults from [`MetricsLayout::current`];
-    /// overridden by tests exercising [`MetricsLayout::Wide`] ahead of the
-    /// repo-wide cutover.
+    /// (see [`MetricsLayout`]), from [`MetricsLayout::current`].
     metrics_layout: MetricsLayout,
 }
 
@@ -1138,13 +1136,6 @@ impl IrService {
     /// attribute types before planning.
     pub fn with_canonical_types(mut self, lookup: Arc<dyn CanonicalTypeLookup>) -> Self {
         self.canonical_type_lookup = Some(lookup);
-        self
-    }
-
-    /// Override the metrics layout this service reads (see [`MetricsLayout`]).
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub fn with_metrics_layout(mut self, metrics_layout: MetricsLayout) -> Self {
-        self.metrics_layout = metrics_layout;
         self
     }
 
@@ -4311,11 +4302,9 @@ mod tests {
         ctx
     }
 
-    /// Two metrics tables (gauge + sum), each shaped like the real
-    /// persisted schema's common columns (`timestamp`/`service_name`/
-    /// `metric_name`/`value`/`attributes`/`resource_attributes`) — exercises
-    /// `scan_source_tables`'s union path, unlike every other fixture here
-    /// (one table each).
+    /// Gauge and sum points in the `metrics` table, over the persisted
+    /// schema's common columns (`timestamp`/`service_name`/`metric_name`/
+    /// `value`/`attributes`/`resource_attributes`).
     fn metrics_ctx() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
@@ -4592,7 +4581,7 @@ mod tests {
     // sharing a `by` value interleave and their deltas cross-contaminate.
     #[tokio::test]
     async fn increase_sums_independent_per_series_deltas_not_interleaved_raw_samples() {
-        let svc = IrService::new(rate_two_series_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(rate_two_series_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 6, "from": "metrics",
             "range": { "from": 0, "to": 2_000_000_000_000i64 },
@@ -4628,7 +4617,7 @@ mod tests {
     #[tokio::test]
     async fn increase_and_rate_across_a_reset() {
         for (func, expected) in [("increase", 25.0), ("rate", 25.0 / 30.0)] {
-            let svc = IrService::new(rate_ctx()).with_metrics_layout(MetricsLayout::Wide);
+            let svc = IrService::new(rate_ctx());
             let d = doc(serde_json::json!({
                 "irVersion": 6, "from": "metrics",
                 "range": { "from": 0, "to": 30_000_000_000i64 },
@@ -4663,7 +4652,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_rejects_a_document_declaring_less_than_ir_version_6() {
-        let svc = IrService::new(rate_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(rate_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 5, "from": "metrics", "range": { "from": 0, "to": 30_000_000_000i64 },
             "result": "series",
@@ -4695,7 +4684,7 @@ mod tests {
 
     #[tokio::test]
     async fn rate_rejects_missing_step() {
-        let svc = IrService::new(rate_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(rate_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 6, "from": "metrics", "range": { "from": 0, "to": 30_000_000_000i64 },
             "result": "table",
@@ -4734,7 +4723,7 @@ mod tests {
     /// at t=29) matters: delta 10 over dt 9s.
     #[tokio::test]
     async fn irate_uses_only_the_last_two_samples() {
-        let svc = IrService::new(rate_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(rate_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
             "range": { "from": 0, "to": 30_000_000_000i64 },
@@ -4755,7 +4744,7 @@ mod tests {
 
     #[tokio::test]
     async fn avg_over_time_averages_the_raw_samples_in_the_window() {
-        let svc = IrService::new(rate_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(rate_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
             "range": { "from": 0, "to": 30_000_000_000i64 },
@@ -4776,7 +4765,7 @@ mod tests {
     /// `sum` — 17.5, not 35.
     #[tokio::test]
     async fn across_avg_reduces_per_series_values_with_avg_not_sum() {
-        let svc = IrService::new(rate_two_series_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(rate_two_series_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
             "range": { "from": 0, "to": 2_000_000_000_000i64 },
@@ -4839,7 +4828,7 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
 
-        let svc = IrService::new(ctx).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(ctx);
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
             "range": { "from": 0, "to": 50_000_000_000i64 },
@@ -4928,8 +4917,7 @@ mod tests {
 
     #[tokio::test]
     async fn increase_window_excludes_the_delta_from_before_the_window() {
-        let svc =
-            IrService::new(increase_window_edge_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(increase_window_edge_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
             "range": { "from": 0, "to": 60_000_000_000i64 },
@@ -5022,7 +5010,7 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
 
-        let svc = IrService::new(ctx).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(ctx);
         // `step: "40s"` keeps every sample in one bucket, whose latest
         // sample is t=30; `window: "10s"` bounds that sample's frame to
         // [20,30] — only the 20→30s interval (the reset, contributing 5).
@@ -5076,13 +5064,12 @@ mod tests {
         // Executes.
         let _ = df.collect().await.unwrap();
     }
-    /// The metrics source unions metrics_gauge + metrics_sum (2 + 1 rows
-    /// here) rather than scanning one table — the case every other source's
-    /// fixture doesn't exercise. Plus, under [`MetricsLayout::Wide`], an
-    /// unrelated `summary`-typed row sharing the queried `metric_name` (but
-    /// a different `service_name`) so only `metric_type` filtering can
-    /// exclude it from a `metrics` scan.
-    fn metrics_ctx_for_layout(layout: MetricsLayout) -> SessionContext {
+
+    /// Gauge (2 rows) and sum (1 row) points in the `metrics` table, plus an
+    /// unrelated `summary`-typed row sharing the queried `metric_name` (but a
+    /// different `service_name`) so only `metric_type` filtering can exclude
+    /// it from a `metrics` scan.
+    fn metrics_ctx_with_summary_leak() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -5123,56 +5110,26 @@ mod tests {
         )
         .unwrap();
 
-        let ctx = SessionContext::new();
+        let leak = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampNanosecondArray::from(vec![25_i64])),
+                Arc::new(StringArray::from(vec!["leak"])),
+                Arc::new(StringArray::from(vec!["signaldb.wal.entries_processed"])),
+                Arc::new(Float64Array::from(vec![999.0])),
+                build_map(&[&[]]),
+                build_map(&[&[]]),
+            ],
+        )
+        .unwrap();
+        let gauge = common::testing::to_wide(&gauge_batch, "gauge");
+        let sum = common::testing::to_wide(&sum_batch, "sum");
+        let leak = common::testing::to_wide(&leak, "summary");
+        let table = MemTable::try_new(gauge.schema(), vec![vec![gauge, sum, leak]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
-        match layout {
-            MetricsLayout::Legacy => {
-                // The union path (`union_columns`/`CoercedTableProvider`)
-                // always expands a container to its typed columns, so the
-                // legacy tables must actually carry the typed layout.
-                let containers = ["attributes", "resource_attributes"];
-                let gauge_batch = common::testing::to_typed_layout(
-                    "metrics_gauge",
-                    "physical-v3",
-                    &gauge_batch,
-                    &containers,
-                );
-                let sum_batch = common::testing::to_typed_layout(
-                    "metrics_sum",
-                    "physical-v3",
-                    &sum_batch,
-                    &containers,
-                );
-                let gauge =
-                    MemTable::try_new(gauge_batch.schema(), vec![vec![gauge_batch]]).unwrap();
-                let sum = MemTable::try_new(sum_batch.schema(), vec![vec![sum_batch]]).unwrap();
-                sp.register_table("metrics_gauge".to_string(), Arc::new(gauge))
-                    .unwrap();
-                sp.register_table("metrics_sum".to_string(), Arc::new(sum))
-                    .unwrap();
-            }
-            MetricsLayout::Wide => {
-                let leak = RecordBatch::try_new(
-                    schema,
-                    vec![
-                        Arc::new(TimestampNanosecondArray::from(vec![25_i64])),
-                        Arc::new(StringArray::from(vec!["leak"])),
-                        Arc::new(StringArray::from(vec!["signaldb.wal.entries_processed"])),
-                        Arc::new(Float64Array::from(vec![999.0])),
-                        build_map(&[&[]]),
-                        build_map(&[&[]]),
-                    ],
-                )
-                .unwrap();
-                let gauge = common::testing::to_wide(&gauge_batch, "gauge");
-                let sum = common::testing::to_wide(&sum_batch, "sum");
-                let leak = common::testing::to_wide(&leak, "summary");
-                let table =
-                    MemTable::try_new(gauge.schema(), vec![vec![gauge, sum, leak]]).unwrap();
-                sp.register_table("metrics".to_string(), Arc::new(table))
-                    .unwrap();
-            }
-        }
+        sp.register_table("metrics".to_string(), Arc::new(table))
+            .unwrap();
+        let ctx = SessionContext::new();
         let cat = Arc::new(MemoryCatalogProvider::new());
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
@@ -5180,57 +5137,48 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metrics_unions_gauge_and_sum_filters_by_name_and_aggregates() {
-        for layout in [MetricsLayout::Legacy, MetricsLayout::Wide] {
-            let svc = IrService::new(metrics_ctx_for_layout(layout)).with_metrics_layout(layout);
-            let d = doc(serde_json::json!({
-                "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
-                "result": "series",
-                "pipeline": [
-                    { "where": { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" } },
-                    { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "1ms" } }
-                ]
-            }));
-            let (df, window) = svc
-                .plan(&d, "t", "d", 0)
-                .await
-                .unwrap()
-                .expect("the metrics source is registered");
-            assert_eq!(
-                window,
-                ResolvedWindow {
-                    start_ns: 0,
-                    end_ns: 1000
-                },
-                "{layout:?}"
-            );
-            let plan = format!("{}", df.logical_plan().display_indent());
-            // The scan is a Union only under the legacy per-type tables; the
-            // wide `metrics` table is one table, filtered.
-            if layout == MetricsLayout::Legacy {
-                assert!(plan.contains("Union"), "{layout:?}: plan:\n{plan}");
+    async fn metrics_reads_gauge_and_sum_filters_by_name_and_aggregates() {
+        let svc = IrService::new(metrics_ctx_with_summary_leak());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "signaldb.wal.entries_processed" } },
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "1ms" } }
+            ]
+        }));
+        let (df, window) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("the metrics source is registered");
+        assert_eq!(
+            window,
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 1000
             }
-            assert!(plan.contains("Aggregate"), "{layout:?}: plan:\n{plan}");
-            assert!(plan.contains("Filter"), "{layout:?}: plan:\n{plan}");
-            assert!(plan.contains("date_bin"), "{layout:?}: plan:\n{plan}");
-            // Executes, and sums across both tables: 5 + 7 (gauge) + 3 (sum) =
-            // 15. Under Wide, the `summary` row must not leak in — its 999.0
-            // would corrupt this total if the `metric_type` filter failed.
-            let batches = df.collect().await.unwrap();
-            let total: f64 = batches
-                .iter()
-                .map(|b| {
-                    let col = b
-                        .column_by_name("v")
-                        .unwrap()
-                        .as_any()
-                        .downcast_ref::<datafusion::arrow::array::Float64Array>()
-                        .unwrap();
-                    col.values().iter().sum::<f64>()
-                })
-                .sum();
-            assert_eq!(total, 15.0, "{layout:?}");
-        }
+        );
+        let plan = format!("{}", df.logical_plan().display_indent());
+        assert!(plan.contains("Aggregate"), "plan:\n{plan}");
+        assert!(plan.contains("Filter"), "plan:\n{plan}");
+        assert!(plan.contains("date_bin"), "plan:\n{plan}");
+        // 5 + 7 (gauge) + 3 (sum) = 15. The `summary` row's 999.0 would
+        // corrupt this total if the `metric_type` filter failed.
+        let batches = df.collect().await.unwrap();
+        let total: f64 = batches
+            .iter()
+            .map(|b| {
+                let col = b
+                    .column_by_name("v")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<datafusion::arrow::array::Float64Array>()
+                    .unwrap();
+                col.values().iter().sum::<f64>()
+            })
+            .sum();
+        assert_eq!(total, 15.0);
     }
 
     /// Every scalar source registers a logical `timestamp` (#1205): metrics
@@ -5238,7 +5186,7 @@ mod tests {
     /// column entity discovery needs across signals — was rejected as
     /// physical addressing on those two sources.
     async fn max_timestamp_ns(ctx: SessionContext, source: &str) -> i64 {
-        let svc = IrService::new(ctx).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(ctx);
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
             "result": "table",
@@ -5279,7 +5227,7 @@ mod tests {
     }
 
     async fn ordered_by_timestamp(ctx: SessionContext, source: &str) -> Vec<i64> {
-        let svc = IrService::new(ctx).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(ctx);
         let d = doc(serde_json::json!({
             "irVersion": 1, "from": source, "range": { "from": 0, "to": 1000 },
             "result": "rows", "fields": ["timestamp", "service.name"],
@@ -5483,7 +5431,7 @@ mod tests {
     /// paired into a single, meaningless first/last delta.
     #[tokio::test]
     async fn histogram_quantile_rate_mode_sums_per_series_deltas_across_an_empty_by_group() {
-        let svc = IrService::new(metrics_histogram_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(metrics_histogram_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -5501,7 +5449,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_single_point_in_rate_mode_is_nan() {
-        let svc = IrService::new(metrics_histogram_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(metrics_histogram_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -5519,7 +5467,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_all_zero_buckets_in_instant_mode_is_nan() {
-        let svc = IrService::new(metrics_histogram_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(metrics_histogram_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -5537,7 +5485,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_skips_malformed_bucket_rows() {
-        let svc = IrService::new(metrics_histogram_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(metrics_histogram_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -5557,7 +5505,7 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_limit_stage_executes_on_reinjected_dataframe() {
-        let svc = IrService::new(metrics_histogram_ctx()).with_metrics_layout(MetricsLayout::Wide);
+        let svc = IrService::new(metrics_histogram_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
             "result": "series",
@@ -9308,8 +9256,7 @@ mod tests {
                 time_col,
                 time_is_timestamp,
                 metric_type,
-            ))
-            .with_metrics_layout(MetricsLayout::Wide);
+            ));
 
             // `rows`: the projected column is the physical `resource_identity`.
             let d = doc(serde_json::json!({
@@ -10168,30 +10115,20 @@ mod tests {
             "profiles",
         );
 
-        // Only row_defaults needs checking against both tables — it's the
-        // common-denominator column set scan_source_tables projects onto
-        // before unioning gauge + sum, so it must exist in each.
-        let gauge = common::iceberg::schemas::create_metrics_gauge_schema().unwrap();
-        let gauge_cols: HashSet<String> =
-            gauge.fields().iter().map(|f| f.name.to_string()).collect();
-        let sum = common::iceberg::schemas::create_metrics_sum_schema().unwrap();
-        let sum_cols: HashSet<String> = sum.fields().iter().map(|f| f.name.to_string()).collect();
-        let metrics = SourcePlan::for_source("metrics").unwrap();
-        for c in metrics.row_defaults {
-            assert!(realized(&gauge_cols, c), "metrics_gauge missing '{c}'");
-            assert!(realized(&sum_cols, c), "metrics_sum missing '{c}'");
-        }
-        check(&metrics, &gauge_cols, "metrics (vs. gauge)");
-
-        let histogram = common::iceberg::schemas::create_metrics_histogram_schema().unwrap();
-        let histogram_cols: HashSet<String> = histogram
+        let metrics = common::iceberg::schemas::create_metrics_schema().unwrap();
+        let metrics_cols: HashSet<String> = metrics
             .fields()
             .iter()
             .map(|f| f.name.to_string())
             .collect();
         check(
+            &SourcePlan::for_source("metrics").unwrap(),
+            &metrics_cols,
+            "metrics",
+        );
+        check(
             &SourcePlan::for_source("metrics_histogram").unwrap(),
-            &histogram_cols,
+            &metrics_cols,
             "metrics_histogram",
         );
     }
