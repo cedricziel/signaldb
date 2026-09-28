@@ -27,72 +27,22 @@ use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
-use iceberg_rust::spec::partition::{
-    PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
-};
 use iceberg_rust::spec::schema::Schema as IcebergSchema;
 use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
-use iceberg_rust::table::Table;
 use std::sync::Arc;
-use tests_integration::compaction_helpers::busiest_partition;
+use tests_integration::compaction_helpers::{
+    busiest_partition, hour_partition_spec, load_table_by_identifier, map_field, string_field,
+};
 
 const TENANT: &str = "t1";
 const DATASET: &str = "d1";
 const TABLE: &str = "logs";
 
-fn map_field(id: i32, name: &str, value: PrimitiveType) -> StructField {
-    StructField {
-        id,
-        name: name.to_string(),
-        required: false,
-        field_type: Type::Map(MapType {
-            key_id: id + 1,
-            key: Box::new(Type::Primitive(PrimitiveType::String)),
-            value_id: id + 2,
-            value_required: false,
-            value: Box::new(Type::Primitive(value)),
-        }),
-        doc: None,
-        initial_default: None,
-        write_default: None,
-    }
-}
-
-fn string_field(id: i32, name: &str) -> StructField {
-    StructField {
-        id,
-        name: name.to_string(),
-        required: false,
-        field_type: Type::Primitive(PrimitiveType::String),
-        doc: None,
-        initial_default: None,
-        write_default: None,
-    }
-}
-
 /// A small logs-shaped table: the real sort columns (timestamp,
-/// service_name, severity_text) plus a typed-layout `log_attributes` container (its string home plus residue)
-/// whose nested key/value ids (6, 7) are allocated after the top-level
-/// ids, as the production schema parser does.
-/// Hour-partition spec on `timestamp`, matching what every production signal
-/// table uses (`common::iceberg::schemas`). Compaction is partition-scoped
-/// (issue #933), so a test table must be partitioned the way real tables are —
-/// an unpartitioned table has no `timestamp_hour` value for the planner or
-/// executor to scope a job to.
-fn hour_partition_spec() -> PartitionSpec {
-    PartitionSpecBuilder::default()
-        .with_spec_id(0)
-        // Iceberg convention: partition field_id = 1000 + source field id.
-        .with_partition_field(PartitionField::new(
-            1,
-            1001,
-            "timestamp_hour",
-            Transform::Hour,
-        ))
-        .build()
-        .expect("hour partition spec should build")
-}
-
+/// service_name, severity_text) plus a typed-layout `log_attributes`
+/// container (its string home plus residue) whose nested key/value ids (6,
+/// 7) are allocated after the top-level ids, as the production schema
+/// parser does.
 fn table_schema() -> IcebergSchema {
     let timestamp = StructField {
         id: 1,
@@ -143,13 +93,6 @@ fn table_schema() -> IcebergSchema {
     )
 }
 
-async fn load_table(catalog_manager: &CatalogManager, identifier: &Identifier) -> Result<Table> {
-    match catalog_manager.catalog().load_tabular(identifier).await? {
-        Tabular::Table(table) => Ok(table),
-        _ => anyhow::bail!("expected a table"),
-    }
-}
-
 /// One test row: (timestamp, service, body, attributes as key/value pairs).
 type TestRow<'a> = (i64, &'a str, &'a str, &'a [(&'a str, &'a str)]);
 
@@ -159,7 +102,7 @@ async fn write_file(
     identifier: &Identifier,
     rows: &[TestRow<'_>],
 ) -> Result<()> {
-    let mut table = load_table(catalog_manager, identifier).await?;
+    let mut table = load_table_by_identifier(catalog_manager, identifier).await?;
 
     // Derive the Arrow schema from the table so the map entry/key/value
     // field names line up with what the table declares.
@@ -406,7 +349,7 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
     // Schema evolved: `attr_record_env` exists (and only it — `pod` had no
     // query demand and must not be promoted, and no legacy `label_*`
     // column is ever created any more).
-    let table = load_table(&catalog_manager, &identifier).await?;
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
         schema.fields().iter().any(|f| f.name == "attr_record_env"),
@@ -478,7 +421,7 @@ async fn dry_run_promotion_changes_nothing() -> Result<()> {
 
     // Schema untouched: no label or promoted-attr columns, no extra
     // schema version.
-    let table = load_table(&catalog_manager, &identifier).await?;
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
         !schema
