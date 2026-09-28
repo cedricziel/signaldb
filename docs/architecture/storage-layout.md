@@ -75,13 +75,10 @@ With `dsn = "file:///.data/storage"`, tenant "acme" (slug `acme`), datasets "pro
       logs/
         metadata/
         data/
-      metrics_gauge/
+      metrics/
         metadata/
         data/
-      metrics_sum/
-        metadata/
-        data/
-      metrics_histogram/
+      metric_exemplars/
         metadata/
         data/
     archive/
@@ -221,11 +218,11 @@ Full:      Identifier([tenant_slug, dataset_slug], table_name)
 
 Examples:
 
-| Tenant | Dataset | Table         | Iceberg Identifier                                 |
-| ------ | ------- | ------------- | -------------------------------------------------- |
-| acme   | prod    | traces        | `Identifier(["acme", "prod"], "traces")`           |
-| acme   | archive | logs          | `Identifier(["acme", "archive"], "logs")`          |
-| beta   | staging | metrics_gauge | `Identifier(["beta", "staging"], "metrics_gauge")` |
+| Tenant | Dataset | Table   | Iceberg Identifier                           |
+| ------ | ------- | ------- | -------------------------------------------- |
+| acme   | prod    | traces  | `Identifier(["acme", "prod"], "traces")`     |
+| acme   | archive | logs    | `Identifier(["acme", "archive"], "logs")`    |
+| beta   | staging | metrics | `Identifier(["beta", "staging"], "metrics")` |
 
 Namespaces are created explicitly: `IcebergTableManager::ensure_table()` (`src/common/src/iceberg/table_manager.rs`) calls `create_namespace` before creating a table, treating "already exists" errors from concurrent creators as success.
 
@@ -281,7 +278,7 @@ At startup, the Querier registers a `TenantCatalog` per enabled tenant, named by
 
 ## Table Types
 
-SignalDB creates up to 8 table types per tenant-dataset combination, controlled by the `[schema.default_schemas]` config (resolved per tenant, so a tenant override narrows the set).
+SignalDB creates up to 5 table types per tenant-dataset combination, controlled by the `[schema.default_schemas]` config (resolved per tenant, so a tenant override narrows the set).
 
 Tables reach a dataset two ways, both through the same load-or-create `CatalogManager::ensure_table`:
 
@@ -292,18 +289,15 @@ Because both paths call the same constructor, a provisioned table is indistingui
 
 ### Signal Type to Table Mapping
 
-| Signal Type              | Table Name                      | WalOperation    | Schema Source                    |
-| ------------------------ | ------------------------------- | --------------- | -------------------------------- |
-| Traces                   | `traces`                        | `WriteTraces`   | `schemas.toml` (v2, inherits v1) |
-| Logs                     | `logs`                          | `WriteLogs`     | `schemas.toml` (v1)              |
-| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Profiles                 | `profiles`                      | `WriteProfiles` | `schemas.toml` (v1)              |
+| Signal Type      | Table Name         | WalOperation    | Schema Source                    |
+| ---------------- | ------------------ | --------------- | -------------------------------- |
+| Traces           | `traces`           | `WriteTraces`   | `schemas.toml` (v2, inherits v1) |
+| Logs             | `logs`             | `WriteLogs`     | `schemas.toml` (v1)              |
+| Metrics          | `metrics`          | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
+| Metric exemplars | `metric_exemplars` | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
+| Profiles         | `profiles`         | `WriteProfiles` | `schemas.toml` (v1)              |
 
-For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
+`metrics` holds one row per data point across every metric type (`metric_type`: gauge, sum, histogram, exponential_histogram, summary), with typed columns for histogram buckets, exponential-histogram buckets, and summary quantiles rather than JSON strings. `metric_exemplars` holds one row per exemplar, linked to its point via `series_id`. A `WriteMetrics` batch's target table is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics`; the five legacy per-type tables (`metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary`) are dropped by the writer's table reconciler on upgrade and no longer created.
 
 ### Partitioning
 
@@ -722,104 +716,62 @@ DataFusion's physical filter-pushdown injects the query predicate into the
 defaulting on, a bloom-filtered file skips row groups that cannot contain the
 target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
 
-#### Metrics Gauge Table (v3 -- current)
+#### Metrics Table (physical-v4 -- current)
 
-Defined in `schemas.toml`. v2 (#1340) adds the `resource_identity` digest column; v3 is the
-typed attribute layout (see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) above).
+Defined in `schemas.toml` (`[metrics.physical-v4]`). Replaces the five
+per-type tables above (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
+`metrics_exponential_histogram`, `metrics_summary`) with one wide table: one
+row per data point across every metric type, distinguished by `metric_type`
+(`gauge`, `sum`, `histogram`, `exponential_histogram`, `summary`). Histogram
+buckets, bounds, and summary quantiles are typed list columns instead of JSON
+strings.
 
-| #   | Field                                               | Iceberg Type           | Required | Notes                                                                                                        |
-| --- | --------------------------------------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------ |
-| 1   | `timestamp`                                         | Timestamp              | Yes      | Partition key                                                                                                |
-| 2   | `start_timestamp`                                   | Timestamp              | No       |                                                                                                              |
-| 3   | `service_name`                                      | String                 | Yes      |                                                                                                              |
-| 4   | `metric_name`                                       | String                 | Yes      |                                                                                                              |
-| 5   | `metric_description`                                | String                 | No       |                                                                                                              |
-| 6   | `metric_unit`                                       | String                 | No       |                                                                                                              |
-| 7   | `value`                                             | Double                 | Yes      |                                                                                                              |
-| 8   | `flags`                                             | Int                    | No       |                                                                                                              |
-| 9   | `resource_schema_url`                               | String                 | No       |                                                                                                              |
-| 10  | `resource_attributes_{str,int,double,bool,residue}` | Map/Map/Map/Map/Binary | No       | v3: typed attribute layout                                                                                   |
-| 11  | `scope_name`                                        | String                 | No       |                                                                                                              |
-| 12  | `scope_version`                                     | String                 | No       |                                                                                                              |
-| 13  | `scope_schema_url`                                  | String                 | No       |                                                                                                              |
-| 14  | `scope_attributes_{str,int,double,bool,residue}`    | Map/Map/Map/Map/Binary | No       | v3: typed attribute layout                                                                                   |
-| 15  | `scope_dropped_attr_count`                          | Int                    | No       |                                                                                                              |
-| 16  | `attributes_{str,int,double,bool,residue}`          | Map/Map/Map/Map/Binary | No       | v3: typed attribute layout (the record-level container)                                                      |
-| 17  | `exemplars`                                         | String                 | No       | JSON                                                                                                         |
-| 18  | `date_day`                                          | Date                   | Yes      | Computed                                                                                                     |
-| 19  | `hour`                                              | Int                    | Yes      | Computed                                                                                                     |
-| 20  | `resource_identity`                                 | String                 | No       | v2: digest of the point's resource attribute set (#1340). Null on any row written before the column existed. |
+| Field                                                                                             | Iceberg Type                  | Required | Notes                                                                                 |
+| ------------------------------------------------------------------------------------------------- | ----------------------------- | -------- | ------------------------------------------------------------------------------------- |
+| `timestamp`                                                                                       | Timestamp                     | Yes      | Partition key                                                                         |
+| `start_timestamp`                                                                                 | Timestamp                     | No       |                                                                                       |
+| `service_name`                                                                                    | String                        | Yes      |                                                                                       |
+| `metric_name`                                                                                     | String                        | Yes      |                                                                                       |
+| `metric_description`                                                                              | String                        | No       |                                                                                       |
+| `metric_unit`                                                                                     | String                        | No       |                                                                                       |
+| `metric_type`                                                                                     | String                        | Yes      | `gauge`, `sum`, `histogram`, `exponential_histogram`, or `summary`                    |
+| `series_id`                                                                                       | String                        | Yes      | Digest of metric name/type, resource identity, scope, and attributes; links exemplars |
+| `value`                                                                                           | Double                        | No       | Gauge/sum                                                                             |
+| `count`, `sum`, `min`, `max`                                                                      | Int64/Double/Double/Double    | No       | Histogram/exponential_histogram                                                       |
+| `explicit_bounds`, `bucket_counts`                                                                | List\<Double\>/List\<Int64\>  | No       | Classic histogram                                                                     |
+| `scale`, `zero_count`, `zero_threshold`                                                           | Int32/Int64/Double            | No       | Exponential histogram                                                                 |
+| `positive_offset`, `positive_bucket_counts`                                                       | Int32/List\<Int64\>           | No       | Exponential histogram                                                                 |
+| `negative_offset`, `negative_bucket_counts`                                                       | Int32/List\<Int64\>           | No       | Exponential histogram                                                                 |
+| `quantiles`, `quantile_values`                                                                    | List\<Double\>/List\<Double\> | No       | Summary; parallel arrays                                                              |
+| `flags`                                                                                           | Int32                         | No       |                                                                                       |
+| `aggregation_temporality`                                                                         | Int32                         | No       | Set only for sum/histogram/exponential_histogram                                      |
+| `is_monotonic`                                                                                    | Boolean                       | No       | Set only for sum                                                                      |
+| `resource_schema_url`, `resource_attributes`                                                      | String/typed attributes       | No       | See [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover)             |
+| `scope_name`, `scope_version`, `scope_schema_url`, `scope_attributes`, `scope_dropped_attr_count` |                               | No       |                                                                                       |
+| `attributes`                                                                                      | typed attributes              | No       | The record-level container                                                            |
+| `resource_identity`                                                                               | String                        | No       | Digest of the point's resource attribute set                                          |
+| `date_day`, `hour`                                                                                | Date/Int32                    | Yes      | Computed                                                                              |
 
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
+**Partition**: `Hour(timestamp)`
 
-#### Metrics Sum Table (v3 -- current)
+#### Metric Exemplars Table (physical-v4 -- current)
 
-Extends Gauge with aggregation fields.
+Defined in `schemas.toml` (`[metric_exemplars.physical-v4]`). One row per
+exemplar; `series_id` links it to its `metrics` row.
 
-| #     | Field                     | Iceberg Type | Required | Notes                                |
-| ----- | ------------------------- | ------------ | -------- | ------------------------------------ |
-| 1-8   | _(same as Gauge 1-8)_     |              |          |                                      |
-| 9     | `aggregation_temporality` | Int          | Yes      | 0=Unspecified, 1=Delta, 2=Cumulative |
-| 10    | `is_monotonic`            | Boolean      | Yes      |                                      |
-| 11-21 | _(same as Gauge 9-19)_    |              |          |                                      |
-| 22    | `resource_identity`       | String       | No       | v2: as Gauge's (#1340)               |
+| Field                                        | Iceberg Type     | Required | Notes                                       |
+| -------------------------------------------- | ---------------- | -------- | ------------------------------------------- |
+| `timestamp`                                  | Timestamp        | Yes      | Exemplar timestamp; partition key           |
+| `point_timestamp`                            | Timestamp        | Yes      | Timestamp of the metric point it belongs to |
+| `service_name`, `metric_name`, `metric_type` | String           | Yes      |                                             |
+| `series_id`                                  | String           | Yes      | Matches the `metrics` row's `series_id`     |
+| `value`                                      | Double           | No       |                                             |
+| `trace_id`, `span_id`                        | String           | No       | Hex-encoded, same convention as traces      |
+| `filtered_attributes`                        | typed attributes | No       |                                             |
+| `resource_identity`                          | String           | No       |                                             |
+| `date_day`, `hour`                           | Date/Int32       | Yes      | Computed                                    |
 
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
-
-#### Metrics Histogram Table (v3 -- current)
-
-| #     | Field                                                 | Iceberg Type | Required | Notes                  |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ---------------------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                        |
-| 7     | `count`                                               | Long         | Yes      | Total count            |
-| 8     | `sum`                                                 | Double       | No       |                        |
-| 9     | `min`                                                 | Double       | No       |                        |
-| 10    | `max`                                                 | Double       | No       |                        |
-| 11    | `bucket_counts`                                       | String       | No       | JSON array             |
-| 12    | `explicit_bounds`                                     | String       | No       | JSON array             |
-| 13    | `flags`                                               | Int          | No       |                        |
-| 14    | `aggregation_temporality`                             | Int          | Yes      |                        |
-| 15-25 | _(resource/scope/attributes as v3 typed columns, plus exemplars/date_day/hour)_ |              |          |                        |
-| 26    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340) |
-
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
-
-#### Metrics Exponential Histogram Table (v3 -- current)
-
-| #     | Field                                                 | Iceberg Type | Required | Notes                  |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ---------------------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                        |
-| 7     | `count`                                               | Long         | Yes      |                        |
-| 8     | `sum`                                                 | Double       | No       |                        |
-| 9     | `min`                                                 | Double       | No       |                        |
-| 10    | `max`                                                 | Double       | No       |                        |
-| 11    | `scale`                                               | Int          | No       |                        |
-| 12    | `zero_count`                                          | Long         | No       |                        |
-| 13    | `positive_offset`                                     | Int          | No       |                        |
-| 14    | `positive_bucket_counts`                              | String       | No       | JSON array             |
-| 15    | `negative_offset`                                     | Int          | No       |                        |
-| 16    | `negative_bucket_counts`                              | String       | No       | JSON array             |
-| 17    | `flags`                                               | Int          | No       |                        |
-| 18    | `aggregation_temporality`                             | Int          | Yes      |                        |
-| 19    | `zero_threshold`                                      | Double       | No       |                        |
-| 20-30 | _(resource/scope/attributes as v3 typed columns, plus exemplars/date_day/hour)_ |              |          |                        |
-| 31    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340) |
-
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
-
-#### Metrics Summary Table (v3 -- current)
-
-| #     | Field                                                 | Iceberg Type | Required | Notes                                     |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ----------------------------------------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                                           |
-| 7     | `count`                                               | Long         | Yes      |                                           |
-| 8     | `sum`                                                 | Double       | Yes      |                                           |
-| 9     | `quantile_values`                                     | String       | No       | JSON array of `{quantile, value}` objects |
-| 10    | `flags`                                               | Int          | No       |                                           |
-| 11-21 | _(resource/scope/attributes as v3 typed columns, plus exemplars/date_day/hour)_ |              |          |                                           |
-| 22    | `resource_identity`                                   | String       | No       | v2: as Gauge's (#1340)                    |
-
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
+**Partition**: `Hour(timestamp)`
 
 #### Profiles Table (v3 -- current)
 

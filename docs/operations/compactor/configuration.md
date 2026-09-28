@@ -208,7 +208,7 @@ profiles = "14d"
 
 - `traces` → `traces` table
 - `logs` → `logs` table
-- `metrics` → any table whose name starts with `metrics_` (`metrics_gauge`, `metrics_sum`, `metrics_histogram` by default)
+- `metrics` → the `metrics` and `metric_exemplars` tables, plus any legacy table whose name starts with `metrics_`
 - `profiles` → `profiles` table
 
 This mapping is the single predicate deciding which catalog tables the

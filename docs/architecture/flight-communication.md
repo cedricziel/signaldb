@@ -352,7 +352,7 @@ sequenceDiagram
 6. Writer confirms after its WAL flush (it does **not** block the confirm on the Iceberg commit); Acceptor marks its WAL entry as processed
 7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store), **coalescing** pending entries per `(tenant, dataset, table)` — a group commits when `[writer].commit_interval` elapses or its rows reach `[writer].max_uncommitted_rows`. This caps the Iceberg snapshot / catalog-metadata write rate independent of ingest rate.
 
-Steps 5 and 7 route the same batch at different times — once to pick its WAL, once to pick its Iceberg table — so both call the writer's single `routing::route`. It trims the metadata tenant/dataset ids, substitutes the deployment default for a blank or absent one, and validates the result; the commit path falls back to the ids of the WAL the entry lives in, which are what routing already returned on ingest. Before this was shared (#1319), a padded or empty metadata tenant landed in one WAL and committed under a different Iceberg tenant, so a row's destination depended on whether it was committed live or replayed after a restart. Signal-to-table mapping lives in the same function: one table per signal, except metrics, which honour the metadata's `target_table` and otherwise fall back to `metrics_gauge`.
+Steps 5 and 7 route the same batch at different times — once to pick its WAL, once to pick its Iceberg table — so both call the writer's single `routing::route`. It trims the metadata tenant/dataset ids, substitutes the deployment default for a blank or absent one, and validates the result; the commit path falls back to the ids of the WAL the entry lives in, which are what routing already returned on ingest. Before this was shared (#1319), a padded or empty metadata tenant landed in one WAL and committed under a different Iceberg tenant, so a row's destination depended on whether it was committed live or replayed after a restart. Signal-to-table mapping lives in the same function: one table per signal, except metrics, which honour the metadata's `target_table` and otherwise fall back to `metrics` (the wide table; a pre-cutover deployment falls back to the legacy `metrics_gauge`).
 
 Because the commit is asynchronous, ingested data is queryable only once committed (bounded by `commit_interval`). A caller needing read-your-writes forces an immediate commit with the Writer Flight `do_action("flush")` (advertised via `list_actions`). The action is **tenant-scoped**: the scope is taken from the request's `x-tenant-id` (required) and `x-dataset-id` (optional) gRPC metadata — the same tenant identity the ingest path carries — and it force-commits only that tenant's (optionally that dataset's) pending groups. A request without `x-tenant-id` is rejected, so a caller can neither flush every tenant nor a tenant it names only in the payload. Tests use `common::testing::flush_storage_writers(transport, tenant, dataset)` for a deterministic barrier.
 
@@ -408,12 +408,12 @@ substitute it when they re-derive `service_name` from `resource_json` —
 because the Iceberg `service_name` column is non-nullable and a missing
 attribute must not dead-letter the batch.
 Metric values that JSON cannot carry — NaN (Prometheus's staleness marker,
-`0/0` rates) and ±Inf — travel in the v1 `data_json` as the strings `"NaN"`,
+`0/0` rates) and ±Inf — travel in the wire `data_json` as the strings `"NaN"`,
 `"+Inf"`, `"-Inf"` (`common::flight::conversion::f64_to_json` /
 `json_to_f64`), never as `null`; the writer maps them back to the same
 non-finite doubles, and a data point with no value at all lands as NaN. This
-keeps the non-nullable `value` columns of `metrics_gauge`/`metrics_sum`
-satisfiable, so one such point can no longer make the writer reject a whole
+keeps the non-nullable `metrics.value` column satisfiable for a gauge/sum
+row, so one such point can no longer make the writer reject a whole
 batch and pin its WAL entry forever (#1061). Histogram `explicit_bounds` keep
 a `+Inf` bound for the same reason.
 The reverse direction, OTLP → Prometheus series
