@@ -256,7 +256,7 @@ pub fn create_metric_exemplars_partition_spec() -> Result<PartitionSpec> {
 /// The only version of the typed `metrics`/`metric_exemplars` tables. Pinned
 /// here instead of read from `current_metric_version`, which still names the
 /// legacy per-type tables' version until the cutover.
-const TYPED_METRIC_VERSION: &str = "physical-v4";
+pub const TYPED_METRIC_VERSION: &str = "physical-v4";
 
 /// All available table schemas
 #[derive(Debug, Clone)]
