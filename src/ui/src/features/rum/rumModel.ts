@@ -253,16 +253,22 @@ export function splitTracedShare(
 ): KpiShareFigure {
   const tracedFigure = splitKpiSeries(traced, midMs);
   const totalFigure = splitKpiSeries(total, midMs);
-  const totalByT = new Map(totalFigure.series.map((p) => [p.tMs, p.value]));
-  const series = tracedFigure.series.flatMap((p): KpiSeriesPoint[] => {
-    const t = totalByT.get(p.tMs);
-    return t !== undefined && t > 0 ? [{ tMs: p.tMs, value: p.value / t }] : [];
-  });
+  // Traced rows are bucketed by the server child's start and total rows by
+  // the client span's, so a request can land in different buckets; clamp so
+  // that skew never reads as more than 100%.
+  const share = (traced: number, total: number) => Math.min(1, traced / total);
+  const tracedByT = new Map(tracedFigure.series.map((p) => [p.tMs, p.value]));
+  const series = totalFigure.series.flatMap((p): KpiSeriesPoint[] =>
+    p.value > 0
+      ? [{ tMs: p.tMs, value: share(tracedByT.get(p.tMs) ?? 0, p.value) }]
+      : [],
+  );
   return {
-    value: totalFigure.value > 0 ? tracedFigure.value / totalFigure.value : 0,
+    value:
+      totalFigure.value > 0 ? share(tracedFigure.value, totalFigure.value) : 0,
     previous:
       totalFigure.previous !== undefined && totalFigure.previous > 0
-        ? (tracedFigure.previous ?? 0) / totalFigure.previous
+        ? share(tracedFigure.previous ?? 0, totalFigure.previous)
         : undefined,
     series,
     hasData: totalFigure.value > 0,

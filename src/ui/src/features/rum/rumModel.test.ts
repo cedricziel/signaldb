@@ -149,6 +149,31 @@ describe("splitTracedShare", () => {
     expect(figure.hasData).toBe(false);
   });
 
+  it("plots a bucket with client spans but nothing traced as 0%", () => {
+    const figure = splitTracedShare(
+      [{ tMs: 20, value: 4 }],
+      [
+        { tMs: 20, value: 4 },
+        { tMs: 30, value: 6 },
+      ],
+      20,
+    );
+    expect(figure.series).toEqual([
+      { tMs: 20, value: 1 },
+      { tMs: 30, value: 0 },
+    ]);
+  });
+
+  it("clamps a bucket whose traced count exceeds its total to 100%", () => {
+    const figure = splitTracedShare(
+      [{ tMs: 20, value: 12 }],
+      [{ tMs: 20, value: 10 }],
+      20,
+    );
+    expect(figure.series).toEqual([{ tMs: 20, value: 1 }]);
+    expect(figure.value).toBe(1);
+  });
+
   it("has no previous figure when the earlier half has no client spans", () => {
     const figure = splitTracedShare(
       [{ tMs: 20, value: 5 }],
