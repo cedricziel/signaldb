@@ -827,13 +827,10 @@ first frame seen under that name when the profiler recorded a source file,
 
 ## Metrics
 
-`metrics` scans the wide `metrics` table filtered to `metric_type` gauge or
-sum — a scalar `value` per point, filtered/grouped/aggregated the same way
-as any other source. Filtering and grouping by any resource attribute
-(`host.name`, `k8s.pod.name`, …) works the same way as on any other source
-(see
-[Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant)).
-`metrics_histogram` is a separate source (see [Histograms](#histograms))
+`metrics` reads the gauge and sum rows of the `metrics` table (filtered by
+`metric_type`) — a scalar `value` per point, filtered/grouped/aggregated the
+same way as any other source. `metrics_histogram` reads the histogram rows of
+the same table and is a separate source (see [Histograms](#histograms))
 since its row shape — a whole bucketed histogram per point, not a scalar
 value — has no equivalent in the generic `where`/`aggregate` pipeline.
 
