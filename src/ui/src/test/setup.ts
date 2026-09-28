@@ -127,6 +127,9 @@ class ResizeObserverStub implements ResizeObserver {
 
 globalThis.ResizeObserver = globalThis.ResizeObserver ?? ResizeObserverStub;
 
+// jsdom has PointerEvent but no pointer capture (the pane resizers use it).
+Element.prototype.setPointerCapture ??= () => {};
+
 // jsdom has no matchMedia; uPlot queries it at module load for pixel-ratio
 // tracking.
 if (typeof window.matchMedia !== "function") {

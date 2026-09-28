@@ -800,7 +800,9 @@ replaced `/api/search/tags`
 ([#1073](https://github.com/cedricziel/signaldb/issues/1073)).
 
 Both the facet sidebar and the traces' span-detail panel are resizable: drag
-the handle on the sidebar's trailing edge. The facet/field sidebar's width is
+the handle on the sidebar's trailing edge with a mouse, finger or pen, or
+focus it and press the left and right arrow keys (Shift for larger steps).
+The facet/field sidebar's width is
 shared between the logs and traces tabs and persists across sessions.
 
 Below a 900px-wide viewport the facet/field sidebar (Logs, Traces, and
