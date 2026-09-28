@@ -21,7 +21,7 @@ use common::processors::{ProcessorRecord, ProcessorSpec, StoreError};
 use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 
 use crate::RouterAppState;
 
@@ -138,6 +138,12 @@ pub struct TestRequest {
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct TestResponse {
+    /// The submitted payload after decoding into the OTLP types and encoding
+    /// again, before any statement ran. It has the same field order and
+    /// defaults as `payload`, so a diff of the two shows only what the
+    /// statements changed.
+    pub input: serde_json::Value,
+    /// The payload after every statement ran.
     pub payload: serde_json::Value,
     pub statements: Vec<TestStatementResult>,
 }
@@ -641,93 +647,71 @@ pub async fn test_processor(
         }
     };
 
-    let mut stats: Vec<TestStatementResult> = Vec::new();
-    let payload = match signal {
-        ottl::Signal::Traces => {
-            let mut req: ExportTraceServiceRequest = match serde_json::from_value(req.payload) {
-                Ok(r) => r,
-                Err(e) => {
-                    return error(
-                        StatusCode::BAD_REQUEST,
-                        format!("invalid OTLP traces payload: {e}"),
-                    );
-                }
-            };
-            for (name, program, mode) in &programs {
-                match program.apply_traces(&mut req, *mode) {
-                    Ok(report) => push_stats(&mut stats, name, &report),
-                    Err(e) => {
-                        return error(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            format!("processor `{name}` failed: {e}"),
-                        );
-                    }
-                }
-            }
-            match serde_json::to_value(&req) {
-                Ok(v) => v,
-                Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            }
-        }
-        ottl::Signal::Logs => {
-            let mut req: ExportLogsServiceRequest = match serde_json::from_value(req.payload) {
-                Ok(r) => r,
-                Err(e) => {
-                    return error(
-                        StatusCode::BAD_REQUEST,
-                        format!("invalid OTLP logs payload: {e}"),
-                    );
-                }
-            };
-            for (name, program, mode) in &programs {
-                match program.apply_logs(&mut req, *mode) {
-                    Ok(report) => push_stats(&mut stats, name, &report),
-                    Err(e) => {
-                        return error(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            format!("processor `{name}` failed: {e}"),
-                        );
-                    }
-                }
-            }
-            match serde_json::to_value(&req) {
-                Ok(v) => v,
-                Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            }
-        }
-        ottl::Signal::Metrics => {
-            let mut req: ExportMetricsServiceRequest = match serde_json::from_value(req.payload) {
-                Ok(r) => r,
-                Err(e) => {
-                    return error(
-                        StatusCode::BAD_REQUEST,
-                        format!("invalid OTLP metrics payload: {e}"),
-                    );
-                }
-            };
-            for (name, program, mode) in &programs {
-                match program.apply_metrics(&mut req, *mode) {
-                    Ok(report) => push_stats(&mut stats, name, &report),
-                    Err(e) => {
-                        return error(
-                            StatusCode::UNPROCESSABLE_ENTITY,
-                            format!("processor `{name}` failed: {e}"),
-                        );
-                    }
-                }
-            }
-            match serde_json::to_value(&req) {
-                Ok(v) => v,
-                Err(e) => return error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            }
-        }
+    let result = match signal {
+        ottl::Signal::Traces => run_test::<ExportTraceServiceRequest>(
+            req.payload,
+            &req.signal,
+            &programs,
+            ottl::CompiledProgram::apply_traces,
+        ),
+        ottl::Signal::Logs => run_test::<ExportLogsServiceRequest>(
+            req.payload,
+            &req.signal,
+            &programs,
+            ottl::CompiledProgram::apply_logs,
+        ),
+        ottl::Signal::Metrics => run_test::<ExportMetricsServiceRequest>(
+            req.payload,
+            &req.signal,
+            &programs,
+            ottl::CompiledProgram::apply_metrics,
+        ),
     };
+    match result {
+        Ok(response) => Json(response).into_response(),
+        Err(r) => *r,
+    }
+}
 
-    Json(TestResponse {
-        payload,
-        statements: stats,
+type ApplyFn<R> = fn(
+    &ottl::CompiledProgram,
+    &mut R,
+    ottl::ErrorMode,
+) -> Result<ottl::ApplyReport, ottl::ApplyError>;
+
+fn run_test<R: DeserializeOwned + Serialize>(
+    payload: serde_json::Value,
+    signal: &str,
+    programs: &[(String, ottl::CompiledProgram, ottl::ErrorMode)],
+    apply: ApplyFn<R>,
+) -> Result<TestResponse, Box<Response>> {
+    let mut req: R = serde_json::from_value(payload).map_err(|e| {
+        Box::new(error(
+            StatusCode::BAD_REQUEST,
+            format!("invalid OTLP {signal} payload: {e}"),
+        ))
+    })?;
+    let input = encode(&req)?;
+    let mut statements = Vec::new();
+    for (name, program, mode) in programs {
+        let report = apply(program, &mut req, *mode).map_err(|e| {
+            Box::new(error(
+                StatusCode::UNPROCESSABLE_ENTITY,
+                format!("processor `{name}` failed: {e}"),
+            ))
+        })?;
+        push_stats(&mut statements, name, &report);
+    }
+    Ok(TestResponse {
+        input,
+        payload: encode(&req)?,
+        statements,
     })
-    .into_response()
+}
+
+fn encode(req: &impl Serialize) -> Result<serde_json::Value, Box<Response>> {
+    serde_json::to_value(req)
+        .map_err(|e| Box::new(error(StatusCode::INTERNAL_SERVER_ERROR, e.to_string())))
 }
 
 /// Accumulates one program's `ApplyReport` into the flat, cross-processor
@@ -1321,6 +1305,18 @@ mod tests {
                 .as_str()
                 .unwrap();
         assert_ne!(email, "alice@example.com");
+
+        // `input` is the payload as decoded and re-encoded before any
+        // statement ran: the original values, with proto3 defaults filled in
+        // the same way as in `payload`.
+        let input_span = &body["input"]["resourceSpans"][0]["scopeSpans"][0]["spans"][0];
+        let input_attrs = input_span["attributes"].as_array().unwrap();
+        let input_url =
+            input_attrs.iter().find(|a| a["key"] == "url.full").unwrap()["value"]["stringValue"]
+                .as_str()
+                .unwrap();
+        assert_eq!(input_url, "https://example.com/checkout?token=abc");
+        assert_eq!(input_span["droppedAttributesCount"], 0);
 
         // no processor was stored
         let (status, body) = call(
