@@ -146,6 +146,11 @@ fn table_info_for_schema(schema: iceberg_schemas::TableSchema) -> TableInfo {
         }
         iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
         iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
+        // Not yet reachable: `all_from_config` never produces these until
+        // the otel-native-schema cutover PR. Handled here only to keep this
+        // match exhaustive.
+        iceberg_schemas::TableSchema::Metrics => "OpenTelemetry metrics",
+        iceberg_schemas::TableSchema::MetricExemplars => "OpenTelemetry metric exemplars",
         iceberg_schemas::TableSchema::Custom(ref name) => {
             // For custom schemas, use a generic description
             return TableInfo {

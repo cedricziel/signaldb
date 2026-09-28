@@ -2006,6 +2006,8 @@ mod tests {
             metrics_histogram: HashMap::new(),
             metrics_exponential_histogram: HashMap::new(),
             metrics_summary: HashMap::new(),
+            metrics: HashMap::new(),
+            metric_exemplars: HashMap::new(),
             profiles: HashMap::new(),
         }
     }
