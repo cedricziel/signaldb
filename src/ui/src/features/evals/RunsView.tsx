@@ -7,10 +7,17 @@ import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { TimeRangePicker } from "../../components/TimeRangePicker";
 import type { ShellContext } from "../../lib/outletState";
-import { viewHref, type ExploreState } from "../../lib/urlState";
 import { baselinesOf, passRateOf, runStatus } from "./evalModel";
 import { fmtCount, fmtDateTime, fmtPct } from "./evalFormat";
-import { EvalsHead, PillSelect, RESULT_EXAMPLE, ScoreBadge } from "./EvalBits";
+import {
+  EvalsHead,
+  PillSelect,
+  compareHref,
+  RESULTS_FORMAT_DOC,
+  ScoreBadge,
+  setHref,
+} from "./EvalBits";
+import { UploadDialog } from "./UploadDialog";
 import {
   evalRange,
   evalScope,
@@ -20,42 +27,53 @@ import {
 } from "./useEvalData";
 import "./evals.css";
 
-export function compareHref(
-  state: ExploreState,
-  baseline: string,
-  candidate: string,
-): string {
-  return viewHref("/evals/compare", state, {
-    evals: { ...state.evals, baseline, candidate, case: "" },
-  });
-}
-
 export function RunsView(shell: ShellContext) {
   const { state, update } = shell;
   const scope = evalScope(state);
   const agents = useAgents(scope);
   const agent = state.evals.agent;
   const runs = useRuns(scope, agent ? { agent } : {});
-  const [set, setSet] = useState("");
+  const set = state.evals.set;
   const all = useMemo(() => runs.data ?? [], [runs.data]);
   const sets = useMemo(
-    () => [...new Set(all.flatMap((r) => (r.set ? [r.set] : [])))].sort(),
-    [all],
+    () =>
+      [
+        ...new Set([
+          ...all.flatMap((r) => (r.set ? [r.set] : [])),
+          ...(set ? [set] : []),
+        ]),
+      ].sort(),
+    [all, set],
   );
   const baselines = useMemo(() => baselinesOf(all), [all]);
   const shown = set ? all.filter((r) => r.set === set) : all;
   const now = Date.now();
   const setEvals = evalsUpdater(shell);
+  const [uploading, setUploading] = useState(false);
+  const upload = () => setUploading(true);
 
   return (
     <div className="evals">
       <EvalsHead
         title="Runs"
         sub="Offline eval runs: one agent version scored on one eval set. Your harness replays the set and sends the scores; SignalDB groups them by run id."
+        actions={
+          <button type="button" className="btn btn-primary" onClick={upload}>
+            Upload results…
+          </button>
+        }
       />
       {runs.error && <QueryError what="eval runs" error={runs.error} />}
-      {runs.isSuccess && all.length === 0 && !agent ? (
-        <NoRuns />
+      {uploading && (
+        <UploadDialog
+          state={state}
+          initialAgent={agent}
+          initialSet={set}
+          onClose={() => setUploading(false)}
+        />
+      )}
+      {runs.isSuccess && all.length === 0 && !agent && !set ? (
+        <NoRuns onUpload={upload} />
       ) : (
         <>
           <div className="evals-bar">
@@ -69,7 +87,7 @@ export function RunsView(shell: ShellContext) {
               label="eval set"
               value={set}
               options={sets}
-              onChange={setSet}
+              onChange={(v) => setEvals({ set: v })}
             />
             <span className="evals-bar-fill" />
             <span className="evals-bar-note">{shown.length} runs</span>
@@ -100,7 +118,13 @@ export function RunsView(shell: ShellContext) {
                   return (
                     <tr key={run.id}>
                       <td className="mono strong nowrap">{run.id}</td>
-                      <td className="mono">{run.set ?? "—"}</td>
+                      <td className="mono">
+                        {run.set ? (
+                          <Link to={setHref(state, run.set)}>{run.set}</Link>
+                        ) : (
+                          "—"
+                        )}
+                      </td>
                       <td>
                         {run.version ? (
                           <span className="evals-tag">{run.version}</span>
@@ -173,12 +197,12 @@ function RunStatusCell({
   );
 }
 
-function NoRuns() {
+function NoRuns({ onUpload }: { onUpload: () => void }) {
   return (
     <div className="evals-empty" style={{ gridTemplateColumns: "1fr" }}>
       <div className="evals-empty-text" style={{ maxWidth: 620 }}>
         <div className="evals-eyebrow">No runs yet</div>
-        <h2>Run your evals where they already run, then send the scores.</h2>
+        <h2>Run your evals where they already run, then upload the scores.</h2>
         <p>
           SignalDB doesn't replay your agent or run your judges. It stores the
           results, links them to the traces from the replay, and compares
@@ -199,18 +223,26 @@ function NoRuns() {
           </span>
         </li>
         <li>
-          <span className="mono faint strong">3 · Send</span>
+          <span className="mono faint strong">3 · Upload</span>
           <span>
-            Emit one <code>gen_ai.evaluation.result</code> log record per result
-            over OTLP, with the run attributes below.
+            Upload a JSONL file, use the CLI in CI, or send{" "}
+            <code>gen_ai.evaluation.result</code> over OTLP.
           </span>
         </li>
       </ol>
-      <pre className="evals-code">{RESULT_EXAMPLE}</pre>
-      <p className="faint" style={{ fontSize: 12 }}>
-        Runs appear here within a minute and are marked complete after 10
-        minutes without new results.
-      </p>
+      <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+        <button type="button" className="btn btn-primary" onClick={onUpload}>
+          Upload results…
+        </button>
+        <a
+          className="btn"
+          href={RESULTS_FORMAT_DOC}
+          target="_blank"
+          rel="noreferrer"
+        >
+          Results file format
+        </a>
+      </div>
     </div>
   );
 }

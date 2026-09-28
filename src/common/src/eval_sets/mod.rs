@@ -75,6 +75,22 @@ pub struct EvalSetSummary {
     pub updated_at: DateTime<Utc>,
 }
 
+/// How many of a set's cases came from each [`EvalCaseSource`] kind.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EvalCaseSourceCounts {
+    pub trace: u64,
+    pub upload: u64,
+    pub hand_written: u64,
+}
+
+/// An eval set as the list returns it: the summary plus its cases' sources.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct EvalSetListing {
+    #[serde(flatten)]
+    pub summary: EvalSetSummary,
+    pub sources: EvalCaseSourceCounts,
+}
+
 /// A stored eval set with its cases in order.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
 pub struct EvalSetRecord {

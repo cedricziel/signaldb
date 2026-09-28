@@ -390,17 +390,26 @@ export interface SdkResult<T> {
  * `fallbackMessage` supplies the message shown when nothing better is
  * found; `messageFromError`, when given, is tried first against the raw
  * `error` value — each caller's own precedence for reading a message out of
- * the error body (`error_description`, `error`, ...). */
+ * the error body (`error_description`, `error`, ...). `toError`, when given,
+ * builds the thrown error instead, for an `ApiError` subclass that keeps
+ * more of the body. */
 export function unwrapSdkResult<T>(
   result: SdkResult<T>,
   fallbackMessage: (status: number) => string,
   messageFromError?: (error: unknown) => string | undefined,
+  toError: (
+    message: string,
+    status: number,
+    error: unknown,
+    retryAfterMs: number | null,
+  ) => ApiError = (message, status, _error, retryAfterMs) =>
+    new ApiError(message, status, retryAfterMs),
 ): T {
   const { data, error, response } = result;
   if (error !== undefined || !response?.ok) {
     const status = response?.status ?? 0;
     const message = messageFromError?.(error) ?? fallbackMessage(status);
-    throw new ApiError(message, status, retryAfterMsFrom(response));
+    throw toError(message, status, error, retryAfterMsFrom(response));
   }
   return data as T;
 }

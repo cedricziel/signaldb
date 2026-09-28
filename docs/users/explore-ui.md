@@ -315,6 +315,22 @@ The **Evaluate** group reads evaluator results for AI agents — offline eval
 runs first — and compares agent versions case by case. What to send and how
 each page reads it is in [Evaluating AI agents](evaluations.md).
 
+- **Eval sets** (`/evals/sets`) lists the dataset's eval sets with what
+  their cases were built from and how the newest run of each scored. **New
+  eval set…** starts a set from a JSONL file of cases, from real agent
+  traces, or empty. A set's page (`/evals/sets/{name}`) shows its cases
+  with each case's score in the newest run, **Export JSONL**, an **Add
+  traces** panel that appends cases from matching agent traces, the Runs of
+  the set, and a Settings tab to delete it. Details:
+  [Eval sets in the Explore UI](eval-sets.md#in-the-explore-ui).
+- **Upload results…** on Runs uploads a JSONL or CSV results file as one
+  run, previewing its cases, evaluators and columns first; the dialog also
+  holds the CLI command for CI and the OTLP log-record form. Details:
+  [From the Explore UI](evaluations.md#from-the-explore-ui).
+- **Save N regressed cases as eval set** on Compare turns the regressions
+  into a new eval set, copying each case's input, expected tools and
+  reference from the set the runs replayed.
+
 ### The catalog
 
 The catalog answers "what's actually sending telemetry" by discovery, not
@@ -957,7 +973,7 @@ header across the top of the main column.
 - **Sidebar.** The signaldb wordmark, the tenant/dataset switcher, then the
   pages in groups — **Monitor** (Overview, Errors, Catalog),
   **Investigate** (Logs, Traces, Metrics, Profiles, Query), **Evaluate**
-  (Agents & scores, Compare, Runs, Evaluators — see
+  (Agents & scores, Compare, Eval sets, Runs, Evaluators — see
   [Evaluating AI agents](evaluations.md)), **Configure** (Schema,
   Processors, Send data) and, for tenant and instance admins only,
   **Settings** (Manage, API keys, Integrations). The read-only demo account

@@ -18,7 +18,8 @@ use anyhow::Context;
 use clap::Subcommand;
 use signaldb_sdk::types::{
     AppendCasesFromTracesOutcome, AppendCasesFromTracesRequest, AppendCasesOutcome, EvalCase,
-    EvalCaseSource, EvalSetListResponse, EvalSetResponse, EvalSetSpec, QueryRange,
+    EvalCaseSource, EvalCaseSourceCounts, EvalSetListResponse, EvalSetResponse, EvalSetSpec,
+    QueryRange,
 };
 
 use super::OutputArgs;
@@ -382,7 +383,27 @@ fn format_timestamp(t: &chrono::DateTime<chrono::Utc>) -> String {
     t.to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
 }
 
-/// Render `NAME  AGENT  CASES  UPDATED  DESCRIPTION` rows.
+/// `200 (trace 162, hand_written 38)`: a set's case count and the source
+/// kinds its cases came from.
+fn format_case_count(count: i64, c: &EvalCaseSourceCounts) -> String {
+    let parts: Vec<String> = [
+        ("trace", c.trace),
+        ("upload", c.upload),
+        ("hand_written", c.hand_written),
+    ]
+    .into_iter()
+    .filter(|(_, n)| *n > 0)
+    .map(|(kind, n)| format!("{kind} {n}"))
+    .collect();
+    if parts.is_empty() {
+        count.to_string()
+    } else {
+        format!("{count} ({})", parts.join(", "))
+    }
+}
+
+/// Render `NAME  AGENT  CASES  UPDATED  DESCRIPTION` rows; CASES carries the
+/// per-source split.
 fn format_eval_set_list(v: &EvalSetListResponse) -> String {
     let rows: Vec<(String, String, String, String, String)> = v
         .items
@@ -391,7 +412,7 @@ fn format_eval_set_list(v: &EvalSetListResponse) -> String {
             (
                 s.name.clone(),
                 s.agent.clone(),
-                s.case_count.to_string(),
+                format_case_count(s.case_count, &s.sources),
                 format_timestamp(&s.updated_at),
                 s.description.clone().unwrap_or_default(),
             )
@@ -565,6 +586,7 @@ mod tests {
     fn human_output_lists_sets_and_cases() {
         let list: EvalSetListResponse = serde_json::from_str(
             r#"{"items": [{"name": "refunds", "agent": "support-triage", "case_count": 2,
+                "sources": {"trace": 1, "upload": 0, "hand_written": 1},
                 "created_at": "2026-01-01T00:00:00Z", "updated_at": "2026-01-02T00:00:00Z",
                 "_links": {"self": {"href": "/api/v1/eval-sets/refunds"}}}],
                "_links": {"self": {"href": "/api/v1/eval-sets"}}}"#,
@@ -573,6 +595,7 @@ mod tests {
         let table = format_eval_set_list(&list);
         assert!(table.starts_with("NAME"), "{table}");
         assert!(table.contains("refunds") && table.contains("support-triage"));
+        assert!(table.contains("2 (trace 1, hand_written 1)"), "{table}");
 
         let set: EvalSetResponse = serde_json::from_str(SET_BODY).expect("set parses");
         let out = format_eval_set(&set);

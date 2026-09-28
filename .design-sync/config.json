@@ -33,6 +33,8 @@
     "Compare": "CompareView",
     "Case": "CaseView",
     "Evaluators": "EvaluatorsView",
+    "EvalSets": "EvalSetsView",
+    "EvalSet": "EvalSetView",
     "RealUsers": "RealUsersView"
   },
   "provider": {
@@ -192,6 +194,16 @@
     "EvaluatorsView": {
       "cardMode": "single",
       "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "EvalSetsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "EvalSetView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
       "primaryStory": "Default"
     },
     "RealUsersView": {

@@ -35,6 +35,8 @@ describe("currentPageFor", () => {
       label: "Agents & scores",
     });
     expect(currentPageFor("/evals/runs").id).toBe("runs");
+    expect(currentPageFor("/evals/sets").id).toBe("sets");
+    expect(currentPageFor("/evals/sets/triage-golden-200").id).toBe("sets");
     expect(currentPageFor("/evals/compare/case").id).toBe("compare");
     expect(currentPageFor("/evalsx").id).toBeNull();
   });

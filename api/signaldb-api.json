@@ -7443,6 +7443,32 @@
         ],
         "description": "Where a case came from."
       },
+      "EvalCaseSourceCounts": {
+        "type": "object",
+        "description": "How many of a set's cases came from each [`EvalCaseSource`] kind.",
+        "required": [
+          "trace",
+          "upload",
+          "hand_written"
+        ],
+        "properties": {
+          "hand_written": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "trace": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          },
+          "upload": {
+            "type": "integer",
+            "format": "int64",
+            "minimum": 0
+          }
+        }
+      },
       "EvalResultsFormat": {
         "type": "string",
         "description": "The format of an uploaded results file.",
@@ -7724,16 +7750,20 @@
           {
             "type": "object",
             "required": [
+              "sources",
               "_links"
             ],
             "properties": {
               "_links": {
                 "$ref": "#/components/schemas/EvalSetLinks"
+              },
+              "sources": {
+                "$ref": "#/components/schemas/EvalCaseSourceCounts"
               }
             }
           }
         ],
-        "description": "An eval set as listed, without its cases."
+        "description": "An eval set as listed, without its cases but with how many of them came\nfrom each source kind."
       },
       "EvaluatorSummary": {
         "type": "object",

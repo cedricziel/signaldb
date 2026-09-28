@@ -16,6 +16,8 @@ CatalogView:features/catalog/CatalogView
 CompareView:features/evals/CompareView
 ConsentView:features/consent/ConsentView
 ErrorsView:features/errors/ErrorsView
+EvalSetsView:features/evals/EvalSetsView
+EvalSetView:features/evals/EvalSetView
 EvaluatorsView:features/evals/EvaluatorsView
 ExploreView:features/explore/ExploreView
 GitHubIntegration:features/integrations/GitHubIntegration

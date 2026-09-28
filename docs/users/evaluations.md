@@ -161,15 +161,22 @@ store its results twice.
   evaluator with version markers, and the evaluators table sorted by the
   biggest drop. The source toggle switches between offline runs (default),
   production results, or both. The page opens on the last 7 days.
+- **Eval sets** (`/evals/sets`, `/evals/sets/{name}`) — the stored
+  [eval sets](eval-sets.md) with their cases, what they were built from,
+  and how each case scored in the set's newest run. See
+  [Eval sets in the UI](eval-sets.md#in-the-explore-ui).
 - **Runs** (`/evals/runs`) — offline runs with their eval set, version,
-  cases, pass rate and status. **Compare ›** opens the run against the
-  previous run of the same eval set.
+  cases, pass rate and status, filterable by agent and eval set (`?set=`).
+  **Compare ›** opens the run against the previous run of the same eval
+  set. **Upload results…** opens the
+  [Upload results dialog](#from-the-explore-ui).
 - **Compare** (`/evals/compare?baseline=…&candidate=…`) — per evaluator
   means, deltas, pass rates and how many cases moved, plus latency p95 and
   tokens per run from the `invoke_agent` spans; then the cases, filtered
   to regressions, improvements or unchanged, with the candidate's tool
   calls marked against the baseline's (skipped, reordered or repeated,
-  new).
+  new). **Save N regressed cases as eval set** turns the regressions into
+  a new set (see [Eval sets](eval-sets.md#in-the-explore-ui)).
 - **Case** (`/evals/compare/case?…&case=…`) — the agent trajectory as a
   timeline with each result on its span, tools the baseline called but
   the candidate skipped as _expected, not called_ rows, the user input and
@@ -332,6 +339,30 @@ In GitHub Actions:
 The MCP server offers the same upload as the `upload_eval_results` tool
 (see [MCP](mcp.md)).
 
+### From the Explore UI
+
+**Upload results…** on the Runs page (and in its empty state) opens a dialog
+with three tabs:
+
+- **Upload file** — drop or choose a `.jsonl` or `.csv` file (up to
+  32 MiB). The browser reads it first and shows the cases, evaluators,
+  span-linked and run-level rows it found, which of the columns above the
+  file has (`case_id` and `gen_ai.evaluation.name` are required), and a
+  warning for rows without a `trace_id`. The run needs an agent, a version
+  and an eval set name. The version is prefilled from the `service.version`
+  of the `invoke_agent` spans the rows link to; when the eval set is a
+  stored one, the dialog says how many of the file's case ids it holds. The
+  set name is required by the endpoint, so an ad-hoc run still needs one; a
+  name that isn't a stored set is accepted and noted. The dialog picks the
+  run id once per chosen file, so uploading the same file again after an
+  error doesn't create a second run. A rejected file lists the server's
+  problems line by line; a successful upload shows the run id, the
+  per-evaluator summary, and links to the run in Runs and to Compare.
+- **CLI / CI** — the `signaldb-cli evals upload` command above, with a Copy
+  button.
+- **Send over OTLP** — the log-record form of one result (see
+  [What to send](#what-to-send)), with a Copy button.
+
 ## Runs and comparisons outside the UI
 
 The Runs and Compare pages have a CLI and an MCP counterpart that read the
@@ -418,10 +449,5 @@ signaldb-cli query --ir --file run-scores.json
 ## Eval sets
 
 Stored eval sets hold a harness's cases (inputs, expected tool trajectories,
-reference answers) per tenant and dataset, behind an HTTP API. See
-[Eval sets](eval-sets.md).
-
-## Coming next
-
-Eval sets and the Upload results dialog in the UI. See the
-`agent-offline-evals` OpenSpec change.
+reference answers) per tenant and dataset, behind an HTTP API and the
+**Eval sets** pages. See [Eval sets](eval-sets.md).

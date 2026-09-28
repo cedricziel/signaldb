@@ -148,6 +148,8 @@ export interface EvalParams {
   baseline: string;
   candidate: string;
   case: string;
+  /** The Runs page's eval-set filter. */
+  set: string;
   mode: EvalCaseMode;
 }
 
@@ -157,6 +159,7 @@ export const DEFAULT_EVAL_PARAMS: EvalParams = {
   baseline: "",
   candidate: "",
   case: "",
+  set: "",
   mode: "candidate",
 };
 
@@ -164,7 +167,13 @@ const EVAL_SOURCES: readonly EvalSource[] = ["offline", "production", "both"];
 const EVAL_MODES: readonly EvalCaseMode[] = ["candidate", "baseline", "side"];
 
 /** The eval params that are plain strings, "" meaning unset. */
-const EVAL_STRING_PARAMS = ["agent", "baseline", "candidate", "case"] as const;
+const EVAL_STRING_PARAMS = [
+  "agent",
+  "baseline",
+  "candidate",
+  "case",
+  "set",
+] as const;
 
 function parseEvalParams(p: URLSearchParams): EvalParams {
   const out = { ...DEFAULT_EVAL_PARAMS };

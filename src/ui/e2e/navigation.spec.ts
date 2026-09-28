@@ -76,6 +76,19 @@ test("/evals/runs marks Runs as the current page", async ({ page }) => {
   await expect(navLink(page, "Runs")).toHaveAttribute("aria-current", "page");
 });
 
+test("an eval set's page marks Eval sets as the current page", async ({
+  page,
+}) => {
+  await page.goto(
+    "/evals/sets/triage-golden-200?tenant=acme&dataset=production",
+  );
+  await expect(page).toHaveURL(/\/evals\/sets\/triage-golden-200\?/);
+  await expect(navLink(page, "Eval sets")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+});
+
 test("⌘K opens the command palette and Enter navigates", async ({ page }) => {
   await page.goto("/logs");
   await expect(navLink(page, "Logs")).toBeVisible();

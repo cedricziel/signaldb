@@ -1,9 +1,22 @@
-import { screen, within } from "@testing-library/react";
+import { fireEvent, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { RunsView } from "./RunsView";
 import { F } from "../../api/evals";
 import * as queryIrApi from "../../api/queryIr";
-import { aggBy, mockIr, renderEvalView, runRows, table } from "./testUtils";
+import {
+  aggBy,
+  mockEvalSetsApi,
+  mockIr,
+  renderEvalView,
+  runRows,
+  table,
+} from "./testUtils";
+import { DEFAULT_EVAL_PARAMS } from "../../lib/urlState";
+
+vi.mock("../../api/evalSets", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../../api/evalSets")>();
+  return { ...actual, listEvalSets: vi.fn(), getEvalSet: vi.fn() };
+});
 
 vi.mock("../../api/queryIr", async (importOriginal) => {
   const actual = await importOriginal<typeof import("../../api/queryIr")>();
@@ -153,5 +166,69 @@ describe("RunsView", () => {
     ).not.toBeInTheDocument();
 
     vi.useRealTimers();
+  });
+
+  it("opens the Upload results dialog from the empty state and the header", async () => {
+    mockEvalSetsApi();
+    mockRuns([]);
+    renderView();
+    const empty = (await screen.findByText("No runs yet")).parentElement!
+      .parentElement!;
+    expect(
+      within(empty).getByRole("link", { name: "Results file format" }),
+    ).toHaveAttribute("href", expect.stringContaining("evaluations.md"));
+    fireEvent.click(
+      within(empty).getByRole("button", { name: "Upload results…" }),
+    );
+    expect(
+      screen.getByRole("dialog", { name: "Upload eval results" }),
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "Close" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Upload results…" })[0]!,
+    );
+    expect(screen.getByRole("dialog")).toBeInTheDocument();
+  });
+
+  it("filters by the URL's eval set and links each set", async () => {
+    mockRuns([
+      {
+        id: "run-a",
+        set: "triage-golden-200",
+        version: "v1",
+        firstMs: NOW - 86_400_000,
+        lastMs: NOW - 86_400_000,
+        n: 10,
+        errors: 0,
+        unlinked: 0,
+        cases: 10,
+      },
+      {
+        id: "run-b",
+        set: "billing-golden-80",
+        version: "v1",
+        firstMs: NOW - 86_400_000,
+        lastMs: NOW - 86_400_000,
+        n: 10,
+        errors: 0,
+        unlinked: 0,
+        cases: 10,
+      },
+    ]);
+    const update = renderEvalView(RunsView, {
+      evals: { ...DEFAULT_EVAL_PARAMS, set: "triage-golden-200" },
+    });
+    const row = await screen.findByRole("row", { name: /run-a/ });
+    expect(
+      within(row).getByRole("link", { name: "triage-golden-200" }),
+    ).toHaveAttribute("href", "/evals/sets/triage-golden-200");
+    expect(screen.queryByRole("row", { name: /run-b/ })).toBeNull();
+    fireEvent.change(screen.getByLabelText("eval set"), {
+      target: { value: "" },
+    });
+    expect(update).toHaveBeenCalledWith({
+      evals: expect.objectContaining({ set: "" }),
+    });
   });
 });

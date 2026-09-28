@@ -309,7 +309,7 @@ describe("command palette", () => {
       within(screen.getByRole("group", { name: "Evaluate" })).getAllByRole(
         "option",
       ),
-    ).toHaveLength(4);
+    ).toHaveLength(5);
     unmount();
 
     stubShell(VIEWER);

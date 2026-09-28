@@ -19,6 +19,7 @@ export type NavIconName =
   | "instrumentation"
   | "evals"
   | "compare"
+  | "sets"
   | "runs"
   | "evaluators"
   | "manage"
@@ -134,6 +135,13 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
       <line x1="11" y1="2" x2="11" y2="14" />
       <polyline points="2,6 5,3 8,6" {...round} />
       <polyline points="8,10 11,13 14,10" {...round} />
+    </>
+  ),
+  sets: (
+    <>
+      <rect x="2" y="2.5" width="12" height="3" rx=".75" />
+      <rect x="2" y="6.5" width="12" height="3" rx=".75" />
+      <rect x="2" y="10.5" width="12" height="3" rx=".75" />
     </>
   ),
   runs: (

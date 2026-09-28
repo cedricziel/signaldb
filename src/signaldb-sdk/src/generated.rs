@@ -1092,6 +1092,18 @@ pub mod types {
         #[serde(rename = "hand_written")]
         HandWritten,
     }
+    ///How many of a set's cases came from each [`EvalCaseSource`] kind.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct EvalCaseSourceCounts {
+        pub hand_written: i64,
+        pub trace: i64,
+        pub upload: i64,
+    }
+    impl EvalCaseSourceCounts {
+        pub fn builder() -> builder::EvalCaseSourceCounts {
+            Default::default()
+        }
+    }
     ///The format of an uploaded results file.
     #[derive(
         ::serde::Deserialize,
@@ -1301,7 +1313,8 @@ pub mod types {
             Default::default()
         }
     }
-    ///An eval set as listed, without its cases.
+    /**An eval set as listed, without its cases but with how many of them came
+    from each source kind.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct EvalSetSummaryResponse {
         pub agent: ::std::string::String,
@@ -1312,6 +1325,7 @@ pub mod types {
         #[serde(rename = "_links")]
         pub links: EvalSetLinks,
         pub name: ::std::string::String,
+        pub sources: EvalCaseSourceCounts,
         pub updated_at: ::chrono::DateTime<::chrono::offset::Utc>,
     }
     impl EvalSetSummaryResponse {
@@ -8376,6 +8390,74 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct EvalCaseSourceCounts {
+            hand_written: ::std::result::Result<i64, ::std::string::String>,
+            trace: ::std::result::Result<i64, ::std::string::String>,
+            upload: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for EvalCaseSourceCounts {
+            fn default() -> Self {
+                Self {
+                    hand_written: Err("no value supplied for hand_written".to_string()),
+                    trace: Err("no value supplied for trace".to_string()),
+                    upload: Err("no value supplied for upload".to_string()),
+                }
+            }
+        }
+        impl EvalCaseSourceCounts {
+            pub fn hand_written<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.hand_written = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for hand_written: {e}"));
+                self
+            }
+            pub fn trace<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.trace = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for trace: {e}"));
+                self
+            }
+            pub fn upload<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.upload = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for upload: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<EvalCaseSourceCounts> for super::EvalCaseSourceCounts {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: EvalCaseSourceCounts,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    hand_written: value.hand_written?,
+                    trace: value.trace?,
+                    upload: value.upload?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::EvalCaseSourceCounts> for EvalCaseSourceCounts {
+            fn from(value: super::EvalCaseSourceCounts) -> Self {
+                Self {
+                    hand_written: Ok(value.hand_written),
+                    trace: Ok(value.trace),
+                    upload: Ok(value.upload),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct EvalResultsUploadLinks {
             query: ::std::result::Result<super::Link, ::std::string::String>,
             runs: ::std::result::Result<super::Link, ::std::string::String>,
@@ -9364,6 +9446,7 @@ pub mod types {
             >,
             links: ::std::result::Result<super::EvalSetLinks, ::std::string::String>,
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            sources: ::std::result::Result<super::EvalCaseSourceCounts, ::std::string::String>,
             updated_at: ::std::result::Result<
                 ::chrono::DateTime<::chrono::offset::Utc>,
                 ::std::string::String,
@@ -9378,6 +9461,7 @@ pub mod types {
                     description: Ok(Default::default()),
                     links: Err("no value supplied for links".to_string()),
                     name: Err("no value supplied for name".to_string()),
+                    sources: Err("no value supplied for sources".to_string()),
                     updated_at: Err("no value supplied for updated_at".to_string()),
                 }
             }
@@ -9443,6 +9527,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for name: {e}"));
                 self
             }
+            pub fn sources<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::EvalCaseSourceCounts>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sources = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sources: {e}"));
+                self
+            }
             pub fn updated_at<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::chrono::DateTime<::chrono::offset::Utc>>,
@@ -9466,6 +9560,7 @@ pub mod types {
                     description: value.description?,
                     links: value.links?,
                     name: value.name?,
+                    sources: value.sources?,
                     updated_at: value.updated_at?,
                 })
             }
@@ -9479,6 +9574,7 @@ pub mod types {
                     description: Ok(value.description),
                     links: Ok(value.links),
                     name: Ok(value.name),
+                    sources: Ok(value.sources),
                     updated_at: Ok(value.updated_at),
                 }
             }
