@@ -20,7 +20,7 @@
 //! error text, which is brittle across upgrades and would swallow genuine
 //! planning failures.
 
-use datafusion::arrow::array::{Array, RecordBatch, StringArray};
+use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use datafusion::common::TableReference;
 use datafusion::datasource::{TableProvider, provider_as_source};
 use datafusion::logical_expr::LogicalPlanBuilder;
@@ -47,15 +47,20 @@ pub(super) fn time_window(df: DataFrame, start: i64, end: i64) -> Result<DataFra
     .map_err(QuerierError::QueryFailed)
 }
 
+/// Borrow `name` from `batch`, erroring if the column is missing.
+pub(super) fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef, QuerierError> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))
+}
+
 /// Borrow `name` from `batch` as a `StringArray`, erroring if the column is
 /// missing or a different type.
 pub(super) fn string_column<'a>(
     batch: &'a RecordBatch,
     name: &str,
 ) -> Result<&'a StringArray, QuerierError> {
-    batch
-        .column_by_name(name)
-        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?
+    column(batch, name)?
         .as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| {

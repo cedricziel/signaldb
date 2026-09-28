@@ -9,6 +9,10 @@
 
 use std::collections::HashMap;
 
+use datafusion::arrow::array::{
+    Array, ArrayRef, Float64Array, Int64Array, ListArray, StringArray, StringViewArray,
+};
+
 /// Merges OTLP histogram data points that share a step bucket and series.
 pub(crate) struct HistogramAcc {
     /// Upper bounds of the finite buckets (`explicit_bounds`).
@@ -107,6 +111,119 @@ pub(crate) fn parse_bounds_cached(
     let parsed = parse_f64_array(raw)?;
     cache.insert(raw.to_string(), parsed.clone());
     Some(parsed)
+}
+
+/// A resolved `bucket_counts`/`explicit_bounds` column: either the wide
+/// `metrics` table's typed `List<Int64>`/`List<Float64>` shape, or the
+/// legacy per-type table's JSON-array string shape — resolved once per batch
+/// via [`Self::resolve`], not per row, since a column's physical type is
+/// fixed for the whole batch.
+pub(crate) enum BucketCol<'a> {
+    F64List(&'a ListArray, &'a Float64Array),
+    I64List(&'a ListArray, &'a Int64Array),
+    Utf8(&'a StringArray),
+    Utf8View(&'a StringViewArray),
+}
+
+impl<'a> BucketCol<'a> {
+    pub(crate) fn resolve(column: &'a dyn Array) -> Option<Self> {
+        if let Some(list) = column.as_any().downcast_ref::<ListArray>() {
+            return match list.values().as_any().downcast_ref::<Float64Array>() {
+                Some(values) => Some(BucketCol::F64List(list, values)),
+                None => list
+                    .values()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .map(|values| BucketCol::I64List(list, values)),
+            };
+        }
+        if let Some(a) = column.as_any().downcast_ref::<StringArray>() {
+            return Some(BucketCol::Utf8(a));
+        }
+        column
+            .as_any()
+            .downcast_ref::<StringViewArray>()
+            .map(BucketCol::Utf8View)
+    }
+
+    pub(crate) fn is_null(&self, row: usize) -> bool {
+        match self {
+            BucketCol::F64List(list, _) | BucketCol::I64List(list, _) => list.is_null(row),
+            BucketCol::Utf8(a) => a.is_null(row),
+            BucketCol::Utf8View(a) => a.is_null(row),
+        }
+    }
+
+    /// Decodes row `row` as `f64`s. `cache` memoizes the legacy JSON parse
+    /// (used for `explicit_bounds`, fixed per series); the typed-list
+    /// variants need no parsing and ignore it.
+    pub(crate) fn decode(
+        &self,
+        row: usize,
+        cache: Option<&mut HashMap<String, Vec<f64>>>,
+    ) -> Option<Vec<f64>> {
+        match self {
+            BucketCol::F64List(list, values) => {
+                let (start, len) = Self::row_range(list, row);
+                Some(
+                    (start..start + len)
+                        .map(|i| {
+                            if values.is_null(i) {
+                                0.0
+                            } else {
+                                values.value(i)
+                            }
+                        })
+                        .collect(),
+                )
+            }
+            BucketCol::I64List(list, values) => {
+                let (start, len) = Self::row_range(list, row);
+                Some(
+                    (start..start + len)
+                        .map(|i| if values.is_null(i) { 0 } else { values.value(i) } as f64)
+                        .collect(),
+                )
+            }
+            BucketCol::Utf8(a) => Self::parse(a.value(row), cache),
+            BucketCol::Utf8View(a) => Self::parse(a.value(row), cache),
+        }
+    }
+
+    fn row_range(list: &ListArray, row: usize) -> (usize, usize) {
+        let offsets = list.value_offsets();
+        let start = offsets[row] as usize;
+        (start, offsets[row + 1] as usize - start)
+    }
+
+    fn parse(raw: &str, cache: Option<&mut HashMap<String, Vec<f64>>>) -> Option<Vec<f64>> {
+        match cache {
+            Some(cache) => parse_bounds_cached(cache, raw),
+            None => parse_f64_array(raw),
+        }
+    }
+}
+
+/// Decodes one row's `bucket_counts`/`explicit_bounds` pair via
+/// [`BucketCol::resolve`] — either the wide `metrics` table's typed
+/// `List<Int64>`/`List<Float64>` columns, or the legacy per-type table's
+/// JSON-array string columns. `None` for a null row or an unrecognized
+/// column type.
+pub(crate) fn decode_bucket_row(
+    counts: &ArrayRef,
+    bounds: &ArrayRef,
+    row: usize,
+    bounds_cache: &mut HashMap<String, Vec<f64>>,
+) -> Option<(Vec<f64>, Vec<f64>)> {
+    let counts = BucketCol::resolve(counts.as_ref())?;
+    let bounds = BucketCol::resolve(bounds.as_ref())?;
+    if counts.is_null(row) || bounds.is_null(row) {
+        return None;
+    }
+    Some((
+        counts.decode(row, None)?,
+        bounds.decode(row, Some(bounds_cache))?,
+    ))
 }
 
 /// Interpolate the `phi`-quantile of a classic histogram, following
@@ -258,6 +375,79 @@ mod tests {
         );
         assert_eq!(parse_f64_array("not json"), None);
         assert_eq!(parse_f64_array(r#"{"a":1}"#), None);
+    }
+
+    #[test]
+    fn bucket_col_reads_typed_list_columns() {
+        use datafusion::arrow::datatypes::Float64Type;
+
+        let counts = ListArray::from_iter_primitive::<Float64Type, _, _>(vec![Some(vec![
+            Some(1.0),
+            Some(2.0),
+            Some(3.0),
+        ])]);
+        let bounds = ListArray::from_iter_primitive::<Float64Type, _, _>(vec![Some(vec![
+            Some(1.0),
+            Some(f64::INFINITY),
+        ])]);
+        let counts = BucketCol::resolve(&counts).expect("typed list resolves");
+        let bounds = BucketCol::resolve(&bounds).expect("typed list resolves");
+        assert_eq!(counts.decode(0, None), Some(vec![1.0, 2.0, 3.0]));
+        assert_eq!(bounds.decode(0, None), Some(vec![1.0, f64::INFINITY]));
+    }
+
+    #[test]
+    fn bucket_col_reads_legacy_json_columns() {
+        let counts = StringArray::from(vec!["[1,2,3]"]);
+        let bounds = StringArray::from(vec![r#"[1,"+Inf"]"#]);
+        let counts = BucketCol::resolve(&counts).expect("utf8 resolves");
+        let bounds = BucketCol::resolve(&bounds).expect("utf8 resolves");
+        let mut cache = HashMap::new();
+        assert_eq!(counts.decode(0, None), Some(vec![1.0, 2.0, 3.0]));
+        assert_eq!(
+            bounds.decode(0, Some(&mut cache)),
+            Some(vec![1.0, f64::INFINITY])
+        );
+        assert_eq!(cache.len(), 1, "bounds parse should be cached");
+    }
+
+    #[test]
+    fn bucket_col_reads_utf8view_columns() {
+        // A Parquet-backed scan under DataFusion 54 can yield `Utf8View` for
+        // string columns (a zero-copy optimization) instead of `Utf8`.
+        let counts = StringViewArray::from(vec!["[1,2,3]"]);
+        let bounds = StringViewArray::from(vec![r#"[1,"+Inf"]"#]);
+        let counts = BucketCol::resolve(&counts).expect("utf8view resolves");
+        let bounds = BucketCol::resolve(&bounds).expect("utf8view resolves");
+        assert_eq!(counts.decode(0, None), Some(vec![1.0, 2.0, 3.0]));
+        assert_eq!(bounds.decode(0, None), Some(vec![1.0, f64::INFINITY]));
+    }
+
+    #[test]
+    fn decode_bucket_row_reads_typed_list_and_legacy_json_columns() {
+        use datafusion::arrow::datatypes::Float64Type;
+        use std::sync::Arc;
+
+        let typed_counts: ArrayRef =
+            Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                Some(vec![Some(1.0), Some(2.0), Some(3.0)]),
+            ]));
+        let typed_bounds: ArrayRef =
+            Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(vec![
+                Some(vec![Some(1.0), Some(f64::INFINITY)]),
+            ]));
+        let mut cache = HashMap::new();
+        assert_eq!(
+            decode_bucket_row(&typed_counts, &typed_bounds, 0, &mut cache),
+            Some((vec![1.0, 2.0, 3.0], vec![1.0, f64::INFINITY]))
+        );
+
+        let json_counts: ArrayRef = Arc::new(StringArray::from(vec!["[1,2,3]"]));
+        let json_bounds: ArrayRef = Arc::new(StringArray::from(vec![r#"[1,"+Inf"]"#]));
+        assert_eq!(
+            decode_bucket_row(&json_counts, &json_bounds, 0, &mut cache),
+            Some((vec![1.0, 2.0, 3.0], vec![1.0, f64::INFINITY]))
+        );
     }
 
     #[test]

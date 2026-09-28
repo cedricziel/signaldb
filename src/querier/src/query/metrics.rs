@@ -30,8 +30,7 @@ use datafusion::prelude::{DataFrame, SessionContext};
 use datafusion::scalar::ScalarValue;
 
 use super::histogram::{
-    HistogramAcc, RateHistAcc, histogram_fraction, histogram_quantile, parse_bounds_cached,
-    parse_f64_array,
+    HistogramAcc, RateHistAcc, decode_bucket_row, histogram_fraction, histogram_quantile,
 };
 use super::logql::MaterializedColumns;
 use super::promql::{
@@ -42,7 +41,7 @@ use super::promql::{
 use super::{
     error::QuerierError,
     table_lookup::{
-        LABEL_SCAN_LIMIT, distinct_non_empty, optional_table, string_column, time_window,
+        LABEL_SCAN_LIMIT, column, distinct_non_empty, optional_table, string_column, time_window,
     },
 };
 use common::schema::materialized_column_name;
@@ -1218,8 +1217,8 @@ impl MetricsService {
                 })?;
             let name = string_column(batch, "metric_name")?;
             let service = string_column(batch, "service_name")?;
-            let counts = string_column(batch, "bucket_counts")?;
-            let bounds = string_column(batch, "explicit_bounds")?;
+            let counts = column(batch, "bucket_counts")?;
+            let bounds = column(batch, "explicit_bounds")?;
             let sample_ts = batch
                 .column_by_name("ts")
                 .and_then(|c| c.as_any().downcast_ref::<TimestampNanosecondArray>())
@@ -1227,13 +1226,12 @@ impl MetricsService {
                     QuerierError::InvalidInput("ts column is not a timestamp".to_string())
                 })?;
             for i in 0..batch.num_rows() {
-                if bucket.is_null(i) || counts.is_null(i) || bounds.is_null(i) {
+                if bucket.is_null(i) {
                     continue;
                 }
-                let (Some(row_counts), Some(row_bounds)) = (
-                    parse_f64_array(counts.value(i)),
-                    parse_bounds_cached(&mut bounds_cache, bounds.value(i)),
-                ) else {
+                let Some((row_counts, row_bounds)) =
+                    decode_bucket_row(counts, bounds, i, &mut bounds_cache)
+                else {
                     continue;
                 };
                 // OTLP invariant: one more bucket count than bound.
