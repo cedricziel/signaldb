@@ -22,10 +22,9 @@ directly, without formulating a dialect string.
 
 This page is the reference for the IR at its foundational scope: **single-signal
 queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
-source covers the scalar-value case — group/filter a metric by name and
+source holds every metric type — group/filter a metric by name, type and
 attributes, aggregate, bucket by `step` — the same as every other source. The
-`metrics_histogram` source plus the `histogram_quantile` stage cover
-percentile-over-buckets, and the `rate`/`increase`/`irate`/`*_over_time`
+`histogram_quantile` stage covers percentile-over-buckets, and the `rate`/`increase`/`irate`/`*_over_time`
 per-series range functions cover counter rates and windowed reductions (see
 [Counter rate](#counter-rate-rateincrease-v6) and
 [More range functions](#more-range-functions-across-and-window-v7)).
@@ -361,7 +360,7 @@ unit, which is how you ask for the error rate rather than the overall rate.
 
 `rate` and `increase` are aggregate functions for a monotonic counter (a
 metrics `sum` with cumulative temporality), legal only with `step` set and
-only on the `metrics`/`metrics_histogram` sources:
+only on the `metrics` source:
 
 ```jsonc
 {
@@ -394,7 +393,7 @@ A `step` aggregate still allows exactly one aggregate output, so `rate`/
 
 `rate`/`increase` belong to a wider family of **per-series range
 functions** — every one legal only with `step` set and only on the
-`metrics`/`metrics_histogram` sources, computed per individual series exactly
+`metrics` source, computed per individual series exactly
 as `rate`/`increase` are:
 
 - `irate` — instantaneous per-second rate from the **last two** samples in
@@ -833,7 +832,8 @@ field, not a separate source: filter or group by `metric.type` to pick the
 types you want. An unfiltered `metrics` query returns every type, with
 `metric.value` null on the histogram, exponential-histogram and summary rows.
 The `histogram_quantile` stage reads the histogram rows (see
-[Histograms](#histograms)).
+[Histograms](#histograms)). The `metrics_histogram` source of earlier
+releases is gone; use `metrics` with a `metric.type` filter instead.
 
 | Field                    | Type    | Meaning                                                                   |
 | ------------------------ | ------- | ------------------------------------------------------------------------- |
@@ -860,7 +860,7 @@ list fields can be selected in `fields` but not filtered, grouped or ordered
 on. The default `rows` projection includes `metric_type`.
 
 Every scalar source registers its primary time column as a logical field —
-`timestamp` on `logs`, `metrics`, `metrics_histogram`, and `profiles`,
+`timestamp` on `logs`, `metrics`, and `profiles`,
 `start_time_unix_nano` on `traces` — so a cross-signal "last seen" aggregate
 such as `{"fn": "max", "of": "timestamp", "as": "last"}` has the same shape
 on every source, and `timestamp` can be filtered, ordered, and selected like
@@ -905,13 +905,11 @@ own.
 
 ## Histograms
 
-The `metrics_histogram` source scans one row per OTLP histogram data point —
-`count`, `sum`, `min`, `max`, and the classic-histogram `bucket_counts`/
-`explicit_bounds` arrays — not a scalar value, so it's a separate source from
-`metrics`. It exposes `timestamp`, `metric.name`, and `service.name` (plus
-resource attributes) for filtering and grouping; the bucket columns themselves are not
-addressable in a `where` or `by` — they only feed the `histogram_quantile`
-stage below.
+A histogram row of the `metrics` source carries a whole OTLP histogram data
+point — `count`, `sum`, `min`, `max`, and the classic-histogram
+`bucket_counts`/`explicit_bounds` lists — not a scalar value. The bucket lists
+are retrieval-only: they are not addressable in a `where` or `by`, and they
+feed the `histogram_quantile` stage below.
 
 A `histogram_quantile` stage (IR v3+) runs on the `metrics` source, reads only
 its histogram rows, and interpolates a percentile from their buckets, following the same linear-interpolation-within-bucket algorithm as
@@ -977,9 +975,7 @@ from `metric.quantiles`/`metric.quantile_values` instead. Rows of an
 on exponential_histogram metrics` (HTTP 501). Gauge and sum rows are ignored.
 Filter by `metric.name` (or `metric.type`) to keep the stage on histograms.
 
-`rate`/`increase` over `metrics_histogram` work the same as over `metrics`
-(see [Counter rate](#counter-rate-rateincrease-v6)) — the source restriction
-is on the aggregate function, not the stage. `histogram_fraction()` (the
+`histogram_fraction()` (the
 CDF-inverse of `histogram_quantile()`) has no IR stage yet — stay on PromQL
 for that (see [Roadmap](#roadmap)).
 

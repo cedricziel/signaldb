@@ -92,15 +92,10 @@ const FLAMEGRAPH_PROFILE_CAP: usize = 1_000;
 /// traces v2 schema renames `name`→`span_name` and `duration_nano`→
 /// `duration_nanos`, so those idiosyncratic renames live in `aliases`.
 pub(crate) struct SourcePlan {
-    /// The logical source name (as written in a document's `from`) — used for
-    /// display/error messages, distinct from `table` below since two sources
-    /// can read the same physical table (`metrics`, `metrics_histogram`).
+    /// The logical source name (as written in a document's `from`).
     name: &'static str,
     /// The physical table scanned for this source.
     table: &'static str,
-    /// The `metric_type`s this source reads from the `metrics` table — empty
-    /// (no filter) for every source except `metrics_histogram`.
-    metric_types: &'static [&'static str],
     /// The column carrying the row's primary timestamp.
     time_col: &'static str,
     /// Whether `time_col` is a real `Timestamp` (compare with a timestamp
@@ -126,7 +121,6 @@ impl SourcePlan {
             "logs" => Some(SourcePlan {
                 name: "logs",
                 table: "logs",
-                metric_types: &[],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["log_attributes", "scope_attributes", "resource_attributes"],
@@ -174,7 +168,6 @@ impl SourcePlan {
             "traces" => Some(SourcePlan {
                 name: "traces",
                 table: "traces",
-                metric_types: &[],
                 time_col: "start_time_unix_nano",
                 time_is_timestamp: false,
                 containers: &["span_attributes", "scope_attributes", "resource_attributes"],
@@ -213,7 +206,6 @@ impl SourcePlan {
             "profiles" => Some(SourcePlan {
                 name: "profiles",
                 table: "profiles",
-                metric_types: &[],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &[
@@ -260,7 +252,6 @@ impl SourcePlan {
             "metrics" => Some(SourcePlan {
                 name: "metrics",
                 table: "metrics",
-                metric_types: &[],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
@@ -298,47 +289,12 @@ impl SourcePlan {
                     ("resource.identity", "resource_identity"),
                 ],
             }),
-            "metrics_histogram" => Some(SourcePlan {
-                name: "metrics_histogram",
-                // One whole histogram (bucket_counts/explicit_bounds) per
-                // row, not a scalar value — a separate source from `metrics`
-                // since the row shape differs. Only reachable via the
-                // `histogram_quantile` stage, which reads the bucket columns
-                // by physical name directly (see `lower_histogram_quantile`)
-                // rather than through the resolver — comparing a bucket list
-                // in a `where` is meaningless, so they get no alias.
-                table: "metrics",
-                metric_types: &["histogram"],
-                time_col: "timestamp",
-                time_is_timestamp: true,
-                containers: &["attributes", "resource_attributes"],
-                attr_prefixes: &[("resource.", "resource_attributes")],
-                row_defaults: &[
-                    "timestamp",
-                    "service_name",
-                    "metric_name",
-                    "count",
-                    "sum",
-                    "min",
-                    "max",
-                    "bucket_counts",
-                    "explicit_bounds",
-                    "aggregation_temporality",
-                    "attributes",
-                    "resource_attributes",
-                ],
-                aliases: &[
-                    ("service.name", "service_name"),
-                    ("metric.name", "metric_name"),
-                ],
-            }),
             _ => None,
         }
     }
 }
 
-/// Scans this source's table, filtered to `metric_type IN (metric_types)`
-/// when the source names any. The scan keeps the table's full raw schema —
+/// Scans this source's table. The scan keeps the table's full raw schema —
 /// `SchemaResolver`'s promoted-attribute discovery depends on seeing every
 /// column the table actually has, not just `row_defaults`.
 async fn scan_source(
@@ -352,15 +308,7 @@ async fn scan_source(
     else {
         return Ok(None);
     };
-    let df = scan_provider(ctx, table_ref, provider)?;
-    if source.metric_types.is_empty() {
-        return Ok(Some(df));
-    }
-    let allowed: Vec<Expr> = source.metric_types.iter().map(|t| lit(*t)).collect();
-    Ok(Some(
-        df.filter(col("metric_type").in_list(allowed, false))
-            .map_err(QuerierError::QueryFailed)?,
-    ))
+    Ok(Some(scan_provider(ctx, table_ref, provider)?))
 }
 
 /// Scan the `traces` table a second time for a `correlate` stage's parent
@@ -4069,7 +4017,7 @@ mod tests {
         ctx
     }
 
-    /// A `metrics_histogram` table with rows shaped for each
+    /// A `metrics` table of histogram rows shaped for each
     /// `histogram_quantile` scenario, distinguished by `metric_name`:
     /// - `latency` (svcA, svcB): two points per service in one step bucket —
     ///   instant-mode merge `[2,2,0,0]`+`[0,2,2,0]`=`[2,4,2,0]`, q=0.5 → 0.3
@@ -4083,7 +4031,7 @@ mod tests {
     ///   NaN.
     /// - `malformed` (svcE): `bucket_counts` has one more entry than the
     ///   OTLP invariant allows — skipped, contributing no output row.
-    fn metrics_histogram_ctx() -> SessionContext {
+    fn histogram_ctx() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "timestamp",
@@ -5393,7 +5341,7 @@ mod tests {
     }
 
     /// The `latency` (svcA/svcB)/`reset` (svcD) slice of
-    /// [`metrics_histogram_ctx`], built via [`common::testing::to_wide`],
+    /// [`histogram_ctx`], built via [`common::testing::to_wide`],
     /// plus one `leak_type` row sharing `latency`'s `metric_name`.
     fn histogram_ctx_with_leak(leak_type: &str) -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
@@ -5472,7 +5420,7 @@ mod tests {
     async fn histogram_quantile_instant_mode_merges_and_groups_by_service() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
@@ -5498,7 +5446,7 @@ mod tests {
     async fn histogram_quantile_rate_mode_clamps_counter_reset_and_inf_overflow() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "reset" } },
@@ -5520,9 +5468,9 @@ mod tests {
     /// paired into a single, meaningless first/last delta.
     #[tokio::test]
     async fn histogram_quantile_rate_mode_sums_per_series_deltas_across_an_empty_by_group() {
-        let svc = IrService::new(metrics_histogram_ctx());
+        let svc = IrService::new(histogram_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "multiservice" } },
@@ -5538,9 +5486,9 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_single_point_in_rate_mode_is_nan() {
-        let svc = IrService::new(metrics_histogram_ctx());
+        let svc = IrService::new(histogram_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "solo" } },
@@ -5556,9 +5504,9 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_all_zero_buckets_in_instant_mode_is_nan() {
-        let svc = IrService::new(metrics_histogram_ctx());
+        let svc = IrService::new(histogram_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "zero" } },
@@ -5574,9 +5522,9 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_skips_malformed_bucket_rows() {
-        let svc = IrService::new(metrics_histogram_ctx());
+        let svc = IrService::new(histogram_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "malformed" } },
@@ -5594,9 +5542,9 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_limit_stage_executes_on_reinjected_dataframe() {
-        let svc = IrService::new(metrics_histogram_ctx());
+        let svc = IrService::new(histogram_ctx());
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
@@ -5670,7 +5618,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn metrics_histogram_missing_table_returns_none() {
+    async fn histogram_quantile_missing_table_returns_none() {
         let ctx = SessionContext::new();
         let sp = Arc::new(MemorySchemaProvider::new());
         let cat = Arc::new(MemoryCatalogProvider::new());
@@ -5679,7 +5627,7 @@ mod tests {
 
         let svc = IrService::new(ctx);
         let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": 0, "to": 1000 },
+            "irVersion": 3, "from": "metrics", "range": { "from": 0, "to": 1000 },
             "result": "series",
             "pipeline": [
                 { "histogram_quantile": { "q": 0.5, "step": "1000ms", "as": "p50" } }
@@ -10274,11 +10222,7 @@ mod tests {
             &metrics_cols,
             "metrics",
         );
-        check(
-            &SourcePlan::for_source("metrics_histogram").unwrap(),
-            &metrics_cols,
-            "metrics_histogram",
-        );
+        assert!(SourcePlan::for_source("metrics_histogram").is_none());
     }
 
     /// Group 7 (`otel-compliant-self-tracing`): query execution decomposes

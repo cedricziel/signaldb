@@ -793,8 +793,7 @@ where
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverFieldsParams {
-    /// Signal source: `logs` (default), `traces`, `profiles`, `metrics`, or
-    /// `metrics_histogram`.
+    /// Signal source: `logs` (default), `traces`, `profiles`, or `metrics`.
     #[serde(default = "default_discovery_source")]
     source: String,
     /// Range start: RFC3339, a relative anchor like `now-1h` (default), or
@@ -3038,7 +3037,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the signal sources available to your tenant (`logs`, `traces`, `profiles`, `metrics`, `metrics_histogram`) with whether each is queryable. Use it to pick a valid `from` for a `query_ir` document or a `discover_fields` call.",
+        description = "List the signal sources available to your tenant (`logs`, `traces`, `profiles`, `metrics`) with whether each is queryable. Use it to pick a valid `from` for a `query_ir` document or a `discover_fields` call.",
         annotations(read_only_hint = true)
     )]
     async fn discover_sources(
@@ -8025,7 +8024,7 @@ mod tests {
             status: "error".to_string(),
             error_type: "bad_data".to_string(),
             error: "invalid IR document: unknown field `all`, expected one of `traces`, `logs`, \
-                     `metrics`, `metrics_histogram`, `profiles`"
+                     `metrics`, `profiles`"
                 .to_string(),
             retry_after_ms: None,
             details: None,

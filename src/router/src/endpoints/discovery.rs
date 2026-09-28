@@ -185,15 +185,12 @@ async fn query_sources_body(
 /// The physical tables that make a source queryable. A source with none of
 /// them is reported unavailable; a source whose table exists but holds no data
 /// is available and empty, never omitted.
-///
-/// Both `metrics` and `metrics_histogram` are backed by the one `metrics`
-/// table.
 fn source_tables(source: &str) -> &'static [&'static str] {
     match source {
         "logs" => &["logs"],
         "traces" => &["traces"],
         "profiles" => &["profiles"],
-        "metrics" | "metrics_histogram" => &["metrics"],
+        "metrics" => &["metrics"],
         _ => &[],
     }
 }
@@ -440,7 +437,7 @@ async fn sampled_values(
 
 /// The aggregate output name the value query declares.
 ///
-/// Not `"count"`: several sources (`metrics`, `metrics_histogram`) have a
+/// Not `"count"`: `metrics` has a
 /// physical `count` column, so that alias trips the physical-addressing
 /// guard (`field 'count' names a physical column or storage detail`) instead
 /// of naming a derived output. `value_count` collides with no schema's
@@ -924,7 +921,7 @@ mod tests {
 
     #[test]
     fn the_hints_suggested_query_validates_against_a_source_with_a_physical_count_column() {
-        // metrics/metrics_histogram have a physical `count` column (the OTel
+        // `metrics` has a physical `count` column (the OTel
         // sum-of-observations field), which collided with the aggregate
         // output alias the hint told clients to run.
         let window = ResolvedWindow {

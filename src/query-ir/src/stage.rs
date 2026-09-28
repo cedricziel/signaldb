@@ -30,8 +30,8 @@ pub enum AggFn {
     /// (`irVersion` 5).
     Last,
     /// Per-second rate of a monotonic counter over the `step` window,
-    /// counter-reset aware. Only legal on `metrics`/`metrics_histogram` with
-    /// `step` set (`irVersion` 6).
+    /// counter-reset aware. Only legal on `metrics` with `step` set
+    /// (`irVersion` 6).
     Rate,
     /// The counter's total increase over the `step` window, counter-reset
     /// aware — `rate` without the division by the window width (`irVersion`
@@ -74,8 +74,8 @@ impl AggFn {
 
     /// Whether this is a per-series range function (`rate`/`increase`/`irate`/
     /// `*_over_time`) — computed per series from ordered raw samples rather
-    /// than a plain grouped reduction, and legal only on `metrics`/
-    /// `metrics_histogram` with `step` set.
+    /// than a plain grouped reduction, and legal only on `metrics` with
+    /// `step` set.
     pub fn is_range_fn(self) -> bool {
         matches!(
             self,
@@ -287,8 +287,8 @@ pub enum HistogramMode {
 }
 
 /// A terminal quantile-over-buckets stage, available in IR v3. Only legal on
-/// the `metrics_histogram` source: interpolates a percentile from OTLP
-/// classic-histogram bucket data, distinct from the `aggregate` stage's
+/// the `metrics` source, over its histogram rows: interpolates a percentile
+/// from OTLP classic-histogram bucket data, distinct from the `aggregate` stage's
 /// `fn: "quantile"` (`approx_percentile_cont` over independent scalar
 /// values — a different algorithm entirely, over a different source shape).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
