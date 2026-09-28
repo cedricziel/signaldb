@@ -4869,6 +4869,160 @@ mod tests {
         assert_eq!(total, 15.0);
     }
 
+    /// Two gauge points and one sum point in the typed-layout `metrics` table,
+    /// every one carrying the resource attribute `container.name`, which is
+    /// not a registered logical field and so resolves through the
+    /// attribute-map fallback. The typed container columns come from
+    /// `metrics_gauge` `physical-v3`, the fixture helper having no `metrics`
+    /// schema; the container shape is the same.
+    fn fallback_attr_metrics_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let batch = |n: usize| {
+            let containers = vec![&[("container.name", "ix-signaldb-mcp-1")] as &[_]; n];
+            RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(TimestampNanosecondArray::from(vec![10_i64; n])),
+                    Arc::new(StringArray::from(vec!["signaldb"; n])),
+                    Arc::new(StringArray::from(vec!["m"; n])),
+                    Arc::new(Float64Array::from(vec![5.0; n])),
+                    build_map(&vec![&[] as &[(&str, &str)]; n]),
+                    build_map(&containers),
+                ],
+            )
+            .unwrap()
+        };
+        let typed = |b: RecordBatch| {
+            common::testing::to_typed_layout(
+                "metrics_gauge",
+                "physical-v3",
+                &b,
+                &["attributes", "resource_attributes"],
+            )
+        };
+        let gauge = common::testing::to_wide(&typed(batch(2)), "gauge");
+        let sum = common::testing::to_wide(&typed(batch(1)), "sum");
+        let table = MemTable::try_new(gauge.schema(), vec![vec![gauge, sum]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics".to_string(), Arc::new(table))
+            .unwrap();
+        let ctx = SessionContext::new();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    /// Runs `pipeline` over [`fallback_attr_metrics_ctx`] and returns the
+    /// result's row count and the sum of its `n` column.
+    async fn fallback_attr_count(pipeline: serde_json::Value) -> (usize, i64) {
+        let svc = IrService::new(fallback_attr_metrics_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "table",
+            "pipeline": pipeline
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("the metrics table is registered");
+        let batches = df.collect().await.unwrap();
+        let rows = batches.iter().map(|b| b.num_rows()).sum();
+        let n = batches
+            .iter()
+            .map(|b| {
+                b.column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .values()
+                    .iter()
+                    .sum::<i64>()
+            })
+            .sum();
+        (rows, n)
+    }
+
+    /// #1206: grouping by a resource attribute that is not a registered
+    /// logical field (`host.name`, absent on every row) resolves through the
+    /// generic `resource.`/map fallback.
+    #[tokio::test]
+    async fn metrics_groups_by_a_fallback_resource_attribute() {
+        let (_, n) = fallback_attr_count(serde_json::json!([
+            { "aggregate": { "by": ["host.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+            { "limit": 501 }
+        ]))
+        .await;
+        // Every gauge and sum row lands in the one (null host.name) group.
+        assert_eq!(n, 3);
+    }
+
+    /// #1348: every predicate shape the resolver can put on an attribute-map
+    /// column must apply, matching all three gauge and sum rows. The ordered
+    /// comparisons are covered by `between`, which lowers to `>= lo AND <= hi`.
+    #[tokio::test]
+    async fn metrics_filters_by_a_fallback_attribute_with_every_operator() {
+        let cases: Vec<(&str, Option<serde_json::Value>)> = vec![
+            ("eq", Some(serde_json::json!("ix-signaldb-mcp-1"))),
+            ("ne", Some(serde_json::json!("something-else"))),
+            ("contains", Some(serde_json::json!("signaldb"))),
+            ("regex", Some(serde_json::json!("(?i)^ix-signaldb"))),
+            ("exists", None),
+            (
+                "in",
+                Some(serde_json::json!(["ix-signaldb-mcp-1", "not-this-one"])),
+            ),
+            ("between", Some(serde_json::json!(["ix-a", "ix-z"]))),
+        ];
+        for (op, value) in cases {
+            let mut predicate = serde_json::json!({ "field": "container.name", "op": op });
+            if let Some(v) = value {
+                predicate["value"] = v;
+            }
+            let (_, n) = fallback_attr_count(serde_json::json!([
+                { "where": predicate },
+                { "aggregate": { "by": ["container.name"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]))
+            .await;
+            assert_eq!(n, 3, "op '{op}' matched the wrong number of rows");
+        }
+    }
+
+    /// A predicate that plans but matches everything would pass the test
+    /// above while ignoring the filter; these cases must exclude every row.
+    #[tokio::test]
+    async fn metrics_filter_by_a_fallback_attribute_excludes_as_well_as_matches() {
+        let cases: Vec<(&str, serde_json::Value)> = vec![
+            ("eq", serde_json::json!("not-a-container")),
+            ("ne", serde_json::json!("ix-signaldb-mcp-1")),
+            ("contains", serde_json::json!("nothing-like-this")),
+            ("regex", serde_json::json!("^zzz")),
+            ("in", serde_json::json!(["neither", "nor"])),
+            ("between", serde_json::json!(["aa", "ab"])),
+        ];
+        for (op, value) in cases {
+            let (rows, _) = fallback_attr_count(serde_json::json!([
+                { "where": { "field": "container.name", "op": op, "value": value } },
+                { "aggregate": { "by": ["container.name"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]))
+            .await;
+            assert_eq!(rows, 0, "op '{op}' should have excluded every row");
+        }
+    }
+
     /// Every scalar source registers a logical `timestamp` (#1205): metrics
     /// and profiles used to lack it, so `max(timestamp)` — the "last seen"
     /// column entity discovery needs across signals — was rejected as
