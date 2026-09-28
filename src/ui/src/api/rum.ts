@@ -971,6 +971,12 @@ export async function fetchResources(
  * verified-working shape from `docs/users/querying-ir.md`'s "Joining spans
  * to their parents", `count_distinct` of `parent.span_id` over `count` of
  * every client span. */
+const SDK_EXPORT_URL_REGEX = "/v1/(traces|logs|metrics)([?#]|$)";
+
+function notSdkExport(field: string) {
+  return { not: { field, op: "regex", value: SDK_EXPORT_URL_REGEX } };
+}
+
 export function buildTracedShareDoc(
   app: string,
   range: ResolvedRange,
@@ -987,6 +993,7 @@ export function buildTracedShareDoc(
     result: "series",
     pipeline: [
       clientSpanWhere(app),
+      { where: notSdkExport("url.full") },
       { aggregate: { aggs: [{ fn: "count", as: "n" }], step } },
     ],
   };
@@ -997,6 +1004,7 @@ export function buildTracedShareDoc(
     result: "series",
     pipeline: [
       ...correlatedServerChildOfAppClient(app),
+      { where: notSdkExport("parent.url.full") },
       {
         aggregate: {
           aggs: [{ fn: "count_distinct", of: "parent.span_id", as: "n" }],

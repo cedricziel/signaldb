@@ -456,6 +456,18 @@ describe("buildResourcesDoc / resourcesFromResponse", () => {
 });
 
 describe("buildTracedShareDoc / tracedShareFromResponse", () => {
+  it("leaves SDK export requests out of both operands", () => {
+    const doc = buildTracedShareDoc("storefront-web", range, 30);
+    const pipelineOf = (name: string) =>
+      JSON.stringify((doc.queries[name] as { pipeline: unknown }).pipeline);
+    expect(pipelineOf("total")).toContain(
+      '{"not":{"field":"url.full","op":"regex"',
+    );
+    expect(pipelineOf("traced")).toContain(
+      '{"not":{"field":"parent.url.full","op":"regex"',
+    );
+  });
+
   it("bundles a client-span total and a correlate-joined traced count behind identity formulas", () => {
     const doc = buildTracedShareDoc("storefront-web", range, 30);
     expect(Object.keys(doc.queries)).toEqual(["traced", "total"]);
