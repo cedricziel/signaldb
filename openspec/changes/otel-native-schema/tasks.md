@@ -66,7 +66,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 - [ ] 7.1 Failing tests: metric points/temporality/monotonicity/start_time typed (no blob parse); explicit + exponential histogram buckets typed; exemplar `trace_id`/`span_id` retrievable+joinable; Summary stored+returned as precomputed, `histogram_quantile` over Summary rejected (spec `typed-metric-storage`)
 - [ ] 7.2 Add typed metric schemas (one metric model surface; bucket-native histogram/exp-histogram columns; exemplar keys) replacing the stored JSON-string columns (design.md D10): one wide `metrics` table plus a `metric_exemplars` table linked by `series_id`; `data_json` stays on the wire (D6)
 - [ ] 7.3 Ingest cutover for metrics, parallel to attributes (one-shot replacement of the stored JSON strings; no blob read path). The writer's table reconciler drops the five legacy per-type tables
-- [ ] 7.5 One metric model in the logical schema (moved from layer 2): metric type, temporality and monotonicity as fields of one `metrics` source over the typed substrate; no per-type surface visible to queries (the `metrics_histogram` IR source is removed); exemplars are the sibling `exemplars` source
+- [x] 7.5 One metric model in the logical schema (moved from layer 2): metric type, temporality and monotonicity as fields of one `metrics` source over the typed substrate; no per-type surface visible to queries (the `metrics_histogram` IR source is removed); exemplars are the sibling `exemplars` source
 - [ ] 7.4 `cargo test -p common -p writer -p tests-integration` green; lint/format/machete
 
 ## 8. Metric-native query operators

@@ -783,6 +783,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 pub(super) fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
         "logs" | "traces" | "profiles" | "metrics" => source,
+        "exemplars" => "metrics",
         _ => {
             return Err(ApiError::bad_request(format!(
                 "unknown query source '{source}'"
@@ -1889,6 +1890,15 @@ mod tests {
 
         let profiles = scoped_context(vec!["profiles:read"]);
         assert!(source_read_scope(&profiles, "metrics").is_err());
+    }
+
+    #[test]
+    fn metrics_read_scope_grants_the_exemplars_source() {
+        let metrics = scoped_context(vec!["metrics:read"]);
+        assert!(source_read_scope(&metrics, "exemplars").is_ok());
+
+        let traces = scoped_context(vec!["traces:read"]);
+        assert!(source_read_scope(&traces, "exemplars").is_err());
     }
 
     #[test]

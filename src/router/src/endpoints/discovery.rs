@@ -191,6 +191,7 @@ fn source_tables(source: &str) -> &'static [&'static str] {
         "traces" => &["traces"],
         "profiles" => &["profiles"],
         "metrics" => &["metrics"],
+        "exemplars" => &["metric_exemplars"],
         _ => &[],
     }
 }

@@ -79,6 +79,16 @@ fn alias_table(source: &str) -> &'static [(&'static str, &'static str)] {
         // Everything else profile-scalar-shaped is a `known_gap` below, not
         // an alias, since there is no logical field for it to realize yet.
         "profiles" => &[("resource_identity", "resource.identity")],
+        "metric_exemplars" => &[
+            ("service_name", "service.name"),
+            ("metric_name", "metric.name"),
+            ("metric_type", "metric.type"),
+            ("series_id", "series.id"),
+            ("value", "exemplar.value"),
+            ("trace_id", "trace.id"),
+            ("span_id", "span.id"),
+            ("resource_identity", "resource.identity"),
+        ],
         _ => &[],
     }
 }
@@ -117,6 +127,7 @@ fn containers(source: &str) -> &'static [&'static str] {
             "resource_attributes",
         ],
         "metrics" => &["attributes", "resource_attributes", "scope_attributes"],
+        "metric_exemplars" => &["filtered_attributes"],
         _ => &[],
     }
 }
@@ -167,6 +178,9 @@ fn known_gap(source: &str, physical: &str) -> bool {
             "trace_id",
             "span_id",
         ],
+        // The owning data point's time; `series.id` plus this links an
+        // exemplar to its point, which no query needs yet.
+        "metric_exemplars" => &["point_timestamp"],
         "metrics" => &[
             "start_timestamp",
             "metric_description",
@@ -204,6 +218,7 @@ fn schemas_for(
         "traces" => (&d.traces, &m.current_trace_version),
         "profiles" => (&d.profiles, &m.current_profile_version),
         "metrics" => (&d.metrics, &m.current_metric_version),
+        "metric_exemplars" => (&d.metric_exemplars, &m.current_metric_version),
         other => panic!("unhandled source {other}"),
     }
 }
@@ -213,7 +228,7 @@ fn schemas_for(
 fn typed_layout_version(source: &str) -> &'static str {
     match source {
         "traces" => "physical-v5",
-        "logs" | "metrics" => "physical-v4",
+        "logs" | "metrics" | "metric_exemplars" => "physical-v4",
         _ => "physical-v3",
     }
 }
@@ -232,12 +247,13 @@ fn layouts_of(source: &str) -> [(&'static str, Vec<ResolvedField>); 2] {
 }
 
 /// Every physical table whose current version this test checks.
-const PHYSICAL_SOURCES: [&str; 4] = ["logs", "traces", "profiles", "metrics"];
+const PHYSICAL_SOURCES: [&str; 5] = ["logs", "traces", "profiles", "metrics", "metric_exemplars"];
 
 /// The logical source name a physical table resolves fields against.
 fn logical_source_for(physical_source: &str) -> &'static str {
     match physical_source {
         "metrics" => "metrics",
+        "metric_exemplars" => "exemplars",
         "logs" => "logs",
         "traces" => "traces",
         "profiles" => "profiles",
