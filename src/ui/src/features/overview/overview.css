@@ -405,6 +405,34 @@
   cursor: grabbing;
 }
 
+/* More map past this edge: fade the clipped side into the card, the same
+   cover colour the table scroll cue uses (global.css `.table-scroll`). */
+.zoompan.clipped-left::before,
+.zoompan.clipped-right::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  z-index: 2;
+  width: 48px;
+  pointer-events: none;
+  background: linear-gradient(
+    var(--fade-dir),
+    var(--scroll-cover, var(--bg)),
+    transparent
+  );
+}
+
+.zoompan.clipped-left::before {
+  left: 0;
+  --fade-dir: to right;
+}
+
+.zoompan.clipped-right::after {
+  right: 0;
+  --fade-dir: to left;
+}
+
 .zoompan-inner {
   transform-origin: 0 0;
   will-change: transform;
@@ -444,6 +472,15 @@
 
 .zoompan-controls button:hover {
   background: var(--surface2);
+}
+
+/* FIT is the way to see what the fade hides. */
+.zoompan-controls button.zoompan-cue {
+  color: var(--accent-text);
+}
+
+.zoompan-cue .zoompan-fit {
+  font-weight: 700;
 }
 
 .zoompan-fit {
