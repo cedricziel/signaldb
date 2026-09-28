@@ -31,6 +31,7 @@ testcontainers-modules = { workspace = true, optional = true }
 anyhow.workspace = true
 schema-model = { path = "../schema-model" }
 query-ir = { path = "../query-ir" }
+eval-model = { path = "../eval-model" }
 ottl.workspace = true
 
 datafusion.workspace = true
@@ -40,6 +41,7 @@ ciborium.workspace = true
 bincode.workspace = true
 crc32fast.workspace = true
 hex.workspace = true
+csv.workspace = true
 base64.workspace = true
 argon2.workspace = true
 rand.workspace = true
@@ -177,10 +179,22 @@ required-features = ["testing-containers"]
 name = "processors_store_postgres"
 required-features = ["testing-containers"]
 
+# Same reasoning again: `eval_sets_store_postgres` starts Postgres through
+# `testing::start_container_with_retry`, gated on `testing-containers`.
+[[test]]
+name = "eval_sets_store_postgres"
+required-features = ["testing-containers"]
+
 # Reaches `common::testing::install_global_tracing_fallback`, gated on the
 # `testing` feature.
 [[test]]
 name = "tracing_interest_fallback"
+required-features = ["testing"]
+
+# Same reasoning: `config_pin_retypes_an_already_established_field_and_warns` reaches
+# `common::testing::WarnCapture`.
+[[test]]
+name = "type_authority"
 required-features = ["testing"]
 
 [dev-dependencies]

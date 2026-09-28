@@ -945,8 +945,26 @@ impl InferCtx<'_> {
             )));
         }
 
+        // `count_distinct` lowers to DataFusion's `approx_distinct`, which
+        // rejects floating point — and equality over a float is rarely what
+        // a distinct count means anyway. `string`/`int64`/`bool`/`timestamp`
+        // are the only operand types accepted; anything else, `float64`
+        // included, is rejected by name and type rather than silently cast.
+        if a.func == AggFn::CountDistinct
+            && let Some(t) = &of_type
+            && !matches!(
+                t,
+                ValueType::String | ValueType::Int64 | ValueType::Bool | ValueType::TimestampNs
+            )
+        {
+            return Err(IrError::Invalid(format!(
+                "aggregate 'count_distinct' does not support field '{}' of type {t}",
+                a.of.as_deref().unwrap_or_default()
+            )));
+        }
+
         let out_ty = match a.func {
-            AggFn::Count => ValueType::Int64,
+            AggFn::Count | AggFn::CountDistinct => ValueType::Int64,
             AggFn::Avg
             | AggFn::Quantile
             | AggFn::Stddev
@@ -2124,7 +2142,7 @@ mod tests {
             if source == self.source && field == self.field {
                 return Some(Resolved::TypedAttribute {
                     homes: vec!["log_attributes_int".to_string()],
-                    promoted: None,
+                    promoted: vec![None],
                     key: field.to_string(),
                     value_type: self.value_type.clone(),
                 });
@@ -2381,13 +2399,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(9, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(10, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 9,
-                    max: 8,
+                    found: 10,
+                    max: 9,
                     ..
                 }
             ),

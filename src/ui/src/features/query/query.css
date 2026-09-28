@@ -40,7 +40,7 @@
 }
 
 .query-ir-warnings {
-  color: var(--warn-banner-text);
+  color: var(--warn-text);
   font-size: 12px;
   margin: 0 0 10px;
 }

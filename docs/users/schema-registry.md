@@ -8,6 +8,7 @@ sources:
   - src/schema-model/src/**
   - src/signaldb-cli/src/commands/**
   - src/mcp-server/src/server.rs
+  - otel/registry-genai/**
 ---
 
 # Schema registry — semantic conventions and custom registries
@@ -19,12 +20,13 @@ with the attributes that identify them, and metric definitions with their
 instrument, unit, and the entities they describe — and resolves any attribute
 key, entity type, or metric name to its definitions for your tenant.
 
-Three kinds of registry exist:
+Four kinds of registry exist:
 
 | Namespace       | Source  | What it is                                                                                         |
 | --------------- | ------- | -------------------------------------------------------------------------------------------------- |
 | `otel`          | bundled | The OpenTelemetry semantic conventions, vendored at the version SignalDB itself emits (`1.43.0`)   |
-| `signaldb`      | bundled | SignalDB's own `signaldb.*` conventions (its self-monitoring telemetry)                            |
+| `otel-genai`    | bundled | The OpenTelemetry GenAI conventions (`gen_ai.*`, `mcp.*`), vendored at a pinned upstream commit    |
+| `signaldb`      | bundled | SignalDB's own conventions: its `signaldb.*` self-monitoring telemetry and the `gen_ai.agent` entity |
 | _anything else_ | custom  | Registries **you** upload for your tenant, in the same OTel Weaver model, versioned `name@version` |
 
 Bundled registries are visible to every tenant and read-only. Custom registries
@@ -33,11 +35,18 @@ custom registry may describe a key that `otel` also describes — both
 definitions coexist; lookups return every one, ordered by precedence:
 
 ```
-your custom registries (namespace A→Z, newest version first) → signaldb → otel
+your custom registries (namespace A→Z, newest version first) → signaldb → otel-genai → otel
 ```
 
 The first hit is the _primary_ definition; the rest are alternatives and are
 never hidden.
+
+OpenTelemetry moved the GenAI and MCP conventions out of core semconv into
+[their own repository](https://github.com/open-telemetry/semantic-conventions-genai);
+the `otel` registry keeps only deprecated copies. That is why `otel-genai`
+comes before `otel`: resolving `gen_ai.agent.id` returns the current
+`otel-genai` definition first and the deprecated `otel` one as an alternative.
+Upstream has no GenAI release yet, so its version is the vendored commit.
 
 The `signaldb` registry's source is
 [`otel/registry/`](https://github.com/cedricziel/signaldb/tree/main/otel/registry)
@@ -71,10 +80,11 @@ curl -H "Authorization: Bearer $KEY" -H "X-Tenant-ID: acme" \
   http://localhost:3000/api/v1/schema/attributes/k8s.pod.uid
 
 # CLI
-signaldb schema attribute get k8s.pod.uid
-signaldb schema entity get k8s.pod
-signaldb schema metric get k8s.pod.cpu.time
-signaldb schema attribute search k8s.pod. --limit 20
+signaldb-cli schema attribute get k8s.pod.uid
+signaldb-cli schema entity get k8s.pod
+signaldb-cli schema metric get k8s.pod.cpu.time
+signaldb-cli schema entity get gen_ai.agent
+signaldb-cli schema attribute search k8s.pod. --limit 20
 ```
 
 The response lists every visible definition:
@@ -106,6 +116,15 @@ and descriptive attributes, the metrics associated with the entity, and any
 custom entities that extend it; metric lookups include instrument, unit, and
 `entity_associations`. An unknown name returns an empty result, not an error.
 
+AI agents are an entity too. `gen_ai.agent` (from the `signaldb` registry) is
+identified by `gen_ai.agent.id` — the provider-assigned, stable id of a hosted
+agent such as an AWS Bedrock agent ARN, not an in-memory instance id — and
+described by `gen_ai.agent.name`, `gen_ai.agent.description`, and
+`gen_ai.agent.version`. Upstream defines these only as span attributes (on
+`create_agent` and `invoke_agent` spans), so SignalDB supplies the entity; a
+custom registry can `extends: entity.gen_ai.agent` to add its own descriptive
+attributes.
+
 Prefix search (`GET /api/v1/schema/attributes?prefix=http.re&limit=20`, also
 `/entities` and `/metrics`) powers autocomplete; `?keys=a,b,c` resolves several
 attribute keys in one call, and the same parameter on `/metrics` batch-resolves
@@ -126,7 +145,7 @@ Write a registry document. It is a Weaver semantic-convention file with the
 manifest fields at the top; a minimal one:
 
 ```yaml
-name: acme # namespace — anything but otel/signaldb
+name: acme # namespace — anything but otel/otel-genai/signaldb
 version: 1.0.0
 schema_url: https://acme.example/schemas/1.0.0
 dependencies:
@@ -160,14 +179,56 @@ groups:
     entity_associations: [acme.order]
 ```
 
+Weaver's newer `file_format: definition/2` layout works too: keep the manifest
+fields at the top and list definitions under `attributes`, `attribute_groups`,
+`entities`, `metrics`, `spans`, `events`, `span_refinements` and
+`metric_refinements` instead of `groups`. The same registry as above:
+
+```yaml
+file_format: definition/2
+name: acme
+version: 1.0.0
+schema_url: https://acme.example/schemas/1.0.0
+dependencies:
+  - name: otel
+attributes:
+  - key: acme.order.id
+    type: string
+    stability: development
+    brief: Internal order identifier (see the order-service runbook).
+    examples: ["ord_8f21a"]
+entities:
+  - name: acme.order
+    stability: development
+    brief: A customer order flowing through Acme's checkout.
+    attributes:
+      - ref: acme.order.id
+        role: identifying
+metrics:
+  - name: acme.checkout.latency
+    instrument: histogram
+    unit: "s"
+    stability: development
+    brief: End-to-end checkout latency per order.
+    entity_associations: [acme.order]
+```
+
+SignalDB converts a `definition/2` upload to `groups` when it stores it, and
+reading the registry back returns the `groups` form: metrics become
+`metric.<name>`, entities `entity.<name>`, and the top-level `attributes` one
+group named `registry.<name>`. The attributes, entities and metrics resolve the
+same as in the `groups` version; only the group an attribute is listed under
+differs. Any other `file_format` value, or `ref_group` references that loop
+back on themselves, are rejected with `422` and nothing is stored.
+
 Validate, then create:
 
 ```bash
-signaldb admin schema validate --file acme.yaml
-signaldb admin schema create --file acme.yaml
+signaldb-cli admin schema validate --file acme.yaml
+signaldb-cli admin schema create --file acme.yaml
 # later
-signaldb admin schema replace acme 1.0.0 --file acme.yaml
-signaldb admin schema delete acme 1.0.0
+signaldb-cli admin schema replace acme 1.0.0 --file acme.yaml
+signaldb-cli admin schema delete acme 1.0.0
 ```
 
 or over HTTP (`Content-Type: application/yaml` for YAML, `application/json`
@@ -193,8 +254,8 @@ attributes but never new identifying ones. Errors name the offending path
 an invalid document leaves the previous one served.
 
 Registries are documents: replacing uploads the whole file (a
-`weaver`-managed repo can push its files unchanged). Namespaces `otel` and
-`signaldb` are reserved. Group types other than `attribute_group`, `entity`,
+`weaver`-managed repo can push its files unchanged). Namespaces `otel`,
+`otel-genai`, and `signaldb` are reserved. Group types other than `attribute_group`, `entity`,
 and `metric` are stored but not resolved.
 
 ## Where the registry shows up
@@ -206,17 +267,21 @@ and `metric` are stored but not resolved.
 - The MCP tools above.
 - `GET /api/v1/schema/registries` lists everything visible to the tenant with
   attribute/entity/metric counts; `GET …/registries/{ns}/{version}` returns
-  the document verbatim.
+  the stored document (a `definition/2` upload comes back in the `groups`
+  form).
 
 ## Troubleshooting
 
 - **`403 missing schema:read scope`** — the key carries explicit scopes
   without `schema:read`; create a key with it (or use a session).
-- **`409 … is bundled and read-only`** — you tried to mutate `otel` or
-  `signaldb`; upload a custom registry that `ref`s or `extends` them instead.
+- **`409 … is bundled and read-only`** — you tried to mutate `otel`,
+  `otel-genai`, or `signaldb`; upload a custom registry that `ref`s or `extends` them instead.
+- **`422 … unsupported file_format`** — the document declares a
+  `file_format` other than `definition/2`. Drop the key for the `groups`
+  layout, or convert the file to `definition/2`.
 - **`422` with `dependencies[0]: unknown dependency namespace`** — the
-  document names a dependency you have not uploaded; only `otel`, `signaldb`,
-  and your own custom registries can be dependencies.
+  document names a dependency you have not uploaded; only `otel`, `otel-genai`,
+  `signaldb`, and your own custom registries can be dependencies.
 - **My tenant's definition should win but `otel` is primary** — the key is
   spelled differently (dotted OTel keys, e.g. `k8s.pod.uid`, not the
   underscore form Loki labels use), or the custom registry belongs to another

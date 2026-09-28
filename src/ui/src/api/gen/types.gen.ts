@@ -19,7 +19,7 @@ export type ApiError = {
 };
 
 /**
- * The JSON envelope every query-surface error responds with: `status` is
+ * The JSON envelope every [`ApiError`] responds with: `status` is
  * always `"error"`, `errorType` a stable low-cardinality code, `error` a
  * human-readable message, and `retryAfterMs` present only on rate-limit
  * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -27,6 +27,12 @@ export type ApiError = {
  * response of every rate-limited operation.
  */
 export type ApiErrorBody = {
+    /**
+     * The individual problems behind the error, when the endpoint reports
+     * them one by one (e.g. the invalid rows of an uploaded results file).
+     * Absent otherwise.
+     */
+    details?: Array<ApiErrorDetail> | null;
     error: string;
     errorType: string;
     /**
@@ -38,6 +44,122 @@ export type ApiErrorBody = {
      * Always `"error"`.
      */
     status: string;
+};
+
+/**
+ * One problem behind an [`ApiErrorBody`]: where it is and why.
+ */
+export type ApiErrorDetail = {
+    /**
+     * The column or field at fault, when there is one.
+     */
+    column?: string | null;
+    reason: string;
+    /**
+     * 1-based line of the request body the problem starts on; absent for
+     * a problem with the body as a whole.
+     */
+    row?: number | null;
+};
+
+/**
+ * Result of appending cases from traces.
+ */
+export type AppendCasesFromTracesOutcome = {
+    added: number;
+    /**
+     * Ids of the new cases, in the order they now appear in the set.
+     */
+    added_ids: Array<string>;
+    /**
+     * Matching traces the set already holds a case for.
+     */
+    already_present: number;
+    /**
+     * Distinct matching traces (after the `failing_evaluator` filter), at
+     * most 10,000.
+     */
+    matches: number;
+};
+
+/**
+ * Body of `POST /api/v1/eval-sets/{name}/cases/from-traces`.
+ *
+ * Unknown keys are rejected: every option narrows or shapes the query, so
+ * a misspelt one silently widening it would add the wrong cases.
+ */
+export type AppendCasesFromTracesRequest = {
+    /**
+     * `gen_ai.agent.name` of the agent span (a span without one matches on
+     * `service.name`). Defaults to the eval set's agent.
+     */
+    agent?: string | null;
+    /**
+     * Set each case's expected tools to the trace's `execute_tool` spans'
+     * `gen_ai.tool.name`s in call order.
+     */
+    expected_tools?: boolean;
+    /**
+     * Keep only traces holding at least one failing result
+     * (`gen_ai.evaluation.result`) of the evaluator with this
+     * `gen_ai.evaluation.name` in the same window. Evaluator errors never
+     * count as failures.
+     */
+    failing_evaluator?: string | null;
+    /**
+     * Extra Query IR predicates the agent span must satisfy (logical field
+     * names, e.g. `{"field": "deployment.environment", "op": "eq", "value":
+     * "prod"}`).
+     */
+    filters?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * `gen_ai.operation.name` of the agent span. Default `invoke_agent`.
+     */
+    operation?: string | null;
+    /**
+     * Time window of the agent spans, as in a Query IR document (e.g.
+     * `{"from": "now-7d", "to": "now"}`).
+     */
+    range: QueryRange;
+    /**
+     * Set each case's reference to the agent's answer (the last text of
+     * the agent span's `gen_ai.output.messages`).
+     */
+    reference_from_answer?: boolean;
+    /**
+     * How many new cases to add, 1-1000. Default 50.
+     */
+    sample?: number | null;
+    /**
+     * Tags put on every new case.
+     */
+    tags?: Array<string>;
+};
+
+/**
+ * Result of appending cases to a set: ids already in the set are reported,
+ * never overwritten.
+ */
+export type AppendCasesOutcome = {
+    added: number;
+    /**
+     * Ids appended, in the order they now appear in the set.
+     */
+    added_ids: Array<string>;
+    already_present: number;
+    /**
+     * Ids skipped because the set already held them.
+     */
+    already_present_ids: Array<string>;
+};
+
+/**
+ * Body of `POST /api/v1/eval-sets/{name}/cases`.
+ */
+export type AppendEvalCasesRequest = {
+    cases: Array<EvalCase>;
 };
 
 /**
@@ -676,6 +798,200 @@ export type EnumMember = {
 };
 
 /**
+ * One test case of an eval set.
+ */
+export type EvalCase = {
+    /**
+     * Expected tool trajectory, in call order. Empty when not checked.
+     */
+    expected_tools?: Array<string>;
+    /**
+     * Unique within the set; 1-128 characters.
+     */
+    id: string;
+    /**
+     * The input the agent under test receives.
+     */
+    input: string;
+    /**
+     * Reference answer for evaluators that compare against one.
+     */
+    reference?: string | null;
+    source?: EvalCaseSource;
+    tags?: Array<string>;
+};
+
+/**
+ * Where a case came from.
+ */
+export type EvalCaseSource = {
+    kind: 'trace';
+    /**
+     * W3C trace id: 32 hex characters, stored lower-case.
+     */
+    trace_id: string;
+} | {
+    kind: 'upload';
+} | {
+    kind: 'hand_written';
+};
+
+/**
+ * How many of a set's cases came from each [`EvalCaseSource`] kind.
+ */
+export type EvalCaseSourceCounts = {
+    hand_written: number;
+    trace: number;
+    upload: number;
+};
+
+/**
+ * The format of an uploaded results file.
+ */
+export type EvalResultsFormat = 'csv' | 'jsonl';
+
+/**
+ * Links on an upload response.
+ */
+export type EvalResultsUploadLinks = {
+    /**
+     * The Query IR endpoint to read the run back: `logs` where
+     * `signaldb.eval.run_id` is the run id.
+     */
+    query: Link;
+    /**
+     * The Explore UI's Runs page (a UI path, not an API resource).
+     */
+    runs: Link;
+};
+
+/**
+ * The run an upload wrote, with its per-evaluator summary.
+ */
+export type EvalResultsUploadResponse = UploadSummary & {
+    _links: EvalResultsUploadLinks;
+    agent: string;
+    run_id: string;
+    set: string;
+    version: string;
+};
+
+/**
+ * Links on one eval set. The mutation links appear only when the caller
+ * may write.
+ */
+export type EvalSetLinks = {
+    append_cases?: null | Link;
+    append_cases_from_traces?: null | Link;
+    delete?: null | Link;
+    replace?: null | Link;
+    self: Link;
+};
+
+/**
+ * Links on the eval-set collection.
+ */
+export type EvalSetListLinks = {
+    create?: null | Link;
+    self: Link;
+};
+
+/**
+ * Every eval set in the caller's dataset, ordered by name.
+ */
+export type EvalSetListResponse = {
+    _links: EvalSetListLinks;
+    items: Array<EvalSetSummaryResponse>;
+};
+
+/**
+ * A stored eval set with its cases in order.
+ */
+export type EvalSetRecord = EvalSetSummary & {
+    cases: Array<EvalCase>;
+    /**
+     * The dataset *name* the set belongs to.
+     */
+    dataset: string;
+    tenant_id: string;
+};
+
+/**
+ * An eval set with its cases in order.
+ */
+export type EvalSetResponse = EvalSetRecord & {
+    _links: EvalSetLinks;
+};
+
+/**
+ * Caller-supplied eval set: the body of a create/replace request.
+ */
+export type EvalSetSpec = {
+    /**
+     * The agent this set evaluates (`gen_ai.agent.name`).
+     */
+    agent: string;
+    /**
+     * Cases, in order.
+     */
+    cases?: Array<EvalCase>;
+    description?: string | null;
+    /**
+     * Slug: lowercase letters, digits, `-`, `_` and `.`, starting with a
+     * letter or digit; 1-128 characters.
+     */
+    name: string;
+};
+
+/**
+ * An eval set without its cases, as listed.
+ */
+export type EvalSetSummary = {
+    agent: string;
+    case_count: number;
+    created_at: string;
+    description?: string | null;
+    name: string;
+    updated_at: string;
+};
+
+/**
+ * An eval set as listed, without its cases but with how many of them came
+ * from each source kind.
+ */
+export type EvalSetSummaryResponse = EvalSetSummary & {
+    _links: EvalSetLinks;
+    sources: EvalCaseSourceCounts;
+};
+
+/**
+ * Figures for one evaluator of an upload.
+ */
+export type EvaluatorSummary = {
+    /**
+     * Rows with an `error`: never counted as failures.
+     */
+    errors: number;
+    /**
+     * Mean score over the rows with a score and no error; `null` when none.
+     */
+    mean?: number | null;
+    /**
+     * `gen_ai.evaluation.name`.
+     */
+    name: string;
+    /**
+     * Passes / (passes + fails) under the pass rule; `null` when no row
+     * has a verdict.
+     */
+    pass_rate?: number | null;
+    /**
+     * Result rows, evaluator errors included.
+     */
+    results: number;
+};
+
+/**
  * Which metadata tier a discovered item came from.
  */
 export type FieldOrigin = 'declared' | 'registry' | 'observed';
@@ -975,6 +1291,14 @@ export type HeatmapResult = {
  */
 export type LabelsResponse = {
     names: Array<string>;
+};
+
+/**
+ * A hypermedia link. `method` is omitted for `GET`.
+ */
+export type Link = {
+    href: string;
+    method?: string | null;
 };
 
 /**
@@ -2078,6 +2402,32 @@ export type UpdateTenantRequest = {
     name?: string | null;
 };
 
+/**
+ * What an upload holds.
+ */
+export type UploadSummary = {
+    /**
+     * Distinct case ids.
+     */
+    cases: number;
+    /**
+     * Per evaluator, ordered by name.
+     */
+    evaluators: Array<EvaluatorSummary>;
+    /**
+     * Result rows written.
+     */
+    rows: number;
+    /**
+     * Rows without a `trace_id` (run-level results).
+     */
+    run_level: number;
+    /**
+     * Rows with a `trace_id`.
+     */
+    span_linked: number;
+};
+
 export type UpsertMembershipRequest = {
     email: string;
     role: MembershipRole;
@@ -2212,7 +2562,7 @@ export type ProfilesByTraceData = {
 
 export type ProfilesByTraceErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2220,6 +2570,12 @@ export type ProfilesByTraceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2258,7 +2614,7 @@ export type ConnectionInfoErrors = {
      */
     401: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2266,6 +2622,12 @@ export type ConnectionInfoErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2290,6 +2652,600 @@ export type ConnectionInfoResponses = {
 };
 
 export type ConnectionInfoResponse2 = ConnectionInfoResponses[keyof ConnectionInfoResponses];
+
+export type ListEvalSetsData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/eval-sets';
+};
+
+export type ListEvalSetsErrors = {
+    /**
+     * Missing evals:read scope
+     */
+    403: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type ListEvalSetsError = ListEvalSetsErrors[keyof ListEvalSetsErrors];
+
+export type ListEvalSetsResponses = {
+    /**
+     * Eval sets without their cases, ordered by name
+     */
+    200: EvalSetListResponse;
+};
+
+export type ListEvalSetsResponse = ListEvalSetsResponses[keyof ListEvalSetsResponses];
+
+export type CreateEvalSetData = {
+    body: EvalSetSpec;
+    path?: never;
+    query?: never;
+    url: '/api/v1/eval-sets';
+};
+
+export type CreateEvalSetErrors = {
+    /**
+     * Malformed JSON body
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * An eval set with this name already exists in the dataset
+     */
+    409: ApiErrorBody;
+    /**
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * Invalid name, empty agent, duplicate or invalid case ids, or an invalid trace id
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type CreateEvalSetError = CreateEvalSetErrors[keyof CreateEvalSetErrors];
+
+export type CreateEvalSetResponses = {
+    /**
+     * Eval set created
+     */
+    201: EvalSetResponse;
+};
+
+export type CreateEvalSetResponse = CreateEvalSetResponses[keyof CreateEvalSetResponses];
+
+export type DeleteEvalSetData = {
+    body?: never;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}';
+};
+
+export type DeleteEvalSetErrors = {
+    /**
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type DeleteEvalSetError = DeleteEvalSetErrors[keyof DeleteEvalSetErrors];
+
+export type DeleteEvalSetResponses = {
+    /**
+     * Eval set deleted
+     */
+    204: void;
+};
+
+export type DeleteEvalSetResponse = DeleteEvalSetResponses[keyof DeleteEvalSetResponses];
+
+export type GetEvalSetData = {
+    body?: never;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}';
+};
+
+export type GetEvalSetErrors = {
+    /**
+     * Missing evals:read scope
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type GetEvalSetError = GetEvalSetErrors[keyof GetEvalSetErrors];
+
+export type GetEvalSetResponses = {
+    /**
+     * The eval set and its cases
+     */
+    200: EvalSetResponse;
+};
+
+export type GetEvalSetResponse = GetEvalSetResponses[keyof GetEvalSetResponses];
+
+export type ReplaceEvalSetData = {
+    body: EvalSetSpec;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}';
+};
+
+export type ReplaceEvalSetErrors = {
+    /**
+     * Malformed JSON body
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set (PUT never creates)
+     */
+    404: ApiErrorBody;
+    /**
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * Invalid spec, or the body name differs from the path name
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type ReplaceEvalSetError = ReplaceEvalSetErrors[keyof ReplaceEvalSetErrors];
+
+export type ReplaceEvalSetResponses = {
+    /**
+     * Eval set replaced
+     */
+    200: EvalSetResponse;
+};
+
+export type ReplaceEvalSetResponse = ReplaceEvalSetResponses[keyof ReplaceEvalSetResponses];
+
+export type AppendEvalCasesData = {
+    body: AppendEvalCasesRequest;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}/cases';
+};
+
+export type AppendEvalCasesErrors = {
+    /**
+     * Malformed JSON body
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * Duplicate or invalid case ids, an invalid trace id, or the set would exceed its case limit
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type AppendEvalCasesError = AppendEvalCasesErrors[keyof AppendEvalCasesErrors];
+
+export type AppendEvalCasesResponses = {
+    /**
+     * Cases appended; ids already in the set are reported, not overwritten
+     */
+    200: AppendCasesOutcome;
+};
+
+export type AppendEvalCasesResponse = AppendEvalCasesResponses[keyof AppendEvalCasesResponses];
+
+export type AppendEvalCasesFromTracesData = {
+    body: AppendCasesFromTracesRequest;
+    path: {
+        /**
+         * Eval set name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/eval-sets/{name}/cases/from-traces';
+};
+
+export type AppendEvalCasesFromTracesErrors = {
+    /**
+     * Malformed JSON body
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope (or, for a session, the tenant-admin role), or missing traces:read (logs:read with failing_evaluator)
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * Invalid options or range, a filter the query engine rejects, or the set would exceed its case limit
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+    /**
+     * No querier service available
+     */
+    503: ApiErrorBody;
+};
+
+export type AppendEvalCasesFromTracesError = AppendEvalCasesFromTracesErrors[keyof AppendEvalCasesFromTracesErrors];
+
+export type AppendEvalCasesFromTracesResponses = {
+    /**
+     * Matching, already-present and added counts, with the new case ids
+     */
+    200: AppendCasesFromTracesOutcome;
+};
+
+export type AppendEvalCasesFromTracesResponse = AppendEvalCasesFromTracesResponses[keyof AppendEvalCasesFromTracesResponses];
+
+export type UploadEvalResultsData = {
+    /**
+     * The results file: JSONL (one JSON object per line) or CSV with a header row. Sent as `text/csv` or `application/x-ndjson`, or with any type plus the `format` parameter.
+     */
+    body: string;
+    path?: never;
+    query: {
+        /**
+         * The agent the run evaluated (`gen_ai.agent.name`, and the records'
+         * `service.name`).
+         */
+        agent: string;
+        /**
+         * The agent version (`gen_ai.agent.version`, and `service.version`).
+         */
+        version: string;
+        /**
+         * The eval set the run replayed: a valid eval set name; the set need
+         * not exist.
+         */
+        set: string;
+        /**
+         * Run id (`signaldb.eval.run_id`); a UUID is generated when absent.
+         * Re-using a run id adds the file's results to that run.
+         */
+        run_id?: string;
+        /**
+         * File format. Overrides the `Content-Type` (`text/csv` for CSV,
+         * `application/x-ndjson` or `application/jsonl` for JSONL); one of the
+         * two must name the format.
+         */
+        format?: EvalResultsFormat;
+    };
+    url: '/api/v1/evals/results';
+};
+
+export type UploadEvalResultsErrors = {
+    /**
+     * Invalid run metadata, unknown format, a file that is not UTF-8, or invalid rows (listed in `details`)
+     */
+    400: ApiErrorBody;
+    /**
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * A tenant log processor rejected the results
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+    /**
+     * No writer service available
+     */
+    503: ApiErrorBody;
+    /**
+     * The writer did not accept the results in time
+     */
+    504: ApiErrorBody;
+};
+
+export type UploadEvalResultsError = UploadEvalResultsErrors[keyof UploadEvalResultsErrors];
+
+export type UploadEvalResultsResponses = {
+    /**
+     * Results written; the run and its per-evaluator summary
+     */
+    201: EvalResultsUploadResponse;
+};
+
+export type UploadEvalResultsResponse = UploadEvalResultsResponses[keyof UploadEvalResultsResponses];
 
 export type OpsCompactData = {
     body?: never;
@@ -2391,7 +3347,7 @@ export type ProcessorsListErrors = {
      */
     403: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2399,6 +3355,12 @@ export type ProcessorsListErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2449,7 +3411,7 @@ export type ProcessorsCreateErrors = {
      */
     422: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2457,6 +3419,12 @@ export type ProcessorsCreateErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2504,7 +3472,7 @@ export type ProcessorsDeleteErrors = {
      */
     404: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2512,6 +3480,12 @@ export type ProcessorsDeleteErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2559,7 +3533,7 @@ export type ProcessorsGetErrors = {
      */
     404: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2567,6 +3541,12 @@ export type ProcessorsGetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2622,7 +3602,7 @@ export type ProcessorsReplaceErrors = {
      */
     422: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2630,6 +3610,12 @@ export type ProcessorsReplaceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2680,7 +3666,7 @@ export type ProcessorsTestErrors = {
      */
     422: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2688,6 +3674,12 @@ export type ProcessorsTestErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2730,7 +3722,7 @@ export type ProcessorsValidateErrors = {
      */
     403: ProcessorError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2738,6 +3730,12 @@ export type ProcessorsValidateErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2784,7 +3782,7 @@ export type QueryIrErrors = {
      */
     403: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2792,6 +3790,12 @@ export type QueryIrErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2834,7 +3838,7 @@ export type QuerySourcesErrors = {
      */
     401: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2842,6 +3846,12 @@ export type QuerySourcesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2884,7 +3894,7 @@ export type GetSchemaErrors = {
      */
     401: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2892,6 +3902,12 @@ export type GetSchemaErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2944,7 +3960,7 @@ export type SchemaSearchAttributesErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2952,6 +3968,12 @@ export type SchemaSearchAttributesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2995,7 +4017,7 @@ export type SchemaResolveAttributeErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3003,6 +4025,12 @@ export type SchemaResolveAttributeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3050,7 +4078,7 @@ export type SchemaSearchEntitiesErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3058,6 +4086,12 @@ export type SchemaSearchEntitiesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3101,7 +4135,7 @@ export type SchemaResolveEntityErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3109,6 +4143,12 @@ export type SchemaResolveEntityErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3161,7 +4201,7 @@ export type SchemaSearchMetricsErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3169,6 +4209,12 @@ export type SchemaSearchMetricsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3212,7 +4258,7 @@ export type SchemaResolveMetricErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3220,6 +4266,12 @@ export type SchemaResolveMetricErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3258,7 +4310,7 @@ export type SchemaListRegistriesErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3266,6 +4318,12 @@ export type SchemaListRegistriesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3293,7 +4351,7 @@ export type SchemaListRegistriesResponse = SchemaListRegistriesResponses[keyof S
 
 export type SchemaCreateRegistryData = {
     /**
-     * Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type
+     * Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form
      */
     body: {
         [key: string]: unknown;
@@ -3317,11 +4375,11 @@ export type SchemaCreateRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * Invalid document (errors carry paths)
+     * Invalid document (errors carry paths) or unsupported file_format
      */
     422: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3329,6 +4387,12 @@ export type SchemaCreateRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3384,7 +4448,7 @@ export type SchemaDeleteRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3392,6 +4456,12 @@ export type SchemaDeleteRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3443,7 +4513,7 @@ export type SchemaGetRegistryErrors = {
      */
     404: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3451,6 +4521,12 @@ export type SchemaGetRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3478,7 +4554,7 @@ export type SchemaGetRegistryResponse = SchemaGetRegistryResponses[keyof SchemaG
 
 export type SchemaReplaceRegistryData = {
     /**
-     * Replacement registry document; its name/version must match the path
+     * Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path
      */
     body: {
         [key: string]: unknown;
@@ -3515,11 +4591,11 @@ export type SchemaReplaceRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * Invalid document or identity mismatch
+     * Invalid document, identity mismatch, or unsupported file_format
      */
     422: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3527,6 +4603,12 @@ export type SchemaReplaceRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3554,7 +4636,7 @@ export type SchemaReplaceRegistryResponse = SchemaReplaceRegistryResponses[keyof
 
 export type SchemaValidateRegistryData = {
     /**
-     * Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored
+     * Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored
      */
     body: {
         [key: string]: unknown;
@@ -3574,7 +4656,11 @@ export type SchemaValidateRegistryErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Unsupported file_format
+     */
+    422: SchemaError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3582,6 +4668,12 @@ export type SchemaValidateRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3673,7 +4765,7 @@ export type CreateTenantErrors = {
      */
     409: ApiError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3681,6 +4773,12 @@ export type CreateTenantErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3850,7 +4948,7 @@ export type ListApiKeysErrors = {
      */
     403: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3858,6 +4956,12 @@ export type ListApiKeysErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3921,7 +5025,7 @@ export type CreateApiKeyErrors = {
      */
     422: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3929,6 +5033,12 @@ export type CreateApiKeyErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3988,7 +5098,7 @@ export type RevokeApiKeyErrors = {
      */
     404: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3996,6 +5106,12 @@ export type RevokeApiKeyErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4067,7 +5183,7 @@ export type UpdateApiKeyErrors = {
      */
     422: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4075,6 +5191,12 @@ export type UpdateApiKeyErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4126,7 +5248,7 @@ export type ListDatasetsErrors = {
      */
     403: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4134,6 +5256,12 @@ export type ListDatasetsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4193,7 +5321,7 @@ export type CreateDatasetErrors = {
      */
     409: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4201,6 +5329,12 @@ export type CreateDatasetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4260,7 +5394,7 @@ export type DeleteDatasetErrors = {
      */
     409: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4268,6 +5402,12 @@ export type DeleteDatasetErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4315,7 +5455,7 @@ export type ListGithubInstallationsErrors = {
      */
     403: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4323,6 +5463,12 @@ export type ListGithubInstallationsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4374,7 +5520,7 @@ export type AttachGithubInstallationErrors = {
      */
     404: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4382,6 +5528,12 @@ export type AttachGithubInstallationErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4437,7 +5589,7 @@ export type StartGithubLinkErrors = {
      */
     404: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4445,6 +5597,12 @@ export type StartGithubLinkErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4500,7 +5658,7 @@ export type RemoveGithubInstallationErrors = {
      */
     404: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4508,6 +5666,12 @@ export type RemoveGithubInstallationErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4563,7 +5727,7 @@ export type ListMembershipsErrors = {
      */
     404: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4571,6 +5735,12 @@ export type ListMembershipsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4630,7 +5800,7 @@ export type UpsertMembershipErrors = {
      */
     409: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4638,6 +5808,12 @@ export type UpsertMembershipErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4705,7 +5881,7 @@ export type RemoveMembershipErrors = {
      */
     409: ManageError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4713,6 +5889,12 @@ export type RemoveMembershipErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4792,7 +5974,7 @@ export type SourceContextAvailabilityErrors = {
      */
     403: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4800,6 +5982,12 @@ export type SourceContextAvailabilityErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4851,7 +6039,7 @@ export type SourceContextErrors = {
      */
     403: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4859,6 +6047,12 @@ export type SourceContextErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5031,7 +6225,7 @@ export type WhoamiErrors = {
      */
     401: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5039,6 +6233,12 @@ export type WhoamiErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5087,7 +6287,7 @@ export type LogqlLabelValuesData = {
 
 export type LogqlLabelValuesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5095,6 +6295,12 @@ export type LogqlLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5136,7 +6342,7 @@ export type LogqlLabelsData = {
 
 export type LogqlLabelsErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5144,6 +6350,12 @@ export type LogqlLabelsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5193,7 +6405,7 @@ export type LogqlQueryData = {
 
 export type LogqlQueryErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5201,6 +6413,12 @@ export type LogqlQueryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5258,7 +6476,7 @@ export type LogqlQueryRangeData = {
 
 export type LogqlQueryRangeErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5266,6 +6484,12 @@ export type LogqlQueryRangeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5375,7 +6599,7 @@ export type PromqlLabelValuesData = {
 
 export type PromqlLabelValuesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5383,6 +6607,12 @@ export type PromqlLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5424,7 +6654,7 @@ export type PromqlLabelsData = {
 
 export type PromqlLabelsErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5432,6 +6662,12 @@ export type PromqlLabelsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5473,7 +6709,7 @@ export type PromqlQueryData = {
 
 export type PromqlQueryErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5481,6 +6717,12 @@ export type PromqlQueryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5530,7 +6772,7 @@ export type PromqlQueryRangeData = {
 
 export type PromqlQueryRangeErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5538,6 +6780,12 @@ export type PromqlQueryRangeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5583,7 +6831,7 @@ export type PyroscopeLabelNamesData = {
 
 export type PyroscopeLabelNamesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5591,6 +6839,12 @@ export type PyroscopeLabelNamesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5638,7 +6892,7 @@ export type PyroscopeLabelValuesData = {
 
 export type PyroscopeLabelValuesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5646,6 +6900,12 @@ export type PyroscopeLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5693,7 +6953,7 @@ export type PyroscopeProfileTypesData = {
 
 export type PyroscopeProfileTypesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5701,6 +6961,12 @@ export type PyroscopeProfileTypesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5764,7 +7030,7 @@ export type PyroscopeRenderData = {
 
 export type PyroscopeRenderErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5772,6 +7038,12 @@ export type PyroscopeRenderErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5835,7 +7107,7 @@ export type PyroscopeRenderDiffData = {
 
 export type PyroscopeRenderDiffErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5843,6 +7115,12 @@ export type PyroscopeRenderDiffErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5890,7 +7168,7 @@ export type SearchErrors = {
      */
     400: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5898,6 +7176,12 @@ export type SearchErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5950,7 +7234,7 @@ export type SearchTagValuesErrors = {
      */
     400: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -5958,6 +7242,12 @@ export type SearchTagValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6005,7 +7295,7 @@ export type SearchTagsErrors = {
      */
     400: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -6013,6 +7303,12 @@ export type SearchTagsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -6063,7 +7359,7 @@ export type QuerySingleTraceErrors = {
      */
     404: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -6071,6 +7367,12 @@ export type QuerySingleTraceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**

@@ -39,27 +39,27 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 ## 4. Tiered substrate: cold one-home + binary residue + warm index (one-shot cutover)
 
 - [x] 4.0 Gate: compaction keeps per-table file counts low on the tables being cut over (spike 0.3 — small flush files make the typed layout slower and larger than legacy); the cutover (4.5) does not ship before this holds (hive compaction confirmed healthy by the maintainer, 2026-09-27)
-- [ ] 4.1 Write failing tests: canonical-typed value stored+retrieved typed (no cast); off-type/array/kvlist/bytes round-trip via binary residue; warm-index prunes unpromoted equality; unpromoted range = correct unpruned scan (spec `typed-attribute-storage`, `query-ir-core` MODIFIED)
-- [ ] 4.2 Add the cold substrate (one canonical typed home per field: per-type maps `attributes_str/_int/_double/_bool`) + binary residue (top-level `Binary` column, one CBOR document per row — spike 0.2) in `common/iceberg/schemas.rs`, behind the logical→physical realization. Every attribute container (resource, scope, record) of every signal becomes `{container}_str/_int/_double/_bool` + `{container}_residue`, declared as a new `physical-vN` that stays non-current until 4.5
-- [ ] 4.2a Write the typed layout through the type authority (the writer half of 5.2, pulled forward because the cutover cannot place a value without a canonical type): the writer resolves each distinct key once per batch via `SignalScope::canonical` and splits values with `place()`; the acceptor, off-type metrics/logs (5.4) and the WAL assertion (5.3) stay in layer 5
-- [ ] 4.3 Build the warm derived containment index (per-type tokens + list-leaf bloom) as an opt-in, budgeted per-table tier (not default-on); wire pruning via a custom footer+bloom pre-filter `TableProvider` hook, set bloom NDV explicitly to rows-per-row-group × attrs-per-row, and skip the pre-filter for non-selective predicates
-- [ ] 4.4 Implement registry typed resolution (promoted col | one typed home | residue) returning canonical-typed values by retrieval — no coalesce across homes, de-conflate cast-free from pruned. The raw accessor for residue values is the retrieval-only `{scope}.attributes` field, which returns the original `AnyValue`s; string-typed `label_<key>` columns serve a field only when its canonical type is String (typed promotion is layer 6). Compatibility dialects (LogQL, TraceQL, Tempo, PromQL) read a key's single home rendered as a string
-- [ ] 4.5 One-shot layout cutover: tables created/recreated in the typed layout; no coexistence read-path or legacy safe-cast (breaking-changes policy); pre-cutover data not migrated. All signals flip together; a table still in the legacy layout is dropped and recreated. The legacy `attr_tokens` column is dropped (spike 0.1: DataFusion never prunes on it) and replaced by the opt-in warm index (4.3)
-- [ ] 4.6 `cargo test -p common -p querier` green; lint/format/machete
+- [x] 4.1 Write failing tests: canonical-typed value stored+retrieved typed (no cast); off-type/array/kvlist/bytes round-trip via binary residue; warm-index prunes unpromoted equality; unpromoted range = correct unpruned scan (spec `typed-attribute-storage`, `query-ir-core` MODIFIED)
+- [x] 4.2 Add the cold substrate (one canonical typed home per field: per-type maps `attributes_str/_int/_double/_bool`) + binary residue (top-level `Binary` column, one CBOR document per row — spike 0.2) in `common/iceberg/schemas.rs`, behind the logical→physical realization. Every attribute container (resource, scope, record) of every signal becomes `{container}_str/_int/_double/_bool` + `{container}_residue`, declared as a new `physical-vN` that stays non-current until 4.5
+- [x] 4.2a Write the typed layout through the type authority (the writer half of 5.2, pulled forward because the cutover cannot place a value without a canonical type): the writer resolves each distinct key once per batch via `SignalScope::canonical` and splits values with `place()`; the acceptor, off-type metrics/logs (5.4) and the WAL assertion (5.3) stay in layer 5
+- [x] 4.3 Build the warm derived containment index (per-type tokens + list-leaf bloom) as an opt-in, budgeted per-table tier (not default-on); wire pruning via a custom footer+bloom pre-filter `TableProvider` hook, set bloom NDV explicitly to rows-per-row-group × attrs-per-row, and skip the pre-filter for non-selective predicates
+- [x] 4.4 Implement registry typed resolution (promoted col | one typed home | residue) returning canonical-typed values by retrieval — no coalesce across homes, de-conflate cast-free from pruned. The raw accessor for residue values is the retrieval-only `{scope}.attributes` field, which returns the original `AnyValue`s; string-typed `label_<key>` columns serve a field only when its canonical type is String (typed promotion is layer 6). Compatibility dialects (LogQL, TraceQL, Tempo, PromQL) read a key's single home rendered as a string
+- [x] 4.5 One-shot layout cutover: tables created/recreated in the typed layout; no coexistence read-path or legacy safe-cast (breaking-changes policy); pre-cutover data not migrated. All signals flip together; a table still in the legacy layout is dropped and recreated. The legacy `attr_tokens` column is dropped (spike 0.1: DataFusion never prunes on it) and replaced by the opt-in warm index (4.3)
+- [x] 4.6 `cargo test -p common -p querier` green; lint/format/machete
 
 ## 5. Ingest enforcement (types stored at write, sender value never rewritten)
 
-- [ ] 5.1 Write failing tests: canonical-typed value stored typed; off-type value retained losslessly in residue (never coerced-away or dropped); existing OTLP clients unchanged; conflict/off-type surfaced not silent (spec `ingest-type-enforcement`)
-- [ ] 5.2 Route the acceptor through the registry (the writer side lands in 4.2a) to pick the canonical home or residue; cache the per-attribute lookup
-- [ ] 5.3 Keep Flight/WAL as JSON-in-Utf8; assert WAL byte-unchanged this phase
-- [ ] 5.4 Surface off-type/conflict as metrics+logs (no silent drop)
-- [ ] 5.5 `cargo test -p acceptor -p writer -p common -p tests-integration` (ingest→storage round-trip) green; lint/format/machete
+- [x] 5.1 Write failing tests: canonical-typed value stored typed; off-type value retained losslessly in residue (never coerced-away or dropped); existing OTLP clients unchanged; conflict/off-type surfaced not silent (spec `ingest-type-enforcement`)
+- [x] 5.2 Route the acceptor through the registry (the writer side lands in 4.2a) to pick the canonical home or residue; cache the per-attribute lookup (decision: design.md D6)
+- [x] 5.3 Keep Flight/WAL as JSON-in-Utf8; assert WAL byte-unchanged this phase
+- [x] 5.4 Surface off-type/conflict as metrics+logs (no silent drop)
+- [x] 5.5 `cargo test -p acceptor -p writer -p common -p tests-integration` (ingest→storage round-trip) green; lint/format/machete
 
 ## 6. Promotion as pure perf (budgeted, demotable) + the invariant test
 
-- [ ] 6.1 Write the demote-and-still-correct invariant test: identical result set AND types with promotion off vs on, over canonical-typed fields (specs `typed-attribute-storage`, `query-ir-core` MODIFIED)
-- [ ] 6.2 Promotion produces typed columns via **Iceberg field-id evolution** (not create-time `max(id)+1`); driven by `attr_demand`; per-table **budget + LRU demotion** (cold column folds back into the typed map on compaction)
-- [ ] 6.3 `cargo test -p querier -p compactor -p tests-integration` green; lint/format/machete
+- [x] 6.1 Write the demote-and-still-correct invariant test: identical result set AND types with promotion off vs on, over canonical-typed fields (specs `typed-attribute-storage`, `query-ir-core` MODIFIED)
+- [x] 6.2 Promotion produces typed columns via **Iceberg field-id evolution** (not create-time `max(id)+1`); driven by `attr_demand`; per-table **budget + LRU demotion** (cold column folds back into the typed map on compaction)
+- [x] 6.3 `cargo test -p querier -p compactor -p tests-integration` green; lint/format/machete
 
 ## 7. Typed metric substrate (replaces the data_json blob)
 

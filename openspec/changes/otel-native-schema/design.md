@@ -127,7 +127,7 @@ operator repins the type; that is the honest cost of never corrupting the value.
 ### D4 — Tiered substrate: cold one-home store + binary residue, warm derived index, hot budgeted promotion
 
 - **Cold (lossless).** One canonical typed home per field — a per-type map
-  (`attributes_str/_int/_double/_bool`) or a promoted column — plus the binary
+  (`<container>_str/_int/_double/_bool`) — plus the binary
   residue for off-type/array/kvlist/bytes.
 - **Warm (the only pre-promotion pruning; opt-in per table).** A derived typed
   containment index — a typed generalization of `attr_tokens` (per-type
@@ -140,10 +140,27 @@ operator repins the type; that is the honest cost of never corrupting the value.
   list-leaf blooms for `array_has`), (b) the bloom NDV set explicitly to
   rows-per-row-group × attrs-per-row, and (c) a selectivity gate that skips the
   pre-filter for non-selective predicates.
-- **Hot (fast).** Demand-driven promotion (`attr_demand`) to typed columns with
-  stats + bloom, via **Iceberg field-id evolution**, bounded by a **per-table
-  budget with LRU demotion** (a cold column folds back into the typed map on
-  compaction), so live-schema width does not grow unbounded as the hot set drifts.
+- **Hot (fast).** Demand-driven promotion creates a redundant typed **copy** of
+  one (level, key) home: a column `attr_<level>_<key>` (level resource, scope or
+  record) typed as the key's canonical type, added via **Iceberg field-id
+  evolution** (ids never reused), with its origin recorded in the column `doc`.
+  The per-type map stays the one canonical home and keeps every value. Keys made
+  of lowercase alphanumeric segments joined by single `.`/`_` get a readable
+  name (`.`→`_`, `_`→`__`); any other key gets
+  `attr_<level>_<stem>___<8-hex FNV-1a>`. A name already held by a column of
+  another origin is skipped, never retyped. Demand and presence come from the
+  per-level `attribute_level_stats` catalog table. Promoted columns share
+  `max_labels_per_table` with legacy `label_<key>` columns, which remain only
+  for `[schema.materialized_labels]` pins and already-existing columns (the
+  compat dialects keep reading them). Demotion drops a column not queried
+  within `demote_after_idle`, then the least recently queried ones while the
+  table is over budget.
+
+_Why copy, not move:_ demotion stays a metadata-only, lossless column drop; the
+writer never needs to know what is promoted; and no file ever holds a key in two
+homes mid-transition. _Why per level:_ one level-less column cannot honour the
+IR's record→scope→resource precedence for a key sent at several levels (the
+old backfill filled resource→scope→record), so each level gets its own column.
 
 _Why not Variant (was "option B"):_ removed from the decision surface — in this
 fork Variant is opaque `Binary` with `unimplemented!` shredding and DataFusion has
@@ -155,8 +172,9 @@ index the warm tier is an unpruned (if cast-free) scan.
 ### D5 — Promotion is only ever performance — and now it actually holds
 
 Because D3 gives each field one canonical home, resolution never coalesces across
-competing homes, so promotion (moving that home's key to a top-level column) cannot
-change results or types. The **testable invariant**: identical result set AND types
+competing homes, and a promoted column is only a copy of that home (read as
+`coalesce(promoted, home)` per level), so promotion cannot change results or
+types. The **testable invariant**: identical result set AND types
 with all promotion off vs. on — scoped to canonical-typed fields (residue values
 are retrievable, a separate axis). This is strictly stronger than `query-ir-core`'s
 original "same-result" (value equality over a cast) because there is no cast.
@@ -169,6 +187,12 @@ registry (D2) and encodes into the typed substrate (D4), replacing
 transitional carrier (it already preserves JSON types), so **WAL format is
 untouched in phase 1** — deliberate, given the WAL-corruption history. Typed
 wire is a later, explicitly-BREAKING phase for full fidelity.
+
+Placement stays in the writer: the acceptor can't carry a placement over the
+JSON-in-Utf8 wire, and only the writer establishes canonical types. The
+acceptor looks types up read-only through a non-blocking cached snapshot and
+warns the sender through OTLP `partial_success`, rejecting nothing. Off-type
+values are counted once, by the writer, after its commit lands.
 
 ### D7 — Reconcile the two schema systems: storage schema becomes the logical schema's physical realization
 
@@ -249,8 +273,13 @@ therefore a forward-only, version-gated event, not a free toggle.
   but not typed-queryable until an operator repins the type; that is the accepted
   cost of never corrupting the sender's value.
 - **Promotion churn / unbounded live schema** → promotion via Iceberg field-id
-  evolution, per-table budget + LRU demotion (D4); metadata-file retention rides
-  #895 (which bounds files, not schema width — the budget bounds width).
+  evolution, per-table budget + idle/LRU demotion (D4); metadata-file retention
+  rides #895 (which bounds files, not schema width — the budget bounds width).
+- **Promoted columns prune only partially** → the compactor backfills promoted
+  columns but the writer does not fill them, so row-group pruning on a promoted
+  filter works only where the key is present in every row of a row group. Full
+  per-file pruning (writer-filled columns plus a scan split by file
+  completeness) is a tracked follow-up.
 - **Write-path cost is the registry lookup, not the builders** → the per-attribute
   registry resolution on the acceptor path (WAL-corruption-sensitive) needs a
   cache; the benchmark must isolate lookup cost, not just builder count.
@@ -324,5 +353,6 @@ flags.
   column holding one CBOR document per row (`Map<String,Binary>` is not
   supported by the pinned provider).
 
-- The promoted-column budget size and LRU-demotion trigger thresholds — tunable,
-  resolvable in the promotion layer without changing the specs.
+- ~~Promoted-column budget and LRU-demotion thresholds~~ — resolved in layer 6:
+  `[compactor.attr_promotion]` (`max_labels_per_table`, `demote_after_idle`,
+  default `7d`).

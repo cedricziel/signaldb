@@ -65,10 +65,14 @@ export function useWhoami(state: {
     retry: false,
     enabled: state.tenant !== "",
   });
-  const who = query.data;
+  return { ...query, canManage: canManage(query.data) };
+}
+
+/** Whether `who` can reach tenant-admin surfaces: an instance admin, or
+ * holding the "admin" role on the active tenant. */
+export function canManage(who: WhoamiResponse | undefined): boolean {
   const role = who?.memberships.find(
     (membership) => membership.tenant_id === who.tenant.id,
   )?.role;
-  const canManage = Boolean(who?.user?.is_instance_admin || role === "admin");
-  return { ...query, canManage };
+  return Boolean(who?.user?.is_instance_admin || role === "admin");
 }

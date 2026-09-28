@@ -108,7 +108,7 @@ Each component implements a Flight service:
 - **Acceptor**: no Flight server; acts as a Flight client forwarding data to the Writer
 - **IcebergWriterFlightService**: Receives data from Acceptor and writes to Iceberg tables
 - **QuerierFlightService**: Executes queries against storage and returns results
-- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight
+- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight. It also writes uploaded eval results (`POST /api/v1/evals/results`) to a Writer as logs batches, through the same `common::flight::forward::forward_batch_to_writer` `DoPut` the Acceptor uses; unlike the Acceptor it keeps no WAL, so the upload is durable once the Writer acks
 - **CompactorFlightService**: Admin-only `DoAction` interface for compaction management
 
 ### 4.3 External Flight Interface
@@ -241,35 +241,41 @@ its span is first entered; span links, by contrast, may be added at any time.
 Four carriers move the context, matching how each path already exchanges
 metadata:
 
-| Carrier                                               | Path                       | Direction        |
-| ----------------------------------------------------- | -------------------------- | ---------------- |
-| JSON `app_metadata` on the first `FlightData` message | Acceptor → Writer `do_put` | inject / extract |
+| Carrier                                               | Path                                    | Direction             |
+| ----------------------------------------------------- | --------------------------------------- | --------------------- |
+| JSON `app_metadata` on the first `FlightData` message | Acceptor → Writer `do_put`              | inject / extract      |
+| gRPC request metadata headers                         | Router → Querier `do_get`               | inject / extract      |
+| HTTP request headers                                  | external caller → Router query APIs     | extract (server side) |
+| Span links                                            | WAL batch fan-in (background processor) | link                  |
 
-The same `app_metadata` JSON also carries `ingest_id`: the acceptor's WAL
-entry id for the batch, stamped on every `do_put` (hot path and WAL retry
-consumer alike) so the writer can recognize a resend of the same entry and
-dedup it. The acceptor picks the destination writer for a `do_put` by
-rendezvous (highest random weight) hashing on `ingest_id` instead of
-round-robin, so every resend of a given entry reaches the same writer as
-long as the writer set is unchanged; see
-`InMemoryFlightTransport::get_client_for_capability_keyed`.
-| gRPC request metadata headers | Router → Querier `do_get` | inject / extract |
-| HTTP request headers | external caller → Router query APIs | extract (server side) |
-| Span links | WAL batch fan-in (background processor) | link |
+The same `do_put` `app_metadata` JSON also carries `ingest_id`, a content
+fingerprint of the batch: an xxh3-128 hash of tenant, dataset, WAL operation
+and the Arrow IPC bytes, formatted as a uuid (`retry_dedup::batch_fingerprint`
+in the acceptor). The handler stores it in the acceptor WAL entry's metadata
+next to the routing fields, so the hot path and the WAL retry consumer forward
+the entry under the same id. Two entries holding byte-identical batches share
+an `ingest_id`, which is what lets the writer drop a client's resend (an OTLP
+exporter retrying after its own timeout) even when it lands in a different
+acceptor WAL entry, at another acceptor replica, or after an acceptor restart.
+Acceptor WAL entries written before the field existed carry no stored id, and
+the retry consumer forwards those under their WAL entry id.
 
-The same `do_put` `app_metadata` JSON also carries an `ingest_id` (the
-acceptor WAL entry uuid, one per `do_put`) so the writer can dedup a resend
-that lands on it again -- see `[writer].ingest_dedup_window` in the
-configuration reference. It is absent for acceptors that predate this field,
-which fall back to today's non-deduped behavior; a present-but-unparseable id
-is rejected with `invalid_argument`.
+The acceptor picks the destination writer for a `do_put` by rendezvous
+(highest random weight) hashing on `ingest_id` instead of round-robin, so every
+copy of a batch reaches the same writer as long as the writer set is
+unchanged; see `InMemoryFlightTransport::get_client_for_capability_keyed`. That
+writer remembers each id for `[writer].ingest_dedup_window` (default 1h) and
+rebuilds the cache from its own WAL at startup; a repeat is acked and its WAL
+entries marked processed, so it is never committed. `ingest_id` is absent for
+acceptors that predate the field, which fall back to non-deduped behavior; a
+present-but-unparseable id is rejected with `invalid_argument`.
 
-`ingest_id` only covers resends of the *same* acceptor WAL entry. A client
-that resends an export (an OTLP exporter retrying after its own timeout) makes
-the acceptor append a new entry with a new id, so the acceptor dedups those
-itself, before forwarding: it fingerprints each flushed batch and acks a
-byte-identical resend within `[acceptor].retry_dedup_window` without
-forwarding it. Both caches live in `common::ingest_dedup`.
+Each acceptor also keeps a per-process cache of the fingerprints it flushed in
+the last `[acceptor].retry_dedup_window` (default 5m). It is a cheap first
+line: a resend that returns to the same acceptor is acked and retired without
+a Flight round trip or a second writer WAL append. `0s` disables that cache
+only; the writer's dedup still applies. Both caches live in
+`common::ingest_dedup`.
 
 **Write path.** At `do_put` the Writer records the active span's context into
 the WAL entry metadata alongside the routing fields. Because the background

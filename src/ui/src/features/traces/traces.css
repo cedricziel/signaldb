@@ -25,9 +25,10 @@
 }
 
 .trace-volume-mode button {
-  padding: 2px 7px;
-  color: var(--faint);
-  font-size: 10.5px;
+  min-height: 24px;
+  padding: 2px 9px;
+  color: var(--dim);
+  font-size: 11.5px;
 }
 
 /* `.trace-volume-mode`'s `overflow: hidden` (its rounded corners) otherwise
@@ -41,7 +42,7 @@
 }
 
 .trace-volume-mode button[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 
@@ -206,7 +207,7 @@
 }
 
 .err-rate {
-  color: var(--err);
+  color: var(--err-text);
   font-weight: 600;
 }
 
@@ -215,6 +216,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
   cursor: pointer;
 }
 
@@ -233,12 +235,12 @@
 }
 
 .status-chip.status-error {
-  color: var(--err);
+  color: var(--err-text);
   background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 .status-chip.status-ok {
-  color: var(--ok);
+  color: var(--ok-text);
   background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
@@ -312,7 +314,7 @@
 
 .trace-open {
   font-weight: 550;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .trace-id {
@@ -450,6 +452,51 @@
 .trace-resizer:hover,
 .trace-resizer:active {
   background: var(--info-bar);
+}
+
+.wf-ruler {
+  display: flex;
+  align-items: flex-end;
+  padding: 0 16px 4px 12px;
+}
+
+.wf-ruler-track {
+  flex: 1;
+  min-width: 60px;
+  position: relative;
+  height: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* `--pct` is the tick's position (0–100). Shifting the label left by the
+   same share keeps 0 flush left, the total flush right, and the rest near
+   their mark. */
+.wf-tick {
+  position: absolute;
+  bottom: 3px;
+  left: calc(var(--pct) * 1%);
+  transform: translateX(calc(var(--pct) * -1%));
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wf-tick::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--pct) * 1%);
+  bottom: -4px;
+  height: 4px;
+  border-left: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  /* The phone-width track only fits three labels: keep 0, ½ and the total. */
+  .wf-tick:nth-child(2n) {
+    visibility: hidden;
+  }
 }
 
 .span-row {
@@ -636,7 +683,7 @@
 }
 
 .span-dur.error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* ---------- span detail ---------- */
@@ -695,7 +742,7 @@
 }
 
 .span-event-err .span-event-name {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .span-event-type {
@@ -783,7 +830,7 @@
   margin-left: auto;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
   border-color: transparent;
 }
@@ -811,7 +858,7 @@
 }
 
 .facet-val[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-left-color: var(--accent);
 }
 

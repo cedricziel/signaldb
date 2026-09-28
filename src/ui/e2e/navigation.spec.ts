@@ -67,6 +67,28 @@ test("switching pages in the sidebar updates the path", async ({ page }) => {
   await expect(navLink(page, "Traces")).toHaveAttribute("aria-current", "page");
 });
 
+test("/evals/runs marks Runs as the current page", async ({ page }) => {
+  // A tenant-less request 401s and the shell bounces to /login (see
+  // App.tsx's redirect effect), so this needs the sticky tenant context in
+  // the URL, same as the /manage test below.
+  await page.goto("/evals/runs?tenant=acme&dataset=production");
+  await expect(page).toHaveURL(/\/evals\/runs\?/);
+  await expect(navLink(page, "Runs")).toHaveAttribute("aria-current", "page");
+});
+
+test("an eval set's page marks Eval sets as the current page", async ({
+  page,
+}) => {
+  await page.goto(
+    "/evals/sets/triage-golden-200?tenant=acme&dataset=production",
+  );
+  await expect(page).toHaveURL(/\/evals\/sets\/triage-golden-200\?/);
+  await expect(navLink(page, "Eval sets")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+});
+
 test("⌘K opens the command palette and Enter navigates", async ({ page }) => {
   await page.goto("/logs");
   await expect(navLink(page, "Logs")).toBeVisible();
@@ -100,11 +122,11 @@ test("the sidebar gives way to a top bar and drawer on a phone", async ({
   ).toHaveCount(0);
 });
 
-test("an unknown path redirects to /logs, preserving the query string", async ({
+test("an unknown path redirects home to /overview, preserving the query string", async ({
   page,
 }) => {
   await page.goto("/bogus?range=15m");
-  await expect(page).toHaveURL(/\/logs\?range=15m$/);
+  await expect(page).toHaveURL(/\/overview\?range=15m$/);
 });
 
 test("/ redirects to /overview, preserving the query string", async ({
@@ -114,13 +136,13 @@ test("/ redirects to /overview, preserving the query string", async ({
   await expect(page).toHaveURL(/\/overview\?tenant=homelab&dataset=default$/);
 });
 
-test("/manage redirects unauthenticated visitors to /logs", async ({
+test("/manage redirects unauthenticated visitors home to /overview", async ({
   page,
 }) => {
   // No mocks: whoami naturally fails without a backend, so this exercises
   // the same "not an admin" redirect path as an authenticated non-admin.
   await page.goto("/manage");
-  await expect(page).toHaveURL(/\/logs$/);
+  await expect(page).toHaveURL(/\/overview$/);
 });
 
 test("an admin can open /manage and the back button returns them", async ({
@@ -218,4 +240,32 @@ test("/login stays usable at a narrow (360x740) viewport", async ({ page }) => {
   expect(box).not.toBeNull();
   expect(box!.x).toBeGreaterThanOrEqual(0);
   expect(box!.x + box!.width).toBeLessThanOrEqual(360);
+});
+
+test("sidebar → Real users → Overview renders", async ({ page }) => {
+  // No RUM data behind this build — the query IR endpoint answers with an
+  // empty envelope for every read the Overview tab issues (apps, KPIs,
+  // vitals, ...), same shape `emptyIrLogs` covers in the component tests.
+  await page.route("**/api/v1/query", (route) =>
+    json(route, {
+      result: "rows",
+      window: { start_ns: 0, end_ns: 0 },
+      columns: [],
+      rows: [],
+      series: [],
+    }),
+  );
+  await page.goto("/logs");
+  await navLink(page, "Real users").click();
+  await expect(page).toHaveURL(/\/rum\/overview$/);
+  await expect(navLink(page, "Real users")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(
+    page.getByText(/No frontend app has sent real-user data yet/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open Setup" }).click();
+  await expect(page).toHaveURL(/\/rum\/setup$/);
+  await expect(page.getByText("Install the SDK")).toBeVisible();
 });

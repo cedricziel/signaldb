@@ -1,9 +1,8 @@
-// WCAG contrast regression for design tokens used as text-on-tint (a
-// `color-mix` background rather than a flat surface), where a token that
-// reads fine on the plain surface can still fall short once mixed with a
-// signal color. Currently covers `--warn-banner-text` (ThrottleBanner.css),
-// which replaced `--warn` there because `--warn` on light theme's throttle
-// tint measured ~3.9:1, under WCAG AA's 4.5:1 for normal text.
+// WCAG contrast regression for the design tokens: text tokens on flat
+// surfaces and on `color-mix` tints (where a token that reads fine on the
+// plain surface can still fall short once mixed with a signal colour),
+// series colours as marks, and the forced-theme blocks mirroring the
+// default/prefers-color-scheme ones.
 import { readFileSync } from "node:fs";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -82,21 +81,6 @@ const themeBlocks = {
   light: () => block(/:root\s*\{/),
   dark: () => block(/@media \(prefers-color-scheme: dark\)\s*\{\s*:root\s*\{/),
 } as const;
-
-describe("ThrottleBanner text meets WCAG AA on its tinted background", () => {
-  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
-    it(`${theme} theme: --warn-banner-text on color-mix(--warn-bar 14%, --surface) is >= 4.5:1`, () => {
-      const cssBlock = getBlock();
-      const text = token(cssBlock, "warn-banner-text");
-      const warnBar = token(cssBlock, "warn-bar");
-      const surface = token(cssBlock, "surface");
-      const background = mix(warnBar, surface, 0.14);
-
-      const ratio = contrastRatio(text, background);
-      expect(ratio).toBeGreaterThanOrEqual(4.5);
-    });
-  }
-});
 
 describe("--dim meets WCAG AA on both surface tokens", () => {
   for (const [theme, getBlock] of Object.entries(themeBlocks)) {
@@ -212,14 +196,108 @@ describe("data-theme scoping applies to nested elements, not just :root", () => 
   });
 });
 
-describe("--ok-text meets WCAG AA on --surface", () => {
-  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
-    it(`${theme} theme: --ok-text on --surface is >= 4.5:1`, () => {
-      const cssBlock = getBlock();
-      const okText = token(cssBlock, "ok-text");
-      const surface = token(cssBlock, "surface");
+const textTokens = [
+  ["ok-text", "ok"],
+  ["warn-text", "warn-bar"],
+  ["accent-text", "accent"],
+  ["err-text", "err"],
+] as const;
 
-      expect(contrastRatio(okText, surface)).toBeGreaterThanOrEqual(4.5);
+describe("status/accent text tokens meet WCAG AA", () => {
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    for (const [name, base] of textTokens) {
+      for (const ground of ["bg", "surface", "surface2"] as const) {
+        it(`${theme} theme: --${name} on --${ground} is >= 4.5:1`, () => {
+          const cssBlock = getBlock();
+          expect(
+            contrastRatio(token(cssBlock, name), token(cssBlock, ground)),
+          ).toBeGreaterThanOrEqual(4.5);
+        });
+      }
+      it(`${theme} theme: --${name} on color-mix(--${base} 14%, --surface) is >= 4.5:1`, () => {
+        const cssBlock = getBlock();
+        const tint = mix(
+          token(cssBlock, base),
+          token(cssBlock, "surface"),
+          0.14,
+        );
+        expect(
+          contrastRatio(token(cssBlock, name), tint),
+        ).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+  }
+});
+
+describe("--faint meets WCAG AA and stays lighter than --dim", () => {
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    for (const ground of ["bg", "surface", "surface2"] as const) {
+      it(`${theme} theme: --faint on --${ground} is >= 4.5:1`, () => {
+        const cssBlock = getBlock();
+        expect(
+          contrastRatio(token(cssBlock, "faint"), token(cssBlock, ground)),
+        ).toBeGreaterThanOrEqual(4.5);
+      });
+    }
+    it(`${theme} theme: --faint has less contrast on --surface than --dim`, () => {
+      const cssBlock = getBlock();
+      const surface = token(cssBlock, "surface");
+      const faint = contrastRatio(token(cssBlock, "faint"), surface);
+      const dim = contrastRatio(token(cssBlock, "dim"), surface);
+      expect(dim / faint).toBeGreaterThanOrEqual(1.15);
+    });
+  }
+});
+
+describe("no --svc-* series colour equals a status colour", () => {
+  // --accent and --info lead SERIES_COLOR_VARS on purpose; the --svc-*
+  // slots after them must not repeat ok/warn/err, or a series reads as a
+  // health state.
+  const statuses = ["ok", "warn", "err"] as const;
+  const svc = SERIES_COLOR_VARS.filter((v) => v.startsWith("--svc-"));
+  for (const [theme, getBlock] of Object.entries(themeBlocks)) {
+    it(`${theme} theme: no --svc-* token repeats --ok/--warn/--err`, () => {
+      const cssBlock = getBlock();
+      const status = new Set(
+        statuses.map((name) => token(cssBlock, name).join(",")),
+      );
+      for (const v of svc) {
+        const name = v.replace(/^--/, "");
+        expect(status.has(token(cssBlock, name).join(",")), name).toBe(false);
+      }
+    });
+  }
+});
+
+describe("forced data-theme blocks mirror the default theme blocks", () => {
+  /** Every `--name: value;` declaration, whitespace-normalised. */
+  function declarations(cssBlock: string): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const m of cssBlock.matchAll(/(--[\w-]+|color-scheme):\s*([^;]+);/g)) {
+      out[m[1]!] = m[2]!.replace(/\s+/g, " ").trim();
+    }
+    return out;
+  }
+  const forced = {
+    light: () =>
+      block(/:root\[data-theme="light"\],\s*\[data-theme="light"\]\s*\{/),
+    dark: () =>
+      block(/:root\[data-theme="dark"\],\s*\[data-theme="dark"\]\s*\{/),
+  } as const;
+
+  for (const theme of ["light", "dark"] as const) {
+    it(`${theme}: [data-theme="${theme}"] sets the same colour tokens`, () => {
+      const base = declarations(themeBlocks[theme]());
+      const over = declarations(forced[theme]());
+      for (const [name, value] of Object.entries(over)) {
+        expect(`${name}: ${value}`).toBe(`${name}: ${base[name]}`);
+      }
+      // Every token that differs by theme is forced too.
+      const other = declarations(
+        themeBlocks[theme === "light" ? "dark" : "light"](),
+      );
+      const colourNames = Object.keys(base).filter((n) => n in other);
+      for (const n of colourNames) expect(over).toHaveProperty(n);
     });
   }
 });

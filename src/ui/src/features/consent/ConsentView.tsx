@@ -16,6 +16,7 @@ import {
   consentContext,
   submitConsentDecision,
 } from "../../api/consent";
+import { BrandMark } from "../../components/BrandMark";
 import { Dialog } from "../../components/Dialog";
 import { useDirtyForm } from "../../lib/dirtyForms";
 import { loginRedirectPath } from "../../lib/redirectTarget";
@@ -273,7 +274,7 @@ export function ConsentView() {
                   setTenantSelection(tenant.id, { datasetMode: "only" })
                 }
               />
-              <span>Only these datasets in {tenant.id}:</span>
+              <span>Only these datasets in {tenant.id}</span>
             </label>
           </li>
         </ul>
@@ -309,12 +310,15 @@ export function ConsentView() {
   return (
     <Dialog label="Authorize access" className="login-panel consent-panel">
       <div className="consent-header">
-        <span className="consent-badge" aria-hidden="true">
-          <ShieldIcon />
-        </span>
+        <div className="consent-brand">
+          <BrandMark />
+          <span>SignalDB</span>
+          <span className="consent-instance">{window.location.host}</span>
+        </div>
         <h2>Authorize {clientLabel}</h2>
         <p className="consent-sub">
-          It's asking to read your observability data in SignalDB.
+          {clientLabel} is asking to read your observability data on this
+          SignalDB instance.
         </p>
       </div>
 
@@ -413,25 +417,6 @@ function scopeLabel(scope: string): string {
     default:
       return scope;
   }
-}
-
-function ShieldIcon() {
-  return (
-    <svg
-      width="22"
-      height="22"
-      viewBox="0 0 24 24"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="2"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      aria-hidden="true"
-    >
-      <path d="M12 2 4 5v6c0 5 3.4 8.5 8 11 4.6-2.5 8-6 8-11V5l-8-3Z" />
-      <path d="m9 12 2 2 4-4" />
-    </svg>
-  );
 }
 
 function EyeIcon() {

@@ -4,7 +4,8 @@
 
 use common::catalog::Catalog;
 use common::schema_registry::{
-    RegistrySource, SchemaResolver, StoreError, bundled_registries, is_bundled,
+    AttributeHit, RegistrySource, Resolution, SchemaResolver, StoreError, bundled_registries,
+    is_bundled,
 };
 use schema_model::{RegistryDocument, Role};
 
@@ -405,4 +406,212 @@ async fn a_fresh_resolver_reloads_custom_registries_from_the_catalog() {
         .await
         .expect("resolve");
     assert_eq!(res.hits.len(), 1);
+}
+
+#[tokio::test]
+async fn signaldb_bundles_the_gen_ai_agent_entity() {
+    let r = resolver().await;
+    let res = r
+        .resolve_entity("t1", "gen_ai.agent")
+        .await
+        .expect("resolve");
+    assert_eq!(res.hits.len(), 1);
+    let agent = &res.hits[0];
+    assert_eq!(agent.namespace, "signaldb");
+    assert_eq!(agent.source, RegistrySource::Bundled);
+    let keys = |attrs: &[schema_model::EntityAttribute]| {
+        attrs.iter().map(|a| a.key.clone()).collect::<Vec<_>>()
+    };
+    assert_eq!(keys(&agent.def.identifying), ["gen_ai.agent.id"]);
+    assert_eq!(
+        keys(&agent.def.descriptive),
+        [
+            "gen_ai.agent.name",
+            "gen_ai.agent.description",
+            "gen_ai.agent.version"
+        ]
+    );
+
+    let res = r
+        .resolve_attribute("t1", "gen_ai.agent.id")
+        .await
+        .expect("resolve");
+    let namespaces: Vec<&str> = res.hits.iter().map(|h| h.namespace.as_str()).collect();
+    assert_eq!(namespaces, ["otel-genai", "otel"]);
+    assert!(res.hits[0].def.deprecated.is_none());
+    assert!(res.hits[1].def.deprecated.is_some());
+    assert!(res.hits[0].entity_roles.iter().any(|e| {
+        e.namespace == "signaldb" && e.entity == "gen_ai.agent" && e.role == Role::Identifying
+    }));
+}
+
+#[tokio::test]
+async fn tenant_registry_can_extend_the_gen_ai_agent_entity() {
+    let r = resolver().await;
+    let doc = RegistryDocument::from_yaml(
+        r#"
+name: agents
+version: 1.0.0
+schema_url: https://agents.example/schemas/1.0.0
+dependencies:
+  - name: signaldb
+groups:
+  - id: registry.agents
+    type: attribute_group
+    brief: Agent deployment attributes.
+    attributes:
+      - id: agents.team
+        type: string
+        stability: development
+        brief: Team that owns the agent.
+        examples: ["payments"]
+  - id: entity.agents.agent
+    type: entity
+    name: agents.agent
+    extends: entity.gen_ai.agent
+    stability: development
+    brief: A GenAI agent annotated with its owning team.
+    attributes:
+      - ref: agents.team
+        role: descriptive
+"#,
+    )
+    .expect("parses");
+    r.create("t1", &doc).await.expect("create");
+
+    let res = r
+        .resolve_entity("t1", "gen_ai.agent")
+        .await
+        .expect("resolve");
+    assert!(
+        res.hits[0]
+            .extended_by
+            .iter()
+            .any(|e| e == "agents/agents.agent")
+    );
+}
+
+#[tokio::test]
+async fn otel_genai_is_bundled_read_only_and_reserved() {
+    let names: Vec<&str> = bundled_registries()
+        .iter()
+        .map(|r| r.resolved.namespace.as_str())
+        .collect();
+    assert_eq!(names, ["signaldb", "otel-genai", "otel"]);
+    assert!(is_bundled("otel-genai"));
+
+    let r = resolver().await;
+    let version = bundled_registries()
+        .iter()
+        .find(|b| b.resolved.namespace == "otel-genai")
+        .map(|b| b.resolved.version.clone())
+        .expect("otel-genai");
+    let err = r.delete("t1", "otel-genai", &version).await.unwrap_err();
+    assert!(matches!(err, StoreError::ReadOnly { .. }), "{err:?}");
+
+    let mut doc = acme("1.0.0");
+    doc.name = "otel-genai".to_string();
+    let err = r.create("t1", &doc).await.unwrap_err();
+    assert!(
+        matches!(&err, StoreError::ReservedNamespace(ns) if ns == "otel-genai"),
+        "{err:?}"
+    );
+}
+
+// ---- semconv-definition-v2 2.1 uploads ------------------------------------
+
+const ACME_V2: &str = include_str!("../../schema-model/tests/fixtures/acme-v2.yaml");
+
+/// definition/2 has no named group for top-level `attributes`, so the
+/// containing group is the one thing that differs from acme.yaml.
+fn without_group(mut res: Resolution<AttributeHit>) -> Resolution<AttributeHit> {
+    for hit in res.primary.iter_mut().chain(res.hits.iter_mut()) {
+        hit.def.group_id.clear();
+        hit.def.group_display_name = None;
+    }
+    res
+}
+
+#[tokio::test]
+async fn definition_v2_upload_resolves_like_its_groups_equivalent() {
+    let r = resolver().await;
+    let v2 = RegistryDocument::from_yaml(ACME_V2).expect("definition/2 parses");
+    let created = r.create("v2", &v2).await.expect("create v2");
+    r.create("v1", &acme("1.0.0")).await.expect("create v1");
+    assert_eq!(
+        (created.namespace.as_str(), created.version.as_str()),
+        ("acme", "1.0.0")
+    );
+    assert_eq!(created.entity_count, 2);
+    assert_eq!(created.metric_count, 1);
+
+    for key in [
+        "acme.order.id",
+        "acme.order.total",
+        "acme.order.channel",
+        "acme.rack.id",
+        "service.name",
+    ] {
+        assert_eq!(
+            without_group(r.resolve_attribute("v2", key).await.expect("resolve")),
+            without_group(r.resolve_attribute("v1", key).await.expect("resolve")),
+            "{key}"
+        );
+    }
+    for name in ["acme.order", "acme.k8s.pod", "k8s.pod"] {
+        assert_eq!(
+            r.resolve_entity("v2", name).await.expect("resolve"),
+            r.resolve_entity("v1", name).await.expect("resolve"),
+            "{name}"
+        );
+    }
+    assert_eq!(
+        r.resolve_metric("v2", "acme.checkout.latency")
+            .await
+            .expect("resolve"),
+        r.resolve_metric("v1", "acme.checkout.latency")
+            .await
+            .expect("resolve"),
+    );
+
+    let (_, stored) = r
+        .get("v2", "acme", "1.0.0")
+        .await
+        .expect("get")
+        .expect("exists");
+    let json = serde_json::to_value(&stored).expect("serialize");
+    assert!(json.get("file_format").is_none(), "{json}");
+    assert!(json.get("entities").is_none(), "{json}");
+    assert!(
+        stored
+            .groups
+            .iter()
+            .any(|g| g.r#type == "entity" && g.name.as_deref() == Some("acme.order"))
+    );
+}
+
+#[tokio::test]
+async fn unsupported_file_format_upload_is_rejected_naming_the_format() {
+    let r = resolver().await;
+    for parsed in [
+        RegistryDocument::from_yaml(&ACME_V2.replace("definition/2", "definition/3")),
+        RegistryDocument::from_json(
+            r#"{"file_format": "definition/3", "name": "acme", "version": "1.0.0"}"#,
+        ),
+        RegistryDocument::from_yaml(&ACME_V2.replace("definition/2", "3")),
+        RegistryDocument::from_json(r#"{"file_format": 3, "name": "acme", "version": "1.0.0"}"#),
+    ] {
+        let err = parsed.expect_err("definition/3 is not supported");
+        assert!(
+            matches!(&err, schema_model::ParseError::UnsupportedFileFormat { format, .. } if format.contains('3')),
+            "{err:?}"
+        );
+    }
+    assert!(
+        !r.list("t1")
+            .await
+            .expect("list")
+            .iter()
+            .any(|s| s.namespace == "acme")
+    );
 }

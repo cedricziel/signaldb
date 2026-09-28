@@ -16,6 +16,7 @@ import { filterByName, indexRegistry } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
 import { useOutletState } from "../../lib/outletState";
 import { toErrorMessage } from "../../api/http";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 /**
  * `/schema/conventions/:ns/:version[/:kind/:name]` — one registry: a search
@@ -32,6 +33,7 @@ export function RegistryBrowser() {
   }>();
   const namespace = params.ns ?? "";
   const version = params.version ?? "";
+  useBreadcrumbLeaf(`${namespace}@${version}`);
   if (version === LATEST) {
     return (
       <LatestRedirect
@@ -183,7 +185,7 @@ function RegistryView({
         </span>
         {canEdit && (
           <div className="schema-actions">
-            <Link className="schema-button" to={editorPath(namespace, version)}>
+            <Link className="btn" to={editorPath(namespace, version)}>
               Edit
             </Link>
           </div>

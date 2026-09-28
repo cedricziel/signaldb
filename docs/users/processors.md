@@ -30,8 +30,10 @@ A processor declares:
 - `name` — a slug (`[a-z0-9][a-z0-9-]{0,62}`), unique per tenant, and the API
   identifier (`/api/v1/processors/{name}`).
 - `signal` — `traces`, `logs`, or `metrics`. One processor applies to one
-  signal.
-- `dataset` (optional) — a dataset *name* (the same value carried in
+  signal. Log records SignalDB derives at ingest — `gen_ai.evaluation.result`
+  span events fanned out from traces, and uploaded eval results — pass
+  through `logs` processors too (see [Evaluations](evaluations.md)).
+- `dataset` (optional) — a dataset _name_ (the same value carried in
   `X-Dataset-ID`). Unset means every dataset of the tenant.
 - `enabled` (default `true`), `priority` (default `100`), `error_mode`
   (default `ignore`), an optional `description`, and an ordered list of
@@ -66,11 +68,11 @@ naming it.
 
 ### Paths, per signal
 
-| Signal    | Keyed paths                                                                                          | Bare map paths (target of map editors)                          |
-| --------- | ----------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------- |
-| `traces`  | `resource.attributes["k"]`, `instrumentation_scope.name\|version\|attributes["k"]`, `span.name\|kind\|status.code\|status.message\|attributes["k"]` | `attributes`, `resource.attributes`, `instrumentation_scope.attributes` |
-| `logs`    | `resource.attributes["k"]`, `instrumentation_scope.name\|version\|attributes["k"]`, `log.body\|severity_text\|severity_number\|attributes["k"]` | `attributes`, `resource.attributes`, `instrumentation_scope.attributes` |
-| `metrics` | `resource.attributes["k"]`, `instrumentation_scope.name\|version\|attributes["k"]`, `metric.name\|description\|unit`, `datapoint.attributes["k"]` | `datapoint.attributes`, `resource.attributes`, `instrumentation_scope.attributes` |
+| Signal    | Keyed paths                                                                                                                                         | Bare map paths (target of map editors)                                            |
+| --------- | --------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| `traces`  | `resource.attributes["k"]`, `instrumentation_scope.name\|version\|attributes["k"]`, `span.name\|kind\|status.code\|status.message\|attributes["k"]` | `attributes`, `resource.attributes`, `instrumentation_scope.attributes`           |
+| `logs`    | `resource.attributes["k"]`, `instrumentation_scope.name\|version\|attributes["k"]`, `log.body\|severity_text\|severity_number\|attributes["k"]`     | `attributes`, `resource.attributes`, `instrumentation_scope.attributes`           |
+| `metrics` | `resource.attributes["k"]`, `instrumentation_scope.name\|version\|attributes["k"]`, `metric.name\|description\|unit`, `datapoint.attributes["k"]`   | `datapoint.attributes`, `resource.attributes`, `instrumentation_scope.attributes` |
 
 Unqualified `attributes[...]` resolves to the signal's leaf item (the span's,
 the log record's, or — for metrics — the data point's attributes); unqualified
@@ -81,18 +83,18 @@ available for.
 
 ### Editors
 
-| Editor                                            | Arity / target                                          |
-| -------------------------------------------------- | -------------------------------------------------------- |
-| `set(target, value)`                               | keyed path                                                |
-| `delete_key(map, "key")`                           | bare map path                                             |
-| `delete_matching_keys(map, regex)`                 | bare map path                                             |
-| `keep_keys(map, "key1", "key2", ...)`              | bare map path                                             |
-| `truncate_all(map, max_len)`                       | bare map path                                             |
-| `limit(map, max_keys)`                             | bare map path                                             |
-| `replace_pattern(target, regex, replacement)`      | keyed path, 3 args only                                   |
-| `replace_all_patterns(map, "key"\|"value", regex, replacement)` | bare map path; the mode string is required        |
-| `replace_match(target, glob, replacement)`         | keyed path                                                 |
-| `replace_all_matches(map, glob, replacement)`      | bare map path                                              |
+| Editor                                                          | Arity / target                             |
+| --------------------------------------------------------------- | ------------------------------------------ |
+| `set(target, value)`                                            | keyed path                                 |
+| `delete_key(map, "key")`                                        | bare map path                              |
+| `delete_matching_keys(map, regex)`                              | bare map path                              |
+| `keep_keys(map, "key1", "key2", ...)`                           | bare map path                              |
+| `truncate_all(map, max_len)`                                    | bare map path                              |
+| `limit(map, max_keys)`                                          | bare map path                              |
+| `replace_pattern(target, regex, replacement)`                   | keyed path, 3 args only                    |
+| `replace_all_patterns(map, "key"\|"value", regex, replacement)` | bare map path; the mode string is required |
+| `replace_match(target, glob, replacement)`                      | keyed path                                 |
+| `replace_all_matches(map, glob, replacement)`                   | bare map path                              |
 
 ### Converters
 
@@ -129,11 +131,11 @@ Every processor declares an `error_mode`, checked per statement at runtime
 (type-conversion failures, an editor targeting a missing required path, or a
 replacement-template error):
 
-| Mode        | Behavior                                                                                  |
-| ----------- | ------------------------------------------------------------------------------------------ |
+| Mode               | Behavior                                                                                                                                      |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------- |
 | `ignore` (default) | Log the failure (rate-limited to once per minute per tenant+processor) and skip that statement for that item; the rest of the export proceeds |
-| `silent`    | Skip the statement for that item without logging                                          |
-| `propagate` | Abort the whole export with an invalid-argument error (HTTP 400 / gRPC `InvalidArgument`) before anything is written |
+| `silent`           | Skip the statement for that item without logging                                                                                              |
+| `propagate`        | Abort the whole export with an invalid-argument error (HTTP 400 / gRPC `InvalidArgument`) before anything is written                          |
 
 A `where` condition referencing an absent key is `false`, never a runtime
 error, under any mode.
@@ -198,7 +200,7 @@ curl -X POST -H "Authorization: Bearer $KEY" -H "X-Tenant-ID: acme" \
 `:validate` returns positional errors (statement index, column, message
 naming the offending token) and never stores anything. `:test` accepts a
 `signal`, an optional `dataset`, an optional inline `processors` list (omit it
-to dry-run the tenant's *stored* processors for that signal/dataset), and an
+to dry-run the tenant's _stored_ processors for that signal/dataset), and an
 OTLP JSON payload up to `[processors].test_payload_max_bytes` (default 1 MiB);
 it returns the transformed `payload`, the `input` it started from, and, per
 statement, how many items it matched and how many errored. The server decodes
@@ -211,15 +213,15 @@ statements changed.
 
 All under `/api/v1`, tenant-credentialed:
 
-| Method   | Path                       | Scope               | Notes                                    |
-| -------- | -------------------------- | -------------------- | ----------------------------------------- |
-| `GET`    | `/processors`              | `processors:read`    | List                                      |
-| `POST`   | `/processors`              | `processors:write`   | Create → `201`                            |
-| `GET`    | `/processors/{name}`       | `processors:read`    | Get                                       |
-| `PUT`    | `/processors/{name}`       | `processors:write`   | Replace (full document; never upserts)    |
-| `DELETE` | `/processors/{name}`       | `processors:write`   | Delete → `204`                            |
-| `POST`   | `/processors:validate`     | `processors:read`    | Compile-check, nothing stored             |
-| `POST`   | `/processors:test`         | `processors:read`    | Dry-run against a payload                 |
+| Method   | Path                   | Scope              | Notes                                  |
+| -------- | ---------------------- | ------------------ | -------------------------------------- |
+| `GET`    | `/processors`          | `processors:read`  | List                                   |
+| `POST`   | `/processors`          | `processors:write` | Create → `201`                         |
+| `GET`    | `/processors/{name}`   | `processors:read`  | Get                                    |
+| `PUT`    | `/processors/{name}`   | `processors:write` | Replace (full document; never upserts) |
+| `DELETE` | `/processors/{name}`   | `processors:write` | Delete → `204`                         |
+| `POST`   | `/processors:validate` | `processors:read`  | Compile-check, nothing stored          |
+| `POST`   | `/processors:test`     | `processors:read`  | Dry-run against a payload              |
 
 Errors: `404` unknown name (`GET`/`PUT`/`DELETE`), `409` create on an existing
 name, `422` with `errors: [{statement, column, message}]` for compile
@@ -254,7 +256,7 @@ catalogue](mcp.md#what-it-exposes).
 
 ## Explore UI
 
-`/processors` (linked from the user menu) lists the tenant's processors —
+`/processors` (**Configure → Processors** in the sidebar) lists the tenant's processors —
 name, signal, dataset, enabled, priority, status (`ok`/`invalid`), last
 update — and, for tenant admins, an editor: one statement per line, validated
 on blur against `:validate` with inline per-line errors, and a **Test** panel

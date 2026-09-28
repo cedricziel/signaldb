@@ -8,9 +8,19 @@
 //! determines which hours the writer actually produced files for.
 
 use anyhow::{Context, Result};
+use common::catalog::Catalog;
 use common::catalog_manager::CatalogManager;
+use common::schema::logical::AttributeLevel;
+use common::schema::type_authority::CanonicalType;
 use compactor::ManifestReader;
-use datafusion::arrow::array::{Array, RecordBatch};
+use datafusion::arrow::array::{Array, MapArray, RecordBatch, StructArray};
+use datafusion::arrow::datatypes::{DataType, Field};
+use iceberg_rust::catalog::identifier::Identifier;
+use iceberg_rust::catalog::tabular::Tabular;
+use iceberg_rust::spec::partition::{
+    PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
+};
+use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, Type};
 use iceberg_rust::table::Table;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -44,6 +54,177 @@ pub async fn load_table(
         iceberg_rust::catalog::tabular::Tabular::Table(table) => Ok(table),
         _ => anyhow::bail!("Expected a table at {identifier}"),
     }
+}
+
+/// Load a table with fresh metadata, already knowing its [`Identifier`] --
+/// for a caller that built one directly rather than from
+/// tenant/dataset/table strings (e.g. to reuse it for writing too).
+pub async fn load_table_by_identifier(
+    catalog_manager: &CatalogManager,
+    identifier: &Identifier,
+) -> Result<Table> {
+    match catalog_manager
+        .catalog()
+        .load_tabular(identifier)
+        .await
+        .with_context(|| format!("Failed to load table {identifier}"))?
+    {
+        Tabular::Table(table) => Ok(table),
+        _ => anyhow::bail!("Expected a table at {identifier}"),
+    }
+}
+
+/// A single-column typed-layout `Map<Utf8, value>` field, e.g. one of a
+/// container's four typed homes (`log_attributes_str`, `..._int`, ...).
+/// Consumes `id` for the map field itself and `id + 1`/`id + 2` for its
+/// nested key/value ids.
+pub fn map_field(id: i32, name: &str, value: PrimitiveType) -> StructField {
+    StructField {
+        id,
+        name: name.to_string(),
+        required: false,
+        field_type: Type::Map(MapType {
+            key_id: id + 1,
+            key: Box::new(Type::Primitive(PrimitiveType::String)),
+            value_id: id + 2,
+            value_required: false,
+            value: Box::new(Type::Primitive(value)),
+        }),
+        doc: None,
+        initial_default: None,
+        write_default: None,
+    }
+}
+
+/// A single optional `String` field, e.g. `service_name`.
+pub fn string_field(id: i32, name: &str) -> StructField {
+    StructField {
+        id,
+        name: name.to_string(),
+        required: false,
+        field_type: Type::Primitive(PrimitiveType::String),
+        doc: None,
+        initial_default: None,
+        write_default: None,
+    }
+}
+
+/// A single optional `Binary` field, e.g. a typed-layout container's
+/// `_residue` column.
+pub fn residue_field(id: i32, name: &str) -> StructField {
+    StructField {
+        id,
+        name: name.to_string(),
+        required: false,
+        field_type: Type::Primitive(PrimitiveType::Binary),
+        doc: None,
+        initial_default: None,
+        write_default: None,
+    }
+}
+
+/// The four typed homes plus residue of one typed-layout attribute
+/// container (`resource_attributes`, `log_attributes`, ...), starting at
+/// `id` (consuming `id..id+13`): `_str`, `_int`, `_double`, `_bool` maps
+/// (each a map field plus its key/value ids) and `_residue`.
+pub fn typed_container_fields(id: i32, container: &str) -> Vec<StructField> {
+    vec![
+        map_field(id, &format!("{container}_str"), PrimitiveType::String),
+        map_field(id + 3, &format!("{container}_int"), PrimitiveType::Long),
+        map_field(
+            id + 6,
+            &format!("{container}_double"),
+            PrimitiveType::Double,
+        ),
+        map_field(id + 9, &format!("{container}_bool"), PrimitiveType::Boolean),
+        residue_field(id + 12, &format!("{container}_residue")),
+    ]
+}
+
+/// Hour-partition spec on `timestamp`, matching what every production
+/// signal table uses (`common::iceberg::schemas`). Compaction is
+/// partition-scoped (issue #933), so a test table must be partitioned the
+/// way real tables are — an unpartitioned table has no `timestamp_hour`
+/// value for the planner or executor to scope a job to.
+pub fn hour_partition_spec() -> PartitionSpec {
+    PartitionSpecBuilder::default()
+        .with_spec_id(0)
+        // Iceberg convention: partition field_id = 1000 + source field id.
+        .with_partition_field(PartitionField::new(
+            1,
+            1001,
+            "timestamp_hour",
+            Transform::Hour,
+        ))
+        .build()
+        .expect("hour partition spec should build")
+}
+
+/// Re-types a [`datafusion::arrow::array::builder::MapBuilder`]-built map
+/// onto `target_field`'s declared type -- same offsets, nulls, and
+/// key/value arrays, but the key/value child fields' `PARQUET:field_id`
+/// metadata (absent from a builder-constructed map, required by the
+/// Iceberg-derived arrow schema `write_parquet_partitioned` writes
+/// against).
+pub fn retype_map(map: MapArray, target_field: &Field) -> Result<MapArray> {
+    let DataType::Map(entries_field, ordered) = target_field.data_type().clone() else {
+        anyhow::bail!("{} is not a Map field", target_field.name());
+    };
+    let DataType::Struct(kv_fields) = entries_field.data_type().clone() else {
+        anyhow::bail!("{} entries are not a Struct", target_field.name());
+    };
+    let entries = StructArray::new(
+        kv_fields,
+        vec![map.keys().clone(), map.values().clone()],
+        None,
+    );
+    Ok(MapArray::try_new(
+        entries_field,
+        map.offsets().clone(),
+        entries,
+        map.nulls().cloned(),
+        ordered,
+    )?)
+}
+
+/// Record a key's canonical type and per-level query demand together --
+/// the two catalog seeds every typed per-level attribute promotion test
+/// needs for a `(level, key)` to become an eligible promotion candidate.
+#[allow(clippy::too_many_arguments)]
+pub async fn seed_typed_attribute_demand(
+    service_catalog: &Catalog,
+    tenant_id: &str,
+    dataset_id: &str,
+    signal: &str,
+    level: AttributeLevel,
+    key: &str,
+    canonical: CanonicalType,
+    query_hits: i64,
+) -> Result<()> {
+    service_catalog
+        .override_attribute_type(
+            tenant_id,
+            dataset_id,
+            &common::schema::logical::LogicalFieldId {
+                source: signal.to_string(),
+                level: Some(level),
+                name: key.to_string(),
+            },
+            canonical,
+        )
+        .await?;
+    service_catalog
+        .add_attribute_level_query_hits(
+            tenant_id,
+            dataset_id,
+            signal,
+            level,
+            key,
+            query_hits,
+            chrono::Utc::now(),
+        )
+        .await?;
+    Ok(())
 }
 
 /// The `timestamp_hour` partition holding the most live data files.

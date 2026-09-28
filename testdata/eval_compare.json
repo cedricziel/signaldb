@@ -1,0 +1,256 @@
+{
+  "cases": [
+    {
+      "name": "a pass turning into a fail is a regression even with a gain elsewhere",
+      "baseline": {
+        "Correctness": {
+          "results": 1,
+          "pass": 1,
+          "score_sum": 0.95,
+          "scored": 1
+        },
+        "Groundedness": {
+          "results": 1,
+          "pass": 1,
+          "score_sum": 0.5,
+          "scored": 1
+        }
+      },
+      "candidate": {
+        "Correctness": {
+          "results": 1,
+          "fail": 1,
+          "score_sum": 0.2,
+          "scored": 1
+        },
+        "Groundedness": {
+          "results": 1,
+          "pass": 1,
+          "score_sum": 0.9,
+          "scored": 1
+        }
+      },
+      "kind": "regression",
+      "no_baseline": false,
+      "evaluators": { "Correctness": "worse", "Groundedness": "better" },
+      "delta": -0.35
+    },
+    {
+      "name": "a wobble under 0.05 is unchanged",
+      "baseline": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.95, "scored": 1 }
+      },
+      "candidate": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.96, "scored": 1 }
+      },
+      "kind": "unchanged",
+      "no_baseline": false,
+      "evaluators": { "G": "same" },
+      "delta": 0.01
+    },
+    {
+      "name": "a drop of exactly 0.05 counts despite float noise",
+      "baseline": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.95, "scored": 1 }
+      },
+      "candidate": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.9, "scored": 1 }
+      },
+      "kind": "regression",
+      "no_baseline": false,
+      "evaluators": { "G": "worse" },
+      "delta": -0.05
+    },
+    {
+      "name": "a gain of exactly 0.05 is an improvement",
+      "baseline": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.5, "scored": 1 }
+      },
+      "candidate": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.55, "scored": 1 }
+      },
+      "kind": "improvement",
+      "no_baseline": false,
+      "evaluators": { "G": "better" },
+      "delta": 0.05
+    },
+    {
+      "name": "fail to pass without scores is better and moves the delta by one",
+      "baseline": { "Tone": { "results": 1, "fail": 1 } },
+      "candidate": { "Tone": { "results": 1, "pass": 1 } },
+      "kind": "improvement",
+      "no_baseline": false,
+      "evaluators": { "Tone": "better" },
+      "delta": 1
+    },
+    {
+      "name": "a failing case with no baseline is a regression",
+      "baseline": null,
+      "candidate": {
+        "G": { "results": 1, "fail": 1, "score_sum": 0.1, "scored": 1 }
+      },
+      "kind": "regression",
+      "no_baseline": true,
+      "evaluators": {},
+      "delta": 0
+    },
+    {
+      "name": "a passing case with no baseline is unchanged",
+      "baseline": null,
+      "candidate": {
+        "G": { "results": 1, "pass": 1, "score_sum": 0.9, "scored": 1 }
+      },
+      "kind": "unchanged",
+      "no_baseline": true,
+      "evaluators": {},
+      "delta": 0
+    },
+    {
+      "name": "an evaluator the baseline lacks is not compared",
+      "baseline": {
+        "A": { "results": 1, "pass": 1, "score_sum": 0.8, "scored": 1 }
+      },
+      "candidate": {
+        "A": { "results": 1, "pass": 1, "score_sum": 0.8, "scored": 1 },
+        "B": { "results": 1, "fail": 1, "score_sum": 0.1, "scored": 1 }
+      },
+      "kind": "unchanged",
+      "no_baseline": false,
+      "evaluators": { "A": "same" },
+      "delta": 0
+    },
+    {
+      "name": "trials average: half passing still passes, but the mean dropped",
+      "baseline": {
+        "G": { "results": 2, "pass": 2, "score_sum": 1.8, "scored": 2 }
+      },
+      "candidate": {
+        "G": {
+          "results": 2,
+          "pass": 1,
+          "fail": 1,
+          "score_sum": 0.9,
+          "scored": 2
+        }
+      },
+      "kind": "regression",
+      "no_baseline": false,
+      "evaluators": { "G": "worse" },
+      "delta": -0.45
+    },
+    {
+      "name": "evaluator errors have no verdict and no mean",
+      "baseline": { "G": { "results": 1, "errors": 1 } },
+      "candidate": { "G": { "results": 1, "errors": 1 } },
+      "kind": "unchanged",
+      "no_baseline": false,
+      "evaluators": { "G": "same" },
+      "delta": 0
+    },
+    {
+      "name": "one evaluator better and another the same is an improvement",
+      "baseline": {
+        "A": { "results": 1, "pass": 1, "score_sum": 0.5, "scored": 1 },
+        "B": { "results": 1, "pass": 1, "score_sum": 0.8, "scored": 1 }
+      },
+      "candidate": {
+        "A": { "results": 1, "pass": 1, "score_sum": 0.7, "scored": 1 },
+        "B": { "results": 1, "pass": 1, "score_sum": 0.8, "scored": 1 }
+      },
+      "kind": "improvement",
+      "no_baseline": false,
+      "evaluators": { "A": "better", "B": "same" },
+      "delta": 0.2
+    }
+  ],
+  "compare": [
+    {
+      "name": "regressions by largest drop, improvements by largest gain, unchanged by id",
+      "baseline": {
+        "a": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.9, "scored": 1 }
+        },
+        "b": { "G": { "results": 1, "pass": 1, "score_sum": 1, "scored": 1 } },
+        "c": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.5, "scored": 1 }
+        },
+        "d": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.7, "scored": 1 }
+        },
+        "g": { "G": { "results": 1, "pass": 1, "score_sum": 0.5, "scored": 1 } }
+      },
+      "candidate": {
+        "a": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.8, "scored": 1 }
+        },
+        "b": {
+          "G": { "results": 1, "fail": 1, "score_sum": 0.2, "scored": 1 }
+        },
+        "c": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.9, "scored": 1 }
+        },
+        "d": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.7, "scored": 1 }
+        },
+        "e": {
+          "G": { "results": 1, "fail": 1, "score_sum": 0.1, "scored": 1 }
+        },
+        "f": {
+          "G": { "results": 1, "pass": 1, "score_sum": 0.6, "scored": 1 }
+        },
+        "g": { "G": { "results": 1, "pass": 1, "score_sum": 0.6, "scored": 1 } }
+      },
+      "order": [
+        ["b", "regression"],
+        ["a", "regression"],
+        ["e", "regression"],
+        ["c", "improvement"],
+        ["g", "improvement"],
+        ["d", "unchanged"],
+        ["f", "unchanged"]
+      ]
+    }
+  ],
+  "tool_diffs": [
+    {
+      "baseline": ["lookup_order", "check_policy", "issue_refund"],
+      "candidate": ["lookup_order", "issue_refund"],
+      "steps": [
+        { "name": "lookup_order", "kind": "same" },
+        { "name": "check_policy", "kind": "skipped" },
+        { "name": "issue_refund", "kind": "same" }
+      ]
+    },
+    {
+      "baseline": ["lookup_order", "track_shipment"],
+      "candidate": ["lookup_order", "lookup_order", "track_shipment"],
+      "steps": [
+        { "name": "lookup_order", "kind": "same" },
+        { "name": "lookup_order", "kind": "repeated" },
+        { "name": "track_shipment", "kind": "same" }
+      ]
+    },
+    {
+      "baseline": ["a", "b", "c"],
+      "candidate": ["b", "a", "c"],
+      "steps": [
+        { "name": "b", "kind": "same" },
+        { "name": "a", "kind": "reordered" },
+        { "name": "c", "kind": "same" }
+      ]
+    },
+    {
+      "baseline": [],
+      "candidate": ["search_kb"],
+      "steps": [{ "name": "search_kb", "kind": "new" }]
+    },
+    {
+      "baseline": ["a", "b"],
+      "candidate": [],
+      "steps": [
+        { "name": "a", "kind": "skipped" },
+        { "name": "b", "kind": "skipped" }
+      ]
+    }
+  ]
+}

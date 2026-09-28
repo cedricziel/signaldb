@@ -232,13 +232,16 @@ async fn test_service_heartbeat_and_cleanup_with_sqlite() {
 
 #[tokio::test]
 async fn test_catalog_unavailability_scenarios() {
-    // Test with invalid SQLite path
+    // A parent that is a regular file can't be turned into a directory, even
+    // by root, so the catalog can never be created there.
+    let blocker = tempfile::NamedTempFile::new().expect("Failed to create temp file");
+    let invalid_dsn = format!("sqlite:{}", blocker.path().join("sub/test.db").display());
     let invalid_config = Configuration {
         database: DatabaseConfig {
-            dsn: "sqlite:/invalid/path/that/does/not/exist/test.db".to_string(),
+            dsn: invalid_dsn.clone(),
         },
         discovery: Some(DiscoveryConfig {
-            dsn: "sqlite:/invalid/path/that/does/not/exist/test.db".to_string(),
+            dsn: invalid_dsn,
             heartbeat_interval: Duration::from_secs(1),
             poll_interval: Duration::from_secs(2),
             ttl: Duration::from_secs(10),

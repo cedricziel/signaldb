@@ -456,7 +456,7 @@ pub fn create_router(state: RouterAppState) -> Router {
             endpoints::ops::router().layer(ops_auth_layer),
         )
         .nest(
-            "/api/v1",
+            endpoints::links::API_V1,
             endpoints::tenant::router()
                 .merge(endpoints::tenants::router())
                 .merge(endpoints::source_context::router())
@@ -465,6 +465,8 @@ pub fn create_router(state: RouterAppState) -> Router {
                 .route("/schema", get(endpoints::schema::get_schema))
                 .nest("/schema", endpoints::schema::router())
                 .merge(endpoints::processors::router())
+                .merge(endpoints::eval_sets::router())
+                .merge(endpoints::evals::router())
                 .route("/whoami", get(endpoints::session::whoami))
                 .route("/connection", get(endpoints::session::connection_info))
                 .merge(endpoints::query::router())

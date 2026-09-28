@@ -20,6 +20,8 @@ export interface KpiCardProps {
   detail?: string;
   /** A `Sparkline` or other small chart, rendered below the value. */
   children?: ReactNode;
+  /** Extra class on the card, e.g. for a warning border. */
+  className?: string;
 }
 
 export function KpiCard({
@@ -30,9 +32,10 @@ export function KpiCard({
   change,
   detail,
   children,
+  className,
 }: KpiCardProps) {
   return (
-    <div className="kpi-card">
+    <div className={className ? `kpi-card ${className}` : "kpi-card"}>
       <div className="kpi-label">{label}</div>
       <div className="kpi-value-row">
         <span className={`kpi-value kpi-value-${valueTone}`}>{value}</span>

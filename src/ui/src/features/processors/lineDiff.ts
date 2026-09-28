@@ -8,12 +8,12 @@ export type DiffLine =
   | { kind: "removed"; text: string }
   | { kind: "added"; text: string };
 
-/** Line-by-line diff of `before` vs `after` via longest-common-subsequence,
- * emitted as a flat sequence of same/removed/added lines (removed lines from
- * `before` precede the added lines from `after` at each divergence point). */
-export function diffLines(before: string, after: string): DiffLine[] {
-  const a = before.split("\n");
-  const b = after.split("\n");
+export type DiffOp<T> = { kind: "same" | "removed" | "added"; item: T };
+
+/** Diff of two sequences via longest-common-subsequence, as a flat run of
+ * same/removed/added items (removed items from `a` precede the added items
+ * from `b` at each divergence point). */
+export function diffSequence<T>(a: readonly T[], b: readonly T[]): DiffOp<T>[] {
   let head = 0;
   while (head < a.length && head < b.length && a[head] === b[head]) head++;
   let tail = 0;
@@ -24,7 +24,7 @@ export function diffLines(before: string, after: string): DiffLine[] {
   ) {
     tail++;
   }
-  const same = (text: string): DiffLine => ({ kind: "same", text });
+  const same = (item: T): DiffOp<T> => ({ kind: "same", item });
   return [
     ...a.slice(0, head).map(same),
     ...diffMiddle(
@@ -35,18 +35,18 @@ export function diffLines(before: string, after: string): DiffLine[] {
   ];
 }
 
-function diffMiddle(a: string[], b: string[]): DiffLine[] {
+function diffMiddle<T>(a: readonly T[], b: readonly T[]): DiffOp<T>[] {
   const n = a.length;
   const m = b.length;
   // Guard against pathological input: the DP matrix below is O(n*m) cells,
-  // which can freeze the tab for a large pasted payload. Fall back to a
-  // cheap linear diff (all removed, then all added) past this threshold.
+  // which can freeze the tab for a large input. Fall back to a cheap linear
+  // diff (all removed, then all added) past this threshold.
   const maxCells = 1_000_000;
   if (n * m > maxCells) {
-    const result: DiffLine[] = [];
-    for (const line of a) result.push({ kind: "removed", text: line });
-    for (const line of b) result.push({ kind: "added", text: line });
-    return result;
+    return [
+      ...a.map((item) => ({ kind: "removed" as const, item })),
+      ...b.map((item) => ({ kind: "added" as const, item })),
+    ];
   }
   // dp[i][j] = length of the LCS of a[i:] and b[j:]
   const dp: number[][] = Array.from({ length: n + 1 }, () =>
@@ -60,23 +60,30 @@ function diffMiddle(a: string[], b: string[]): DiffLine[] {
           : Math.max(dp[i + 1]![j]!, dp[i]![j + 1]!);
     }
   }
-  const result: DiffLine[] = [];
+  const result: DiffOp<T>[] = [];
   let i = 0;
   let j = 0;
   while (i < n && j < m) {
     if (a[i] === b[j]) {
-      result.push({ kind: "same", text: a[i]! });
+      result.push({ kind: "same", item: a[i]! });
       i++;
       j++;
     } else if (dp[i + 1]![j]! >= dp[i]![j + 1]!) {
-      result.push({ kind: "removed", text: a[i]! });
+      result.push({ kind: "removed", item: a[i]! });
       i++;
     } else {
-      result.push({ kind: "added", text: b[j]! });
+      result.push({ kind: "added", item: b[j]! });
       j++;
     }
   }
-  while (i < n) result.push({ kind: "removed", text: a[i++]! });
-  while (j < m) result.push({ kind: "added", text: b[j++]! });
+  while (i < n) result.push({ kind: "removed", item: a[i++]! });
+  while (j < m) result.push({ kind: "added", item: b[j++]! });
   return result;
+}
+
+/** Line-by-line diff of `before` vs `after` (see `diffSequence`). */
+export function diffLines(before: string, after: string): DiffLine[] {
+  return diffSequence(before.split("\n"), after.split("\n")).map(
+    ({ kind, item }) => ({ kind, text: item }),
+  );
 }

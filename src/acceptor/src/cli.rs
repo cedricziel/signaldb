@@ -158,6 +158,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
         processor_registry: http_resources.processor_registry,
         retry_dedup: http_resources.retry_dedup,
         max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
+        type_snapshots: http_resources.type_snapshots,
     };
     let http_handle = tokio::spawn(async move {
         if let Err(e) =

@@ -1,6 +1,5 @@
 // The app navigation that replaced the top bar: a collapsible left sidebar
-// (brand, tenant/dataset switcher, grouped pages, Manage, account, collapse
-// toggle) at ≥ 720px, and a 48px top bar with a slide-in drawer below that.
+// (brand, tenant/dataset switcher, grouped pages, account, collapse toggle) at ≥ 720px, and a 48px top bar with a slide-in drawer below that.
 // The command palette and its trigger live in `CommandPalette` and
 // `PageHeader`; `useAppNavState` owns the shared open/collapsed state.
 
@@ -11,13 +10,13 @@ import { DEFAULT_DATASET, DEFAULT_TENANT } from "../../api/http";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
+import { useBreadcrumbLeafValue } from "./breadcrumbLeaf";
 import { BrandPulse, NavIcon } from "./NavIcon";
 import {
   currentPageFor,
   HOME_PATH,
-  MANAGE_PAGE,
-  NAV_GROUPS,
   pageHref,
+  visibleNavGroups,
   type PageId,
 } from "./navModel";
 import { UserMenu } from "./UserMenu";
@@ -123,6 +122,7 @@ interface NavProps {
   update: (patch: Partial<ExploreState>) => void;
   who: WhoamiResponse | undefined;
   canManage: boolean;
+  isDemo: boolean;
   nav: ReturnType<typeof useAppNavState>;
 }
 
@@ -130,9 +130,10 @@ export function AppNav(props: NavProps) {
   return props.nav.narrow ? <MobileNav {...props} /> : <Sidebar {...props} />;
 }
 
-function Sidebar({ state, update, who, canManage, nav }: NavProps) {
+function Sidebar({ state, update, who, canManage, isDemo, nav }: NavProps) {
   const { pathname } = useLocation();
   const current = currentPageFor(pathname).id;
+  const groups = visibleNavGroups({ canManage, isDemo });
   const expanded = !nav.collapsed;
   const collapseLabel = expanded ? "Collapse sidebar" : "Expand sidebar";
   return (
@@ -160,7 +161,7 @@ function Sidebar({ state, update, who, canManage, nav }: NavProps) {
           expanded={expanded}
         />
         <nav className="app-sidebar-groups" aria-label="Pages">
-          {NAV_GROUPS.map((g) => (
+          {groups.map((g) => (
             <div key={g.title} className="app-nav-group">
               {expanded ? (
                 <div className="nav-section-label app-nav-group-label">
@@ -183,16 +184,11 @@ function Sidebar({ state, update, who, canManage, nav }: NavProps) {
           ))}
         </nav>
         <div className="app-sidebar-footer">
-          {canManage && (
-            <NavItem
-              id="manage"
-              label={MANAGE_PAGE.label}
-              to={MANAGE_PAGE.path}
-              current={current === "manage"}
-              showLabel={expanded}
-            />
-          )}
-          <UserMenu state={state} variant="sidebar" expanded={expanded} />
+          <UserMenu
+            who={who}
+            variant="sidebar"
+            expanded={expanded}
+          />
           <button
             type="button"
             className="app-nav-item app-sidebar-collapse"
@@ -375,9 +371,11 @@ function TenantOption({
   );
 }
 
-function MobileNav({ state, update, who, canManage, nav }: NavProps) {
+function MobileNav({ state, update, who, canManage, isDemo, nav }: NavProps) {
   const { pathname } = useLocation();
   const page = currentPageFor(pathname);
+  const leaf = useBreadcrumbLeafValue();
+  const groups = visibleNavGroups({ canManage, isDemo });
   const drawerOpen = nav.overlay === "drawer";
   return (
     <>
@@ -399,7 +397,7 @@ function MobileNav({ state, update, who, canManage, nav }: NavProps) {
           <BrandPulse />
         </Link>
         <span className="app-mobilebar-page" aria-current="page">
-          {page.label}
+          {leaf ?? page.label}
         </span>
         <span className="app-mobilebar-spacer" />
         <button
@@ -411,7 +409,7 @@ function MobileNav({ state, update, who, canManage, nav }: NavProps) {
         >
           <NavIcon name="search" size={18} />
         </button>
-        <UserMenu state={state} variant="compact" />
+        <UserMenu who={who} variant="compact" />
       </header>
       {drawerOpen && (
         <>
@@ -428,7 +426,7 @@ function MobileNav({ state, update, who, canManage, nav }: NavProps) {
               expanded
               large
             />
-            {NAV_GROUPS.map((g) => (
+            {groups.map((g) => (
               <div key={g.title} className="app-nav-group">
                 <div className="nav-section-label app-drawer-group-label">
                   {g.title}
@@ -446,18 +444,6 @@ function MobileNav({ state, update, who, canManage, nav }: NavProps) {
                 ))}
               </div>
             ))}
-            {canManage && (
-              <div className="app-drawer-footer">
-                <NavItem
-                  id="manage"
-                  label={MANAGE_PAGE.label}
-                  to={MANAGE_PAGE.path}
-                  current={page.id === "manage"}
-                  showLabel
-                  large
-                />
-              </div>
-            )}
           </nav>
         </>
       )}

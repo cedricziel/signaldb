@@ -1,7 +1,9 @@
 mod authority;
+mod snapshot;
 mod store;
 
 pub use authority::{AuthorityError, SignalScope, TypeAuthority};
+pub use snapshot::{TypeSnapshot, TypeSnapshots, off_type_keys};
 pub use store::{AttributeKeyType, AttributeTypeRecord, StoreError, StoredType};
 
 use crate::schema::logical::{AttributeLevel, LogicalType};

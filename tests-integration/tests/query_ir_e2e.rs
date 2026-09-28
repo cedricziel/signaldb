@@ -16,7 +16,6 @@ use axum::{
     http::{Request, StatusCode},
     middleware,
 };
-use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource, auth_middleware};
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -43,16 +42,17 @@ use tonic::transport::Server;
 use tower::ServiceExt;
 
 /// A base timestamp (2023-11-14T22:13:20Z) shared by the ingested signals.
-const BASE_NS: i64 = 1_700_000_000_000_000_000;
+pub(crate) const BASE_NS: i64 = 1_700_000_000_000_000_000;
 
 pub(crate) struct TestServices {
-    flight_transport: Arc<InMemoryFlightTransport>,
+    pub(crate) flight_transport: Arc<InMemoryFlightTransport>,
     pub(crate) log_handler: Arc<LogHandler>,
     pub(crate) trace_handler: Arc<TraceHandler>,
     /// Shared with the router built by `build_router`, so a processor
     /// created through `POST /api/v1/processors` is visible to the next
     /// `for_request` lookup the ingest handlers make (task 3.3).
     processor_registry: Arc<common::processors::ProcessorRegistry>,
+    pub(crate) catalog: Arc<Catalog>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -190,18 +190,17 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
     // Shared with the writer's `TypeAuthority` below, so the querier's
-    // `CanonicalTypeLookup` (wired via `with_tenant_source`) sees the
-    // canonical types the writer commits -- both read the same DB the
-    // production binary points at `router_bootstrap.catalog()` for.
+    // `CanonicalTypeLookup` sees the canonical types the writer commits.
     let type_authority_catalog = Catalog::new(&catalog_dsn)
         .await
         .expect("type authority catalog");
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog mgr")
-            .with_tenant_source(Arc::new(type_authority_catalog.clone())),
-    );
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("catalog mgr");
     let writer_service =
         tests_integration::test_support::writer_service_with_type_authority_and_catalog(
             catalog_manager.clone(),
@@ -272,7 +271,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
     ));
     let processor_catalog = Arc::new(Catalog::new(&catalog_dsn).await.expect("catalog"));
     let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
-        processor_catalog,
+        processor_catalog.clone(),
         &common::config::ProcessorsConfig::default(),
     ));
     let log_handler = Arc::new(LogHandler::new(
@@ -280,11 +279,14 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         wal_manager.clone(),
         processor_registry.clone(),
     ));
-    let trace_handler = Arc::new(TraceHandler::new(
-        flight_transport.clone(),
-        wal_manager,
-        processor_registry.clone(),
-    ));
+    let trace_handler = Arc::new(
+        TraceHandler::new(
+            flight_transport.clone(),
+            wal_manager,
+            processor_registry.clone(),
+        )
+        .with_evaluation_logs(log_handler.clone()),
+    );
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {
@@ -308,12 +310,13 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         log_handler,
         trace_handler,
         processor_registry,
+        catalog: processor_catalog,
         config,
         _temp_dir: temp_dir,
     }
 }
 
-fn string_value(s: &str) -> AnyValue {
+pub(crate) fn string_value(s: &str) -> AnyValue {
     AnyValue {
         value: Some(Value::StringValue(s.to_string())),
     }
@@ -438,7 +441,8 @@ pub(crate) fn traces_request(service: &str, spans: Vec<Span>) -> ExportTraceServ
     }
 }
 
-/// Build the router with the native IR endpoint and test auth.
+/// Build the router with the native IR, processors, eval-sets and eval-results endpoints
+/// and test auth.
 pub(crate) async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
@@ -465,6 +469,8 @@ pub(crate) async fn build_router(services: &TestServices) -> Router {
             "/api/v1",
             endpoints::query::router()
                 .merge(endpoints::processors::router())
+                .merge(endpoints::eval_sets::router())
+                .merge(endpoints::evals::router())
                 .with_state(state),
         )
         .merge(traces_http)
@@ -1189,6 +1195,64 @@ async fn scoped_aggregate_keeps_groups_with_no_match() {
         table_pairs(&body, "service_name", "errors"),
         vec![("api".to_string(), 0), ("web".to_string(), 1)],
         "the error-free group is kept, reporting zero: {body}"
+    );
+}
+
+/// A `count_distinct` aggregate (`irVersion` 9) over ingested OTLP logs:
+/// three records carry two distinct `session.id` values, one has no
+/// `session.id` at all — the null must not inflate the count.
+#[tokio::test]
+async fn count_distinct_aggregate_end_to_end() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let with_session = |offset_ns: i64, session_id: &str| LogRecord {
+        attributes: vec![KeyValue {
+            key: "session.id".to_string(),
+            value: Some(string_value(session_id)),
+            ..Default::default()
+        }],
+        ..log_record(offset_ns, "INFO", "page view")
+    };
+
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "web",
+                vec![
+                    with_session(0, "s1"),
+                    with_session(1_000_000, "s1"),
+                    with_session(2_000_000, "s2"),
+                    log_record(3_000_000, "INFO", "no session on this one"),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest web logs");
+
+    let app = build_router(&services).await;
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 9,
+            "from": "logs",
+            "range": range(),
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": ["service.name"], "aggs": [
+                { "fn": "count_distinct", "of": "session.id", "as": "sessions" }
+            ] } } ]
+        }),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "count_distinct aggregate: {body}");
+    assert_eq!(
+        table_pairs(&body, "service_name", "sessions"),
+        vec![("web".to_string(), 2)],
+        "two distinct sessions (s1, s2); the record with no session.id doesn't count: {body}"
     );
 }
 

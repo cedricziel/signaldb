@@ -394,13 +394,7 @@ async fn query_ir_single(
             .await
             .map(axum::Json);
     }
-    let payload = serde_json::json!({ "document": document.clone(), "now_ns": now });
-    let payload = serde_json::to_string(&payload)
-        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
-    let ticket = format!(
-        "query_ir:{}:{}:{}",
-        ctx.tenant_slug, ctx.dataset_slug, payload
-    );
+    let ticket = query_ir_ticket(ctx, &document, now)?;
 
     let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
@@ -570,15 +564,7 @@ async fn execute_inner_series_query(
     now_ns: i64,
 ) -> Result<(ResolvedWindow, Vec<common::query_ir::EvalSeries>), ApiError> {
     let window = resolve_window(&req.range, now_ns)?;
-    let document = serde_json::to_value(req)
-        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
-    let payload = serde_json::json!({ "document": document, "now_ns": now_ns });
-    let payload = serde_json::to_string(&payload)
-        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
-    let ticket = format!(
-        "query_ir:{}:{}:{}",
-        ctx.tenant_slug, ctx.dataset_slug, payload
-    );
+    let ticket = query_ir_ticket(ctx, req, now_ns)?;
     let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
     let (series, _step_ns) = to_series(&batches);
     let eval_series = series
@@ -593,6 +579,40 @@ async fn execute_inner_series_query(
         })
         .collect();
     Ok((window, eval_series))
+}
+
+/// The `query_ir:{tenant}:{dataset}:{payload}` Flight ticket for one IR
+/// document, scoped to the caller's tenant and dataset slugs and carrying
+/// the server clock stamp relative anchors resolve against.
+fn query_ir_ticket(
+    ctx: &TenantContext,
+    document: &impl Serialize,
+    now_ns: i64,
+) -> Result<String, ApiError> {
+    let payload = serde_json::json!({ "document": document, "now_ns": now_ns });
+    let payload = serde_json::to_string(&payload)
+        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+    Ok(format!(
+        "query_ir:{}:{}:{}",
+        ctx.tenant_slug, ctx.dataset_slug, payload
+    ))
+}
+
+/// Run one IR document for the caller's tenant and dataset exactly the way
+/// a single `POST /api/v1/query` request runs (same ticket, querier and
+/// result bounds), decoded to the `rows`/`table` shape. For first-party
+/// server-side readers such as building eval cases from traces, which go
+/// through the Query IR rather than a compatibility API. The caller checks
+/// the source's read scope first ([`source_read_scope`]).
+pub(super) async fn execute_document_rows(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    document: &common::query_ir::Document,
+    now_ns: i64,
+) -> Result<(Vec<ResultColumn>, Vec<Vec<serde_json::Value>>), ApiError> {
+    let ticket = query_ir_ticket(ctx, document, now_ns)?;
+    let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
+    Ok(ir_table(&batches))
 }
 
 /// Whether the request asks about the source rather than its records.
@@ -760,7 +780,7 @@ fn edit_distance(a: &str, b: &str) -> usize {
 }
 
 /// Require the read scope associated with a registered Query IR source.
-fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
+pub(super) fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
         "logs" | "traces" | "profiles" | "metrics" => source,
         // metrics_histogram is a distinct IR source (bucketed rows, not a
@@ -784,7 +804,7 @@ fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> 
 }
 
 /// Resolve a range to an absolute window using the server-stamped clock.
-fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, ApiError> {
+pub(super) fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, ApiError> {
     let resolve = |s: &str| -> Result<i64, ApiError> {
         match coerce(
             &serde_json::Value::String(s.to_string()),

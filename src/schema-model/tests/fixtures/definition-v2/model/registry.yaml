@@ -1,0 +1,37 @@
+file_format: definition/2
+attributes:
+  - key: widget.color
+    type:
+      members:
+        - id: red
+          value: "red"
+          brief: Red widget.
+        - id: blue
+          value: "blue"
+          brief: Blue widget.
+    brief: The color of the widget.
+    stability: development
+  - key: widget.id
+    type: string
+    brief: The unique identifier of the widget.
+    examples: ["w-1"]
+    stability: development
+
+attribute_groups:
+  - id: widget.common
+    visibility: internal
+    attributes:
+      - ref: widget.id
+        requirement_level: required
+      - ref: widget.color
+        requirement_level: recommended
+
+entities:
+  - name: widget
+    brief: A physical widget.
+    stability: development
+    attributes:
+      - ref: widget.id
+        role: identifying
+      - ref: widget.color
+        role: descriptive

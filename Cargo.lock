@@ -21,7 +21,6 @@ dependencies = [
  "opentelemetry-appender-tracing",
  "opentelemetry-proto",
  "opentelemetry_sdk",
- "ottl",
  "prost",
  "serde",
  "serde_json",
@@ -34,7 +33,6 @@ dependencies = [
  "tracing",
  "tracing-opentelemetry",
  "tracing-subscriber",
- "twox-hash",
  "uuid",
  "workspace-hack",
  "zstd 0.14.0",
@@ -1304,8 +1302,10 @@ dependencies = [
  "clap",
  "crc32fast",
  "criterion",
+ "csv",
  "dashmap",
  "datafusion",
+ "eval-model",
  "figment",
  "futures",
  "hex",
@@ -2950,6 +2950,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "eval-model"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "futures",
+ "opentelemetry-semantic-conventions",
+ "query-ir",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+]
+
+[[package]]
 name = "event-listener"
 version = "5.4.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4497,6 +4511,7 @@ dependencies = [
  "clap",
  "common",
  "dashmap",
+ "eval-model",
  "futures",
  "opentelemetry",
  "opentelemetry_sdk",
@@ -4511,6 +4526,7 @@ dependencies = [
  "tracing-opentelemetry",
  "tracing-subscriber",
  "url",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -7395,6 +7411,7 @@ dependencies = [
  "clap",
  "clap_complete",
  "crossterm",
+ "eval-model",
  "futures",
  "insta",
  "mockito",
@@ -7407,6 +7424,8 @@ dependencies = [
  "tokio",
  "toml 1.1.6+spec-1.1.0",
  "tui-tree-widget",
+ "url",
+ "uuid",
  "workspace-hack",
 ]
 
@@ -9760,8 +9779,10 @@ dependencies = [
  "foldhash 0.2.0",
  "form_urlencoded",
  "futures-channel",
+ "futures-core",
  "futures-executor",
  "futures-io",
+ "futures-sink",
  "futures-task",
  "futures-util",
  "generic-array",

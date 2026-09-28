@@ -27,6 +27,7 @@ pub mod auth;
 pub mod chunk;
 pub mod conversion;
 pub mod decode;
+pub mod forward;
 pub mod schema;
 
 /// `app_metadata` payload for the trailing, data-free `FlightData` message

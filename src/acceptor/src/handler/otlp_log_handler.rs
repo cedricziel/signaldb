@@ -19,7 +19,7 @@ use super::WalManager;
 use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
 use super::processors_apply::apply_log_processors;
-use super::retry_dedup::RetryDedup;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct LogHandler {
     /// Flight transport for forwarding telemetry
@@ -157,20 +157,20 @@ impl LogHandler {
             }
         }
 
-        // Serialize metadata for WAL storage (enables background processor routing)
-        let metadata_str = serde_json::to_string(&metadata).ok();
-
         // Step 1: Write to WAL first for durability
         let batch_bytes = record_batch_to_bytes(&record_batch)
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
-        let fingerprint = self.retry_dedup.fingerprint(
+        let ingest_id = stamp_batch_fingerprint(
+            &mut metadata,
             &tenant_context.tenant_id,
             &tenant_context.dataset_id,
             &WalOperation::WriteLogs,
             &batch_bytes,
         );
+        // Serialize metadata for WAL storage (enables background processor routing)
+        let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
             .append(WalOperation::WriteLogs, batch_bytes, metadata_str.clone())
             .await
@@ -190,7 +190,7 @@ impl LogHandler {
         // flush above (issue #1734). Awaiting the handle keeps behavior for
         // connected clients unchanged. A client's resend of a batch already
         // accepted is retired instead (see `retry_dedup`).
-        let forward_task = if self.retry_dedup.is_resend(fingerprint) {
+        let forward_task = if self.retry_dedup.is_resend(ingest_id) {
             spawn_retire_resend(
                 wal,
                 wal_entry_id,
@@ -202,6 +202,7 @@ impl LogHandler {
                 self.flight_transport.clone(),
                 wal,
                 wal_entry_id,
+                ingest_id,
                 record_batch,
                 metadata_str,
                 "logs",
@@ -214,5 +215,87 @@ impl LogHandler {
         // Data is durable in the WAL at this point; forward failures are
         // recovered by the retry consumer, so the export is acknowledged.
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod wal_bytes_tests {
+    use std::sync::Arc;
+
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+    use opentelemetry_proto::tonic::resource::v1::Resource;
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::handler::test_support::{
+        only_wal_entry_bytes, test_tenant_context, test_wal_manager, transport_without_writer,
+    };
+
+    fn sample_log_request() -> ExportLogsServiceRequest {
+        ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key_strindex: 0,
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("test-service".to_string())),
+                        }),
+                    }],
+                    dropped_attributes_count: 0,
+                    entity_refs: vec![],
+                }),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![LogRecord {
+                        time_unix_nano: 1_000,
+                        observed_time_unix_nano: 1_000,
+                        severity_number: 9,
+                        severity_text: "INFO".to_string(),
+                        body: Some(AnyValue {
+                            value: Some(Value::StringValue("hello".to_string())),
+                        }),
+                        attributes: vec![KeyValue {
+                            key_strindex: 0,
+                            key: "http.status_code".to_string(),
+                            value: Some(AnyValue {
+                                value: Some(Value::IntValue(200)),
+                            }),
+                        }],
+                        dropped_attributes_count: 0,
+                        flags: 0,
+                        trace_id: vec![],
+                        span_id: vec![],
+                        event_name: String::new(),
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        }
+    }
+
+    #[tokio::test]
+    async fn wal_entry_bytes_match_the_unmodified_otlp_to_arrow_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let (transport, processor_registry) = transport_without_writer().await;
+        let handler = LogHandler::new(transport, wal_manager.clone(), processor_registry);
+        let tenant_context = test_tenant_context();
+        let request = sample_log_request();
+
+        let expected_batch = otlp_logs_to_arrow(&request).unwrap();
+        let expected_bytes = record_batch_to_bytes(&expected_batch).unwrap();
+
+        handler
+            .handle_grpc_otlp_logs(&tenant_context, request)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            only_wal_entry_bytes(&wal_manager, &tenant_context, "logs").await,
+            expected_bytes
+        );
     }
 }

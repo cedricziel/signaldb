@@ -3,17 +3,15 @@
 //! Shared helper for forwarding Arrow RecordBatches from the acceptor to a
 //! writer service via Flight. Used by the OTLP/Prometheus handlers on the
 //! hot path and by the WAL retry consumer when replaying entries whose
-//! initial forward failed.
+//! initial forward failed. The `DoPut` itself is
+//! [`common::flight::forward::forward_batch_to_writer`], re-exported here.
 
 use std::sync::Arc;
 
-use anyhow::Context;
-use bytes::Bytes;
-use common::flight::batches_to_compressed_flight_data;
-use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+pub use common::flight::forward::forward_batch_to_writer;
+use common::flight::transport::InMemoryFlightTransport;
 use common::wal::{Wal, WalOperation};
 use datafusion::arrow::record_batch::RecordBatch;
-use futures::{StreamExt, stream};
 use tracing::Instrument;
 use uuid::Uuid;
 
@@ -56,96 +54,6 @@ pub fn classify_forward_failure(error: &anyhow::Error) -> ForwardFailureKind {
     }
 }
 
-/// Overwrite the `traceparent`/`tracestate` fields in the metadata JSON with
-/// the current span's context, and stamp `ingest_id` (the WAL entry id this
-/// DoPut carries). Returns the input with only `ingest_id` added when it is
-/// not a JSON object (falls back to a bare object) so every DoPut can be
-/// deduplicated on the writer side.
-fn stamp_ingest_metadata(metadata_json: &str, ingest_id: Uuid) -> String {
-    let mut value = serde_json::from_str::<serde_json::Value>(metadata_json)
-        .unwrap_or_else(|_| serde_json::json!({}));
-    let Some(obj) = value.as_object_mut() else {
-        return metadata_json.to_owned();
-    };
-    obj.insert("ingest_id".to_string(), ingest_id.to_string().into());
-    if let Some((traceparent, tracestate)) =
-        common::flight::trace_context::current_trace_context_fields()
-    {
-        obj.insert("traceparent".to_string(), traceparent.into());
-        match tracestate {
-            Some(ts) => obj.insert("tracestate".to_string(), ts.into()),
-            None => obj.remove("tracestate"),
-        };
-    }
-    serde_json::to_string(&value).unwrap_or_else(|_| metadata_json.to_owned())
-}
-
-/// Build the app_metadata bytes for the first FlightData message of a DoPut:
-/// the caller's metadata JSON (or an empty object when none is given) with
-/// `ingest_id` and the current trace context stamped in. Pure so it can be
-/// unit tested without a Flight transport.
-fn build_first_message_metadata(metadata_json: Option<&str>, ingest_id: Uuid) -> Bytes {
-    let base = metadata_json.unwrap_or("{}");
-    Bytes::from(stamp_ingest_metadata(base, ingest_id).into_bytes())
-}
-
-/// Forward a RecordBatch to a writer service with Storage capability.
-///
-/// `metadata_json` is attached as `app_metadata` on the first FlightData
-/// message (the schema message) so the writer can route the batch to the
-/// right table. `ingest_id` is the acceptor WAL entry id for this batch; it
-/// is stamped into that same metadata as `"ingest_id"` so the writer can
-/// deduplicate resends of the same entry, and it also selects which writer
-/// receives the batch (see [`InMemoryFlightTransport::get_client_for_capability_keyed`]),
-/// so every resend of a given entry is pinned to the same writer.
-///
-/// Returns an error if no storage service is discoverable, the batch cannot
-/// be encoded, or the Flight put fails. The caller decides whether the data
-/// stays in the WAL for retry.
-pub async fn forward_batch_to_writer(
-    flight_transport: &InMemoryFlightTransport,
-    record_batch: RecordBatch,
-    metadata_json: Option<&str>,
-    ingest_id: Uuid,
-) -> anyhow::Result<()> {
-    // Resolve writer address up-front so the CLIENT span carries
-    // server.address per gRPC semconv (required on client call sites).
-    let server_address = flight_transport
-        .get_client_and_address_for_capability_keyed(ServiceCapability::Storage, ingest_id)
-        .await
-        .ok()
-        .map(|(_, addr)| addr);
-    // The whole logical DoPut is a semconv RPC CLIENT span; the writer's
-    // server span becomes its child via the trace context stamped into the
-    // app_metadata below.
-    let rpc_span = common::self_monitoring::spans::rpc_client_span(
-        common::self_monitoring::spans::FLIGHT_DO_PUT,
-        None,
-        server_address.as_deref(),
-    );
-    let record_span = rpc_span.clone();
-    let result =
-        forward_batch_to_writer_inner(flight_transport, record_batch, metadata_json, ingest_id)
-            .instrument(rpc_span)
-            .await;
-    // Best-effort status: the underlying tonic code survives anyhow's
-    // context chain via the root cause; anything else is UNKNOWN.
-    let code = match &result {
-        Ok(()) => tonic::Code::Ok,
-        Err(e) => e
-            .root_cause()
-            .downcast_ref::<tonic::Status>()
-            .map(|s| s.code())
-            .unwrap_or(tonic::Code::Unknown),
-    };
-    common::self_monitoring::spans::record_rpc_result(
-        &record_span,
-        common::self_monitoring::spans::RpcBoundary::Client,
-        code,
-    );
-    result
-}
-
 /// Forward a WAL-durable batch to the writer and mark its WAL entry
 /// processed on success, detached from the caller's future.
 ///
@@ -168,6 +76,7 @@ pub fn spawn_forward_and_mark(
     flight_transport: Arc<InMemoryFlightTransport>,
     wal: Arc<Wal>,
     wal_entry_id: Uuid,
+    ingest_id: Uuid,
     record_batch: RecordBatch,
     metadata_json: Option<String>,
     signal: &'static str,
@@ -178,7 +87,7 @@ pub fn spawn_forward_and_mark(
                 &flight_transport,
                 record_batch,
                 metadata_json.as_deref(),
-                wal_entry_id,
+                ingest_id,
             )
             .await
             {
@@ -227,61 +136,6 @@ pub fn spawn_retire_resend(
         }
         .instrument(tracing::Span::current()),
     )
-}
-
-async fn forward_batch_to_writer_inner(
-    flight_transport: &InMemoryFlightTransport,
-    record_batch: RecordBatch,
-    metadata_json: Option<&str>,
-    ingest_id: Uuid,
-) -> anyhow::Result<()> {
-    let mut client = flight_transport
-        .get_client_for_capability_keyed(ServiceCapability::Storage, ingest_id)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to get Flight client for storage service: {e}"))?;
-
-    let schema = record_batch.schema();
-    // One RecordBatch encodes into one FlightData message; a batch whose
-    // encoded size exceeds the receiver's gRPC limit fails do_put on every
-    // retry and wedges its WAL entry forever (#944). Chunk oversized
-    // batches so each message stays well below the shared limit — the
-    // budget is measured on in-memory size, so lz4 IPC compression (#945)
-    // only adds headroom on top.
-    let batches = common::flight::chunk::split_batch_for_grpc(
-        &record_batch,
-        common::flight::chunk::MAX_ENCODED_BATCH_SIZE,
-    )
-    .context("Failed to split batch for transport")?;
-    let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
-        .context("Failed to convert batch to flight data")?;
-
-    // Add metadata to the first FlightData message (which contains the
-    // schema): the ingest id for writer-side dedup, and the trace context
-    // re-stamped with the CLIENT span's own (we run instrumented, so the
-    // current span is the rpc.client span) — the handler-captured
-    // traceparent would skip this span otherwise.
-    if let Some(first) = flight_data.first_mut() {
-        first.app_metadata = build_first_message_metadata(metadata_json, ingest_id);
-    }
-
-    let mut request = tonic::Request::new(stream::iter(flight_data));
-    // Authenticate to the writer when service-to-service auth is configured
-    if let Some(key) = flight_transport.internal_service_key() {
-        common::flight::auth::attach_internal_auth(&mut request, key);
-    }
-
-    let response = client
-        .do_put(request)
-        .await
-        .context("Flight do_put failed")?;
-
-    let mut response_stream = response.into_inner();
-    while let Some(result) = response_stream.next().await {
-        let put_result = result.context("Flight put error")?;
-        tracing::debug!(response = ?put_result, "Flight put response");
-    }
-
-    Ok(())
 }
 
 #[cfg(test)]
@@ -352,27 +206,5 @@ mod tests {
             classify_forward_failure(&error),
             ForwardFailureKind::Transient
         );
-    }
-
-    #[test]
-    fn first_message_metadata_carries_ingest_id() {
-        let ingest_id = Uuid::new_v4();
-        let metadata = build_first_message_metadata(
-            Some(r#"{"schema_version":"v1","signal_type":"traces"}"#),
-            ingest_id,
-        );
-        let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-
-        assert_eq!(value["ingest_id"], ingest_id.to_string());
-        assert_eq!(value["signal_type"], "traces");
-    }
-
-    #[test]
-    fn first_message_metadata_carries_ingest_id_with_no_caller_metadata() {
-        let ingest_id = Uuid::new_v4();
-        let metadata = build_first_message_metadata(None, ingest_id);
-        let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
-
-        assert_eq!(value["ingest_id"], ingest_id.to_string());
     }
 }

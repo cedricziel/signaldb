@@ -26,9 +26,9 @@ pub use resolve::{
     MetricDef, Registry, ResolvedRegistry, ValidationError,
 };
 
-/// Namespaces owned by bundled registries; a custom registry may not claim
-/// them in any tenant.
-pub const RESERVED_NAMESPACES: [&str; 2] = ["otel", "signaldb"];
+/// Namespaces owned by bundled registries, in lookup precedence order; a
+/// custom registry may not claim them in any tenant.
+pub const RESERVED_NAMESPACES: [&str; 3] = ["signaldb", "otel-genai", "otel"];
 
 /// Whether `namespace` is reserved for a bundled registry.
 pub fn is_reserved_namespace(namespace: &str) -> bool {

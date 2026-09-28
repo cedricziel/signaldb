@@ -296,15 +296,16 @@ Env: `SIGNALDB__COMPACTOR__RETENTION__ENABLED`, `SIGNALDB__COMPACTOR__RETENTION_
 ```toml
 [compactor.attr_promotion]
 enabled = false               # Decision pass off by default
-dry_run = true                # Log-only (schema-changing rewrite not yet implemented)
-max_labels_per_table = 32     # Width budget incl. pinned [schema.materialized_labels]
+dry_run = true                # Log-only; false evolves the schema during the rewrite
+max_labels_per_table = 32     # Width budget shared by label columns (pins) and attr_* columns
+demote_after_idle = "7d"      # Demote a promoted column not queried this long; "0s" disables
 min_presence = 0.005          # Min fraction of rows carrying the key
 min_query_hits = 1            # Min accumulated query demand
 promote_streak = 3            # Consecutive over-threshold cycles (hysteresis)
 max_promotions_per_cycle = 4
 ```
 
-Scores persisted attribute stats (compactor scan stats + querier demand counters in the catalog's `attribute_stats` table) as demand × presence; rejects capped-cardinality and generated-looking keys; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
+Scores per-(level, key) stats (compactor presence + querier demand and `last_queried_at` in the catalog's `attribute_level_stats` table) as demand × presence and adds typed `attr_<level>_<key>` copy columns; rejects capped-cardinality and generated-looking keys; demotes idle, then least-recently-queried columns when over budget; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
 
 #### Orphan Cleanup (Phase 3)
 
@@ -345,13 +346,15 @@ sort_spill_reservation_mb = 10     # Headroom a spilling sort holds back for its
 ```toml
 [acceptor]
 max_request_body_bytes = 67108864 # 64MB decoded body cap for every OTLP/HTTP and remote_write route; also gRPC's max_decoding_message_size
-retry_dedup_window = "5m"         # How long a durably accepted batch is remembered so a byte-identical client resend is acked, not re-ingested; "0s" disables
+retry_dedup_window = "5m"         # Per-acceptor cache: a byte-identical client resend returning to this acceptor is acked without forwarding; "0s" disables this cache only
 ```
 
 A resend within `retry_dedup_window` is matched by a fingerprint of the
 WAL-bound batch, taken right after the WAL flush, and its fresh entry is marked
 processed instead of forwarded (`signaldb.acceptor.resends_dropped`). The
-cache is in-memory, per acceptor process. Rationale:
+cache is in-memory, per acceptor process, and only a first line: the same
+fingerprint is the batch's `ingest_id`, so a resend at another replica or after
+a restart is dropped by the writer's `ingest_dedup_window`. Rationale:
 `src/acceptor/src/handler/retry_dedup.rs`.
 
 ### Writer (Commit Coalescing)
@@ -412,15 +415,17 @@ call. Expiry is a transient commit failure like any other catalog/object-store
 outage: the group's entries stay pending and retry next cycle, never
 dead-lettered.
 
-`do_put`'s `app_metadata` carries an `ingest_id` (the acceptor WAL entry uuid;
-absent for pre-#1734 acceptors, which get today's non-deduped behavior). The
+`do_put`'s `app_metadata` carries an `ingest_id`: the batch's content
+fingerprint, stored in the acceptor WAL entry metadata so hot path and retry
+consumer agree (absent for pre-#1734 acceptors, which get non-deduped
+behavior). Byte-identical batches in different acceptor WAL entries share it. The
 writer keeps an in-memory cache of ingest ids seen within `ingest_dedup_window`
 and, on a repeat, marks that put's freshly appended WAL entries processed
 immediately instead of letting the background loop commit them again —
 counted in `signaldb.writer.ingest_duplicates_dropped`. The cache is rebuilt
 at startup from ingest ids still present in this writer's own WAL entries
-within the window, so a restart does not reopen a window an acceptor retry
-could exploit; an entry pruned from the WAL before the window elapses is a
+within the window, so a restart does not reopen a window an acceptor retry or
+client resend could exploit; an entry pruned from the WAL before the window elapses is a
 known gap in that rebuild.
 
 ### MCP (Model Context Protocol server)

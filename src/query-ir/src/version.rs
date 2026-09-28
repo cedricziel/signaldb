@@ -20,7 +20,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 8;
+pub const MAX_IR_VERSION: i64 = 9;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -86,6 +86,7 @@ const AGGS: &[(AggFn, i64)] = &[
     (AggFn::MaxOverTime, 7),
     (AggFn::SumOverTime, 7),
     (AggFn::CountOverTime, 7),
+    (AggFn::CountDistinct, 9),
 ];
 
 /// Extract parsers, keyed by the `irVersion` that introduced them.
@@ -172,7 +173,22 @@ mod tests {
         assert!(is_supported(6));
         assert!(is_supported(7));
         assert!(is_supported(8));
-        assert!(!is_supported(9));
+        assert!(is_supported(9));
+        assert!(!is_supported(10));
+    }
+
+    #[test]
+    fn v9_unlocks_count_distinct() {
+        assert!(
+            !OperatorRegistry::for_version(8)
+                .unwrap()
+                .supports_agg(AggFn::CountDistinct)
+        );
+        assert!(
+            OperatorRegistry::for_version(9)
+                .unwrap()
+                .supports_agg(AggFn::CountDistinct)
+        );
     }
 
     #[test]
@@ -272,6 +288,7 @@ mod tests {
             AggFn::MaxOverTime,
             AggFn::SumOverTime,
             AggFn::CountOverTime,
+            AggFn::CountDistinct,
         ];
         for agg in all {
             assert!(

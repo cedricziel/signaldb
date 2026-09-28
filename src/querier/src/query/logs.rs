@@ -91,10 +91,8 @@ const KNOWN_LABELS: &[&str] = &[
     "trace_id",
 ];
 
-/// Columns whose distinct values define a series' identity. Pinned against
-/// `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`) by
-/// `differential::ql_ir_stream_identity_matches_series_columns`, so the two
-/// constants cannot drift apart unnoticed.
+/// Columns whose distinct values define a series' identity. Must stay in
+/// step with `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`).
 pub(super) const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
 
 /// Scan direction for a log query.
@@ -631,12 +629,7 @@ impl LogsService {
         };
         let map_attrs = attr_context_of(&df).map_attrs;
         let df = time_window(df, start, end)?;
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            ATTR_CONTAINERS,
-        );
-        let df = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        let df = common::attrs::expr::select_attr_columns(df, ATTR_CONTAINERS)
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns, so the JSON-era
         // `distinct()` dedup is skipped for map-typed attribute tables.
@@ -698,12 +691,7 @@ impl LogsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            ATTR_CONTAINERS,
-        );
-        let df = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        let df = common::attrs::expr::select_attr_columns(df, ATTR_CONTAINERS)
             .map_err(QuerierError::QueryFailed)?;
         let df = if map_attrs {
             df
@@ -763,12 +751,7 @@ impl LogsService {
             }
         }
         let df = time_window(df, params.start, params.end)?;
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            ATTR_CONTAINERS,
-        );
-        let batches = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
+        let batches = common::attrs::expr::select_attr_columns(df, ATTR_CONTAINERS)
             .map_err(QuerierError::QueryFailed)?
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
@@ -898,13 +881,7 @@ impl LogsService {
 /// `body` projection is (issue #1410 — ingest JSON-encodes `body`, so a
 /// plain string value must come back decoded on every path that projects
 /// it), everything else is projected as-is.
-///
-/// `pub(crate)` and shared with the `differential` test harness
-/// (`old_logql_log_plan`), which pins its hand-built "old path" plan against
-/// this file's IR-routed plan at the optimized-plan-text level — sharing
-/// this function is what keeps that pin from drifting the moment either
-/// side changes how `body` is projected.
-pub(crate) fn log_query_projection(columns: &[&str]) -> Vec<Expr> {
+fn log_query_projection(columns: &[&str]) -> Vec<Expr> {
     columns
         .iter()
         .map(|c| {
@@ -932,19 +909,10 @@ pub fn shape_log_query(
     if let Some(filter) = filter {
         df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
     }
-    // `LOG_COLUMNS`' two attribute containers are the typed layout's five
-    // columns each on a typed table, not the literal container name.
-    let schema = df.schema().as_arrow();
-    let columns: Vec<String> = LOG_COLUMNS
-        .iter()
-        .flat_map(|&c| {
-            if ATTR_CONTAINERS.contains(&c) {
-                common::attrs::expr::select_columns_for_containers(Some(schema), &[c])
-            } else {
-                vec![c.to_string()]
-            }
-        })
-        .collect();
+    let columns = common::attrs::expr::select_columns_for_containers(
+        Some(df.schema().as_arrow()),
+        LOG_COLUMNS,
+    );
     df.select(log_query_projection(
         &columns.iter().map(String::as_str).collect::<Vec<_>>(),
     ))
@@ -969,19 +937,13 @@ pub(super) fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
 }
 
 /// The attribute-matching context for a logs table: its materialized
-/// `label_<key>` columns, and whether its attribute columns are typed maps
-/// (either a single `Map<Utf8,Utf8>` column or the typed-attribute layout's
-/// five columns) or JSON strings (legacy tables).
+/// `label_<key>` columns, and whether its attribute columns are on the
+/// typed-attribute layout or still JSON strings (unflushed wire-format rows).
 fn attr_context_of(df: &DataFrame) -> AttrContext {
     let schema = df.schema().as_arrow();
-    let map_attrs = schema
-        .fields()
-        .iter()
-        .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)))
-        || common::attrs::expr::is_typed_layout(schema, "log_attributes");
     AttrContext {
         materialized: materialized_columns_of(df),
-        map_attrs,
+        map_attrs: common::attrs::expr::is_typed_layout(schema, "log_attributes"),
         schema: Some(df.schema().inner().clone()),
     }
 }
@@ -1735,6 +1697,24 @@ mod tests {
         }
     }
 
+    #[test]
+    fn series_columns_matches_stream_identity() {
+        let resolved: Vec<&str> = ql_ir::STREAM_IDENTITY
+            .iter()
+            .map(|field| {
+                LOG_FIELD_PAIRS
+                    .iter()
+                    .find(|(logical, _)| logical == field)
+                    .map(|(_, column)| *column)
+                    .unwrap_or_else(|| panic!("{field}: no LOG_FIELD_PAIRS entry"))
+            })
+            .collect();
+        assert_eq!(
+            resolved, SERIES_COLUMNS,
+            "ql_ir::STREAM_IDENTITY must resolve to exactly logs::SERIES_COLUMNS, in order"
+        );
+    }
+
     /// `column_for_label` backs `get_label_values`, `by` grouping,
     /// `on`/`ignoring`, `label_replace`, `unwrap`, and attr-demand
     /// recording, and `logql::label_expr` imports this same function — the
@@ -2200,11 +2180,6 @@ mod tests {
         LogsService::new(ctx)
     }
 
-    /// A typed-layout `log_attributes` (five typed homes, no single
-    /// `log_attributes` column) must still be detected as `map_attrs` --
-    /// the fallback LogQL path's only route to `compat_attr_expr` instead
-    /// of a JSON-substring `contains()` that would error with "No field
-    /// named log_attributes".
     #[tokio::test]
     async fn attr_context_of_detects_the_typed_attribute_layout() {
         let (fields, arrays) = common::testing::typed_attribute_columns_from(

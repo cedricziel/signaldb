@@ -88,7 +88,8 @@ static BUNDLED: Lazy<Vec<BundledRegistry>> = Lazy::new(|| {
 /// Namespace of the bundled OpenTelemetry semconv snapshot.
 const OTEL_NAMESPACE: &str = "otel";
 
-/// The bundled registries, in precedence order (`signaldb` before `otel`).
+/// The bundled registries, in precedence order
+/// ([`schema_model::RESERVED_NAMESPACES`]).
 pub fn bundled_registries() -> &'static [BundledRegistry] {
     &BUNDLED
 }
@@ -301,13 +302,13 @@ impl SchemaResolver {
         tenant_id: &str,
         namespace: &str,
         version: &str,
-    ) -> Result<Option<(RegistrySummary, RegistryDocument)>, StoreError> {
+    ) -> Result<Option<(RegistrySummary, Arc<RegistryDocument>)>, StoreError> {
         Ok(self
             .visible(tenant_id)
             .await?
             .into_iter()
             .find(|v| v.resolved.namespace == namespace && v.resolved.version == version)
-            .map(|v| (v.summary(), v.document.as_ref().clone())))
+            .map(|v| (v.summary(), v.document)))
     }
 
     // ---- custom registry mutation --------------------------------------

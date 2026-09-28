@@ -51,12 +51,15 @@ use common::schema::materialized_column_name;
 /// and gauges; histograms are handled separately with histogram_quantile).
 const METRIC_TABLES: &[&str] = &["metrics_gauge", "metrics_sum"];
 
-/// Fixed (non-attribute) columns projected from each metrics table before
-/// the union. The attribute containers (`attributes`/`resource_attributes`)
-/// are projected separately per table via
-/// [`common::attrs::expr::select_columns_for_containers`], since a typed-
-/// layout table has no single `attributes` column to select.
-const SCAN_COLUMNS: &[&str] = &["timestamp", "service_name", "metric_name", "value"];
+/// Columns projected from each metrics table before the union.
+const SCAN_COLUMNS: &[&str] = &[
+    "timestamp",
+    "service_name",
+    "metric_name",
+    "value",
+    "attributes",
+    "resource_attributes",
+];
 
 const LOG_ATTRIBUTES: &str = "attributes";
 const RESOURCE_ATTRIBUTES: &str = "resource_attributes";
@@ -1568,12 +1571,11 @@ impl MetricsService {
             .collect();
         let mut union: Option<DataFrame> = None;
         for df in tables {
-            let mut proj: Vec<Expr> = SCAN_COLUMNS.iter().map(|c| col(*c)).collect();
-            let attr_columns = common::attrs::expr::select_columns_for_containers(
+            let scan_columns = common::attrs::expr::select_columns_for_containers(
                 Some(df.schema().as_arrow()),
-                &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES],
+                SCAN_COLUMNS,
             );
-            proj.extend(attr_columns.iter().map(|c| col(c.as_str())));
+            let mut proj: Vec<Expr> = scan_columns.iter().map(|c| col(c.as_str())).collect();
             for label in &label_cols {
                 if df.schema().field_with_unqualified_name(label).is_ok() {
                     proj.push(col(label.as_str()));
@@ -1608,13 +1610,9 @@ impl MetricsService {
             return Ok(Vec::new());
         };
         let df = time_window(df, start, end)?;
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES],
-        );
-        let df = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
-            .map_err(QuerierError::QueryFailed)?;
+        let df =
+            common::attrs::expr::select_attr_columns(df, &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
+                .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let attrs_are_map = df.schema().fields().iter().any(|f| {
             matches!(
@@ -1678,13 +1676,9 @@ impl MetricsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
-        let attr_columns = common::attrs::expr::select_columns_for_containers(
-            Some(df.schema().as_arrow()),
-            &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES],
-        );
-        let df = df
-            .select_columns(&attr_columns.iter().map(String::as_str).collect::<Vec<_>>())
-            .map_err(QuerierError::QueryFailed)?;
+        let df =
+            common::attrs::expr::select_attr_columns(df, &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
+                .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let attrs_are_map = df.schema().fields().iter().any(|f| {
             matches!(
@@ -2215,16 +2209,7 @@ fn apply_filters(
             .map(|f| f.name().to_string())
             .filter(|n| n.starts_with("label_"))
             .collect(),
-        map_attrs: df.schema().fields().iter().any(|f| {
-            f.name() == LOG_ATTRIBUTES
-                && matches!(
-                    f.data_type(),
-                    datafusion::arrow::datatypes::DataType::Map(_, _)
-                )
-        }) || common::attrs::expr::is_typed_layout(
-            df.schema().as_arrow(),
-            LOG_ATTRIBUTES,
-        ),
+        map_attrs: common::attrs::expr::is_typed_layout(df.schema().as_arrow(), LOG_ATTRIBUTES),
         schema: Some(df.schema().inner().clone()),
     };
     let mut predicate = metric_name_expr(plan);

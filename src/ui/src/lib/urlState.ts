@@ -128,6 +128,67 @@ export interface ExploreState {
    * environment. Only the Overview reads it; it isn't carried to other
    * pages (see `crossSignalSearch`). */
   env: string;
+  /** The Evaluate pages' own selection (agent, source, compared runs,
+   * drilled-into case). Only those pages read it; like `env` it isn't
+   * carried to other pages. */
+  evals: EvalParams;
+  /** The Real users page's selected frontend app (a `service.name`) — ""
+   * means "not yet picked" (the page defaults to the busiest app and
+   * writes it here). Only `/rum` reads it; like `env` it isn't carried to
+   * other pages. */
+  rumApp: string;
+}
+
+export type EvalSource = "offline" | "production" | "both";
+export type EvalCaseMode = "candidate" | "baseline" | "side";
+
+export interface EvalParams {
+  agent: string;
+  source: EvalSource;
+  baseline: string;
+  candidate: string;
+  case: string;
+  /** The Runs page's eval-set filter. */
+  set: string;
+  mode: EvalCaseMode;
+}
+
+export const DEFAULT_EVAL_PARAMS: EvalParams = {
+  agent: "",
+  source: "offline",
+  baseline: "",
+  candidate: "",
+  case: "",
+  set: "",
+  mode: "candidate",
+};
+
+const EVAL_SOURCES: readonly EvalSource[] = ["offline", "production", "both"];
+const EVAL_MODES: readonly EvalCaseMode[] = ["candidate", "baseline", "side"];
+
+/** The eval params that are plain strings, "" meaning unset. */
+const EVAL_STRING_PARAMS = [
+  "agent",
+  "baseline",
+  "candidate",
+  "case",
+  "set",
+] as const;
+
+function parseEvalParams(p: URLSearchParams): EvalParams {
+  const out = { ...DEFAULT_EVAL_PARAMS };
+  for (const key of EVAL_STRING_PARAMS) out[key] = p.get(key) ?? "";
+  out.source = oneOf(EVAL_SOURCES, p.get("source"), out.source);
+  out.mode = oneOf(EVAL_MODES, p.get("mode"), out.mode);
+  return out;
+}
+
+function oneOf<T extends string>(
+  options: readonly T[],
+  value: string | null,
+  fallback: T,
+): T {
+  return options.find((o) => o === value) ?? fallback;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -165,6 +226,8 @@ export const DEFAULT_STATE: ExploreState = {
   catalogSecondary: "",
   catalogView: "list",
   env: "",
+  evals: DEFAULT_EVAL_PARAMS,
+  rumApp: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -338,6 +401,8 @@ export function parseExploreState(search: string): ExploreState {
     catalogSecondary: "",
     catalogView: catalogViewFromParam(p.get("cview")),
     env: p.get("env") ?? "",
+    evals: parseEvalParams(p),
+    rumApp: p.get("app") ?? "",
   };
 }
 
@@ -423,6 +488,11 @@ export function buildSearch(state: ExploreState): string {
   if (state.dataset) p.set("dataset", state.dataset);
   if (state.catalogView !== "list") p.set("cview", state.catalogView);
   if (state.env) p.set("env", state.env);
+  const ev = state.evals;
+  for (const key of EVAL_STRING_PARAMS) if (ev[key]) p.set(key, ev[key]);
+  if (ev.source !== DEFAULT_EVAL_PARAMS.source) p.set("source", ev.source);
+  if (ev.mode !== DEFAULT_EVAL_PARAMS.mode) p.set("mode", ev.mode);
+  if (state.rumApp) p.set("app", state.rumApp);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }
@@ -443,6 +513,22 @@ export function crossSignalSearch(state: ExploreState): string {
     tenant: state.tenant,
     dataset: state.dataset,
   });
+}
+
+/** An in-app link to `path` carrying the window and tenant context, plus
+ * `patch` for the target page's own state. */
+export function viewHref(
+  path: string,
+  state: ExploreState,
+  patch: Partial<ExploreState> = {},
+): string {
+  return `${path}${buildSearch({
+    ...DEFAULT_STATE,
+    range: state.range,
+    tenant: state.tenant,
+    dataset: state.dataset,
+    ...patch,
+  })}`;
 }
 
 /**

@@ -33,6 +33,7 @@ import {
   allowedOriginsSet,
 } from "./OriginPicker";
 import "./ApiKeys.css";
+import { HOME_PATH } from "../shell/navModel";
 
 /** Scopes checked in a form, in vocabulary order. */
 function selectedScopes(data: FormData): ApiKeyScope[] {
@@ -88,7 +89,7 @@ export function ApiKeys() {
   if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
 
   if (!who || !canManage) {
-    return <Navigate to="/logs" replace />;
+    return <Navigate to={HOME_PATH} replace />;
   }
 
   // Keyed on the outlet's own tenant (not `who.tenant.id`, which can briefly
@@ -277,11 +278,10 @@ function ApiKeysBody({ who }: { who: WhoamiResponse }) {
           onSubmit={handleCreate}
           onChange={handleCreateFormChange}
         >
-          <input
-            name="name"
-            placeholder="collector-production"
-            aria-label="Key name (optional)"
-          />
+          <label className="api-keys-field">
+            <span>Name (optional)</span>
+            <input name="name" placeholder="collector-production" />
+          </label>
           <DatasetPicker
             idPrefix="create"
             datasets={datasets}

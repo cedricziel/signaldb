@@ -2,7 +2,7 @@
 
 import type { Client, ClientMeta, Options as Options2, RequestResult, TDataShape } from './client';
 import { client } from './client.gen';
-import type { AttachGithubInstallationData, AttachGithubInstallationErrors, AttachGithubInstallationResponses, ConnectionInfoData, ConnectionInfoErrors, ConnectionInfoResponses, CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateTenantTablesData, CreateTenantTablesErrors, CreateTenantTablesResponses, CreateUserData, CreateUserErrors, CreateUserResponses, CurrentSessionData, CurrentSessionErrors, CurrentSessionResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetSchemaData, GetSchemaErrors, GetSchemaResponses, GetTenantData, GetTenantErrors, GetTenantResponses, GithubCallbackData, GithubCallbackErrors, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListAvailableSchemasData, ListAvailableSchemasResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListGithubInstallationsData, ListGithubInstallationsErrors, ListGithubInstallationsResponses, ListMembershipsData, ListMembershipsErrors, ListMembershipsResponses, ListTenantSchemasData, ListTenantSchemasErrors, ListTenantSchemasResponses, ListTenantsData, ListTenantsErrors, ListTenantsResponses, ListTenantTablesData, ListTenantTablesErrors, ListTenantTablesResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginConfigData, LoginConfigResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, ProcessorsCreateData, ProcessorsCreateErrors, ProcessorsCreateResponses, ProcessorsDeleteData, ProcessorsDeleteErrors, ProcessorsDeleteResponses, ProcessorsGetData, ProcessorsGetErrors, ProcessorsGetResponses, ProcessorsListData, ProcessorsListErrors, ProcessorsListResponses, ProcessorsReplaceData, ProcessorsReplaceErrors, ProcessorsReplaceResponses, ProcessorsTestData, ProcessorsTestErrors, ProcessorsTestResponses, ProcessorsValidateData, ProcessorsValidateErrors, ProcessorsValidateResponses, ProfilesByTraceData, ProfilesByTraceErrors, ProfilesByTraceResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, PyroscopeLabelNamesData, PyroscopeLabelNamesErrors, PyroscopeLabelNamesResponses, PyroscopeLabelValuesData, PyroscopeLabelValuesErrors, PyroscopeLabelValuesResponses, PyroscopeProfileTypesData, PyroscopeProfileTypesErrors, PyroscopeProfileTypesResponses, PyroscopeRenderData, PyroscopeRenderDiffData, PyroscopeRenderDiffErrors, PyroscopeRenderDiffResponses, PyroscopeRenderErrors, PyroscopeRenderResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, QuerySourcesData, QuerySourcesErrors, QuerySourcesResponses, RemoveGithubInstallationData, RemoveGithubInstallationErrors, RemoveGithubInstallationResponses, RemoveMembershipData, RemoveMembershipErrors, RemoveMembershipResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, SessionOidcCallbackData, SessionOidcCallbackErrors, SessionOidcStartData, SessionOidcStartErrors, SourceContextAvailabilityData, SourceContextAvailabilityErrors, SourceContextAvailabilityResponses, SourceContextData, SourceContextErrors, SourceContextResponses, StartGithubLinkData, StartGithubLinkErrors, StartGithubLinkResponses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, UpsertMembershipData, UpsertMembershipErrors, UpsertMembershipResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
+import type { AppendEvalCasesData, AppendEvalCasesErrors, AppendEvalCasesFromTracesData, AppendEvalCasesFromTracesErrors, AppendEvalCasesFromTracesResponses, AppendEvalCasesResponses, AttachGithubInstallationData, AttachGithubInstallationErrors, AttachGithubInstallationResponses, ConnectionInfoData, ConnectionInfoErrors, ConnectionInfoResponses, CreateApiKeyData, CreateApiKeyErrors, CreateApiKeyResponses, CreateDatasetData, CreateDatasetErrors, CreateDatasetResponses, CreateEvalSetData, CreateEvalSetErrors, CreateEvalSetResponses, CreateTenantData, CreateTenantErrors, CreateTenantResponses, CreateTenantTablesData, CreateTenantTablesErrors, CreateTenantTablesResponses, CreateUserData, CreateUserErrors, CreateUserResponses, CurrentSessionData, CurrentSessionErrors, CurrentSessionResponses, DeleteDatasetData, DeleteDatasetErrors, DeleteDatasetResponses, DeleteEvalSetData, DeleteEvalSetErrors, DeleteEvalSetResponses, DeleteTenantData, DeleteTenantErrors, DeleteTenantResponses, GetEvalSetData, GetEvalSetErrors, GetEvalSetResponses, GetSchemaData, GetSchemaErrors, GetSchemaResponses, GetTenantData, GetTenantErrors, GetTenantResponses, GithubCallbackData, GithubCallbackErrors, ListApiKeysData, ListApiKeysErrors, ListApiKeysResponses, ListAvailableSchemasData, ListAvailableSchemasResponses, ListDatasetsData, ListDatasetsErrors, ListDatasetsResponses, ListEvalSetsData, ListEvalSetsErrors, ListEvalSetsResponses, ListGithubInstallationsData, ListGithubInstallationsErrors, ListGithubInstallationsResponses, ListMembershipsData, ListMembershipsErrors, ListMembershipsResponses, ListTenantSchemasData, ListTenantSchemasErrors, ListTenantSchemasResponses, ListTenantsData, ListTenantsErrors, ListTenantsResponses, ListTenantTablesData, ListTenantTablesErrors, ListTenantTablesResponses, ListUsersData, ListUsersErrors, ListUsersResponses, LoginConfigData, LoginConfigResponses, LogqlLabelsData, LogqlLabelsErrors, LogqlLabelsResponses, LogqlLabelValuesData, LogqlLabelValuesErrors, LogqlLabelValuesResponses, LogqlQueryData, LogqlQueryErrors, LogqlQueryRangeData, LogqlQueryRangeErrors, LogqlQueryRangeResponses, LogqlQueryResponses, OauthConsentContextData, OauthConsentContextErrors, OauthConsentContextResponses, OauthConsentDecisionData, OauthConsentDecisionErrors, OauthConsentDecisionResponses, OpsCompactData, OpsCompactDryRunData, OpsCompactDryRunErrors, OpsCompactDryRunResponses, OpsCompactErrors, OpsCompactResponses, OpsCompactStatusData, OpsCompactStatusErrors, OpsCompactStatusResponses, ProcessorsCreateData, ProcessorsCreateErrors, ProcessorsCreateResponses, ProcessorsDeleteData, ProcessorsDeleteErrors, ProcessorsDeleteResponses, ProcessorsGetData, ProcessorsGetErrors, ProcessorsGetResponses, ProcessorsListData, ProcessorsListErrors, ProcessorsListResponses, ProcessorsReplaceData, ProcessorsReplaceErrors, ProcessorsReplaceResponses, ProcessorsTestData, ProcessorsTestErrors, ProcessorsTestResponses, ProcessorsValidateData, ProcessorsValidateErrors, ProcessorsValidateResponses, ProfilesByTraceData, ProfilesByTraceErrors, ProfilesByTraceResponses, PromqlLabelsData, PromqlLabelsErrors, PromqlLabelsResponses, PromqlLabelValuesData, PromqlLabelValuesErrors, PromqlLabelValuesResponses, PromqlQueryData, PromqlQueryErrors, PromqlQueryRangeData, PromqlQueryRangeErrors, PromqlQueryRangeResponses, PromqlQueryResponses, PyroscopeLabelNamesData, PyroscopeLabelNamesErrors, PyroscopeLabelNamesResponses, PyroscopeLabelValuesData, PyroscopeLabelValuesErrors, PyroscopeLabelValuesResponses, PyroscopeProfileTypesData, PyroscopeProfileTypesErrors, PyroscopeProfileTypesResponses, PyroscopeRenderData, PyroscopeRenderDiffData, PyroscopeRenderDiffErrors, PyroscopeRenderDiffResponses, PyroscopeRenderErrors, PyroscopeRenderResponses, QueryIrData, QueryIrErrors, QueryIrResponses, QuerySingleTraceData, QuerySingleTraceErrors, QuerySingleTraceResponses, QuerySourcesData, QuerySourcesErrors, QuerySourcesResponses, RemoveGithubInstallationData, RemoveGithubInstallationErrors, RemoveGithubInstallationResponses, RemoveMembershipData, RemoveMembershipErrors, RemoveMembershipResponses, ReplaceEvalSetData, ReplaceEvalSetErrors, ReplaceEvalSetResponses, RevokeApiKeyData, RevokeApiKeyErrors, RevokeApiKeyResponses, SchemaCreateRegistryData, SchemaCreateRegistryErrors, SchemaCreateRegistryResponses, SchemaDeleteRegistryData, SchemaDeleteRegistryErrors, SchemaDeleteRegistryResponses, SchemaGetRegistryData, SchemaGetRegistryErrors, SchemaGetRegistryResponses, SchemaListRegistriesData, SchemaListRegistriesErrors, SchemaListRegistriesResponses, SchemaReplaceRegistryData, SchemaReplaceRegistryErrors, SchemaReplaceRegistryResponses, SchemaResolveAttributeData, SchemaResolveAttributeErrors, SchemaResolveAttributeResponses, SchemaResolveEntityData, SchemaResolveEntityErrors, SchemaResolveEntityResponses, SchemaResolveMetricData, SchemaResolveMetricErrors, SchemaResolveMetricResponses, SchemaSearchAttributesData, SchemaSearchAttributesErrors, SchemaSearchAttributesResponses, SchemaSearchEntitiesData, SchemaSearchEntitiesErrors, SchemaSearchEntitiesResponses, SchemaSearchMetricsData, SchemaSearchMetricsErrors, SchemaSearchMetricsResponses, SchemaValidateRegistryData, SchemaValidateRegistryErrors, SchemaValidateRegistryResponses, SearchData, SearchErrors, SearchResponses, SearchTagsData, SearchTagsErrors, SearchTagsResponses, SearchTagsV2Data, SearchTagsV2Errors, SearchTagsV2Responses, SearchTagValuesData, SearchTagValuesErrors, SearchTagValuesResponses, SearchTagValuesV2Data, SearchTagValuesV2Errors, SearchTagValuesV2Responses, SessionOidcCallbackData, SessionOidcCallbackErrors, SessionOidcStartData, SessionOidcStartErrors, SourceContextAvailabilityData, SourceContextAvailabilityErrors, SourceContextAvailabilityResponses, SourceContextData, SourceContextErrors, SourceContextResponses, StartGithubLinkData, StartGithubLinkErrors, StartGithubLinkResponses, UpdateApiKeyData, UpdateApiKeyErrors, UpdateApiKeyResponses, UpdateTenantData, UpdateTenantErrors, UpdateTenantResponses, UploadEvalResultsData, UploadEvalResultsErrors, UploadEvalResultsResponses, UpsertMembershipData, UpsertMembershipErrors, UpsertMembershipResponses, WhoamiData, WhoamiErrors, WhoamiResponses } from './types.gen';
 
 export type Options<TData extends TDataShape = TDataShape, ThrowOnError extends boolean = boolean, TResponse = unknown> = Options2<TData, ThrowOnError, TResponse> & {
     /**
@@ -50,6 +50,135 @@ export const connectionInfo = <ThrowOnError extends boolean = false>(options?: O
         }],
     url: '/api/v1/connection',
     ...options
+});
+
+/**
+ * List the eval sets in the caller's dataset
+ */
+export const listEvalSets = <ThrowOnError extends boolean = false>(options?: Options<ListEvalSetsData, ThrowOnError>): RequestResult<ListEvalSetsResponses, ListEvalSetsErrors, ThrowOnError> => (options?.client ?? client).get<ListEvalSetsResponses, ListEvalSetsErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets',
+    ...options
+});
+
+/**
+ * Create an eval set in the caller's dataset
+ */
+export const createEvalSet = <ThrowOnError extends boolean = false>(options: Options<CreateEvalSetData, ThrowOnError>): RequestResult<CreateEvalSetResponses, CreateEvalSetErrors, ThrowOnError> => (options.client ?? client).post<CreateEvalSetResponses, CreateEvalSetErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Delete an eval set and its cases
+ */
+export const deleteEvalSet = <ThrowOnError extends boolean = false>(options: Options<DeleteEvalSetData, ThrowOnError>): RequestResult<DeleteEvalSetResponses, DeleteEvalSetErrors, ThrowOnError> => (options.client ?? client).delete<DeleteEvalSetResponses, DeleteEvalSetErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets/{name}',
+    ...options
+});
+
+/**
+ * Get an eval set with its cases in order
+ */
+export const getEvalSet = <ThrowOnError extends boolean = false>(options: Options<GetEvalSetData, ThrowOnError>): RequestResult<GetEvalSetResponses, GetEvalSetErrors, ThrowOnError> => (options.client ?? client).get<GetEvalSetResponses, GetEvalSetErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets/{name}',
+    ...options
+});
+
+/**
+ * Replace an eval set's agent, description and cases
+ */
+export const replaceEvalSet = <ThrowOnError extends boolean = false>(options: Options<ReplaceEvalSetData, ThrowOnError>): RequestResult<ReplaceEvalSetResponses, ReplaceEvalSetErrors, ThrowOnError> => (options.client ?? client).put<ReplaceEvalSetResponses, ReplaceEvalSetErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets/{name}',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Append cases to an eval set, skipping ids it already holds
+ */
+export const appendEvalCases = <ThrowOnError extends boolean = false>(options: Options<AppendEvalCasesData, ThrowOnError>): RequestResult<AppendEvalCasesResponses, AppendEvalCasesErrors, ThrowOnError> => (options.client ?? client).post<AppendEvalCasesResponses, AppendEvalCasesErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets/{name}/cases',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Append one case per matching agent trace not already in the set
+ *
+ * Runs a trace query through the Query IR and appends one case per matching agent trace the set does not hold yet, newest traces first, up to `sample` (default 50, at most 1000). See docs/users/eval-sets.md ("Build cases from traces") for the full matching, selection and case-building rules.
+ */
+export const appendEvalCasesFromTraces = <ThrowOnError extends boolean = false>(options: Options<AppendEvalCasesFromTracesData, ThrowOnError>): RequestResult<AppendEvalCasesFromTracesResponses, AppendEvalCasesFromTracesErrors, ThrowOnError> => (options.client ?? client).post<AppendEvalCasesFromTracesResponses, AppendEvalCasesFromTracesErrors, ThrowOnError>({
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/eval-sets/{name}/cases/from-traces',
+    ...options,
+    headers: {
+        'Content-Type': 'application/json',
+        ...options.headers
+    }
+});
+
+/**
+ * Upload a JSONL or CSV file of evaluator results as one offline run
+ *
+ * One row per evaluator result: `case_id` and `name` required; `score`, `label`, `explanation`, `trace_id`, `span_id`, `evaluator`, `error` and `trial` optional. The whole file is validated first: any invalid row rejects it with a `400` listing every problem in `details` (at most 100), and nothing is written. Each row becomes a `gen_ai.evaluation.result` log record carrying the run attributes, written through the log ingest path. See docs/users/evaluations.md ("Upload a results file").
+ */
+export const uploadEvalResults = <ThrowOnError extends boolean = false>(options: Options<UploadEvalResultsData, ThrowOnError>): RequestResult<UploadEvalResultsResponses, UploadEvalResultsErrors, ThrowOnError> => (options.client ?? client).post<UploadEvalResultsResponses, UploadEvalResultsErrors, ThrowOnError>({
+    bodySerializer: null,
+    security: [{
+            key: 'bearerAuth',
+            scheme: 'bearer',
+            type: 'http'
+        }],
+    url: '/api/v1/evals/results',
+    ...options,
+    headers: {
+        'Content-Type': 'text/plain',
+        ...options.headers
+    }
 });
 
 /**

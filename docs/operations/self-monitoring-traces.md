@@ -68,9 +68,23 @@ being lost — the affected entries stay pending and retry once it recovers.
 
 One acceptor counter pairs with those: `signaldb.acceptor.resends_dropped`
 (`signaldb.tenant.id` and `signal` attributes) counts client resends of a batch the
-acceptor had already made durable, acknowledged without being ingested again
-(`[acceptor].retry_dedup_window`). A steady rate means clients give up before
-the acceptor answers: its ingest latency exceeds their export timeout.
+same acceptor had already made durable, acknowledged without being forwarded
+again (`[acceptor].retry_dedup_window`). A resend that reaches another acceptor
+replica, or arrives after a restart, is forwarded and dropped at the writer
+instead, counted by `signaldb.writer.ingest_duplicates_dropped` alongside the
+acceptor's own forward retries. A steady `resends_dropped` rate means clients
+give up before the acceptor answers: its ingest latency exceeds their export
+timeout.
+
+`signaldb.writer.attribute_type_mismatches` (counter; `signaldb.tenant.id`,
+`signal`, `level` and `reason` attributes) counts attribute values that did not
+match their field's canonical type. With `reason=off_type`, the value was
+stored as sent in the residue: it can still be retrieved, but it can't be
+filtered as a typed value. With `reason=pin_conflict`, a
+`[[schema.attribute_types]]` pin retyped a field that data had already typed.
+Each affected key is logged once per writer process, and its running total is
+the `off_type_count` returned by `GET /api/v1/schema/attributes/{key}`. The
+metric never carries the attribute key.
 
 ## Resource identity
 
@@ -209,10 +223,22 @@ decision. Headers are omitted when self-monitoring is disabled and on
 | span `flight_do_put`                                      | `arrow.flight.protocol.FlightService/DoPut`           |
 | span `compaction_job`                                     | `compaction`                                          |
 | field `tenant_id`                                         | `signaldb.tenant.id`                                  |
-| field `dataset_id`                                        | `signaldb.dataset.id`                                 |
+| field `dataset_id` / `dataset`                            | `signaldb.dataset.id`                                 |
 | field `table` / `table_name`                              | `signaldb.table`                                      |
 | field `entry_count`                                       | `signaldb.wal.entry_count`                            |
 | field `operation` / `data_size` / `entry_id` (WAL spans)  | `signaldb.wal.operation` / `…data_size` / `…entry_id` |
+| field `wal_dir`                                           | `signaldb.wal.dir`                                    |
+| field `address` / `addr` (listener startup)               | `signaldb.service.address`                            |
+| field `service_type` / `service_id` (bootstrap)           | `signaldb.service.type` / `service.instance.id`       |
+| field `dsn`                                               | `signaldb.catalog.dsn` (object store: `url.full`)     |
+| field `limit` (concurrent-query rejection)                | `signaldb.querier.max_concurrent_queries`             |
+| field `catalog` (querier catalog registration)            | `signaldb.catalog.name`                               |
+| field `memory_limit_mb` / `memory_pool_fraction`          | `signaldb.querier.memory_limit_mb` / `…pool_fraction` |
+| field `total_ram_bytes`                                   | `signaldb.querier.host_memory_bytes`                  |
+| field `candidates_identified` (orphan-cleanup summary)    | `signaldb.job.candidates`                             |
+| field `bytes_freed` (orphan-cleanup summary)              | `signaldb.job.bytes_reclaimed`                        |
+| field `cleanup_skipped_threshold`                         | `signaldb.job.tables_skipped`                         |
+| field `datasets_checked` / … (reconcile pass)             | `signaldb.job.datasets_checked` / …                   |
 | resource `deployment.environment` (= `"self-monitoring"`) | `deployment.environment.name` (config-sourced)        |
 
 ## Conventions registry and enforcement
@@ -239,8 +265,8 @@ whitelisted for live-check via finding filters in the repo-root
 events (stamped unconditionally by tracing-opentelemetry's event bridge),
 and the `not_stable` advice for our own `signaldb.*` attributes (the
 SignalDB registry is `development` by design). `info!`/`warn!` events
-inside instrumented spans become span events, so their fields must be
-declared in the resolved registry — `signaldb.*` for SignalDB-specific
-fields, or an upstream semconv attribute (e.g. `file.path`) where one
+become span events inside instrumented spans and OTel log records
+everywhere, so their fields must be declared in the resolved registry —
+`signaldb.*` for SignalDB-specific fields, or an upstream semconv attribute (e.g. `file.path`) where one
 fits. Per-item developer detail belongs at `debug!`, which the default
 `info` level keeps out of telemetry.

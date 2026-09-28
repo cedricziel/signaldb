@@ -40,7 +40,7 @@ use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequ
 
 use super::WalManager;
 use super::forward::{forward_batch_to_writer, spawn_retire_resend};
-use super::retry_dedup::RetryDedup;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 /// Header indicating remote_write protocol version
 pub const HEADER_REMOTE_WRITE_VERSION: &str = "X-Prometheus-Remote-Write-Version";
@@ -319,14 +319,14 @@ impl PrometheusHandler {
                     wal_metadata["tracestate"] = tracestate.into();
                 }
             }
-            let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
-
-            let fingerprint = self.retry_dedup.fingerprint(
+            let ingest_id = stamp_batch_fingerprint(
+                &mut wal_metadata,
                 &tenant_context.tenant_id,
                 &tenant_context.dataset_id,
                 &WalOperation::WriteMetrics,
                 &batch_bytes,
             );
+            let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
             let wal_entry_id = wal
                 .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
                 .await
@@ -348,7 +348,7 @@ impl PrometheusHandler {
 
             // A remote_write retry of a partition already accepted is retired
             // instead of forwarded (see `retry_dedup`).
-            if self.retry_dedup.is_resend(fingerprint) {
+            if self.retry_dedup.is_resend(ingest_id) {
                 if let Err(e) = spawn_retire_resend(
                     wal.clone(),
                     wal_entry_id,
@@ -385,7 +385,7 @@ impl PrometheusHandler {
                 &self.flight_transport,
                 record_batch,
                 Some(&metadata.to_string()),
-                wal_entry_id,
+                ingest_id,
             )
             .await
             {

@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router";
 import {
-  createApiKey,
   createDataset,
   createTenant,
   deleteDataset,
@@ -10,9 +10,7 @@ import {
   listTables,
   provisionTables,
   removeMembership,
-  revokeApiKey,
   upsertMembership,
-  type IngestScope,
   type ManagedTables,
 } from "../../api/management";
 import type { WhoamiResponse } from "../../api/session";
@@ -20,12 +18,6 @@ import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { Dialog } from "../../components/Dialog";
-import {
-  DatasetPicker,
-  datasetRestrictionLabel,
-  selectedDatasetIds,
-} from "./DatasetPicker";
-import { OriginPicker, allowedOriginsLabel } from "./OriginPicker";
 import "./management.css";
 
 /** `ManagedTables["tables"]`'s element type. */
@@ -60,17 +52,14 @@ function tablesByDataset(
   }));
 }
 
+function activeKeysLabel(n: number): string {
+  return `${n} active key${n === 1 ? "" : "s"}`;
+}
+
 /** Human-friendly label for a membership's `granted_by` source. */
 function grantSourceLabel(grantedBy: string): string {
   return grantedBy === "oidc_mapping" ? "SSO group" : "Local";
 }
-
-const scopes: IngestScope[] = [
-  "metrics:write",
-  "logs:write",
-  "traces:write",
-  "profiles:write",
-];
 
 interface Props {
   who: WhoamiResponse;
@@ -81,12 +70,7 @@ interface Props {
 export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
   const tenant = who.tenant.id;
   const client = useQueryClient();
-  const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  // Allowed origins are free-form strings, not a fixed checkable set like
-  // datasets, so the picker's add/remove list is real React state rather
-  // than read from FormData on submit (see OriginPicker/ApiKeys.tsx).
-  const [origins, setOrigins] = useState<string[]>([]);
   const keys = useQuery({
     queryKey: ["managed-api-keys", tenant],
     queryFn: () => listApiKeys(tenant),
@@ -112,20 +96,6 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
     onSuccess: refresh,
     onError: (value) => setError(toErrorMessage(value)),
   });
-  const keyMutation = useMutation({
-    mutationFn: (input: {
-      name?: string;
-      dataset_ids?: string[];
-      allowed_origins?: string[];
-      scopes: IngestScope[];
-    }) => createApiKey(tenant, input),
-    onSuccess: (result) => {
-      setSecret(result.key);
-      setError(null);
-      refresh();
-    },
-    onError: (value) => setError(toErrorMessage(value)),
-  });
   const provisionMutation = useMutation({
     mutationFn: () => provisionTables(tenant),
     onSuccess: refresh,
@@ -149,13 +119,6 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
       </header>
 
       {error && <p className="manage-error error-text" role="alert">{error}</p>}
-      {secret && (
-        <div className="secret-once">
-          <strong>Copy this key now</strong>
-          <code>{secret}</code>
-          <span>It will not be shown again.</span>
-        </div>
-      )}
 
       <div className="manage-grid">
         <section>
@@ -208,68 +171,14 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
 
         <section>
           <h3>API keys</h3>
-          <ul className="compact-list">
-            {(keys.data ?? []).map((key) => (
-              <li key={key.id}>
-                <div>
-                  <strong>{key.name || "Unnamed key"}</strong>
-                  <span>
-                    {datasetRestrictionLabel(key)} · {allowedOriginsLabel(key)}{" "}
-                    · {key.scopes?.join(", ") || "legacy unrestricted"}
-                  </span>
-                </div>
-                {!key.revoked && (
-                  <ConfirmButton
-                    label="Revoke"
-                    prompt={`Revoke ${key.name || "this key"}?`}
-                    onConfirm={() =>
-                      revokeApiKey(tenant, key.id)
-                        .then(refresh)
-                        .catch((value) => setError(toErrorMessage(value)))
-                    }
-                  />
-                )}
-              </li>
-            ))}
-          </ul>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              const data = new FormData(event.currentTarget);
-              const datasetIds = selectedDatasetIds(data);
-              keyMutation.mutate({
-                name: String(data.get("name") ?? "").trim() || undefined,
-                dataset_ids: datasetIds.length > 0 ? datasetIds : undefined,
-                allowed_origins: origins.length > 0 ? origins : undefined,
-                scopes: scopes.filter((scope) => data.has(scope)),
-              });
-              setOrigins([]);
-            }}
-          >
-            <input name="name" placeholder="collector-production" />
-            <DatasetPicker
-              idPrefix="manage-create"
-              datasets={who.datasets}
-              checked={() => false}
-            />
-            <OriginPicker
-              idPrefix="manage-create"
-              origins={origins}
-              onChange={setOrigins}
-            />
-            <fieldset className="scopes">
-              <legend>Ingestion scopes</legend>
-              {scopes.map((scope) => (
-                <label key={scope}>
-                  <input type="checkbox" name={scope} defaultChecked />
-                  {scope}
-                </label>
-              ))}
-            </fieldset>
-            <button className="btn btn-primary" disabled={keyMutation.isPending}>
-              Create API key
-            </button>
-          </form>
+          {keys.data && (
+            <p>
+              {activeKeysLabel(keys.data.filter((k) => !k.revoked).length)}
+            </p>
+          )}
+          <Link className="btn" to="/api-keys">
+            Manage API keys
+          </Link>
         </section>
       </div>
 

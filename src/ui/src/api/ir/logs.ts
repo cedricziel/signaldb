@@ -7,7 +7,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "../gen";
 import type { LabelFilter } from "../../lib/filters";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
-import { runIrQuery } from "../queryIr";
+import { namedRows, runIrQuery, type IrRow } from "../queryIr";
 
 export interface LogRow {
   tsNs: string;
@@ -121,20 +121,7 @@ export function buildLogVolumeDoc(
   };
 }
 
-type Row = Record<string, unknown>;
-
-/** Rows as objects keyed by the response's column names. */
-function namedRows(res: QueryIrResponse): Row[] {
-  const names = (res.columns ?? []).map((c) => c.name);
-  return (res.rows ?? []).map((row) => {
-    const cells = row as unknown[];
-    const out: Row = {};
-    names.forEach((n, i) => {
-      out[n] = cells[i];
-    });
-    return out;
-  });
-}
+type Row = IrRow;
 
 const str = (v: unknown): string => (v == null ? "" : String(v));
 

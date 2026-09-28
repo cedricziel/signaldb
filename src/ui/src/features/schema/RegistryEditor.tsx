@@ -29,6 +29,7 @@ import {
 } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
 import { toErrorMessage } from "../../api/http";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 /**
  * `/schema/conventions/new` and `/schema/conventions/:ns/:version/edit` —
@@ -41,6 +42,7 @@ export function RegistryEditor() {
   const { ns, version } = useParams<{ ns?: string; version?: string }>();
   const { isTenantAdmin, isLoading, tenant, dataset } = useSchemaSession();
   const editing = ns !== undefined && version !== undefined;
+  useBreadcrumbLeaf(editing ? `Edit ${ns}@${version}` : "New registry");
   const stored = useQuery({
     queryKey: ["schema-registry", ns, version, tenant, dataset],
     queryFn: () => getRegistry(ns!, version!),
@@ -309,7 +311,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
 
       <div className="schema-editor">
         <div className="schema-editor-toolbar">
-          <label className="schema-button">
+          <label className="btn">
             Upload file
             <input
               ref={fileInput}
@@ -323,7 +325,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           <span className="spacer" />
           <button
             type="button"
-            className="schema-button btn"
+            className="btn"
             disabled={busy || text.trim() === ""}
             onClick={() => validation.mutate(text)}
           >
@@ -331,7 +333,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           </button>
           <button
             type="button"
-            className="schema-button btn btn-primary"
+            className="btn btn-primary"
             disabled={busy || !validated}
             title={validated ? undefined : "Validate first"}
             onClick={() => save.mutate()}
@@ -349,19 +351,20 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
               />
               <button
                 type="button"
-                className="schema-button btn"
+                className="btn"
                 disabled={busy || !validated || newVersion.trim() === ""}
                 onClick={() => saveAsNew.mutate()}
               >
                 Save as new version
               </button>
-              <ConfirmButton
-                className="schema-button"
-                label="Delete"
-                prompt={`Delete ${title}?`}
-                disabled={busy}
-                onConfirm={() => remove.mutate()}
-              />
+              <span className="schema-editor-danger">
+                <ConfirmButton
+                  label="Delete"
+                  prompt={`Delete ${title}?`}
+                  disabled={busy}
+                  onConfirm={() => remove.mutate()}
+                />
+              </span>
             </>
           )}
         </div>

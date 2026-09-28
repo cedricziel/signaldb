@@ -1,18 +1,29 @@
 // The main column's sticky 52px header on desktop and tablet: a
-// "{Group} / {Page}" breadcrumb and the search field that opens the ⌘K
-// palette. Its bottom border lines up with the sidebar's brand row.
+// "{Group} / {Page} / {Leaf}" breadcrumb (the leaf only on a detail page,
+// see breadcrumbLeaf.ts) and the search field that opens the ⌘K palette.
+// Its bottom border lines up with the sidebar's brand row.
 
-import { useLocation } from "react-router";
+import { Link, useLocation } from "react-router";
+import type { ExploreState } from "../../lib/urlState";
+import { useBreadcrumbLeafValue } from "./breadcrumbLeaf";
 import { NavIcon } from "./NavIcon";
-import { currentPageFor } from "./navModel";
+import { currentPageFor, pageById, pageHref } from "./navModel";
 
 const isMac =
   typeof navigator !== "undefined" &&
   /mac|iphone|ipad/i.test(navigator.platform || navigator.userAgent);
 
-export function PageHeader({ onOpenPalette }: { onOpenPalette: () => void }) {
+export function PageHeader({
+  state,
+  onOpenPalette,
+}: {
+  state: ExploreState;
+  onOpenPalette: () => void;
+}) {
   const { pathname } = useLocation();
   const page = currentPageFor(pathname);
+  const leaf = useBreadcrumbLeafValue();
+  const section = page.id ? pageById(page.id) : undefined;
   const shortcut = isMac ? "⌘K" : "Ctrl K";
   return (
     <header className="app-page-header">
@@ -25,9 +36,30 @@ export function PageHeader({ onOpenPalette }: { onOpenPalette: () => void }) {
             </span>
           </>
         )}
-        <span className="app-breadcrumb-page" aria-current="page">
-          {page.label}
-        </span>
+        {leaf ? (
+          <>
+            {section ? (
+              <Link
+                className="app-breadcrumb-group app-breadcrumb-link"
+                to={pageHref(section, state)}
+              >
+                {page.label}
+              </Link>
+            ) : (
+              <span className="app-breadcrumb-group">{page.label}</span>
+            )}
+            <span className="app-breadcrumb-sep" aria-hidden="true">
+              /
+            </span>
+            <span className="app-breadcrumb-page" aria-current="page">
+              {leaf}
+            </span>
+          </>
+        ) : (
+          <span className="app-breadcrumb-page" aria-current="page">
+            {page.label}
+          </span>
+        )}
       </nav>
       <span className="app-page-header-spacer" />
       <button

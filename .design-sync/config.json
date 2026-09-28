@@ -24,11 +24,18 @@
     "Query": "QueryView",
     "Schema": "SchemaHub",
     "Login": "LoginRoute",
-    "AppShell": "ExploreView",
     "APIKeys": "ApiKeys",
     "GitHubIntegration": "GitHubIntegration",
     "SelectTenant": "SelectTenant",
-    "Overview": "OverviewView"
+    "Overview": "OverviewView",
+    "AgentsScores": "AgentsScoresView",
+    "Runs": "RunsView",
+    "Compare": "CompareView",
+    "Case": "CaseView",
+    "Evaluators": "EvaluatorsView",
+    "EvalSets": "EvalSetsView",
+    "EvalSet": "EvalSetView",
+    "RealUsers": "RealUsersView"
   },
   "provider": {
     "component": "QueryClientProvider",
@@ -56,14 +63,10 @@
       ]
     },
     "SemanticKeyLabel": {
-      "skip": [
-        "components-semantickey--unresolved"
-      ]
+      "skip": ["components-semantickey--unresolved"]
     },
     "SourceSnippet": {
-      "skip": [
-        "components-sourcesnippet--unavailable"
-      ]
+      "skip": ["components-sourcesnippet--unavailable"]
     },
     "LogsView": {
       "cardMode": "single",
@@ -90,7 +93,7 @@
       "viewport": "1280x800",
       "primaryStory": "Default"
     },
-    "ExploreView": {
+    "AppShell": {
       "cardMode": "single",
       "viewport": "1280x800",
       "primaryStory": "Default"
@@ -153,16 +156,12 @@
     "ThrottleBanner": {
       "cardMode": "single",
       "primaryStory": "Visible",
-      "skip": [
-        "components-throttlebanner--hidden"
-      ]
+      "skip": ["components-throttlebanner--hidden"]
     },
     "UpdateBanner": {
       "cardMode": "single",
       "primaryStory": "Visible",
-      "skip": [
-        "components-updatebanner--hidden"
-      ]
+      "skip": ["components-updatebanner--hidden"]
     },
     "ServiceGraph": {
       "cardMode": "column"
@@ -170,6 +169,46 @@
     "OverviewView": {
       "cardMode": "single",
       "viewport": "1280x1650",
+      "primaryStory": "Default"
+    },
+    "AgentsScoresView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
+      "primaryStory": "Default"
+    },
+    "RunsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "CompareView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "CaseView": {
+      "cardMode": "single",
+      "viewport": "1280x900",
+      "primaryStory": "Default"
+    },
+    "EvaluatorsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "EvalSetsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "EvalSetView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
+      "primaryStory": "Default"
+    },
+    "RealUsersView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
       "primaryStory": "Default"
     }
   },

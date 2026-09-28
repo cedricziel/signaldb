@@ -101,10 +101,11 @@ single-key object naming the stage:
 | `limit`            | integer                          | bound the row count                              |
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate    |
 
-`irVersion` 5 adds four aggregate functions and an aggregate `divisor` — see
+`irVersion` 5 adds four aggregate functions and an aggregate `divisor`;
+`irVersion` 9 adds `count_distinct` — see
 [Aggregate functions](#aggregate-functions). Every earlier document keeps its
-exact meaning; a document using a v5 feature while declaring a lower version
-is rejected naming the version it needs, never silently upgraded.
+exact meaning; a document using a v5 or v9 feature while declaring a lower
+version is rejected naming the version it needs, never silently upgraded.
 
 An unknown stage, or a stage illegal for the source (e.g. `extract` on
 `traces`), is rejected by name during validation — never silently dropped.
@@ -277,6 +278,7 @@ thing a later stage may reference:
 | `quantile`            | yes  | `[0,1]` | v1     | float            |
 | `stddev` / `stdvar`   | yes  | —       | **v5** | float            |
 | `first` / `last`      | yes  | —       | **v5** | the field's type |
+| `count_distinct`      | yes  | —       | **v9** | integer          |
 
 `first` and `last` order by the source's own time column, so they mean
 earliest and latest — not whichever row the scan happened to produce first.
@@ -289,6 +291,47 @@ no recorded canonical type yet resolves as `string` and is rejected the same
 way; it starts aggregating once an observed value establishes a numeric
 canonical type for it (see
 [Field resolution is promotion-invariant](#field-resolution-is-promotion-invariant)).
+
+`count_distinct` is an **approximate** distinct count: it lowers to
+DataFusion's `approx_distinct` (a HyperLogLog sketch), so its memory cost
+does not grow with the number of distinct values, at the price of roughly
+1-2% error — fine for a dashboard counting sessions or users, not for a
+billing count. It accepts `string`/`int64`/`bool`/`timestamp` `of` fields;
+`float64` is rejected at validation, naming the field and its type, the same
+way a non-numeric field is rejected for `sum`/`avg` — `approx_distinct` itself
+rejects floating point, and equality over a float is rarely what a distinct
+count means anyway. A record with no value for the field is not counted:
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["service.name"],
+    "aggs": [{ "fn": "count_distinct", "of": "session.id", "as": "sessions" }],
+  },
+}
+```
+
+Scoped the same way as any other aggregate (see
+[Scoping an aggregate to a subset](#scoping-an-aggregate-to-a-subset)), to
+count only sessions that hit a particular condition — sessions with at least
+one exception, say:
+
+```jsonc
+{
+  "aggregate": {
+    "by": ["service.name"],
+    "aggs": [
+      { "fn": "count_distinct", "of": "session.id", "as": "sessions" },
+      {
+        "fn": "count_distinct",
+        "of": "session.id",
+        "as": "sessions_with_exception",
+        "where": { "field": "event_name", "op": "eq", "value": "exception" },
+      },
+    ],
+  },
+}
+```
 
 ### Reporting a rate: `divisor` (v5)
 
@@ -459,9 +502,17 @@ the IR, independent of the execution engine.
 Fields resolve through the logical schema (`LogicalSchema::core()`, which
 declares the canonical client-visible OTel fields independent of the physical
 Iceberg layout) and then through the attribute type authority to a physical
-location — a promoted column or a typed-home retrieval — at plan time. The
-**result of a query does not depend on whether a field is currently
-promoted**; promotion is pure performance upside. An attribute's canonical
+location at plan time. An attribute's home is its typed map at each level it
+was sent at; a promoted column (`attr_<level>_<key>`) is only a copy of one
+level's home. A typed attribute reads `coalesce(promoted, home)` per level in
+record → scope → resource order, and a promoted column is used only when it
+exists with the canonical type. The **result set and result types of a query
+do not depend on whether a field is currently promoted**; a test holds this
+for every scalar canonical type, filters, aggregations, and a key sent at two
+levels. Promotion is pure performance upside: `=`, `!=`, `<`, `<=`, `>`, `>=`
+filters on a promoted attribute let the engine skip row groups using the
+column's statistics, which works where the key is present in every row of a
+row group. `in` and `between` do not use this rewrite. An attribute's canonical
 type is picked, in order: a config pin, else a semantic-convention type hint
 (from the resource/scope `schema_url`'s semconv registry), else the type of
 the first value ever observed for it — and never changes once established.

@@ -212,6 +212,13 @@ joins `READ_SCOPES` (OAuth-grantable, mirrors `schema:read`);
 dataset (unset = every dataset of the tenant); dataset-scoped processors
 always run after tenant-wide ones, so they can override a tenant baseline.
 
+**Eval-set scopes** (change `agent-offline-evals`). `evals:read` (list/get
+eval sets) joins `READ_SCOPES` (OAuth-grantable, mirrors `processors:read`)
+and gates `/api/v1/eval-sets` reads via `can_read_evals()`; `evals:write`
+(create/replace/delete/append cases) requires tenant-admin rights via
+`can_write_evals()` and is never OAuth-grantable. Sets are scoped to the
+caller's tenant *and* dataset — see `docs/users/eval-sets.md`.
+
 **Management scope** (change `management-api-key-scope`). `tenant:manage`
 (`TENANT_MANAGE_SCOPE`, in `API_KEY_SCOPES`, never in `READ_SCOPES` so never
 OAuth-grantable) lets an API key call the management API for its own tenant.

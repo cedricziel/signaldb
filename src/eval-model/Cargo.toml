@@ -1,0 +1,37 @@
+[package]
+name = "eval-model"
+version = "0.1.0"
+edition = "2024"
+description = "SignalDB's eval run/comparison model: attribute names, the pass rule, run stats, and the Query IR documents behind evals runs|compare"
+license = "AGPL-3.0"
+# A leaf crate for the same reason query-ir is: signaldb-cli depends on it
+# instead of on `common`, so the CLI does not build `common` (its build
+# script and its direct FDAP dependencies). `common::evals` re-exports it
+# for in-process consumers (the router, the MCP server) and keeps the
+# server-only parts (the upload parser, span-event conversion — both OTLP
+# proto types).
+publish = false
+
+[features]
+# `test_util::FakeIr`: a Query IR stand-in for the CLI's and MCP server's
+# eval read tests.
+testing = []
+
+[dependencies]
+# The typed Query IR documents; itself a leaf crate.
+query-ir.workspace = true
+# `try_join!` for the reads that don't depend on each other.
+futures.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+chrono.workspace = true
+# `gen_ai.*` GenAI semantic-convention attribute names.
+opentelemetry-semantic-conventions.workspace = true
+
+[lib]
+name = "eval_model"
+path = "src/lib.rs"
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["macros", "rt"] }

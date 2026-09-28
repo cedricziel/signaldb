@@ -531,6 +531,15 @@
   text-overflow: ellipsis;
 }
 
+.app-breadcrumb-link {
+  text-decoration: none;
+}
+
+.app-breadcrumb-link:hover {
+  color: var(--text);
+  text-decoration: underline;
+}
+
 .app-page-header-spacer {
   flex: 1;
 }
@@ -649,11 +658,6 @@
 
 .app-drawer-group-label {
   padding: 4px 10px;
-}
-
-.app-drawer-footer {
-  border-top: 1px solid var(--border);
-  padding-top: 8px;
 }
 
 /* ---- command palette ------------------------------------------------- */

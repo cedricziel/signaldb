@@ -7,7 +7,7 @@
 //! - `signaldb-cli schema registry list|get <ns> <version>`
 //! - `signaldb-cli schema attribute|entity|metric get <name>` — every
 //!   definition of the name across the tenant's visible registries, in
-//!   precedence order (custom → signaldb → otel), `primary` first
+//!   precedence order (custom → signaldb → otel-genai → otel), `primary` first
 //! - `signaldb-cli schema attribute|entity|metric search <prefix> [--limit]`,
 //!   or `--keys a,b,c` to batch-resolve an exact name set instead of a
 //!   prefix (attribute and metric only)
@@ -20,7 +20,6 @@
 
 use std::path::{Path, PathBuf};
 
-use anyhow::Context;
 use clap::{Args, Subcommand};
 
 use super::discover::ConnectArgs;
@@ -131,36 +130,10 @@ pub struct DocumentArgs {
     connect: ConnectArgs,
 }
 
-/// A registry document as the JSON object the API takes.
-pub(crate) type Document = serde_json::Map<String, serde_json::Value>;
-
 /// Read a registry document from disk, converting YAML to JSON. The API's
 /// create/replace/validate bodies are the raw Weaver-model document as JSON.
-pub(crate) fn read_document(path: &Path) -> anyhow::Result<Document> {
-    let text = std::fs::read_to_string(path)
-        .with_context(|| format!("failed to read {}", path.display()))?;
-    parse_document(&text, path)
-}
-
-fn parse_document(text: &str, path: &Path) -> anyhow::Result<Document> {
-    let is_json = path
-        .extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
-    let value: serde_json::Value = if is_json {
-        serde_json::from_str(text)
-            .with_context(|| format!("{} is not valid JSON", path.display()))?
-    } else {
-        serde_norway::from_str(text)
-            .with_context(|| format!("{} is not valid YAML", path.display()))?
-    };
-    match value {
-        serde_json::Value::Object(map) => Ok(map),
-        _ => anyhow::bail!(
-            "{} must contain a registry document object (name, version, groups)",
-            path.display()
-        ),
-    }
+fn read_document(path: &Path) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    super::read_json_object(path, "registry document")
 }
 
 impl SchemaAction {
@@ -379,6 +352,7 @@ impl AdminSchemaAction {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::commands::test_support::{connect, write_temp};
     use clap::Parser;
 
     #[derive(Parser)]
@@ -394,23 +368,6 @@ mod tests {
     }
 
     const ACME_YAML: &str = include_str!("../../../schema-model/tests/fixtures/acme.yaml");
-
-    fn connect(url: &str) -> ConnectArgs {
-        ConnectArgs {
-            url: url.to_string(),
-            api_key: Some("sk-test".to_string()),
-            tenant_id: Some("acme".to_string()),
-            dataset_id: None,
-        }
-    }
-
-    fn write_temp(name: &str, contents: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join(format!("signaldb-cli-schema-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).expect("temp dir");
-        let path = dir.join(name);
-        std::fs::write(&path, contents).expect("write fixture");
-        path
-    }
 
     #[test]
     fn schema_registry_list_and_get_parse() {
@@ -525,14 +482,14 @@ mod tests {
     #[test]
     fn read_document_accepts_yaml_and_json_by_extension() {
         let yaml = write_temp("acme.yaml", ACME_YAML);
-        let from_yaml = read_document(&yaml).expect("yaml parses");
+        let from_yaml = read_document(yaml.path()).expect("yaml parses");
         assert_eq!(from_yaml["name"], "acme");
         assert_eq!(from_yaml["version"], "1.0.0");
         assert!(from_yaml["groups"].as_array().is_some_and(|g| g.len() == 5));
 
         let json_text = serde_json::to_string(&from_yaml).expect("serialize");
         let json = write_temp("acme.json", &json_text);
-        let from_json = read_document(&json).expect("json parses");
+        let from_json = read_document(json.path()).expect("json parses");
         assert_eq!(
             from_json, from_yaml,
             "YAML and JSON produce the same document"
@@ -541,7 +498,7 @@ mod tests {
         // Anything else is tried as YAML, which is a superset of JSON.
         let other = write_temp("acme.registry", &json_text);
         assert_eq!(
-            read_document(&other).expect("json-as-yaml parses"),
+            read_document(other.path()).expect("json-as-yaml parses"),
             from_yaml
         );
     }
@@ -549,16 +506,51 @@ mod tests {
     #[test]
     fn read_document_rejects_non_object_and_bad_syntax() {
         let list = write_temp("list.yaml", "- a\n- b\n");
-        let err = read_document(&list).expect_err("a list is not a document");
+        let err = read_document(list.path()).expect_err("a list is not a document");
         assert!(
             err.to_string().contains("registry document object"),
             "{err}"
         );
 
         let broken = write_temp("broken.json", "{ not json");
-        assert!(read_document(&broken).is_err());
+        assert!(read_document(broken.path()).is_err());
 
         assert!(read_document(Path::new("/nonexistent/conv.yaml")).is_err());
+    }
+
+    #[tokio::test]
+    async fn admin_schema_create_uploads_a_definition_v2_file() {
+        let file = write_temp(
+            "acme-v2.yaml",
+            include_str!("../../../schema-model/tests/fixtures/acme-v2.yaml"),
+        );
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/schema/registries")
+            .match_header("authorization", "Bearer sk-test")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "file_format": "definition/2",
+                "name": "acme",
+                "version": "1.0.0",
+                "entities": [{"name": "acme.order"}, {"name": "acme.k8s.pod"}],
+                "metrics": [{"name": "acme.checkout.latency"}],
+            })))
+            .with_status(201)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"namespace":"acme","version":"1.0.0","source":"custom","attribute_count":5,"entity_count":2,"metric_count":1,"read_only":false}"#,
+            )
+            .create_async()
+            .await;
+
+        AdminSchemaAction::Create(DocumentArgs {
+            file: file.path().to_path_buf(),
+            connect: connect(&server.url()),
+        })
+        .run()
+        .await
+        .expect("admin schema create succeeds");
+        mock.assert_async().await;
     }
 
     #[tokio::test]
@@ -684,7 +676,7 @@ mod tests {
 
         let file = write_temp("upload.yaml", ACME_YAML);
         AdminSchemaAction::Create(DocumentArgs {
-            file,
+            file: file.path().to_path_buf(),
             connect: connect(&server.url()),
         })
         .run()
@@ -726,7 +718,7 @@ mod tests {
 
         let file = write_temp("invalid.yaml", ACME_YAML);
         let err = AdminSchemaAction::Create(DocumentArgs {
-            file,
+            file: file.path().to_path_buf(),
             connect: connect(&server.url()),
         })
         .run()

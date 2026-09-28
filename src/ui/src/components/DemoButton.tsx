@@ -24,7 +24,7 @@ export function DemoButton({ username, password, onAuthenticated }: Props) {
     <div className="login-demo">
       <button
         type="button"
-        className="login-demo-button btn btn-primary"
+        className="login-demo-button login-submit btn"
         disabled={busy}
         onClick={() => {
           setBusy(true);

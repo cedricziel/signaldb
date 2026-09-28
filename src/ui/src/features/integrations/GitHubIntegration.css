@@ -75,7 +75,8 @@
 .github-installations h2 {
   font-size: var(--text-section);
   font-weight: 650;
-  padding: 20px 20px 0;
+  margin: 0;
+  padding: 20px 20px 4px;
 }
 
 .github-installations > ul {
@@ -110,7 +111,7 @@
 }
 
 .github-stale-marker {
-  color: var(--warn);
+  color: var(--warn-text);
   font-size: 11px;
 }
 

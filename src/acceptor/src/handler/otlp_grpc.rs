@@ -5,6 +5,10 @@
 //! Named `otlp_grpc` for its original gRPC-only origin; both the gRPC
 //! (`services::otlp_trace_service`) and HTTP (`lib::handle_http_traces`)
 //! surfaces share this one handler.
+//!
+//! A `gen_ai.evaluation.result` span event is also written as a log record
+//! (see [`common::evals::span_events`]) through the log handler, since the
+//! Evaluate pages read results from `logs`.
 
 use std::sync::Arc;
 
@@ -19,8 +23,9 @@ use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use super::WalManager;
 use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
+use super::otlp_log_handler::LogHandler;
 use super::processors_apply::apply_trace_processors;
-use super::retry_dedup::RetryDedup;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct TraceHandler {
     /// Flight transport for forwarding telemetry
@@ -31,6 +36,10 @@ pub struct TraceHandler {
     retry_dedup: Arc<RetryDedup>,
     /// Tenant OTTL processors (change: tenant-ottl-processors)
     processor_registry: Arc<ProcessorRegistry>,
+    /// Writes the log records derived from evaluation-result span events,
+    /// through the acceptor's shared log ingest path. `None` makes the
+    /// fan-out a no-op, which keeps other constructors and tests unchanged.
+    eval_log_handler: Option<Arc<LogHandler>>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -78,6 +87,7 @@ impl TraceHandler {
             wal_manager,
             retry_dedup: Arc::new(RetryDedup::default()),
             processor_registry,
+            eval_log_handler: None,
         }
     }
 
@@ -86,6 +96,15 @@ impl TraceHandler {
     /// the default window.
     pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
         self.retry_dedup = retry_dedup;
+        self
+    }
+
+    /// Route `gen_ai.evaluation.result` span events to `log_handler` (see
+    /// [`common::evals::span_events`]). Without this, the fan-out is a
+    /// no-op: the trace export still succeeds, but no derived log is
+    /// written.
+    pub fn with_evaluation_logs(mut self, log_handler: Arc<LogHandler>) -> Self {
+        self.eval_log_handler = Some(log_handler);
         self
     }
 
@@ -162,18 +181,19 @@ impl TraceHandler {
                 metadata["tracestate"] = tracestate.into();
             }
         }
-        let metadata_str = serde_json::to_string(&metadata).ok();
 
         let batch_bytes = record_batch_to_bytes(&record_batch)
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
-        let fingerprint = self.retry_dedup.fingerprint(
+        let ingest_id = stamp_batch_fingerprint(
+            &mut metadata,
             &tenant_context.tenant_id,
             &tenant_context.dataset_id,
             &WalOperation::WriteTraces,
             &batch_bytes,
         );
+        let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
             .append(WalOperation::WriteTraces, batch_bytes, metadata_str.clone())
             .await
@@ -193,7 +213,7 @@ impl TraceHandler {
         // flush above (issue #1734). Awaiting the handle keeps behavior for
         // connected clients unchanged. A client's resend of a batch already
         // accepted is retired instead (see `retry_dedup`).
-        let forward_task = if self.retry_dedup.is_resend(fingerprint) {
+        let forward_task = if self.retry_dedup.is_resend(ingest_id) {
             spawn_retire_resend(
                 wal,
                 wal_entry_id,
@@ -205,6 +225,7 @@ impl TraceHandler {
                 self.flight_transport.clone(),
                 wal,
                 wal_entry_id,
+                ingest_id,
                 record_batch,
                 metadata_str,
                 "traces",
@@ -214,9 +235,44 @@ impl TraceHandler {
             tracing::error!(entry_id = %wal_entry_id, error = %e, "Forward-and-mark task for traces did not complete");
         }
 
+        self.write_evaluation_logs(tenant_context, request).await;
+
         // Data is durable in the WAL at this point; forward failures are
         // recovered by the retry consumer, so the export is acknowledged.
         Ok(())
+    }
+
+    /// Writes each `gen_ai.evaluation.result` span event in `request` as a
+    /// log record through the log ingest path (log processors, logs WAL,
+    /// forward), when an evaluation log handler is set. Runs after the
+    /// traces are durable and never fails the trace export: the spans are
+    /// stored either way, and a lost result is logged. The derived batch
+    /// depends only on `request`, so a resent trace export fingerprints to
+    /// the same logs `ingest_id` and is deduplicated like any resent logs
+    /// batch. Takes `request` by value since this is its last use in the
+    /// caller, letting the conversion move attributes instead of cloning.
+    async fn write_evaluation_logs(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportTraceServiceRequest,
+    ) {
+        let Some(eval_log_handler) = &self.eval_log_handler else {
+            return;
+        };
+        let Some(logs) = common::evals::span_events::evaluation_logs_from_spans(request) else {
+            return;
+        };
+        if let Err(error) = eval_log_handler
+            .handle_grpc_otlp_logs(tenant_context, logs)
+            .await
+        {
+            tracing::warn!(
+                tenant_id = %tenant_context.tenant_id,
+                dataset_id = %tenant_context.dataset_id,
+                error = %error,
+                "Failed to write evaluation results derived from span events; the spans were stored"
+            );
+        }
     }
 }
 
@@ -233,12 +289,11 @@ mod cancellation_safety_tests {
     use std::time::Duration;
 
     use arrow_flight::flight_service_server::FlightService;
-    use common::auth::{TenantContext, TenantSource};
+    use common::auth::TenantContext;
     use common::catalog::Catalog;
     use common::flight::transport::InMemoryFlightTransport;
     use common::processors::ProcessorRegistry;
     use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-    use common::wal::WalConfig;
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
     use opentelemetry_proto::tonic::resource::v1::Resource;
     use opentelemetry_proto::tonic::trace::v1::{
@@ -248,25 +303,9 @@ mod cancellation_safety_tests {
     use tokio::sync::Notify;
 
     use super::*;
-
-    fn test_tenant_context() -> TenantContext {
-        TenantContext {
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            tenant_slug: "acme".to_string(),
-            dataset_slug: "production".to_string(),
-            api_key_name: Some("test-key".to_string()),
-            api_key_scopes: None,
-            api_key_dataset_ids: None,
-            oauth_tenant_grants: None,
-            api_key_allowed_origins: None,
-            user_id: None,
-            role: None,
-            is_instance_admin: false,
-            session_id: None,
-            source: TenantSource::Config,
-        }
-    }
+    use crate::handler::test_support::{
+        only_wal_entry_bytes, test_tenant_context, test_wal_manager, transport_without_writer,
+    };
 
     fn sample_trace_request() -> ExportTraceServiceRequest {
         ExportTraceServiceRequest {
@@ -406,11 +445,6 @@ mod cancellation_safety_tests {
         }
     }
 
-    fn test_wal_manager(base_dir: &std::path::Path) -> WalManager {
-        let config = WalConfig::with_defaults(base_dir.to_path_buf());
-        WalManager::new(config.clone(), config.clone(), config.clone(), config)
-    }
-
     #[tokio::test]
     async fn dropping_the_request_future_after_flush_does_not_duplicate_the_forward() {
         let catalog = Catalog::new_in_memory().await.unwrap();
@@ -502,26 +536,9 @@ mod cancellation_safety_tests {
         );
     }
 
-    /// A handler whose writer is unreachable: forwards fail, so every entry
-    /// the handler appends stays unprocessed and is visible to the test.
     async fn handler_without_writer(wal_manager: Arc<WalManager>) -> TraceHandler {
-        let catalog = Catalog::new_in_memory().await.unwrap();
-        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
-            catalog,
-            ServiceType::Acceptor,
-            "127.0.0.1:0",
-        )
-        .await
-        .unwrap();
-        let processor_registry = Arc::new(ProcessorRegistry::new(
-            Arc::new(common::catalog::Catalog::new_in_memory().await.unwrap()),
-            &common::config::ProcessorsConfig::default(),
-        ));
-        TraceHandler::new(
-            Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap)),
-            wal_manager,
-            processor_registry,
-        )
+        let (transport, processor_registry) = transport_without_writer().await;
+        TraceHandler::new(transport, wal_manager, processor_registry)
     }
 
     async fn unprocessed_traces(wal_manager: &WalManager, tenant_context: &TenantContext) -> usize {
@@ -579,5 +596,191 @@ mod cancellation_safety_tests {
         }
 
         assert_eq!(unprocessed_traces(&wal_manager, &tenant_context).await, 2);
+    }
+
+    /// The WAL carries the unmodified JSON-in-Utf8 conversion: attribute
+    /// typing happens at the writer, never in the acceptor's WAL bytes.
+    #[tokio::test]
+    async fn wal_entry_bytes_match_the_unmodified_otlp_to_arrow_conversion() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler_without_writer(wal_manager.clone()).await;
+        let tenant_context = test_tenant_context();
+        let request = sample_trace_request();
+
+        let expected_batch = otlp_traces_to_arrow(&request).unwrap();
+        let expected_bytes = record_batch_to_bytes(&expected_batch).unwrap();
+
+        handler
+            .handle_grpc_otlp_traces(&tenant_context, request)
+            .await
+            .unwrap();
+
+        assert_eq!(
+            only_wal_entry_bytes(&wal_manager, &tenant_context, "traces").await,
+            expected_bytes
+        );
+    }
+}
+
+#[cfg(test)]
+mod evaluation_span_event_tests {
+    //! Change agent-offline-evals, task 7.1: a `gen_ai.evaluation.result`
+    //! span event is also written through the log ingest path.
+
+    use std::sync::Arc;
+
+    use common::evals::{EVALUATION_NAME, EVALUATION_RESULT_EVENT};
+    use common::wal::bytes_to_record_batch;
+    use datafusion::arrow::array::{Array, BinaryArray, StringArray};
+    use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+    use opentelemetry_proto::tonic::trace::v1::span::Event;
+    use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span};
+    use tempfile::TempDir;
+
+    use super::*;
+    use crate::handler::test_support::{
+        only_wal_entry_bytes, test_tenant_context, test_wal_manager, transport_without_writer,
+    };
+
+    const TRACE_ID: [u8; 16] = [0x42; 16];
+    const SPAN_ID: [u8; 8] = [0x24; 8];
+
+    fn trace_request(events: Vec<Event>) -> ExportTraceServiceRequest {
+        ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                scope_spans: vec![ScopeSpans {
+                    spans: vec![Span {
+                        trace_id: TRACE_ID.to_vec(),
+                        span_id: SPAN_ID.to_vec(),
+                        name: "invoke_agent triage".to_string(),
+                        start_time_unix_nano: 1_000,
+                        end_time_unix_nano: 2_000,
+                        events,
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }],
+        }
+    }
+
+    fn evaluation_event() -> Event {
+        Event {
+            time_unix_nano: 1_500,
+            name: EVALUATION_RESULT_EVENT.to_string(),
+            attributes: vec![KeyValue {
+                key: EVALUATION_NAME.to_string(),
+                value: Some(AnyValue {
+                    value: Some(Value::StringValue("Correctness".to_string())),
+                }),
+                ..Default::default()
+            }],
+            dropped_attributes_count: 0,
+        }
+    }
+
+    async fn unprocessed(wal_manager: &WalManager, signal: &str) -> usize {
+        let tenant_context = test_tenant_context();
+        wal_manager
+            .get_wal(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                signal,
+            )
+            .await
+            .unwrap()
+            .get_unprocessed_entries()
+            .await
+            .unwrap()
+            .len()
+    }
+
+    async fn handler(wal_manager: Arc<WalManager>) -> TraceHandler {
+        let (transport, processor_registry) = transport_without_writer().await;
+        let log_handler = Arc::new(LogHandler::new(
+            transport.clone(),
+            wal_manager.clone(),
+            processor_registry.clone(),
+        ));
+        TraceHandler::new(transport, wal_manager, processor_registry)
+            .with_evaluation_logs(log_handler)
+    }
+
+    #[tokio::test]
+    async fn an_evaluation_span_event_becomes_a_logs_batch_with_the_span_trace_context() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler(wal_manager.clone()).await;
+        let tenant_context = test_tenant_context();
+
+        handler
+            .handle_grpc_otlp_traces(&tenant_context, trace_request(vec![evaluation_event()]))
+            .await
+            .unwrap();
+
+        assert_eq!(unprocessed(&wal_manager, "traces").await, 1);
+        let batch = bytes_to_record_batch(
+            &only_wal_entry_bytes(&wal_manager, &tenant_context, "logs").await,
+        )
+        .unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        let binary = |name: &str| {
+            batch
+                .column_by_name(name)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<BinaryArray>()
+                .unwrap()
+                .value(0)
+                .to_vec()
+        };
+        assert_eq!(binary("trace_id"), TRACE_ID);
+        assert_eq!(binary("span_id"), SPAN_ID);
+        let event_name = batch
+            .column_by_name("event_name")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(event_name.value(0), EVALUATION_RESULT_EVENT);
+    }
+
+    #[tokio::test]
+    async fn a_trace_without_evaluation_events_writes_no_logs() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler(wal_manager.clone()).await;
+        let other = Event {
+            name: "exception".to_string(),
+            ..Default::default()
+        };
+
+        handler
+            .handle_grpc_otlp_traces(&test_tenant_context(), trace_request(vec![other]))
+            .await
+            .unwrap();
+
+        assert_eq!(unprocessed(&wal_manager, "traces").await, 1);
+        assert_eq!(unprocessed(&wal_manager, "logs").await, 0);
+    }
+
+    #[tokio::test]
+    async fn a_resent_trace_export_writes_its_evaluation_logs_once() {
+        let temp_dir = TempDir::new().unwrap();
+        let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+        let handler = handler(wal_manager.clone()).await;
+        let tenant_context = test_tenant_context();
+
+        for _ in 0..2 {
+            handler
+                .handle_grpc_otlp_traces(&tenant_context, trace_request(vec![evaluation_event()]))
+                .await
+                .unwrap();
+        }
+
+        assert_eq!(unprocessed(&wal_manager, "traces").await, 1);
+        assert_eq!(unprocessed(&wal_manager, "logs").await, 1);
     }
 }

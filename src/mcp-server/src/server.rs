@@ -40,7 +40,7 @@
 //!   `resolve_entity` / `resolve_metric`, `search_schema` — schema-registry
 //!   lookup: what an attribute key, entity type, or metric name *means*,
 //!   precedence-ordered across the tenant's visible registries (custom →
-//!   signaldb → otel), so a model can learn the vocabulary before building a
+//!   signaldb → otel-genai → otel), so a model can learn the vocabulary before building a
 //!   query
 //! - `create_schema_registry` / `replace_schema_registry` /
 //!   `delete_schema_registry` / `validate_schema_registry` — custom-registry
@@ -151,6 +151,7 @@ use crate::audit::{
 use crate::docs;
 use crate::prompts;
 use crate::sdk_client_for;
+use crate::trace_view;
 use crate::ui_links;
 
 /// The SignalDB MCP server handler. One instance is created per session by the
@@ -227,9 +228,11 @@ struct GetTraceParams {
     /// Trace ID to fetch.
     trace_id: String,
     /// Optional start-of-range hint, unix seconds, to prune the scan.
+    /// Defaults to 30 days before now.
     #[serde(default)]
     start: Option<i64>,
     /// Optional end-of-range hint, unix seconds, to prune the scan.
+    /// Defaults to now.
     #[serde(default)]
     end: Option<i64>,
     /// Tenant to query — must match the credential's authenticated tenant
@@ -383,7 +386,7 @@ struct CreateApiKeyParams {
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
     /// `schema:read`, `schema:write`, `processors:read`, `processors:write`,
-    /// `tenant:manage` (manage the key's own
+    /// `evals:read`, `evals:write`, `tenant:manage` (manage the key's own
     /// tenant — datasets, API keys, memberships, schema — through the
     /// management API; explicit only, never implied by an unscoped key).
     scopes: Vec<String>,
@@ -1428,7 +1431,7 @@ struct TenantCreateApiKeyParams {
     /// `metrics:write`, `logs:write`, `traces:write`, `profiles:write`,
     /// `traces:read`, `logs:read`, `metrics:read`, `profiles:read`,
     /// `schema:read`, `schema:write`, `processors:read`, `processors:write`,
-    /// `tenant:manage` (manage this tenant's
+    /// `evals:read`, `evals:write`, `tenant:manage` (manage this tenant's
     /// datasets, API keys, memberships, and schema view; explicit only).
     scopes: Vec<String>,
     /// Dataset set the key is restricted to (non-empty; a bare empty array
@@ -1764,6 +1767,456 @@ struct DeleteProcessorParams {
     name: String,
 }
 
+// ---- Agent eval set parameters (tenant credential) ----
+
+/// Parameters for `list_eval_sets`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListEvalSetsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset whose eval sets to list. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+}
+
+/// Default and ceiling for `get_eval_set`'s `limit`: large enough for a
+/// typical set in one call, small enough that a page stays well under the
+/// tool payload cap.
+const EVAL_CASES_DEFAULT_LIMIT: usize = 200;
+const EVAL_CASES_MAX_LIMIT: usize = 1000;
+
+/// Parameters for `get_eval_set`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct GetEvalSetParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Index of the first case to return. Default 0.
+    #[serde(default)]
+    offset: Option<usize>,
+    /// Maximum number of cases to return. Default 200, at most 1000.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Parameters for `delete_eval_set`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct DeleteEvalSetParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+}
+
+/// JSON-schema mirror of the SDK's `EvalCase`: the tool parameters
+/// deserialize straight into the SDK type (`#[schemars(with)]`), so this only
+/// describes the wire shape to the client.
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[expect(
+    dead_code,
+    reason = "schema-only mirror of signaldb_sdk::types::EvalCase"
+)]
+struct EvalCaseParam {
+    /// Case id, unique within the set; 1-128 characters.
+    id: String,
+    /// The input the agent under test receives.
+    input: String,
+    /// Tool names the agent should call, in order. Omit to leave the
+    /// trajectory unchecked.
+    #[serde(default)]
+    expected_tools: Vec<String>,
+    /// Reference answer, for evaluators that compare against one.
+    #[serde(default)]
+    reference: Option<String>,
+    /// Free-form labels.
+    #[serde(default)]
+    tags: Vec<String>,
+    /// Where the case came from. Defaults to `hand_written`.
+    #[serde(default)]
+    source: Option<EvalCaseSourceParam>,
+}
+
+/// JSON-schema mirror of the SDK's `EvalCaseSource`
+/// (`{"kind": "trace", "trace_id": "…"}`, `{"kind": "upload"}`,
+/// `{"kind": "hand_written"}`).
+#[derive(JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(tag = "kind", rename_all = "snake_case")]
+#[expect(
+    dead_code,
+    reason = "schema-only mirror of signaldb_sdk::types::EvalCaseSource"
+)]
+enum EvalCaseSourceParam {
+    /// Captured from a production trace.
+    Trace {
+        /// The 32-hex-character trace id.
+        trace_id: String,
+    },
+    /// Imported from an uploaded file.
+    Upload,
+    /// Written by hand.
+    HandWritten,
+}
+
+/// Parameters for `create_eval_set` and `replace_eval_set`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct WriteEvalSetParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name: lowercase letters, digits, `-`, `_` and `.`, starting
+    /// with a letter or digit; 1-128 characters. `replace_eval_set` replaces
+    /// the existing set of this name.
+    name: String,
+    /// The agent the set evaluates (`gen_ai.agent.name`). Must not be empty.
+    agent: String,
+    /// Human-readable description.
+    #[serde(default)]
+    description: Option<String>,
+    /// Cases, in order (at most 10,000). A replace swaps in exactly these.
+    #[serde(default)]
+    #[schemars(with = "Vec<EvalCaseParam>")]
+    cases: Vec<signaldb_sdk::types::EvalCase>,
+}
+
+impl From<WriteEvalSetParams> for signaldb_sdk::types::EvalSetSpec {
+    fn from(p: WriteEvalSetParams) -> Self {
+        signaldb_sdk::types::EvalSetSpec {
+            name: p.name,
+            agent: p.agent,
+            description: p.description,
+            cases: p.cases,
+        }
+    }
+}
+
+/// Parameters for `append_eval_cases`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct AppendEvalCasesParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set lives in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Cases to append. Ids the set already holds are skipped and reported,
+    /// never overwritten.
+    #[schemars(with = "Vec<EvalCaseParam>")]
+    cases: Vec<signaldb_sdk::types::EvalCase>,
+}
+
+fn default_eval_traces_from() -> String {
+    "now-7d".to_string()
+}
+
+/// Parameters for `append_eval_cases_from_traces`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct AppendEvalCasesFromTracesParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval set and the traces live in. Required: one MCP
+    /// session may span several datasets, so there is no implicit session
+    /// default; see `discover_datasets`.
+    dataset: String,
+    /// Eval set name.
+    name: String,
+    /// Window start: RFC3339, a relative anchor (`now-7d`) or epoch
+    /// nanoseconds. Defaults to `now-7d`.
+    #[serde(default = "default_eval_traces_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// `gen_ai.agent.name` of the agent span. Defaults to the set's agent.
+    #[serde(default)]
+    agent: Option<String>,
+    /// `gen_ai.operation.name` of the agent span. Defaults to `invoke_agent`.
+    #[serde(default)]
+    operation: Option<String>,
+    /// Extra Query IR predicates the agent span must satisfy, e.g.
+    /// `{"field": "deployment.environment", "op": "eq", "value": "prod"}`.
+    #[serde(default)]
+    filters: Vec<serde_json::Map<String, serde_json::Value>>,
+    /// Keep only traces with at least one failing result of this evaluator
+    /// (`gen_ai.evaluation.name`) in the window. Evaluator errors never
+    /// count as failures.
+    #[serde(default)]
+    failing_evaluator: Option<String>,
+    /// How many new cases to add, 1-1000. Defaults to 50.
+    #[serde(default)]
+    sample: Option<std::num::NonZeroU32>,
+    /// Use each trace's `execute_tool` calls, in order, as the case's
+    /// expected tools.
+    #[serde(default)]
+    expected_tools: bool,
+    /// Use the agent's answer as the case's reference.
+    #[serde(default)]
+    reference_from_answer: bool,
+    /// Tags put on every new case.
+    #[serde(default)]
+    tags: Vec<String>,
+}
+
+impl From<AppendEvalCasesFromTracesParams> for signaldb_sdk::types::AppendCasesFromTracesRequest {
+    fn from(p: AppendEvalCasesFromTracesParams) -> Self {
+        signaldb_sdk::types::AppendCasesFromTracesRequest {
+            range: signaldb_sdk::types::QueryRange {
+                from: p.from,
+                to: p.to,
+            },
+            agent: p.agent,
+            operation: p.operation,
+            filters: p.filters,
+            failing_evaluator: p.failing_evaluator,
+            sample: p.sample,
+            expected_tools: Some(p.expected_tools),
+            reference_from_answer: Some(p.reference_from_answer),
+            tags: p.tags,
+        }
+    }
+}
+
+/// File format of `upload_eval_results`.
+#[derive(Debug, Clone, Copy, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+#[serde(rename_all = "lowercase")]
+enum EvalResultsFormatParam {
+    /// CSV with a header row.
+    Csv,
+    /// One JSON object per line.
+    Jsonl,
+}
+
+impl From<EvalResultsFormatParam> for signaldb_sdk::types::EvalResultsFormat {
+    fn from(format: EvalResultsFormatParam) -> Self {
+        match format {
+            EvalResultsFormatParam::Csv => Self::Csv,
+            EvalResultsFormatParam::Jsonl => Self::Jsonl,
+        }
+    }
+}
+
+/// Parameters for `upload_eval_results`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct UploadEvalResultsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset to write the results to. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// The results file's text: one row per evaluator result. Columns
+    /// (CSV header or JSONL keys): `case_id`, `name` (the evaluator)
+    /// required; `score`, `label`, `explanation`, `trace_id` (32 hex),
+    /// `span_id` (16 hex), `evaluator`, `error`, `trial` optional; each row
+    /// needs a score, a label or an error.
+    content: String,
+    /// `csv` or `jsonl`.
+    format: EvalResultsFormatParam,
+    /// The agent the run evaluated (`gen_ai.agent.name`).
+    agent: String,
+    /// The agent version under test (`gen_ai.agent.version`).
+    version: String,
+    /// The eval set the run replayed (a valid eval set name; the set need
+    /// not exist).
+    set: String,
+    /// Run id. Generated when omitted (and named in an error). Re-using one
+    /// with a different file adds to that run; re-sending the same file
+    /// under the same run id (a retry) is not written twice.
+    #[serde(default)]
+    run_id: Option<String>,
+}
+
+fn default_eval_runs_from() -> String {
+    "now-7d".to_string()
+}
+
+fn default_eval_compare_from() -> String {
+    common::evals::runs::LATEST_LOOKBACK.to_string()
+}
+
+/// Default and ceiling for the `limit` of `list_eval_runs` (runs) and
+/// `compare_eval_runs` (regressed cases).
+const EVAL_RUNS_DEFAULT_LIMIT: usize = 50;
+const EVAL_RUNS_MAX_LIMIT: usize = 500;
+
+/// Parameters for `list_eval_runs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct ListEvalRunsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval results live in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// Window start: RFC3339, a relative anchor (`now-7d`) or epoch
+    /// nanoseconds. Defaults to `now-7d`.
+    #[serde(default = "default_eval_runs_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Only runs of this agent (`gen_ai.agent.name`, or `service.name` when
+    /// a result doesn't name its agent).
+    #[serde(default)]
+    agent: Option<String>,
+    /// Only runs of this agent version (`gen_ai.agent.version`, or
+    /// `service.version`).
+    #[serde(default)]
+    version: Option<String>,
+    /// Only runs of this eval set (`signaldb.eval.set`).
+    #[serde(default)]
+    set: Option<String>,
+    /// Most runs to return, newest first. Default 50, at most 500.
+    #[serde(default)]
+    limit: Option<usize>,
+}
+
+/// Parameters for `compare_eval_runs`.
+#[derive(Debug, Deserialize, JsonSchema)]
+#[schemars(crate = "rmcp::schemars")]
+struct CompareEvalRunsParams {
+    /// Tenant to query — must match the credential's authenticated tenant
+    /// for this call (see `discover_datasets`). Required: one MCP session
+    /// may hold credentials for several tenants across calls, so there is no
+    /// single implicit default to fall back to; a mismatch fails the call
+    /// before any router request is made.
+    tenant: String,
+    /// Dataset the eval results live in. Required: one MCP session may span
+    /// several datasets, so there is no implicit session default; see
+    /// `discover_datasets`.
+    dataset: String,
+    /// The run to compare against: a run id, or `latest:<version>` for the
+    /// newest run of that agent version on the same eval set.
+    baseline: String,
+    /// The run under test: a run id, or `latest:<version>`.
+    candidate: String,
+    /// Agent for resolving `latest:<version>`. Defaults to the other side's
+    /// run's agent; needed when both sides are `latest:`.
+    #[serde(default)]
+    agent: Option<String>,
+    /// Eval set for resolving `latest:<version>`. Defaults to the other
+    /// side's run's set; needed when both sides are `latest:`.
+    #[serde(default)]
+    set: Option<String>,
+    /// Window both runs' results are read from: RFC3339, a relative anchor
+    /// or epoch nanoseconds. Defaults to `now-30d`.
+    #[serde(default = "default_eval_compare_from")]
+    from: String,
+    /// Window end. Defaults to `now`.
+    #[serde(default = "default_discovery_to")]
+    to: String,
+    /// Most regressed cases to list, largest drop first. Default 50, at
+    /// most 500. The counts always cover every case.
+    #[serde(default)]
+    limit: Option<usize>,
+    /// Add each listed regression's tool trajectory: the candidate's
+    /// `execute_tool` calls marked against the baseline's (`same`,
+    /// `skipped`, `reordered`, `repeated`, `new`). Reads the runs' traces,
+    /// so it needs `traces:read` too.
+    #[serde(default)]
+    include_tools: bool,
+}
+
+/// `common::evals::runs`'s Query IR reads, sent through the router as the
+/// caller (`POST /api/v1/query`).
+struct RouterIr<'a> {
+    client: &'a signaldb_sdk::Client,
+    what: &'static str,
+}
+
+impl common::evals::runs::IrSource for RouterIr<'_> {
+    type Error = ErrorData;
+
+    async fn query(
+        &self,
+        document: &common::evals::runs::Document,
+    ) -> Result<common::evals::runs::IrTable, ErrorData> {
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::to_value(document)
+            .and_then(serde_json::from_value)
+            .map_err(|e| {
+                ErrorData::internal_error(format!("{}: bad IR document: {e}", self.what), None)
+            })?;
+        let response = self
+            .client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, self.what))?
+            .into_inner();
+        Ok(common::evals::runs::IrTable {
+            columns: response.columns.into_iter().map(|c| c.name).collect(),
+            rows: response.rows,
+        })
+    }
+}
+
+/// A run read failure as a tool error: the IR request's own error, or an
+/// invalid-params error naming what could not be resolved.
+fn map_eval_read_err(err: common::evals::runs::ReadError<ErrorData>) -> ErrorData {
+    match err {
+        common::evals::runs::ReadError::Query(e) => e,
+        other => ErrorData::invalid_params(other.to_string(), None),
+    }
+}
+
 #[tool_router]
 impl McpServer {
     /// Construct a handler that forwards to `router_base_url`, bounding each
@@ -2018,7 +2471,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Fetch a single trace by its ID, scoped to your tenant. Optional `start`/`end` (unix seconds) hints prune the scan. Returns a not-found error when the trace does not exist."
+        description = "Fetch a single trace by its ID, scoped to your tenant, over the native Query IR. Optional `start`/`end` (unix seconds) hints prune the scan; the range defaults to the last 30 days when omitted, since a trace opened by pasting its ID may be much older than a short default window. Each span carries its span kind. When the trace's actual root span hasn't been stored yet (still in flight, or lost), the root falls back to the earliest orphan span rather than reporting \"unknown\". Returns a not-found error when the trace does not exist."
     )]
     async fn get_trace(
         &self,
@@ -2034,29 +2487,24 @@ impl McpServer {
             &p.dataset,
             &p.trace_id,
         ));
-        let mut req = client.query_single_trace().trace_id(p.trace_id);
-        if let Some(v) = p.start {
-            req = req.start(v);
-        }
-        if let Some(v) = p.end {
-            req = req.end(v);
-        }
-        let resp = req.send().await.map_err(|e| map_sdk_err(e, "get_trace"))?;
-        let trace = resp.into_inner();
-        // Adds a `services` summary (nodes with time-in-service, edges with
-        // call counts, failures marked) alongside the trace's own fields —
-        // see `trace_services_summary`. The waterfall app renders from
-        // `structuredContent`, which the host forwards to the iframe without
-        // adding it to the model's context; it is attached only for
-        // UI-capable clients so a plain client is not sent the same trace
-        // twice.
-        let mut payload = serde_json::to_value(&trace).map_err(|e| {
-            ErrorData::internal_error(format!("failed to serialize trace: {e}"), None)
-        })?;
-        if let Some(object) = payload.as_object_mut() {
-            object.insert("services".to_string(), trace_services_summary(&trace));
-        }
-        json_result_ext(&payload, client_supports_ui(&context), links)
+        let document = trace_view::trace_document(&p.trace_id, p.start, p.end);
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
+        let resp = client
+            .query_ir()
+            .body(request)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "get_trace"))?;
+        // The waterfall app renders from `structuredContent`, which the host
+        // forwards to the iframe without adding it to the model's context;
+        // it is attached only for UI-capable clients so a plain client is
+        // not sent the same trace twice.
+        let trace =
+            trace_view::trace_from_response(&p.trace_id, resp.into_inner()).ok_or_else(|| {
+                ErrorData::resource_not_found("get_trace: not found".to_string(), None)
+            })?;
+        json_result_ext(&trace, client_supports_ui(&context), links)
     }
 
     #[tool(
@@ -2098,7 +2546,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "get_service_map"))?;
+            .map_err(|e| map_api_error_body(e, "get_service_map"))?;
         let graph = resp
             .into_inner()
             .graph
@@ -2143,7 +2591,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "search_trace_groups"))?;
+            .map_err(|e| map_api_error_body(e, "search_trace_groups"))?;
         let groups =
             trace_groups_from_response(resp.into_inner(), p.group_by.len(), limit as usize);
         json_result_ext(&groups, false, links)
@@ -2171,7 +2619,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "get_profile"))?;
+            .map_err(|e| map_api_error_body(e, "get_profile"))?;
         let flamegraph = flamegraph_or_not_found(resp.into_inner())?;
         // The flamegraph app renders from `structuredContent`, mirroring
         // `get_trace`'s waterfall.
@@ -2549,7 +2997,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "discover_fields"))?;
+            .map_err(|e| map_api_error_body(e, "discover_fields"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2585,7 +3033,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "discover_field_values"))?;
+            .map_err(|e| map_api_error_body(e, "discover_field_values"))?;
         json_result(&resp.into_inner())
     }
 
@@ -2727,7 +3175,7 @@ impl McpServer {
             .body(request)
             .send()
             .await
-            .map_err(|e| map_query_err(e, "query_ir"))?;
+            .map_err(|e| map_api_error_body(e, "query_ir"))?;
         json_result(&resp.into_inner())
     }
 
@@ -3601,7 +4049,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the schema registries visible to your tenant, in precedence order (custom tenant registries first, then the bundled `signaldb` and OpenTelemetry `otel` semantic conventions), with attribute/entity/metric counts. Use `resolve_attribute`, `resolve_entity`, `resolve_metric`, or `search_schema` to look up what a specific name means."
+        description = "List the schema registries visible to your tenant, in precedence order (custom tenant registries first, then the bundled `signaldb`, OpenTelemetry GenAI `otel-genai`, and OpenTelemetry `otel` semantic conventions), with attribute/entity/metric counts. Use `resolve_attribute`, `resolve_entity`, `resolve_metric`, or `search_schema` to look up what a specific name means."
     )]
     async fn list_schema_registries(
         &self,
@@ -3999,6 +4447,322 @@ impl McpServer {
             "name": p.name,
         }))
     }
+
+    #[tool(
+        description = "List the agent eval sets in a dataset, without their cases: name, agent, case count, description, timestamps. An eval set is a named, ordered list of test cases (input, expected tool trajectory, reference answer) that an offline eval harness runs one agent over. Requires the `evals:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_eval_sets(
+        &self,
+        Parameters(p): Parameters<ListEvalSetsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let resp = client
+            .list_eval_sets()
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "list_eval_sets"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Fetch one agent eval set by name with a page of its cases in order (id, input, expected_tools, reference, tags, source). Returns the set header plus `total_cases`, `offset`, `returned` and `has_more`; page through a large set with `offset`/`limit` (default 200 cases, at most 1000). Requires the `evals:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn get_eval_set(
+        &self,
+        Parameters(p): Parameters<GetEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let set = client
+            .get_eval_set()
+            .name(&p.name)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "get_eval_set"))?
+            .into_inner();
+        json_result(&eval_set_page(set, p.offset, p.limit))
+    }
+
+    #[tool(
+        description = "Create an agent eval set (a named, ordered list of test cases for one agent) in a dataset. Fails if the name is taken; use `append_eval_cases` to add cases to an existing set. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn create_eval_set(
+        &self,
+        Parameters(p): Parameters<WriteEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let resp = client
+            .create_eval_set()
+            .body(signaldb_sdk::types::EvalSetSpec::from(p))
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "create_eval_set"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Replace an existing agent eval set (by `name`): its agent, description and every case are swapped for the ones given; cases not listed are dropped. Never creates a set. Requires the `evals:write` scope.",
+        annotations(destructive_hint = true)
+    )]
+    async fn replace_eval_set(
+        &self,
+        Parameters(p): Parameters<WriteEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let spec = signaldb_sdk::types::EvalSetSpec::from(p);
+        let resp = client
+            .replace_eval_set()
+            .name(&spec.name)
+            .body(spec)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "replace_eval_set"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Delete an agent eval set and all its cases by name. Requires the `evals:write` scope.",
+        annotations(destructive_hint = true, read_only_hint = false)
+    )]
+    async fn delete_eval_set(
+        &self,
+        Parameters(p): Parameters<DeleteEvalSetParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        client
+            .delete_eval_set()
+            .name(&p.name)
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "delete_eval_set"))?;
+        json_result(&serde_json::json!({
+            "deleted": true,
+            "name": p.name,
+        }))
+    }
+
+    #[tool(
+        description = "Append cases to an existing agent eval set. Case ids the set already holds are skipped and reported, never overwritten; the result gives `added`/`already_present` counts and ids. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn append_eval_cases(
+        &self,
+        Parameters(p): Parameters<AppendEvalCasesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let resp = client
+            .append_eval_cases()
+            .name(&p.name)
+            .body(signaldb_sdk::types::AppendEvalCasesRequest { cases: p.cases })
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "append_eval_cases"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Build eval cases from production traces: append one case per matching agent trace (a `gen_ai.operation.name` = `invoke_agent` span of the agent, in the window, matching `filters`) that the eval set does not hold yet, newest first, up to `sample` (default 50). With `failing_evaluator`, only traces holding a failing result of that evaluator count. A case's input is the agent span's last user message, its source the trace; optionally its expected tools are the trace's tool calls and its reference the agent's answer. Returns `matches`, `already_present`, `added` and `added_ids`. Requires the `evals:write` and `traces:read` scopes (plus `logs:read` with `failing_evaluator`).",
+        annotations(destructive_hint = false)
+    )]
+    async fn append_eval_cases_from_traces(
+        &self,
+        Parameters(p): Parameters<AppendEvalCasesFromTracesParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let name = p.name.clone();
+        let resp = client
+            .append_eval_cases_from_traces()
+            .name(&name)
+            .body(signaldb_sdk::types::AppendCasesFromTracesRequest::from(p))
+            .send()
+            .await
+            .map_err(|e| map_api_error_body(e, "append_eval_cases_from_traces"))?;
+        json_result(&resp.into_inner())
+    }
+
+    #[tool(
+        description = "Upload agent eval results as one offline run, for harnesses that do not export OpenTelemetry: `content` is a JSONL or CSV file with one row per evaluator result. The whole file is validated first; any invalid row rejects it and every problem is listed (row, column, reason), nothing written. Each row becomes a `gen_ai.evaluation.result` log record with the run attributes, so the run appears on the Evaluate pages and in `query_ir` like one sent over OTLP (queryable once the writer commits, typically within seconds). Returns the run id and, per evaluator, results, errors, mean and pass rate. Requires the `evals:write` scope.",
+        annotations(destructive_hint = false)
+    )]
+    async fn upload_eval_results(
+        &self,
+        Parameters(p): Parameters<UploadEvalResultsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        // Chosen here rather than by the server so the error can name it: a
+        // retry with the same run id and content is deduplicated.
+        let run_id = p
+            .run_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        let resp = client
+            .upload_eval_results()
+            .agent(p.agent)
+            .version(p.version)
+            .set(p.set)
+            .run_id(&run_id)
+            .format(signaldb_sdk::types::EvalResultsFormat::from(p.format))
+            .body(p.content)
+            .send()
+            .await
+            .map_err(|e| {
+                // A 4xx wrote nothing; anything else may have landed.
+                let rejected = matches!(&e, signaldb_sdk::Error::ErrorResponse(r)
+                    if r.status().is_client_error());
+                let mut err = map_api_error_body(e, "upload_eval_results");
+                if !rejected {
+                    err.message = format!(
+                        "{} (run_id `{run_id}`: retrying with the same run_id and content is safe)",
+                        err.message
+                    )
+                    .into();
+                }
+                err
+            })?;
+        json_result(&resp.into_inner())
+    }
+    #[tool(
+        description = "List offline agent eval runs (one run = the results sharing a `signaldb.eval.run_id`), newest first: run_id, eval set, agent, version, started_at/last_result_at, status (`running` while results arrived in the last 10 minutes, then `complete`, or `partial` with evaluator errors or results without trace context), results, cases, errors, unlinked, overall pass rate, per-evaluator mean and pass rate, and `previous_run_id` (the newest earlier run of the same eval set: the natural baseline for `compare_eval_runs`). Use it to find the runs to compare, or to answer \"how did version X score\". Window defaults to the last 7 days; filter by `agent`, `version`, `set`; at most `limit` runs (default 50, max 500) with `total_runs` and `truncated` saying when more matched. Reads `gen_ai.evaluation.result` log records through the Query IR, so it needs the `logs:read` scope.",
+        annotations(read_only_hint = true)
+    )]
+    async fn list_eval_runs(
+        &self,
+        Parameters(p): Parameters<ListEvalRunsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let source = RouterIr {
+            client: &client,
+            what: "list_eval_runs",
+        };
+        let window = common::evals::runs::Window {
+            from: p.from,
+            to: p.to,
+        };
+        let filter = common::evals::runs::RunFilter {
+            agent: p.agent.filter(|a| !a.is_empty()),
+            version: p.version.filter(|v| !v.is_empty()),
+            set: p.set.filter(|s| !s.is_empty()),
+            run_ids: Vec::new(),
+        };
+        let limit = p
+            .limit
+            .unwrap_or(EVAL_RUNS_DEFAULT_LIMIT)
+            .clamp(1, EVAL_RUNS_MAX_LIMIT);
+        let runs = common::evals::runs::list_runs(
+            &source,
+            &window,
+            &filter,
+            limit,
+            common::evals::runs::now_ms(),
+        )
+        .await
+        .map_err(map_eval_read_err)?;
+        json_result(&runs)
+    }
+
+    #[tool(
+        description = "Compare two offline agent eval runs case by case — \"did version B get worse than A, where and why\". Give `baseline` and `candidate` as run ids (see `list_eval_runs`) or `latest:<version>` (the newest run of that version of the same agent on the same eval set). Cases join on `signaldb.eval.case_id`; per evaluator a case got worse on pass→fail or a mean drop of at least 0.05 (better the other way); a case is a regression if any evaluator got worse, else an improvement if any got better, else unchanged; a candidate-only case that fails is a regression with `no_baseline`. Returns both runs' summaries, per-evaluator baseline/candidate mean and pass rate with the delta and how many cases moved, counts of regressions/improvements/unchanged, and the regressed cases (largest drop first, at most `limit`, default 50) with the evaluators that got worse (baseline and candidate mean, pass rate, verdict) and both trace ids for `get_trace`. `include_tools=true` adds each listed regression's tool-call diff (skipped, reordered, repeated, new calls). Reads through the Query IR: needs `logs:read`, plus `traces:read` with `include_tools`.",
+        annotations(read_only_hint = true)
+    )]
+    async fn compare_eval_runs(
+        &self,
+        Parameters(p): Parameters<CompareEvalRunsParams>,
+        Extension(parts): Extension<Parts>,
+    ) -> Result<CallToolResult, ErrorData> {
+        check_tenant_scope(&parts, &p.tenant)?;
+        let invalid = |e: String| ErrorData::invalid_params(e, None);
+        let request = common::evals::runs::CompareRequest {
+            baseline: common::evals::runs::RunRef::parse_named("baseline", &p.baseline)
+                .map_err(invalid)?,
+            candidate: common::evals::runs::RunRef::parse_named("candidate", &p.candidate)
+                .map_err(invalid)?,
+            agent: p.agent.filter(|a| !a.is_empty()),
+            set: p.set.filter(|s| !s.is_empty()),
+            window: common::evals::runs::Window {
+                from: p.from,
+                to: p.to,
+            },
+            limit: p
+                .limit
+                .unwrap_or(EVAL_RUNS_DEFAULT_LIMIT)
+                .clamp(1, EVAL_RUNS_MAX_LIMIT),
+            include_tools: p.include_tools,
+        };
+        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
+        let source = RouterIr {
+            client: &client,
+            what: "compare_eval_runs",
+        };
+        let comparison =
+            common::evals::runs::compare_runs(&source, &request, common::evals::runs::now_ms())
+                .await
+                .map_err(map_eval_read_err)?;
+        json_result(&comparison)
+    }
+}
+
+/// One page of an eval set for `get_eval_set`: the set header with
+/// `cases[offset..offset + limit]` and the paging fields, so a large set
+/// never reaches the tool payload cap.
+fn eval_set_page(
+    set: signaldb_sdk::types::EvalSetResponse,
+    offset: Option<usize>,
+    limit: Option<usize>,
+) -> serde_json::Value {
+    let signaldb_sdk::types::EvalSetResponse {
+        agent,
+        cases,
+        created_at,
+        dataset,
+        description,
+        links,
+        name,
+        tenant_id,
+        updated_at,
+        case_count: _,
+    } = set;
+    let total_cases = cases.len();
+    let offset = offset.unwrap_or(0).min(total_cases);
+    let limit = limit
+        .unwrap_or(EVAL_CASES_DEFAULT_LIMIT)
+        .clamp(1, EVAL_CASES_MAX_LIMIT);
+    let page: Vec<_> = cases.into_iter().skip(offset).take(limit).collect();
+    let returned = page.len();
+    serde_json::json!({
+        "name": name,
+        "agent": agent,
+        "description": description,
+        "dataset": dataset,
+        "tenant_id": tenant_id,
+        "created_at": created_at,
+        "updated_at": updated_at,
+        "total_cases": total_cases,
+        "offset": offset,
+        "returned": returned,
+        "has_more": offset + returned < total_cases,
+        "cases": page,
+        "_links": links,
+    })
 }
 
 impl McpServer {
@@ -4403,7 +5167,7 @@ fn json_result_ext<T: serde::Serialize>(
 /// falling back to `default_from` (a relative `"now-<duration>"` expression)
 /// and `"now"` when a bound is absent. Shared by every tool that builds a
 /// Query IR document from an optional `start`/`end` hint.
-fn range_bounds_ns(
+pub(crate) fn range_bounds_ns(
     start: Option<i64>,
     end: Option<i64>,
     default_from: &'static str,
@@ -4541,101 +5305,6 @@ fn service_map_summary(graph: &signaldb_sdk::types::ServiceGraph) -> String {
     }
 
     lines.join("\n")
-}
-
-/// Derive `get_trace`'s `services` summary from the trace's own spans:
-/// nodes are services with total span duration and call count in this
-/// trace, edges are calls between *different* services found by walking to
-/// each span's direct parent (a span nested under its own service's parent
-/// extends the caller rather than drawing a self-edge), failed when any
-/// call or span reached error status. Mirrors
-/// `src/ui/src/lib/traceToGraph.ts`'s `traceToGraph`. Pure and synchronous.
-fn trace_services_summary(trace: &signaldb_sdk::types::Trace) -> serde_json::Value {
-    use std::collections::HashMap;
-
-    let spans: Vec<&signaldb_sdk::types::Span> = trace
-        .span_sets
-        .iter()
-        .flat_map(|span_set| span_set.spans.iter())
-        .collect();
-    if spans.is_empty() {
-        return serde_json::json!({ "nodes": [], "edges": [] });
-    }
-    let by_id: HashMap<&str, &signaldb_sdk::types::Span> = spans
-        .iter()
-        .map(|span| (span.span_id.as_str(), *span))
-        .collect();
-
-    struct NodeAcc {
-        duration_ms: f64,
-        span_count: i64,
-        failed: bool,
-    }
-    let mut nodes: HashMap<String, NodeAcc> = HashMap::new();
-    for span in &spans {
-        let service = span.service_name.clone().unwrap_or_default();
-        let duration_ns: f64 = span.duration_nanos.parse().unwrap_or(0.0);
-        let acc = nodes.entry(service).or_insert(NodeAcc {
-            duration_ms: 0.0,
-            span_count: 0,
-            failed: false,
-        });
-        acc.duration_ms += duration_ns / 1_000_000.0;
-        acc.span_count += 1;
-        if span.status.as_deref() == Some("error") {
-            acc.failed = true;
-        }
-    }
-
-    struct EdgeAcc {
-        count: i64,
-        failed: bool,
-    }
-    let mut edges: HashMap<(String, String), EdgeAcc> = HashMap::new();
-    for span in &spans {
-        let Some(parent) = span.parent_span_id.as_deref().and_then(|id| by_id.get(id)) else {
-            continue;
-        };
-        let Some(from) = parent.service_name.clone() else {
-            continue;
-        };
-        let to = span.service_name.clone().unwrap_or_default();
-        if from == to {
-            continue;
-        }
-        let acc = edges.entry((from, to)).or_insert(EdgeAcc {
-            count: 0,
-            failed: false,
-        });
-        acc.count += 1;
-        if span.status.as_deref() == Some("error") {
-            acc.failed = true;
-        }
-    }
-
-    let node_list: Vec<serde_json::Value> = nodes
-        .into_iter()
-        .map(|(service, acc)| {
-            serde_json::json!({
-                "service": service,
-                "durationMs": acc.duration_ms,
-                "spanCount": acc.span_count,
-                "failed": acc.failed,
-            })
-        })
-        .collect();
-    let edge_list: Vec<serde_json::Value> = edges
-        .into_iter()
-        .map(|((from, to), acc)| {
-            serde_json::json!({
-                "from": from,
-                "to": to,
-                "count": acc.count,
-                "failed": acc.failed,
-            })
-        })
-        .collect();
-    serde_json::json!({ "nodes": node_list, "edges": edge_list })
 }
 
 /// Build the Query IR document `search_trace_groups` submits: the same
@@ -4821,42 +5490,6 @@ fn map_manage_err(
     }
 }
 
-/// Map a `/api/v1/query` error to an MCP error, keeping the router's typed
-/// `error`/`errorType` body in the message — otherwise a `400` (e.g. an
-/// invalid IR document) reaches the client as an opaque `Error Response:
-/// status: 400 ...; value: ()`, with the actual reason dropped. Other
-/// statuses fall back to [`map_sdk_err`].
-fn map_query_err(
-    err: signaldb_sdk::Error<signaldb_sdk::types::ApiErrorBody>,
-    what: &str,
-) -> ErrorData {
-    let signaldb_sdk::Error::ErrorResponse(response) = err else {
-        return map_sdk_err(err.into_untyped(), what);
-    };
-    let status = response.status().as_u16();
-    if status == 429 {
-        let retry_after = response
-            .into_inner()
-            .retry_after_ms
-            .and_then(|ms| u64::try_from(ms).ok())
-            .map(std::time::Duration::from_millis);
-        return throttled_error(what, retry_after);
-    }
-    let body = response.into_inner();
-    let message = format!("{what}: {}", body.error);
-    let mapped = match status {
-        400 | 422 => ErrorData::invalid_params(message, None),
-        401 => ErrorData::invalid_request(
-            format!("{what}: credential expired or was revoked; re-authenticate the session"),
-            None,
-        ),
-        403 => ErrorData::invalid_request(message, None),
-        404 => ErrorData::resource_not_found(message, None),
-        _ => ErrorData::internal_error(message, None),
-    };
-    with_http_status(mapped, status)
-}
-
 /// The `QueryIrRequest` fields with neither `Option<_>` nor `#[serde(default)]`
 /// (see `src/signaldb-sdk/src/generated.rs`) — a document missing any of
 /// these fails to deserialize.
@@ -4897,6 +5530,7 @@ fn map_schema_err(
         return map_sdk_err(err.into_untyped(), what);
     };
     let status = response.status().as_u16();
+    let retry_after = signaldb_sdk::retry::retry_after_from_headers(response.headers());
     let body = response.into_inner();
     let mut message = format!("{what}: {}", body.error);
     if !body.errors.is_empty() {
@@ -4909,17 +5543,7 @@ fn map_schema_err(
         message.push_str(&details.join("; "));
         message.push(']');
     }
-    let mapped = match status {
-        400 | 422 => ErrorData::invalid_params(message, None),
-        401 => ErrorData::invalid_request(
-            format!("{what}: credential expired or was revoked; re-authenticate the session"),
-            None,
-        ),
-        403 | 409 => ErrorData::invalid_request(message, None),
-        404 => ErrorData::resource_not_found(message, None),
-        _ => ErrorData::internal_error(message, None),
-    };
-    with_http_status(mapped, status)
+    status_to_error(status, what, message, retry_after)
 }
 
 /// Map a processors-API error to an MCP error, keeping the router's typed
@@ -4934,6 +5558,7 @@ fn map_processor_err(
         return map_sdk_err(err.into_untyped(), what);
     };
     let status = response.status().as_u16();
+    let retry_after = signaldb_sdk::retry::retry_after_from_headers(response.headers());
     let body = response.into_inner();
     let mut message = format!("{what}: {}", body.error);
     if !body.errors.is_empty() {
@@ -4946,14 +5571,66 @@ fn map_processor_err(
         message.push_str(&details.join("; "));
         message.push(']');
     }
+    status_to_error(status, what, message, retry_after)
+}
+
+/// Map an error carrying the router's shared `ApiErrorBody` envelope (the
+/// query and eval-sets APIs) to an MCP error, keeping its `error` text in the
+/// message so a model can fix the request (an invalid IR document, a bad
+/// eval set name, duplicate case ids, a taken name); other failures fall
+/// back to [`map_sdk_err`].
+fn map_api_error_body(
+    err: signaldb_sdk::Error<signaldb_sdk::types::ApiErrorBody>,
+    what: &str,
+) -> ErrorData {
+    let signaldb_sdk::Error::ErrorResponse(response) = err else {
+        return map_sdk_err(err.into_untyped(), what);
+    };
+    let status = response.status().as_u16();
+    let header_wait = signaldb_sdk::retry::retry_after_from_headers(response.headers());
+    let body = response.into_inner();
+    let retry_after = body
+        .retry_after_ms
+        .and_then(|ms| u64::try_from(ms).ok())
+        .map(std::time::Duration::from_millis)
+        .or(header_wait);
+    // Problems the router listed one by one (e.g. an upload's invalid rows).
+    let details: String = body
+        .details
+        .iter()
+        .flatten()
+        .map(|d| match (d.row, &d.column) {
+            (Some(row), Some(column)) => format!("\n- row {row}, `{column}`: {}", d.reason),
+            (Some(row), None) => format!("\n- row {row}: {}", d.reason),
+            (None, _) => format!("\n- {}", d.reason),
+        })
+        .collect();
+    status_to_error(
+        status,
+        what,
+        format!("{what}: {}{details}", body.error),
+        retry_after,
+    )
+}
+
+/// The status mapping shared by the typed-body mappers: `message` carries
+/// the router's error text, except on a `401` (a fixed re-authenticate hint)
+/// and a `429` (the throttled error, naming `retry_after`).
+fn status_to_error(
+    status: u16,
+    what: &str,
+    message: String,
+    retry_after: Option<std::time::Duration>,
+) -> ErrorData {
     let mapped = match status {
-        400 | 422 => ErrorData::invalid_params(message, None),
+        400 | 413 | 422 => ErrorData::invalid_params(message, None),
         401 => ErrorData::invalid_request(
             format!("{what}: credential expired or was revoked; re-authenticate the session"),
             None,
         ),
         403 | 409 => ErrorData::invalid_request(message, None),
         404 => ErrorData::resource_not_found(message, None),
+        429 => throttled_error(what, retry_after),
         _ => ErrorData::internal_error(message, None),
     };
     with_http_status(mapped, status)
@@ -5343,104 +6020,6 @@ mod tests {
             ],
         };
         assert!(!service_map_summary(&graph).contains("Highest-error edges"));
-    }
-
-    fn tempo_span(
-        span_id: &str,
-        parent_span_id: Option<&str>,
-        service_name: &str,
-        duration_nanos: &str,
-        status: Option<&str>,
-    ) -> serde_json::Value {
-        let mut span = serde_json::json!({
-            "spanID": span_id,
-            "serviceName": service_name,
-            "durationNanos": duration_nanos,
-            "startTimeUnixNano": "0",
-            "attributes": {},
-        });
-        if let Some(parent) = parent_span_id {
-            span["parentSpanID"] = serde_json::json!(parent);
-        }
-        if let Some(status) = status {
-            span["status"] = serde_json::json!(status);
-        }
-        span
-    }
-
-    fn trace_with_spans(spans: Vec<serde_json::Value>) -> signaldb_sdk::types::Trace {
-        serde_json::from_value(serde_json::json!({
-            "traceID": "abc",
-            "rootServiceName": "frontend",
-            "rootTraceName": "GET /",
-            "durationMs": 1,
-            "startTimeUnixNano": "0",
-            "spanSets": [{ "matched": spans.len(), "spans": spans }],
-        }))
-        .expect("trace fixture parses")
-    }
-
-    #[test]
-    fn trace_services_summary_is_empty_for_a_trace_with_no_spans() {
-        let trace = trace_with_spans(vec![]);
-        assert_eq!(
-            trace_services_summary(&trace),
-            serde_json::json!({ "nodes": [], "edges": [] })
-        );
-    }
-
-    #[test]
-    fn trace_services_summary_sums_duration_per_service_and_marks_failed_nodes() {
-        let trace = trace_with_spans(vec![
-            tempo_span("1", None, "frontend", "1000000", None),
-            tempo_span("2", Some("1"), "checkout", "2000000", Some("error")),
-        ]);
-        let summary = trace_services_summary(&trace);
-        let nodes = summary["nodes"].as_array().expect("nodes array");
-        let checkout = nodes
-            .iter()
-            .find(|n| n["service"] == "checkout")
-            .expect("checkout node present");
-        assert_eq!(checkout["durationMs"], 2.0);
-        assert_eq!(checkout["spanCount"], 1);
-        assert_eq!(checkout["failed"], true);
-        let frontend = nodes
-            .iter()
-            .find(|n| n["service"] == "frontend")
-            .expect("frontend node present");
-        assert_eq!(frontend["failed"], false);
-    }
-
-    #[test]
-    fn trace_services_summary_edges_use_the_direct_parents_service_and_mark_failed_calls() {
-        let trace = trace_with_spans(vec![
-            tempo_span("1", None, "frontend", "1000000", None),
-            tempo_span("2", Some("1"), "checkout", "1000000", Some("error")),
-        ]);
-        let summary = trace_services_summary(&trace);
-        let edges = summary["edges"].as_array().expect("edges array");
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0]["from"], "frontend");
-        assert_eq!(edges[0]["to"], "checkout");
-        assert_eq!(edges[0]["count"], 1);
-        assert_eq!(edges[0]["failed"], true);
-    }
-
-    /// A span nested under a same-service parent extends the caller rather
-    /// than drawing a self-edge — mirrors `traceToGraph.ts`'s
-    /// `callerService`.
-    #[test]
-    fn trace_services_summary_skips_same_service_parent_child_edges() {
-        let trace = trace_with_spans(vec![
-            tempo_span("1", None, "checkout", "1000000", None),
-            tempo_span("2", Some("1"), "checkout", "500000", None),
-            tempo_span("3", Some("2"), "payments", "200000", None),
-        ]);
-        let summary = trace_services_summary(&trace);
-        let edges = summary["edges"].as_array().expect("edges array");
-        assert_eq!(edges.len(), 1);
-        assert_eq!(edges[0]["from"], "checkout");
-        assert_eq!(edges[0]["to"], "payments");
     }
 
     #[test]
@@ -7449,17 +8028,60 @@ mod tests {
                      `metrics`, `metrics_histogram`, `profiles`"
                 .to_string(),
             retry_after_ms: None,
+            details: None,
         };
         let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
             body,
             reqwest::StatusCode::BAD_REQUEST,
             reqwest::header::HeaderMap::new(),
         ));
-        let mapped = map_query_err(err, "query_ir");
+        let mapped = map_api_error_body(err, "query_ir");
         assert_eq!(mapped.code, ErrorData::invalid_params("", None).code);
         assert!(
             mapped.message.contains("unknown field `all`"),
             "router error text should reach the MCP client: {}",
+            mapped.message
+        );
+    }
+
+    #[test]
+    fn query_ir_413_is_invalid_params_naming_the_router_error() {
+        let body = signaldb_sdk::types::ApiErrorBody {
+            status: "error".to_string(),
+            error_type: "payload_too_large".to_string(),
+            error: "result exceeds the row limit".to_string(),
+            retry_after_ms: None,
+            details: None,
+        };
+        let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
+            body,
+            reqwest::StatusCode::PAYLOAD_TOO_LARGE,
+            reqwest::header::HeaderMap::new(),
+        ));
+        let mapped = map_api_error_body(err, "query_ir");
+        assert_eq!(mapped.code, ErrorData::invalid_params("", None).code);
+        assert!(mapped.message.contains("row limit"), "{}", mapped.message);
+    }
+
+    #[test]
+    fn eval_set_409_is_an_invalid_request_naming_the_router_error() {
+        let body = signaldb_sdk::types::ApiErrorBody {
+            status: "error".to_string(),
+            error_type: "conflict".to_string(),
+            error: "eval set `refunds` already exists".to_string(),
+            retry_after_ms: None,
+            details: None,
+        };
+        let err = signaldb_sdk::Error::ErrorResponse(signaldb_sdk::ResponseValue::new(
+            body,
+            reqwest::StatusCode::CONFLICT,
+            reqwest::header::HeaderMap::new(),
+        ));
+        let mapped = map_api_error_body(err, "create_eval_set");
+        assert_eq!(mapped.code, ErrorData::invalid_request("", None).code);
+        assert!(
+            mapped.message.contains("already exists"),
+            "{}",
             mapped.message
         );
     }

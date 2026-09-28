@@ -133,6 +133,16 @@ pub struct AttrPromotionConfig {
     /// Maximum promotions per rewrite cycle.
     #[serde(default = "default_attr_promotion_max_per_cycle")]
     pub max_promotions_per_cycle: usize,
+
+    /// How long a promoted `attr_<level>_<key>` column may go unqueried
+    /// before it's demoted (folded back into the typed map on the next
+    /// compaction). `0s` disables idle demotion; over-budget demotion still
+    /// applies regardless of this setting.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_attr_promotion_demote_after_idle"
+    )]
+    pub demote_after_idle: Duration,
 }
 
 impl Default for AttrPromotionConfig {
@@ -145,6 +155,7 @@ impl Default for AttrPromotionConfig {
             min_query_hits: default_attr_promotion_min_query_hits(),
             promote_streak: default_attr_promotion_promote_streak(),
             max_promotions_per_cycle: default_attr_promotion_max_per_cycle(),
+            demote_after_idle: default_attr_promotion_demote_after_idle(),
         }
     }
 }
@@ -167,6 +178,10 @@ fn default_attr_promotion_promote_streak() -> i64 {
 
 fn default_attr_promotion_max_per_cycle() -> usize {
     4
+}
+
+fn default_attr_promotion_demote_after_idle() -> Duration {
+    Duration::from_secs(7 * 24 * 3600) // 7 days
 }
 
 /// Orphan file cleanup configuration for compactor (Phase 3).
@@ -448,11 +463,13 @@ pub struct AcceptorConfig {
     /// note on the OTLP/HTTP routers for why.
     /// Env: SIGNALDB__ACCEPTOR__MAX_REQUEST_BODY_BYTES
     pub max_request_body_bytes: u64,
-    /// How long a durably accepted batch is remembered so a client's
-    /// byte-identical resend (an exporter retrying after its own timeout) is
-    /// acknowledged without being ingested again; see the acceptor's
-    /// `retry_dedup` module. Default 5m, the OpenTelemetry Collector's retry
-    /// horizon. `0s` disables it.
+    /// How long this acceptor remembers a durably accepted batch so a
+    /// client's byte-identical resend (an exporter retrying after its own
+    /// timeout) returning to it is retired without forwarding it; see the
+    /// acceptor's `retry_dedup` module. A cheap first line only: the writer
+    /// dedups resends across acceptors and restarts
+    /// (`[writer].ingest_dedup_window`). Default 5m, the OpenTelemetry
+    /// Collector's retry horizon. `0s` disables this cache.
     /// Env: SIGNALDB__ACCEPTOR__RETRY_DEDUP_WINDOW
     #[serde(with = "humantime_serde")]
     pub retry_dedup_window: Duration,
@@ -2305,13 +2322,14 @@ pub struct WriterConfig {
     /// pending and are retried next cycle, never dead-lettered.
     #[serde(with = "humantime_serde")]
     pub group_commit_timeout: Duration,
-    /// How long an ingest id (the acceptor WAL entry uuid carried in
-    /// `do_put`'s `app_metadata`) is remembered so a resend that reaches
-    /// this writer again is deduped instead of re-inserted (issue #1734
-    /// step 2). Sized for roughly one writer restart plus the acceptor's
-    /// retry horizon, not for long-term storage: the cache is in-memory
-    /// only, rebuilt at startup from ingest ids still present in this
-    /// writer's own WAL entries within the window.
+    /// How long an ingest id (the batch content fingerprint carried in
+    /// `do_put`'s `app_metadata`) is remembered so a copy of a batch that
+    /// reaches this writer again -- an acceptor retry, or a client's resend
+    /// through any acceptor -- is deduped instead of re-inserted (issue
+    /// #1734 step 2). Sized for roughly one writer restart plus the
+    /// clients' and acceptor's retry horizon, not for long-term storage:
+    /// the cache is in-memory only, rebuilt at startup from ingest ids
+    /// still present in this writer's own WAL entries within the window.
     #[serde(with = "humantime_serde")]
     pub ingest_dedup_window: Duration,
 }

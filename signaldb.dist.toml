@@ -487,12 +487,13 @@ max_drain_bytes_per_cycle = 268435456 # 256 MiB
 # and retry next cycle, never dead-lettered.
 group_commit_timeout = "120s"
 #
-# How long an ingest id (the acceptor WAL entry uuid carried in do_put's
-# app_metadata) is remembered, so a resend that reaches this writer again is
-# deduped instead of re-inserted. In-memory only: rebuilt at startup from
-# ingest ids still present in this writer's own WAL entries within the
-# window. Size for roughly one writer restart plus the acceptor's retry
-# horizon, not long-term storage.
+# How long an ingest id (the batch content fingerprint carried in do_put's
+# app_metadata) is remembered, so a copy of a batch that reaches this writer
+# again -- an acceptor retry, or a client's resend through any acceptor
+# replica -- is deduped instead of re-inserted. In-memory only: rebuilt at
+# startup from ingest ids still present in this writer's own WAL entries
+# within the window. Size for roughly one writer restart plus the clients'
+# and acceptor's retry horizon, not long-term storage.
 ingest_dedup_window = "1h"
 
 [processors]
@@ -524,10 +525,12 @@ max_regex_len = 2048
 # size: gzip/zstd request bodies are decompressed before this limit is
 # applied. 64MB comfortably covers the [wal] segment tuning below.
 max_request_body_bytes = 67108864     # 64MB
-# How long a durably accepted batch is remembered, so an exporter that timed
-# out and resends the identical export is acknowledged instead of ingested a
-# second time. Covers the OpenTelemetry Collector's default retry horizon.
-# "0s" disables it.
+# How long this acceptor remembers a durably accepted batch, so an exporter
+# that timed out and resends the identical export to it is acknowledged
+# without forwarding it again. A cheap first line: the writer's
+# ingest_dedup_window catches resends across acceptor replicas and restarts.
+# Covers the OpenTelemetry Collector's default retry horizon. "0s" disables
+# this cache only.
 retry_dedup_window = "5m"
 
 [compactor]
@@ -655,6 +658,7 @@ profiles = "30d"                      # Profile data retention (default: 30 days
 # min_query_hits = 1            # Minimum accumulated query demand
 # promote_streak = 3            # Consecutive over-threshold cycles before promotion
 # max_promotions_per_cycle = 4  # Promotion cap per rewrite cycle
+# demote_after_idle = "7d"      # Fold a promoted column back into the typed map once this long unqueried; "0s" disables idle demotion
 
 [compactor.orphan_cleanup]
 enabled = true                        # Enable orphan cleanup (default: true)

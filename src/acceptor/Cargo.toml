@@ -9,7 +9,6 @@ testing = []
 
 [dependencies]
 common.workspace = true
-ottl.workspace = true
 prost.workspace = true
 
 datafusion.workspace = true
@@ -33,7 +32,6 @@ tower-http = { workspace = true, features = ["cors", "decompression-gzip", "deco
 serde.workspace = true
 serde_json.workspace = true
 uuid.workspace = true
-twox-hash.workspace = true
 
 opentelemetry.workspace = true
 async-trait.workspace = true

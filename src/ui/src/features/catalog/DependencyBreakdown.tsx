@@ -11,23 +11,20 @@ import { ShareBar } from "../../components/ShareBar";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { useRovingFocus } from "../../hooks/useRovingFocus";
 import type { ResolvedRange } from "../../lib/time";
-import { formatShare, formatValue } from "../../lib/vizFormat";
+import { formatShare, formatValue, pluralCount } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
 import { SkeletonLines } from "../explore/Skeleton";
 import { DependencyTable } from "./DependencyTable";
 
-function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
-}
-
 /** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css.
  * Exported so `DependencyTable`'s per-row kind swatch reuses the same
- * mapping rather than inventing a second palette. */
+ * mapping rather than inventing a second palette. Avoids the green and
+ * yellow series slots, which read as the ok/warn status colours. */
 export const DEP_COLORS: Record<string, string> = {
-  database: "var(--svc-a)",
+  database: "var(--svc-i)",
   http: "var(--svc-b)",
   rpc: "var(--svc-c)",
-  messaging: "var(--svc-d)",
+  messaging: "var(--svc-g)",
   other: "var(--faint)",
 };
 
@@ -131,7 +128,8 @@ export function DependencyBreakdown({
             </dt>
             <dd>
               {formatDurationMs(c.durationNs / 1e6)} ·{" "}
-              {formatShare(c.durationNs, total)} · {plural(c.count, "call")}
+              {formatShare(c.durationNs, total)} ·{" "}
+              {pluralCount(c.count, "call")}
             </dd>
           </div>
         ))}

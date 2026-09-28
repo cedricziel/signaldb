@@ -1,0 +1,550 @@
+/* Real users page (`/rum`): page chrome, tab strip, app switcher, vitals,
+ * sessions chart and setup layout. Classes through `.rum-kv` below are the
+ * design prototype's own (Claude Design project 85b1fe47-…, Real User
+ * Monitoring.html / rum/overview.jsx), reused verbatim on the app's own
+ * tokens; everything after is this page's own supporting layout, using the
+ * same tokens/scale. */
+
+.rum-body {
+  padding: var(--gutter);
+  max-width: 1480px;
+  margin: 0 auto;
+}
+/* Text utilities the prototype's own stylesheet defines globally
+ * (`.mono`/`.dim`/`.faint`/`.ell`) — scoped under `.rum-body` rather than
+ * added app-wide, since no other page uses this shorthand convention. */
+.rum-body .mono {
+  font-family: var(--mono);
+}
+.rum-body .dim {
+  color: var(--dim);
+}
+.rum-body .faint {
+  color: var(--faint);
+}
+.rum-body .ell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rum-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gutter);
+  min-width: 0;
+}
+.rum-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--gutter-sm);
+}
+.rum-grid-2-1 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: var(--gutter);
+}
+.rum-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--gutter);
+}
+@container (max-width: 1000px) {
+  .rum-grid-2-1,
+  .rum-grid-3 {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+.rum-main {
+  container-type: inline-size;
+}
+.rum-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+.rum-panel-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px var(--gutter-sm);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.rum-panel-h h3 {
+  margin: 0;
+  font-size: var(--text-section);
+  font-weight: 600;
+}
+.rum-panel-body {
+  padding: 12px var(--gutter-sm);
+}
+.rum-meta {
+  font-size: 12px;
+  color: var(--dim);
+}
+.rum-vitals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 18px 20px;
+}
+.rum-vital {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.rum-vital-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rum-vital-key {
+  font: 600 12px var(--mono);
+}
+.rum-vital-name {
+  font-size: 12px;
+}
+.rum-vital-value {
+  font: 600 22px var(--mono);
+  letter-spacing: -0.01em;
+}
+.rum-vital-rating {
+  font-size: 12px;
+  font-weight: 600;
+}
+.rum-vital-dist-wrap {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rum-vital-dist {
+  position: relative;
+  padding: 4px 0;
+  margin: -4px 0;
+  cursor: default;
+  outline: none;
+}
+.rum-vital-goodpct {
+  font-size: 11px;
+}
+.rum-distbar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.rum-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 9px var(--gutter-sm);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+a.rum-row:hover {
+  background: var(--surface2);
+  text-decoration: none;
+}
+.rum-row:last-child {
+  border-bottom: 0;
+}
+.rum-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.rum-key i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.rum-pill {
+  display: inline-flex;
+  align-items: center;
+  font: 600 10.5px/16px var(--mono);
+  padding: 0 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid;
+}
+.rum-pill.warn {
+  color: var(--warn-banner-text);
+  border-color: color-mix(in oklab, var(--warn) 50%, transparent);
+  background: color-mix(in oklab, var(--warn) 10%, transparent);
+}
+.rum-eyebrow {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+.rum-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+.rum-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  padding: 8px 10px 9px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.rum-tabs button:hover {
+  color: var(--text);
+}
+.rum-tabs button.on {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.rum-appsel {
+  position: relative;
+}
+.rum-appbtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 600 12px var(--mono);
+  cursor: pointer;
+}
+.rum-appbtn:hover {
+  border-color: var(--dim);
+}
+.rum-appbtn-platform {
+  font: 12px var(--mono);
+  font-weight: 400;
+}
+.rum-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 300px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--text) 14%, transparent);
+}
+.rum-menu-eyebrow {
+  padding: 6px 8px 4px;
+}
+.rum-menu button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rum-menu button:hover {
+  background: var(--surface2);
+}
+.rum-menu-item-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rum-menu-item-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.rum-menu-item-platform {
+  font-size: 11px;
+}
+.rum-snippet {
+  margin: 0;
+  padding: 10px 12px;
+  padding-right: 70px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: 12px/1.55 var(--mono);
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text);
+}
+.rum-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.rum-steps li {
+  display: flex;
+  gap: 12px;
+}
+.rum-stepn {
+  width: 22px;
+  height: 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  font: 600 11px var(--mono);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  background: var(--surface2);
+}
+.rum-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.8fr);
+  gap: var(--gutter);
+  align-items: start;
+}
+.rum-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px;
+  font-size: 12px;
+  margin: 0;
+}
+
+/* ---- Supporting layout not in the prototype excerpt (page header, empty
+ * state, sessions chart internals, setup step body, checklist marks) —
+ * same tokens/scale, no new colour or spacing system. ---- */
+
+.rum-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gutter-sm);
+  flex-wrap: wrap;
+  margin-bottom: var(--gutter-sm);
+}
+.rum-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.rum-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rum-env-version {
+  font-size: 12px;
+}
+.rum-platform-icon {
+  flex: none;
+}
+
+.rum-error-list {
+  display: flex;
+  flex-direction: column;
+}
+.rum-row-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rum-row-title {
+  font-weight: 600;
+}
+.rum-row-message {
+  font-weight: 400;
+}
+.rum-row-count {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rum-device-eyebrow {
+  margin: 16px 0 8px;
+}
+.rum-minibars {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+}
+.rum-minibars-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+.rum-minibars-label {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rum-minibars-track {
+  height: 6px;
+  background: var(--surface3);
+  border-radius: 2px;
+}
+.rum-minibars-fill {
+  display: block;
+  height: 100%;
+  background: var(--dim);
+  border-radius: 2px;
+}
+.rum-minibars-value {
+  font-size: 12px;
+  text-align: right;
+}
+
+.rum-placeholder {
+  font-size: 12px;
+  color: var(--dim);
+  padding: 8px 0;
+}
+.rum-empty-setup-link {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent);
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: inherit;
+}
+.rum-setup-note {
+  font-size: 12px;
+  color: var(--dim);
+  margin: 0 0 8px;
+}
+
+.rum-stacked-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rum-stacked-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.rum-stacked-bars {
+  position: relative;
+  height: 120px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.rum-stacked-bar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rum-stacked-bar-ok {
+  background: var(--dim);
+  border-radius: 2px 2px 0 0;
+}
+.rum-stacked-bar-err {
+  background: var(--err-bar);
+}
+.rum-stacked-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+}
+
+.rum-step-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.rum-step-body {
+  min-width: 0;
+  flex: 1;
+}
+.rum-snippet-wrap {
+  position: relative;
+}
+.rum-snippet-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--bg-inset);
+}
+
+.rum-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rum-checklist-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.rum-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--surface);
+}
+.rum-check-done {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.rum-checklist-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rum-checklist-text b {
+  font-size: 13px;
+}
+.rum-checklist-detail {
+  font-size: 11px;
+}
+
+.rum-kv-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+.rum-kv-term {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.rum-kv-desc {
+  margin: 0;
+  color: var(--text);
+}

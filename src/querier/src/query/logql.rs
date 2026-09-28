@@ -468,7 +468,10 @@ mod tests {
 
         // Regex on any attribute — impossible on the JSON path.
         let re = sql_map(r#"{namespace=~"pro.*"}"#);
-        assert!(re.contains("regexp_like(get_field(log_attributes"), "{re}");
+        assert!(
+            re.contains("regexp_like(coalesce(") && re.contains("get_field(log_attributes"),
+            "{re}"
+        );
 
         // Ordered comparison on any attribute, cast to Float64.
         let gt = sql_map(r#"{service_name="api"} | logfmt | status > 500"#);
@@ -536,11 +539,11 @@ mod tests {
     fn dotted_label_lowers_to_get_field_on_the_dotted_key() {
         let eq = sql_map(r#"{k8s.pod.name="checkout-7c9f"}"#);
         assert!(
-            eq.contains(r#"get_field(log_attributes, Utf8("k8s.pod.name"))"#),
+            eq.contains(r#"get_field(log_attributes_str, Utf8("k8s.pod.name"))"#),
             "{eq}"
         );
         assert!(
-            eq.contains(r#"get_field(resource_attributes, Utf8("k8s.pod.name"))"#),
+            eq.contains(r#"get_field(resource_attributes_str, Utf8("k8s.pod.name"))"#),
             "{eq}"
         );
     }
@@ -659,7 +662,7 @@ mod tests {
     /// still render as `regexp_like(ir_body_decode(body), ...)`. Execute the
     /// lowered filter over a fixture whose `body` column is JSON-encoded the
     /// way ingest actually encodes it (`serde_json::to_string`, issue
-    /// #1410), not `differential.rs`'s bare (non-JSON) bodies, and use an
+    /// #1410), not a bare (non-JSON) body fixture, and use an
     /// anchored pattern (`^boom`) so a decode failure changes the row
     /// count rather than passing by luck the way an unanchored `contains`
     /// can (the raw column's leading `"` would defeat the anchor but not a

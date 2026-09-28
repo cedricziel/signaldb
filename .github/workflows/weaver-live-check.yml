@@ -27,7 +27,7 @@ on:
     branches: [main]
 
 env:
-  WEAVER_VERSION: v0.25.1
+  WEAVER_VERSION: v0.26.1 # keep in step with WEAVER_IMAGE in ci.yml
 
 jobs:
   live-check:
@@ -79,11 +79,19 @@ jobs:
             --no-stream \
             --format json --output http \
             --fail-on violation
-          # Wait for the listener to accept connections.
-          for i in $(seq 1 30); do
-            (echo > /dev/tcp/localhost/14317) 2>/dev/null && break
+          # A bare TCP probe passes early: docker's port proxy accepts before
+          # weaver listens, and the reset drops SignalDB's one boot-log batch.
+          # Wait until an HTTP/2 server answers (curl exits 0 on any status).
+          deadline=$((SECONDS + 120))
+          until curl -s --http2-prior-knowledge -o /dev/null --max-time 1 http://localhost:14317/; do
+            if [ "$SECONDS" -ge "$deadline" ]; then
+              echo "::error::weaver OTLP listener not ready after 120 s"
+              docker logs weaver
+              exit 1
+            fi
             sleep 1
           done
+          echo "weaver OTLP listener ready (step time ${SECONDS} s)"
 
       - name: Boot SignalDB with self-monitoring
         env:
@@ -133,6 +141,25 @@ jobs:
           fi
           echo "weaver exit code: $code"
           exit "$code"
+
+      # A clean report is meaningless if spans or logs never reached weaver.
+      - name: Check spans and logs were sampled
+        if: always()
+        run: |
+          if [ ! -s live-check-report.json ]; then
+            echo "::error::live-check-report.json is missing or empty"
+            exit 1
+          fi
+          missing=0
+          for signal in span log; do
+            n=$(jq --arg s "$signal" '[.samples[] | select(has($s))] | length' live-check-report.json)
+            echo "$signal samples: $n"
+            if [ "$n" -eq 0 ]; then
+              echo "::error::live-check report holds zero $signal samples; the result does not cover ${signal}s"
+              missing=1
+            fi
+          done
+          exit "$missing"
 
       - name: Upload report
         if: always()

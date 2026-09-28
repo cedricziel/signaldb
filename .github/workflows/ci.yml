@@ -11,6 +11,10 @@ env:
   RUST_BACKTRACE: short # Changed from 1 to short for better performance
   CARGO_INCREMENTAL: 0 # Disable incremental compilation for CI
   CARGO_NET_RETRY: 10
+  # Weaver is 0.x (breaking minor releases), so pin it. Keep in step with
+  # weaver-live-check.yml and the default in scripts/weaver-check-fixtures.sh
+  # (which reads this variable). >= v0.26: GenAI's model uses definition/2.
+  WEAVER_IMAGE: otel/weaver:v0.26.1
 
 # Cancel superseded PR runs, but never main runs: only main saves the
 # rust-cache entries every PR restores from, and a cancelled main run
@@ -346,13 +350,20 @@ jobs:
             exit 1
           fi
 
-      # Validate the SignalDB semantic-convention registry (Weaver pinned —
-      # 0.x, breaking minor releases). The factories' literal field names are
-      # pinned against this registry by common's registry_pins tests.
+      # Validate the SignalDB semantic-convention registry. The factories'
+      # literal field names are pinned against this registry by common's
+      # registry_pins tests.
       - name: Weaver registry check
         run: |
           docker run --rm -v "$PWD/otel/registry:/registry" \
-            otel/weaver:v0.25.1 registry check -r /registry
+            "$WEAVER_IMAGE" registry check -r /registry
+
+      # SignalDB groups over the GenAI conventions, kept in a separate
+      # registry (see its manifest).
+      - name: Weaver registry check (GenAI)
+        run: |
+          docker run --rm -v "$PWD/otel/registry-genai:/registry" \
+            "$WEAVER_IMAGE" registry check -r /registry
 
       # The sample custom registries schema-model's validator accepts must
       # pass Weaver too (accept-set ⊆ Weaver, modulo namespaced re-description).

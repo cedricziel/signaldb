@@ -10,6 +10,8 @@ pub mod datafusion_runtime;
 pub mod discovery;
 pub mod endpoints;
 pub mod error;
+pub mod eval_sets;
+pub mod evals;
 pub mod flight;
 pub mod iceberg;
 pub mod ingest_dedup;

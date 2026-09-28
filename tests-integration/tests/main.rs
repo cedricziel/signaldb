@@ -24,8 +24,12 @@ mod e2e;
 mod querier;
 mod writer;
 
+mod acceptor_resend_dedup;
 mod dataset_restriction_e2e;
+mod eval_results_upload_e2e;
+mod eval_sets_from_traces_e2e;
 mod flight_message_limits;
+mod ingest_type_enforcement_e2e;
 mod logql_queries;
 mod mcp_multi_tenant_oauth_flow;
 mod oauth_connector_flow;

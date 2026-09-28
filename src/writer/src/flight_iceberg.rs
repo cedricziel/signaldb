@@ -27,7 +27,7 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
-use common::ingest_dedup::{Clock, IngestDedup, SystemClock};
+use common::ingest_dedup::{Clock, IngestDedup, SystemClock, ingest_id_from_metadata};
 use common::schema::type_authority::TypeAuthority;
 use common::wal::manager::WalManager;
 use common::wal::{WalOperation, record_batch_to_bytes};
@@ -187,15 +187,7 @@ impl IcebergWriterFlightService {
                 }
             };
             for entry in entries {
-                let Some(ingest_id) = entry
-                    .metadata
-                    .as_deref()
-                    .and_then(|json| serde_json::from_str::<serde_json::Value>(json).ok())
-                    .and_then(|v| {
-                        v.get("ingest_id")
-                            .and_then(|v| v.as_str().map(str::to_string))
-                    })
-                    .and_then(|s| uuid::Uuid::parse_str(&s).ok())
+                let Some(ingest_id) = entry.metadata.as_deref().and_then(ingest_id_from_metadata)
                 else {
                     continue;
                 };
@@ -230,16 +222,16 @@ impl IcebergWriterFlightService {
                     Ok(summary) => {
                         if summary.tables_created > 0 || summary.tables_failed > 0 {
                             tracing::info!(
-                                datasets_checked = summary.datasets_checked,
-                                datasets_skipped = summary.datasets_skipped,
-                                tables_created = summary.tables_created,
-                                tables_failed = summary.tables_failed,
+                                signaldb.job.datasets_checked = summary.datasets_checked as i64,
+                                signaldb.job.datasets_skipped = summary.datasets_skipped as i64,
+                                signaldb.job.tables_created = summary.tables_created as i64,
+                                signaldb.job.tables_failed = summary.tables_failed as i64,
                                 "Signal-table reconcile pass complete"
                             );
                         } else {
                             tracing::debug!(
-                                datasets_checked = summary.datasets_checked,
-                                datasets_skipped = summary.datasets_skipped,
+                                signaldb.job.datasets_checked = summary.datasets_checked as i64,
+                                signaldb.job.datasets_skipped = summary.datasets_skipped as i64,
                                 "Signal-table reconcile pass complete (converged)"
                             );
                         }

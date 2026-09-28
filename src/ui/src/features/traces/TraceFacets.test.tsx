@@ -223,6 +223,20 @@ describe("TraceFacets", () => {
     expect(await screen.findByText(/could not load/i)).toBeInTheDocument();
   });
 
+  it("keeps the span kinds selectable but shows no counts when their query fails", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/query", body: { error: "boom" }, status: 500 },
+    ]);
+    renderFacets({ filters: [{ field: "kind", value: "Server" }] });
+    expect(
+      await screen.findByText(/could not load counts/i),
+    ).toBeInTheDocument();
+    const values = screen.getAllByTestId("facet-value");
+    expect(values).toHaveLength(5);
+    for (const v of values) expect(v).not.toHaveTextContent(/\d/);
+    expect(screen.getByRole("checkbox", { name: "Client" })).toBeEnabled();
+  });
+
   it("opens a facet with a filter already applied", async () => {
     stubFetchRoutes([{ match: "/api/v1/query", body: table([["error", 6]]) }]);
     renderFacets({ filters: [{ field: "status", value: "error" }] });

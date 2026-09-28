@@ -240,9 +240,9 @@ materialized_labels` is applied when a table is created; `ensure_table`'s
   an existing table. Provisioning means the initial labels-at-creation
   behavior now happens for every dataset, not only for ones that ingest, so
   prefer setting `materialized_labels` before a dataset is provisioned.
-  Existing tables are not stuck: the compactor's attribute-promotion pass
-  can add `label_<key>` columns to them — see
-  [label columns can be added to existing tables](../architecture/storage-layout.md#label-columns-can-be-added-to-existing-tables).
+  The compactor no longer adds `label_<key>` columns; its attribute-promotion
+  pass adds typed `attr_<level>_<key>` copies of hot attributes instead — see
+  [Attribute Promotion](compactor/operations.md#attribute-promotion).
 - **`ensure_table` does evolve an existing table's schema** — every
   `schemas.toml`-sourced signal (traces, logs, all five metrics
   representations, and profiles). Every load, not just creation, brings the

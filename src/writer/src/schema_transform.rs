@@ -38,10 +38,11 @@ pub struct FlightMetadata {
     /// W3C trace context of the sending service, for distributed tracing
     pub traceparent: Option<String>,
     pub tracestate: Option<String>,
-    /// The acceptor WAL entry uuid this `do_put` carries data for, one id per
-    /// `do_put` (issue #1734). Used to dedup a resend that reaches this
-    /// writer again; absent for acceptors that predate this field, which get
-    /// today's non-deduped behavior.
+    /// The content fingerprint of the batch this `do_put` carries (issue
+    /// #1734), shared by every copy of it however many acceptor WAL entries
+    /// hold one. Used to dedup a copy that reaches this writer again; absent
+    /// for acceptors that predate this field, which get non-deduped
+    /// behavior.
     pub ingest_id: Option<uuid::Uuid>,
 }
 

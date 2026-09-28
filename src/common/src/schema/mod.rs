@@ -38,6 +38,93 @@ pub fn materialized_column_name(label: &str) -> String {
     out
 }
 
+/// The column name a per-level promoted attribute (`otel-native-schema`
+/// layer 6) is stored under: `attr_<level>_<key>`. Unlike
+/// [`materialized_column_name`], this is reversible for the common case — a
+/// "clean" key (`^[a-z0-9]+([._][a-z0-9]+)*$`, ASCII lowercase/digits with
+/// single `.`/`_` separators) round-trips through `.` → `_` and `_` → `__`,
+/// so two clean keys never collide (a clean name never contains `___`, the
+/// hashed form's separator). Anything else — mixed case, other punctuation,
+/// or a clean name that would exceed 120 characters — falls back to a
+/// lowercased, sanitized stem plus an 8-hex-digit FNV-1a hash of the exact
+/// key bytes, so distinct keys stay distinct even when their stems collide.
+pub fn promoted_attr_column(level: crate::schema::logical::AttributeLevel, key: &str) -> String {
+    let prefix = format!("attr_{}_", level.as_str());
+    if is_clean_attr_key(key) {
+        let mut cleaned = String::with_capacity(key.len() * 2);
+        for ch in key.chars() {
+            match ch {
+                '.' => cleaned.push('_'),
+                '_' => cleaned.push_str("__"),
+                other => cleaned.push(other),
+            }
+        }
+        let name = format!("{prefix}{cleaned}");
+        if name.len() <= 120 {
+            return name;
+        }
+    }
+    format!(
+        "{prefix}{}___{}",
+        attr_key_stem(key),
+        fnv1a32_hex(key.as_bytes())
+    )
+}
+
+/// Whether `key` matches `^[a-z0-9]+([._][a-z0-9]+)*$`: one or more
+/// lowercase-ASCII-alphanumeric segments joined by single `.` or `_`
+/// separators, with no leading/trailing/doubled separator.
+fn is_clean_attr_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.split(['.', '_']).all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+}
+
+/// The hashed fallback's human-readable stem: `key` lowercased, every
+/// non-`[a-z0-9]` byte mapped to `_`, runs of `_` collapsed to one,
+/// leading/trailing `_` trimmed, truncated to 64 bytes (then re-trimmed).
+fn attr_key_stem(key: &str) -> String {
+    let mut collapsed = String::with_capacity(key.len());
+    let mut last_was_underscore = false;
+    for ch in key.to_lowercase().chars() {
+        let is_alnum = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        last_was_underscore = match (is_alnum, last_was_underscore) {
+            (true, _) => {
+                collapsed.push(ch);
+                false
+            }
+            (false, false) => {
+                collapsed.push('_');
+                true
+            }
+            (false, true) => true,
+        };
+    }
+    collapsed
+        .trim_matches('_')
+        .chars()
+        .take(64)
+        .collect::<String>()
+        .trim_end_matches('_')
+        .to_string()
+}
+
+/// FNV-1a, 32-bit, as 8 lowercase hex digits — implemented inline (not
+/// pulled from a crate) so [`promoted_attr_column`]'s hashed fallback stays
+/// stable across platforms and dependency versions.
+fn fnv1a32_hex(bytes: &[u8]) -> String {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        hash ^= u32::from(b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    format!("{hash:08x}")
+}
+
 /// Stopgap for #1533: two distinct label keys can sanitize to the same
 /// [`materialized_column_name`] (e.g. `http.method` and `http_method` both
 /// map to `label_http_method`); the writer resolves the collision by
@@ -631,6 +718,7 @@ impl TenantSchemaRegistry {
 mod tests {
     use super::*;
     use crate::config::{SchemaConfig, TenantSchemaConfig, TenantsConfig};
+    use crate::schema::logical::AttributeLevel;
     use std::collections::HashMap;
 
     /// A point-lookup filter must be sized for point lookups: Parquet's default
@@ -837,6 +925,67 @@ mod tests {
             materialized_column_name("k8s.pod/name"),
             "label_k8s_pod_name"
         );
+    }
+
+    #[test]
+    fn promoted_attr_column_encodes_clean_keys_reversibly() {
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "http.request.method"),
+            "attr_record_http_request_method"
+        );
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "http.response.status_code"),
+            "attr_record_http_response_status__code"
+        );
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "http_method"),
+            "attr_record_http__method"
+        );
+    }
+
+    #[test]
+    fn promoted_attr_column_distinguishes_dot_and_underscore_spellings() {
+        assert_ne!(
+            promoted_attr_column(AttributeLevel::Record, "http.method"),
+            promoted_attr_column(AttributeLevel::Record, "http_method")
+        );
+        // Neither is clean (an empty segment from the adjacent separators),
+        // so both fall back to the hashed form — still distinct.
+        assert_ne!(
+            promoted_attr_column(AttributeLevel::Record, "a._b"),
+            promoted_attr_column(AttributeLevel::Record, "a_.b")
+        );
+    }
+
+    #[test]
+    fn promoted_attr_column_hash_is_pinned() {
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "MyApp-Version"),
+            "attr_record_myapp_version___8241949b"
+        );
+    }
+
+    #[test]
+    fn promoted_attr_column_prefixes_by_level() {
+        for (level, prefix) in [
+            (AttributeLevel::Resource, "attr_resource_"),
+            (AttributeLevel::Scope, "attr_scope_"),
+            (AttributeLevel::Record, "attr_record_"),
+        ] {
+            assert!(
+                promoted_attr_column(level, "k").starts_with(prefix),
+                "level {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn promoted_attr_column_falls_back_when_the_clean_name_exceeds_120_chars() {
+        let key = "a".repeat(130);
+        let name = promoted_attr_column(AttributeLevel::Resource, &key);
+        assert!(name.len() <= 120, "{name} ({} chars)", name.len());
+        assert!(name.contains("___"), "{name}");
+        assert!(name.starts_with("attr_resource_"), "{name}");
     }
 
     /// Builds the `Schema` [`bloom_filter_properties_for_labels`] reads back

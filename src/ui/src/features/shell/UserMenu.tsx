@@ -1,20 +1,19 @@
-// User menu dropdown for the top bar. Shows avatar with initials, user info,
-// theme toggle, navigation items, and sign-out action.
+// The account menu: avatar with initials, user info, theme toggle, docs,
+// switch tenant and sign out. Pages live in the sidebar, not here.
 
 import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
 import { deleteSession, type WhoamiResponse } from "../../api/session";
-import type { ExploreState } from "../../lib/urlState";
 import { clearRecentQueries } from "../../lib/recentQueries";
-import { useIsDemo, useWhoami } from "../../lib/useWhoami";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
 import "./UserMenu.css";
 
 interface Props {
-  state: ExploreState;
+  /** The signed-in identity; nothing renders without a user. */
+  who: WhoamiResponse | undefined;
   /**
    * `topbar` (the default): avatar + name + caret, the popover dropping
    * below. `sidebar`: the nav sidebar's footer row — avatar, then name over
@@ -27,13 +26,11 @@ interface Props {
 }
 
 export function UserMenu({
-  state,
+  who,
   variant = "topbar",
   expanded = true,
 }: Props) {
   const [open, setOpen] = useState(false);
-  const { data: who, canManage } = useWhoami(state);
-  const isDemo = useIsDemo();
   const toggle = () => setOpen((prev) => !prev);
   const close = () => setOpen(false);
 
@@ -78,13 +75,7 @@ export function UserMenu({
         </button>
       )}
       {open && (
-        <UserMenuPopover
-          who={who}
-          role={role}
-          canManage={canManage}
-          isDemo={isDemo}
-          onClose={close}
-        />
+        <UserMenuPopover who={who} role={role} onClose={close} />
       )}
     </span>
   );
@@ -93,21 +84,10 @@ export function UserMenu({
 interface PopoverProps {
   who: WhoamiResponse;
   role: string | undefined;
-  canManage: boolean;
-  /** Hides mutating surfaces (change: demo-mode): schema/processor editing
-   * is reachable by every role today, so this is checked independently of
-   * `canManage`. */
-  isDemo: boolean;
   onClose: () => void;
 }
 
-function UserMenuPopover({
-  who,
-  role,
-  canManage,
-  isDemo,
-  onClose,
-}: PopoverProps) {
+function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const backdropRef = useRef<HTMLSpanElement>(null);
@@ -168,42 +148,6 @@ function UserMenuPopover({
             <span>Appearance</span>
             <span className="user-menu-hint">{isDark ? "Dark" : "Light"}</span>
           </button>
-          <Link
-            className="user-menu-item"
-            to="/instrumentation"
-            onClick={onClose}
-          >
-            <span>Send data</span>
-            <span className="user-menu-hint">instrumentation</span>
-          </Link>
-          {canManage && (
-            <Link className="user-menu-item" to="/api-keys" onClick={onClose}>
-              <span>API keys</span>
-              <span className="user-menu-hint">{who.tenant.id}</span>
-            </Link>
-          )}
-          {canManage && (
-            <Link
-              className="user-menu-item"
-              to="/integrations/github"
-              onClick={onClose}
-            >
-              <span>GitHub</span>
-              <span className="user-menu-hint">integration</span>
-            </Link>
-          )}
-          {!isDemo && (
-            <Link className="user-menu-item" to="/schema" onClick={onClose}>
-              <span>Schema</span>
-              <span className="user-menu-hint">conventions</span>
-            </Link>
-          )}
-          {!isDemo && (
-            <Link className="user-menu-item" to="/processors" onClick={onClose}>
-              <span>Processors</span>
-              <span className="user-menu-hint">OTTL</span>
-            </Link>
-          )}
           <a
             className="user-menu-item"
             href="https://signaldb.dev/docs"

@@ -12,7 +12,7 @@ import type {
 /** What the UI knows about one attribute key, derived from a resolution. */
 export interface AttributeSemantics {
   key: string;
-  /** Winning definition (tenant custom → signaldb → otel). */
+  /** Winning definition (tenant custom → signaldb → otel-genai → otel). */
   primary: AttributeHit;
   /** Further definitions of the same key, in precedence order. */
   alternatives: AttributeHit[];
