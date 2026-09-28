@@ -574,7 +574,10 @@ fn create_log_batch(
     Ok(batch)
 }
 
-/// Creates a metric batch with specified parameters
+/// Creates a metric batch with specified parameters, in the wire format the
+/// acceptor produces (one gauge data point per row): `IcebergTableWriter`
+/// runs the real wire->wide transform on it once it lands in the `metrics`
+/// table, so this fixture never has to hand-build the wide storage schema.
 fn create_metric_batch(
     start_ts: i64,
     end_ts: i64,
@@ -582,17 +585,7 @@ fn create_metric_batch(
     partition_idx: usize,
     file_idx: usize,
 ) -> Result<RecordBatch> {
-    use chrono::{DateTime, Datelike, Timelike};
-    use common::schema::resource_identity::resource_identity_from_json;
-    use datafusion::arrow::array::{
-        Date32Array, Float64Array, Int32Array, TimestampNanosecondArray,
-    };
-
-    // Use the writer's schema
-    let schema = writer::schema_transform::create_metrics_gauge_arrow_schema();
-    // Every row shares the same generated resource_attributes ("{}" below),
-    // so its digest is constant too -- computed once rather than per row.
-    let resource_identity_value = resource_identity_from_json("{}");
+    use datafusion::arrow::array::{BooleanArray, Int32Array, StringArray, UInt64Array};
 
     let time_step = if num_rows == 0 {
         0
@@ -601,84 +594,45 @@ fn create_metric_batch(
     };
     let metric_names = ["cpu_usage", "memory_usage", "request_count", "error_rate"];
 
-    // Build arrays for all 19 non-computed fields (resource_identity is
-    // appended directly below, constant across rows)
-    let mut timestamps: Vec<Option<i64>> = Vec::with_capacity(num_rows);
-    let mut start_timestamps: Vec<Option<i64>> = Vec::with_capacity(num_rows);
-    let mut service_names: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut metric_name_arr: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut metric_descriptions: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut metric_units: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut values: Vec<Option<f64>> = Vec::with_capacity(num_rows);
-    let mut flags: Vec<Option<i32>> = Vec::with_capacity(num_rows);
-    let mut resource_schema_urls: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut resource_attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut scope_names: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut scope_versions: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut scope_schema_urls: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut scope_attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::with_capacity(num_rows);
-    let mut attributes: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut exemplars: Vec<Option<String>> = Vec::with_capacity(num_rows);
-    let mut date_days: Vec<Option<i32>> = Vec::with_capacity(num_rows);
-    let mut hours: Vec<Option<i32>> = Vec::with_capacity(num_rows);
+    let mut names: Vec<&str> = Vec::with_capacity(num_rows);
+    let mut resource_jsons: Vec<String> = Vec::with_capacity(num_rows);
+    let mut time_unix_nanos: Vec<u64> = Vec::with_capacity(num_rows);
+    let mut data_jsons: Vec<String> = Vec::with_capacity(num_rows);
 
     for i in 0..num_rows {
         let ts_millis = start_ts + (i as i64 * time_step);
-        let ts_nanos = ts_millis * 1_000_000; // Convert milliseconds to nanoseconds
+        let ts_nanos = (ts_millis * 1_000_000) as u64; // milliseconds -> nanoseconds
+        let value = (partition_idx * 1000 + file_idx * 100 + i) as f64;
 
-        timestamps.push(Some(ts_nanos));
-        start_timestamps.push(Some(ts_nanos)); // Same as timestamp for gauges
-        service_names.push(Some(format!("test-service-{}", i % 3)));
-        metric_name_arr.push(Some(metric_names[i % metric_names.len()].to_string()));
-        metric_descriptions.push(Some(format!("Test metric {}", i)));
-        metric_units.push(Some("units".to_string()));
-        values.push(Some((partition_idx * 1000 + file_idx * 100 + i) as f64));
-        flags.push(Some(0));
-        resource_schema_urls.push(None);
-        resource_attributes.push(Some("{}".to_string()));
-        scope_names.push(Some("test-scope".to_string()));
-        scope_versions.push(Some("1.0.0".to_string()));
-        scope_schema_urls.push(None);
-        scope_attributes.push(Some("{}".to_string()));
-        scope_dropped_attr_counts.push(Some(0));
-        attributes.push(Some("{}".to_string()));
-        exemplars.push(None);
-
-        // Calculate date and hour from timestamp
-        let secs = ts_nanos / 1_000_000_000;
-        if let Some(dt) = DateTime::from_timestamp(secs, 0) {
-            date_days.push(Some(dt.naive_utc().date().num_days_from_ce() - 719163));
-            hours.push(Some(dt.hour() as i32));
-        } else {
-            date_days.push(None);
-            hours.push(None);
-        }
+        names.push(metric_names[i % metric_names.len()]);
+        resource_jsons.push(format!(r#"{{"service.name":"test-service-{}"}}"#, i % 3));
+        time_unix_nanos.push(ts_nanos);
+        data_jsons.push(format!(
+            r#"[{{"time_unix_nano":{ts_nanos},"start_time_unix_nano":{ts_nanos},"value":{value},"attributes":{{}}}}]"#
+        ));
     }
 
+    let schema = common::flight::schema::FlightSchemas::new().metric_schema;
     let batch = RecordBatch::try_new(
-        schema,
+        Arc::new(schema),
         vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(metric_name_arr)),
-            Arc::new(StringArray::from(metric_descriptions)),
-            Arc::new(StringArray::from(metric_units)),
-            Arc::new(Float64Array::from(values)),
-            Arc::new(Int32Array::from(flags)),
-            Arc::new(StringArray::from(resource_schema_urls)),
-            Arc::new(StringArray::from(resource_attributes)),
-            Arc::new(StringArray::from(scope_names)),
-            Arc::new(StringArray::from(scope_versions)),
-            Arc::new(StringArray::from(scope_schema_urls)),
-            Arc::new(StringArray::from(scope_attributes)),
-            Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-            Arc::new(StringArray::from(attributes)),
-            Arc::new(StringArray::from(exemplars)),
-            Arc::new(Date32Array::from(date_days)),
-            Arc::new(Int32Array::from(hours)),
-            Arc::new(StringArray::from(vec![resource_identity_value; num_rows])),
+            Arc::new(StringArray::from(names)),
+            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
+            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
+            Arc::new(UInt64Array::from(time_unix_nanos.clone())),
+            Arc::new(UInt64Array::from(time_unix_nanos)),
+            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
+            Arc::new(StringArray::from(resource_jsons)),
+            Arc::new(StringArray::from(vec![
+                Some(
+                    r#"{"name":"test-scope","version":"1.0.0"}"#
+                );
+                num_rows
+            ])),
+            Arc::new(StringArray::from(vec!["gauge"; num_rows])),
+            Arc::new(StringArray::from(data_jsons)),
+            Arc::new(Int32Array::from(vec![None; num_rows])),
+            Arc::new(BooleanArray::from(vec![None; num_rows])),
         ],
     )?;
 
@@ -828,8 +782,8 @@ mod tests {
     fn test_create_metric_batch() -> Result<()> {
         let batch = create_metric_batch(1700000000000, 1700003600000, 75, 0, 0)?;
         assert_eq!(batch.num_rows(), 75);
-        // metrics_gauge physical-v2 (#1340's resource_identity): 20 fields.
-        assert_eq!(batch.num_columns(), 20);
+        // The wire-format metric schema (`FlightSchemas::metric_schema`): 12 fields.
+        assert_eq!(batch.num_columns(), 12);
         Ok(())
     }
 

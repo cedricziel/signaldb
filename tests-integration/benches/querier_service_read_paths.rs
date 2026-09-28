@@ -134,7 +134,7 @@ async fn seed() -> Env {
         &catalog_manager,
         TENANT.to_string(),
         DATASET.to_string(),
-        "metrics_gauge".to_string(),
+        "metrics".to_string(),
     )
     .await
     .expect("metrics writer");

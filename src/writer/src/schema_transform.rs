@@ -1037,39 +1037,6 @@ struct ScopeContext {
     scope_dropped_attr_count: i32,
 }
 
-pub fn create_metrics_gauge_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-        Field::new("resource_identity", DataType::Utf8, true),
-    ]))
-}
-
 fn get_typed_column<'a, T>(batch: &'a RecordBatch, name: &str) -> Result<&'a T>
 where
     T: Array + 'static,
@@ -1155,11 +1122,10 @@ fn json_to_f64(value: Option<&serde_json::Value>) -> Option<f64> {
     value.and_then(common::flight::conversion::json_to_f64)
 }
 
-/// The `value` column of `metrics_gauge` / `metrics_sum` is non-nullable. A
-/// point with no value (absent or `null`) is stored as NaN — the honest "no
-/// number here" that Float64 can express — instead of leaving a null that
-/// makes the whole batch fail `RecordBatch::try_new` and pins the WAL entry
-/// forever (#1061).
+/// A gauge/sum point with no value (absent or `null`) is stored as NaN — the
+/// honest "no number here" that Float64 can express — instead of leaving a
+/// null that makes the whole batch fail `RecordBatch::try_new` and pins the
+/// WAL entry forever (#1061).
 fn point_value(point: &serde_json::Value) -> f64 {
     json_to_f64(point.get("value")).unwrap_or(f64::NAN)
 }
@@ -3513,14 +3479,7 @@ mod tests {
 /// (an unhandled field hits an `Unknown field in ... schema` error, since
 /// each iterates its schema's own field list) -- these tests give that
 /// property a fast, explicit, named failure instead of relying on it
-/// surfacing through some other test. The five metrics tables have no such
-/// runtime check: `transform_metrics_*_v1_to_iceberg` builds its output
-/// columns positionally against its own hand-written
-/// `create_metrics_*_arrow_schema()`, entirely independent of
-/// `SCHEMA_DEFINITIONS` -- a field added to `schemas.toml` there would
-/// silently never be populated until the resulting Iceberg write bounced
-/// off a missing-required-column error, or worse, went unnoticed if the
-/// new field was nullable. These tests catch that at PR/CI time instead.
+/// surfacing through some other test.
 #[cfg(test)]
 mod schema_consistency {
     use super::*;
@@ -3541,21 +3500,6 @@ mod schema_consistency {
              or removed from schemas.toml without updating the matching \
              transform function (or vice versa)"
         );
-    }
-
-    /// The "touched" set for a metrics transform, straight from its own
-    /// `create_metrics_*_arrow_schema()` rather than a hand-typed list --
-    /// the schema literal and the test can no longer drift apart. `date_day`
-    /// and `hour` are computed (see the module doc comment above), so they
-    /// carry no `schemas.toml` entry and are excluded here the same way the
-    /// traces/logs/profiles lists already exclude their computed fields.
-    fn metrics_arrow_touched_fields(schema: &Schema) -> Vec<&str> {
-        schema
-            .fields()
-            .iter()
-            .map(|f| f.name().as_str())
-            .filter(|name| *name != "date_day" && *name != "hour")
-            .collect()
     }
 
     #[test]
@@ -3659,35 +3603,5 @@ mod schema_consistency {
                 "resource_identity",
             ],
         );
-    }
-
-    #[test]
-    fn metrics_gauge_transform_covers_every_non_computed_physical_v2_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v2")
-            .unwrap();
-        let schema = create_metrics_gauge_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
-    }
-
-    #[test]
-    #[should_panic(expected = "diverged")]
-    fn metrics_gauge_transform_flags_an_arrow_field_missing_from_schemas_toml() {
-        // Simulate a column added to create_metrics_gauge_arrow_schema()
-        // without a matching schemas.toml entry -- the scenario this
-        // derivation exists to catch.
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v2")
-            .unwrap();
-        let mut fields: Vec<Field> = create_metrics_gauge_arrow_schema()
-            .fields()
-            .iter()
-            .map(|f| f.as_ref().clone())
-            .collect();
-        fields.push(Field::new("undeclared_field", DataType::Utf8, true));
-        let drifted = Schema::new(fields);
-        let touched = metrics_arrow_touched_fields(&drifted);
-        assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
     }
 }

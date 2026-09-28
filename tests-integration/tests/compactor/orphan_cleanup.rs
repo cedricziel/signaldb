@@ -246,7 +246,7 @@ async fn test_orphan_cleanup_batch_deletion() -> Result<()> {
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics_gauge";
+    let table_name = "metrics";
     let mut writer = ctx.create_table(tenant_id, dataset_id, table_name).await?;
 
     // Create base table
