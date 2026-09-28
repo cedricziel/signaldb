@@ -56,7 +56,7 @@ body. The response is the declared result envelope (see
 ```jsonc
 {
   "irVersion": 1, // versioned; use 2 for heatmap
-  "from": "logs", // a registered source: "logs", "traces", "profiles", or "metrics"
+  "from": "logs", // a registered source: "logs", "traces", "profiles", "metrics", or "exemplars"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
   "fields": ["service.name"], // optional curated projection (rows/table)
@@ -1016,6 +1016,53 @@ use bucket zero; values at or above the final bound use the final overflow
 bucket. Missing cells inside the declared window are zero. The server accepts
 at most 32 y-axis bounds and rejects non-positive steps or non-increasing
 bounds before execution.
+
+## Exemplars
+
+The `exemplars` source reads one row per metric exemplar: a sampled
+measurement a metric data point carries together with the trace and span it
+was recorded in. It is the way from a metric to the traces behind it.
+
+| Field                          | Type    | Meaning                                                           |
+| ------------------------------ | ------- | ----------------------------------------------------------------- |
+| `timestamp`                    | time    | when the exemplar was recorded                                    |
+| `trace.id` / `span.id`         | string  | the trace and span, hex-encoded the way `traces` stores them      |
+| `exemplar.value`               | float64 | the measured value                                                |
+| `metric.name` / `metric.type`  | string  | the metric whose data point carries the exemplar                  |
+| `series.id`                    | string  | digest of the owning series; the same value as on its metric rows |
+| `exemplar.filtered_attributes` | object  | the attributes the SDK filtered out of the point; retrieval-only  |
+| `service.name`                 | string  | the emitting service                                              |
+| `resource.identity`            | string  | SignalDB's resource identity                                      |
+
+Find the exemplars recorded in one trace:
+
+```json
+{
+  "irVersion": 1,
+  "from": "exemplars",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "rows",
+  "fields": [
+    "timestamp",
+    "span.id",
+    "exemplar.value",
+    "metric.name",
+    "metric.type",
+    "exemplar.filtered_attributes"
+  ],
+  "pipeline": [
+    {
+      "where": {
+        "field": "trace.id",
+        "op": "eq",
+        "value": "4bf92f3577b34da6a3ce929d0e0e4736"
+      }
+    }
+  ]
+}
+```
+
+Reading exemplars needs the `metrics:read` scope.
 
 ## Joining spans to their parents (v8)
 

@@ -289,6 +289,35 @@ impl SourcePlan {
                     ("resource.identity", "resource_identity"),
                 ],
             }),
+            "exemplars" => Some(SourcePlan {
+                name: "exemplars",
+                table: "metric_exemplars",
+                time_col: "timestamp",
+                time_is_timestamp: true,
+                containers: &["filtered_attributes"],
+                attr_prefixes: &[],
+                row_defaults: &[
+                    "timestamp",
+                    "service_name",
+                    "metric_name",
+                    "metric_type",
+                    "value",
+                    "trace_id",
+                    "span_id",
+                    "filtered_attributes",
+                ],
+                aliases: &[
+                    ("service.name", "service_name"),
+                    ("trace.id", "trace_id"),
+                    ("span.id", "span_id"),
+                    ("metric.name", "metric_name"),
+                    ("metric.type", "metric_type"),
+                    ("series.id", "series_id"),
+                    ("exemplar.value", "value"),
+                    ("exemplar.filtered_attributes", "filtered_attributes"),
+                    ("resource.identity", "resource_identity"),
+                ],
+            }),
             _ => None,
         }
     }
@@ -5045,6 +5074,90 @@ mod tests {
         .await
         .unwrap_err();
         assert!(matches!(err, QuerierError::InvalidInput(_)), "{err}");
+    }
+
+    /// Two exemplars of one histogram series, on different traces.
+    fn exemplars_ctx() -> SessionContext {
+        let columns: Vec<(&str, ArrayRef)> = vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from(vec![10_i64, 20])),
+            ),
+            (
+                "point_timestamp",
+                Arc::new(TimestampNanosecondArray::from(vec![30_i64, 30])),
+            ),
+            (
+                "service_name",
+                Arc::new(StringArray::from(vec!["checkout"; 2])),
+            ),
+            (
+                "metric_name",
+                Arc::new(StringArray::from(vec!["http.server.duration"; 2])),
+            ),
+            (
+                "metric_type",
+                Arc::new(StringArray::from(vec!["histogram"; 2])),
+            ),
+            ("series_id", Arc::new(StringArray::from(vec!["s1"; 2]))),
+            ("value", Arc::new(Float64Array::from(vec![0.25, 0.75]))),
+            (
+                "trace_id",
+                Arc::new(StringArray::from(vec!["aaaa", "bbbb"])),
+            ),
+            ("span_id", Arc::new(StringArray::from(vec!["01", "02"]))),
+            (
+                "filtered_attributes",
+                build_map(&[&[("http.route", "/cart")], &[]]),
+            ),
+            (
+                "resource_identity",
+                Arc::new(StringArray::from(vec!["r1"; 2])),
+            ),
+        ];
+        let batch = common::testing::to_typed_layout(
+            "metric_exemplars",
+            "physical-v4",
+            &RecordBatch::try_from_iter(columns).unwrap(),
+            &["filtered_attributes"],
+        );
+        single_table_ctx("metric_exemplars", batch.schema(), batch)
+    }
+
+    #[tokio::test]
+    async fn exemplars_are_queryable_by_trace_id() {
+        let svc = IrService::new(exemplars_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "exemplars", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": [
+                "timestamp", "span.id", "exemplar.value", "exemplar.filtered_attributes",
+                "metric.name", "metric.type"
+            ],
+            "pipeline": [{ "where": { "field": "trace.id", "op": "eq", "value": "aaaa" } }]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let batch =
+            datafusion::arrow::compute::concat_batches(&batches[0].schema(), &batches).unwrap();
+        assert_eq!(batch.num_rows(), 1);
+        for (column, expected) in [
+            ("span_id", "01"),
+            ("value", "0.25"),
+            ("metric_name", "http.server.duration"),
+            ("metric_type", "histogram"),
+        ] {
+            assert_eq!(strings_of(&batch, column), vec![expected], "{column}");
+        }
+        assert_eq!(strings_of(&batch, "timestamp").len(), 1);
+        let attrs = datafusion::arrow::util::display::array_value_to_string(
+            batch
+                .column_by_name("exemplar_filtered_attributes")
+                .unwrap(),
+            0,
+        )
+        .unwrap();
+        assert!(attrs.contains("/cart"), "{attrs}");
     }
 
     #[tokio::test]
@@ -10221,6 +10334,17 @@ mod tests {
             &SourcePlan::for_source("metrics").unwrap(),
             &metrics_cols,
             "metrics",
+        );
+        let exemplars = common::iceberg::schemas::create_metric_exemplars_schema().unwrap();
+        let exemplar_cols: HashSet<String> = exemplars
+            .fields()
+            .iter()
+            .map(|f| f.name.to_string())
+            .collect();
+        check(
+            &SourcePlan::for_source("exemplars").unwrap(),
+            &exemplar_cols,
+            "exemplars",
         );
         assert!(SourcePlan::for_source("metrics_histogram").is_none());
     }

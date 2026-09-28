@@ -241,7 +241,7 @@ pub fn signal_for_source(source: &str) -> Option<&'static str> {
         "logs" => Some("logs"),
         "traces" => Some("traces"),
         "profiles" => Some("profiles"),
-        "metrics" | "metric_exemplars" => Some("metrics"),
+        "metrics" | "metric_exemplars" | "exemplars" => Some("metrics"),
         name if name.starts_with("metrics_") => Some("metrics"),
         _ => None,
     }
@@ -653,6 +653,7 @@ mod tests {
         }
         assert_eq!(signal_for_source("metrics_histogram"), Some("metrics"));
         assert_eq!(signal_for_source("metrics_gauge"), Some("metrics"));
+        assert_eq!(signal_for_source("exemplars"), Some("metrics"));
         assert_eq!(signal_for_source("nope"), None);
     }
 

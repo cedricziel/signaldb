@@ -63,6 +63,14 @@ impl SourceRegistry {
                 allows_extract: false,
             },
         );
+        sources.insert(
+            "exemplars".to_string(),
+            SourceDef {
+                name: "exemplars".to_string(),
+                grain: Grain::Event,
+                allows_extract: false,
+            },
+        );
         SourceRegistry { sources }
     }
 

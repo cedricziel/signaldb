@@ -793,7 +793,8 @@ where
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct DiscoverFieldsParams {
-    /// Signal source: `logs` (default), `traces`, `profiles`, or `metrics`.
+    /// Signal source: `logs` (default), `traces`, `profiles`, `metrics`, or
+    /// `exemplars`.
     #[serde(default = "default_discovery_source")]
     source: String,
     /// Range start: RFC3339, a relative anchor like `now-1h` (default), or
@@ -3037,7 +3038,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the signal sources available to your tenant (`logs`, `traces`, `profiles`, `metrics`) with whether each is queryable. Use it to pick a valid `from` for a `query_ir` document or a `discover_fields` call.",
+        description = "List the signal sources available to your tenant (`logs`, `traces`, `profiles`, `metrics`, `exemplars`) with whether each is queryable. Use it to pick a valid `from` for a `query_ir` document or a `discover_fields` call.",
         annotations(read_only_hint = true)
     )]
     async fn discover_sources(

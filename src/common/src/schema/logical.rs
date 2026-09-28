@@ -325,6 +325,19 @@ impl LogicalSchema {
                 LogicalType::AnyValue,
             )
             .retrieval_only(),
+            LogicalField::record_metadata("exemplars", "timestamp", LogicalType::TimestampNs),
+            LogicalField::join_key("exemplars", "trace.id"),
+            LogicalField::join_key("exemplars", "span.id"),
+            LogicalField::record_metadata("exemplars", "metric.name", LogicalType::String),
+            LogicalField::record_metadata("exemplars", "metric.type", LogicalType::String),
+            LogicalField::record_metadata("exemplars", "series.id", LogicalType::String),
+            LogicalField::record_metadata("exemplars", "exemplar.value", LogicalType::Float64),
+            LogicalField::record_metadata(
+                "exemplars",
+                "exemplar.filtered_attributes",
+                LogicalType::AnyValue,
+            )
+            .retrieval_only(),
             // Profiles: the summary row's own time column. Every scalar
             // source registers its primary timestamp (logs `timestamp`,
             // traces `start_time_unix_nano`) so a cross-signal "last seen"
@@ -341,6 +354,13 @@ impl LogicalSchema {
         ));
         fields.push(LogicalField::signaldb_resource_identity("metrics"));
         fields.push(LogicalField::signaldb_resource_identity("profiles"));
+        fields.push(LogicalField::signaldb_resource_identity("exemplars"));
+        fields.push(LogicalField::attribute(
+            "exemplars",
+            AttributeLevel::Resource,
+            "service.name",
+            LogicalType::String,
+        ));
         // A record's whole attribute bag per OTel scope, as one map value.
         // Retrieval-only: individual attributes are addressed by name (with
         // an optional scope qualifier); the bag itself is not a predicate
@@ -612,6 +632,36 @@ mod tests {
     }
 
     #[test]
+    fn exemplars_expose_trace_correlation_keys_and_the_owning_metric() {
+        let schema = LogicalSchema::core();
+        let field = |name: &str| {
+            schema
+                .resolve("exemplars", name)
+                .unwrap_or_else(|| panic!("exemplars.{name} is registered"))
+        };
+        for name in ["trace.id", "span.id"] {
+            assert_eq!(field(name).kind, LogicalFieldKind::JoinKey, "{name}");
+        }
+        for (name, value_type) in [
+            ("timestamp", LogicalType::TimestampNs),
+            ("metric.name", LogicalType::String),
+            ("metric.type", LogicalType::String),
+            ("series.id", LogicalType::String),
+            ("exemplar.value", LogicalType::Float64),
+        ] {
+            assert_eq!(field(name).value_type, value_type, "{name}");
+        }
+        assert_eq!(
+            field("exemplar.filtered_attributes").filterability,
+            Filterability::RetrievalOnly
+        );
+        assert_eq!(
+            field("resource.identity").kind,
+            LogicalFieldKind::SignalDbDefined
+        );
+    }
+
+    #[test]
     fn fields_iterates_every_registered_field_and_agrees_with_resolve() {
         let schema = LogicalSchema::core();
         let all: Vec<_> = schema.fields().collect();
@@ -643,7 +693,7 @@ mod tests {
     }
 
     const FIELD_SET_FINGERPRINT: &str =
-        "a64b3014de3de83e515c8530284a54be9857593ec6653f911572e082a3cad6cb";
+        "d8f33448a100d57db9cdff82e1e3fa6e3b4bb3b5840b48385bb7fe440f446e3f";
 
     fn fingerprint() -> String {
         use sha2::{Digest, Sha256};

@@ -1783,6 +1783,16 @@ mod tests {
     }
 
     #[test]
+    fn exemplars_is_registered_as_an_event_grain_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("exemplars")
+            .expect("exemplars source is registered");
+        assert_eq!(source.grain, Grain::Event);
+        assert!(!source.allows_extract);
+    }
+
+    #[test]
     fn metrics_histogram_is_not_a_source() {
         assert!(
             SourceRegistry::core()
