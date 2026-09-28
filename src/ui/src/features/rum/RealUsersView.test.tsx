@@ -124,8 +124,9 @@ describe("RealUsersView", () => {
       ],
     });
     renderRum("/rum/overview?app=storefront-web");
-    // "Sessions" labels both the KPI card and the sessions-over-time panel.
-    expect(await screen.findAllByText("Sessions")).toHaveLength(2);
+    // "Sessions" labels the KPI card, the sessions-over-time panel, and now
+    // the Sessions tab in the tab strip.
+    expect(await screen.findAllByText("Sessions")).toHaveLength(3);
     expect(await screen.findByText("Core Web Vitals")).toBeInTheDocument();
   });
 
