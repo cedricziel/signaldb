@@ -46,8 +46,10 @@ import type { ResolvedRange } from "../lib/time";
 import {
   isSdkExportPath,
   resolveRoute,
+  routeUrlRegex,
   urlTemplate,
   vitalShares,
+  type NavTimingP75,
   type VitalName,
   type VitalRating,
 } from "../features/rum/rumModel";
@@ -1315,6 +1317,279 @@ export async function fetchPages(
     ],
   );
   return pagesFromResponses(viewsRes, vitalRatingsRes, vitalP75Res, errorsRes);
+}
+
+// ---- Pages: load breakdown for one route -------------------------------
+//
+// Navigation timing carries `url.full` but usually no `url.template`, so the
+// read is narrowed to the route server-side (template match, or a `url.full`
+// regex built from the route) before the group cap, then grouped by both
+// fields and re-checked client-side with `resolveRoute`.
+
+const NAV_TIMING_LIMIT = 500;
+
+const NAV_TIMING_FIELDS = [
+  "browser.resource_timing.domain_lookup_start",
+  "browser.resource_timing.domain_lookup_end",
+  "browser.resource_timing.connect_start",
+  "browser.resource_timing.connect_end",
+  "browser.resource_timing.request_start",
+  "browser.resource_timing.response_start",
+  "browser.resource_timing.response_end",
+  "browser.navigation_timing.dom_interactive",
+  "browser.navigation_timing.dom_content_loaded_event_end",
+  "browser.navigation_timing.load_event_end",
+] as const;
+
+function buildLoadBreakdownDoc(
+  app: string,
+  range: ResolvedRange,
+  route: string,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      {
+        where: {
+          field: "event_name",
+          op: "eq",
+          value: "browser.navigation_timing",
+        },
+      },
+      {
+        where: {
+          or: [
+            { field: "url.template", op: "eq", value: route },
+            { field: "url.full", op: "regex", value: routeUrlRegex(route) },
+          ],
+        },
+      },
+      {
+        aggregate: {
+          by: ["url.template", "url.full"],
+          aggs: [
+            { fn: "count", as: "n" },
+            ...NAV_TIMING_FIELDS.map((field, i) => ({
+              fn: "quantile" as const,
+              of: field,
+              arg: 0.75,
+              as: `p${i}`,
+            })),
+          ],
+        },
+      },
+      { limit: NAV_TIMING_LIMIT },
+    ],
+  };
+}
+
+/** Blends every matching `url.full` group's phase-boundary p75s into one
+ * route-level set, weighted by each group's own navigation count — the
+ * same weighted-mean approximation `networkRowsFromResponses` uses to merge
+ * a template's constituent URLs. `undefined` when the route has no
+ * navigation-timing record at all (the caller hides the panel). */
+export function loadBreakdownFromResponse(
+  res: QueryIrResponse,
+  route: string,
+): NavTimingP75 | undefined {
+  const pairs: Record<string, { value: number; weight: number }[]> = {};
+  for (const field of NAV_TIMING_FIELDS) pairs[field] = [];
+  let matched = false;
+
+  for (const row of res.rows ?? []) {
+    const cols = row as unknown[];
+    const [template, full, n, ...rest] = cols as [
+      string | null,
+      string | null,
+      number,
+      ...(number | null)[],
+    ];
+    if (resolveRoute(template, full) !== route) continue;
+    matched = true;
+    const weight = typeof n === "number" ? n : 0;
+    NAV_TIMING_FIELDS.forEach((field, i) => {
+      const v = rest[i];
+      if (typeof v === "number") pairs[field]!.push({ value: v, weight });
+    });
+  }
+  if (!matched) return undefined;
+
+  const blend = (field: (typeof NAV_TIMING_FIELDS)[number]) =>
+    weightedMean(pairs[field]!);
+
+  return {
+    domainLookupStart: blend("browser.resource_timing.domain_lookup_start"),
+    domainLookupEnd: blend("browser.resource_timing.domain_lookup_end"),
+    connectStart: blend("browser.resource_timing.connect_start"),
+    connectEnd: blend("browser.resource_timing.connect_end"),
+    requestStart: blend("browser.resource_timing.request_start"),
+    responseStart: blend("browser.resource_timing.response_start"),
+    responseEnd: blend("browser.resource_timing.response_end"),
+    domInteractive: blend("browser.navigation_timing.dom_interactive"),
+    domContentLoadedEventEnd: blend(
+      "browser.navigation_timing.dom_content_loaded_event_end",
+    ),
+    loadEventEnd: blend("browser.navigation_timing.load_event_end"),
+  };
+}
+
+export async function fetchLoadBreakdown(
+  app: string,
+  range: ResolvedRange,
+  route: string,
+): Promise<NavTimingP75 | undefined> {
+  return loadBreakdownFromResponse(
+    await runIrQuery(buildLoadBreakdownDoc(app, range, route)),
+    route,
+  );
+}
+
+// ---- Pages: backend calls from a route ---------------------------------
+//
+// `browser.resource_timing` fetch/xhr entries carry the page's `url.template`
+// and the request's `url.full`; filtering on the page route before grouping
+// keeps a quiet route from being crowded out by the group cap.
+
+const BACKEND_CALL_INITIATORS = ["fetch", "xmlhttprequest"];
+
+function buildBackendCallsDoc(
+  app: string,
+  range: ResolvedRange,
+  route: string,
+): QueryIrRequest {
+  return {
+    irVersion: 8,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      serviceWhere(app),
+      {
+        where: {
+          field: "event_name",
+          op: "eq",
+          value: "browser.resource_timing",
+        },
+      },
+      {
+        where: {
+          field: "browser.resource_timing.initiator_type",
+          op: "in",
+          value: BACKEND_CALL_INITIATORS,
+        },
+      },
+      { where: { field: "url.template", op: "eq", value: route } },
+      {
+        aggregate: {
+          by: ["url.full"],
+          aggs: [
+            { fn: "count", as: "n" },
+            {
+              fn: "quantile",
+              of: "browser.resource_timing.duration",
+              arg: 0.75,
+              as: "p75",
+            },
+          ],
+        },
+      },
+      { limit: PAGE_GROUP_LIMIT },
+    ],
+  };
+}
+
+export interface RumBackendCallRow {
+  origin: string;
+  template: string;
+  calls: number;
+  p75Ms: number | null;
+  /** The Network tab's backend `service.name` for this (origin, template)
+   * pair, when known — the caller fills this in from `RumRequestRow[]`. */
+  backendService?: string;
+}
+
+/** Rows for one route, bucketed by the *request*'s own (origin, template) —
+ * not the page's — so e.g. `/api/products/:id` shows as one row across
+ * every product page that calls it. */
+export function backendCallsFromResponse(
+  res: QueryIrResponse,
+): RumBackendCallRow[] {
+  interface Bucket {
+    origin: string;
+    template: string;
+    calls: number;
+    p75Pairs: { value: number; weight: number }[];
+  }
+  const buckets = new Map<string, Bucket>();
+
+  for (const row of res.rows ?? []) {
+    const [requestUrl, n, p75] = row as [string | null, number, number | null];
+    if (!requestUrl) continue;
+    const parsed = urlTemplate(requestUrl);
+    const origin = parsed?.origin ?? "unknown";
+    const template = parsed?.template ?? requestUrl;
+    const key = `${origin}\u0000${template}`;
+    const bucket = buckets.get(key) ?? {
+      origin,
+      template,
+      calls: 0,
+      p75Pairs: [],
+    };
+    const calls = typeof n === "number" ? n : 0;
+    bucket.calls += calls;
+    if (typeof p75 === "number")
+      bucket.p75Pairs.push({ value: p75, weight: calls });
+    buckets.set(key, bucket);
+  }
+
+  return Array.from(buckets.values())
+    .map((b): RumBackendCallRow => ({
+      origin: b.origin,
+      template: b.template,
+      calls: b.calls,
+      p75Ms: weightedMean(b.p75Pairs) ?? null,
+    }))
+    .sort((a, b) => b.calls - a.calls);
+}
+
+/** Fills in each row's `backendService` by matching (origin, template)
+ * against the Network tab's own request rows (`useRumNetworkRequests`) —
+ * shared cache, no extra read. */
+export function joinBackendCallsToNetworkService(
+  rows: RumBackendCallRow[],
+  networkRows: RumRequestRow[],
+): RumBackendCallRow[] {
+  // `null` marks a (origin, template) served by more than one backend
+  // service, e.g. different methods — too ambiguous to name one.
+  const serviceByKey = new Map<string, string | null>();
+  for (const r of networkRows) {
+    if (!r.backendService) continue;
+    const key = `${r.origin}\u0000${r.template}`;
+    const seen = serviceByKey.get(key);
+    serviceByKey.set(
+      key,
+      seen === undefined || seen === r.backendService ? r.backendService : null,
+    );
+  }
+  return rows.map((r) => ({
+    ...r,
+    backendService:
+      serviceByKey.get(`${r.origin}\u0000${r.template}`) ?? undefined,
+  }));
+}
+
+export async function fetchBackendCalls(
+  app: string,
+  range: ResolvedRange,
+  route: string,
+): Promise<RumBackendCallRow[]> {
+  return backendCallsFromResponse(
+    await runIrQuery(buildBackendCallsDoc(app, range, route)),
+  );
 }
 
 export type { VitalName, VitalRating };

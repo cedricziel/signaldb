@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import {
   formatVitalValue,
   isSdkExportPath,
+  loadBreakdownPhases,
+  routeUrlRegex,
   NO_VITAL_DATA,
   rateVital,
   ratingSwatchColorVar,
@@ -272,6 +274,69 @@ describe("resolveRoute", () => {
 
   it("is null with neither field", () => {
     expect(resolveRoute(null, null)).toBeNull();
+  });
+});
+
+describe("routeUrlRegex", () => {
+  it("matches a url.full whose path fits the route, and nothing else", () => {
+    const re = new RegExp(routeUrlRegex("/orders/:id"));
+    expect(re.test("https://shop.example.com/orders/48213?x=1")).toBe(true);
+    expect(re.test("https://shop.example.com/orders/48213/items")).toBe(false);
+    expect(re.test("https://shop.example.com/orders")).toBe(false);
+    expect(
+      new RegExp(routeUrlRegex("/")).test("https://shop.example.com/"),
+    ).toBe(true);
+  });
+});
+
+describe("loadBreakdownPhases", () => {
+  it("computes non-overlapping phase durations from fetchStart", () => {
+    const phases = loadBreakdownPhases({
+      domainLookupStart: 10,
+      domainLookupEnd: 40,
+      connectStart: 40,
+      connectEnd: 90,
+      requestStart: 90,
+      responseStart: 120,
+      responseEnd: 260,
+      domInteractive: 420,
+      domContentLoadedEventEnd: 440,
+      loadEventEnd: 620,
+    });
+    expect(phases.map((p) => [p.label, p.ms])).toEqual([
+      ["DNS", 30],
+      ["Connect + TLS", 50],
+      ["Request → first byte", 30],
+      ["Response", 140],
+      ["DOM processing", 160],
+      ["DOMContentLoaded", 20],
+      ["Load", 180],
+    ]);
+  });
+
+  it("leaves out a phase whose boundary was not recorded", () => {
+    const phases = loadBreakdownPhases({
+      requestStart: 90,
+      responseStart: 120,
+      domInteractive: 420,
+    });
+    expect(phases.map((p) => p.label)).toEqual(["Request → first byte"]);
+  });
+
+  it("clamps a non-monotonic blend to zero rather than a negative bar", () => {
+    const phases = loadBreakdownPhases({
+      domainLookupStart: 40,
+      domainLookupEnd: 10,
+      connectStart: 0,
+      connectEnd: 0,
+      requestStart: 0,
+      responseStart: 0,
+      responseEnd: 0,
+      domInteractive: 0,
+      domContentLoadedEventEnd: 0,
+      loadEventEnd: 0,
+    });
+    expect(phases[0]!.ms).toBe(0);
   });
 });
 
