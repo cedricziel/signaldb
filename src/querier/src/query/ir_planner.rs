@@ -48,9 +48,7 @@ use datafusion::arrow::array::{
     Array, BooleanArray, Float64Array, LargeStringArray, StringArray, StringBuilder,
     StringViewArray, TimestampNanosecondArray,
 };
-use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
-use datafusion::datasource::TableProvider;
 use datafusion::functions::core::expr_fn::{coalesce, named_struct, with_metadata};
 use datafusion::functions::datetime::expr_fn::date_bin;
 use datafusion::functions::regex::expr_fn::regexp_like;
@@ -61,15 +59,10 @@ use datafusion::functions_aggregate::expr_fn::{
 };
 use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
-use datafusion::logical_expr::TableProviderFilterPushDown;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, JoinType, Operator, ScalarFunctionArgs, ScalarUDF,
     ScalarUDFImpl, Signature, TypeSignature, Volatility, cast, col, lit, not, try_cast,
 };
-use datafusion::physical_expr::PhysicalExpr;
-use datafusion::physical_expr::expressions::{CastExpr, Column as PhysicalColumn};
-use datafusion::physical_plan::ExecutionPlan;
-use datafusion::physical_plan::projection::ProjectionExec;
 use datafusion::prelude::{DataFrame, SessionContext, ident};
 use datafusion::scalar::ScalarValue;
 
@@ -79,7 +72,6 @@ use super::histogram::{BucketCol, HistogramAcc, RateHistAcc, histogram_quantile}
 use super::profile::batch_to_models;
 use super::table_lookup::{column, optional_table_provider, scan_provider, string_column};
 use super::typed_attrs::{CanonicalTypeLookup, CanonicalTypes};
-use common::iceberg::schemas::MetricsLayout;
 use datafusion::common::TableReference;
 
 /// Upper bound on profile rows aggregated into one `flamegraph` result.
@@ -96,13 +88,14 @@ const FLAMEGRAPH_PROFILE_CAP: usize = 1_000;
 /// `duration_nanos`, so those idiosyncratic renames live in `aliases`.
 pub(crate) struct SourcePlan {
     /// The logical source name (as written in a document's `from`) — used for
-    /// display/error messages, distinct from `tables` below since a source
-    /// can scan more than one physical table (metrics unions gauge + sum).
+    /// display/error messages, distinct from `table` below since two sources
+    /// can read the same physical table (`metrics`, `metrics_histogram`).
     name: &'static str,
-    /// Physical tables scanned for this source. A dataset missing one of
-    /// several (e.g. no sum metrics ingested yet) still scans the rest; only
-    /// a dataset missing *all* of them has no rows to plan over.
-    tables: &'static [&'static str],
+    /// The physical table scanned for this source.
+    table: &'static str,
+    /// The `metric_type`s this source reads from the `metrics` table — empty
+    /// (no filter) for every source that isn't `metrics`/`metrics_histogram`.
+    metric_types: &'static [&'static str],
     /// The column carrying the row's primary timestamp.
     time_col: &'static str,
     /// Whether `time_col` is a real `Timestamp` (compare with a timestamp
@@ -120,10 +113,6 @@ pub(crate) struct SourcePlan {
     /// schema's idiosyncratic renames that a plain dot→underscore mapping does
     /// not cover.
     aliases: &'static [(&'static str, &'static str)],
-    /// Under [`MetricsLayout::Wide`], the `metric_type`s this source reads
-    /// from the wide `metrics` table instead of `tables` — empty for every
-    /// source that isn't `metrics`/`metrics_histogram`.
-    wide_metric_types: &'static [&'static str],
 }
 
 impl SourcePlan {
@@ -131,7 +120,8 @@ impl SourcePlan {
         match source {
             "logs" => Some(SourcePlan {
                 name: "logs",
-                tables: &["logs"],
+                table: "logs",
+                metric_types: &[],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["log_attributes", "scope_attributes", "resource_attributes"],
@@ -175,11 +165,11 @@ impl SourcePlan {
                     ("resource.attributes", "resource_attributes"),
                     ("resource.identity", "resource_identity"),
                 ],
-                wide_metric_types: &[],
             }),
             "traces" => Some(SourcePlan {
                 name: "traces",
-                tables: &["traces"],
+                table: "traces",
+                metric_types: &[],
                 time_col: "start_time_unix_nano",
                 time_is_timestamp: false,
                 containers: &["span_attributes", "scope_attributes", "resource_attributes"],
@@ -214,11 +204,11 @@ impl SourcePlan {
                     ("resource.attributes", "resource_attributes"),
                     ("resource.identity", "resource_identity"),
                 ],
-                wide_metric_types: &[],
             }),
             "profiles" => Some(SourcePlan {
                 name: "profiles",
-                tables: &["profiles"],
+                table: "profiles",
+                metric_types: &[],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &[
@@ -261,7 +251,6 @@ impl SourcePlan {
                     ("span.id", "span_id"),
                     ("resource.identity", "resource_identity"),
                 ],
-                wide_metric_types: &[],
             }),
             "metrics" => Some(SourcePlan {
                 name: "metrics",
@@ -270,8 +259,8 @@ impl SourcePlan {
                 // IR aggregate equivalent yet (no `histogram_quantile`
                 // stage), so they're deliberately excluded here rather than
                 // scanned and misinterpreted as plain values.
-                tables: &["metrics_gauge", "metrics_sum"],
-                wide_metric_types: &["gauge", "sum"],
+                table: "metrics",
+                metric_types: &["gauge", "sum"],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
@@ -304,10 +293,10 @@ impl SourcePlan {
                 // since the row shape differs. Only reachable via the
                 // `histogram_quantile` stage, which reads the bucket columns
                 // by physical name directly (see `lower_histogram_quantile`)
-                // rather than through the resolver — comparing a JSON-array
-                // string in a `where` is meaningless, so they get no alias.
-                tables: &["metrics_histogram"],
-                wide_metric_types: &["histogram"],
+                // rather than through the resolver — comparing a bucket list
+                // in a `where` is meaningless, so they get no alias.
+                table: "metrics",
+                metric_types: &["histogram"],
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
@@ -336,88 +325,30 @@ impl SourcePlan {
     }
 }
 
-/// Scans this source's rows. Under [`MetricsLayout::Wide`], a source with a
-/// non-empty `wide_metric_types` (`metrics`/`metrics_histogram`) instead
-/// scans the wide `metrics` table filtered to `metric_type IN
-/// (wide_metric_types)`.
-///
-/// Otherwise, scans every table in `source.tables`, unioning them when
-/// there's more than one (legacy `metrics`: gauge + sum). A single-table
-/// source's scan keeps its full raw schema unchanged — `SchemaResolver`'s
-/// promoted-attribute discovery depends on seeing every column the table
-/// actually has, not just `row_defaults` — so the projection-then-union step
-/// only runs when there's more than one table to reconcile onto a common
-/// schema.
-async fn scan_source_tables(
+/// Scans this source's table, filtered to `metric_type IN (metric_types)`
+/// when the source names any. The scan keeps the table's full raw schema —
+/// `SchemaResolver`'s promoted-attribute discovery depends on seeing every
+/// column the table actually has, not just `row_defaults`.
+async fn scan_source(
     ctx: &SessionContext,
     tenant_slug: &str,
     dataset_slug: &str,
     source: &SourcePlan,
-    metrics_layout: MetricsLayout,
 ) -> Result<Option<DataFrame>, QuerierError> {
-    if metrics_layout == MetricsLayout::Wide && !source.wide_metric_types.is_empty() {
-        let Some((table_ref, provider)) =
-            optional_table_provider(ctx, tenant_slug, dataset_slug, "metrics").await?
-        else {
-            return Ok(None);
-        };
-        let df = scan_provider(ctx, table_ref, provider)?;
-        let allowed: Vec<Expr> = source.wide_metric_types.iter().map(|t| lit(*t)).collect();
-        return Ok(Some(
-            df.filter(col("metric_type").in_list(allowed, false))
-                .map_err(QuerierError::QueryFailed)?,
-        ));
+    let Some((table_ref, provider)) =
+        optional_table_provider(ctx, tenant_slug, dataset_slug, source.table).await?
+    else {
+        return Ok(None);
+    };
+    let df = scan_provider(ctx, table_ref, provider)?;
+    if source.metric_types.is_empty() {
+        return Ok(Some(df));
     }
-    let mut providers = Vec::with_capacity(source.tables.len());
-    for table in source.tables {
-        // A missing table (e.g. no sum metrics ingested yet) is not an
-        // error — skip it. A catalog failure still is.
-        if let Some(found) = optional_table_provider(ctx, tenant_slug, dataset_slug, table).await? {
-            providers.push(found);
-        }
-    }
-    match providers.len() {
-        0 => Ok(None),
-        1 => {
-            // Also reached for `metrics` when only one of gauge/sum has been
-            // ingested yet.
-            let (table_ref, provider) = providers.remove(0);
-            Ok(Some(scan_provider(ctx, table_ref, provider)?))
-        }
-        _ => {
-            // Tables created at different times can disagree on a column's
-            // physical type or order — most commonly the typed-attribute
-            // migration flipping which columns an attribute container
-            // expands to. UNION requires identical types per position, so
-            // pick one target type per column and coerce each mismatching
-            // table's *scan* to it (a wrapping provider,
-            // not a projection expression: DataFusion 54's
-            // `optimize_projections` mis-orders the pushed-down projections
-            // of a UNION whose inputs mix columns and expressions) (#1206).
-            let columns = union_columns(source);
-            let column_refs: Vec<&str> = columns.iter().map(String::as_str).collect();
-            let targets = union_target_types(&providers, &column_refs);
-            let mut union: Option<DataFrame> = None;
-            for (table_ref, provider) in providers {
-                let provider = CoercedTableProvider::wrap(provider, &column_refs, &targets)?;
-                let df = scan_provider(ctx, table_ref, provider)?;
-                // Now an identity projection — the provider above already
-                // presents exactly `columns`, in order. Kept so the two
-                // branches carry the same unqualified column names into the
-                // union regardless of their table qualifiers, not because it
-                // selects or reorders anything.
-                let proj: Vec<Expr> = column_refs.iter().map(|c| col(*c)).collect();
-                let projected = df.select(proj).map_err(QuerierError::QueryFailed)?;
-                union = Some(match union {
-                    None => projected,
-                    Some(existing) => existing
-                        .union(projected)
-                        .map_err(QuerierError::QueryFailed)?,
-                });
-            }
-            Ok(union)
-        }
-    }
+    let allowed: Vec<Expr> = source.metric_types.iter().map(|t| lit(*t)).collect();
+    Ok(Some(
+        df.filter(col("metric_type").in_list(allowed, false))
+            .map_err(QuerierError::QueryFailed)?,
+    ))
 }
 
 /// Scan the `traces` table a second time for a `correlate` stage's parent
@@ -442,13 +373,8 @@ async fn scan_parent_traces(
     dataset_slug: &str,
     source: &SourcePlan,
 ) -> Result<Option<DataFrame>, QuerierError> {
-    let [table] = source.tables else {
-        return Err(QuerierError::InvalidInput(
-            "correlate only supports the traces source".to_string(),
-        ));
-    };
     let Some((table_ref, provider)) =
-        optional_table_provider(ctx, tenant_slug, dataset_slug, table).await?
+        optional_table_provider(ctx, tenant_slug, dataset_slug, source.table).await?
     else {
         return Ok(None);
     };
@@ -466,229 +392,6 @@ async fn scan_parent_traces(
         } => TableReference::full(catalog, schema, format!("{table}__correlate_parent")),
     };
     Ok(Some(scan_provider(ctx, parent_ref, provider)?))
-}
-
-/// The columns [`scan_source_tables`]'s union branch scans, in order:
-/// `source.row_defaults` with every attribute container expanded to its five
-/// typed columns.
-fn union_columns(source: &SourcePlan) -> Vec<String> {
-    source
-        .row_defaults
-        .iter()
-        .flat_map(|&c| {
-            if source.containers.contains(&c) {
-                typed_columns(c).to_vec()
-            } else {
-                vec![c.to_string()]
-            }
-        })
-        .collect()
-}
-
-/// The type each unioned column should have: the first table's type.
-fn union_target_types(
-    providers: &[(datafusion::common::TableReference, Arc<dyn TableProvider>)],
-    columns: &[&str],
-) -> Vec<Option<DataType>> {
-    columns
-        .iter()
-        .map(|c| {
-            providers.iter().find_map(|(_, p)| {
-                p.schema()
-                    .field_with_name(c)
-                    .ok()
-                    .map(|f| f.data_type().clone())
-            })
-        })
-        .collect()
-}
-
-/// A [`TableProvider`] that presents `inner` as an explicit column list, in
-/// that order, with any column cast to an explicit target type — used by
-/// `scan_source_tables`'s union branch (see `wrap`'s doc comment) so that
-/// every union input's scan presents an identical schema.
-///
-/// Presenting the *shape*, not just the types, is what makes a multi-table
-/// source safe to union. The tables of one source disagree on column order and
-/// count as well as on type — `metrics_sum` carries `aggregation_temporality`
-/// and `is_monotonic` in the middle, so every column after them sits at a
-/// different index than in `metrics_gauge`, and both end with the `date_day`
-/// / `hour` partition helpers. If each branch's scan exposed its own full
-/// schema, the branches would agree only because a projection above them
-/// picked the same names; `optimize_projections` rebuilds those projections
-/// from sorted column indices, and the moment anything is pushed between the
-/// projection and the scan — a predicate pushed below the UNION, say — the two
-/// branches are rebuilt against different index spaces and stop lining up.
-/// That produced "UNION field 0 have different type in inputs: left has Utf8
-/// whereas right has Date32" for any filter on an attribute-map column
-/// (#1348), while grouping by the same column worked, because grouping adds no
-/// node between the two.
-///
-/// Making the scan itself present the common columns removes the mismatch at
-/// the source: every branch's `TableScan` has an identical schema, so no
-/// optimizer rewrite can misalign them. Coercing types alone (#1206) was the
-/// same idea one step short of this.
-///
-/// Filters that only touch un-coerced columns are still offered to the inner
-/// provider, so time-range and partition pruning survive.
-#[derive(Debug)]
-struct CoercedTableProvider {
-    inner: Arc<dyn TableProvider>,
-    /// The columns this provider presents, in order — the caller's explicit
-    /// list (the union's common columns, or a single table's own full column
-    /// list; see `wrap`'s doc comment).
-    schema: SchemaRef,
-    /// Our column index → the inner schema's index for the same column.
-    inner_index: Vec<usize>,
-    /// Our column index → target type, for columns that differ from `inner`.
-    coerced: Vec<(usize, DataType)>,
-}
-
-impl CoercedTableProvider {
-    /// Present `inner` as `columns`, coerced to `targets` —
-    /// `scan_source_tables`'s union branch, with `columns` the union's
-    /// `row_defaults` subset (needed so every branch's `TableScan` has an
-    /// identical schema).
-    ///
-    /// Returns `inner` untouched only when it already *is* that schema: same
-    /// columns, same order, same types. In practice no real table matches —
-    /// `row_defaults` is a strict subset of a physical schema, which also
-    /// carries `date_day`/`hour` and the rest — so this is an identity check
-    /// rather than an optimization for any known caller.
-    fn wrap(
-        inner: Arc<dyn TableProvider>,
-        columns: &[&str],
-        targets: &[Option<DataType>],
-    ) -> Result<Arc<dyn TableProvider>, QuerierError> {
-        let inner_schema = inner.schema();
-        let mut fields = Vec::with_capacity(columns.len());
-        let mut inner_index = Vec::with_capacity(columns.len());
-        let mut coerced = Vec::new();
-
-        for (our_idx, (name, target)) in columns.iter().zip(targets).enumerate() {
-            // Every requested column must exist on `inner` — for the union
-            // caller, on every table of the source, or the union has
-            // nothing to align; the single-table caller can't actually hit
-            // this, since it derives `columns` from `inner`'s own schema.
-            // Failing here names the column; letting it through would
-            // silently produce a provider of the wrong width.
-            let idx = inner_schema.index_of(name).map_err(|_| {
-                QuerierError::QueryFailed(datafusion::error::DataFusionError::Plan(format!(
-                    "table is missing column '{name}' required to present this schema"
-                )))
-            })?;
-            let inner_field = inner_schema.field(idx);
-            match target {
-                Some(target) if inner_field.data_type() != target => {
-                    coerced.push((our_idx, target.clone()));
-                    fields.push(Field::new(*name, target.clone(), true));
-                }
-                _ => fields.push(inner_field.clone()),
-            }
-            inner_index.push(idx);
-        }
-
-        let already_identical = coerced.is_empty()
-            && inner_index
-                .iter()
-                .copied()
-                .eq(0..inner_schema.fields().len());
-        if already_identical {
-            return Ok(inner);
-        }
-
-        let schema = Arc::new(Schema::new_with_metadata(
-            fields,
-            inner_schema.metadata().clone(),
-        ));
-        Ok(Arc::new(Self {
-            inner,
-            schema,
-            inner_index,
-            coerced,
-        }))
-    }
-
-    fn is_coerced(&self, idx: usize) -> bool {
-        self.coerced.iter().any(|(i, _)| *i == idx)
-    }
-}
-
-#[async_trait::async_trait]
-impl TableProvider for CoercedTableProvider {
-    fn schema(&self) -> SchemaRef {
-        Arc::clone(&self.schema)
-    }
-    fn table_type(&self) -> datafusion::datasource::TableType {
-        self.inner.table_type()
-    }
-    fn supports_filters_pushdown(
-        &self,
-        filters: &[&Expr],
-    ) -> datafusion::error::Result<Vec<TableProviderFilterPushDown>> {
-        // A filter over a coerced column must run against the coerced
-        // values, i.e. above this provider; everything else may go down.
-        let coerced_names: Vec<&str> = self
-            .coerced
-            .iter()
-            .map(|(i, _)| self.schema.field(*i).name().as_str())
-            .collect();
-        let (down, down_idx): (Vec<&Expr>, Vec<usize>) = filters
-            .iter()
-            .enumerate()
-            .filter(|(_, f)| {
-                f.column_refs()
-                    .iter()
-                    .all(|c| !coerced_names.contains(&c.name.as_str()))
-            })
-            .map(|(i, f)| (*f, i))
-            .unzip();
-        let inner = self.inner.supports_filters_pushdown(&down)?;
-        let mut out = vec![TableProviderFilterPushDown::Unsupported; filters.len()];
-        for (i, support) in down_idx.into_iter().zip(inner) {
-            out[i] = support;
-        }
-        Ok(out)
-    }
-    async fn scan(
-        &self,
-        state: &dyn datafusion::catalog::Session,
-        projection: Option<&Vec<usize>>,
-        filters: &[Expr],
-        limit: Option<usize>,
-    ) -> datafusion::error::Result<Arc<dyn ExecutionPlan>> {
-        // `projection` indexes into *our* schema (the caller's explicit
-        // column list); the inner table has its own column order, so
-        // translate before handing the scan down. Filters are only those
-        // that survived
-        // `supports_filters_pushdown`.
-        let selected: Vec<usize> = match projection {
-            Some(p) => p.clone(),
-            None => (0..self.schema.fields().len()).collect(),
-        };
-        let inner_projection: Vec<usize> = selected.iter().map(|i| self.inner_index[*i]).collect();
-        let inner_plan = self
-            .inner
-            .scan(state, Some(&inner_projection), filters, limit)
-            .await?;
-        // The inner plan already yields the selected columns in the selected
-        // order; a cast is only needed where the type still differs.
-        if !selected.iter().any(|i| self.is_coerced(*i)) {
-            return Ok(inner_plan);
-        }
-        let mut exprs: Vec<(Arc<dyn PhysicalExpr>, String)> = Vec::with_capacity(selected.len());
-        for (out_idx, src_idx) in selected.iter().enumerate() {
-            let name = self.schema.field(*src_idx).name().clone();
-            let column: Arc<dyn PhysicalExpr> = Arc::new(PhysicalColumn::new(&name, out_idx));
-            let expr: Arc<dyn PhysicalExpr> = match self.coerced.iter().find(|(i, _)| i == src_idx)
-            {
-                None => column,
-                Some((_, target)) => Arc::new(CastExpr::new(column, target.clone(), None)),
-            };
-            exprs.push((expr, name));
-        }
-        Ok(Arc::new(ProjectionExec::try_new(exprs, inner_plan)?))
-    }
 }
 
 /// Map an Arrow data type to the IR canonical [`ValueType`], or `None` for a
@@ -1107,9 +810,6 @@ pub struct IrService {
     /// by the production Flight service; `None` in every other caller
     /// (compat lowerings, most tests), which never reach a typed table.
     canonical_type_lookup: Option<Arc<dyn CanonicalTypeLookup>>,
-    /// Which physical layout the `metrics`/`metrics_histogram` sources read
-    /// (see [`MetricsLayout`]), from [`MetricsLayout::current`].
-    metrics_layout: MetricsLayout,
 }
 
 /// The resolved absolute time window `[t0, t1]` (unix epoch nanoseconds),
@@ -1127,7 +827,6 @@ impl IrService {
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
             canonical_type_lookup: None,
-            metrics_layout: MetricsLayout::current(),
         }
     }
 
@@ -1313,8 +1012,7 @@ impl IrService {
             doc,
             PlanRequest::new(tenant_slug, dataset_slug, now_ns)
                 .with_correlate_max_rows(self.correlate_max_rows)
-                .with_attribute_type_request(attribute_type_request)
-                .with_metrics_layout(self.metrics_layout),
+                .with_attribute_type_request(attribute_type_request),
         )
         .await
     }
@@ -1344,7 +1042,6 @@ pub(crate) async fn plan_document(
         now_ns,
         correlate_max_rows,
         attribute_type_request,
-        metrics_layout,
     } = request;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
@@ -1352,9 +1049,7 @@ pub(crate) async fn plan_document(
     // A dataset with none of this source's tables has no rows to plan
     // over. The document's schema-dependent validation is skipped along
     // with the scan — there is no schema to validate against.
-    let Some(base) =
-        scan_source_tables(ctx, tenant_slug, dataset_slug, &source, metrics_layout).await?
-    else {
+    let Some(base) = scan_source(ctx, tenant_slug, dataset_slug, &source).await? else {
         return Ok(None);
     };
 
@@ -1622,7 +1317,6 @@ pub(crate) struct PlanRequest<'a> {
     pub now_ns: i64,
     pub correlate_max_rows: usize,
     pub attribute_type_request: AttributeTypeRequest,
-    pub metrics_layout: MetricsLayout,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -1633,7 +1327,6 @@ impl<'a> PlanRequest<'a> {
             now_ns,
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             attribute_type_request: AttributeTypeRequest::CompatOnly,
-            metrics_layout: MetricsLayout::current(),
         }
     }
 
@@ -1647,11 +1340,6 @@ impl<'a> PlanRequest<'a> {
         attribute_type_request: AttributeTypeRequest,
     ) -> Self {
         self.attribute_type_request = attribute_type_request;
-        self
-    }
-
-    pub(crate) fn with_metrics_layout(mut self, metrics_layout: MetricsLayout) -> Self {
-        self.metrics_layout = metrics_layout;
         self
     }
 }
