@@ -658,6 +658,7 @@ profiles = "30d"                      # Profile data retention (default: 30 days
 # min_query_hits = 1            # Minimum accumulated query demand
 # promote_streak = 3            # Consecutive over-threshold cycles before promotion
 # max_promotions_per_cycle = 4  # Promotion cap per rewrite cycle
+# demote_after_idle = "7d"      # Fold a promoted column back into the typed map once this long unqueried; "0s" disables idle demotion
 
 [compactor.orphan_cleanup]
 enabled = true                        # Enable orphan cleanup (default: true)
