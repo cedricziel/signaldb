@@ -27,15 +27,28 @@ export interface PromSeries {
   points: [number, number][];
 }
 
-/** Prometheus-style series label: `name{k="v", …}` — used for the chart
- * legend/tooltip regardless of which path produced the series. */
-export function seriesName(labels: Record<string, string>): string {
+function splitLabels(labels: Record<string, string>) {
   const { __name__: name, ...rest } = labels;
-  const pairs = Object.entries(rest)
-    .sort(([a], [b]) => a.localeCompare(b))
-    .map(([k, v]) => `${k}="${v}"`);
-  if (pairs.length === 0) return name ?? "value";
+  return {
+    name,
+    entries: Object.entries(rest).sort(([a], [b]) => a.localeCompare(b)),
+  };
+}
+
+/** Prometheus-style series selector: `name{k="v", …}`. */
+export function seriesName(labels: Record<string, string>): string {
+  const { name, entries } = splitLabels(labels);
+  if (entries.length === 0) return name ?? "value";
+  const pairs = entries.map(([k, v]) => `${k}="${v}"`);
   return `${name ?? ""}{${pairs.join(", ")}}`;
+}
+
+/** A series as people read it: its label values (ordered by key) without the
+ * `key="…"` syntax, or the metric name when it has no labels. */
+export function seriesDisplayName(labels: Record<string, string>): string {
+  const { name, entries } = splitLabels(labels);
+  if (entries.length === 0) return name ?? "value";
+  return entries.map(([, v]) => v).join(" · ");
 }
 
 /** A user can still free-type a label the picker didn't offer, so this stays

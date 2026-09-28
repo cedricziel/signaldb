@@ -219,6 +219,26 @@ export function axisLabelFormatter(
   };
 }
 
+/**
+ * Time-axis tick labels on one line each: time of day at the step's
+ * precision, with the `MM-DD` date only on the first tick and wherever the
+ * calendar day changes. At a step of a day or more, the date alone.
+ */
+export function timeAxisLabels(splits: number[], incrMs: number): string[] {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  let prevDay = "";
+  return splits.map((ms) => {
+    const d = new Date(ms);
+    const day = `${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+    if (incrMs >= DAY_MS) return day;
+    let time = `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+    if (incrMs < 60_000) time += `:${pad(d.getSeconds())}`;
+    const label = day === prevDay ? time : `${day} ${time}`;
+    prevDay = day;
+    return label;
+  });
+}
+
 export function formatRangeLabel(range: TimeRange): string {
   if (range.type === "relative") {
     const preset = RANGE_PRESETS.find((p) => p.seconds === range.seconds);
