@@ -1,5 +1,5 @@
 use crate::schema_transform::{
-    LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg,
+    LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg, transform_metric_exemplars,
     transform_metrics_exponential_histogram_v1_to_iceberg, transform_metrics_gauge_v1_to_iceberg,
     transform_metrics_histogram_v1_to_iceberg, transform_metrics_sum_v1_to_iceberg,
     transform_metrics_summary_v1_to_iceberg, transform_metrics_to_wide,
@@ -374,6 +374,7 @@ impl IcebergTableWriter {
                 transform_metrics_summary_v1_to_iceberg(batch, labels)
             }
             "metrics" if has_field("data_json") => transform_metrics_to_wide(batch, labels),
+            "metric_exemplars" if has_field("data_json") => transform_metric_exemplars(batch),
             // Wire-format profiles carry raw OTLP "time_unix_nano"; the
             // storage schema uses computed "timestamp"/"date_day"/"hour".
             "profiles" if has_field("time_unix_nano") => {
@@ -2604,6 +2605,148 @@ mod tests {
         assert!(
             record_batch.column_by_name(WARM_INDEX_COLUMN).is_none(),
             "a table with no warm-index column must not gain one"
+        );
+    }
+
+    fn typed_column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
+        batch
+            .column_by_name(name)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<T>()
+            .unwrap()
+    }
+
+    fn downcast<T: Array + 'static>(array: &dyn Array) -> &T {
+        array.as_any().downcast_ref::<T>().unwrap()
+    }
+
+    /// A wire-format histogram metric batch with one exemplar.
+    fn wire_histogram_metric_batch() -> RecordBatch {
+        use common::flight::conversion::otlp_metrics_to_arrow;
+        use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Exemplar, Histogram, HistogramDataPoint, Metric, ResourceMetrics, ScopeMetrics,
+            exemplar, metric::Data,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let attr = |key: &str, value: &str| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+            ..Default::default()
+        };
+
+        let point = HistogramDataPoint {
+            attributes: vec![attr("host", "a")],
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            time_unix_nano: 1_700_000_001_000_000_000,
+            count: 3,
+            sum: Some(6.0),
+            bucket_counts: vec![1, 2, 0],
+            explicit_bounds: vec![1.0, 2.0],
+            exemplars: vec![Exemplar {
+                time_unix_nano: 1_700_000_001_500_000_000,
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                value: Some(exemplar::Value::AsDouble(2.0)),
+                filtered_attributes: vec![attr("debug", "yes")],
+            }],
+            ..Default::default()
+        };
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![attr("service.name", "checkout")],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "requests.duration".to_string(),
+                        data: Some(Data::Histogram(Histogram {
+                            data_points: vec![point],
+                            aggregation_temporality: 2,
+                        })),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        otlp_metrics_to_arrow(&request).expect("conversion should succeed")
+    }
+
+    /// A batch committed to the wide `metrics`/`metric_exemplars` tables must
+    /// land with typed list columns and typed attribute containers.
+    #[tokio::test]
+    async fn wide_metrics_and_exemplars_commit_with_typed_lists_and_attributes() {
+        let catalog_manager = create_test_catalog_manager().await;
+        let (type_authority, _sql_catalog) = test_type_authority().await;
+        let batch = wire_histogram_metric_batch();
+
+        let mut metrics_writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "wide-metrics-tenant".to_string(),
+            "local".to_string(),
+            "metrics".to_string(),
+        )
+        .await
+        .expect("metrics table should be creatable from TableSchema::Metrics")
+        .with_type_authority(type_authority.clone());
+        let outcome = metrics_writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch.clone())])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let mut exemplars_writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "wide-metrics-tenant".to_string(),
+            "local".to_string(),
+            "metric_exemplars".to_string(),
+        )
+        .await
+        .expect("metric_exemplars table should be creatable from TableSchema::MetricExemplars")
+        .with_type_authority(type_authority);
+        let outcome = exemplars_writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let metrics_batches = scan_batches(&metrics_writer.table).await;
+        let metrics_batch = metrics_batches
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .expect("one committed metrics row");
+        let bucket_counts = typed_column::<ListArray>(metrics_batch, "bucket_counts").value(0);
+        assert_eq!(
+            downcast::<datafusion::arrow::array::Int64Array>(&bucket_counts).values(),
+            &[1, 2, 0]
+        );
+        assert!(
+            !typed_column::<datafusion::arrow::array::MapArray>(metrics_batch, "attributes_str")
+                .is_null(0),
+            "record attributes must land in attributes_str"
+        );
+
+        let exemplar_batches = scan_batches(&exemplars_writer.table).await;
+        let exemplar_batch = exemplar_batches
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .expect("one committed exemplar row");
+        assert!(
+            !typed_column::<datafusion::arrow::array::MapArray>(
+                exemplar_batch,
+                "filtered_attributes_str"
+            )
+            .is_null(0),
+            "filtered_attributes must land in filtered_attributes_str"
         );
     }
 }

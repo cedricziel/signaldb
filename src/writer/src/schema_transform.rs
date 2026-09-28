@@ -2148,6 +2148,21 @@ fn json_array_of<T>(
     Some(array.iter().map(|v| decode(Some(v))).collect())
 }
 
+type OptionalF64List = Option<Vec<Option<f64>>>;
+
+fn summary_quantile_lists(value: Option<&serde_json::Value>) -> (OptionalF64List, OptionalF64List) {
+    let Some(entries) = value.and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+        return (None, None);
+    };
+    let mut quantiles = Vec::with_capacity(entries.len());
+    let mut values = Vec::with_capacity(entries.len());
+    for entry in entries {
+        quantiles.push(json_to_f64(entry.get("quantile")));
+        values.push(json_to_f64(entry.get("value")));
+    }
+    (Some(quantiles), Some(values))
+}
+
 #[derive(Default)]
 struct WidePointFields {
     value: Option<f64>,
@@ -2168,6 +2183,13 @@ struct WidePointFields {
     quantile_values: Option<Vec<Option<f64>>>,
     aggregation_temporality: Option<i32>,
     is_monotonic: Option<bool>,
+}
+
+fn bucket_side(side: Option<&serde_json::Value>) -> (Option<i32>, Option<Vec<Option<i64>>>) {
+    (
+        side.and_then(|s| json_to_i32(s.get("offset"))),
+        side.and_then(|s| json_array_of(s.get("bucket_counts"), json_to_i64)),
+    )
 }
 
 /// The wire carries temporality and monotonicity on every row; only the
@@ -2200,6 +2222,35 @@ fn wide_point_fields(
             aggregation_temporality,
             ..Default::default()
         },
+        "exponential_histogram" => {
+            let (positive_offset, positive_bucket_counts) = bucket_side(point.get("positive"));
+            let (negative_offset, negative_bucket_counts) = bucket_side(point.get("negative"));
+            WidePointFields {
+                count: json_to_i64(point.get("count")),
+                sum: json_to_f64(point.get("sum")),
+                min: json_to_f64(point.get("min")),
+                max: json_to_f64(point.get("max")),
+                scale: json_to_i32(point.get("scale")),
+                zero_count: json_to_i64(point.get("zero_count")),
+                zero_threshold: json_to_f64(point.get("zero_threshold")),
+                positive_offset,
+                positive_bucket_counts,
+                negative_offset,
+                negative_bucket_counts,
+                aggregation_temporality,
+                ..Default::default()
+            }
+        }
+        "summary" => {
+            let (quantiles, quantile_values) = summary_quantile_lists(point.get("quantile_values"));
+            WidePointFields {
+                count: json_to_i64(point.get("count")),
+                sum: json_to_f64(point.get("sum")),
+                quantiles,
+                quantile_values,
+                ..Default::default()
+            }
+        }
         _ => WidePointFields {
             value: json_to_f64(point.get("value")),
             ..Default::default()
@@ -2432,6 +2483,129 @@ pub fn transform_metrics_to_wide(batch: RecordBatch, labels: &[String]) -> Resul
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
     RecordBatch::try_new(out_schema, columns)
         .map_err(|e| anyhow!("Failed to create transformed metrics RecordBatch: {}", e))
+}
+
+/// The `metric_exemplars` transform schema, resolved once rather than per batch.
+static METRIC_EXEMPLARS_SCHEMA: std::sync::LazyLock<Result<Arc<Schema>, String>> =
+    std::sync::LazyLock::new(|| {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metric_exemplars, TYPED_METRIC_VERSION)
+            .map_err(|e| e.to_string())?;
+        create_wide_transform_schema(resolved).map_err(|e| e.to_string())
+    });
+
+struct WideExemplar {
+    metric: usize,
+    timestamp: Option<i64>,
+    point_timestamp: Option<i64>,
+    date_day: Option<i32>,
+    hour: Option<i32>,
+    series_id: String,
+    value: Option<f64>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    filtered_attributes: Option<String>,
+}
+
+/// A wire metrics batch -> one `metric_exemplars` row per exemplar across
+/// every point. No exemplars is a zero-row batch, not an error.
+pub fn transform_metric_exemplars(batch: RecordBatch) -> Result<RecordBatch> {
+    let output_schema = METRIC_EXEMPLARS_SCHEMA
+        .clone()
+        .map_err(|e| anyhow!("failed to build the metric_exemplars schema: {e}"))?;
+
+    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
+    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
+    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
+    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
+    let metric_type_array = get_typed_column::<StringArray>(&batch, "metric_type")?;
+
+    let mut metrics: Vec<WideMetric> = Vec::with_capacity(batch.num_rows());
+    let mut exemplars: Vec<WideExemplar> = Vec::new();
+    for row in 0..batch.num_rows() {
+        let metric = WideMetric {
+            name: string_value(name_array, row).unwrap_or_default(),
+            description: None,
+            unit: None,
+            metric_type: string_value(metric_type_array, row).unwrap_or_default(),
+            resource: extract_resource_context(string_value_ref(resource_json_array, row)),
+            scope: extract_scope_context(string_value_ref(scope_json_array, row)),
+        };
+
+        for point in parse_data_points(string_value_ref(data_json_array, row)) {
+            let (point_timestamp, _, _) =
+                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
+            let Some(point_exemplars) = point.get("exemplars").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            let series_id = point_series_id(&metric.series_key(), &point);
+
+            for exemplar in point_exemplars {
+                let (timestamp, date_day, hour) =
+                    temporal_from_nanos(json_to_u64(exemplar.get("time_unix_nano")));
+                exemplars.push(WideExemplar {
+                    metric: metrics.len(),
+                    timestamp,
+                    point_timestamp,
+                    date_day,
+                    hour,
+                    series_id: series_id.clone(),
+                    value: json_to_f64(exemplar.get("value")),
+                    trace_id: exemplar
+                        .get("trace_id")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                    span_id: exemplar
+                        .get("span_id")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                    filtered_attributes: serialize_json(exemplar.get("filtered_attributes")),
+                });
+            }
+        }
+        metrics.push(metric);
+    }
+
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(
+            exemplars
+                .iter()
+                .map(|e| e.timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        Arc::new(
+            exemplars
+                .iter()
+                .map(|e| e.point_timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        str_column(&exemplars, |e| {
+            metrics[e.metric].resource.service_name.as_deref()
+        }),
+        str_column(&exemplars, |e| Some(metrics[e.metric].name.as_str())),
+        str_column(&exemplars, |e| Some(metrics[e.metric].metric_type.as_str())),
+        str_column(&exemplars, |e| Some(e.series_id.as_str())),
+        Arc::new(exemplars.iter().map(|e| e.value).collect::<Float64Array>()),
+        str_column(&exemplars, |e| e.trace_id.as_deref()),
+        str_column(&exemplars, |e| e.span_id.as_deref()),
+        str_column(&exemplars, |e| e.filtered_attributes.as_deref()),
+        str_column(&exemplars, |e| {
+            metrics[e.metric].resource.resource_identity.as_deref()
+        }),
+        Arc::new(
+            exemplars
+                .iter()
+                .map(|e| e.date_day)
+                .collect::<Date32Array>(),
+        ),
+        Arc::new(exemplars.iter().map(|e| e.hour).collect::<Int32Array>()),
+    ];
+    RecordBatch::try_new(output_schema, columns).map_err(|e| {
+        anyhow!(
+            "Failed to create transformed metric_exemplars RecordBatch: {}",
+            e
+        )
+    })
 }
 
 /// Target Arrow schema for the profiles Iceberg table
@@ -4139,21 +4313,42 @@ mod tests {
     fn metrics_v1_batch_mixed_types() -> RecordBatch {
         use datafusion::arrow::array::{BooleanArray, Int32Array};
 
-        let rows: [(&str, &str, &str); 3] = [
+        // (name, metric_type, data_json, description, unit)
+        let rows: [(&str, &str, &str, &str, &str); 5] = [
             (
                 "requests.gauge",
                 "gauge",
                 r#"[{"time_unix_nano":1,"value":1.5,"attributes":{"host":"a"}},{"time_unix_nano":2,"value":1.7,"attributes":{"host":"a"}}]"#,
+                "gauge desc",
+                "1",
             ),
             (
                 "requests.sum",
                 "sum",
                 r#"[{"time_unix_nano":1,"value":2.5,"attributes":{"host":"a"}}]"#,
+                "sum desc",
+                "ms",
             ),
             (
                 "requests.duration",
                 "histogram",
-                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"min":1.0,"max":3.0,"bucket_counts":[1,2,0],"explicit_bounds":[1.0,"+Inf"],"attributes":{"host":"a"}}]"#,
+                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"min":1.0,"max":3.0,"bucket_counts":[1,2,0],"explicit_bounds":[1.0,"+Inf"],"attributes":{"host":"a"},"exemplars":[{"time_unix_nano":15,"value":2.0,"trace_id":"0102030405060708090a0b0c0d0e0f10","span_id":"0102030405060708","filtered_attributes":{"scope":"dbg"}}]}]"#,
+                "histogram desc",
+                "ms",
+            ),
+            (
+                "requests.duration.exp",
+                "exponential_histogram",
+                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"scale":2,"zero_count":1,"positive":{"offset":0,"bucket_counts":[1,2]},"negative":{"offset":1,"bucket_counts":[0,1]},"attributes":{"host":"a"}}]"#,
+                "exp desc",
+                "ms",
+            ),
+            (
+                "requests.summary",
+                "summary",
+                r#"[{"time_unix_nano":1,"count":5,"sum":10.0,"quantile_values":[{"quantile":0.5,"value":2.0},{"quantile":0.9,"value":4.0}],"attributes":{"host":"a"}}]"#,
+                "summary desc",
+                "1",
             ),
         ];
         let n = rows.len();
@@ -4177,8 +4372,12 @@ mod tests {
                 Arc::new(StringArray::from(
                     rows.iter().map(|r| r.0).collect::<Vec<_>>(),
                 )),
-                Arc::new(StringArray::from(vec![Some("desc"); n])),
-                Arc::new(StringArray::from(vec![Some("1"); n])),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                )),
                 Arc::new(UInt64Array::from(vec![Some(0u64); n])),
                 Arc::new(UInt64Array::from(vec![0u64; n])),
                 Arc::new(StringArray::from(vec![Some("{}"); n])),
@@ -4203,35 +4402,31 @@ mod tests {
         .unwrap()
     }
 
-    fn wide_row(batch: &RecordBatch, want: &str) -> usize {
-        let types = wide_col::<StringArray>(batch, "metric_type");
+    /// Every row of `batch` whose `metric_type` column equals `want`.
+    fn wide_rows(batch: &RecordBatch, want: &str) -> Vec<usize> {
+        let types = get_typed_column::<StringArray>(batch, "metric_type").unwrap();
         (0..batch.num_rows())
-            .find(|&row| types.value(row) == want)
+            .filter(|&row| types.value(row) == want)
+            .collect()
+    }
+
+    fn wide_row(batch: &RecordBatch, want: &str) -> usize {
+        *wide_rows(batch, want)
+            .first()
             .unwrap_or_else(|| panic!("no row for metric_type {want}"))
     }
 
-    fn wide_col<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
-        batch
-            .column_by_name(name)
-            .unwrap_or_else(|| panic!("missing column {name}"))
-            .as_any()
-            .downcast_ref::<T>()
-            .unwrap_or_else(|| panic!("column {name} has an unexpected type"))
-    }
-
-    fn f64_list_at(batch: &RecordBatch, name: &str, row: usize) -> Vec<f64> {
-        let list = wide_col::<ListArray>(batch, name).value(row);
-        list.as_any()
-            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+    /// `batch`'s `name` list column at `row`, as a native `Vec`.
+    fn list_at<T: ArrowPrimitiveType>(
+        batch: &RecordBatch,
+        name: &str,
+        row: usize,
+    ) -> Vec<T::Native> {
+        let list = get_typed_column::<ListArray>(batch, name)
             .unwrap()
-            .values()
-            .to_vec()
-    }
-
-    fn i64_list_at(batch: &RecordBatch, name: &str, row: usize) -> Vec<i64> {
-        let list = wide_col::<ListArray>(batch, name).value(row);
+            .value(row);
         list.as_any()
-            .downcast_ref::<Int64Array>()
+            .downcast_ref::<datafusion::arrow::array::PrimitiveArray<T>>()
             .unwrap()
             .values()
             .to_vec()
@@ -4241,25 +4436,28 @@ mod tests {
     fn transform_metrics_to_wide_fans_mixed_types_into_one_row_each() {
         let batch = metrics_v1_batch_mixed_types();
         let wide = transform_metrics_to_wide(batch, &[]).expect("transform");
-        assert_eq!(wide.num_rows(), 4, "2 gauge points + 1 sum + 1 histogram");
+        assert_eq!(
+            wide.num_rows(),
+            6,
+            "2 gauge points + 1 each of 4 other types"
+        );
 
-        let metric_types = wide_col::<StringArray>(&wide, "metric_type");
-        let gauge_rows: Vec<usize> = (0..wide.num_rows())
-            .filter(|&r| metric_types.value(r) == "gauge")
-            .collect();
+        let gauge_rows = wide_rows(&wide, "gauge");
         assert_eq!(gauge_rows.len(), 2);
-        let series_ids = wide_col::<StringArray>(&wide, "series_id");
+        let series_ids = get_typed_column::<StringArray>(&wide, "series_id").unwrap();
         assert_eq!(
             series_ids.value(gauge_rows[0]),
             series_ids.value(gauge_rows[1])
         );
 
-        let temporality = wide_col::<Int32Array>(&wide, "aggregation_temporality");
-        let monotonic = wide_col::<BooleanArray>(&wide, "is_monotonic");
+        let temporality = get_typed_column::<Int32Array>(&wide, "aggregation_temporality").unwrap();
+        let monotonic = get_typed_column::<BooleanArray>(&wide, "is_monotonic").unwrap();
         for (metric_type, want_temporality, want_monotonic) in [
             ("gauge", None, None),
             ("sum", Some(2), Some(true)),
             ("histogram", Some(2), None),
+            ("exponential_histogram", Some(2), None),
+            ("summary", None, None),
         ] {
             let row = wide_row(&wide, metric_type);
             assert_eq!(
@@ -4274,16 +4472,87 @@ mod tests {
             );
         }
 
-        let values = wide_col::<Float64Array>(&wide, "value");
+        let values = get_typed_column::<Float64Array>(&wide, "value").unwrap();
         assert_eq!(values.value(wide_row(&wide, "gauge")), 1.5);
         assert_eq!(values.value(wide_row(&wide, "sum")), 2.5);
 
+        let descriptions = get_typed_column::<StringArray>(&wide, "metric_description").unwrap();
+        let units = get_typed_column::<StringArray>(&wide, "metric_unit").unwrap();
+        let sum_row = wide_row(&wide, "sum");
+        assert_eq!(descriptions.value(sum_row), "sum desc");
+        assert_eq!(units.value(sum_row), "ms");
+
         let row = wide_row(&wide, "histogram");
         assert_eq!(
-            f64_list_at(&wide, "explicit_bounds", row),
+            list_at::<Float64Type>(&wide, "explicit_bounds", row),
             [1.0, f64::INFINITY]
         );
-        assert_eq!(i64_list_at(&wide, "bucket_counts", row), [1, 2, 0]);
+        assert_eq!(list_at::<Int64Type>(&wide, "bucket_counts", row), [1, 2, 0]);
+
+        // exponential_histogram: scale plus positive/negative bucket lists.
+        let row = wide_row(&wide, "exponential_histogram");
+        assert_eq!(
+            get_typed_column::<Int32Array>(&wide, "scale")
+                .unwrap()
+                .value(row),
+            2
+        );
+        assert_eq!(
+            list_at::<Int64Type>(&wide, "positive_bucket_counts", row),
+            [1, 2]
+        );
+
+        // summary: count/sum plus parallel quantile lists.
+        let row = wide_row(&wide, "summary");
+        assert_eq!(
+            get_typed_column::<Int64Array>(&wide, "count")
+                .unwrap()
+                .value(row),
+            5
+        );
+        assert_eq!(list_at::<Float64Type>(&wide, "quantiles", row), [0.5, 0.9]);
+        assert_eq!(
+            list_at::<Float64Type>(&wide, "quantile_values", row),
+            [2.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn transform_metric_exemplars_extracts_one_row_per_exemplar_with_the_owning_series_id() {
+        let batch = metrics_v1_batch_mixed_types();
+        let wide = transform_metrics_to_wide(batch.clone(), &[]).expect("wide transform");
+        let exemplars = transform_metric_exemplars(batch).expect("exemplars transform");
+        assert_eq!(exemplars.num_rows(), 1);
+
+        assert_eq!(
+            get_typed_column::<StringArray>(&exemplars, "trace_id")
+                .unwrap()
+                .value(0),
+            "0102030405060708090a0b0c0d0e0f10"
+        );
+        assert_eq!(
+            get_typed_column::<StringArray>(&exemplars, "span_id")
+                .unwrap()
+                .value(0),
+            "0102030405060708"
+        );
+
+        let histogram_row = wide_row(&wide, "histogram");
+        assert_eq!(
+            get_typed_column::<StringArray>(&exemplars, "series_id")
+                .unwrap()
+                .value(0),
+            get_typed_column::<StringArray>(&wide, "series_id")
+                .unwrap()
+                .value(histogram_row)
+        );
+    }
+
+    #[test]
+    fn transform_metric_exemplars_with_no_exemplars_is_zero_rows() {
+        let batch = metrics_v1_batch(Some(r#"{"service.name":"x"}"#));
+        let exemplars = transform_metric_exemplars(batch).expect("transform");
+        assert_eq!(exemplars.num_rows(), 0);
     }
 }
 
