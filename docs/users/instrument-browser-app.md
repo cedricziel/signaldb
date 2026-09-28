@@ -4,8 +4,6 @@ type: how-to
 status: living
 sources:
   - src/ui/src/features/rum/SetupTab.tsx
-  - src/ui/src/features/rum/rumModel.ts
-  - src/ui/src/features/rum/useRumData.ts
 ---
 
 # Instrument a browser app
