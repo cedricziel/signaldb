@@ -263,7 +263,7 @@ function LoadWaterfall({
     phases.reduce((s, p) => s + p.ms, 0),
   );
   return (
-    <div>
+    <div className="rum-load-wrap">
       <div
         ref={hostRef}
         tabIndex={0}

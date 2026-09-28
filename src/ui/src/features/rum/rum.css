@@ -702,6 +702,9 @@ a.rum-row:hover {
   text-align: right;
 }
 
+.rum-load-wrap {
+  position: relative;
+}
 .rum-load-bar {
   display: flex;
   height: 22px;
