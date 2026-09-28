@@ -264,6 +264,7 @@ async fn setup_with_tenant(
         min_query_hits: 1,
         promote_streak: 1,
         max_promotions_per_cycle: 4,
+        demote_after_idle: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     if pinned {
         if tenant_id == tenant_slug {

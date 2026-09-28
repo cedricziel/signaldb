@@ -620,10 +620,14 @@ impl ParquetRewriter {
             }
         };
         let promoted_attrs = common::iceberg::evolution::promoted_attrs_of(&current_schema);
-        let promoted: HashSet<(AttributeLevel, String)> = promoted_attrs
+        // Schema field order, not `HashSet` iteration order: `decide_typed_demotions`'
+        // idle-demotion order (and thus which pairs the caller sees demoted
+        // first) must be deterministic run to run.
+        let promoted_list: Vec<(AttributeLevel, String)> = promoted_attrs
             .iter()
             .map(|(level, key, _, _)| (*level, key.clone()))
             .collect();
+        let promoted: HashSet<(AttributeLevel, String)> = promoted_list.iter().cloned().collect();
         let available_levels = crate::attr_promotion::available_attribute_levels(&current_schema);
         let capped_keys: HashSet<String> = stats
             .iter()
@@ -632,13 +636,29 @@ impl ParquetRewriter {
             .collect();
         let label_budget_used =
             materialized.len() + pinned.iter().filter(|p| !materialized.contains(p)).count();
+        let now = chrono::Utc::now();
+        // Demotion decided (and, below, acted on) before promotion so a
+        // just-demoted column can't be re-promoted in the same cycle, and
+        // so the promotion headroom sees the slots demotion frees.
+        let typed_demote = crate::attr_promotion::decide_typed_demotions(
+            &promoted_list,
+            &level_stats,
+            now,
+            label_budget_used,
+            promotion,
+        );
+        crate::attr_promotion::log_typed_demotion(table_name, &typed_demote, promotion.dry_run);
+        let demoted_attrs: HashSet<(AttributeLevel, String)> =
+            typed_demote.iter().cloned().collect();
         let (typed_decision, new_level_streaks) = crate::attr_promotion::decide_typed_promotions(
             &level_stats,
             &canonical_types,
             &promoted,
+            &demoted_attrs,
             &available_levels,
             &capped_keys,
             label_budget_used,
+            now,
             promotion,
         );
         crate::attr_promotion::log_typed_decision(table_name, &typed_decision, promotion.dry_run);
@@ -653,6 +673,39 @@ impl ParquetRewriter {
 
         if promotion.dry_run {
             return outcome;
+        }
+
+        // Typed attribute demotion (D4: budgeted LRU demotion): drop the
+        // idle/over-budget promoted columns before the rewrite so the new
+        // files stop carrying them. The typed map still holds every value
+        // (it's the demoted column's home), so nothing is lost — the next
+        // query for the key falls back to it. A failure is logged and the
+        // compaction continues; at worst the column lives until the next
+        // cycle.
+        if !typed_demote.is_empty() {
+            let schema_before_demote = current_schema.clone();
+            match common::iceberg::evolution::remove_promoted_attr_columns(
+                self.catalog_manager.catalog(),
+                table.identifier(),
+                &typed_demote,
+            )
+            .await
+            {
+                Ok(pruned) => {
+                    let dropped_columns = actually_dropped_columns(&schema_before_demote, &pruned);
+                    outcome.evolved = outcome.evolved || !dropped_columns.is_empty();
+                    outcome.dropped_columns.extend(dropped_columns);
+                    current_schema = pruned;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        table = %table_name,
+                        keys = ?typed_demote,
+                        "Failed to evolve schema for typed attribute demotion; continuing compaction without it"
+                    );
+                }
+            }
         }
         if !typed_decision.promote.is_empty() {
             let attrs: Vec<(AttributeLevel, String, CanonicalType)> = typed_decision
@@ -718,7 +771,7 @@ impl ParquetRewriter {
                     let dropped_columns = actually_dropped_columns(&schema_before_demote, &pruned);
                     outcome.evolved = outcome.evolved || !dropped_columns.is_empty();
                     demoted = decision.demote;
-                    outcome.dropped_columns = dropped_columns;
+                    outcome.dropped_columns.extend(dropped_columns);
                     current_schema = pruned;
                 }
                 Err(e) => {

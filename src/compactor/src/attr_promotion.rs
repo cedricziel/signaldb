@@ -24,6 +24,7 @@
 //!   demoted.
 
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use common::attrs::AttrDocument;
 use common::catalog::{AttributeLevelStatsRecord, AttributeStatsRecord};
 use common::config::AttrPromotionConfig;
@@ -161,36 +162,82 @@ pub fn available_attribute_levels(
     levels_with_container(schema.fields().iter().map(|f| f.name.as_str()))
 }
 
+/// Parse a `last_queried_at` timestamp, accepting both storage dialects:
+/// SQLite's RFC 3339 (`chrono::DateTime::to_rfc3339()`) and Postgres's
+/// `CAST(timestamptz AS TEXT)` (e.g. `2026-09-28 01:02:03.456+00`, a space
+/// separator and no minutes in the offset). `None` for anything else.
+fn parse_last_queried_at(s: &str) -> Option<DateTime<Utc>> {
+    DateTime::parse_from_rfc3339(s)
+        .or_else(|_| DateTime::parse_from_str(s, "%Y-%m-%d %H:%M:%S%.f%#z"))
+        .map(|dt| dt.with_timezone(&Utc))
+        .ok()
+}
+
+/// The idle-demotion cutoff: a promoted column last queried before this
+/// instant is stale. `None` when `demote_after_idle` is zero, meaning idle
+/// demotion (and the promotion side's anti-flapping guard) is disabled.
+fn idle_cutoff(
+    now: DateTime<Utc>,
+    demote_after_idle: std::time::Duration,
+) -> Option<DateTime<Utc>> {
+    if demote_after_idle.is_zero() {
+        return None;
+    }
+    chrono::Duration::from_std(demote_after_idle)
+        .ok()
+        .map(|idle| now - idle)
+}
+
 /// The per-level typed promotion decision for one table: the legacy label guardrails
 /// (cardinality cap, generated keys, presence/demand thresholds, hysteresis) keyed by
 /// `(level, key)`, with `max_labels_per_table` shared with the `label_columns_used`
 /// label columns. `capped_keys` comes from the flat, level-less `attribute_stats`.
+///
+/// `demoted` is this cycle's just-decided demotions (see
+/// [`decide_typed_demotions`]): those pairs are excluded from promotion
+/// candidates so a column isn't demoted and re-promoted in the same cycle,
+/// while the promotion headroom still counts them as freed (not part of
+/// `promoted` for budget purposes once the caller demotes them). A
+/// candidate must also have been queried within `config.demote_after_idle`
+/// of `now` (when non-zero) — otherwise it would qualify for idle demotion
+/// on the very next cycle.
 #[allow(clippy::too_many_arguments)]
 pub fn decide_typed_promotions(
     level_stats: &[AttributeLevelStatsRecord],
     canonical_types: &HashMap<(AttributeLevel, String), CanonicalType>,
     promoted: &HashSet<(AttributeLevel, String)>,
+    demoted: &HashSet<(AttributeLevel, String)>,
     available_levels: &HashSet<AttributeLevel>,
     capped_keys: &HashSet<String>,
     label_columns_used: usize,
+    now: DateTime<Utc>,
     config: &AttrPromotionConfig,
 ) -> (TypedPromotionDecision, Vec<LevelStreak>) {
     let mut decision = TypedPromotionDecision::default();
     let mut new_streaks: Vec<LevelStreak> = Vec::new();
+    let flapping_cutoff = idle_cutoff(now, config.demote_after_idle);
 
     let mut eligible: Vec<(&AttributeLevelStatsRecord, f64)> = Vec::new();
     for record in level_stats {
         let level_key = (record.level, record.attr_key.clone());
-        if promoted.contains(&level_key) {
+        if promoted.contains(&level_key) || demoted.contains(&level_key) {
             continue;
         }
+        let recently_queried = flapping_cutoff.is_none_or(|cutoff| {
+            record
+                .last_queried_at
+                .as_deref()
+                .and_then(parse_last_queried_at)
+                .is_some_and(|ts| ts >= cutoff)
+        });
         let over_threshold = canonical_types.contains_key(&level_key)
             && available_levels.contains(&record.level)
             && !capped_keys.contains(&record.attr_key)
             && !looks_generated(&record.attr_key)
             && record.total_rows > 0
             && record.query_hits >= config.min_query_hits
-            && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence;
+            && (record.present_rows as f64 / record.total_rows as f64) >= config.min_presence
+            && recently_queried;
         let streak = if over_threshold {
             record.promote_streak + 1
         } else {
@@ -209,9 +256,10 @@ pub fn decide_typed_promotions(
         }
     }
 
+    let promoted_after_demotion = promoted.len().saturating_sub(demoted.len());
     let headroom = config
         .max_labels_per_table
-        .saturating_sub(label_columns_used + promoted.len())
+        .saturating_sub(label_columns_used + promoted_after_demotion)
         .min(config.max_promotions_per_cycle);
     eligible.sort_by(|a, b| b.1.total_cmp(&a.1));
     decision.promote = eligible
@@ -221,6 +269,82 @@ pub fn decide_typed_promotions(
         .collect();
 
     (decision, new_streaks)
+}
+
+/// Which already-promoted `(level, key)` typed columns should be dropped at
+/// the next rewrite (design D4: budgeted LRU demotion — a cold column folds
+/// back into the typed map, which still holds every value, so nothing is
+/// lost). Two independent reasons, applied in order:
+///
+/// - **Idle**: `last_queried_at` missing, unparsable, or older than
+///   `now - config.demote_after_idle`. Disabled when `demote_after_idle` is
+///   zero.
+/// - **Over budget**: if, after the idle demotions, `label_columns_used +
+///   promoted.len()` still exceeds `max_labels_per_table`, the
+///   least-recently-queried remaining columns are demoted until back
+///   within budget — missing timestamp sorts oldest, ties broken by fewer
+///   `query_hits`, then by `(level, key)` for determinism.
+pub fn decide_typed_demotions(
+    promoted: &[(AttributeLevel, String)],
+    level_stats: &[AttributeLevelStatsRecord],
+    now: DateTime<Utc>,
+    label_columns_used: usize,
+    config: &AttrPromotionConfig,
+) -> Vec<(AttributeLevel, String)> {
+    let stats_by_key: HashMap<(AttributeLevel, String), &AttributeLevelStatsRecord> = level_stats
+        .iter()
+        .map(|r| ((r.level, r.attr_key.clone()), r))
+        .collect();
+    let last_queried = |pair: &(AttributeLevel, String)| -> Option<DateTime<Utc>> {
+        stats_by_key
+            .get(pair)
+            .and_then(|r| r.last_queried_at.as_deref())
+            .and_then(parse_last_queried_at)
+    };
+
+    let cutoff = idle_cutoff(now, config.demote_after_idle);
+    let mut demote: Vec<(AttributeLevel, String)> = Vec::new();
+    if let Some(cutoff) = cutoff {
+        for pair in promoted {
+            let stale = last_queried(pair).is_none_or(|ts| ts < cutoff);
+            if stale {
+                demote.push(pair.clone());
+            }
+        }
+    }
+    let demoted_set: HashSet<&(AttributeLevel, String)> = demote.iter().collect();
+
+    let remaining_used = label_columns_used + promoted.len() - demote.len();
+    if remaining_used > config.max_labels_per_table {
+        let over = remaining_used - config.max_labels_per_table;
+        type Candidate<'a> = (&'a (AttributeLevel, String), Option<DateTime<Utc>>, i64);
+        let mut candidates: Vec<Candidate> = promoted
+            .iter()
+            .filter(|pair| !demoted_set.contains(pair))
+            .map(|pair| {
+                let record = stats_by_key.get(pair);
+                let hits = record.map(|r| r.query_hits).unwrap_or(0);
+                (pair, last_queried(pair), hits)
+            })
+            .collect();
+        candidates.sort_by(|a, b| {
+            let by_recency = match (a.1, b.1) {
+                (None, None) => std::cmp::Ordering::Equal,
+                (None, Some(_)) => std::cmp::Ordering::Less,
+                (Some(_), None) => std::cmp::Ordering::Greater,
+                (Some(x), Some(y)) => x.cmp(&y),
+            };
+            by_recency.then(a.2.cmp(&b.2)).then(a.0.cmp(b.0))
+        });
+        demote.extend(
+            candidates
+                .into_iter()
+                .take(over)
+                .map(|(pair, _, _)| pair.clone()),
+        );
+    }
+
+    demote
 }
 
 /// Log the typed-attribute promotion decision for one table.
@@ -234,6 +358,20 @@ pub fn log_typed_decision(table_name: &str, decision: &TypedPromotionDecision, d
         promote = ?decision.promote,
         building = ?decision.building,
         "Typed attribute promotion decision"
+    );
+}
+
+/// Log the typed-attribute demotion decision for one table (see
+/// [`decide_typed_demotions`]).
+pub fn log_typed_demotion(table_name: &str, demote: &[(AttributeLevel, String)], dry_run: bool) {
+    if demote.is_empty() {
+        return;
+    }
+    tracing::info!(
+        table = %table_name,
+        dry_run,
+        demote = ?demote,
+        "Typed attribute demotion decision"
     );
 }
 
@@ -575,6 +713,11 @@ mod tests {
             min_query_hits: 1,
             promote_streak: 3,
             max_promotions_per_cycle: 4,
+            // Existing promotion-only tests predate idle demotion and
+            // don't set `last_queried_at`; disabled here so the new
+            // anti-flapping guard doesn't reject them. Idle/demotion
+            // behavior gets its own tests with a non-zero value.
+            demote_after_idle: std::time::Duration::ZERO,
         }
     }
 
@@ -633,9 +776,11 @@ mod tests {
             &[ready, fresh],
             &types,
             &HashSet::new(),
+            &HashSet::new(),
             &all_levels(),
             &HashSet::new(),
             0,
+            Utc::now(),
             &cfg,
         );
         assert_eq!(
@@ -659,9 +804,11 @@ mod tests {
             &[cooled],
             &types,
             &HashSet::new(),
+            &HashSet::new(),
             &all_levels(),
             &HashSet::new(),
             0,
+            Utc::now(),
             &cfg,
         );
         assert!(decision.promote.is_empty());
@@ -705,9 +852,11 @@ mod tests {
             &[no_type, no_container, capped, generated, sparse],
             &types,
             &HashSet::new(),
+            &HashSet::new(),
             &available,
             &capped_keys,
             0,
+            Utc::now(),
             &cfg,
         );
         assert!(decision.promote.is_empty());
@@ -723,9 +872,11 @@ mod tests {
             &[quiet],
             &types,
             &HashSet::new(),
+            &HashSet::new(),
             &all_levels(),
             &HashSet::new(),
             0,
+            Utc::now(),
             &cfg,
         );
         assert!(decision.promote.is_empty());
@@ -750,9 +901,11 @@ mod tests {
             &[a, b],
             &types,
             &promoted,
+            &HashSet::new(),
             &all_levels(),
             &HashSet::new(),
             2,
+            Utc::now(),
             &cfg,
         );
         assert!(decision.promote.is_empty());
@@ -764,9 +917,11 @@ mod tests {
             &[a, b],
             &types,
             &promoted,
+            &HashSet::new(),
             &all_levels(),
             &HashSet::new(),
             2,
+            Utc::now(),
             &cfg,
         );
         assert_eq!(
@@ -786,9 +941,11 @@ mod tests {
             &[record_row, resource_row],
             &types,
             &HashSet::new(),
+            &HashSet::new(),
             &all_levels(),
             &HashSet::new(),
             0,
+            Utc::now(),
             &cfg,
         );
         assert_eq!(
@@ -1003,5 +1160,235 @@ mod tests {
         let stats = vec![record("http_method", 1, 1, 1, 0)];
         let schema = schema_with_label("http.method", "label_http_method");
         assert!(materialized_keys_of(&schema, &stats).is_empty());
+    }
+
+    fn now() -> DateTime<Utc> {
+        chrono::TimeZone::with_ymd_and_hms(&Utc, 2026, 9, 28, 12, 0, 0).unwrap()
+    }
+
+    fn idle_config(max_labels: usize) -> AttrPromotionConfig {
+        AttrPromotionConfig {
+            demote_after_idle: std::time::Duration::from_secs(7 * 24 * 3600),
+            max_labels_per_table: max_labels,
+            ..config()
+        }
+    }
+
+    fn level_record_with_demand(
+        level: AttributeLevel,
+        key: &str,
+        hits: i64,
+        last_queried_at: Option<&str>,
+    ) -> AttributeLevelStatsRecord {
+        AttributeLevelStatsRecord {
+            last_queried_at: last_queried_at.map(str::to_string),
+            ..level_record(level, key, 90, 100, hits, 5)
+        }
+    }
+
+    #[test]
+    fn idle_demotes_a_column_with_no_recorded_demand() {
+        let promoted = vec![(AttributeLevel::Record, "cold".to_string())];
+        let stats = vec![level_record_with_demand(
+            AttributeLevel::Record,
+            "cold",
+            0,
+            None,
+        )];
+        let demote = decide_typed_demotions(&promoted, &stats, now(), 0, &idle_config(10));
+        assert_eq!(demote, promoted);
+    }
+
+    #[test]
+    fn idle_demotes_a_column_stale_in_either_storage_format() {
+        let promoted = vec![
+            (AttributeLevel::Record, "rfc3339".to_string()),
+            (AttributeLevel::Record, "postgres".to_string()),
+        ];
+        let stats = vec![
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "rfc3339",
+                5,
+                Some("2026-01-01T00:00:00Z"),
+            ),
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "postgres",
+                5,
+                Some("2026-01-01 00:00:00.000+00"),
+            ),
+        ];
+        let demote = decide_typed_demotions(&promoted, &stats, now(), 0, &idle_config(10));
+        assert_eq!(demote.len(), 2);
+        assert!(demote.contains(&(AttributeLevel::Record, "rfc3339".to_string())));
+        assert!(demote.contains(&(AttributeLevel::Record, "postgres".to_string())));
+    }
+
+    #[test]
+    fn idle_keeps_a_column_queried_recently_in_either_storage_format() {
+        let promoted = vec![
+            (AttributeLevel::Record, "rfc3339".to_string()),
+            (AttributeLevel::Record, "postgres".to_string()),
+        ];
+        let stats = vec![
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "rfc3339",
+                5,
+                Some("2026-09-28T00:00:00Z"),
+            ),
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "postgres",
+                5,
+                Some("2026-09-28 00:00:00.000+00"),
+            ),
+        ];
+        let demote = decide_typed_demotions(&promoted, &stats, now(), 0, &idle_config(10));
+        assert!(demote.is_empty());
+    }
+
+    #[test]
+    fn zero_demote_after_idle_disables_idle_demotion() {
+        let promoted = vec![(AttributeLevel::Record, "cold".to_string())];
+        let stats = vec![level_record_with_demand(
+            AttributeLevel::Record,
+            "cold",
+            0,
+            None,
+        )];
+        let demote = decide_typed_demotions(&promoted, &stats, now(), 0, &config());
+        assert!(demote.is_empty());
+    }
+
+    #[test]
+    fn over_budget_demotes_least_recently_queried_first_with_tie_breaks() {
+        // All four are recently queried (no idle demotion applies); the
+        // budget of 2 forces demoting the two least-recently-queried ones.
+        let promoted = vec![
+            (AttributeLevel::Record, "oldest".to_string()),
+            (AttributeLevel::Record, "missing_ts".to_string()),
+            (AttributeLevel::Record, "tie_low_hits".to_string()),
+            (AttributeLevel::Record, "tie_high_hits".to_string()),
+        ];
+        let stats = vec![
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "oldest",
+                5,
+                Some("2026-09-25T00:00:00Z"),
+            ),
+            level_record_with_demand(AttributeLevel::Record, "missing_ts", 5, None),
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "tie_low_hits",
+                1,
+                Some("2026-09-27T00:00:00Z"),
+            ),
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "tie_high_hits",
+                9,
+                Some("2026-09-27T00:00:00Z"),
+            ),
+        ];
+        let demote = decide_typed_demotions(&promoted, &stats, now(), 0, &idle_config(2));
+        // Missing timestamp sorts oldest; then the older explicit
+        // timestamp; the two 2026-09-27 entries would tie on recency, so
+        // "tie_low_hits" (fewer query_hits) demotes before
+        // "tie_high_hits" survives within budget.
+        assert_eq!(
+            demote,
+            vec![
+                (AttributeLevel::Record, "missing_ts".to_string()),
+                (AttributeLevel::Record, "oldest".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn idle_demotions_reduce_budget_pressure_before_lru_kicks_in() {
+        // "cold" is idle-demoted outright; that alone brings the count to
+        // budget, so no additional LRU demotion is needed even though
+        // "warm" would otherwise be the least-recently-queried survivor.
+        let promoted = vec![
+            (AttributeLevel::Record, "cold".to_string()),
+            (AttributeLevel::Record, "warm".to_string()),
+        ];
+        let stats = vec![
+            level_record_with_demand(AttributeLevel::Record, "cold", 0, None),
+            level_record_with_demand(
+                AttributeLevel::Record,
+                "warm",
+                5,
+                Some("2026-09-28T00:00:00Z"),
+            ),
+        ];
+        let demote = decide_typed_demotions(&promoted, &stats, now(), 0, &idle_config(1));
+        assert_eq!(demote, vec![(AttributeLevel::Record, "cold".to_string())]);
+    }
+
+    #[test]
+    fn a_column_demoted_this_cycle_is_not_re_promoted_in_the_same_cycle() {
+        let cfg = idle_config(10);
+        let demoted: HashSet<(AttributeLevel, String)> =
+            [(AttributeLevel::Record, "flappy".to_string())]
+                .into_iter()
+                .collect();
+        // Otherwise fully eligible: typed, available, uncapped, not
+        // generated, high presence/hits, streak already built, and
+        // recently queried (so the anti-flapping guard alone wouldn't
+        // reject it).
+        let record = level_record_with_demand(
+            AttributeLevel::Record,
+            "flappy",
+            50,
+            Some("2026-09-28T00:00:00Z"),
+        );
+        let types = types(&[(AttributeLevel::Record, "flappy", CanonicalType::String)]);
+        let (decision, _) = decide_typed_promotions(
+            &[record],
+            &types,
+            &HashSet::new(),
+            &demoted,
+            &all_levels(),
+            &HashSet::new(),
+            0,
+            now(),
+            &cfg,
+        );
+        assert!(decision.promote.is_empty());
+    }
+
+    #[test]
+    fn a_promotion_candidate_not_recently_queried_is_rejected_to_avoid_flapping() {
+        // Otherwise-eligible, but its last query demand is older than
+        // `demote_after_idle` -- promoting it now would only have it
+        // demoted again next cycle.
+        let cfg = idle_config(10);
+        let record = level_record_with_demand(
+            AttributeLevel::Record,
+            "stale_demand",
+            50,
+            Some("2026-01-01T00:00:00Z"),
+        );
+        let types = types(&[(
+            AttributeLevel::Record,
+            "stale_demand",
+            CanonicalType::String,
+        )]);
+        let (decision, _) = decide_typed_promotions(
+            &[record],
+            &types,
+            &HashSet::new(),
+            &HashSet::new(),
+            &all_levels(),
+            &HashSet::new(),
+            0,
+            now(),
+            &cfg,
+        );
+        assert!(decision.promote.is_empty());
     }
 }
