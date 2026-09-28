@@ -44,6 +44,12 @@ correlation can join on them.
 - **THEN** the exemplar's `trace_id`/`span_id` are available as join keys without
   parsing a blob
 
+#### Scenario: Exemplars are queryable by trace_id
+
+- **WHEN** a client queries the `exemplars` source filtered on a `trace_id`
+- **THEN** it returns each matching exemplar with its `span_id`, timestamp, value,
+  filtered attributes and the owning metric's name and type
+
 ### Requirement: Summary metrics are passthrough; histogram_quantile over Summary is rejected
 
 OTLP Summary metrics carry precomputed client-side quantiles and SHALL be stored
