@@ -274,8 +274,9 @@ so the WAL stays byte-unchanged (D6).
 - **Exemplars in their own table.** `metric_exemplars` holds one row per
   exemplar with flat `trace_id`/`span_id` columns (the hex encoding traces
   use), the exemplar time and value, and `filtered_attributes` as a typed
-  attribute container. A `series_id` digest (metric name, resource identity,
-  record attributes), stored on both tables, links an exemplar to its series.
+  attribute container. A `series_id` digest (metric name and type, resource
+  identity, instrumentation scope name and version, record attributes),
+  stored on both tables, links an exemplar to its series.
   Flat keys make `trace_id` filterable and prunable, which the correlate stage
   (layer 9) joins on. One WAL entry commits to both tables; each table keeps
   its own idempotency marker, so a replay stays duplicate-free.

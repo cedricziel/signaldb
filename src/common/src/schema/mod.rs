@@ -10,6 +10,7 @@ use std::sync::Arc;
 pub mod logical;
 pub mod resource_identity;
 pub mod schema_parser;
+pub mod series_id;
 pub mod type_authority;
 pub mod typed_attributes;
 
