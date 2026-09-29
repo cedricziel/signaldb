@@ -5,10 +5,6 @@ use datafusion::prelude::{DataFrame, ident};
 
 use crate::query::error::QuerierError;
 
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "label rewrites are not wired into a stage yet")
-)]
 pub mod label_ops;
 pub mod labels;
 pub mod sample;

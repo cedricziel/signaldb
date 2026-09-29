@@ -108,22 +108,27 @@ fn udf(op: Op) -> ScalarUDF {
 }
 
 /// `labels_keep(labels, key…)`: only the named labels.
+#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn labels_keep_udf() -> ScalarUDF {
     udf(Op::Keep)
 }
 /// `labels_drop(labels, key…)`: every label but the named ones.
+#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn labels_drop_udf() -> ScalarUDF {
     udf(Op::Drop)
 }
 /// `labels_get(labels, key)`: one label's value, null when absent.
+#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn labels_get_udf() -> ScalarUDF {
     udf(Op::Get)
 }
 /// `label_replace(labels, dst, replacement, src, regex)`, PromQL semantics.
+#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn label_replace_udf() -> ScalarUDF {
     udf(Op::Replace)
 }
 /// `label_join(labels, dst, sep, src…)`, PromQL semantics.
+#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn label_join_udf() -> ScalarUDF {
     udf(Op::Join)
 }

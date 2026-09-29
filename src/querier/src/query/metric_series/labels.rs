@@ -209,8 +209,8 @@ impl ScalarUDFImpl for SeriesLabels {
                 service_name: text(1, row),
                 scope_name: text(2, row),
                 scope_version: text(3, row),
-                resource: resource[row].as_ref(),
-                attrs: attrs[row].as_ref(),
+                resource: resource.get(row).and_then(Option::as_ref),
+                attrs: attrs.get(row).and_then(Option::as_ref),
             });
             out.append_value(encode(&set)?);
         }
