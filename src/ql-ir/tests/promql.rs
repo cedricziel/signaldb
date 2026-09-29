@@ -358,3 +358,196 @@ fn constructs_the_ir_cannot_express_are_named() {
         assert!(msg.contains(needle), "{q}: {msg}");
     }
 }
+
+fn binop(op: &str, right: Value, extra: Value) -> Value {
+    let mut b = json!({ "op": op, "right": right, "reverse": false, "bool": false });
+    b.as_object_mut()
+        .unwrap()
+        .extend(extra.as_object().unwrap().clone());
+    json!({ "binop": b })
+}
+
+/// `m` as a sub-document: the selector and its sample.
+fn sub(m: &str) -> Value {
+    json!({ "from": "metrics", "pipeline": [name(m), latest()] })
+}
+
+#[test]
+fn binary_operators_with_a_number() {
+    let x = |stage: Value| after("x", latest(), &[stage]);
+    let filter =
+        |op: &str, bool: bool| json!({ "filter": { "op": op, "value": 5.0, "bool": bool } });
+    cases(&[
+        ("x * 100", x(binop("mul", json!(100.0), json!({})))),
+        (
+            "2 - x",
+            x(binop("sub", json!(2.0), json!({ "reverse": true }))),
+        ),
+        ("x ^ 2", x(binop("pow", json!(2.0), json!({})))),
+        ("x atan2 2", x(binop("atan2", json!(2.0), json!({})))),
+        ("-x", x(binop("mul", json!(-1.0), json!({})))),
+        ("x > 5", x(filter("gt", false))),
+        ("5 < x", x(filter("gt", false))),
+        ("5 >= x", x(filter("le", false))),
+        ("x == bool 5", x(filter("eq", true))),
+        ("x != (2 + 3)", x(filter("ne", false))),
+    ]);
+    assert!(inexpressible("x * (1 / 0)").contains("non-finite"));
+}
+
+/// Scalar-only expressions fold, or read a pseudo-source.
+#[test]
+fn scalar_expressions() {
+    let constant = |c: f64| {
+        let doc = lower(&format!("{c}"));
+        (
+            doc["from"].clone(),
+            doc["constant"].clone(),
+            doc["result"].clone(),
+        )
+    };
+    assert_eq!(
+        constant(3.0),
+        (json!("constant"), json!(3.0), json!("scalar"))
+    );
+    for (q, value) in [
+        ("1 + 2 * 3", 7.0),
+        ("2 ^ 3 % 5", 3.0),
+        ("1 > bool 2", 0.0),
+        ("-(4)", -4.0),
+    ] {
+        let doc = lower(q);
+        assert_eq!(
+            (doc["from"].clone(), doc["constant"].clone()),
+            (json!("constant"), json!(value)),
+            "{q}"
+        );
+    }
+    let doc = lower("time() * 2");
+    assert_eq!(
+        (doc["from"].clone(), doc["result"].clone()),
+        (json!("time"), json!("scalar"))
+    );
+    assert_eq!(
+        doc["pipeline"],
+        json!([binop("mul", json!(2.0), json!({}))])
+    );
+    let doc = lower("time() - time()");
+    let time = json!({ "from": "time", "pipeline": [] });
+    assert_eq!(doc["pipeline"], json!([binop("sub", time, json!({}))]));
+    assert!(inexpressible("1 / 0").contains("non-finite"));
+}
+
+#[test]
+fn vector_matching() {
+    let a = |b: Value| after("a", latest(), &[b]);
+    cases(&[
+        ("a / b", a(binop("div", sub("b"), json!({})))),
+        (
+            "a / on(job) group_left(team) b",
+            a(binop(
+                "div",
+                sub("b"),
+                json!({
+                "on": ["service.name"], "group": { "side": "left", "include": ["team"] } }),
+            )),
+        ),
+        (
+            "a * ignoring(pod) group_right b",
+            a(binop(
+                "mul",
+                sub("b"),
+                json!({ "ignoring": ["pod"], "group": { "side": "right" } }),
+            )),
+        ),
+        (
+            "a > bool on() b",
+            a(binop("gt", sub("b"), json!({ "on": [], "bool": true }))),
+        ),
+        ("a and b", a(binop("and", sub("b"), json!({})))),
+        ("a or b", a(binop("or", sub("b"), json!({})))),
+        (
+            "a unless on(job) b",
+            a(binop("unless", sub("b"), json!({ "on": ["service.name"] }))),
+        ),
+        // A pseudo-source left operand swaps sides; `reverse` keeps the order.
+        (
+            "time() - a",
+            a(binop(
+                "sub",
+                json!({ "from": "time", "pipeline": [] }),
+                json!({ "reverse": true }),
+            )),
+        ),
+        // A scalar on the left of a comparison swaps sides with the operator
+        // flipped, so the vector's values are the ones kept.
+        ("scalar(y) < a", a(binop("gt", scalar_of("y"), json!({})))),
+        (
+            "time() > a",
+            a(binop(
+                "lt",
+                json!({ "from": "time", "pipeline": [] }),
+                json!({}),
+            )),
+        ),
+        (
+            "(a + b) / c",
+            after(
+                "a",
+                latest(),
+                &[
+                    binop("add", sub("b"), json!({})),
+                    binop("div", sub("c"), json!({})),
+                ],
+            ),
+        ),
+        (
+            "a / (b + c)",
+            a(binop(
+                "div",
+                json!({ "from": "metrics", "pipeline": [
+                name("b"), latest(), binop("add", sub("c"), json!({}))
+            ] }),
+                json!({}),
+            )),
+        ),
+    ]);
+}
+
+fn scalar_of(m: &str) -> Value {
+    json!({ "from": "metrics", "pipeline": [name(m), latest(), { "scalar": {} }] })
+}
+
+#[test]
+fn scalar_functions() {
+    cases(&[
+        ("vector(1)", json!([{ "vector": {} }])),
+        (
+            "x * scalar(y)",
+            after("x", latest(), &[binop("mul", scalar_of("y"), json!({}))]),
+        ),
+    ]);
+    let doc = lower("vector(1)");
+    assert_eq!(
+        (doc["from"].clone(), doc["constant"].clone()),
+        (json!("constant"), json!(1.0))
+    );
+    assert_eq!(lower("scalar(x)")["result"], json!("scalar"));
+    let doc = lower("vector(time())");
+    assert_eq!(
+        (&doc["from"], &doc["pipeline"]),
+        (&json!("time"), &json!([{ "vector": {} }]))
+    );
+    let doc = lower("-time()");
+    let minus = binop("mul", json!(-1.0), json!({}));
+    assert_eq!(
+        (&doc["from"], &doc["result"]),
+        (&json!("time"), &json!("scalar"))
+    );
+    assert_eq!(doc["pipeline"], json!([minus]));
+    // Arithmetic drops the metric name; a filtering comparison keeps it.
+    assert_eq!(labels("x * 2"), (vec![], true));
+    assert_eq!(labels("x > 2").0, ["metric.name"]);
+    assert_eq!(lower("pi()")["constant"], json!(std::f64::consts::PI));
+    assert!(inexpressible("sin(x)").contains("sin"));
+}
