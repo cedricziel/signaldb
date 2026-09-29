@@ -472,6 +472,9 @@ jobs:
     runs-on: ubuntu-latest
     needs: changes
     if: needs.changes.outputs.core == 'true'
+    # The image jobs below need `test`, so a red beta leg would stop main
+    # from publishing images at all.
+    continue-on-error: ${{ matrix.rust == 'beta' }}
     strategy:
       fail-fast: false
       matrix:
