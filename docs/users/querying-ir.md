@@ -182,6 +182,7 @@ prefix addresses exactly one container:
 | `log.`      | log-record attributes | logs         |
 | `span.`     | span attributes       | traces       |
 | `profile.`  | profile attributes    | profiles     |
+| `point.`    | data-point attributes | metrics      |
 
 ```jsonc
 { "field": "resource.deployment.environment", "op": "eq", "value": "prod" }
@@ -198,6 +199,8 @@ A physical column wins over a prefix, so `scope.name` is the instrumentation
 scope's name (a first-class column), not a key called `name` inside the scope
 attributes. To reach a key that literally begins with one of these prefixes,
 qualify it: `log.resource.foo` is the key `resource.foo` on the record.
+On `metrics`, `point.metric.name` is the data-point attribute `metric.name`,
+the spelling a metric Series' labels use for a colliding point attribute.
 
 The whole bag of one scope is a field too: `log.attributes`, `span.attributes`,
 `profile.attributes`, `scope.attributes`, and `resource.attributes` project

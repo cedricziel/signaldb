@@ -5,3 +5,6 @@
 
 pub mod labels;
 pub(crate) mod vector_match;
+
+#[cfg(test)]
+mod tests;
