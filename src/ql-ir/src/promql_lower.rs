@@ -12,6 +12,7 @@
 //! `metric.name`; `job`, `service` and `service_name` are `service.name`; any
 //! other label, dotted UTF-8 names included, passes through as spelled.
 
+use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use promql_parser::label::{MatchOp, Matcher};
@@ -21,9 +22,10 @@ use promql_parser::parser::{
     VectorMatchCardinality, VectorSelector, token,
 };
 use query_ir::{
-    Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, ComparisonOp, Document, Filter, GroupSide,
-    Leaf, NoOperands, Predicate, Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn,
-    SampleOf, Stage, SubDocument, is_pseudo_source,
+    Absent, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, ComparisonOp, Direction, Document,
+    Filter, GroupSide, LabelJoin, LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, Predicate,
+    Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf, Stage, SubDocument,
+    is_pseudo_source,
 };
 
 use crate::LowerError;
@@ -275,24 +277,83 @@ impl Lowerer<'_> {
             };
             return self.range_call(call, func, arg, window_arg);
         }
-        match name {
-            "pi" => Ok(Operand::Number(std::f64::consts::PI)),
-            "time" => Ok(Operand::Pipe(time())),
+        let series = |i: usize| self.series(arg(call, i)?, name);
+        let map = |func, args| Stage::Map(Map { func, args });
+        let stage = match name {
+            "pi" => return Ok(Operand::Number(std::f64::consts::PI)),
+            "time" => return Ok(Operand::Pipe(time())),
             "vector" => {
                 let scalar = self.lower(arg(call, 0)?)?.into_pipe()?;
-                Ok(Operand::Pipe(Pipe {
+                return Ok(Operand::Pipe(Pipe {
                     shape: Shape::Series,
                     ..scalar.push(Stage::Vector(NoOperands {}))
-                }))
+                }));
             }
-            "scalar" => Ok(Operand::Pipe(Pipe {
-                shape: Shape::Scalar,
-                ..self
-                    .series(arg(call, 0)?, name)?
-                    .push(Stage::Scalar(NoOperands {}))
+            "scalar" => {
+                return Ok(Operand::Pipe(Pipe {
+                    shape: Shape::Scalar,
+                    ..series(0)?.push(Stage::Scalar(NoOperands {}))
+                }));
+            }
+            "absent" => {
+                let labels = match unparen(arg(call, 0)?) {
+                    Expr::VectorSelector(vs) => absent_labels(vs),
+                    _ => BTreeMap::new(),
+                };
+                return Ok(Operand::Pipe(
+                    series(0)?.push(Stage::Absent(Absent { labels })),
+                ));
+            }
+            "absent_over_time" => {
+                let Expr::MatrixSelector(ms) = unparen(arg(call, 0)?) else {
+                    return Err(inexpressible("absent_over_time() over a subquery"));
+                };
+                let labels = absent_labels(&ms.vs);
+                let present = self.range_call(call, SampleFn::CountOverTime, None, 0)?;
+                return Ok(Operand::Pipe(
+                    present.into_pipe()?.push(Stage::Absent(Absent { labels })),
+                ));
+            }
+            "sort" => Stage::Sort(Direction::Asc),
+            "sort_desc" => Stage::Sort(Direction::Desc),
+            "label_replace" => Stage::Labels(Labels::Replace(LabelReplace {
+                dst: promql_label_field(&string_arg(call, 1)?),
+                replacement: string_arg(call, 2)?,
+                src: promql_label_field(&string_arg(call, 3)?),
+                // Prometheus anchors the regex to the whole value, and `.`
+                // matches a newline.
+                regex: format!("^(?s:{})$", string_arg(call, 4)?),
             })),
-            _ => Err(inexpressible(&format!("the PromQL function {name}()"))),
-        }
+            "label_join" => Stage::Labels(Labels::Join(LabelJoin {
+                dst: promql_label_field(&string_arg(call, 1)?),
+                separator: string_arg(call, 2)?,
+                src: (3..call.args.args.len())
+                    .map(|i| string_arg(call, i).map(|l| promql_label_field(&l)))
+                    .collect::<Result<_, _>>()?,
+            })),
+            "round" if call.args.args.len() > 1 => {
+                map(MapFn::Round, vec![self.number_arg(call, 1)?])
+            }
+            "clamp" => map(
+                MapFn::Clamp,
+                vec![self.number_arg(call, 1)?, self.number_arg(call, 2)?],
+            ),
+            "clamp_min" => map(MapFn::ClampMin, vec![self.number_arg(call, 1)?]),
+            "clamp_max" => map(MapFn::ClampMax, vec![self.number_arg(call, 1)?]),
+            other => match map_function(other) {
+                // A calendar function without an argument reads `vector(time())`.
+                Some(func) if call.args.args.is_empty() => {
+                    let now = time().push(Stage::Vector(NoOperands {}));
+                    return Ok(Operand::Pipe(Pipe {
+                        shape: Shape::Series,
+                        ..now.push(map(func, Vec::new()))
+                    }));
+                }
+                Some(func) => map(func, Vec::new()),
+                None => return Err(inexpressible(&format!("the PromQL function {name}()"))),
+            },
+        };
+        Ok(Operand::Pipe(series(0)?.push(stage)))
     }
 
     /// `f(m[w])`: the range function samples the selector's window.
@@ -487,6 +548,18 @@ fn arg(call: &Call, i: usize) -> Result<&Expr, LowerError> {
     })
 }
 
+/// The `i`-th argument of a call, which must be a string literal.
+fn string_arg(call: &Call, i: usize) -> Result<String, LowerError> {
+    match unparen(arg(call, i)?) {
+        Expr::StringLiteral(s) => Ok(s.val.clone()),
+        _ => Err(inexpressible(&format!(
+            "{}() with a non-literal argument {}",
+            call.func.name,
+            i + 1
+        ))),
+    }
+}
+
 /// The `time` pseudo-source: the evaluation instant, in seconds.
 fn time() -> Pipe {
     Pipe {
@@ -495,6 +568,59 @@ fn time() -> Pipe {
         pipeline: Vec::new(),
         shape: Shape::Scalar,
     }
+}
+
+/// The labels `absent()` gives its series, by Prometheus's rule: each
+/// label's first equality matcher, less the metric name, any label another
+/// matcher also constrains, and empty values (which are no label).
+fn absent_labels(vs: &VectorSelector) -> BTreeMap<String, String> {
+    if !vs.matchers.or_matchers.is_empty() {
+        return BTreeMap::new();
+    }
+    let mut labels = BTreeMap::new();
+    let mut unknown = Vec::new();
+    for m in &vs.matchers.matchers {
+        let field = promql_label_field(&m.name);
+        if field == "metric.name" {
+            continue;
+        }
+        if m.op == MatchOp::Equal && !labels.contains_key(&field) {
+            if !m.value.is_empty() {
+                labels.insert(field, m.value.clone());
+            }
+        } else {
+            unknown.push(field);
+        }
+    }
+    for field in unknown {
+        labels.remove(&field);
+    }
+    labels
+}
+
+/// The operand-free `map` function a PromQL function is.
+fn map_function(name: &str) -> Option<MapFn> {
+    Some(match name {
+        "abs" => MapFn::Abs,
+        "ceil" => MapFn::Ceil,
+        "floor" => MapFn::Floor,
+        "round" => MapFn::Round,
+        "sqrt" => MapFn::Sqrt,
+        "exp" => MapFn::Exp,
+        "ln" => MapFn::Ln,
+        "log2" => MapFn::Log2,
+        "log10" => MapFn::Log10,
+        "sgn" => MapFn::Sgn,
+        "day_of_month" => MapFn::DayOfMonth,
+        "day_of_week" => MapFn::DayOfWeek,
+        "day_of_year" => MapFn::DayOfYear,
+        "days_in_month" => MapFn::DaysInMonth,
+        "hour" => MapFn::Hour,
+        "minute" => MapFn::Minute,
+        "month" => MapFn::Month,
+        "year" => MapFn::Year,
+        _ => return None,
+    })
 }
 
 /// `pipe op n` (or `n op pipe` when `reversed`).
