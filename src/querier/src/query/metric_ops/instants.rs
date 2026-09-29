@@ -1,3 +1,5 @@
+//! Evaluation-instant helpers: which instants cover a point, and timestamp normalisation.
+
 use std::hash::Hash;
 use std::sync::Arc;
 
