@@ -501,17 +501,14 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn mismatched_bounds_across_series_are_invalid_input() {
+    async fn mismatched_bounds_across_series_merge_on_their_union() {
         let mut b = eh("b", 70, &[1, 0, 0], 1.0, 100);
         b.bounds = vec![1.0, 3.0];
         let rows = [eh("a", 70, &[1, 0, 0, 0], 1.0, 100), b];
-        let err = run(&rows, HistStat::Count, Mode::Instant, 60)
+        let out = run(&rows, HistStat::Count, Mode::Instant, 60)
             .await
-            .unwrap_err();
-        assert!(
-            matches!(&err, QuerierError::InvalidInput(m) if m.contains("bucket bounds")),
-            "{err:?}"
-        );
+            .unwrap();
+        assert_eq!(out, vec![Some(2.0)]);
     }
 
     #[test]

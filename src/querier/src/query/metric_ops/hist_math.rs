@@ -125,14 +125,14 @@ fn merge_two(a: HistPoint, b: &HistPoint) -> Result<HistPoint, QuerierError> {
                 count: bn,
             },
         ) => {
-            if &bounds != bb || counts.len() != bc.len() {
-                return Err(invalid(
-                    "histograms with different bucket bounds cannot be merged; group by the series attributes that distinguish them",
-                ));
-            }
-            for (x, y) in counts.iter_mut().zip(bc) {
-                *x = x.saturating_add(*y);
-            }
+            let (bounds, counts) = if &bounds == bb && counts.len() == bc.len() {
+                for (x, y) in counts.iter_mut().zip(bc) {
+                    *x = x.saturating_add(*y);
+                }
+                (bounds, counts)
+            } else {
+                merge_bounds(&bounds, &counts, bb, bc)
+            };
             Ok(HistPoint::Explicit {
                 bounds,
                 counts,
@@ -148,6 +148,33 @@ fn merge_two(a: HistPoint, b: &HistPoint) -> Result<HistPoint, QuerierError> {
             "explicit-bucket and exponential histograms cannot be merged",
         )),
     }
+}
+
+/// Two explicit layouts on the union of their bounds: at each bound `le`, a
+/// histogram contributes its cumulative count at its largest own bound
+/// `<= le` (a step function), as Prometheus' `sum by (le)` does; the summed
+/// cumulative counts are kept non-decreasing.
+fn merge_bounds(ab: &[f64], ac: &[u64], bb: &[f64], bc: &[u64]) -> (Vec<f64>, Vec<u64>) {
+    let mut bounds: Vec<f64> = ab.iter().chain(bb).copied().collect();
+    bounds.sort_by(f64::total_cmp);
+    bounds.dedup();
+    let cumulative_at = |own: &[f64], counts: &[u64], le: f64| -> u64 {
+        let n = own.partition_point(|&b| b <= le);
+        counts[..n].iter().fold(0u64, |a, &c| a.saturating_add(c))
+    };
+    let total = |counts: &[u64]| counts.iter().fold(0u64, |a, &c| a.saturating_add(c));
+    let mut merged = Vec::with_capacity(bounds.len() + 1);
+    let mut prev = 0u64;
+    for &le in &bounds {
+        let cum = cumulative_at(ab, ac, le)
+            .saturating_add(cumulative_at(bb, bc, le))
+            .max(prev);
+        merged.push(cum - prev);
+        prev = cum;
+    }
+    let all = total(ac).saturating_add(total(bc)).max(prev);
+    merged.push(all - prev);
+    (bounds, merged)
 }
 
 /// Merge the values of several series into one histogram (`None` when empty).
@@ -399,19 +426,33 @@ mod tests {
     fn merge_across_series_and_mismatch() {
         let m = merge_across(vec![eb(&[1, 0, 0, 0], 1.0), eb(&[0, 2, 0, 0], 3.0)]).unwrap();
         assert_eq!(m, Some(eb(&[1, 2, 0, 0], 4.0)));
-        let other = HistPoint::Explicit {
-            bounds: vec![1.0, 5.0],
-            counts: vec![1, 0, 0],
-            sum: None,
-            count: 1,
-        };
-        let err = merge_across(vec![eb(&[1, 0, 0, 0], 1.0), other]).unwrap_err();
-        assert!(
-            matches!(err, QuerierError::InvalidInput(m) if m.contains("different bucket bounds"))
-        );
         let mixed = merge_across(vec![eb(&[1, 0, 0, 0], 1.0), ex(&[1], 1.0)]);
         assert!(matches!(mixed, Err(QuerierError::InvalidInput(_))));
         assert_eq!(merge_across(vec![]).unwrap(), None);
+    }
+
+    /// Different bounds merge on their union, each series read as a step
+    /// function of its own cumulative counts (Prometheus' `sum by (le)`).
+    #[test]
+    fn explicit_bounds_merge_on_their_union() {
+        let a = eb(&[1, 1, 1, 1], 2.0);
+        let b = HistPoint::Explicit {
+            bounds: vec![1.0, 5.0],
+            counts: vec![2, 2, 2],
+            sum: Some(3.0),
+            count: 6,
+        };
+        let want = HistPoint::Explicit {
+            bounds: vec![1.0, 2.0, 4.0, 5.0],
+            counts: vec![3, 1, 1, 2, 3],
+            sum: Some(5.0),
+            count: 10,
+        };
+        assert_eq!(
+            merge_across(vec![a.clone(), b.clone()]).unwrap(),
+            Some(want.clone())
+        );
+        assert_eq!(merge_across(vec![b, a]).unwrap(), Some(want));
     }
 
     #[test]
