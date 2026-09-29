@@ -69,13 +69,15 @@ pub struct QueryIrRequest {
     /// IR document version (the server accepts a bounded range).
     #[serde(rename = "irVersion")]
     pub ir_version: i64,
-    /// The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
+    /// The registered signal source (`logs`, `traces`, `metrics`,
+    /// `exemplars`, profile-summary `profiles`), or (irVersion 10+) the
+    /// Scalar pseudo-source `time` or `constant`.
     #[schema(example = "logs")]
     pub from: String,
     pub range: QueryRange,
     /// Declared result envelope: `rows`, `series`, `table`, `heatmap`,
-    /// (for the `profiles` source only) `flamegraph`, or (for the `traces`
-    /// source, irVersion 8+) `graph`.
+    /// (for the `profiles` source only) `flamegraph`, (for the `traces`
+    /// source, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.
     #[schema(example = "rows")]
     pub result: String,
     /// Curated projection (logical field names) for `rows`/`table`.
@@ -94,6 +96,14 @@ pub struct QueryIrRequest {
     /// `graph` only: restrict to the services and calls of one trace.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// The default evaluation step of the series-algebra stages; required by
+    /// the `time`/`constant` pseudo-sources (irVersion 10+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "1m")]
+    pub step: Option<String>,
+    /// The value of the `constant` pseudo-source (irVersion 10+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constant: Option<f64>,
 }
 
 /// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
@@ -150,6 +160,7 @@ impl QueryIrResponse {
             columns: Vec::new(),
             rows: Vec::new(),
             series: Vec::new(),
+            points: None,
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: None,
@@ -290,10 +301,11 @@ pub struct QueryWarning {
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-/// `flamegraph`; `graph` fills `graph`.
+/// `flamegraph`; `graph` fills `graph`; `scalar` fills `points`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
-    /// The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`.
+    /// The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
+    /// `graph`, `metadata`, or `scalar`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -304,6 +316,11 @@ pub struct QueryIrResponse {
     pub rows: Vec<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub series: Vec<ResultSeries>,
+    /// Present iff `result == "scalar"`: one `[t_ns, value]` point per
+    /// evaluation instant, with no labels (`null` is NaN).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Vec<serde_json::Value>>>)]
+    pub points: Option<Vec<[serde_json::Value; 2]>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_ns: Option<i64>,
     #[serde(default, skip_serializing_if = "HeatmapResult::is_empty")]
@@ -394,7 +411,6 @@ async fn query_ir_single(
             .await
             .map(axum::Json);
     }
-    reject_unshaped_envelope(&req.result)?;
     let ticket = query_ir_ticket(ctx, &document, now)?;
 
     let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
@@ -480,6 +496,7 @@ async fn query_ir_multi(
         columns: Vec::new(),
         rows: Vec::new(),
         series,
+        points: None,
         step_ns: None,
         heatmap: HeatmapResult::default(),
         flamegraph: None,
@@ -514,23 +531,13 @@ fn parse_envelope(s: &str) -> Result<common::query_ir::ResultEnvelope, ApiError>
         "flamegraph" => Flamegraph,
         "metadata" => Metadata,
         "graph" => Graph,
+        "scalar" => Scalar,
         other => {
             return Err(ApiError::bad_request(format!(
                 "unknown result envelope '{other}'"
             )));
         }
     })
-}
-
-/// The IR accepts `result: "scalar"` (`irVersion` 10) but this endpoint has
-/// no response shape for it yet, so it is refused like an unknown envelope.
-fn reject_unshaped_envelope(result: &str) -> Result<(), ApiError> {
-    if result == common::query_ir::ResultEnvelope::Scalar.as_str() {
-        return Err(ApiError::bad_request(format!(
-            "unknown result envelope '{result}'"
-        )));
-    }
-    Ok(())
 }
 
 /// Build the [`common::query_ir::MultiDocument`] a [`MultiQueryIrRequest`]
@@ -794,6 +801,8 @@ fn edit_distance(a: &str, b: &str) -> usize {
 /// Require the read scope associated with a registered Query IR source.
 pub(super) fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
+        // A Scalar pseudo-source reads no signal.
+        s if common::query_ir::is_pseudo_source(s) => return Ok(()),
         "logs" | "traces" | "profiles" | "metrics" => source,
         "exemplars" => "metrics",
         _ => {
@@ -937,7 +946,26 @@ fn build_envelope(
                 columns: Vec::new(),
                 rows: Vec::new(),
                 series,
+                points: None,
                 step_ns,
+                heatmap: HeatmapResult::default(),
+                flamegraph: None,
+                graph: None,
+                metadata: None,
+                warnings: Vec::new(),
+            })
+        }
+        "scalar" => {
+            // A Scalar frame is `(bucket, value)`: one label-less series.
+            let points = to_series(batches).0.into_iter().next();
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                series: Vec::new(),
+                points: Some(points.map(|s| s.points).unwrap_or_default()),
+                step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 graph: None,
@@ -953,6 +981,7 @@ fn build_envelope(
                 columns,
                 rows,
                 series: Vec::new(),
+                points: None,
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
@@ -991,6 +1020,7 @@ fn build_envelope(
                 columns: Vec::new(),
                 rows: Vec::new(),
                 series: Vec::new(),
+                points: None,
                 step_ns: None,
                 heatmap: HeatmapResult {
                     x: HeatmapAxisX {
@@ -1018,6 +1048,7 @@ fn build_envelope(
             columns: Vec::new(),
             rows: Vec::new(),
             series: Vec::new(),
+            points: None,
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: Some(to_flamegraph_result(batches)?),
@@ -1033,6 +1064,7 @@ fn build_envelope(
                 columns: Vec::new(),
                 rows: Vec::new(),
                 series: Vec::new(),
+                points: None,
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
@@ -1393,7 +1425,13 @@ pub(super) fn ir_table(
     (columns, rows)
 }
 
-/// Reshape step-aggregate batches (`[bucket, labels…, value]`) into series.
+/// The column a metric Series frame carries its canonical label set in
+/// (`querier::query::metric_series::labels::LABELS_COLUMN`).
+const SERIES_LABELS_COLUMN: &str = "__labels";
+
+/// Reshape series batches into series: a metric Series frame
+/// (`[bucket, __labels, value]`, the label set as a JSON object) or a legacy
+/// step aggregate (`[bucket, labels…, value]`, one column per label).
 fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
     let mut order: Vec<String> = Vec::new();
     let mut series: BTreeMap<String, ResultSeries> = BTreeMap::new();
@@ -1424,9 +1462,16 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
                 },
             )
             .collect();
+        let label_set =
+            (label_cols.len() == 1 && schema.field(1).name() == SERIES_LABELS_COLUMN).then_some(1);
         for r in 0..batch.num_rows() {
             let mut labels = BTreeMap::new();
-            for &c in &label_cols {
+            if let Some(c) = label_set
+                && let serde_json::Value::String(set) = cell(casted[c].as_ref(), r)
+            {
+                labels = serde_json::from_str(&set).unwrap_or_default();
+            }
+            for &c in label_cols.iter().filter(|_| label_set.is_none()) {
                 let name = schema.field(c).name().clone();
                 let v = match cell(casted[c].as_ref(), r) {
                     serde_json::Value::String(s) => s,
@@ -1776,7 +1821,7 @@ mod tests {
     use super::{
         GRAPH_NODE_LIMIT, MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange,
         ResolvedWindow, build_envelope, check_multi_source_scopes, parse_envelope,
-        reject_unshaped_envelope, source_read_scope, to_multi_document,
+        source_read_scope, to_multi_document,
     };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
@@ -2393,6 +2438,8 @@ mod tests {
                 focus: None,
                 depth: None,
                 trace_id: None,
+                step: None,
+                constant: None,
             },
         );
         queries.insert(
@@ -2410,6 +2457,8 @@ mod tests {
                 focus: None,
                 depth: None,
                 trace_id: None,
+                step: None,
+                constant: None,
             },
         );
         assert!(check_multi_source_scopes(&scoped, &queries).is_err());
@@ -2446,6 +2495,8 @@ mod tests {
                 focus: None,
                 depth: None,
                 trace_id: None,
+                step: None,
+                constant: None,
             },
         );
         let req = MultiQueryIrRequest {
@@ -2466,12 +2517,106 @@ mod tests {
     #[test]
     fn parse_envelope_rejects_an_unknown_result() {
         assert!(parse_envelope("bogus").is_err());
-        assert!(parse_envelope("scalar").is_err());
-        assert!(reject_unshaped_envelope("scalar").is_err());
-        assert!(reject_unshaped_envelope("series").is_ok());
+        assert_eq!(
+            parse_envelope("scalar").unwrap(),
+            common::query_ir::ResultEnvelope::Scalar
+        );
         assert_eq!(
             parse_envelope("series").unwrap(),
             common::query_ir::ResultEnvelope::Series
         );
+    }
+
+    // otel-native-schema D11 — metric Series and the scalar envelope.
+
+    use datafusion::arrow::array::{ArrayRef, Float64Array, RecordBatch, StringArray};
+    use std::sync::Arc;
+
+    fn frame(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        RecordBatch::try_from_iter(columns).unwrap()
+    }
+
+    fn buckets(ns: Vec<i64>) -> ArrayRef {
+        Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(ns))
+    }
+
+    #[test]
+    fn a_scalar_frame_serializes_as_label_less_points() {
+        let batch = frame(vec![
+            ("bucket", buckets(vec![60, 120])),
+            ("value", Arc::new(Float64Array::from(vec![1.5, f64::NAN]))),
+        ]);
+        let window = ResolvedWindow {
+            start_ns: 60,
+            end_ns: 120,
+        };
+        let doc = serde_json::json!({});
+        let response = build_envelope("scalar", window, &[batch], &doc).unwrap();
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["result"], "scalar");
+        assert_eq!(json["points"], serde_json::json!([[60, 1.5], [120, null]]));
+        assert!(json.get("series").is_none());
+        let empty = build_envelope("scalar", window, &[], &doc).unwrap();
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["points"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn a_series_frame_decodes_its_label_set() {
+        let labels = [
+            r#"{"code":"200","metric.name":"m"}"#,
+            r#"{"code":"500","metric.name":"m"}"#,
+        ];
+        let batch = frame(vec![
+            ("bucket", buckets(vec![60, 60, 120])),
+            (
+                "__labels",
+                Arc::new(StringArray::from(vec![labels[0], labels[1], labels[0]])),
+            ),
+            ("value", Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0]))),
+        ]);
+        let window = ResolvedWindow {
+            start_ns: 60,
+            end_ns: 120,
+        };
+        let response = build_envelope("series", window, &[batch], &serde_json::json!({})).unwrap();
+        let json = serde_json::to_value(&response.series).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                { "labels": { "code": "200", "metric.name": "m" }, "points": [[60, 1.0], [120, 3.0]] },
+                { "labels": { "code": "500", "metric.name": "m" }, "points": [[60, 2.0]] }
+            ])
+        );
+    }
+
+    /// `step`/`constant` survive the router's re-serialization into the
+    /// querier ticket, and a pseudo-source needs no read scope.
+    #[tokio::test]
+    async fn a_pseudo_source_scalar_request_reaches_the_query_boundary() {
+        let req: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 10, "from": "constant", "range": { "from": "now-1h", "to": "now" },
+            "result": "scalar", "step": "1m", "constant": 2.5
+        }))
+        .unwrap();
+        let round_trip = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            (round_trip["step"].clone(), round_trip["constant"].clone()),
+            ("1m".into(), 2.5.into())
+        );
+
+        let app = test_app().await;
+        let resp = app
+            .clone()
+            .oneshot(post(
+                "/api/v1/query",
+                true,
+                Body::from(round_trip.to_string()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

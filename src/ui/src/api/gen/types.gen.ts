@@ -1788,6 +1788,10 @@ export type QueryFormula = {
  */
 export type QueryIrRequest = {
     /**
+     * The value of the `constant` pseudo-source (irVersion 10+).
+     */
+    constant?: number | null;
+    /**
      * `graph` only: hops from `focus` (1-3, default 1).
      */
     depth?: number | null;
@@ -1800,7 +1804,9 @@ export type QueryIrRequest = {
      */
     focus?: string | null;
     /**
-     * The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
+     * The registered signal source (`logs`, `traces`, `metrics`,
+     * `exemplars`, profile-summary `profiles`), or (irVersion 10+) the
+     * Scalar pseudo-source `time` or `constant`.
      */
     from: string;
     /**
@@ -1816,10 +1822,15 @@ export type QueryIrRequest = {
     range: QueryRange;
     /**
      * Declared result envelope: `rows`, `series`, `table`, `heatmap`,
-     * (for the `profiles` source only) `flamegraph`, or (for the `traces`
-     * source, irVersion 8+) `graph`.
+     * (for the `profiles` source only) `flamegraph`, (for the `traces`
+     * source, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.
      */
     result: string;
+    /**
+     * The default evaluation step of the series-algebra stages; required by
+     * the `time`/`constant` pseudo-sources (irVersion 10+).
+     */
+    step?: string | null;
     /**
      * `graph` only: restrict to the services and calls of one trace.
      */
@@ -1838,7 +1849,7 @@ export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
  * `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
- * `flamegraph`; `graph` fills `graph`.
+ * `flamegraph`; `graph` fills `graph`; `scalar` fills `points`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
@@ -1847,7 +1858,13 @@ export type QueryIrResponse = {
     heatmap?: HeatmapResult;
     metadata?: null | MetadataResult;
     /**
-     * The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`.
+     * Present iff `result == "scalar"`: one `[t_ns, value]` point per
+     * evaluation instant, with no labels (`null` is NaN).
+     */
+    points?: Array<Array<unknown>> | null;
+    /**
+     * The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
+     * `graph`, `metadata`, or `scalar`.
      */
     result: string;
     rows?: Array<Array<unknown>>;
