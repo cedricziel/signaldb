@@ -7706,12 +7706,12 @@ mod multi_tenancy_tests {
 
     /// Reproduces the contention behind #1495: a second connection holds an
     /// open write transaction on the same on-disk file while a write goes
-    /// through `retry_on_sqlite_busy`. The held connection's `busy_timeout`
-    /// is set far shorter than the hold, so a single attempt is guaranteed
-    /// to see `SQLITE_BUSY` ((code: 5) "database is locked") — exactly what
-    /// an extra `SqlitePool` against the same DSN looks like in monolithic
-    /// mode. Only the retry-with-backoff wrapper, not `busy_timeout` alone,
-    /// can make this succeed.
+    /// through `retry_on_sqlite_busy` — exactly what an extra `SqlitePool`
+    /// against the same DSN looks like in monolithic mode. The first attempt
+    /// must fail with `SQLITE_BUSY` ((code: 5) "database is locked") and
+    /// commits the blocker before handing its error to the retry loop, so
+    /// the test never races the loop's wall-clock budget and only a retry
+    /// can succeed.
     #[tokio::test]
     async fn retry_on_sqlite_busy_rides_out_contention_a_single_attempt_would_miss() {
         let dir = tempfile::tempdir().unwrap();
@@ -7730,7 +7730,7 @@ mod multi_tenancy_tests {
 
         let writer_options = SqliteConnectOptions::from_str(&dsn)
             .unwrap()
-            .busy_timeout(std::time::Duration::from_millis(50));
+            .busy_timeout(std::time::Duration::from_millis(1));
         let writer_pool = SqlitePoolOptions::new()
             .max_connections(1)
             .connect_with(writer_options)
@@ -7746,28 +7746,24 @@ mod multi_tenancy_tests {
             .await
             .unwrap();
 
-        let write = tokio::spawn(async move {
-            retry_on_sqlite_busy(|| async {
-                query("INSERT INTO t (v) VALUES (2)")
-                    .execute(&writer_pool)
-                    .await
-            })
-            .await
-        });
-
-        // Outlasts writer_pool's 50ms busy_timeout, so a single attempt
-        // fails with SQLITE_BUSY; the retry loop's backoff must ride it out.
-        // Held well under the retry loop's total budget (attempts *
-        // busy_timeout + backoff sleeps, comfortably >200ms) so the
-        // assertion below doesn't race scheduling jitter under parallel
-        // test execution.
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-        query("COMMIT").execute(&mut blocker).await.unwrap();
-
-        write
-            .await
-            .unwrap()
-            .expect("retry_on_sqlite_busy should recover once the blocking writer commits");
+        let mut blocker = Some(blocker);
+        retry_on_sqlite_busy(|| {
+            let blocker = blocker.take();
+            let pool = &writer_pool;
+            async move {
+                let result = query("INSERT INTO t (v) VALUES (2)").execute(pool).await;
+                if let Some(mut blocker) = blocker {
+                    assert!(
+                        matches!(&result, Err(e) if is_retriable_sqlite_busy(e)),
+                        "a single attempt should hit SQLITE_BUSY while the blocker holds the write lock, got {result:?}"
+                    );
+                    query("COMMIT").execute(&mut blocker).await.unwrap();
+                }
+                result
+            }
+        })
+        .await
+        .expect("retry_on_sqlite_busy should recover once the blocking writer commits");
     }
 
     #[test]
