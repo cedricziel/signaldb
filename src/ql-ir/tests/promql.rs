@@ -642,3 +642,83 @@ fn functions() {
         assert!(msg.contains(needle), "{q}: {msg}");
     }
 }
+
+#[test]
+fn subqueries() {
+    let over = |f: &str, window: &str| json!({ "over_time": { "fn": f, "window": window } });
+    let rate_at = |step: &str| {
+        let mut s = ranged("rate", "5m");
+        s["sample"]["step"] = json!(step);
+        s
+    };
+    cases(&[
+        (
+            "max_over_time(rate(x[5m])[1h:30s])",
+            after("x", rate_at("30s"), &[over("max", "1h")]),
+        ),
+        // The selector's own offset and `@` carry into the subquery.
+        ("max_over_time((x offset 5m @ 1700000000)[1h:30s])", {
+            let mut s = latest();
+            s["sample"]["step"] = json!("30s");
+            s["sample"]["offset"] = json!("5m");
+            s["sample"]["at"] = json!(START);
+            after("x", s, &[over("max", "1h")])
+        }),
+        ("quantile_over_time(0.5, x[1h:30s])", {
+            let mut s = latest();
+            s["sample"]["step"] = json!("30s");
+            let mut o = over("quantile", "1h");
+            o["over_time"]["arg"] = json!(0.5);
+            after("x", s, &[o])
+        }),
+        (
+            "max_over_time(avg_over_time(rate(x[5m])[10m:30s])[1h:1m])",
+            after(
+                "x",
+                rate_at("30s"),
+                &[over("avg", "10m"), over("max", "1h")],
+            ),
+        ),
+        (
+            "deriv(sum(rate(x[5m]))[30m:30s])",
+            after(
+                "x",
+                rate_at("30s"),
+                &[json!({ "reduce": { "fn": "sum" } }), over("deriv", "30m")],
+            ),
+        ),
+    ]);
+    // Coarser than the query step: fine where the step is, or for an
+    // instant query, whose step rises to meet it.
+    let coarse = "max_over_time(rate(x[5m])[1h:5m])";
+    let every_5m = PromqlParams::range(START, END, 300_000_000_000);
+    assert_eq!(
+        lower_with(coarse, &every_5m)["pipeline"],
+        after("x", ranged("rate", "5m"), &[over("max", "1h")])
+    );
+    // No resolution: 1m, Prometheus's default evaluation interval.
+    let default_res = "max_over_time(rate(x[5m])[1h:])";
+    assert_eq!(
+        lower_with(default_res, &every_5m)["pipeline"],
+        after("x", rate_at("1m"), &[over("max", "1h")])
+    );
+    let every_30s = PromqlParams::range(START, END, 30_000_000_000);
+    assert!(matches!(
+        ql_ir::promql_to_ir(default_res, &every_30s),
+        Err(LowerError::Inexpressible(msg)) if msg.contains("coarser")
+    ));
+    assert_eq!(
+        lower_with(coarse, &PromqlParams::instant(END))["step"],
+        json!("5m")
+    );
+    for (q, needle) in [
+        (coarse, "coarser"),
+        ("rate(x[5m:1m])", "rate() over a subquery"),
+        ("max_over_time((x - time())[1h:30s])", "time()"),
+        ("max_over_time(x[1h:30s] offset 5m)", "offset"),
+        ("max_over_time(x[1h:30s] @ 1700000000)", "@"),
+    ] {
+        let msg = inexpressible(q);
+        assert!(msg.contains(needle), "{q}: {msg}");
+    }
+}

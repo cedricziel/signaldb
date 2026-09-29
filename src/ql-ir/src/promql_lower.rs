@@ -18,14 +18,15 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use promql_parser::label::{MatchOp, Matcher};
 use promql_parser::parser::token::TokenId;
 use promql_parser::parser::{
-    self, AggregateExpr, AtModifier, BinaryExpr, Call, Expr, LabelModifier, Offset,
+    self, AggregateExpr, AtModifier, BinaryExpr, Call, Expr, LabelModifier, Offset, SubqueryExpr,
     VectorMatchCardinality, VectorSelector, token,
 };
+use promql_parser::util::{ExprVisitor, walk_expr};
 use query_ir::{
     Absent, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, ComparisonOp, Direction, Document,
-    Filter, GroupSide, LabelJoin, LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, Predicate,
-    Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf, Stage, SubDocument,
-    is_pseudo_source,
+    Filter, GroupSide, LabelJoin, LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, OverTime,
+    OverTimeFn, Predicate, Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf,
+    Stage, SubDocument, is_pseudo_source,
 };
 
 use crate::LowerError;
@@ -40,6 +41,10 @@ const LOOKBACK: &str = "5m";
 /// The step an instant query declares when the caller gives none. An instant
 /// query evaluates once, so any positive step denotes the same thing.
 const INSTANT_STEP_NS: i64 = 1_000_000_000;
+
+/// Prometheus's default evaluation interval: the resolution of a subquery
+/// that states none.
+const DEFAULT_RESOLUTION_NS: i64 = 60_000_000_000;
 
 /// When and how often a PromQL query is evaluated, in nanoseconds since the
 /// epoch.
@@ -114,7 +119,18 @@ pub fn promql_to_ir(query: &str, params: &PromqlParams) -> Result<Document, Lowe
             ));
         }
     };
-    let lowerer = Lowerer { params };
+    // An instant query evaluates once, so its step is free: it is raised to
+    // the coarsest subquery resolution, which an `over_time` may not undercut.
+    let step_ns = if params.instant {
+        step_ns.max(max_subquery_step(&expr))
+    } else {
+        step_ns
+    };
+    let lowerer = Lowerer {
+        params,
+        doc_step_ns: step_ns,
+        step_ns,
+    };
     let operand = lowerer.lower(&expr)?;
     let pipe = operand.into_pipe()?;
     Ok(Document {
@@ -196,8 +212,14 @@ impl Operand {
     }
 }
 
+#[derive(Clone, Copy)]
 struct Lowerer<'a> {
     params: &'a PromqlParams,
+    /// The document step.
+    doc_step_ns: i64,
+    /// The step this sub-expression is evaluated at: a subquery's resolution
+    /// inside one, else the document step.
+    step_ns: i64,
 }
 
 impl Lowerer<'_> {
@@ -205,13 +227,7 @@ impl Lowerer<'_> {
         match expr {
             Expr::Paren(p) => self.lower(&p.expr),
             Expr::NumberLiteral(n) => Ok(Operand::Number(n.val)),
-            Expr::VectorSelector(vs) => Ok(Operand::Pipe(self.select(
-                vs,
-                Sample {
-                    lookback: Some(LOOKBACK.to_string()),
-                    ..sample(SampleFn::Latest)
-                },
-            )?)),
+            Expr::VectorSelector(vs) => Ok(Operand::Pipe(self.select(vs, latest())?)),
             Expr::Call(call) => self.call(call),
             Expr::Aggregate(agg) => self.aggregate(agg),
             Expr::Binary(bin) => self.binary(bin),
@@ -237,19 +253,10 @@ impl Lowerer<'_> {
     /// A selector read by one `sample`: `where` over the point stream, then
     /// the sample, carrying the selector's `offset` and `@`.
     fn select(&self, vs: &VectorSelector, mut sample: Sample) -> Result<Pipe, LowerError> {
+        sample.step = self.stage_step();
         sample.offset = offset(vs.offset.as_ref())?;
         sample.at = vs.at.as_ref().map(|at| self.at(at)).transpose()?;
-        let mut pipeline = Vec::new();
-        if let Some(p) = selector_predicate(vs) {
-            pipeline.push(Stage::Where(p));
-        }
-        pipeline.push(Stage::Sample(sample));
-        Ok(Pipe {
-            from: "metrics",
-            constant: None,
-            pipeline,
-            shape: Shape::Series,
-        })
+        Ok(where_pipe(vs).push(Stage::Sample(sample)))
     }
 
     /// `@ <t>`, `@ start()`, `@ end()` as a timestamp literal in nanoseconds.
@@ -374,11 +381,56 @@ impl Lowerer<'_> {
                     ..sample(func)
                 },
             )?)),
-            Some(Expr::Subquery(_)) => Err(inexpressible(&format!("{name}() over a subquery"))),
+            Some(Expr::Subquery(sq)) => self.subquery(name, sq, arg),
             _ => Err(inexpressible(&format!(
                 "{name}() over anything but a range selector"
             ))),
         }
+    }
+
+    /// The step a stage states: none (the document's) outside a subquery.
+    fn stage_step(&self) -> Option<String> {
+        (self.step_ns != self.doc_step_ns).then(|| duration_ns(self.step_ns))
+    }
+
+    /// `f(expr[range:res])`: `expr` evaluated every `res`, re-windowed by an
+    /// `over_time` stage at this sub-expression's own step.
+    fn subquery(
+        &self,
+        name: &str,
+        sq: &SubqueryExpr,
+        arg: Option<f64>,
+    ) -> Result<Operand, LowerError> {
+        let func = over_time_function(name)
+            .ok_or_else(|| inexpressible(&format!("{name}() over a subquery")))?;
+        if sq.offset.is_some() || sq.at.is_some() {
+            return Err(inexpressible("offset or @ on a subquery"));
+        }
+        let res_ns = subquery_resolution(sq);
+        if res_ns > self.step_ns {
+            return Err(inexpressible(&format!(
+                "a subquery resolution ({}) coarser than its evaluation step ({})",
+                duration_ns(res_ns),
+                duration_ns(self.step_ns)
+            )));
+        }
+        let inner = Lowerer {
+            step_ns: res_ns,
+            ..*self
+        }
+        .series(&sq.expr, "a subquery")?;
+        // A pseudo-source always evaluates at the document step.
+        if res_ns != self.doc_step_ns && reads_pseudo_source(inner.from, &inner.pipeline) {
+            return Err(inexpressible(
+                "time(), vector() or scalar arithmetic inside a subquery at its own resolution",
+            ));
+        }
+        Ok(Operand::Pipe(inner.push(Stage::OverTime(OverTime {
+            func,
+            window: duration(sq.range),
+            step: self.stage_step(),
+            arg,
+        }))))
     }
 
     /// The `i`-th call argument, which must fold to a number.
@@ -511,11 +563,7 @@ impl Lowerer<'_> {
         let (pipe, right) = if reverse { (r, l) } else { (l, r) };
         let binop = Binop {
             op,
-            right: BinopOperand::Document(Box::new(SubDocument {
-                from: right.from.to_string(),
-                pipeline: right.pipeline,
-                constant: right.constant,
-            })),
+            right: BinopOperand::Document(Box::new(sub_document(right))),
             reverse,
             on,
             ignoring,
@@ -534,6 +582,19 @@ impl Lowerer<'_> {
             Operand::Pipe(p) if p.shape == Shape::Series => Ok(p),
             _ => Err(inexpressible(&format!("{what} over a scalar"))),
         }
+    }
+}
+
+/// The metrics point stream narrowed by a selector's matchers.
+fn where_pipe(vs: &VectorSelector) -> Pipe {
+    Pipe {
+        from: "metrics",
+        constant: None,
+        pipeline: selector_predicate(vs)
+            .map(Stage::Where)
+            .into_iter()
+            .collect(),
+        shape: Shape::Series,
     }
 }
 
@@ -731,6 +792,79 @@ fn fold(op: BinopOp, a: f64, b: f64) -> Option<f64> {
     })
 }
 
+fn sub_document(pipe: Pipe) -> SubDocument {
+    SubDocument {
+        from: pipe.from.to_string(),
+        pipeline: pipe.pipeline,
+        constant: pipe.constant,
+    }
+}
+
+/// Whether a pipeline, or a sub-document it combines with, reads a
+/// pseudo-source.
+fn reads_pseudo_source(from: &str, pipeline: &[Stage]) -> bool {
+    is_pseudo_source(from)
+        || pipeline.iter().any(|stage| {
+            matches!(stage, Stage::Binop(Binop { right: BinopOperand::Document(d), .. })
+                if reads_pseudo_source(&d.from, &d.pipeline))
+        })
+}
+
+/// The coarsest subquery resolution in an instant query, or 0.
+fn max_subquery_step(expr: &Expr) -> i64 {
+    struct Max(i64);
+    impl ExprVisitor for Max {
+        type Error = std::convert::Infallible;
+        fn pre_visit(&mut self, expr: &Expr) -> Result<bool, Self::Error> {
+            if let Expr::Subquery(sq) = expr {
+                self.0 = self.0.max(subquery_resolution(sq));
+            }
+            Ok(true)
+        }
+    }
+    let mut max = Max(0);
+    let Ok(_) = walk_expr(&mut max, expr);
+    max.0
+}
+
+/// A subquery's resolution, Prometheus's default evaluation interval when it
+/// states none.
+fn subquery_resolution(sq: &SubqueryExpr) -> i64 {
+    sq.step
+        .map(duration_i64)
+        .filter(|&ns| ns > 0)
+        .unwrap_or(DEFAULT_RESOLUTION_NS)
+}
+
+/// The `over_time` function a PromQL range function is over a subquery.
+fn over_time_function(name: &str) -> Option<OverTimeFn> {
+    Some(match name {
+        "avg_over_time" => OverTimeFn::Avg,
+        "min_over_time" => OverTimeFn::Min,
+        "max_over_time" => OverTimeFn::Max,
+        "sum_over_time" => OverTimeFn::Sum,
+        "count_over_time" => OverTimeFn::Count,
+        "last_over_time" => OverTimeFn::Last,
+        "stddev_over_time" => OverTimeFn::Stddev,
+        "stdvar_over_time" => OverTimeFn::Stdvar,
+        "present_over_time" => OverTimeFn::Present,
+        "quantile_over_time" => OverTimeFn::Quantile,
+        "delta" => OverTimeFn::Delta,
+        "deriv" => OverTimeFn::Deriv,
+        "changes" => OverTimeFn::Changes,
+        "resets" => OverTimeFn::Resets,
+        _ => return None,
+    })
+}
+
+/// An instant `sample`: the latest point within the lookback.
+fn latest() -> Sample {
+    Sample {
+        lookback: Some(LOOKBACK.to_string()),
+        ..sample(SampleFn::Latest)
+    }
+}
+
 /// A `sample` of `func` with every optional operand unset.
 fn sample(func: SampleFn) -> Sample {
     Sample {
@@ -892,7 +1026,11 @@ fn system_time_ns(t: SystemTime) -> Option<i64> {
 }
 
 fn duration(d: Duration) -> String {
-    duration_ns(i64::try_from(d.as_nanos()).unwrap_or(i64::MAX))
+    duration_ns(duration_i64(d))
+}
+
+fn duration_i64(d: Duration) -> i64 {
+    i64::try_from(d.as_nanos()).unwrap_or(i64::MAX)
 }
 
 /// A duration as the IR spells it, in the largest unit that divides it.
