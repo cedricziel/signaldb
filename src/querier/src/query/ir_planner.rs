@@ -36,7 +36,7 @@ use common::attrs::expr::typed_home_expr;
 use common::attrs::expr::typed_home_filter_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
-    Aggregate, Binop, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
+    Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
     FieldResolver, Heatmap, HistogramMode, HistogramQuantile, JoinKind, Leaf, Literal, Parser,
     Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
     coerce, safe_ident, validate,
@@ -1023,11 +1023,15 @@ fn reject_pseudo_source(doc: &Document) -> Result<(), QuerierError> {
     Ok(())
 }
 
-/// The series-algebra shapes (`irVersion` 10) validate but have no lowering
+/// The `irVersion` 10 histogram shapes that validate but have no lowering
 /// yet: refused after validation, so an invalid document still gets its 400,
 /// as `Unsupported` (501).
 fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
-    if let Some(stage) = doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
+    if let Some(stage) = doc
+        .pipeline
+        .iter()
+        .find(|stage| matches!(stage, Stage::HistogramFraction(_)))
+    {
         return Err(unsupported_stage(stage));
     }
     if doc
@@ -1040,16 +1044,6 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
         ));
     }
     Ok(())
-}
-
-fn is_series_algebra(stage: &Stage) -> bool {
-    matches!(
-        stage,
-        Stage::Binop(Binop {
-            right: BinopOperand::Document(_),
-            ..
-        }) | Stage::HistogramFraction(_)
-    )
 }
 
 fn unsupported_stage(stage: &Stage) -> QuerierError {
@@ -1074,6 +1068,7 @@ pub(crate) async fn plan_document(
     doc: &Document,
     request: PlanRequest<'_>,
 ) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
+    let operand_request = request.clone();
     let PlanRequest {
         tenant_slug,
         dataset_slug,
@@ -1084,7 +1079,7 @@ pub(crate) async fn plan_document(
     reject_pseudo_source(doc)?;
     if common::query_ir::is_pseudo_source(&doc.from) {
         let window = resolve_window(doc, now_ns)?;
-        let df = metric_series::scalar::plan_pseudo_source(ctx, doc, window)?;
+        let df = plan_pseudo_document(ctx, doc, window, &operand_request).await?;
         return Ok(Some((df, window, None)));
     }
     let source = SourcePlan::for_source(&doc.from)
@@ -1227,7 +1222,7 @@ pub(crate) async fn plan_document(
                     step_ns: series_step,
                     doc_step,
                 };
-                metric_series::lower_stage(df, stage, &env)?
+                lower_frame_stage(df, stage, &env, doc, &operand_request).await?
             }
             // Needs the resolved window for its evaluation instants.
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
@@ -1263,6 +1258,78 @@ pub(crate) async fn plan_document(
     }
     df = lowering.apply_projection(df, doc)?;
     Ok(Some((df, window, lowering.correlate_truncated)))
+}
+
+/// Plan a document over the `time`/`constant` pseudo-source: its Scalar,
+/// then its Series/Scalar stages.
+async fn plan_pseudo_document(
+    ctx: &SessionContext,
+    doc: &Document,
+    window: ResolvedWindow,
+    request: &PlanRequest<'_>,
+) -> Result<DataFrame, QuerierError> {
+    let (mut df, step_ns) = metric_series::scalar::pseudo_source_frame(ctx, doc, window)?;
+    let doc_step = doc.step.as_deref();
+    let windows = metric_series::stage_windows(&doc.pipeline, window, Some(step_ns), doc_step);
+    let mut step = Some(step_ns);
+    for (stage, &stage_window) in doc.pipeline.iter().zip(&windows) {
+        let env = metric_series::FrameEnv {
+            ctx,
+            window: stage_window,
+            step_ns: step,
+            doc_step,
+        };
+        df = lower_frame_stage(df, stage, &env, doc, request).await?;
+        step = metric_series::output_step(stage, step, doc_step);
+    }
+    metric_series::sort_frame(df, metric_series::terminal_order(doc, window))
+}
+
+/// Lower one Series/Scalar stage; a `binop` with a sub-document first plans
+/// that document over the stage's window and matches the two frames.
+async fn lower_frame_stage(
+    df: DataFrame,
+    stage: &Stage,
+    env: &metric_series::FrameEnv<'_>,
+    doc: &Document,
+    request: &PlanRequest<'_>,
+) -> Result<DataFrame, QuerierError> {
+    let Stage::Binop(binop) = stage else {
+        return metric_series::lower_stage(df, stage, env);
+    };
+    let BinopOperand::Document(sub) = &binop.right else {
+        return metric_series::lower_stage(df, stage, env);
+    };
+    if env.step_ns.is_none() {
+        return Err(QuerierError::Unsupported(
+            "binop over a non-sampled Series".to_string(),
+        ));
+    }
+    let child = Document {
+        ir_version: doc.ir_version,
+        from: sub.from.clone(),
+        range: common::query_ir::Range {
+            from: env.window.start_ns.into(),
+            to: env.window.end_ns.into(),
+        },
+        result: if metric_series::yields_scalar(&sub.from, &sub.pipeline) {
+            ResultEnvelope::Scalar
+        } else {
+            ResultEnvelope::Series
+        },
+        fields: None,
+        pipeline: sub.pipeline.clone(),
+        focus: None,
+        depth: None,
+        trace_id: None,
+        step: doc.step.clone(),
+        constant: sub.constant,
+    };
+    let right = match Box::pin(plan_document(env.ctx, &child, request.clone())).await? {
+        Some((right, _, _)) => metric_series::operand(right),
+        None => metric_series::empty_series(env.ctx)?,
+    };
+    metric_series::vector_match::vector_match(metric_series::operand(df), right, binop)
 }
 
 /// Decode full-payload profile rows, aggregate them into one flamegraph, and
@@ -1488,6 +1555,7 @@ pub(crate) enum AttributeTypeRequest {
 /// table (every compat lowering, every planner test) can
 /// build one with [`PlanRequest::new`] and not spell out either default at
 /// every call site.
+#[derive(Clone)]
 pub(crate) struct PlanRequest<'a> {
     pub tenant_slug: &'a str,
     pub dataset_slug: &'a str,
@@ -5772,18 +5840,12 @@ mod tests {
         assert!(vs.len() == 1 && vs[0] > 2.0 && vs[0] <= 4.0, "{vs:?}");
     }
 
-    /// `irVersion` 10 series-algebra shapes validate but are refused before
-    /// any scan until their lowering lands.
+    /// `irVersion` 10 histogram shapes validate but are refused before any
+    /// scan until their lowering lands.
     #[tokio::test]
-    async fn series_algebra_is_not_supported_yet() {
+    async fn unexecutable_histogram_shapes_are_not_supported_yet() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
         for (from, pipeline, expected) in [
-            (
-                "metrics",
-                serde_json::json!([{ "sample": { "fn": "latest" } }, { "binop": {
-                    "op": "add", "right": { "from": "constant", "constant": 1 } } }]),
-                "binop stage is not supported yet",
-            ),
             (
                 "metrics",
                 serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),

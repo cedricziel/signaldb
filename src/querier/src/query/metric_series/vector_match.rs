@@ -10,8 +10,6 @@
 //! are bounded, each side's series count is capped, and the state is
 //! reserved against the memory pool) and emits one sorted batch.
 
-#![cfg_attr(not(test), expect(dead_code, reason = "not wired into a planner yet"))]
-
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
 use std::fmt;
@@ -63,6 +61,9 @@ const VALUE: &str = "value";
 pub(crate) enum Operand {
     Series(DataFrame),
     Scalar(DataFrame),
+    /// The planner lowers a number operand as a projection instead
+    /// (`stages::lower_number_binop`); the node's own tests still use it.
+    #[cfg_attr(not(test), expect(dead_code, reason = "numbers plan as a projection"))]
     Number(f64),
 }
 

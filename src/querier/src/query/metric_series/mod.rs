@@ -1,7 +1,11 @@
 //! Metric Series planning (D11): the Series frame `(bucket, __labels, value)`
 //! and the label-set UDFs its stages group, match and rewrite by.
 
-use common::query_ir::{BinopOperand, Direction, Document, Stage};
+use std::sync::Arc;
+
+use common::query_ir::{BinopOperand, Direction, Document, Stage, is_pseudo_source};
+use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions::math::expr_fn::isnan;
 use datafusion::prelude::{DataFrame, SessionContext, ident};
 
@@ -20,6 +24,8 @@ mod window;
 
 pub(crate) use window::{output_step, stage_windows};
 
+#[cfg(test)]
+mod binop_tests;
 #[cfg(test)]
 mod stage_tests;
 #[cfg(test)]
@@ -67,7 +73,7 @@ pub(crate) fn lower_stage(
         Stage::Binop(binop) => match &binop.right {
             BinopOperand::Number(n) => stages::lower_number_binop(df, binop, *n),
             BinopOperand::Document(_) => Err(QuerierError::Unsupported(
-                "binop with a sub-document operand is not supported yet".to_string(),
+                "binop with a sub-document operand is planned by the IR planner".to_string(),
             )),
         },
         // Only the terminal order changes (see `terminal_order`).
@@ -77,6 +83,52 @@ pub(crate) fn lower_stage(
             other.name()
         ))),
     }
+}
+
+/// Whether a `binop` sub-document yields a Scalar rather than a Series.
+pub(crate) fn yields_scalar(from: &str, pipeline: &[Stage]) -> bool {
+    pipeline
+        .iter()
+        .fold(is_pseudo_source(from), |scalar, stage| match stage {
+            Stage::Scalar(_) => true,
+            Stage::Binop(binop) => {
+                scalar
+                    && match &binop.right {
+                        BinopOperand::Number(_) => true,
+                        BinopOperand::Document(sub) => yields_scalar(&sub.from, &sub.pipeline),
+                    }
+            }
+            Stage::Map(_) | Stage::Filter(_) => scalar,
+            _ => false,
+        })
+}
+
+/// A planned metric frame as a `binop` operand.
+pub(crate) fn operand(df: DataFrame) -> vector_match::Operand {
+    if df
+        .schema()
+        .has_column_with_unqualified_name(labels::LABELS_COLUMN)
+    {
+        vector_match::Operand::Series(df)
+    } else {
+        vector_match::Operand::Scalar(df)
+    }
+}
+
+/// A Series with no series: the operand read from a dataset without the
+/// source's table.
+pub(crate) fn empty_series(ctx: &SessionContext) -> Result<vector_match::Operand, QuerierError> {
+    let schema = Schema::new(vec![
+        Field::new(
+            "bucket",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new(labels::LABELS_COLUMN, DataType::Utf8, false),
+        Field::new("value", DataType::Float64, false),
+    ]);
+    let batch = RecordBatch::new_empty(Arc::new(schema));
+    Ok(vector_match::Operand::Series(ctx.read_batch(batch)?))
 }
 
 /// The value order a terminal `sort` asks for. As in Prometheus it orders
