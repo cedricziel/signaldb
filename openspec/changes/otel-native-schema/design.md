@@ -289,6 +289,96 @@ so the WAL stays byte-unchanged (D6).
   is needed. The writer's table reconciler drops (with purge) the five legacy
   tables; their data is not migrated.
 
+### D11 — Metric-native query: point streams, series algebra, one engine for IR and PromQL
+
+Layer 8 decisions (taken 2026-09-29). PromQL stops being a second engine: it
+lowers to IR documents (as LogQL and TraceQL already do through `ql-ir`) and the
+PromQL evaluator in `querier::query::{promql,metrics}` is deleted within the
+layer. The IR grows whatever PromQL needs.
+
+- **Relations.** The range relation is the metric *point stream* itself — the
+  `metrics` RowSet with grain `point`, holding `series_id`, `start_timestamp`,
+  temporality and type. OTel points already carry what a PromQL range vector
+  reconstructs from scrapes (identity, interval, temporality), so there is no
+  range-selector construct: a window is a parameter of the operator that reads
+  the stream. `where` keeps the stream's identity; `extract`, `aggregate`,
+  `topk`/`bottomk`, `order`, `limit` drop it. The instant relation is an
+  aligned `Series` (one value per series per evaluation instant). `Scalar` is a
+  new relation: one value per evaluation instant, no labels. Feeding a Series,
+  a Scalar or an identity-less RowSet to an operator that needs a point stream
+  is a validation error (400).
+- **Series labels.** A Series produced from a point stream carries the full
+  label set of its series: `metric.name`, resource attributes as
+  `resource.<key>` (with `service.name` as itself), and point attributes by
+  their own key — the IR's logical names, stringified. The relation type
+  records the label set as *known* (after a `by`) or *open*. In the querier a
+  Series is `(bucket, labels Map<Utf8,Utf8>, value Float64)`; grouping and
+  matching go through label-set UDFs (keep / drop / fingerprint / replace /
+  join), so `without`, `ignoring` and `label_replace` work on label sets not
+  known at plan time. The PromQL surface maps names at its own boundary
+  (`__name__` ↔ `metric.name`, `job`/`service_name` ↔ `service.name`, other
+  dots ↔ `_`), never inside the model.
+- **Evaluation instants.** Metric Series are evaluated at `t = from + k·step`
+  and labelled `t`. An instant value is a series' latest point in
+  `(t − lookback, t]` (lookback default `5m`); range operators read
+  `(t − window, t]`. `offset` shifts the read window back, `at` pins `t`.
+  Log/trace/profile aggregates keep epoch-aligned `date_bin` buckets.
+- **rate / increase / irate** are one DataFusion window function (UDWF)
+  partitioned by `series_id`, ordered by `timestamp`. Cumulative: sum of
+  successive differences inside the window; a point whose `start_timestamp`
+  moved forward is a reset and contributes its full value; the first point
+  contributes its full value only when its `start_timestamp` lies inside the
+  window, else it is the baseline; with no `start_timestamp` (0/null — e.g.
+  Prometheus remote-write) a value decrease is the reset signal. Delta: the
+  sum of the points in the window. `rate = increase / window_seconds`; no
+  extrapolation. Gauges and non-monotonic sums are rejected (400, naming
+  `delta`/`deriv`) — on the IR and on PromQL.
+- **Histograms.** A UDAF merges bucket data across series (explicit bounds
+  must match; exponential buckets are downscaled to the smallest scale and
+  the largest zero threshold wins, folding buckets inside it into the zero
+  count — the OTel SDK merge rule); a scalar UDF interpolates the quantile.
+  Explicit: linear within the bucket, as today. Exponential: bucket `i` is
+  `(base^i, base^(i+1)]`, `base = 2^(2^−scale)`; rank walk negative (largest
+  magnitude first) → zero → positive; exponential interpolation inside a
+  bucket, linear across the zero bucket, clamped to OTel `min`/`max` when
+  present. Rate mode differences each series' buckets per the rate rules
+  above before merging. Summary stays rejected (400).
+- **Vector matching** is a `binop` stage whose right operand is a sub-document
+  (or a number). It plans as one custom logical node + `ExecutionPlan`
+  (the `correlate_cap` pattern) that joins on the fingerprint of the matched
+  label set (`on` / `ignoring`), enforces one-to-one or the declared
+  `group: left|right` side, and rejects many-to-many and a duplicate output
+  label set with a 400. Arithmetic drops `metric.name`; `bool` comparisons
+  yield 0/1; `and`/`or`/`unless` are set operations on label sets. A Scalar
+  operand broadcasts. `formulas` remain the multi-query convenience.
+- **Series algebra stages (`irVersion` 10).** `sample` (point stream → Series:
+  latest, rate/increase/irate/delta/idelta/deriv/resets/changes,
+  `*_over_time`, over `of` = `metric.value` or `metric.count`/`metric.sum`),
+  `reduce` (Series → Series: sum/avg/min/max/count/group/stddev/stdvar/
+  quantile/topk/bottomk/count_values, `by` or `without`), `map` (value
+  functions incl. math, clamp, round, timestamp, calendar), `labels`
+  (replace/join), `filter` (compare with a scalar, optional `bool`), `binop`,
+  `sort`, `absent`, `over_time` (a subquery: re-window a Series evaluated at
+  its own resolution), `scalar` (Series → Scalar, NaN unless exactly one
+  series) and `vector` (Scalar → Series). `histogram_quantile` gains `window`
+  and a `histogram_fraction` sibling; `from: "time"` and `from: "constant"`
+  are Scalar pseudo-sources. The legacy `aggregate` range functions and
+  `histogram_quantile` keep their document shape and run on the same
+  operators.
+- **Scalar envelope.** `result: "scalar"` returns `points: [[t_ns, value]]`
+  with no labels; PromQL maps it to `resultType: "scalar"` (instant) and to a
+  label-less matrix (range, as Prometheus does).
+- **Result changes (stated, not hidden).** Series identity is `series_id`, not
+  (service, materialized labels); rate-mode `histogram_quantile` returns a
+  value where it returned NaN for services emitting several series of one
+  metric; instant-mode `histogram_quantile` takes each series' latest point
+  instead of summing cumulative snapshots; metric Series timestamps move from
+  bucket start to evaluation instant; PromQL instant queries use a 5m
+  lookback instead of a 1h bucket; exponential-histogram quantiles return a
+  value instead of 501; rate/increase/irate over gauges and UpDownCounters
+  return 400; PromQL honours `on`/`ignoring`/`group_*` and rejects
+  many-to-many; `scalar()`/`time()` return scalars.
+
 ## Risks / Trade-offs
 
 - **Warm tier is unpruned without the derived index** → the typed map is cast-free
@@ -364,8 +454,9 @@ match `tasks.md`; results of layer 0 are in `spike/results.md`.
 7. **Typed metric substrate** (`typed-metric-storage`): bucket-native histograms,
    typed temporality, exemplar join keys, Summary passthrough — replacing
    `data_json` in the same one-shot cutover. **BREAKING** metric layout.
-8. **Metric-native operators** (`metric-native-query`): rate/increase, histogram
-   quantiles, vector matching as custom operators over the typed substrate.
+8. **Metric-native operators** (`metric-native-query`, D11): rate/increase,
+   histogram quantiles, vector matching as custom operators over the typed
+   substrate; PromQL lowers to the IR and its evaluator is deleted.
 9. **Correlate.**
 10. **Structural `match`** (per-trace evaluator baseline).
 11. **Surface parity, subsumption, docs.**
