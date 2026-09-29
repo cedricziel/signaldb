@@ -2718,7 +2718,7 @@ mod tests {
     }
 
     /// Append `n` rows of empty typed-layout `attributes`/`resource_attributes`
-    /// columns (the `metrics_gauge` `physical-v3` shape) to `fields`/`columns`.
+    /// columns (the wide `metrics` `physical-v4` shape) to `fields`/`columns`.
     fn push_empty_typed_metric_attrs(
         fields: &mut Vec<Field>,
         columns: &mut Vec<ArrayRef>,
@@ -2728,8 +2728,8 @@ mod tests {
             vec![Some(serde_json::Map::new()); n];
         for name in [LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES] {
             let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
-                "metrics_gauge",
-                "physical-v3",
+                "metrics",
+                "physical-v4",
                 name,
                 &rows,
             );
@@ -2787,12 +2787,8 @@ mod tests {
             (LOG_ATTRIBUTES, &attr_rows),
             (RESOURCE_ATTRIBUTES, &resource_rows),
         ] {
-            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
-                "metrics_gauge",
-                "physical-v3",
-                name,
-                rows,
-            );
+            let (typed_fields, typed_arrays) =
+                common::testing::typed_attribute_columns_from("metrics", "physical-v4", name, rows);
             fields.extend(typed_fields);
             columns.extend(typed_arrays);
         }

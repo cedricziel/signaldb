@@ -44,9 +44,9 @@ pub struct RouteTarget {
 pub struct RouteMetadata<'a> {
     pub tenant_id: Option<&'a str>,
     pub dataset_id: Option<&'a str>,
-    /// Honoured for metrics only, which fan out across several tables
-    /// (`metrics_gauge`, `metrics_sum`, ...). Every other signal has exactly
-    /// one table, so a `target_table` there is ignored.
+    /// Honoured for metrics only: `metrics` or one of the five legacy
+    /// per-type names, all of which route to `metrics`. Every other signal has
+    /// exactly one table, so a `target_table` there is ignored.
     pub target_table: Option<&'a str>,
 }
 

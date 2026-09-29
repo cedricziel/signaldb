@@ -542,10 +542,14 @@ mod tests {
                 ensured.insert(("acme".to_string(), "production".to_string(), table));
             }
         }
-        manager
-            .ensure_table("acme", "production", "metrics_gauge")
-            .await
-            .unwrap();
+        common::testing::create_legacy_metric_table(
+            &manager,
+            "acme",
+            "production",
+            "metrics_gauge",
+        )
+        .await
+        .unwrap();
 
         let retry = reconciler.run_pass().await.unwrap();
         assert_eq!(retry.datasets_skipped, 1);
@@ -556,8 +560,7 @@ mod tests {
                 .contains(&"metrics_gauge".to_string())
         );
 
-        manager
-            .ensure_table("acme", "production", "metrics_sum")
+        common::testing::create_legacy_metric_table(&manager, "acme", "production", "metrics_sum")
             .await
             .unwrap();
         let later = reconciler.run_pass().await.unwrap();

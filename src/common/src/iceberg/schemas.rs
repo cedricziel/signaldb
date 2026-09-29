@@ -78,31 +78,6 @@ pub fn create_logs_schema() -> Result<Schema> {
     create_logs_schema_with(&materialized_labels_for("logs"))
 }
 
-/// Global-config variant of [`create_metrics_gauge_schema_with`].
-pub fn create_metrics_gauge_schema() -> Result<Schema> {
-    create_metrics_gauge_schema_with(&materialized_labels_for("metrics"))
-}
-
-/// Global-config variant of [`create_metrics_sum_schema_with`].
-pub fn create_metrics_sum_schema() -> Result<Schema> {
-    create_metrics_sum_schema_with(&materialized_labels_for("metrics"))
-}
-
-/// Global-config variant of [`create_metrics_histogram_schema_with`].
-pub fn create_metrics_histogram_schema() -> Result<Schema> {
-    create_metrics_histogram_schema_with(&materialized_labels_for("metrics"))
-}
-
-/// Global-config variant of [`create_metrics_exponential_histogram_schema_with`].
-pub fn create_metrics_exponential_histogram_schema() -> Result<Schema> {
-    create_metrics_exponential_histogram_schema_with(&materialized_labels_for("metrics"))
-}
-
-/// Global-config variant of [`create_metrics_summary_schema_with`].
-pub fn create_metrics_summary_schema() -> Result<Schema> {
-    create_metrics_summary_schema_with(&materialized_labels_for("metrics"))
-}
-
 /// Global-config variant of [`create_profiles_schema_with`].
 pub fn create_profiles_schema() -> Result<Schema> {
     create_profiles_schema_with(&materialized_labels_for("profiles"))
@@ -110,8 +85,7 @@ pub fn create_profiles_schema() -> Result<Schema> {
 
 /// Create Iceberg schema for the wide metrics table (otel-native-schema
 /// layer 7, D10) using TOML definitions, plus any configured
-/// materialized-label columns. Declaration only -- not yet reachable through
-/// [`TableSchema::all`]/table creation.
+/// materialized-label columns.
 pub fn create_metrics_schema_with(labels: &[String]) -> Result<Schema> {
     TableSchema::Metrics
         .resolved_schema()?
@@ -124,7 +98,6 @@ pub fn create_metrics_schema() -> Result<Schema> {
 }
 
 /// Create Iceberg schema for the metric exemplars table paired with
-/// [`create_metrics_schema_with`]. Declaration only, same inert status as
 /// [`create_metrics_schema_with`].
 pub fn create_metric_exemplars_schema_with(labels: &[String]) -> Result<Schema> {
     TableSchema::MetricExemplars
@@ -155,46 +128,6 @@ fn materialized_labels_for(signal: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// Create Iceberg schema for metrics gauge table
-/// Based on ClickHouse metrics_gauge_table.sql schema but adapted for Iceberg
-pub fn create_metrics_gauge_schema_with(labels: &[String]) -> Result<Schema> {
-    TableSchema::MetricsGauge
-        .resolved_schema()?
-        .to_iceberg_schema_with_labels(labels)
-}
-
-/// Create Iceberg schema for metrics sum table
-/// Based on ClickHouse metrics_sum_table.sql schema but adapted for Iceberg
-pub fn create_metrics_sum_schema_with(labels: &[String]) -> Result<Schema> {
-    TableSchema::MetricsSum
-        .resolved_schema()?
-        .to_iceberg_schema_with_labels(labels)
-}
-
-/// Create Iceberg schema for metrics histogram table
-/// Based on ClickHouse metrics_histogram_table.sql schema but adapted for Iceberg
-pub fn create_metrics_histogram_schema_with(labels: &[String]) -> Result<Schema> {
-    TableSchema::MetricsHistogram
-        .resolved_schema()?
-        .to_iceberg_schema_with_labels(labels)
-}
-
-/// Create Iceberg schema for metrics exponential histogram table
-/// Similar to histogram but with exponential bucketing for better precision
-pub fn create_metrics_exponential_histogram_schema_with(labels: &[String]) -> Result<Schema> {
-    TableSchema::MetricsExponentialHistogram
-        .resolved_schema()?
-        .to_iceberg_schema_with_labels(labels)
-}
-
-/// Create Iceberg schema for metrics summary table
-/// Stores quantile values for summary metrics
-pub fn create_metrics_summary_schema_with(labels: &[String]) -> Result<Schema> {
-    TableSchema::MetricsSummary
-        .resolved_schema()?
-        .to_iceberg_schema_with_labels(labels)
-}
-
 /// Create Iceberg schema for the profiles table
 ///
 /// Storage format for OpenTelemetry profiles with the OTLP dictionary
@@ -222,15 +155,6 @@ pub fn create_logs_partition_spec() -> Result<PartitionSpec> {
     create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
-/// Create partition specification for metrics tables
-/// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
-/// Hour-level partitioning also enables day/month/year pruning automatically.
-pub fn create_metrics_partition_spec() -> Result<PartitionSpec> {
-    // Use metrics gauge schema as the base (they all have the same timestamp column)
-    let schema = create_metrics_gauge_schema()?;
-    create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
-}
-
 /// Create partition specification for profiles table
 /// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
 /// Hour-level partitioning also enables day/month/year pruning automatically.
@@ -241,7 +165,7 @@ pub fn create_profiles_partition_spec() -> Result<PartitionSpec> {
 
 /// Create partition specification for the wide metrics table.
 /// Partitions by hour using Iceberg's built-in Hour transform on the timestamp column.
-pub fn create_metrics_partition_spec_v4() -> Result<PartitionSpec> {
+pub fn create_metrics_partition_spec() -> Result<PartitionSpec> {
     let schema = create_metrics_schema()?;
     create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
@@ -253,14 +177,8 @@ pub fn create_metric_exemplars_partition_spec() -> Result<PartitionSpec> {
     create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
-/// The only version of the typed `metrics`/`metric_exemplars` tables. Pinned
-/// here instead of read from `current_metric_version`, which still names the
-/// legacy per-type tables' version until the cutover.
+/// The version of the typed `metrics`/`metric_exemplars` tables.
 pub const TYPED_METRIC_VERSION: &str = "physical-v4";
-
-/// The legacy per-type metric tables' version, pinned so they still resolve
-/// after `current_metric_version` flips (the reconciler drops them then).
-pub const LEGACY_METRIC_VERSION: &str = "physical-v3";
 
 /// The five per-type metric tables the wide `metrics` table replaced. The
 /// reconciler purges them and the writer redirects stragglers targeting them.
@@ -277,18 +195,10 @@ pub const LEGACY_METRIC_TABLE_NAMES: &[&str] = &[
 pub enum TableSchema {
     Traces,
     Logs,
-    MetricsGauge,
-    MetricsSum,
-    MetricsHistogram,
-    MetricsExponentialHistogram,
-    MetricsSummary,
     Profiles,
-    /// The wide metrics table (otel-native-schema layer 7, D10). Not yet
-    /// created anywhere: absent from [`Self::all`]/[`Self::all_from_config`]
-    /// until the cutover PR switches ingestion and the table reconciler over
-    /// to it.
+    /// The wide metrics table (otel-native-schema layer 7, D10).
     Metrics,
-    /// The exemplars table paired with [`Self::Metrics`]. Same inert status.
+    /// The exemplars table paired with [`Self::Metrics`].
     MetricExemplars,
     Custom(String), // For custom schemas from configuration
 }
@@ -325,13 +235,9 @@ impl TableSchema {
         match self {
             TableSchema::Traces => Some(AttributeTypeSignal::Traces),
             TableSchema::Logs => Some(AttributeTypeSignal::Logs),
-            TableSchema::MetricsGauge
-            | TableSchema::MetricsSum
-            | TableSchema::MetricsHistogram
-            | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary
-            | TableSchema::Metrics
-            | TableSchema::MetricExemplars => Some(AttributeTypeSignal::Metrics),
+            TableSchema::Metrics | TableSchema::MetricExemplars => {
+                Some(AttributeTypeSignal::Metrics)
+            }
             TableSchema::Profiles => Some(AttributeTypeSignal::Profiles),
             TableSchema::Custom(_) => None,
         }
@@ -347,18 +253,6 @@ impl TableSchema {
             }
             TableSchema::Logs => SCHEMA_DEFINITIONS
                 .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version),
-            TableSchema::MetricsGauge => SCHEMA_DEFINITIONS
-                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, LEGACY_METRIC_VERSION),
-            TableSchema::MetricsSum => SCHEMA_DEFINITIONS
-                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, LEGACY_METRIC_VERSION),
-            TableSchema::MetricsHistogram => SCHEMA_DEFINITIONS
-                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, LEGACY_METRIC_VERSION),
-            TableSchema::MetricsExponentialHistogram => SCHEMA_DEFINITIONS.resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                LEGACY_METRIC_VERSION,
-            ),
-            TableSchema::MetricsSummary => SCHEMA_DEFINITIONS
-                .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, LEGACY_METRIC_VERSION),
             TableSchema::Profiles => SCHEMA_DEFINITIONS.resolve_table_schema(
                 &SCHEMA_DEFINITIONS.profiles,
                 &SCHEMA_DEFINITIONS.metadata.current_profile_version,
@@ -384,13 +278,7 @@ impl TableSchema {
         match self {
             TableSchema::Traces => &m.traces,
             TableSchema::Logs => &m.logs,
-            TableSchema::MetricsGauge
-            | TableSchema::MetricsSum
-            | TableSchema::MetricsHistogram
-            | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary
-            | TableSchema::Metrics
-            | TableSchema::MetricExemplars => &m.metrics,
+            TableSchema::Metrics | TableSchema::MetricExemplars => &m.metrics,
             TableSchema::Profiles => &m.profiles,
             TableSchema::Custom(_) => &[],
         }
@@ -400,13 +288,6 @@ impl TableSchema {
         match self {
             TableSchema::Traces => create_traces_schema(),
             TableSchema::Logs => create_logs_schema(),
-            TableSchema::MetricsGauge => create_metrics_gauge_schema(),
-            TableSchema::MetricsSum => create_metrics_sum_schema(),
-            TableSchema::MetricsHistogram => create_metrics_histogram_schema(),
-            TableSchema::MetricsExponentialHistogram => {
-                create_metrics_exponential_histogram_schema()
-            }
-            TableSchema::MetricsSummary => create_metrics_summary_schema(),
             TableSchema::Profiles => create_profiles_schema(),
             TableSchema::Metrics => create_metrics_schema(),
             TableSchema::MetricExemplars => create_metric_exemplars_schema(),
@@ -421,13 +302,8 @@ impl TableSchema {
         match self {
             TableSchema::Traces => create_traces_partition_spec(),
             TableSchema::Logs => create_logs_partition_spec(),
-            TableSchema::MetricsGauge
-            | TableSchema::MetricsSum
-            | TableSchema::MetricsHistogram
-            | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary => create_metrics_partition_spec(),
             TableSchema::Profiles => create_profiles_partition_spec(),
-            TableSchema::Metrics => create_metrics_partition_spec_v4(),
+            TableSchema::Metrics => create_metrics_partition_spec(),
             TableSchema::MetricExemplars => create_metric_exemplars_partition_spec(),
             TableSchema::Custom(_) => Err(anyhow::anyhow!(
                 "Custom partition specs must be defined in configuration"
@@ -445,11 +321,6 @@ impl TableSchema {
         match table_name {
             "traces" => Some(TableSchema::Traces),
             "logs" => Some(TableSchema::Logs),
-            "metrics_gauge" => Some(TableSchema::MetricsGauge),
-            "metrics_sum" => Some(TableSchema::MetricsSum),
-            "metrics_histogram" => Some(TableSchema::MetricsHistogram),
-            "metrics_exponential_histogram" => Some(TableSchema::MetricsExponentialHistogram),
-            "metrics_summary" => Some(TableSchema::MetricsSummary),
             "profiles" => Some(TableSchema::Profiles),
             "metrics" => Some(TableSchema::Metrics),
             "metric_exemplars" => Some(TableSchema::MetricExemplars),
@@ -472,11 +343,6 @@ impl TableSchema {
         match self {
             TableSchema::Traces => &["timestamp", "trace_id"],
             TableSchema::Logs => &["timestamp", "service_name", "severity_text"],
-            TableSchema::MetricsGauge
-            | TableSchema::MetricsSum
-            | TableSchema::MetricsHistogram
-            | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary => &["timestamp", "metric_name", "service_name"],
             TableSchema::Profiles => &["timestamp", "service_name"],
             TableSchema::Metrics => &["timestamp", "metric_name", "service_name"],
             TableSchema::MetricExemplars => &["timestamp", "trace_id"],
@@ -536,11 +402,6 @@ impl TableSchema {
         match self {
             TableSchema::Traces => "traces",
             TableSchema::Logs => "logs",
-            TableSchema::MetricsGauge => "metrics_gauge",
-            TableSchema::MetricsSum => "metrics_sum",
-            TableSchema::MetricsHistogram => "metrics_histogram",
-            TableSchema::MetricsExponentialHistogram => "metrics_exponential_histogram",
-            TableSchema::MetricsSummary => "metrics_summary",
             TableSchema::Profiles => "profiles",
             TableSchema::Metrics => "metrics",
             TableSchema::MetricExemplars => "metric_exemplars",
@@ -634,7 +495,7 @@ mod tests {
             ..Default::default()
         };
 
-        let gauge = TableSchema::MetricsGauge.schema_with_labels(&m).unwrap();
+        let gauge = TableSchema::Metrics.schema_with_labels(&m).unwrap();
         assert!(gauge.fields().iter().any(|f| f.name == "label_region"));
 
         let profiles = TableSchema::Profiles.schema_with_labels(&m).unwrap();
@@ -720,46 +581,6 @@ mod tests {
                 .iter()
                 .any(|s| matches!(s, TableSchema::Profiles))
         );
-    }
-
-    #[test]
-    fn test_metrics_gauge_schema_creation() {
-        let schema = create_metrics_gauge_schema().unwrap();
-
-        // Check for key fields
-        assert!(has_field(&schema, "timestamp"));
-        assert!(has_field(&schema, "service_name"));
-        assert!(has_field(&schema, "metric_name"));
-        assert!(has_field(&schema, "value"));
-        assert!(has_field(&schema, "date_day"));
-    }
-
-    #[test]
-    fn test_metrics_sum_schema_creation() {
-        let schema = create_metrics_sum_schema().unwrap();
-
-        // Check for key fields
-        assert!(has_field(&schema, "timestamp"));
-        assert!(has_field(&schema, "service_name"));
-        assert!(has_field(&schema, "metric_name"));
-        assert!(has_field(&schema, "value"));
-        assert!(has_field(&schema, "aggregation_temporality"));
-        assert!(has_field(&schema, "is_monotonic"));
-        assert!(has_field(&schema, "date_day"));
-    }
-
-    #[test]
-    fn test_metrics_histogram_schema_creation() {
-        let schema = create_metrics_histogram_schema().unwrap();
-
-        // Check for key fields
-        assert!(has_field(&schema, "timestamp"));
-        assert!(has_field(&schema, "service_name"));
-        assert!(has_field(&schema, "metric_name"));
-        assert!(has_field(&schema, "count"));
-        assert!(has_field(&schema, "bucket_counts"));
-        assert!(has_field(&schema, "explicit_bounds"));
-        assert!(has_field(&schema, "date_day"));
     }
 
     #[test]
@@ -866,27 +687,11 @@ mod sort_order_tests {
                 TableSchema::Logs,
                 &["timestamp", "service_name", "severity_text"],
             ),
-            (
-                TableSchema::MetricsGauge,
-                &["timestamp", "metric_name", "service_name"],
-            ),
-            (
-                TableSchema::MetricsSum,
-                &["timestamp", "metric_name", "service_name"],
-            ),
-            (
-                TableSchema::MetricsHistogram,
-                &["timestamp", "metric_name", "service_name"],
-            ),
-            (
-                TableSchema::MetricsExponentialHistogram,
-                &["timestamp", "metric_name", "service_name"],
-            ),
-            (
-                TableSchema::MetricsSummary,
-                &["timestamp", "metric_name", "service_name"],
-            ),
             (TableSchema::Profiles, &["timestamp", "service_name"]),
+            (
+                TableSchema::Metrics,
+                &["timestamp", "metric_name", "service_name"],
+            ),
         ];
 
         for (table, key) in expected {
@@ -1004,24 +809,6 @@ mod sort_order_tests {
             SCHEMA_DEFINITIONS.metadata.current_metric_version,
             "physical-v4"
         );
-    }
-
-    #[test]
-    fn legacy_metric_variants_resolve_pinned_to_v3() {
-        assert_eq!(LEGACY_METRIC_VERSION, "physical-v3");
-        for schema in [
-            TableSchema::MetricsGauge,
-            TableSchema::MetricsSum,
-            TableSchema::MetricsHistogram,
-            TableSchema::MetricsExponentialHistogram,
-            TableSchema::MetricsSummary,
-        ] {
-            assert!(
-                schema.schema().is_ok(),
-                "{} should still resolve at {LEGACY_METRIC_VERSION}",
-                schema.table_name()
-            );
-        }
     }
 
     fn table_names(schemas: &[TableSchema]) -> Vec<&str> {

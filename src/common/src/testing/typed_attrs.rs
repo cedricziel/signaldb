@@ -19,12 +19,7 @@ fn typed_attribute_fields_from(table: &str, version: &str, container: &str) -> [
     let resolved = match table {
         "traces" => SCHEMA_DEFINITIONS.resolve_trace_schema(version),
         "logs" => SCHEMA_DEFINITIONS.resolve_log_schema(version),
-        "metrics_gauge" => {
-            SCHEMA_DEFINITIONS.resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, version)
-        }
-        "metrics_sum" => {
-            SCHEMA_DEFINITIONS.resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, version)
-        }
+        "metrics" => SCHEMA_DEFINITIONS.resolve_table_schema(&SCHEMA_DEFINITIONS.metrics, version),
         "profiles" => {
             SCHEMA_DEFINITIONS.resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, version)
         }

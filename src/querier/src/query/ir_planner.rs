@@ -5253,8 +5253,8 @@ mod tests {
         };
         let typed = |b: RecordBatch| {
             common::testing::to_typed_layout(
-                "metrics_gauge",
-                "physical-v3",
+                "metrics",
+                "physical-v4",
                 &b,
                 &["attributes", "resource_attributes"],
             )
