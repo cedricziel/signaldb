@@ -3,6 +3,7 @@
 
 #![cfg_attr(not(test), expect(dead_code, reason = "not wired into a planner yet"))]
 
+pub mod label_ops;
 pub mod labels;
 pub(crate) mod vector_match;
 
