@@ -491,6 +491,16 @@ mod tests {
         let m = invalid_msg(cols("exponential_histogram", 1, None, vec![1, -2]));
         assert!(m.contains("positive_bucket_counts"), "{m}");
         assert!(invalid_msg(cols("mystery", 1, None, vec![])).contains("metric_type"));
+        for bounds in [
+            vec![f64::NAN],
+            vec![f64::INFINITY],
+            vec![2.0, 1.0],
+            vec![1.0, 1.0],
+        ] {
+            let n = bounds.len() + 1;
+            let m = invalid_msg(cols("histogram", 1, Some(bounds), vec![1; n]));
+            assert!(m.contains("strictly increasing"), "{m}");
+        }
     }
 
     #[test]
