@@ -7,6 +7,7 @@ pub mod logql;
 pub mod logql_metric;
 pub mod logs;
 pub mod metric_ops;
+pub(crate) mod metric_series;
 pub mod metrics;
 pub mod profile;
 pub mod promql;
