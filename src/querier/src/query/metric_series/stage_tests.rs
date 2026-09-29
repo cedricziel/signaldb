@@ -94,3 +94,91 @@ async fn labels_replace_with_an_empty_source_sets_a_constant_label() {
     let l = r#"{"dst":"value"}"#;
     assert_eq!(got, rows(&[(60, l, 1.0), (120, l, 1.0)]));
 }
+
+const UNNAMED_A: &str = r#"{"code":"200","service.name":"svc"}"#;
+const UNNAMED_B: &str = r#"{"code":"500","service.name":"svc"}"#;
+
+#[tokio::test]
+async fn map_applies_to_every_value_and_drops_the_name() {
+    let got = over_two_series(json!([{ "map": { "fn": "clamp", "args": [1.5, 15.0] } }])).await;
+    let want = [
+        (60, UNNAMED_A, 1.5),
+        (120, UNNAMED_A, 2.0),
+        (60, UNNAMED_B, 10.0),
+        (120, UNNAMED_B, 15.0),
+    ];
+    assert_eq!(got, rows(&want));
+    // min > max: Prometheus returns nothing.
+    let empty = over_two_series(json!([{ "map": { "fn": "clamp", "args": [2.0, 1.0] } }])).await;
+    assert!(empty.is_empty(), "{empty:?}");
+}
+
+#[tokio::test]
+async fn map_ln_yields_nan_and_infinities() {
+    let points = [
+        gauge(60 * S, "a", -1.0, json!({"k": "neg"})),
+        gauge(60 * S, "b", 0.0, json!({"k": "zero"})),
+        gauge(60 * S, "c", f64::NAN, json!({"k": "nan"})),
+    ];
+    let mut doc = doc(json!([{ "map": { "fn": "ln" } }]));
+    doc["range"]["to"] = json!(60 * S);
+    let got = series_rows(&run(&points, doc).await.unwrap());
+    let got: Vec<_> = got.iter().map(|(_, l, v)| format!("{l}={v}")).collect();
+    assert_eq!(
+        got,
+        [
+            r#"{"k":"nan","service.name":"svc"}=NaN"#,
+            r#"{"k":"neg","service.name":"svc"}=NaN"#,
+            r#"{"k":"zero","service.name":"svc"}=-inf"#,
+        ]
+    );
+}
+
+#[tokio::test]
+async fn map_reads_a_scalar_and_calendar_functions_read_vector_time() {
+    let doc = |from: &str, pipeline: JsonValue| {
+        let mut doc = json!({
+            "irVersion": 10, "from": from, "step": "3600s",
+            "range": { "from": 0, "to": 7200 * S }, "pipeline": pipeline, "result": "series"
+        });
+        if from == "constant" {
+            doc["constant"] = json!(16.0);
+            doc["result"] = json!("scalar");
+        }
+        doc
+    };
+    let sqrt = run(&[], doc("constant", json!([{ "map": { "fn": "sqrt" } }])));
+    let got = super::tests::scalar_rows(&sqrt.await.unwrap());
+    assert_eq!(got, [(0, 4.0), (3600, 4.0), (7200, 4.0)]);
+    let hour = json!([{ "vector": {} }, { "map": { "fn": "hour" } }]);
+    let got = series_rows(&run(&[], doc("time", hour)).await.unwrap());
+    assert_eq!(
+        got,
+        rows(&[(0, "{}", 0.0), (3600, "{}", 1.0), (7200, "{}", 2.0)])
+    );
+}
+
+#[tokio::test]
+async fn filter_keeps_matching_values_with_the_name_and_bool_yields_0_or_1() {
+    let got = over_two_series(json!([{ "filter": { "op": "ge", "value": 2.0 } }])).await;
+    assert_eq!(got, rows(&[(120, A, 2.0), (60, B, 10.0), (120, B, 20.0)]));
+    let got =
+        over_two_series(json!([{ "filter": { "op": "gt", "value": 2.0, "bool": true } }])).await;
+    let want = [
+        (60, UNNAMED_A, 0.0),
+        (120, UNNAMED_A, 0.0),
+        (60, UNNAMED_B, 1.0),
+        (120, UNNAMED_B, 1.0),
+    ];
+    assert_eq!(got, rows(&want));
+}
+
+#[tokio::test]
+async fn filter_never_keeps_nan_but_ne() {
+    let points = [gauge(60 * S, "a", f64::NAN, json!({}))];
+    let mut doc = doc(json!([{ "filter": { "op": "gt", "value": 0.0 } }]));
+    doc["range"]["to"] = json!(60 * S);
+    assert_eq!(run(&points, doc.clone()).await.unwrap().num_rows(), 0);
+    doc["pipeline"][1] = json!({ "filter": { "op": "ne", "value": 0.0 } });
+    assert_eq!(run(&points, doc).await.unwrap().num_rows(), 1);
+}

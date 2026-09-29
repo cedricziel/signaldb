@@ -1055,8 +1055,6 @@ fn is_series_algebra(stage: &Stage) -> bool {
     matches!(
         stage,
         Stage::Reduce(_)
-            | Stage::Map(_)
-            | Stage::Filter(_)
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
@@ -1219,7 +1217,11 @@ pub(crate) async fn plan_document(
                 series_step = Some(step_ns);
                 df
             }
-            Stage::Scalar(_) | Stage::Vector(_) | Stage::Labels(_) => {
+            Stage::Scalar(_)
+            | Stage::Vector(_)
+            | Stage::Labels(_)
+            | Stage::Map(_)
+            | Stage::Filter(_) => {
                 let env = metric_series::FrameEnv {
                     ctx,
                     window,

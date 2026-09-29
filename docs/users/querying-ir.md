@@ -1051,6 +1051,38 @@ constant label); otherwise the series is unchanged. `join` sets `dst` to the
 values of `src` (absent as `""`) joined by `separator`. Either way an empty
 result removes `dst`.
 
+#### `map`
+
+Apply a function to every value: `abs`, `ceil`, `floor`, `round` (optional
+`args: [to_nearest]`, rounding half up), `sqrt`, `exp`, `ln`, `log2`,
+`log10`, `sgn`, `clamp` (`args: [min, max]`; `min > max` yields no series),
+`clamp_min` / `clamp_max` (`args: [bound]`), `timestamp`, and the UTC
+calendar functions `day_of_month`, `day_of_week` (0 = Sunday), `day_of_year`,
+`days_in_month`, `hour`, `minute`, `month`, `year`, which read the value as
+seconds since the epoch.
+
+```json
+{ "map": { "fn": "clamp", "args": [0, 100] } }
+```
+
+Math follows IEEE as in Prometheus: `ln(0)` is `-Inf`, `ln(-1)` and `sqrt(-1)`
+are `NaN`, and `NaN` stays `NaN` through every function (a calendar function
+of `NaN` or `±Inf` is `NaN`). A Series loses its `metric.name`. The math
+functions also apply to a Scalar. `timestamp` is the evaluation instant in
+seconds; Prometheus returns a raw selector's sample timestamp instead.
+
+#### `filter`
+
+Compare every value with a number (`eq`, `ne`, `gt`, `ge`, `lt`, `le`): keep
+the values that compare true, with their `metric.name`, or with `"bool": true`
+replace every value by `1`/`0` and drop `metric.name`.
+
+```json
+{ "filter": { "op": "gt", "value": 0.5 } }
+```
+
+`NaN` compares false to everything but `ne`, as in Prometheus.
+
 ## Histograms
 
 A histogram row of the `metrics` source carries a whole OTLP histogram data
