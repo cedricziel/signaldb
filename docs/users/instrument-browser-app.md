@@ -98,9 +98,9 @@ const loggerProvider = new LoggerProvider({
   resource,
   processors: [
     new SessionProcessor(), // see "Stamp session.id" below
-    new BatchLogRecordProcessor(
-      new OTLPLogExporter({ url: `${COLLECTOR_URL}/v1/logs` }),
-    ),
+    new BatchLogRecordProcessor({
+      exporter: new OTLPLogExporter({ url: `${COLLECTOR_URL}/v1/logs` }),
+    }),
   ],
 });
 logs.setGlobalLoggerProvider(loggerProvider);
