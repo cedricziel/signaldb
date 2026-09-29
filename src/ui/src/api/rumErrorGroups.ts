@@ -346,8 +346,15 @@ export async function fetchRumErrorGroupsWithBackendCause(
     new Set(groups.flatMap((g) => (g.lastSessionId ? [g.lastSessionId] : []))),
   );
   if (sessionIds.length === 0) return groups;
-  const failedRequests = failedRequestsFromResponse(
-    await runIrQuery(buildBackendCauseRequestsDoc(app, range, sessionIds)),
-  );
+  // The backend cause is an enrichment: if its read fails, still show the
+  // groups rather than failing the whole list.
+  let failedRequests: RumFailedRequest[];
+  try {
+    failedRequests = failedRequestsFromResponse(
+      await runIrQuery(buildBackendCauseRequestsDoc(app, range, sessionIds)),
+    );
+  } catch {
+    return groups;
+  }
   return joinBackendCause(groups, failedRequests);
 }
