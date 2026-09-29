@@ -47,8 +47,14 @@ not on which attributes happen to be promoted today. That makes a parser usable
 in a CI check, an editor, a WASM build in the browser, or a downstream project —
 none of which can run a query engine.
 
-PromQL has no crate of ours; the third-party `promql-parser` supplies the
-grammar and the querier lowers it.
+PromQL has no parser crate of ours; the third-party `promql-parser` supplies
+the grammar. `ql-ir` lowers the parsed expression onto a `query-ir` document
+(`ql_ir::promql_to_ir`), the same way it lowers LogQL and TraceQL. That
+lowering is not wired in yet: the Prometheus endpoints still evaluate through
+`src/querier/src/query/promql.rs` until the planner executes every stage the
+lowering emits, and the router switches over. Constructs the IR can't
+express come back as `LowerError::Inexpressible`, naming the construct; a query
+that doesn't parse, or bad range parameters, as `LowerError::InvalidPromql`.
 
 ### How the rule is enforced
 
