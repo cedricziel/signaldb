@@ -73,7 +73,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 - [ ] 8.1 Failing tests: instant/range/scalar distinct relation types (mismatch = type error); temporality-aware rate/increase with start_time resets; histogram_quantile over typed explicit + exponential buckets; vector-matching output labels + many-to-many rejection; scalar envelope (spec `metric-native-query`)
 - [ ] 8.2 Implement as **custom query-engine operators** (UDWF accumulators for rate/increase, array operators for quantiles, a label-set join + cardinality-validation node for vector matching) over the typed metric substrate — not SQL lowering (design.md D11)
-  - [ ] 8.2.1 rate/increase/irate window function (temporality, start_time resets, gauge rejection)
+  - [ ] 8.2.1 windowed range accumulator: rate/increase/irate and the other range functions per (series, evaluation instant) (temporality, start_time resets, gauge rejection)
   - [ ] 8.2.2 histogram bucket merge UDAF + quantile UDF, explicit buckets
   - [ ] 8.2.3 exponential-histogram merge + quantile (OTel merge rule, exponential interpolation, min/max clamp)
   - [ ] 8.2.4 point-stream / Series / Scalar relation typing, `irVersion` 10

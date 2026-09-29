@@ -323,8 +323,13 @@ layer. The IR grows whatever PromQL needs.
   `(t − lookback, t]` (lookback default `5m`); range operators read
   `(t − window, t]`. `offset` shifts the read window back, `at` pins `t`.
   Log/trace/profile aggregates keep epoch-aligned `date_bin` buckets.
-- **rate / increase / irate** are one DataFusion window function (UDWF)
-  partitioned by `series_id`, ordered by `timestamp`. Cumulative: sum of
+- **Range operators** (rate / increase / irate / delta / deriv / resets /
+  changes / `*_over_time` / the instant `latest`) are one windowed
+  accumulator: a DataFusion aggregate UDF grouped by (`series_id`,
+  evaluation instant), each point assigned to every instant whose window
+  covers it, the accumulator ordering its points by `timestamp`. That is
+  exact at evaluation instants, which a per-row window frame is not (its
+  frame ends at a point, not at `t`). Cumulative: sum of
   successive differences inside the window; a point whose `start_timestamp`
   moved forward is a reset and contributes its full value; the first point
   contributes its full value only when its `start_timestamp` lies inside the
