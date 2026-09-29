@@ -15,12 +15,15 @@
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use promql_parser::label::{MatchOp, Matcher};
+use promql_parser::parser::token::TokenId;
 use promql_parser::parser::{
-    self, AggregateExpr, AtModifier, Call, Expr, LabelModifier, Offset, VectorSelector, token,
+    self, AggregateExpr, AtModifier, BinaryExpr, Call, Expr, LabelModifier, Offset,
+    VectorMatchCardinality, VectorSelector, token,
 };
 use query_ir::{
-    ComparisonOp, Document, Leaf, Predicate, Range, Reduce, ReduceFn, ResultEnvelope, Sample,
-    SampleFn, SampleOf, Stage,
+    Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, ComparisonOp, Document, Filter, GroupSide,
+    Leaf, NoOperands, Predicate, Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn,
+    SampleOf, Stage, SubDocument, is_pseudo_source,
 };
 
 use crate::LowerError;
@@ -111,7 +114,7 @@ pub fn promql_to_ir(query: &str, params: &PromqlParams) -> Result<Document, Lowe
     };
     let lowerer = Lowerer { params };
     let operand = lowerer.lower(&expr)?;
-    let pipe = operand.into_pipe();
+    let pipe = operand.into_pipe()?;
     Ok(Document {
         ir_version: IR_VERSION,
         from: pipe.from.to_string(),
@@ -175,15 +178,18 @@ enum Operand {
 }
 
 impl Operand {
-    fn into_pipe(self) -> Pipe {
+    /// The operand as a pipeline: a number becomes the `constant`
+    /// pseudo-source, which carries finite values only.
+    fn into_pipe(self) -> Result<Pipe, LowerError> {
         match self {
-            Operand::Number(n) => Pipe {
+            Operand::Number(n) if !n.is_finite() => Err(non_finite(n)),
+            Operand::Number(n) => Ok(Pipe {
                 from: "constant",
                 constant: Some(n),
                 pipeline: Vec::new(),
                 shape: Shape::Scalar,
-            },
-            Operand::Pipe(p) => p,
+            }),
+            Operand::Pipe(p) => Ok(p),
         }
     }
 }
@@ -206,6 +212,18 @@ impl Lowerer<'_> {
             )?)),
             Expr::Call(call) => self.call(call),
             Expr::Aggregate(agg) => self.aggregate(agg),
+            Expr::Binary(bin) => self.binary(bin),
+            // Unary minus: `-v` is `v * -1`, which drops the metric name as
+            // Prometheus does.
+            Expr::Unary(u) => Ok(match self.lower(&u.expr)? {
+                Operand::Number(n) => Operand::Number(-n),
+                Operand::Pipe(p) => Operand::Pipe(p.push(Stage::Binop(number_binop(
+                    BinopOp::Mul,
+                    -1.0,
+                    false,
+                    false,
+                )))),
+            }),
             Expr::StringLiteral(_) => Err(inexpressible("a string literal as a value")),
             Expr::MatrixSelector(_) => Err(inexpressible(
                 "a range vector outside a range function (a range-vector result)",
@@ -257,7 +275,24 @@ impl Lowerer<'_> {
             };
             return self.range_call(call, func, arg, window_arg);
         }
-        Err(inexpressible(&format!("the PromQL function {name}()")))
+        match name {
+            "pi" => Ok(Operand::Number(std::f64::consts::PI)),
+            "time" => Ok(Operand::Pipe(time())),
+            "vector" => {
+                let scalar = self.lower(arg(call, 0)?)?.into_pipe()?;
+                Ok(Operand::Pipe(Pipe {
+                    shape: Shape::Series,
+                    ..scalar.push(Stage::Vector(NoOperands {}))
+                }))
+            }
+            "scalar" => Ok(Operand::Pipe(Pipe {
+                shape: Shape::Scalar,
+                ..self
+                    .series(arg(call, 0)?, name)?
+                    .push(Stage::Scalar(NoOperands {}))
+            })),
+            _ => Err(inexpressible(&format!("the PromQL function {name}()"))),
+        }
     }
 
     /// `f(m[w])`: the range function samples the selector's window.
@@ -354,6 +389,84 @@ impl Lowerer<'_> {
         }))))
     }
 
+    /// A binary operator. Number operands fold or become the stage's number
+    /// operand; two pipelines become a `binop` over a sub-document.
+    fn binary(&self, bin: &BinaryExpr) -> Result<Operand, LowerError> {
+        let op = binop_op(bin.op.id())
+            .ok_or_else(|| inexpressible(&format!("the binary operator {}", bin.op)))?;
+        let is_bool = bin.return_bool();
+        match (self.lower(&bin.lhs)?, self.lower(&bin.rhs)?) {
+            (Operand::Number(a), Operand::Number(b)) => fold(op, a, b)
+                .map(Operand::Number)
+                .ok_or_else(|| inexpressible(&format!("{} between two numbers", bin.op))),
+            (Operand::Pipe(p), Operand::Number(n)) => with_number(p, op, n, false, is_bool),
+            (Operand::Number(n), Operand::Pipe(p)) => with_number(p, op, n, true, is_bool),
+            (Operand::Pipe(l), Operand::Pipe(r)) => self.vector_binop(bin, op, l, r),
+        }
+    }
+
+    /// `l op r` between two pipelines, with PromQL's vector matching.
+    fn vector_binop(
+        &self,
+        bin: &BinaryExpr,
+        mut op: BinopOp,
+        mut l: Pipe,
+        mut r: Pipe,
+    ) -> Result<Operand, LowerError> {
+        let modifier = bin.modifier.clone().unwrap_or_default();
+        let fill = &modifier.fill_values;
+        if fill.lhs.is_some() || fill.rhs.is_some() {
+            return Err(inexpressible("fill() vector-matching modifiers"));
+        }
+        let (on, ignoring) = match &modifier.matching {
+            Some(LabelModifier::Include(ls)) => (Some(label_fields(&ls.labels)), None),
+            Some(LabelModifier::Exclude(ls)) => (None, Some(label_fields(&ls.labels))),
+            None => (None, None),
+        };
+        let group = match &modifier.card {
+            VectorMatchCardinality::ManyToOne(ls) => Some((GroupSide::Left, ls)),
+            VectorMatchCardinality::OneToMany(ls) => Some((GroupSide::Right, ls)),
+            _ => None,
+        }
+        .map(|(side, ls)| BinopGroup {
+            side,
+            include: label_fields(&ls.labels),
+        });
+        let shape = if l.shape == Shape::Scalar && r.shape == Shape::Scalar {
+            Shape::Scalar
+        } else {
+            Shape::Series
+        };
+        // A scalar-vector comparison keeps the vector's values, so a scalar
+        // on the left swaps sides with the comparison flipped:
+        // `scalar(y) < x` is `x > scalar(y)`.
+        if l.shape == Shape::Scalar && r.shape == Shape::Series && compare_op(op).is_some() {
+            (l, r, op) = (r, l, flip(op));
+        }
+        // A sub-document reads the document's own source or a
+        // pseudo-source, so a pseudo-source left operand swaps sides:
+        // `reverse` keeps the operator's (and `group`'s) sides as written.
+        let reverse = is_pseudo_source(l.from) && !is_pseudo_source(r.from);
+        let (pipe, right) = if reverse { (r, l) } else { (l, r) };
+        let binop = Binop {
+            op,
+            right: BinopOperand::Document(Box::new(SubDocument {
+                from: right.from.to_string(),
+                pipeline: right.pipeline,
+                constant: right.constant,
+            })),
+            reverse,
+            on,
+            ignoring,
+            group,
+            bool: bin.return_bool(),
+        };
+        Ok(Operand::Pipe(Pipe {
+            shape,
+            ..pipe.push(Stage::Binop(binop))
+        }))
+    }
+
     /// Lower an operand that must be a series.
     fn series(&self, expr: &Expr, what: &str) -> Result<Pipe, LowerError> {
         match self.lower(expr)? {
@@ -361,6 +474,135 @@ impl Lowerer<'_> {
             _ => Err(inexpressible(&format!("{what} over a scalar"))),
         }
     }
+}
+
+/// The `i`-th argument of a call.
+fn arg(call: &Call, i: usize) -> Result<&Expr, LowerError> {
+    call.args.args.get(i).map(|a| &**a).ok_or_else(|| {
+        LowerError::InvalidPromql(format!(
+            "{}() is missing argument {}",
+            call.func.name,
+            i + 1
+        ))
+    })
+}
+
+/// The `time` pseudo-source: the evaluation instant, in seconds.
+fn time() -> Pipe {
+    Pipe {
+        from: "time",
+        constant: None,
+        pipeline: Vec::new(),
+        shape: Shape::Scalar,
+    }
+}
+
+/// `pipe op n` (or `n op pipe` when `reversed`).
+///
+/// A series compared with a finite number is a `filter`, which keeps the
+/// series that compare true (or yields 0/1 with `bool`); everything else is a
+/// `binop` with a number operand.
+fn with_number(
+    pipe: Pipe,
+    op: BinopOp,
+    n: f64,
+    reversed: bool,
+    is_bool: bool,
+) -> Result<Operand, LowerError> {
+    if !n.is_finite() {
+        return Err(non_finite(n));
+    }
+    let compare = compare_op(if reversed { flip(op) } else { op });
+    let stage = match compare {
+        Some(op) if pipe.shape == Shape::Series => Stage::Filter(Filter {
+            op,
+            value: n,
+            bool: is_bool,
+        }),
+        _ => Stage::Binop(number_binop(op, n, reversed, is_bool)),
+    };
+    Ok(Operand::Pipe(pipe.push(stage)))
+}
+
+fn number_binop(op: BinopOp, n: f64, reverse: bool, is_bool: bool) -> Binop {
+    Binop {
+        op,
+        right: BinopOperand::Number(n),
+        reverse,
+        on: None,
+        ignoring: None,
+        group: None,
+        bool: is_bool,
+    }
+}
+
+fn binop_op(id: TokenId) -> Option<BinopOp> {
+    Some(match id {
+        token::T_ADD => BinopOp::Add,
+        token::T_SUB => BinopOp::Sub,
+        token::T_MUL => BinopOp::Mul,
+        token::T_DIV => BinopOp::Div,
+        token::T_MOD => BinopOp::Mod,
+        token::T_POW => BinopOp::Pow,
+        token::T_ATAN2 => BinopOp::Atan2,
+        token::T_EQLC => BinopOp::Eq,
+        token::T_NEQ => BinopOp::Ne,
+        token::T_GTR => BinopOp::Gt,
+        token::T_GTE => BinopOp::Ge,
+        token::T_LSS => BinopOp::Lt,
+        token::T_LTE => BinopOp::Le,
+        token::T_LAND => BinopOp::And,
+        token::T_LOR => BinopOp::Or,
+        token::T_LUNLESS => BinopOp::Unless,
+        _ => return None,
+    })
+}
+
+fn compare_op(op: BinopOp) -> Option<CompareOp> {
+    Some(match op {
+        BinopOp::Eq => CompareOp::Eq,
+        BinopOp::Ne => CompareOp::Ne,
+        BinopOp::Gt => CompareOp::Gt,
+        BinopOp::Ge => CompareOp::Ge,
+        BinopOp::Lt => CompareOp::Lt,
+        BinopOp::Le => CompareOp::Le,
+        _ => return None,
+    })
+}
+
+/// The operator with its operands swapped, for a comparison: `5 < v` is
+/// `v > 5`.
+fn flip(op: BinopOp) -> BinopOp {
+    match op {
+        BinopOp::Gt => BinopOp::Lt,
+        BinopOp::Ge => BinopOp::Le,
+        BinopOp::Lt => BinopOp::Gt,
+        BinopOp::Le => BinopOp::Ge,
+        same => same,
+    }
+}
+
+/// `a op b` over two numbers, as Prometheus evaluates it. A comparison
+/// between scalars always carries `bool` (the parser insists), so it is 0/1.
+/// Set operators take vectors, so they have no value here.
+fn fold(op: BinopOp, a: f64, b: f64) -> Option<f64> {
+    let truth = |t: bool| if t { 1.0 } else { 0.0 };
+    Some(match op {
+        BinopOp::Add => a + b,
+        BinopOp::Sub => a - b,
+        BinopOp::Mul => a * b,
+        BinopOp::Div => a / b,
+        BinopOp::Mod => a % b,
+        BinopOp::Pow => a.powf(b),
+        BinopOp::Atan2 => a.atan2(b),
+        BinopOp::Eq => truth(a == b),
+        BinopOp::Ne => truth(a != b),
+        BinopOp::Gt => truth(a > b),
+        BinopOp::Ge => truth(a >= b),
+        BinopOp::Lt => truth(a < b),
+        BinopOp::Le => truth(a <= b),
+        BinopOp::And | BinopOp::Or | BinopOp::Unless => return None,
+    })
 }
 
 /// A `sample` of `func` with every optional operand unset.
