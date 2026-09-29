@@ -879,11 +879,13 @@ describe("Sessions tab", () => {
     });
     renderRum("/rum/sessions?app=storefront-web&session=sess-1");
 
+    // Same budget as the likely-cause test below: the session detail's
+    // chained renders can exceed the default 1 s under coverage.
     expect(
-      await screen.findByText("Navigated to /checkout"),
+      await screen.findByText("Navigated to /checkout", {}, { timeout: 5000 }),
     ).toBeInTheDocument();
     expect(await screen.findByText("user.id")).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("resets the selected event when ?session= switches to a different session", async () => {
     stubFetchRoutes([
@@ -1082,5 +1084,6 @@ describe("Sessions tab", () => {
       { timeout: 5000 },
     );
     expect(cause.textContent).toContain("502");
-  });
+    // Two 5 s waits need more than vitest's 5 s default per test.
+  }, 15_000);
 });
