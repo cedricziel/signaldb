@@ -1025,7 +1025,12 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 fn is_series_algebra(stage: &Stage) -> bool {
     matches!(
         stage,
-        Stage::Sample(_) | Stage::Scalar(_) | Stage::Vector(_)
+        Stage::Sample(_)
+            | Stage::Scalar(_)
+            | Stage::Vector(_)
+            | Stage::Reduce(_)
+            | Stage::Map(_)
+            | Stage::Labels(_)
     )
 }
 
@@ -1519,7 +1524,12 @@ impl Lowering<'_> {
             Stage::Correlate(_) => Err(QuerierError::InvalidInput(
                 "correlate requires async lowering".into(),
             )),
-            Stage::Sample(_) | Stage::Scalar(_) | Stage::Vector(_) => Err(unsupported_stage(stage)),
+            Stage::Sample(_)
+            | Stage::Scalar(_)
+            | Stage::Vector(_)
+            | Stage::Reduce(_)
+            | Stage::Map(_)
+            | Stage::Labels(_) => Err(unsupported_stage(stage)),
         }
     }
 

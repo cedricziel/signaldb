@@ -49,8 +49,8 @@ pub use source::{PSEUDO_SOURCES, SourceDef, SourceRegistry, is_pseudo_source};
 pub use stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, DerivedField, Describe, DescribeTarget,
     Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode,
-    HistogramQuantile, JoinKind, NoOperands, Order, Parser, Rank, Sample, SampleFn, SampleOf,
-    Stage,
+    HistogramQuantile, JoinKind, LabelJoin, LabelReplace, Labels, Map, MapFn, NoOperands, Order,
+    Parser, Rank, Reduce, ReduceFn, Sample, SampleFn, SampleOf, Stage,
 };
 pub use validate::{IrError, Validated, validate, validate_describe};
 pub use value::{

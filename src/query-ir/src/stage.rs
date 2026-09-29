@@ -456,6 +456,136 @@ pub struct Sample {
     pub as_name: Option<String>,
 }
 
+/// A `reduce` function: folds series into groups at every instant
+/// (`irVersion` 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ReduceFn {
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Count,
+    Group,
+    Stddev,
+    Stdvar,
+    Quantile,
+    Topk,
+    Bottomk,
+    CountValues,
+}
+
+/// The `reduce` stage: Series → Series, grouped `by` or `without` labels.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Reduce {
+    #[serde(rename = "fn")]
+    pub func: ReduceFn,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub without: Option<Vec<String>>,
+    /// `topk`/`bottomk`: the integer k; `quantile`: the quantile.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg: Option<f64>,
+    /// `count_values`: the label that carries each value.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A per-value `map` function (`irVersion` 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MapFn {
+    Abs,
+    Ceil,
+    Floor,
+    Round,
+    Sqrt,
+    Exp,
+    Ln,
+    Log2,
+    Log10,
+    Sgn,
+    Clamp,
+    ClampMin,
+    ClampMax,
+    Timestamp,
+    DayOfMonth,
+    DayOfWeek,
+    DayOfYear,
+    DaysInMonth,
+    Hour,
+    Minute,
+    Month,
+    Year,
+}
+
+impl MapFn {
+    /// The accepted number of `args`.
+    pub fn arity(self) -> std::ops::RangeInclusive<usize> {
+        match self {
+            MapFn::Round => 0..=1,
+            MapFn::Clamp => 2..=2,
+            MapFn::ClampMin | MapFn::ClampMax => 1..=1,
+            _ => 0..=0,
+        }
+    }
+
+    /// A pure math function, legal on a Scalar as well as a Series.
+    pub fn is_math(self) -> bool {
+        !matches!(
+            self,
+            MapFn::Timestamp
+                | MapFn::DayOfMonth
+                | MapFn::DayOfWeek
+                | MapFn::DayOfYear
+                | MapFn::DaysInMonth
+                | MapFn::Hour
+                | MapFn::Minute
+                | MapFn::Month
+                | MapFn::Year
+        )
+    }
+}
+
+/// The `map` stage: apply a function to every value.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Map {
+    #[serde(rename = "fn")]
+    pub func: MapFn,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub args: Vec<f64>,
+}
+
+/// `labels.replace`: PromQL's `label_replace`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LabelReplace {
+    pub dst: String,
+    pub replacement: String,
+    pub src: String,
+    pub regex: String,
+}
+
+/// `labels.join`: PromQL's `label_join`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LabelJoin {
+    pub dst: String,
+    pub separator: String,
+    pub src: Vec<String>,
+}
+
+/// The `labels` stage: rewrite one label of every series.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Labels {
+    Replace(LabelReplace),
+    Join(LabelJoin),
+}
+
 /// The operand of a stage that takes none (`{"scalar": {}}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -481,6 +611,9 @@ pub enum Stage {
     Sample(Sample),
     Scalar(NoOperands),
     Vector(NoOperands),
+    Reduce(Reduce),
+    Map(Map),
+    Labels(Labels),
 }
 
 impl Stage {
@@ -501,6 +634,9 @@ impl Stage {
             Stage::Sample(_) => "sample",
             Stage::Scalar(_) => "scalar",
             Stage::Vector(_) => "vector",
+            Stage::Reduce(_) => "reduce",
+            Stage::Map(_) => "map",
+            Stage::Labels(_) => "labels",
         }
     }
 
@@ -514,6 +650,9 @@ impl Stage {
             Stage::Sample(_) => Feature::Sample,
             Stage::Scalar(_) => Feature::ScalarStage,
             Stage::Vector(_) => Feature::VectorStage,
+            Stage::Reduce(_) => Feature::Reduce,
+            Stage::Map(_) => Feature::Map,
+            Stage::Labels(_) => Feature::Labels,
             _ => return None,
         })
     }
