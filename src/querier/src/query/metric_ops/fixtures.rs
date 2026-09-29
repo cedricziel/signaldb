@@ -5,7 +5,7 @@ use std::sync::Arc;
 use datafusion::arrow::array::{
     ArrayRef, Int32Array, Int64Array, ListArray, RecordBatch, StringArray, TimestampNanosecondArray,
 };
-use datafusion::arrow::datatypes::{Field, Float64Type, Int64Type, Schema};
+use datafusion::arrow::datatypes::{DataType, Field, Float64Type, Int64Type, Schema};
 
 /// Cumulative points of metric `lat` from service `svc`, as `(series_id, ts, counts)`.
 /// `histogram` rows use bounds `[1, 2, 4]`; `exponential_histogram` rows hold
@@ -67,4 +67,28 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
         columns.into_iter().map(|(_, a)| a).collect(),
     )
     .unwrap()
+}
+
+/// Appends `series_id = service_name/metric_name` to a legacy-shaped fixture.
+pub(crate) fn with_series_id(batch: RecordBatch) -> RecordBatch {
+    let text = |name: &str| {
+        batch
+            .column_by_name(name)
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .unwrap()
+    };
+    let (svc, metric) = (text("service_name"), text("metric_name"));
+    let ids = StringArray::from_iter_values(
+        (0..batch.num_rows()).map(|i| format!("{}/{}", svc.value(i), metric.value(i))),
+    );
+    let mut fields: Vec<Field> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.as_ref().clone())
+        .collect();
+    fields.push(Field::new("series_id", DataType::Utf8, false));
+    let mut columns = batch.columns().to_vec();
+    columns.push(Arc::new(ids));
+    RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
 }
