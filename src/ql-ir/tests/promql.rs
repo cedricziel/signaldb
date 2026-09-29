@@ -872,7 +872,11 @@ fn histogram_values_and_refusals() {
     cases(&[
         (
             "histogram_count(x)",
-            json!([name("x"), of("latest", "metric.count", None)]),
+            json!([
+                name("x"),
+                of("latest", "metric.count", None),
+                binop("mul", json!(1.0), json!({}))
+            ]),
         ),
         (
             "histogram_sum(rate(x[5m]))",
@@ -903,8 +907,39 @@ fn histogram_values_and_refusals() {
         ("histogram_fraction(0, 1, irate(x[5m]))", "irate()"),
         ("histogram_count(sum(x))", "sum()"),
         ("histogram_stddev(x)", "histogram_stddev"),
+        ("histogram_quantile(1.5, rate(x[5m]))", "outside [0, 1]"),
+        ("histogram_quantile(-0.1, rate(x[5m]))", "outside [0, 1]"),
+        ("histogram_fraction(2, 1, rate(x[5m]))", "lower above upper"),
+        ("histogram_count(max_over_time(x[5m]))", "max_over_time()"),
+        (
+            "histogram_sum(stddev_over_time(x[5m]))",
+            "stddev_over_time()",
+        ),
+        (
+            r#"histogram_quantile(0.9, {__name__=~"x.*"})"#,
+            "several metric names",
+        ),
     ] {
         let msg = inexpressible(q);
         assert!(msg.contains(needle), "{q}: {msg}");
     }
+}
+
+/// Histogram outputs carry Prometheus's labels: no metric name, and each
+/// grouping field once even when several PromQL labels map to it.
+#[test]
+fn histogram_output_labels() {
+    let dup = lower("histogram_quantile(0.9, sum by (le, job, service_name) (rate(x[5m])))");
+    assert_eq!(
+        dup["pipeline"][1]["histogram_quantile"]["by"],
+        json!(["service.name"])
+    );
+    for q in ["histogram_count(x)", "histogram_sum(last_over_time(x[5m]))"] {
+        assert!(!labels(q).0.contains(&"metric.name".to_string()), "{q}");
+    }
+    assert_eq!(
+        labels("histogram_fraction(0, 1, sum by (le, job) (rate(x[5m])))"),
+        (vec!["service.name".to_string()], false)
+    );
+    assert_eq!(labels("histogram_fraction(0, 1, x)"), (vec![], true));
 }
