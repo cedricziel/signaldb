@@ -106,10 +106,9 @@ impl Row {
             })?;
             HistPoint::Exp(exp, self.sum)
         } else {
-            if !self.bounds.iter().all(|b| b.is_finite()) || !self.bounds.is_sorted_by(|a, b| a < b)
-            {
+            if self.bounds.iter().any(|b| b.is_nan()) || !self.bounds.is_sorted_by(|a, b| a < b) {
                 return Err(invalid(
-                    "explicit_bounds must be finite and strictly increasing",
+                    "explicit_bounds must be strictly increasing, without NaN",
                 ));
             }
             let total = self.count.map(|c| count("count", c)).transpose()?;
@@ -187,6 +186,11 @@ fn list_values<T: ArrowPrimitiveType>(
 
 /// Parse 18 per-point columns (the UDAF arguments, or flattened state lists) into rows.
 pub(super) fn parse_rows(cols: &[ArrayRef]) -> Result<Vec<Row>> {
+    parse_rows_for("histogram functions", cols)
+}
+
+/// [`parse_rows`], naming `function` when a summary point is rejected.
+pub(super) fn parse_rows_for(function: &str, cols: &[ArrayRef]) -> Result<Vec<Row>> {
     let mut rows = Vec::new();
     let [
         series,
@@ -253,9 +257,9 @@ pub(super) fn parse_rows(cols: &[ArrayRef]) -> Result<Vec<Row>> {
             Some("histogram") => false,
             Some("exponential_histogram") => true,
             Some("summary") => {
-                return Err(invalid(
-                    "histogram functions are not supported on summary metrics",
-                ));
+                return Err(invalid(format!(
+                    "{function} is not supported on summary metrics"
+                )));
             }
             Some("gauge" | "sum") | None => continue,
             Some(other) => return Err(invalid(format!("unknown metric_type {other:?}"))),
@@ -491,16 +495,23 @@ mod tests {
         let m = invalid_msg(cols("exponential_histogram", 1, None, vec![1, -2]));
         assert!(m.contains("positive_bucket_counts"), "{m}");
         assert!(invalid_msg(cols("mystery", 1, None, vec![])).contains("metric_type"));
-        for bounds in [
-            vec![f64::NAN],
-            vec![f64::INFINITY],
-            vec![2.0, 1.0],
-            vec![1.0, 1.0],
-        ] {
+        for bounds in [vec![f64::NAN], vec![2.0, 1.0], vec![1.0, 1.0]] {
             let n = bounds.len() + 1;
             let m = invalid_msg(cols("histogram", 1, Some(bounds), vec![1; n]));
             assert!(m.contains("strictly increasing"), "{m}");
         }
+    }
+
+    /// Prometheus-converted histograms may carry a `+Inf` top bound.
+    #[test]
+    fn an_infinite_top_bound_parses() {
+        let c = cols(
+            "histogram",
+            1,
+            Some(vec![1.0, f64::INFINITY]),
+            vec![1, 2, 0],
+        );
+        assert_eq!(parse_rows(&c).unwrap().len(), 1);
     }
 
     #[test]

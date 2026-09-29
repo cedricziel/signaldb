@@ -10,7 +10,8 @@ use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::{DataType, Field, Int64Type, TimeUnit};
 use datafusion::error::{DataFusionError, Result};
 use datafusion::logical_expr::{
-    ColumnarValue, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility,
+    ColumnarValue, Expr, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature, Volatility, col,
+    lit,
 };
 
 use crate::query::error::QuerierError;
@@ -35,10 +36,21 @@ pub(super) fn as_ns(a: &ArrayRef) -> Result<Int64Array> {
         .clone())
 }
 
+/// [`covering_instants_udf`] over the `timestamp` column.
+pub(super) fn covering_instants(first: i64, last: i64, step: i64, window: i64) -> Expr {
+    covering_instants_udf().call(vec![
+        col("timestamp"),
+        lit(first),
+        lit(last),
+        lit(step),
+        lit(window),
+    ])
+}
+
 /// Scalar UDF `covering_instants(ts, first_instant, last_instant, step_ns, window_ns) -> List<Int64>`:
 /// every evaluation instant `t = first + k*step` (`t <= last`) whose window
-/// `(t - window, t]` contains `ts`. Non-positive `step`/`window`, or a window
-/// spanning more than 11 000 steps, is an `InvalidInput` error.
+/// `(t - window, t]` contains `ts`. Non-positive `step`/`window`, or a point
+/// covered by more than 11 000 instants, is an `InvalidInput` error.
 pub fn covering_instants_udf() -> ScalarUDF {
     ScalarUDF::new_from_impl(CoveringInstants {
         signature: Signature::any(5, Volatility::Immutable),
@@ -101,7 +113,8 @@ impl ScalarUDFImpl for CoveringInstants {
             if step <= 0 || window <= 0 {
                 return Err(invalid("step and range window must be positive"));
             }
-            if (window - 1) / step + 1 > MAX_INSTANTS_PER_POINT {
+            let instants = last.saturating_sub(first).max(-1) / step + 1;
+            if ((window - 1) / step + 1).min(instants) > MAX_INSTANTS_PER_POINT {
                 return Err(invalid(format!(
                     "range window spans more than {MAX_INSTANTS_PER_POINT} evaluation steps; increase the step or shrink the window"
                 )));
@@ -197,11 +210,13 @@ mod tests {
             [1, 0, 9, 0, 5],
             [1, 0, 9, 1, 0],
             [1, 0, 9, -1, 5],
-            [1, 0, 9, 1, 11_001],
+            [1, 0, 20_000, 1, 11_001],
         ] {
             let err = QuerierError::from(invoke(bad.map(Some)).unwrap_err());
             assert!(matches!(err, QuerierError::InvalidInput(_)), "{bad:?}");
         }
-        assert!(invoke([1, 0, 9, 1, 11_000].map(Some)).is_ok());
+        assert!(invoke([1, 0, 20_000, 1, 11_000].map(Some)).is_ok());
+        // A wide window over a short query range still covers few instants.
+        assert!(invoke([1, 0, 9, 1, 11_001].map(Some)).is_ok());
     }
 }
