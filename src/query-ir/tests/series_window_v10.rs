@@ -101,3 +101,25 @@ fn window_stages_require_a_series_and_irversion_10() {
     let parsed: Document = serde_json::from_value(d).unwrap();
     assert_eq!(parsed.minimum_ir_version(), 10);
 }
+
+#[test]
+fn window_stages_reject_a_non_numeric_series() {
+    let stepped_min = json!({ "aggregate": { "by": ["service.name"],
+        "aggs": [{ "fn": "min", "of": "metric.name", "as": "m" }], "step": "1m" } });
+    let doc = |pipeline: Value| {
+        json!({ "irVersion": 10, "from": "metrics", "range": { "from": "now-1h", "to": "now" },
+            "result": "series", "pipeline": pipeline })
+    };
+    assert_eq!(
+        series(check_doc(doc(json!([stepped_min.clone()])))).value,
+        ValueType::String
+    );
+    for stage in [
+        json!({ "filter": { "op": "gt", "value": 1 } }),
+        json!({ "sort": "desc" }),
+        json!({ "over_time": { "fn": "sum", "window": "5m" } }),
+    ] {
+        let msg = err(check_doc(doc(json!([stepped_min.clone(), stage.clone()]))));
+        assert!(msg.contains("numeric"), "{stage}: {msg}");
+    }
+}
