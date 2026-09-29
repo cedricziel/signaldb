@@ -15,7 +15,7 @@ use datafusion::logical_expr::{
 use datafusion::scalar::ScalarValue;
 
 use super::hist_math::{HistPt, Mode, fraction, merge_across, quantile, series_value};
-use super::hist_state::{ARGS, Row, column_types, decode, encode, list_of, parse_rows};
+use super::hist_state::{ARGS, Row, column_types, decode, encode, list_of, parse_rows_for};
 use super::instants::{as_ns, invalid};
 use crate::query::error::QuerierError;
 
@@ -45,6 +45,16 @@ impl HistStat {
             HistStat::Fraction(lo, hi) => format!("fraction_{lo}_{hi}"),
             HistStat::Count => "count".into(),
             HistStat::Sum => "sum".into(),
+        }
+    }
+
+    /// The PromQL/IR function this statistic implements, for error messages.
+    fn function(&self) -> &'static str {
+        match self {
+            HistStat::Quantile(_) => "histogram_quantile",
+            HistStat::Fraction(..) => "histogram_fraction",
+            HistStat::Count => "histogram_count",
+            HistStat::Sum => "histogram_sum",
         }
     }
 }
@@ -148,7 +158,8 @@ impl Accumulator for HistAcc {
                 .find(|&i| instant.is_valid(i))
                 .map(|i| instant.value(i));
         }
-        self.rows.extend(parse_rows(&values[..ARGS - 1])?);
+        self.rows
+            .extend(parse_rows_for(self.stat.function(), &values[..ARGS - 1])?);
         Ok(())
     }
 
