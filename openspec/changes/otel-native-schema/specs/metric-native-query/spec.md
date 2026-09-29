@@ -47,6 +47,33 @@ samples within the range without extrapolation beyond it.
 - **THEN** the reset is recognized from the OTLP start-time boundary rather than
   inferred from a sample-value decrease
 
+#### Scenario: Delta series are summed, not differenced
+
+- **WHEN** `increase` runs over a delta-temporality sum whose points in the
+  range are 3, 4 and 5
+- **THEN** it returns 12
+
+#### Scenario: A series that starts inside the range counts from zero
+
+- **WHEN** a cumulative series' first point in the range has a `start_time`
+  inside the range
+- **THEN** that point's full value counts toward `increase`, because the
+  counter began within the range
+
+#### Scenario: Series are identified by series identity, not by service
+
+- **WHEN** one service emits two series of one cumulative metric that differ
+  only in a point attribute
+- **THEN** rate/increase and rate-mode histogram quantiles difference each
+  series against itself, never one series against the other
+
+#### Scenario: Rate over a gauge is rejected
+
+- **WHEN** `rate`, `increase` or `irate` reads gauge points or a non-monotonic
+  sum
+- **THEN** the query is rejected (HTTP 400) with an error naming `delta` or
+  `deriv` as the alternative
+
 #### Scenario: rate is per-second, increase is the total
 
 - **WHEN** a counter accumulates 120 over a 60-second range with no reset
@@ -71,6 +98,34 @@ assuming Prometheus `le`-bucket layout.
 - **THEN** it is computed from the metric's scale, zero bucket, and
   positive/negative offset buckets, not from a linear `le`-bucket assumption
 
+#### Scenario: Exponential-histogram merge follows the OTel rule
+
+- **WHEN** exponential-histogram points of different scales or zero
+  thresholds are merged for one quantile
+- **THEN** buckets are downscaled to the smallest scale and the largest zero
+  threshold is used, folding buckets inside it into the zero count, and the
+  result is clamped to the recorded `min`/`max` when present
+
+#### Scenario: A merged zero threshold that cuts a bucket absorbs it
+
+- **WHEN** the largest zero threshold of the merged points falls inside a
+  populated bucket
+- **THEN** the threshold is raised to that bucket's upper boundary and the
+  bucket's count is folded into the zero count
+
+### Requirement: Metric series are evaluated at evaluation instants
+
+A metric series SHALL be evaluated at instants `start + k·step` and labelled
+with that instant. An instant value SHALL be a series' latest point within the
+lookback window ending at the instant (default five minutes); a range operator
+SHALL read the window ending at the instant.
+
+#### Scenario: Instant value uses the lookback
+
+- **WHEN** a gauge series has points at 10:00:00 and 10:02:30 and is evaluated
+  at 10:04:00 with the default lookback
+- **THEN** the value is the 10:02:30 point, labelled 10:04:00
+
 ### Requirement: Vector-matching arithmetic between metric series
 
 Binary arithmetic between metric series SHALL support vector matching that aligns
@@ -85,6 +140,32 @@ surface syntax.
   specified label set
 - **THEN** the result aligns series by that label set and carries the defined
   output label set, or is rejected when the match is ambiguous
+
+#### Scenario: Many-to-many match is rejected
+
+- **WHEN** both sides of an arithmetic or comparison operation hold more than
+  one series for the same match key and no group side is declared
+- **THEN** the query is rejected (HTTP 400) rather than pairing series
+  arbitrarily
+
+#### Scenario: Set operators allow many-to-many
+
+- **WHEN** `and`, `or` or `unless` combine sides that each hold several series
+  per match key
+- **THEN** the result keeps or drops series by whether a match exists on the
+  other side, without a cardinality error
+
+### Requirement: PromQL is a projection of the metric model
+
+The PromQL dialect SHALL lower to the same metric model and operators as the
+native query surface, so one PromQL expression and its equivalent native query
+return the same result. There SHALL be no second metric evaluator.
+
+#### Scenario: PromQL and native query agree
+
+- **WHEN** a PromQL expression and the native query it lowers to run over the
+  same data
+- **THEN** both return the same series, labels and values
 
 ### Requirement: Scalar result envelope
 
