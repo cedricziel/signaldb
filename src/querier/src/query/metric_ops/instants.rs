@@ -239,6 +239,9 @@ mod tests {
         assert!(invoke([1, 0, 10_999, 1, 11_000].map(Some)).is_ok());
         // A wide window over a short query range covers few instants.
         assert!(invoke([1, 0, 9, 1, 11_001].map(Some)).is_ok());
+        // A window of many steps is bounded by `last`.
+        let long = invoke([1, 0, 9, 1, 1_000_000].map(Some)).unwrap();
+        assert_eq!(long, vec![Some((1..=9).collect())]);
     }
 
     #[test]

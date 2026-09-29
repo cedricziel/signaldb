@@ -118,10 +118,10 @@ fn read(
     doc_step: Option<&str>,
     now_ns: i64,
 ) -> Result<Read, QuerierError> {
-    let (what, window_ns) = match (&sample.window, &sample.lookback) {
-        (Some(w), _) => ("window", duration("sample.window", w, 1)?),
-        (None, Some(l)) => ("lookback", duration("sample.lookback", l, 1)?),
-        (None, None) => ("lookback", DEFAULT_LOOKBACK_NS),
+    let window_ns = match (&sample.window, &sample.lookback) {
+        (Some(w), _) => duration("sample.window", w, 1)?,
+        (None, Some(l)) => duration("sample.lookback", l, 1)?,
+        (None, None) => DEFAULT_LOOKBACK_NS,
     };
     let step = sample.step.as_deref().or(doc_step).ok_or_else(|| {
         QuerierError::InvalidInput("sample requires a `step`, on the stage or the document".into())
@@ -143,12 +143,6 @@ fn read(
         },
         None => None,
     };
-    if at.is_none() && (window_ns - 1) / step_ns + 1 > MAX_INSTANTS {
-        return Err(QuerierError::InvalidInput(format!(
-            "sample {what} spans more than {MAX_INSTANTS} steps; \
-             increase the step or shrink the {what}"
-        )));
-    }
     let (first, last) = at.map_or((window.start_ns, window.end_ns), |at| (at, at));
     Ok(Read {
         f: range_fn(sample),

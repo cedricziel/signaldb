@@ -698,3 +698,22 @@ async fn a_collision_after_dropping_the_name_keeps_both_rows() {
         "{rows:?}"
     );
 }
+
+/// A window far longer than the range reads back over many steps, but the
+/// range itself evaluates only a handful of instants.
+#[tokio::test]
+async fn a_long_window_over_a_short_range_is_fine() {
+    let points = [
+        counter(1_000 * S, "a", 1.0, json!({})),
+        counter(100_000 * S, "a", 3.0, json!({})),
+    ];
+    let mut doc = sample_doc(
+        100_000,
+        100_300,
+        json!({ "fn": "increase", "window": "3d" }),
+    );
+    doc["step"] = json!("15s");
+    let rows = series_rows(&run(&points, doc).await.unwrap());
+    assert_eq!(rows.len(), 21, "{rows:?}");
+    assert!(rows.iter().all(|(_, _, v)| *v == 2.0), "{rows:?}");
+}
