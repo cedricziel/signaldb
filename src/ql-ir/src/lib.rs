@@ -37,7 +37,7 @@
 //! aggregation. `rate` is a `count` carrying a `divisor` — which is why
 //! `irVersion` 5 added one.
 //!
-//! ### What is still inexpressible
+//! ### What LogQL still cannot express
 //!
 //! Each of these is refused by name rather than lowered to something narrower,
 //! because a partially-applied query returns more rows than asked for while
@@ -61,10 +61,16 @@
 //!   range aggregate's field, which is the only place LogQL gives it a
 //!   meaning this crate can carry.
 //!
-//! Documents claim the lowest version that carries them: a query needing no v5
-//! feature declares v1 and stays executable by an older server.
+//! **PromQL** — lowers onto the `irVersion` 10 series algebra (design D11 of
+//! `otel-native-schema`): a selector is a `where` plus a `sample`, and
+//! aggregations are `reduce` stages. Every PromQL document declares v10.
+//!
+//! LogQL and TraceQL documents claim the lowest version that carries them: a
+//! query needing no v5 feature declares v1 and stays executable by an older
+//! server.
 
 mod logql_lower;
+mod promql_lower;
 mod traceql_lower;
 
 /// An IR range from two literal bounds.
@@ -80,6 +86,7 @@ fn ir_range(from: &str, to: &str) -> query_ir::Range {
 }
 
 pub use logql_lower::{STREAM_IDENTITY, logql_label_field, logql_to_ir};
+pub use promql_lower::{PromqlParams, promql_label_field, promql_to_ir};
 pub use traceql_lower::{traceql_condition_to_predicate, traceql_to_ir};
 
 /// Why a query could not be lowered.
@@ -96,6 +103,11 @@ pub enum LowerError {
     /// 1-based position.
     #[error("{0}")]
     ParseLogql(#[from] logql::ParseError),
+
+    /// The text is not PromQL, or the evaluation parameters describe no
+    /// evaluation (a range ending before it starts, a non-positive step).
+    #[error("invalid PromQL: {0}")]
+    InvalidPromql(String),
 
     /// The query parses, but says something the IR cannot express. Distinct
     /// from a parse failure: the language is fine, our target is not rich
