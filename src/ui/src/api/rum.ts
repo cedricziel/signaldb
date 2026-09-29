@@ -255,6 +255,17 @@ function identityFormulaDoc(
   return { queries, formulas, result: "series" };
 }
 
+function seriesByFormula(
+  res: QueryIrResponse,
+): Map<string, RumKpiSeriesPoint[]> {
+  const out = new Map<string, RumKpiSeriesPoint[]>();
+  for (const s of res.series ?? []) {
+    const f = s.labels?.formula;
+    if (typeof f === "string") out.set(f, decodePoints(s.points));
+  }
+  return out;
+}
+
 /** Decodes the combined KPIs response, keyed by metric — each named
  * query's identity formula tags its series with `labels.formula`. A metric
  * with no matching series (nothing recorded, or the server dropped an
@@ -263,14 +274,9 @@ export function kpisFromResponse(
   res: QueryIrResponse,
   metrics: readonly RumKpiMetric[],
 ): Record<string, RumKpiSeriesPoint[]> {
+  const byFormula = seriesByFormula(res);
   const out: Record<string, RumKpiSeriesPoint[]> = {};
-  for (const metric of metrics) out[metric] = [];
-  for (const s of res.series ?? []) {
-    const metric = s.labels?.formula;
-    if (typeof metric === "string" && metric in out) {
-      out[metric] = decodePoints(s.points);
-    }
-  }
+  for (const metric of metrics) out[metric] = byFormula.get(metric) ?? [];
   return out;
 }
 
@@ -484,11 +490,7 @@ export function buildSessionsOverTimeDoc(
 export function sessionsOverTimeFromResponse(
   res: QueryIrResponse,
 ): RumSessionSeries {
-  const byFormula = new Map<string, RumKpiSeriesPoint[]>();
-  for (const s of res.series ?? []) {
-    const f = s.labels?.formula;
-    if (typeof f === "string") byFormula.set(f, decodePoints(s.points));
-  }
+  const byFormula = seriesByFormula(res);
   return {
     total: byFormula.get("total") ?? [],
     withErrors: byFormula.get("with_errors") ?? [],
@@ -1048,11 +1050,7 @@ export interface RumTracedShareSeries {
 export function tracedShareFromResponse(
   res: QueryIrResponse,
 ): RumTracedShareSeries {
-  const byFormula = new Map<string, RumKpiSeriesPoint[]>();
-  for (const s of res.series ?? []) {
-    const f = s.labels?.formula;
-    if (typeof f === "string") byFormula.set(f, decodePoints(s.points));
-  }
+  const byFormula = seriesByFormula(res);
   return {
     traced: byFormula.get("traced") ?? [],
     total: byFormula.get("total") ?? [],
