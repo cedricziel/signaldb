@@ -127,3 +127,6 @@ path = "tests/query_parity.rs"
 [[test]]
 name = "github_source_context_e2e"
 path = "tests/github_source_context_e2e.rs"
+
+[lints]
+workspace = true

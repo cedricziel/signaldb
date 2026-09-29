@@ -47,3 +47,6 @@ common = { path = "../common", features = ["testing"] }
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+
+[lints]
+workspace = true

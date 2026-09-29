@@ -32,3 +32,5 @@ default = []
 client = []
 server = []
 
+[lints]
+workspace = true

@@ -41,3 +41,6 @@ ignored = ["cargo-husky", "workspace-hack"]
 [features]
 jemalloc = ["dep:tikv-jemallocator"]
 jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling", "common/jemalloc-profiling"]
+
+[lints]
+workspace = true

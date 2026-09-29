@@ -75,3 +75,6 @@ tracing-subscriber.workspace = true
 [package.metadata.cargo-machete]
 # workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
 ignored = ["tokio-test", "workspace-hack"]
+
+[lints]
+workspace = true

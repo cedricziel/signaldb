@@ -65,6 +65,12 @@ default-members = [
 edition = "2024"
 license = "AGPL-3.0"
 
+# Every member depends on workspace-hack only to unify features (cargo-hakari),
+# which cargo cannot tell apart from a real unused dependency. cargo machete
+# --with-metadata covers unused dependencies instead, with that exception.
+[workspace.lints.cargo]
+unused_dependencies = "allow"
+
 [workspace.dependencies]
 common = { path = "src/common" }
 eval-model = { path = "src/eval-model" }

@@ -19,3 +19,6 @@ name = "logql"
 
 [dependencies]
 thiserror.workspace = true
+
+[lints]
+workspace = true
