@@ -1,7 +1,7 @@
 //! Metric Series planning (D11): the Series frame `(bucket, __labels, value)`
 //! and the label-set UDFs its stages group, match and rewrite by.
 
-use common::query_ir::{Direction, Document, Stage};
+use common::query_ir::{BinopOperand, Direction, Document, Stage};
 use datafusion::functions::math::expr_fn::isnan;
 use datafusion::prelude::{DataFrame, SessionContext, ident};
 
@@ -64,6 +64,12 @@ pub(crate) fn lower_stage(
             })?;
             window::lower_over_time(df, over, env.window, out_step)
         }
+        Stage::Binop(binop) => match &binop.right {
+            BinopOperand::Number(n) => stages::lower_number_binop(df, binop, *n),
+            BinopOperand::Document(_) => Err(QuerierError::Unsupported(
+                "binop with a sub-document operand is not supported yet".to_string(),
+            )),
+        },
         // Only the terminal order changes (see `terminal_order`).
         Stage::Sort(_) => Ok(df),
         other => Err(QuerierError::Unsupported(format!(
