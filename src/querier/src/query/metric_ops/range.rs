@@ -4,7 +4,10 @@ use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::Arc;
 
-use datafusion::arrow::array::{Array, ArrayRef, AsArray};
+use datafusion::arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, BooleanBuilder, ListArray, ListBuilder,
+    PrimitiveArray, PrimitiveBuilder,
+};
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Float64Type, Int32Type, Int64Type};
 use datafusion::error::{DataFusionError, Result};
@@ -25,7 +28,10 @@ pub fn range_udaf(f: RangeFn, window_ns: i64) -> AggregateUDF {
     AggregateUDF::new_from_impl(RangeUdaf {
         f,
         window_ns,
-        name: format!("range_{}", f.name()),
+        name: match f {
+            RangeFn::QuantileOverTime(q) => format!("range_{}_q{q}_w{window_ns}", f.name()),
+            _ => format!("range_{}_w{window_ns}", f.name()),
+        },
         signature: Signature::any(7, Volatility::Immutable),
     })
 }
@@ -91,8 +97,30 @@ fn opt<A: Array>(a: &A, i: usize) -> bool {
     a.is_valid(i)
 }
 
-fn list_scalar(vals: Vec<ScalarValue>, t: DataType) -> ScalarValue {
-    ScalarValue::List(ScalarValue::new_list_nullable(&vals, &t))
+fn bad_state(what: &str) -> DataFusionError {
+    DataFusionError::Internal(format!(
+        "range accumulator state `{what}` has the wrong type"
+    ))
+}
+
+fn state_list<'a>(a: &'a ArrayRef, what: &str) -> Result<&'a ListArray> {
+    a.as_list_opt::<i32>().ok_or_else(|| bad_state(what))
+}
+
+fn state_values<T: ArrowPrimitiveType>(a: &ArrayRef, what: &str) -> Result<PrimitiveArray<T>> {
+    a.as_primitive_opt::<T>()
+        .cloned()
+        .ok_or_else(|| bad_state(what))
+}
+
+/// One list scalar holding `vals`.
+fn list_scalar<T: ArrowPrimitiveType>(
+    vals: impl Iterator<Item = Option<T::Native>>,
+) -> ScalarValue {
+    let mut b = ListBuilder::new(PrimitiveBuilder::<T>::new());
+    b.values().extend(vals);
+    b.append(true);
+    ScalarValue::List(Arc::new(b.finish()))
 }
 
 impl RangeAcc {
@@ -147,22 +175,26 @@ impl Accumulator for RangeAcc {
             ));
         };
         let (ts, v, start) = (
-            ts.as_list::<i32>(),
-            v.as_list::<i32>(),
-            start.as_list::<i32>(),
+            state_list(ts, "ts")?,
+            state_list(v, "value")?,
+            state_list(start, "start")?,
         );
-        let (temporality, monotonic) = (temporality.as_list::<i32>(), monotonic.as_list::<i32>());
-        let (kind, instant) = (kind.as_string::<i32>(), instant.as_primitive::<Int64Type>());
+        let (temporality, monotonic) = (
+            state_list(temporality, "temporality")?,
+            state_list(monotonic, "monotonic")?,
+        );
+        let kind = kind
+            .as_string_opt::<i32>()
+            .ok_or_else(|| bad_state("kind"))?;
+        let instant = state_values::<Int64Type>(instant, "instant")?;
         for row in 0..ts.len() {
             if ts.is_valid(row) {
-                let (t, val, s) = (ts.value(row), v.value(row), start.value(row));
-                let (tp, mo) = (temporality.value(row), monotonic.value(row));
-                let (t, val, s) = (
-                    t.as_primitive::<Int64Type>(),
-                    val.as_primitive::<Float64Type>(),
-                    s.as_primitive::<Int64Type>(),
-                );
-                let (tp, mo) = (tp.as_primitive::<Int32Type>(), mo.as_boolean());
+                let t = state_values::<Int64Type>(&ts.value(row), "ts")?;
+                let val = state_values::<Float64Type>(&v.value(row), "value")?;
+                let s = state_values::<Int64Type>(&start.value(row), "start")?;
+                let tp = state_values::<Int32Type>(&temporality.value(row), "temporality")?;
+                let mo = monotonic.value(row);
+                let mo = mo.as_boolean_opt().ok_or_else(|| bad_state("monotonic"))?;
                 if let Some(newest) = t.values().iter().max() {
                     self.absorb_kind(*newest, opt(kind, row).then(|| kind.value(row)));
                 }
@@ -171,28 +203,29 @@ impl Accumulator for RangeAcc {
                         ts: t.value(i),
                         v: val.value(i),
                         start: s.value(i),
-                        temporality: opt(tp, i).then(|| tp.value(i)),
+                        temporality: opt(&tp, i).then(|| tp.value(i)),
                         monotonic: opt(mo, i).then(|| mo.value(i)),
                     });
                 }
             }
             self.instant = self
                 .instant
-                .or(opt(instant, row).then(|| instant.value(row)));
+                .or(opt(&instant, row).then(|| instant.value(row)));
         }
         Ok(())
     }
 
     fn state(&mut self) -> Result<Vec<ScalarValue>> {
-        let col = |get: fn(&Pt) -> ScalarValue, t: DataType| {
-            list_scalar(self.pts.iter().map(get).collect(), t)
-        };
+        let pts = &self.pts;
+        let mut monotonic = ListBuilder::new(BooleanBuilder::new());
+        monotonic.values().extend(pts.iter().map(|p| p.monotonic));
+        monotonic.append(true);
         Ok(vec![
-            col(|p| ScalarValue::Int64(Some(p.ts)), DataType::Int64),
-            col(|p| ScalarValue::Float64(Some(p.v)), DataType::Float64),
-            col(|p| ScalarValue::Int64(Some(p.start)), DataType::Int64),
-            col(|p| ScalarValue::Int32(p.temporality), DataType::Int32),
-            col(|p| ScalarValue::Boolean(p.monotonic), DataType::Boolean),
+            list_scalar::<Int64Type>(pts.iter().map(|p| Some(p.ts))),
+            list_scalar::<Float64Type>(pts.iter().map(|p| Some(p.v))),
+            list_scalar::<Int64Type>(pts.iter().map(|p| Some(p.start))),
+            list_scalar::<Int32Type>(pts.iter().map(|p| p.temporality)),
+            ScalarValue::List(Arc::new(monotonic.finish())),
             ScalarValue::Utf8(self.newest_kind.as_ref().map(|(_, k)| k.clone())),
             ScalarValue::Int64(self.instant),
         ])
@@ -232,6 +265,16 @@ mod tests {
     use crate::query::error::QuerierError;
 
     const S: i64 = 1_000_000_000;
+
+    #[test]
+    fn udaf_names_carry_the_window_and_quantile() {
+        let name = |f, w| range_udaf(f, w).name().to_string();
+        assert_ne!(name(RangeFn::Rate, 1), name(RangeFn::Rate, 2));
+        assert_ne!(
+            name(RangeFn::QuantileOverTime(0.5), 1),
+            name(RangeFn::QuantileOverTime(0.9), 1)
+        );
+    }
 
     #[derive(Clone)]
     struct Row {
