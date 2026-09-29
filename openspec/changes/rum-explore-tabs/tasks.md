@@ -22,7 +22,7 @@ proposal — Why).
 
 ## 4. Errors
 
-- [ ] 4.1 Failing tests for app-scoped error groups, "new in release" and the preceding-failed-request lookup (one batched read for the list, not per row).
+- [x] 4.1 Failing tests for app-scoped error groups, "new in release" and the preceding-failed-request lookup (one batched read for the list, not per row).
 - [ ] 4.2 Errors tab reusing `api/errors.ts` scoped by `service.name`, stack frames, by-browser breakdown, backend cause, latest session link; Overview "Top errors" rows link into it.
 
 ## 5. Platform labels + docs
