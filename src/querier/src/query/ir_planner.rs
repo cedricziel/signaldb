@@ -69,6 +69,7 @@ use super::error::QuerierError;
 use super::metric_ops::hist::HistStat;
 use super::metric_ops::hist_math::Mode;
 use super::metric_ops::hist_plan::{HistEval, histogram_series};
+use super::metric_ops::instants::check_instants;
 use super::metric_ops::range_math::RangeFn;
 use super::metric_ops::range_plan::{RangeEval, range_series};
 use super::metric_series;
@@ -1181,10 +1182,10 @@ pub(crate) async fn plan_document(
     for stage in &doc.pipeline {
         match stage {
             Stage::HistogramQuantile(hq) => {
-                lookback = lookback.max(histogram_step_window(hq)?.1);
+                lookback = lookback.max(histogram_step_window(hq, &window)?.1);
             }
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
-                lookback = lookback.max(range_step_window(agg, a)?.1);
+                lookback = lookback.max(range_step_window(agg, a, &window)?.1);
             }
             Stage::Aggregate(agg) if let Some(step) = instant_grid_step(agg, &source) => {
                 lookback = lookback.max(parse_step(step)?);
@@ -1357,10 +1358,12 @@ fn parse_step(step: &str) -> Result<i64, QuerierError> {
         .ok_or_else(|| QuerierError::InvalidInput(format!("invalid step duration '{step}'")))
 }
 
-/// A range aggregate's step and window (the window defaults to the step).
+/// A range aggregate's step and window (the window defaults to the step),
+/// checked against the query's evaluation instants.
 fn range_step_window(
     agg: &Aggregate,
     a: &common::query_ir::Agg,
+    range: &ResolvedWindow,
 ) -> Result<(i64, i64), QuerierError> {
     let parse = |d: &str, what: &str| {
         common::query_ir::parse_duration_ns(d)
@@ -1371,18 +1374,25 @@ fn range_step_window(
         .window
         .as_deref()
         .map_or(Ok(step_ns), |w| parse(w, "window"))?;
+    check_instants(range.start_ns, range.end_ns, step_ns, window_ns)?;
     Ok((step_ns, window_ns))
 }
 
-/// A histogram_quantile's step and window (the window defaults to the step).
-fn histogram_step_window(hq: &HistogramQuantile) -> Result<(i64, i64), QuerierError> {
+/// A histogram_quantile's step and window (the window defaults to the step),
+/// checked against the query's evaluation instants.
+fn histogram_step_window(
+    hq: &HistogramQuantile,
+    range: &ResolvedWindow,
+) -> Result<(i64, i64), QuerierError> {
     let parse = |d: &str| {
         common::query_ir::parse_duration_ns(d).ok_or_else(|| {
             QuerierError::InvalidInput(format!("invalid histogram_quantile duration '{d}'"))
         })
     };
     let step_ns = parse(&hq.step)?;
-    Ok((step_ns, hq.window.as_deref().map_or(Ok(step_ns), parse)?))
+    let window_ns = hq.window.as_deref().map_or(Ok(step_ns), parse)?;
+    check_instants(range.start_ns, range.end_ns, step_ns, window_ns)?;
+    Ok((step_ns, window_ns))
 }
 
 /// Resolve the document's range to an absolute window.
@@ -1947,6 +1957,7 @@ impl Lowering<'_> {
                 // holds the point: `k` is the ceiling of `(ts - from) / step`,
                 // which integer division gives for every `ts > from - step`.
                 const INSTANT: &str = "__instant";
+                check_instants(w.start_ns, w.end_ns, step_ns, step_ns)?;
                 let ts = cast(
                     cast(col(self.source.time_col), ts_type.clone()),
                     DataType::Int64,
@@ -2015,7 +2026,7 @@ impl Lowering<'_> {
         window: &ResolvedWindow,
     ) -> Result<DataFrame, QuerierError> {
         use common::query_ir::AggFn;
-        let (step_ns, window_ns) = range_step_window(agg, a)?;
+        let (step_ns, window_ns) = range_step_window(agg, a, window)?;
         let of = a.of.as_deref().ok_or_else(|| {
             QuerierError::InvalidInput(format!(
                 "aggregate '{}' requires an `of` field",
@@ -2155,7 +2166,7 @@ impl Lowering<'_> {
         hq: &HistogramQuantile,
         window: &ResolvedWindow,
     ) -> Result<DataFrame, QuerierError> {
-        let (step_ns, window_ns) = histogram_step_window(hq)?;
+        let (step_ns, window_ns) = histogram_step_window(hq, window)?;
         let by_aliases: Vec<String> = hq.by.iter().map(|by| safe_ident(by)).collect();
         let mut groups = vec![(col("metric_name"), "metric_name".to_string())];
         for (by, alias) in hq.by.iter().zip(&by_aliases) {
@@ -4566,8 +4577,8 @@ mod tests {
         assert!((value - 5.0).abs() < 1e-9, "got {value}");
     }
 
-    fn increase_doc(func: &str) -> Document {
-        doc(serde_json::json!({
+    fn increase_json(func: &str) -> serde_json::Value {
+        serde_json::json!({
             "irVersion": 7, "from": "metrics",
             "range": { "from": 35_000_000_000i64, "to": 35_000_000_000i64 },
             "result": "series",
@@ -4576,7 +4587,11 @@ mod tests {
                 "aggs": [{ "fn": func, "of": "metric.value", "as": "r" }],
                 "step": "30s"
             } }]
-        }))
+        })
+    }
+
+    fn increase_doc(func: &str) -> Document {
+        doc(increase_json(func))
     }
 
     /// One service emitting two series of one counter (distinct `series_id`):
@@ -4601,16 +4616,38 @@ mod tests {
     async fn rate_over_a_gauge_is_invalid_input() {
         let rows: &[(&str, i64, f64)] = &[("g", 10_000_000_000, 1.0), ("g", 20_000_000_000, 2.0)];
         let svc = IrService::new(points_ctx(counter_points("gauge", rows)));
-        let (df, _) = svc
-            .plan(&increase_doc("rate"), "t", "d", 0)
-            .await
-            .unwrap()
-            .unwrap();
-        let err = QuerierError::from(df.collect().await.unwrap_err());
+        let params = IrQueryParams {
+            document: increase_json("rate"),
+            now_ns: 0,
+        };
+        let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
             matches!(&err, QuerierError::InvalidInput(m) if m.contains("use delta or deriv")),
             "{err}"
         );
+    }
+
+    /// Step, window and the instant cap are checked before execution.
+    #[tokio::test]
+    async fn metric_operators_reject_too_many_instants_at_plan_time() {
+        let rows: &[(&str, i64, f64)] = &[("c", 10, 1.0)];
+        let svc = IrService::new(points_ctx(counter_points("sum", rows)));
+        let range = serde_json::json!({ "from": 0, "to": 100_000_000_000_000i64 });
+        let hq = serde_json::json!({ "histogram_quantile": { "q": 0.5, "step": "1s", "as": "p" } });
+        let rate = serde_json::json!({ "aggregate": {
+            "aggs": [{ "fn": "rate", "of": "metric.value", "as": "r" }], "step": "1s"
+        } });
+        for stage in [hq, rate] {
+            let d = doc(serde_json::json!({
+                "irVersion": 7, "from": "metrics", "range": range, "result": "series",
+                "pipeline": [stage]
+            }));
+            let err = svc.plan(&d, "t", "d", 0).await.map(|_| ()).unwrap_err();
+            assert!(
+                matches!(&err, QuerierError::InvalidInput(m) if m.contains("11000")),
+                "{err}"
+            );
+        }
     }
 
     // Task 4.1 — from(logs)+where+aggregate(step) lowers to the expected plan.

@@ -34,6 +34,7 @@ use super::logql::MaterializedColumns;
 use super::metric_ops::hist::HistStat;
 use super::metric_ops::hist_math::Mode;
 use super::metric_ops::hist_plan::{HistEval, histogram_series};
+use super::metric_ops::instants::check_instants;
 use super::promql::{
     ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
     MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
@@ -1151,13 +1152,6 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        // No histogram table yet → empty result. A catalog failure still errors.
-        let Some(df) = self
-            .scan_metrics(tenant_slug, dataset_slug, NON_SCALAR_METRIC_TYPES)
-            .await?
-        else {
-            return Ok(vec![]);
-        };
         let rate_window = plan.range.map(|r| (r.seconds * 1e9).round() as i64);
         let eval = HistEval {
             stat: match plan.histogram_fraction {
@@ -1170,6 +1164,14 @@ impl MetricsService {
             step_ns: step,
             window_ns: rate_window.unwrap_or(step),
             offset_ns: plan.offset_ns,
+        };
+        check_instants(eval.first_ns, eval.last_ns, eval.step_ns, eval.window_ns)?;
+        // No histogram table yet → empty result. A catalog failure still errors.
+        let Some(df) = self
+            .scan_metrics(tenant_slug, dataset_slug, NON_SCALAR_METRIC_TYPES)
+            .await?
+        else {
+            return Ok(vec![]);
         };
         let df = apply_filters(df, plan, eval.first_ns - eval.window_ns, eval.last_ns)?;
         let groups = ["metric_name", "service_name"].map(|c| (col(c), c.to_string()));
@@ -3926,6 +3928,19 @@ mod tests {
             (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
             "got {}",
             out[0].2
+        );
+    }
+
+    #[tokio::test]
+    async fn histogram_quantile_over_too_many_instants_is_invalid_input() {
+        let service = histogram_service_with_leak("gauge");
+        let err = service
+            .query_range("histogram_quantile(0.5, latency)", 0, 11_000, 1, "t", "d")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("11000")),
+            "{err}"
         );
     }
 
