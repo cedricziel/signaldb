@@ -30,7 +30,7 @@ use super::document::{Document, Range, ResultEnvelope};
 use super::predicate::{ComparisonOp, Leaf, Predicate};
 use super::relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
-    Series,
+    Scalar, Series,
 };
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry};
@@ -91,7 +91,7 @@ pub enum IrError {
     InvalidRankSize { n: i64 },
 
     #[error(
-        "`fields` projection is only valid for rows/table results, not series, heatmap, flamegraph, graph, or metadata"
+        "`fields` projection is only valid for rows/table results, not series, scalar, heatmap, flamegraph, graph, or metadata"
     )]
     FieldsOnSeries,
 
@@ -163,6 +163,9 @@ pub fn validate(
     // router's schema-free path (`validate_describe`) share one rule set.
     let describe = check_describe(doc)?;
 
+    if doc.result == ResultEnvelope::Scalar {
+        require_feature(&registry, Feature::ScalarEnvelope, "scalar result envelope")?;
+    }
     // 2. Source resolution — unknown source is a clear error, not a parse fail.
     let source_def = resolve_source(doc, sources)?;
 
@@ -183,6 +186,7 @@ pub fn validate(
             aggregated: false,
             open: true,
             correlated: false,
+            identity: source_def.grain == Grain::Point,
         }),
         names: Vec::new(),
         declared_result: doc.result,
@@ -247,7 +251,10 @@ impl InferCtx<'_> {
                     .to_string(),
             });
         }
-        match stage {
+        if let Some(feature) = stage.feature() {
+            require_feature(&self.registry, feature, &format!("{} stage", stage.name()))?;
+        }
+        let applied = match stage {
             Stage::Where(pred) => self.apply_where(pred),
             Stage::Extract(extract) => self.apply_extract(extract),
             Stage::Aggregate(agg) => self.apply_aggregate(agg),
@@ -258,6 +265,21 @@ impl InferCtx<'_> {
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
             Stage::Correlate(correlate) => self.apply_correlate(correlate),
+            Stage::Scalar(_) => {
+                let step_ns = self.require_series("scalar")?.step_ns;
+                self.relation = RelationType::Scalar(Scalar { step_ns });
+                Ok(())
+            }
+            Stage::Vector(_) => {
+                let step_ns = self.require_scalar("vector")?.step_ns;
+                self.relation = RelationType::Series(Series {
+                    labels: Vec::new(),
+                    open_labels: false,
+                    value: ValueType::Float64,
+                    step_ns,
+                });
+                Ok(())
+            }
             // Unreachable in practice: an introspection document returns before
             // stage inference. Kept explicit so a future caller that skips
             // `check_describe` fails loudly instead of inferring nonsense.
@@ -266,6 +288,62 @@ impl InferCtx<'_> {
                 reason: "`describe` introspects a source and cannot appear in an executable \
                          pipeline"
                     .to_string(),
+            }),
+        };
+        // Only `where` keeps a point stream's identity.
+        if !matches!(stage, Stage::Where(_))
+            && let RelationType::RowSet(rs) = &mut self.relation
+        {
+            rs.identity = false;
+        }
+        applied
+    }
+
+    /// The input of an operator that reads a metric point stream: an
+    /// unbroken `metrics` scan, optionally narrowed by `where`.
+    fn require_point_stream(&self, stage: &str) -> Result<(), IrError> {
+        match &self.relation {
+            RelationType::RowSet(rs)
+                if rs.source == "metrics"
+                    && rs.grain == Grain::Point
+                    && !rs.aggregated
+                    && rs.identity =>
+            {
+                Ok(())
+            }
+            other => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "requires a metric point stream (a `metrics` scan, optionally narrowed by \
+                     `where`), but the input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    fn require_series(&self, stage: &str) -> Result<&Series, IrError> {
+        match &self.relation {
+            RelationType::Series(s) => Ok(s),
+            other => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "expects a series input, but the input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    fn require_scalar(&self, stage: &str) -> Result<Scalar, IrError> {
+        match &self.relation {
+            RelationType::Scalar(s) => Ok(*s),
+            other => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "expects a scalar input, but the input is {}",
+                    other.describe()
+                ),
             }),
         }
     }
@@ -276,6 +354,10 @@ impl InferCtx<'_> {
             RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::IllegalStage {
                 stage: stage.to_string(),
                 reason: "expects a row-set input but the pipeline is a series".to_string(),
+            }),
+            RelationType::Scalar(_) => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: "expects a row-set input but the pipeline is a scalar".to_string(),
             }),
             RelationType::Metadata(_) => Err(IrError::IllegalStage {
                 stage: stage.to_string(),
@@ -311,11 +393,12 @@ impl InferCtx<'_> {
         // relabels the outcome, it does not change how a field is found.
         let resolve_name = self.parent_field(name).unwrap_or(name);
         match &self.relation {
-            RelationType::Series(_) | RelationType::Heatmap(_) | RelationType::Metadata(_) => {
-                Err(IrError::UnknownReference {
-                    name: name.to_string(),
-                })
-            }
+            RelationType::Series(_)
+            | RelationType::Scalar(_)
+            | RelationType::Heatmap(_)
+            | RelationType::Metadata(_) => Err(IrError::UnknownReference {
+                name: name.to_string(),
+            }),
             RelationType::RowSet(rs) => {
                 if let Some(col) = rs.columns.iter().find(|c| c.name == name) {
                     return Ok((col.value_type.clone(), false));
@@ -481,6 +564,9 @@ impl InferCtx<'_> {
             });
         }
         let was_correlated = rs.correlated;
+        if self.source == "metrics" && agg.aggs.iter().any(|a| a.func.is_range_fn()) {
+            self.require_point_stream("aggregate")?;
+        }
         if agg.aggs.is_empty() {
             return Err(IrError::Invalid(
                 "aggregate requires at least one aggregate output".to_string(),
@@ -529,6 +615,7 @@ impl InferCtx<'_> {
                 }
                 self.relation = RelationType::Series(Series {
                     labels: agg.by.clone(),
+                    open_labels: false,
                     value: out_cols[0].value_type.clone(),
                     step_ns,
                 });
@@ -543,6 +630,7 @@ impl InferCtx<'_> {
                     aggregated: true,
                     open: false,
                     correlated: was_correlated,
+                    identity: false,
                 });
             }
         }
@@ -636,12 +724,7 @@ impl InferCtx<'_> {
                 reason: "is only supported on the metrics source".into(),
             });
         }
-        if self.require_rowset("histogram_quantile")?.aggregated {
-            return Err(IrError::IllegalStage {
-                stage: "histogram_quantile".into(),
-                reason: "cannot run on an already-aggregated relation".into(),
-            });
-        }
+        self.require_point_stream("histogram_quantile")?;
         if !hq.q.is_finite() || !(0.0..=1.0).contains(&hq.q) {
             return Err(IrError::Invalid(
                 "histogram_quantile q must be within [0, 1]".to_string(),
@@ -701,6 +784,7 @@ impl InferCtx<'_> {
         labels.extend(hq.by.clone());
         self.relation = RelationType::Series(Series {
             labels,
+            open_labels: false,
             value: ValueType::Float64,
             step_ns,
         });
@@ -1048,6 +1132,22 @@ fn check_range(range: &Range) -> Result<(), IrError> {
     Ok(())
 }
 
+/// Gate a versioned feature on the document's registry.
+fn require_feature(
+    registry: &OperatorRegistry,
+    feature: Feature,
+    what: &str,
+) -> Result<(), IrError> {
+    if registry.supports_feature(feature) {
+        return Ok(());
+    }
+    Err(IrError::Invalid(format!(
+        "{what} requires irVersion {} (document declares {})",
+        OperatorRegistry::feature_min_version(feature),
+        registry.version
+    )))
+}
+
 fn is_numeric(t: &ValueType) -> bool {
     matches!(
         t,
@@ -1152,6 +1252,7 @@ fn envelope_rejects_projection(result: ResultEnvelope) -> bool {
     matches!(
         result,
         ResultEnvelope::Series
+            | ResultEnvelope::Scalar
             | ResultEnvelope::Heatmap
             | ResultEnvelope::Flamegraph
             | ResultEnvelope::Metadata
@@ -1243,6 +1344,7 @@ fn validate_envelope(
         (ResultEnvelope::Rows, RelationType::RowSet(rs)) => !rs.aggregated,
         (ResultEnvelope::Table, RelationType::RowSet(rs)) => rs.aggregated,
         (ResultEnvelope::Series, RelationType::Series(_)) => true,
+        (ResultEnvelope::Scalar, RelationType::Scalar(_)) => true,
         (ResultEnvelope::Heatmap, RelationType::Heatmap(_)) => true,
         (ResultEnvelope::Flamegraph, RelationType::RowSet(rs)) => {
             source == "profiles" && !rs.aggregated
@@ -1773,12 +1875,12 @@ mod tests {
     }
 
     #[test]
-    fn metrics_is_registered_as_an_event_grain_source() {
+    fn metrics_is_registered_as_a_point_grain_source() {
         let sources = SourceRegistry::core();
         let source = sources
             .resolve("metrics")
             .expect("metrics source is registered");
-        assert_eq!(source.grain, Grain::Event);
+        assert_eq!(source.grain, Grain::Point);
         assert!(!source.allows_extract);
     }
 
@@ -2394,13 +2496,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(10, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(11, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 10,
-                    max: 9,
+                    found: 11,
+                    max: 10,
                     ..
                 }
             ),

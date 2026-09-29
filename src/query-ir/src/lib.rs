@@ -42,14 +42,14 @@ pub use formula::{
 pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
 pub use relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
-    Series,
+    Scalar as ScalarRelation, Series,
 };
 pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
 pub use source::{SourceDef, SourceRegistry};
 pub use stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, DerivedField, Describe, DescribeTarget,
     Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode,
-    HistogramQuantile, JoinKind, Order, Parser, Rank, Stage,
+    HistogramQuantile, JoinKind, NoOperands, Order, Parser, Rank, Stage,
 };
 pub use validate::{IrError, Validated, validate, validate_describe};
 pub use value::{

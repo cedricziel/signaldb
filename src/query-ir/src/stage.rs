@@ -8,6 +8,7 @@ use serde::{Deserialize, Serialize};
 
 use super::predicate::Predicate;
 use super::value::ValueType;
+use super::version::Feature;
 
 /// An aggregate function. Member of the versioned function registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -384,6 +385,11 @@ pub struct Correlate {
     pub kind: JoinKind,
 }
 
+/// The operand of a stage that takes none (`{"scalar": {}}`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct NoOperands {}
+
 /// A transform stage in the pipeline. Externally tagged: a single-key object
 /// whose key names the stage. An unknown key is an unsupported stage and is
 /// rejected by name.
@@ -401,6 +407,8 @@ pub enum Stage {
     HistogramQuantile(HistogramQuantile),
     Describe(Describe),
     Correlate(Correlate),
+    Scalar(NoOperands),
+    Vector(NoOperands),
 }
 
 impl Stage {
@@ -418,7 +426,22 @@ impl Stage {
             Stage::HistogramQuantile(_) => "histogram_quantile",
             Stage::Describe(_) => "describe",
             Stage::Correlate(_) => "correlate",
+            Stage::Scalar(_) => "scalar",
+            Stage::Vector(_) => "vector",
         }
+    }
+
+    /// The versioned feature this stage kind is, if it is gated.
+    pub fn feature(&self) -> Option<Feature> {
+        Some(match self {
+            Stage::Heatmap(_) => Feature::Heatmap,
+            Stage::HistogramQuantile(_) => Feature::HistogramQuantile,
+            Stage::Describe(_) => Feature::Describe,
+            Stage::Correlate(_) => Feature::SpanCorrelate,
+            Stage::Scalar(_) => Feature::ScalarStage,
+            Stage::Vector(_) => Feature::VectorStage,
+            _ => return None,
+        })
     }
 }
 
