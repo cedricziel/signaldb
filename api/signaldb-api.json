@@ -10462,11 +10462,17 @@
       "TestResponse": {
         "type": "object",
         "required": [
+          "input",
           "payload",
           "statements"
         ],
         "properties": {
-          "payload": {},
+          "input": {
+            "description": "The submitted payload after decoding into the OTLP types and encoding\nagain, before any statement ran. It has the same field order and\ndefaults as `payload`, so a diff of the two shows only what the\nstatements changed."
+          },
+          "payload": {
+            "description": "The payload after every statement ran."
+          },
           "statements": {
             "type": "array",
             "items": {

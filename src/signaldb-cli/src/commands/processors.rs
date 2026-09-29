@@ -687,7 +687,7 @@ mod tests {
             .mock("POST", "/api/v1/processors:test")
             .with_status(200)
             .with_header("content-type", "application/json")
-            .with_body(r#"{"payload":{},"statements":[]}"#)
+            .with_body(r#"{"input":{},"payload":{},"statements":[]}"#)
             .create_async()
             .await;
 

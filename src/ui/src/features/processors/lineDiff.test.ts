@@ -27,4 +27,19 @@ describe("diffLines", () => {
       true,
     );
   }, 10_000);
+
+  it("runs LCS only over the changed middle, so a long payload with one edit stays exact", () => {
+    const lines = Array.from({ length: 3000 }, (_, i) => `line${i}`);
+    const edited = [...lines];
+    edited[1500] = "changed";
+
+    const changed = diffLines(lines.join("\n"), edited.join("\n")).filter(
+      (line) => line.kind !== "same",
+    );
+
+    expect(changed).toEqual([
+      { kind: "removed", text: "line1500" },
+      { kind: "added", text: "changed" },
+    ]);
+  });
 });

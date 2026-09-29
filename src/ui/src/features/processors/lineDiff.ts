@@ -14,6 +14,28 @@ export type DiffOp<T> = { kind: "same" | "removed" | "added"; item: T };
  * same/removed/added items (removed items from `a` precede the added items
  * from `b` at each divergence point). */
 export function diffSequence<T>(a: readonly T[], b: readonly T[]): DiffOp<T>[] {
+  let head = 0;
+  while (head < a.length && head < b.length && a[head] === b[head]) head++;
+  let tail = 0;
+  while (
+    tail < a.length - head &&
+    tail < b.length - head &&
+    a[a.length - 1 - tail] === b[b.length - 1 - tail]
+  ) {
+    tail++;
+  }
+  const same = (item: T): DiffOp<T> => ({ kind: "same", item });
+  return [
+    ...a.slice(0, head).map(same),
+    ...diffMiddle(
+      a.slice(head, a.length - tail),
+      b.slice(head, b.length - tail),
+    ),
+    ...a.slice(a.length - tail).map(same),
+  ];
+}
+
+function diffMiddle<T>(a: readonly T[], b: readonly T[]): DiffOp<T>[] {
   const n = a.length;
   const m = b.length;
   // Guard against pathological input: the DP matrix below is O(n*m) cells,

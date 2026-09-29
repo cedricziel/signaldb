@@ -2290,6 +2290,16 @@ export type TestRequest = {
 };
 
 export type TestResponse = {
+    /**
+     * The submitted payload after decoding into the OTLP types and encoding
+     * again, before any statement ran. It has the same field order and
+     * defaults as `payload`, so a diff of the two shows only what the
+     * statements changed.
+     */
+    input: unknown;
+    /**
+     * The payload after every statement ran.
+     */
     payload: unknown;
     statements: Array<TestStatementResult>;
 };

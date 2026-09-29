@@ -3556,6 +3556,12 @@ pub mod types {
     ///`TestResponse`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct TestResponse {
+        /**The submitted payload after decoding into the OTLP types and encoding
+        again, before any statement ran. It has the same field order and
+        defaults as `payload`, so a diff of the two shows only what the
+        statements changed.*/
+        pub input: ::serde_json::Value,
+        ///The payload after every statement ran.
         pub payload: ::serde_json::Value,
         pub statements: ::std::vec::Vec<TestStatementResult>,
     }
@@ -17554,6 +17560,7 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct TestResponse {
+            input: ::std::result::Result<::serde_json::Value, ::std::string::String>,
             payload: ::std::result::Result<::serde_json::Value, ::std::string::String>,
             statements: ::std::result::Result<
                 ::std::vec::Vec<super::TestStatementResult>,
@@ -17563,12 +17570,23 @@ pub mod types {
         impl ::std::default::Default for TestResponse {
             fn default() -> Self {
                 Self {
+                    input: Err("no value supplied for input".to_string()),
                     payload: Err("no value supplied for payload".to_string()),
                     statements: Err("no value supplied for statements".to_string()),
                 }
             }
         }
         impl TestResponse {
+            pub fn input<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::serde_json::Value>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.input = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for input: {e}"));
+                self
+            }
             pub fn payload<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::serde_json::Value>,
@@ -17596,6 +17614,7 @@ pub mod types {
                 value: TestResponse,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    input: value.input?,
                     payload: value.payload?,
                     statements: value.statements?,
                 })
@@ -17604,6 +17623,7 @@ pub mod types {
         impl ::std::convert::From<super::TestResponse> for TestResponse {
             fn from(value: super::TestResponse) -> Self {
                 Self {
+                    input: Ok(value.input),
                     payload: Ok(value.payload),
                     statements: Ok(value.statements),
                 }

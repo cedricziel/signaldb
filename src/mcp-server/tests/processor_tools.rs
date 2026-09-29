@@ -126,7 +126,7 @@ async fn behaviour(
             return axum::Json(serde_json::json!({"errors": []})).into_response();
         }
         if path == "/api/v1/processors:test" {
-            return axum::Json(serde_json::json!({"payload": {}, "statements": []}))
+            return axum::Json(serde_json::json!({"input": {}, "payload": {}, "statements": []}))
                 .into_response();
         }
         if method == axum::http::Method::GET {

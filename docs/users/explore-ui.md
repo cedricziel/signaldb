@@ -1324,8 +1324,9 @@ message and column — Save is disabled while any error is present. A
 **Test** panel, preloaded with a sample OTLP JSON payload for the selected
 signal and editable, submits the current (unsaved) processor to `:test` and
 renders a before/after diff of the payload plus per-statement match and
-error counts. Both sides of the diff list keys alphabetically and leave out
-zero-valued fields, so only what the statements changed shows up. After a successful save the editor shows an "applies within
+error counts. The diff compares the server's decoded copy of the payload
+with its transformed one, so only what the statements changed shows up. After
+a successful save the editor shows an "applies within
 N seconds" hint, matching `[processors].reload_interval`. Everything goes
 through the generated TypeScript client.
 

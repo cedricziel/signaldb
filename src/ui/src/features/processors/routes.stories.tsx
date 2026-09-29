@@ -14,7 +14,7 @@ import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
 import { pageFrame } from "../../stories/PageFrame";
 import { processorsRoutes } from "./routes";
-import { REDACTED_LOGS_ECHO } from "./serverEcho.fixture";
+import { REDACT_EMAILS_TEST_RESPONSE } from "./testResponse.fixture";
 
 const who = sampleWhoami();
 
@@ -66,11 +66,6 @@ const processorsList = {
 };
 
 const redactEmails = processorsList.processors[0];
-
-const testResponse = {
-  payload: REDACTED_LOGS_ECHO,
-  statements: [{ processor: "redact-emails", index: 0, matched: 1, errors: 0 }],
-};
 
 function ProcessorsPage({
   routes,
@@ -155,7 +150,7 @@ export const TestRun: Story = {
         irCatchAll,
         { match: "/api/v1/whoami", body: who },
         { match: "/api/v1/processors/redact-emails", body: redactEmails },
-        { match: "/api/v1/processors:test", body: testResponse },
+        { match: "/api/v1/processors:test", body: REDACT_EMAILS_TEST_RESPONSE },
       ]}
     />
   ),

@@ -202,8 +202,12 @@ naming the offending token) and never stores anything. `:test` accepts a
 `signal`, an optional `dataset`, an optional inline `processors` list (omit it
 to dry-run the tenant's _stored_ processors for that signal/dataset), and an
 OTLP JSON payload up to `[processors].test_payload_max_bytes` (default 1 MiB);
-it returns the transformed payload plus, per statement, how many items it
-matched and how many errored.
+it returns the transformed `payload`, the `input` it started from, and, per
+statement, how many items it matched and how many errored. The server decodes
+the payload into the OTLP protobuf types, so both `input` and `payload` come
+back in protobuf field order with zero-valued fields spelled out. Diff `input`
+against `payload`, not against the text you sent, to see only what the
+statements changed.
 
 ## HTTP API
 

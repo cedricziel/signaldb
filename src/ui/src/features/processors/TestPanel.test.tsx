@@ -5,6 +5,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { stubFetchRoutes } from "../../test/render";
 import { TestPanel } from "./TestPanel";
 import { SAMPLE_PAYLOADS } from "./samples";
+import { REDACT_EMAILS_TEST_RESPONSE } from "./testResponse.fixture";
 import type { ProcessorSpec } from "./api";
 
 const SPEC: ProcessorSpec = {
@@ -55,11 +56,33 @@ describe("TestPanel", () => {
     ).toBe(JSON.stringify(SAMPLE_PAYLOADS.logs, null, 2));
   });
 
+  it("diffs the server's input against its output, so only statement changes show", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/processors:test", body: REDACT_EMAILS_TEST_RESPONSE },
+    ]);
+    const { container } = renderWithRerenderableClient(
+      <TestPanel signal="logs" dataset={null} spec={SPEC} />,
+    );
+
+    screen.getByRole("button", { name: "Run test" }).click();
+    await screen.findByLabelText("diff");
+
+    const changed = [
+      ...container.querySelectorAll(
+        ".line-diff-view-removed, .line-diff-view-added",
+      ),
+    ].map((line) => line.textContent);
+    expect(changed).toEqual([
+      expect.stringContaining("alice@example.com"),
+      expect.stringContaining("[redacted]"),
+    ]);
+  });
+
   it("clears a prior result when the signal changes", async () => {
     stubFetchRoutes([
       {
         match: "/api/v1/processors:test",
-        body: { payload: { a: 1 }, statements: [{ processor: "p", index: 0, matched: 1, errors: 0 }] },
+        body: { input: { a: 1 }, payload: { a: 1 }, statements: [{ processor: "p", index: 0, matched: 1, errors: 0 }] },
       },
     ]);
     const { rerender } = renderWithRerenderableClient(
