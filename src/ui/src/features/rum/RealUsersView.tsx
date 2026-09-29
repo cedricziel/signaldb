@@ -73,8 +73,19 @@ export function RealUsersView({
     }
   }, [known, selectedApp, state.rumApp, update]);
 
+  // Clears the previous app's selected route, error group and session in
+  // the same navigation that sets the new app — the spec's "Switching apps"
+  // scenario. `update()` already builds one URL from the whole patch, so
+  // this doesn't need `onTabChangeWith`'s two-navigations workaround (that
+  // one exists only because switching tab goes through path-based
+  // `navigate()`, not `update()`).
   function selectApp(app: string) {
-    update({ rumApp: app });
+    update({
+      rumApp: app,
+      rumRoute: "",
+      rumSession: "",
+      rumErrorGroup: "",
+    });
   }
 
   const noAppsYet = !apps.isPending && appList.length === 0;

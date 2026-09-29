@@ -272,6 +272,53 @@ describe("RealUsersView", () => {
   });
 });
 
+describe("Switching apps clears the selection", () => {
+  it("clears the selected route, error group and session in one navigation when picking another app", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({ serviceName: "storefront-web", count: 500 }),
+      rumApp({ serviceName: "admin-web", count: 10 }),
+    ]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([pageRow()]);
+    renderRum(
+      "/rum/pages?app=storefront-web&route=%2Forders%2F%3Aid&session=sess-1&errgroup=eg-1",
+    );
+
+    const user = userEvent.setup();
+    await user.click(
+      await screen.findByRole("button", { name: /storefront-web/ }),
+    );
+    const menu = await screen.findByRole("listbox", { name: "Frontend apps" });
+    await user.click(within(menu).getByRole("option", { name: /admin-web/ }));
+
+    await waitFor(() =>
+      expect(window.location.search).toContain("app=admin-web"),
+    );
+    expect(window.location.search).not.toContain("route=");
+    expect(window.location.search).not.toContain("session=");
+    expect(window.location.search).not.toContain("errgroup=");
+  });
+
+  it("doesn't clobber an already-set route when the default-app effect writes the initial app", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/connection", body: connectionInfoBody() },
+    ]);
+    vi.mocked(rumApi.fetchRumApps).mockResolvedValue([
+      rumApp({ serviceName: "storefront-web", count: 500 }),
+    ]);
+    vi.mocked(rumApi.fetchPages).mockResolvedValue([pageRow()]);
+    // No ?app= yet — the busiest-app effect picks one and writes `?app=`.
+    renderRum("/rum/pages?route=%2Forders%2F%3Aid");
+
+    await waitFor(() =>
+      expect(window.location.search).toContain("app=storefront-web"),
+    );
+    expect(window.location.search).toContain("route=%2Forders%2F%3Aid");
+  });
+});
+
 describe("Platform-aware labels", () => {
   it("relabels Pages/Errors/Interactions to Screens/Crashes/Taps for an iOS app and shows a Web Vitals empty state", async () => {
     stubFetchRoutes([
