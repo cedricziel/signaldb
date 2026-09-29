@@ -2,4 +2,5 @@
 
 pub mod exp_histogram;
 pub mod instants;
+pub mod range;
 pub mod range_math;
