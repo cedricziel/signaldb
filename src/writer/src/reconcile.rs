@@ -37,8 +37,7 @@ pub struct ReconcilePassSummary {
     /// Tables that could not be provisioned; retried on the next pass.
     pub tables_failed: usize,
     /// Legacy per-type metric tables dropped this pass (otel-native-schema
-    /// layer 7, D10 cutover). Always zero under
-    /// [`common::iceberg::schemas::MetricsLayout::Legacy`].
+    /// layer 7, D10 cutover).
     pub legacy_metric_tables_dropped: usize,
 }
 
@@ -626,15 +625,11 @@ mod tests {
     // names declared in the `registry.signaldb.tenancy` semconv group
     // (`signaldb.tenant.id` / `signaldb.dataset.id`), not bare `tenant` /
     // `dataset`, or `weaver registry live-check` flags them as unregistered.
-    // otel-native-schema layer 7, D10 cutover prep. `MetricsLayout::current()`
-    // reads the embedded `schemas.toml`'s `current_metric_version`, a
-    // process-global static that a unit test cannot flip to Wide -- the
-    // layout-gated drop itself is exercised directly, parameterized by
-    // layout, in `common::catalog_manager`'s
-    // `purge_legacy_metric_tables_with_layout` tests. This only proves the
-    // reconciler's wiring stays a no-op under today's Legacy layout.
+    // The purge itself is exercised in `common::catalog_manager`'s
+    // `purge_legacy_metric_tables` tests; this proves the reconciler's pass
+    // reports zero drops when a dataset holds no legacy tables.
     #[tokio::test]
-    async fn run_pass_drops_no_legacy_metric_tables_under_the_legacy_layout() {
+    async fn run_pass_drops_no_legacy_metric_tables_when_none_exist() {
         let manager = Arc::new(
             CatalogManager::new(config_with(vec![config_tenant("acme", &["production"])]))
                 .await
