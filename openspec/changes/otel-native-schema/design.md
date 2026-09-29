@@ -318,12 +318,13 @@ layer. The IR grows whatever PromQL needs.
   Series is `(bucket, labels Map<Utf8,Utf8>, value Float64)`; grouping and
   matching go through label-set UDFs (keep / drop / fingerprint / replace /
   join), so `without`, `ignoring` and `label_replace` work on label sets not
-  known at plan time. The PromQL surface maps names at its own boundary
-  (`__name__` ↔ `metric.name`, `job`/`service_name` ↔ `service.name`, other
-  dots ↔ `_`), never inside the model. When two labels of one series map to
-  the same Prometheus name (`foo.bar` and `foo_bar`), their values are joined
-  with `;` in key order — the Prometheus OTLP translation rule — and a
-  PromQL matcher on that name matches any logical key that escapes to it.
+  known at plan time. The PromQL surface maps names at its own boundary and
+  never inside the model: `__name__` ↔ `metric.name` and `job`/`service`/
+  `service_name` ↔ `service.name`. Every other label name passes through
+  unchanged — dotted names are written as PromQL's quoted UTF-8 names
+  (`{"k8s.pod.name"="p"}`), and a bare dotted metric name is read as its
+  quoted form. There is no dots ↔ `_` escaping, so no two logical keys can
+  collide on one Prometheus name.
 - **Evaluation instants.** Metric Series are evaluated at `t = from + k·step`
   and labelled `t`. An instant value is a series' latest point in
   `(t − lookback, t]` (lookback default `5m`); range operators read
@@ -382,6 +383,31 @@ layer. The IR grows whatever PromQL needs.
   are Scalar pseudo-sources. The legacy `aggregate` range functions and
   `histogram_quantile` keep their document shape and run on the same
   operators.
+- **PromQL semantics, pinned.** PromQL lowers to the IR, and the two answer
+  with the same series, labels and values:
+  - *Metric name.* `sample` keeps `metric.name` for `latest` and
+    `last_over_time` and drops it for every other function (rate,
+    increase, irate, delta, idelta, deriv, resets, changes and every other
+    `*_over_time`); `over_time` likewise keeps it only for `last`. `reduce`
+    keeps exactly its `by` labels, and `without` also drops `metric.name`.
+    Arithmetic and `bool` comparisons drop it; filtering comparisons and set
+    operations keep it.
+  - *Histograms.* `histogram_quantile`/`histogram_fraction` output carries no
+    `metric.name`: a merge is labelled by `by` (grouping still separates
+    metrics internally), `per_series` by each series' labels less the name.
+    Instant mode takes an optional `lookback`: at each instant, each
+    series' latest point in `(t − lookback, t]`, as a PromQL instant vector
+    reads it. Rate mode has its `window` instead, and `lookback` with rate
+    mode is invalid.
+  - *Vector matching.* The default and `ignoring` match key is every label
+    but `metric.name` (less the ignored ones); `on` matches exactly the
+    listed labels.
+  - *Constant labels.* `labels` replace accepts an empty `src`, read as `""`
+    — Prometheus' `label_replace(v, "dst", "value", "", "")` idiom.
+  - *Subqueries.* A subquery's inner instants are `from + k·res`, aligned to
+    the query start rather than to the epoch as Prometheus aligns them; a
+    subquery without a resolution uses `1m`, Prometheus' default evaluation
+    interval.
 - **Scalar envelope.** `result: "scalar"` returns `points: [[t_ns, value]]`
   with no labels; PromQL maps it to `resultType: "scalar"` (instant) and to a
   label-less matrix (range, as Prometheus does).

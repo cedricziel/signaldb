@@ -1045,6 +1045,15 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
     if doc
         .pipeline
         .iter()
+        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.lookback.is_some()))
+    {
+        return Err(QuerierError::Unsupported(
+            "histogram_quantile lookback is not supported yet".to_string(),
+        ));
+    }
+    if doc
+        .pipeline
+        .iter()
         .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.per_series))
     {
         return Err(QuerierError::Unsupported(
@@ -5807,6 +5816,12 @@ mod tests {
                 "metrics",
                 serde_json::json!({ "histogram_quantile": { "q": 0.5, "step": "1m", "window": "5m", "as": "p" } }),
                 "histogram_quantile window is not supported yet",
+            ),
+            (
+                "metrics",
+                serde_json::json!({ "histogram_quantile": {
+                    "q": 0.5, "step": "1m", "mode": "instant", "lookback": "5m", "as": "p" } }),
+                "histogram_quantile lookback is not supported yet",
             ),
             (
                 "time",
