@@ -70,6 +70,24 @@ fn batch(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
     .unwrap()
 }
 
+/// The hive NaN shape: one service, two cumulative series `a`, `b` of one
+/// histogram with staggered points and different distributions. Over a
+/// window holding every point, each series differenced against itself gives
+/// a = [2,3,2,0] and b = [0,2,5,0], merged [2,5,7,0]: median
+/// [`HIVE_MERGED_P50`]. Each series alone gives 1.5 or 2.6, and differencing
+/// the last point against the first across series (the old keying) 2.83.
+pub(crate) const HIVE_SERIES: &[(&str, i64, &[i64])] = &[
+    ("a", 10, &[1, 1, 0, 0]),
+    ("b", 15, &[0, 0, 1, 0]),
+    ("a", 20, &[2, 2, 1, 0]),
+    ("b", 25, &[0, 1, 3, 0]),
+    ("a", 30, &[3, 4, 2, 0]),
+    ("b", 35, &[0, 2, 6, 0]),
+];
+
+/// The median of [`HIVE_SERIES`]' merged increase.
+pub(crate) const HIVE_MERGED_P50: f64 = 2.0;
+
 /// Appends `series_id = service_name/metric_name` to a legacy-shaped fixture.
 pub(crate) fn with_series_id(batch: RecordBatch) -> RecordBatch {
     let text = |name: &str| {

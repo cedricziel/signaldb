@@ -415,27 +415,30 @@ fn histogram_metrics(service: &str) -> ExportMetricsServiceRequest {
 }
 
 /// A cumulative `commit_duration` histogram from one service with two series
-/// that differ only in the `op` attribute, sampled at `BASE_NS`, +30s, +60s
-/// (the hive NaN shape: several series of one metric per service).
+/// that differ only in the `op` attribute (the hive NaN shape): `a` sampled at
+/// `BASE_NS` +0/30/60s, `b` at +15/45/75s with a different distribution.
+/// Each series differenced against itself gives a = [2,3,2,0] and
+/// b = [0,2,5,0], merged [2,5,7,0] with median 2.0; `a` alone gives 1.5, `b`
+/// alone 2.6, and differencing across the two series 2.83 (or NaN).
 fn two_series_cumulative_histogram(service: &str) -> ExportMetricsServiceRequest {
-    let series: [(&str, [[u64; 4]; 3]); 2] = [
-        ("a", [[1, 1, 0, 0], [2, 2, 1, 0], [3, 4, 2, 0]]),
-        ("b", [[0, 1, 0, 0], [0, 2, 1, 0], [1, 3, 1, 0]]),
+    let series: [(&str, u64, [[u64; 4]; 3]); 2] = [
+        ("a", 0, [[1, 1, 0, 0], [2, 2, 1, 0], [3, 4, 2, 0]]),
+        ("b", 15, [[0, 0, 1, 0], [0, 1, 3, 0], [0, 2, 6, 0]]),
     ];
     let data_points = series
         .iter()
-        .flat_map(|(op, samples)| {
+        .flat_map(|(op, first_s, samples)| {
             samples
                 .iter()
                 .enumerate()
-                .map(|(i, counts)| HistogramDataPoint {
+                .map(move |(i, counts)| HistogramDataPoint {
                     attributes: vec![KeyValue {
                         key: "op".to_string(),
                         value: Some(string_value(op)),
                         ..Default::default()
                     }],
                     start_time_unix_nano: BASE_NS - 600_000_000_000,
-                    time_unix_nano: BASE_NS + i as u64 * 30_000_000_000,
+                    time_unix_nano: BASE_NS + (first_s + i as u64 * 30) * 1_000_000_000,
                     count: counts.iter().sum(),
                     sum: None,
                     bucket_counts: counts.to_vec(),
@@ -1140,7 +1143,8 @@ async fn promql_histogram_quantile_interpolates_median() {
 
 /// Regression (hive NaN): `histogram_quantile(q, rate(m[r]))` over one
 /// service's several cumulative series of a metric differences each series
-/// against itself. Increases [2,3,2,0] + [1,2,1,0] = [3,5,3,0]: median 1.5.
+/// against itself, then merges: exactly 2.0 (see
+/// [`two_series_cumulative_histogram`]).
 #[tokio::test]
 async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
     let (services, app) = setup_with_ingested_metrics().await;
@@ -1156,17 +1160,25 @@ async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
         .await
         .expect("flush writer");
 
-    let t = BASE_NS / 1_000_000_000 + 60;
+    // One 100s bucket starting at BASE (a multiple of 100s) holds every
+    // point of both series up to the query's end.
+    let start = BASE_NS / 1_000_000_000;
+    let end = start + 80;
     let query = encode_query("histogram_quantile(0.5, rate(commit_duration[2m]))");
     let (status, body) = get(
         &app,
-        &format!("/prometheus/api/v1/query_range?query={query}&start={t}&end={t}&step=20"),
+        &format!("/prometheus/api/v1/query_range?query={query}&start={start}&end={end}&step=100"),
     )
     .await;
 
     assert_eq!(status, StatusCode::OK, "{body}");
-    let q = matrix_value_sum(&body);
-    assert!((q - 1.5).abs() < 1e-9, "median 1.5, got {q}: {body}");
+    let values: Vec<f64> = body["data"]["result"][0]["values"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(|v| v[1].as_str()?.parse().ok())
+        .collect();
+    assert_eq!(values, vec![2.0], "{body}");
 }
 
 // The remaining tests exercise newer function families end-to-end through
