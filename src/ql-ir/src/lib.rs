@@ -71,6 +71,7 @@
 
 mod logql_lower;
 mod promql_lower;
+mod promql_names;
 mod traceql_lower;
 
 /// An IR range from two literal bounds.
@@ -87,6 +88,7 @@ fn ir_range(from: &str, to: &str) -> query_ir::Range {
 
 pub use logql_lower::{STREAM_IDENTITY, logql_label_field, logql_to_ir};
 pub use promql_lower::{PromqlParams, promql_label_field, promql_to_ir};
+pub use promql_names::quote_dotted_metric_names;
 pub use traceql_lower::{traceql_condition_to_predicate, traceql_to_ir};
 
 /// Why a query could not be lowered.

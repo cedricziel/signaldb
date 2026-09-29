@@ -817,6 +817,46 @@ fn subqueries() {
     }
 }
 
+/// Bare dotted metric names read as their quoted form. The hive repro:
+/// this query failed to parse before dotted names were rewritten.
+#[test]
+fn bare_dotted_metric_names() {
+    for (bare, quoted) in [
+        (
+            "histogram_quantile(0.95, rate(signaldb.writer.commit_duration[5m]))",
+            r#"histogram_quantile(0.95, rate({"signaldb.writer.commit_duration"}[5m]))"#,
+        ),
+        (
+            r#"process.memory.usage{service_name="signaldb"}"#,
+            r#"{__name__="process.memory.usage", service_name="signaldb"}"#,
+        ),
+        (
+            "sum by (job) (rate(signaldb.ingest.spans_received[5m]))",
+            r#"sum by (job) (rate({"signaldb.ingest.spans_received"}[5m]))"#,
+        ),
+    ] {
+        assert_eq!(lower(bare), lower(quoted), "{bare}");
+    }
+    assert_eq!(
+        lower("histogram_quantile(0.95, rate(signaldb.writer.commit_duration[5m]))")["pipeline"],
+        json!([
+            name("signaldb.writer.commit_duration"),
+            hq(0.95, None, "rate", Some("5m"))
+        ])
+    );
+    assert_eq!(
+        lower(r#"a.b{x="1" or y="2"}"#),
+        lower(r#"{"a.b", x="1" or "a.b", y="2"}"#)
+    );
+    // The quoting hint shows only where a dotted name is still bare.
+    let invalid = |q: &str| match ql_ir::promql_to_ir(q, &PromqlParams::range(START, END, STEP)) {
+        Err(LowerError::InvalidPromql(msg)) => msg,
+        other => panic!("{q}: expected InvalidPromql, got {other:?}"),
+    };
+    assert!(invalid("sum by (http.method) (a.b)").contains(r#"("a.b")"#));
+    assert!(!invalid("a.b.c{").contains("quoted"));
+}
+
 /// A histogram's count and sum read as plain values, and the histogram
 /// operands the IR cannot express.
 #[test]

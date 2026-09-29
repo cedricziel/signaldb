@@ -10,7 +10,9 @@
 //!
 //! Label names map at this boundary and nowhere else: `__name__` is
 //! `metric.name`; `job`, `service` and `service_name` are `service.name`; any
-//! other label, dotted UTF-8 names included, passes through as spelled.
+//! other label, dotted UTF-8 names included, passes through as spelled. A bare
+//! dotted metric name (`signaldb.wal.entries_pending`) is accepted and read as
+//! its quoted form.
 
 use std::collections::BTreeMap;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -31,6 +33,7 @@ use query_ir::{
 };
 
 use crate::LowerError;
+use crate::promql_names::{has_bare_dotted_name, quote_dotted_metric_names};
 
 /// The version every PromQL document declares: the series algebra.
 const IR_VERSION: i64 = 10;
@@ -104,7 +107,16 @@ impl PromqlParams {
 /// The document is not validated here: the caller validates it against its
 /// source registry and field resolver (`query_ir::validate`).
 pub fn promql_to_ir(query: &str, params: &PromqlParams) -> Result<Document, LowerError> {
-    let expr = parser::parse(query).map_err(|e| LowerError::InvalidPromql(e.to_string()))?;
+    let rewritten = quote_dotted_metric_names(query);
+    let expr = parser::parse(&rewritten).map_err(|e| {
+        let mut msg = e.to_string();
+        if has_bare_dotted_name(&rewritten) {
+            msg.push_str(
+                r#"; names containing '.' must be quoted: a metric as {"a.b"} or {__name__="a.b"}, a label as ("a.b")"#,
+            );
+        }
+        LowerError::InvalidPromql(msg)
+    })?;
     let (start, end) = params.window();
     if start > end {
         return Err(LowerError::InvalidPromql(
