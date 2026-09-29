@@ -8,6 +8,7 @@
 #![expect(dead_code, reason = "not wired into a planner yet")]
 
 mod eval;
+mod fold;
 
 const BUCKET: &str = "bucket";
 const LABELS: &str = "__labels";
