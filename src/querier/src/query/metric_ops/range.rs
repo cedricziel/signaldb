@@ -1,3 +1,5 @@
+//! Aggregate UDF that evaluates a windowed range function per (series, evaluation instant).
+
 use std::hash::Hash;
 use std::mem::size_of;
 use std::sync::Arc;
@@ -12,7 +14,7 @@ use datafusion::logical_expr::{
 };
 use datafusion::scalar::ScalarValue;
 
-use super::instants::as_ns;
+use super::instants::{as_ns, invalid};
 use super::range_math::{Pt, RangeFn, eval_points};
 
 /// Aggregate UDF: one value per group; the planner groups by
@@ -60,6 +62,9 @@ impl AggregateUDFImpl for RangeUdaf {
         ])
     }
     fn accumulator(&self, _: AccumulatorArgs) -> Result<Box<dyn Accumulator>> {
+        if self.window_ns <= 0 {
+            return Err(invalid("range window must be positive"));
+        }
         Ok(Box::new(RangeAcc {
             f: self.f,
             window_ns: self.window_ns,
@@ -376,6 +381,15 @@ mod tests {
         swapped.reverse();
         assert_eq!(one(&tied, RangeFn::Increase, 60).await, Some(4.0));
         assert_eq!(one(&swapped, RangeFn::Increase, 60).await, Some(4.0));
+    }
+
+    #[tokio::test]
+    async fn non_positive_window_is_invalid_input() {
+        let rows = [cum("a", 10, 1.0, Some(5), 30)];
+        for w in [0, -5] {
+            let err = run(&rows, RangeFn::Rate, w).await.unwrap_err();
+            assert!(matches!(err, QuerierError::InvalidInput(_)), "{err:?}");
+        }
     }
 
     #[tokio::test]

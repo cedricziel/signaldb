@@ -1,3 +1,5 @@
+//! Range-function math (rate, increase, resets, `*_over_time`) over the points of one series.
+
 use std::hash::{Hash, Hasher};
 
 use crate::query::error::QuerierError;
@@ -174,6 +176,7 @@ pub fn eval_points(
         RangeFn::Delta => prev.map(|_| last.v - first.v),
         RangeFn::Idelta => prev.map(|p| last.v - p.v),
         RangeFn::Deriv => deriv(&pts),
+        RangeFn::Resets if is_delta => Some(0.0),
         RangeFn::Resets => Some(pts.windows(2).filter(|w| is_reset(&w[0], &w[1])).count() as f64),
         RangeFn::Changes => Some(
             pts.windows(2)
@@ -291,6 +294,13 @@ mod tests {
     }
 
     type Case = (RangeFn, Meta, Vec<(i64, f64, i64)>, i64, i64, Option<f64>);
+
+    #[test]
+    fn resets_on_delta_temporality_is_zero() {
+        let pts = [(10, 5.0, 0), (20, 1.0, 0)];
+        assert_eq!(run(RangeFn::Resets, DEL, &pts, 30, 60).unwrap(), Some(0.0));
+        assert_eq!(run(RangeFn::Resets, CUM, &pts, 30, 60).unwrap(), Some(1.0));
+    }
 
     #[test]
     fn counter_rules() {
