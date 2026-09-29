@@ -43,7 +43,7 @@ fn sample_over_a_filtered_point_stream_is_an_open_series_at_the_document_step() 
         panic!("expected a series, got {t:?}");
     };
     assert!(s.open_labels);
-    assert!(s.labels.is_empty());
+    assert_eq!(s.labels, vec!["metric.name"]);
     assert_eq!(s.value, ValueType::Float64);
     assert_eq!(s.step_ns, 60_000_000_000);
 }

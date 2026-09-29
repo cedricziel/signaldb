@@ -41,7 +41,7 @@ fn metrics(stage: Value) -> Result<RelationType, IrError> {
 fn histogram_fraction_and_window() {
     let s = series(metrics(json!({ "histogram_fraction": {
         "lower": 0, "upper": 0.25, "by": ["service.name"], "step": "1m", "window": "5m", "as": "f" } })));
-    assert_eq!(s.labels, vec!["metric.name", "service.name"]);
+    assert_eq!(s.labels, vec!["service.name"]);
     assert!(
         metrics(
             json!({ "histogram_quantile": { "q": 0.9, "step": "1m", "window": "5m", "as": "p" } })
@@ -102,10 +102,7 @@ fn per_series_keeps_each_series_and_excludes_by() {
         json!({ "histogram_fraction": { "lower": 0, "upper": 1, "per_series": true, "step": "1m", "as": "f" } }),
     ] {
         let s = series(metrics(stage));
-        assert_eq!(
-            (s.labels, s.open_labels),
-            (vec!["metric.name".to_string()], true)
-        );
+        assert_eq!((s.labels, s.open_labels), (Vec::<String>::new(), true));
     }
     let both = metrics(json!({ "histogram_quantile": {
         "q": 0.9, "per_series": true, "by": ["service.name"], "step": "1m", "as": "p" } }));

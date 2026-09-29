@@ -463,8 +463,15 @@ impl InferCtx<'_> {
             self.check_output_name(name)?;
         }
         let step_ns = self.stage_step("sample", sample.step.as_ref())?;
+        // As in Prometheus, only the functions that return a point's own
+        // value keep the metric name.
+        let keeps_name = matches!(sample.func, SampleFn::Latest | SampleFn::LastOverTime);
         self.relation = RelationType::Series(Series {
-            labels: Vec::new(),
+            labels: if keeps_name {
+                vec![METRIC_NAME.to_string()]
+            } else {
+                Vec::new()
+            },
             open_labels: true,
             value: ValueType::Float64,
             step_ns,
@@ -574,8 +581,8 @@ impl InferCtx<'_> {
     fn apply_labels(&mut self, op: &Labels) -> Result<(), IrError> {
         self.require_series("labels")?;
         let dst = match op {
+            // An empty `src` reads as "": Prometheus' constant-label idiom.
             Labels::Replace(r) => {
-                check_label_name("labels", &r.src)?;
                 regex::Regex::new(&r.regex).map_err(|e| {
                     IrError::Invalid(format!("labels replace `regex` does not compile: {e}"))
                 })?;
@@ -641,7 +648,12 @@ impl InferCtx<'_> {
                 "over_time `step` must not be finer than its input series' step".to_string(),
             ));
         }
+        let mut labels = input.labels;
+        if over.func != OverTimeFn::Last {
+            labels.retain(|l| l != METRIC_NAME);
+        }
         self.relation = RelationType::Series(Series {
+            labels,
             value: ValueType::Float64,
             step_ns,
             ..input
@@ -1187,7 +1199,7 @@ impl InferCtx<'_> {
     }
 
     /// Quantile-over-histogram-buckets — legal only on `metrics`,
-    /// always produces a series (`metric.name` plus any extra `by` labels).
+    /// always produces a series labelled by its `by` labels.
     /// Distinct from `aggregate`'s `fn: "quantile"` (an approx-percentile over
     /// independent scalar values, `check_agg` below) — different algorithm,
     /// different source shape.
@@ -1205,6 +1217,7 @@ impl InferCtx<'_> {
                 per_series: hq.per_series,
                 step: &hq.step,
                 window: hq.window.as_ref(),
+                lookback: hq.lookback.as_ref(),
                 mode: hq.mode,
                 as_name: &hq.as_name,
             },
@@ -1226,6 +1239,7 @@ impl InferCtx<'_> {
                 per_series: hf.per_series,
                 step: &hf.step,
                 window: hf.window.as_ref(),
+                lookback: hf.lookback.as_ref(),
                 mode: hf.mode,
                 as_name: &hf.as_name,
             },
@@ -1249,6 +1263,7 @@ impl InferCtx<'_> {
             per_series,
             step,
             window,
+            lookback,
             mode,
             as_name,
         } = shape;
@@ -1270,6 +1285,14 @@ impl InferCtx<'_> {
             if mode == HistogramMode::Instant {
                 return Err(IrError::Invalid(format!(
                     "{stage} `window` is the rate-mode lookback and is not valid with `mode: instant`"
+                )));
+            }
+        }
+        if let Some(lookback) = lookback {
+            positive_duration(&format!("{stage}.lookback"), lookback)?;
+            if mode != HistogramMode::Instant {
+                return Err(IrError::Invalid(format!(
+                    "{stage} `lookback` is the instant-mode lookback and needs `mode: instant`"
                 )));
             }
         }
@@ -1325,10 +1348,10 @@ impl InferCtx<'_> {
             });
         }
         self.names.push(as_name.to_string());
-        let mut labels = vec!["metric.name".to_string()];
-        labels.extend(by.to_vec());
+        // As in Prometheus, the output carries no metric name: the `by`
+        // labels when merging, each series' own labels when per series.
         self.relation = RelationType::Series(Series {
-            labels,
+            labels: by.to_vec(),
             open_labels: per_series,
             value: ValueType::Float64,
             step_ns,
@@ -1740,6 +1763,7 @@ struct HistogramShape<'a> {
     per_series: bool,
     step: &'a str,
     window: Option<&'a String>,
+    lookback: Option<&'a String>,
     mode: HistogramMode,
     as_name: &'a str,
 }
@@ -2306,7 +2330,7 @@ mod tests {
         .unwrap();
         match v.terminal {
             RelationType::Series(s) => {
-                assert_eq!(s.labels, vec!["metric.name", "service.name"]);
+                assert_eq!(s.labels, vec!["service.name"]);
                 assert_eq!(s.value, ValueType::Float64);
                 assert_eq!(s.step_ns, 60_000_000_000);
             }

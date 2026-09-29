@@ -297,13 +297,16 @@ pub enum HistogramMode {
 pub struct HistogramQuantile {
     /// The quantile, in `[0, 1]`.
     pub q: f64,
-    /// Extra grouping labels (logical names). `metric.name` is implicit —
-    /// merging bucket data across different metrics is meaningless, since
-    /// different metrics carry different bucket bounds.
+    /// Grouping labels (logical names), and the output's labels. Grouping
+    /// also separates metrics internally — merging bucket data across
+    /// different metrics is meaningless, since different metrics carry
+    /// different bucket bounds — but, as in Prometheus, the output does not
+    /// carry `metric.name`.
     #[serde(default)]
     pub by: Vec<String>,
     /// One result per stored series instead of merging them (`irVersion`
-    /// 10). Excludes `by`; the output keeps each series' labels.
+    /// 10). Excludes `by`; the output keeps each series' labels less
+    /// `metric.name`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub per_series: bool,
     /// Time-bucket width. The result is always a `series`.
@@ -313,6 +316,11 @@ pub struct HistogramQuantile {
     /// Rate mode's lookback (default: `step`), `irVersion` 10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// Instant mode only: at each evaluation instant `t`, read each series'
+    /// latest point within `(t - lookback, t]`, as a PromQL instant vector
+    /// does (`irVersion` 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookback: Option<String>,
     /// The output value column name.
     #[serde(rename = "as")]
     pub as_name: String,
@@ -328,7 +336,8 @@ pub struct HistogramFraction {
     #[serde(default)]
     pub by: Vec<String>,
     /// One result per stored series instead of merging them (`irVersion`
-    /// 10). Excludes `by`; the output keeps each series' labels.
+    /// 10). Excludes `by`; the output keeps each series' labels less
+    /// `metric.name`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub per_series: bool,
     pub step: String,
@@ -336,6 +345,9 @@ pub struct HistogramFraction {
     pub mode: HistogramMode,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
+    /// As on `histogram_quantile`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookback: Option<String>,
     #[serde(rename = "as")]
     pub as_name: String,
 }
@@ -505,6 +517,9 @@ pub enum ReduceFn {
 }
 
 /// The `reduce` stage: Series → Series, grouped `by` or `without` labels.
+///
+/// `without` also drops `metric.name`, as Prometheus does; `by` keeps
+/// exactly the listed labels (so `by (metric.name)` keeps the name).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Reduce {
@@ -754,6 +769,10 @@ pub enum BinopOperand {
 }
 
 /// The `binop` stage: combine the pipeline (left) with `right`.
+///
+/// Two series match on a key of their labels, as in PromQL: by default every
+/// label but `metric.name`; with `ignoring`, every label but `metric.name`
+/// and the listed ones; with `on`, exactly the listed labels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Binop {
@@ -772,6 +791,7 @@ pub struct Binop {
     #[serde(default)]
     pub bool: bool,
 }
+
 /// The operand of a stage that takes none (`{"scalar": {}}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -1083,6 +1103,7 @@ mod tests {
             step: "5m".to_string(),
             mode: HistogramMode::Instant,
             window: None,
+            lookback: None,
             as_name: "p99".to_string(),
         };
         let encoded = serde_json::to_value(Stage::HistogramQuantile(hq.clone())).unwrap();
