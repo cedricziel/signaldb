@@ -63,10 +63,7 @@ fn reduce_label_sets() {
     let s = series(known(
         json!([{ "reduce": { "fn": "max", "without": ["service.name"] } }]),
     ));
-    assert_eq!(
-        (s.labels, s.open_labels),
-        (vec!["metric.name".to_string()], true)
-    );
+    assert_eq!((s.labels, s.open_labels), (Vec::<String>::new(), true));
     let s = series(known(json!([{ "reduce": { "fn": "topk", "arg": 3 } }])));
     assert_eq!(s.labels, vec!["metric.name", "service.name"]);
     let s = series(open(

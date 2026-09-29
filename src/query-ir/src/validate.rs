@@ -481,7 +481,7 @@ impl InferCtx<'_> {
                 input
                     .labels
                     .iter()
-                    .filter(|l| !without.contains(l))
+                    .filter(|l| *l != METRIC_NAME && !without.contains(l))
                     .cloned()
                     .collect(),
                 true,
