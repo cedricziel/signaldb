@@ -551,3 +551,94 @@ fn scalar_functions() {
     assert_eq!(lower("pi()")["constant"], json!(std::f64::consts::PI));
     assert!(inexpressible("sin(x)").contains("sin"));
 }
+
+#[test]
+fn functions() {
+    let x = |stages: &[Value]| after("x", latest(), stages);
+    let map = |f: &str, args: Value| json!({ "map": { "fn": f, "args": args } });
+    let map0 = |f: &str| json!({ "map": { "fn": f } });
+    let vector = json!({ "vector": {} });
+    cases(&[
+        ("abs(x)", x(&[map0("abs")])),
+        ("round(x)", x(&[map0("round")])),
+        ("round(x, 0.5)", x(&[map("round", json!([0.5]))])),
+        ("clamp(x, 0, 1)", x(&[map("clamp", json!([0.0, 1.0]))])),
+        ("clamp_min(x, 0)", x(&[map("clamp_min", json!([0.0]))])),
+        ("clamp_max(x, 1)", x(&[map("clamp_max", json!([1.0]))])),
+        ("day_of_week(x)", x(&[map0("day_of_week")])),
+        ("hour()", json!([vector, map0("hour")])),
+        ("sort(x)", x(&[json!({ "sort": "asc" })])),
+        ("sort_desc(x)", x(&[json!({ "sort": "desc" })])),
+        (
+            r#"label_replace(x, "svc", "$1", "job", "(.*)-prod")"#,
+            x(&[json!({ "labels": { "replace": {
+                "dst": "svc", "replacement": "$1", "src": "service.name", "regex": "^(?s:(.*)-prod)$"
+            } } })]),
+        ),
+        // An empty source is Prometheus's constant-label idiom.
+        (
+            r#"label_replace(x, "a", "b", "", "")"#,
+            x(&[json!({ "labels": { "replace": {
+                "dst": "a", "replacement": "b", "src": "", "regex": "^(?s:)$" } } })]),
+        ),
+        (
+            r#"label_join(x, "id", "/", "job", "pod")"#,
+            x(&[json!({ "labels": { "join": {
+                "dst": "id", "separator": "/", "src": ["service.name", "pod"] } } })]),
+        ),
+        (
+            r#"absent(x{job="api", pod=~"p.*"})"#,
+            json!([
+                { "where": { "and": [
+                    leaf("metric.name", "eq", "x"),
+                    leaf("service.name", "eq", "api"),
+                    leaf("pod", "regex", "^(?s:p.*)$")
+                ] } },
+                latest(),
+                { "absent": { "labels": { "service.name": "api" } } }
+            ]),
+        ),
+        (
+            "absent_over_time(x[5m])",
+            after(
+                "x",
+                ranged("count_over_time", "5m"),
+                &[json!({ "absent": { "labels": {} } })],
+            ),
+        ),
+    ]);
+    // absent() labels only the labels with exactly one equality matcher, as
+    // Prometheus does; an empty value is no label.
+    let absent = lower(r#"absent(x{a="1", a="2", b!="3", b="4", c="", d="5"})"#);
+    assert_eq!(
+        absent["pipeline"][2],
+        json!({ "absent": { "labels": { "d": "5" } } })
+    );
+    assert_eq!(labels(r#"absent(x{d="5"})"#), (vec!["d".into()], false));
+    // topk keeps its input series whole; count_values labels by the value.
+    cases(&[
+        (
+            "topk without (pod) (2, x)",
+            x(&[json!({ "reduce": { "fn": "topk", "without": ["pod"], "arg": 2.0 } })]),
+        ),
+        (
+            r#"count_values without (pod) ("v", x)"#,
+            x(&[json!({ "reduce": { "fn": "count_values", "without": ["pod"], "label": "v" } })]),
+        ),
+    ]);
+    assert_eq!(labels("topk without (pod) (2, x)").0, ["metric.name"]);
+    assert_eq!(
+        labels(r#"count_values without (pod) ("v", x)"#),
+        (vec!["v".into()], true)
+    );
+    for (q, needle) in [
+        ("timestamp(x)", "timestamp"),
+        ("clamp(x, -Inf, Inf)", "non-finite"),
+        ("predict_linear(x[5m], 60)", "predict_linear"),
+        (r#"sort_by_label(x, "job")"#, "sort_by_label"),
+        ("mad_over_time(x[5m])", "mad_over_time"),
+    ] {
+        let msg = inexpressible(q);
+        assert!(msg.contains(needle), "{q}: {msg}");
+    }
+}
