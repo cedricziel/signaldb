@@ -6,7 +6,7 @@
 //! `Inexpressible` error naming the construct.
 
 use ql_ir::{LowerError, PromqlParams};
-use query_ir::{FieldResolver, Resolved, SourceRegistry, ValueType};
+use query_ir::{FieldResolver, RelationType, Resolved, SourceRegistry, ValueType};
 use serde_json::{Value, json};
 
 const START: i64 = 1_700_000_000_000_000_000;
@@ -44,6 +44,16 @@ fn lower_with(q: &str, params: &PromqlParams) -> Value {
     serde_json::to_value(&doc).expect("a document serializes")
 }
 
+/// The labels the validator infers for the lowered document: the known
+/// ones, and whether the set is open.
+fn labels(q: &str) -> (Vec<String>, bool) {
+    let doc = ql_ir::promql_to_ir(q, &PromqlParams::range(START, END, STEP)).expect("lowers");
+    match query_ir::validate(&doc, &SourceRegistry::core(), &Permissive).map(|v| v.terminal) {
+        Ok(RelationType::Series(s)) => (s.labels, s.open_labels),
+        other => panic!("{q}: expected a series, got {other:?}"),
+    }
+}
+
 fn lower(q: &str) -> Value {
     lower_with(q, &PromqlParams::range(START, END, STEP))
 }
@@ -77,6 +87,17 @@ fn latest() -> Value {
     json!({ "sample": { "fn": "latest", "of": "metric.value", "lookback": "5m" } })
 }
 
+fn ranged(f: &str, window: &str) -> Value {
+    json!({ "sample": { "fn": f, "of": "metric.value", "window": window } })
+}
+
+/// `stages` appended to `[name(m), sample]`.
+fn after(m: &str, sample: Value, stages: &[Value]) -> Value {
+    let mut p = vec![name(m), sample];
+    p.extend_from_slice(stages);
+    Value::Array(p)
+}
+
 /// `up{…}` with one extra matcher predicate.
 fn up_and(pred: Value) -> Value {
     json!([{ "where": { "and": [leaf("metric.name", "eq", "up"), pred] } }, latest()])
@@ -91,6 +112,33 @@ fn a_range_query_document() {
             "result": "series", "step": "1m", "pipeline": [name("up"), latest()],
         })
     );
+    // An instant selector keeps each series' labels, the name included.
+    assert_eq!(labels("up"), (vec!["metric.name".to_string()], true));
+}
+
+/// An instant query evaluates once: `start = end = t`, any positive step.
+#[test]
+fn an_instant_query_document() {
+    let doc = lower_with("up", &PromqlParams::instant(END));
+    assert_eq!(doc["range"], json!({ "from": END, "to": END }));
+    assert_eq!(doc["step"], json!("1s"));
+    let explicit = PromqlParams {
+        step_ns: 15_000_000_000,
+        ..PromqlParams::instant(END)
+    };
+    assert_eq!(lower_with("up", &explicit)["step"], json!("15s"));
+}
+
+#[test]
+fn bad_parameters_and_text_are_invalid_promql() {
+    for (q, params) in [
+        ("up", PromqlParams::range(START, END, 0)),
+        ("up", PromqlParams::range(END, START, STEP)),
+        ("sum(", PromqlParams::range(START, END, STEP)),
+    ] {
+        let result = ql_ir::promql_to_ir(q, &params);
+        assert!(matches!(result, Err(LowerError::InvalidPromql(_))), "{q}");
+    }
 }
 
 /// Matchers keep Prometheus's absent-is-empty semantics (a matcher `""`
@@ -134,12 +182,178 @@ fn selectors() {
             r#"{__name__=~"http_.*"}"#,
             json!([{ "where": leaf("metric.name", "regex", "^(?s:http_.*)$") }, latest()]),
         ),
+        (
+            r#"{"signaldb.wal.entries_pending", "k8s.pod.name"="p"}"#,
+            json!([{ "where": { "and": [
+                leaf("metric.name", "eq", "signaldb.wal.entries_pending"),
+                leaf("k8s.pod.name", "eq", "p")
+            ] } }, latest()]),
+        ),
+    ]);
+}
+
+/// `{a or b}` is a disjunction of matcher groups, under the metric name.
+#[test]
+fn or_selectors() {
+    cases(&[(
+        r#"up{a="1", b="2" or c="3"}"#,
+        up_and(json!({ "or": [
+            { "and": [leaf("a", "eq", "1"), leaf("b", "eq", "2")] },
+            leaf("c", "eq", "3")
+        ] })),
+    )]);
+}
+
+#[test]
+fn offset_and_at_modifiers() {
+    let up = |extra: Value| {
+        let mut s = latest();
+        s["sample"]
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        json!([name("up"), s])
+    };
+    cases(&[
+        ("up offset 5m", up(json!({ "offset": "5m" }))),
+        ("up @ 1700000000", up(json!({ "at": START }))),
+        (
+            "up @ 1700000000.5",
+            up(json!({ "at": START + 500_000_000 })),
+        ),
+        ("up @ start()", up(json!({ "at": START }))),
+        (
+            "up @ end() offset 1h",
+            up(json!({ "offset": "1h", "at": END })),
+        ),
+        ("rate(up[5m] offset 1d)", {
+            let mut s = ranged("rate", "5m");
+            s["sample"]["offset"] = json!("24h");
+            json!([name("up"), s])
+        }),
+    ]);
+    assert!(inexpressible("up offset -5m").contains("negative offset"));
+    let far = ql_ir::promql_to_ir("up @ 1e12", &PromqlParams::range(START, END, STEP));
+    assert!(matches!(far, Err(LowerError::InvalidPromql(_))), "{far:?}");
+}
+
+#[test]
+fn range_functions_sample_the_window() {
+    for f in [
+        "rate",
+        "increase",
+        "irate",
+        "delta",
+        "idelta",
+        "deriv",
+        "resets",
+        "changes",
+        "avg_over_time",
+        "min_over_time",
+        "max_over_time",
+        "sum_over_time",
+        "count_over_time",
+        "last_over_time",
+        "stddev_over_time",
+        "stdvar_over_time",
+        "present_over_time",
+    ] {
+        let q = format!("{f}(x[90s])");
+        assert_eq!(
+            lower(&q)["pipeline"],
+            after("x", ranged(f, "90s"), &[]),
+            "{q}"
+        );
+    }
+    let mut quantile = ranged("quantile_over_time", "1h");
+    quantile["sample"]["arg"] = json!(0.9);
+    cases(&[
+        ("quantile_over_time(0.9, x[1h])", after("x", quantile, &[])),
+        ("rate(x[1500ms])", after("x", ranged("rate", "1500ms"), &[])),
     ]);
 }
 
 #[test]
+fn aggregations_reduce() {
+    let rate = |reduce: Value| after("x", ranged("rate", "5m"), &[json!({ "reduce": reduce })]);
+    cases(&[
+        ("sum(rate(x[5m]))", rate(json!({ "fn": "sum" }))),
+        (
+            "sum by (job, region) (rate(x[5m]))",
+            rate(json!({ "fn": "sum", "by": ["service.name", "region"] })),
+        ),
+        (
+            "avg by () (rate(x[5m]))",
+            rate(json!({ "fn": "avg", "by": [] })),
+        ),
+        // Prometheus drops the metric name under `without`.
+        (
+            "max without (pod) (rate(x[5m]))",
+            rate(json!({ "fn": "max", "without": ["pod"] })),
+        ),
+        (
+            "min without (__name__) (rate(x[5m]))",
+            rate(json!({ "fn": "min", "without": ["metric.name"] })),
+        ),
+        ("count(rate(x[5m]))", rate(json!({ "fn": "count" }))),
+        ("group(rate(x[5m]))", rate(json!({ "fn": "group" }))),
+        ("stddev(rate(x[5m]))", rate(json!({ "fn": "stddev" }))),
+        ("stdvar(rate(x[5m]))", rate(json!({ "fn": "stdvar" }))),
+        (
+            "quantile by (job) (0.99, rate(x[5m]))",
+            rate(json!({ "fn": "quantile", "by": ["service.name"], "arg": 0.99 })),
+        ),
+        (
+            "topk(3, rate(x[5m]))",
+            rate(json!({ "fn": "topk", "arg": 3.0 })),
+        ),
+        (
+            "bottomk by (job) (2, rate(x[5m]))",
+            rate(json!({ "fn": "bottomk", "by": ["service.name"], "arg": 2.0 })),
+        ),
+        (
+            r#"count_values("v", rate(x[5m]))"#,
+            rate(json!({ "fn": "count_values", "label": "v" })),
+        ),
+        (
+            "max(sum by (job, pod) (x))",
+            after(
+                "x",
+                latest(),
+                &[
+                    json!({ "reduce": { "fn": "sum", "by": ["service.name", "pod"] } }),
+                    json!({ "reduce": { "fn": "max" } }),
+                ],
+            ),
+        ),
+        (
+            "topk(2.7, rate(x[5m]))",
+            rate(json!({ "fn": "topk", "arg": 2.0 })),
+        ),
+    ]);
+    // A computed value drops the name; `without` drops it too, `by` keeps
+    // exactly its labels.
+    assert_eq!(labels("rate(x[5m])"), (vec![], true));
+    assert_eq!(labels("last_over_time(x[5m])").0, ["metric.name"]);
+    assert_eq!(labels("max without (pod) (x)"), (vec![], true));
+    assert_eq!(
+        labels("sum by (__name__) (x)"),
+        (vec!["metric.name".into()], false)
+    );
+}
+
+#[test]
 fn constructs_the_ir_cannot_express_are_named() {
-    for (q, needle) in [("x[5m]", "range vector"), (r#""text""#, "string literal")] {
+    for (q, needle) in [
+        ("limitk(2, x)", "limitk"),
+        ("limit_ratio(0.5, x)", "limit_ratio"),
+        ("x[5m]", "range vector"),
+        (r#""text""#, "string literal"),
+        ("topk(0.5, x)", "below 1"),
+        ("quantile(1.5, x)", "outside [0, 1]"),
+        ("quantile_over_time(-1, x[5m])", "outside [0, 1]"),
+        ("quantile_over_time(NaN, x[5m])", "non-finite"),
+    ] {
         let msg = inexpressible(q);
         assert!(msg.contains(needle), "{q}: {msg}");
     }
