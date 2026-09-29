@@ -1033,15 +1033,6 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
     if doc
         .pipeline
         .iter()
-        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.lookback.is_some()))
-    {
-        return Err(QuerierError::Unsupported(
-            "histogram_quantile lookback is not supported yet".to_string(),
-        ));
-    }
-    if doc
-        .pipeline
-        .iter()
         .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.per_series))
     {
         return Err(QuerierError::Unsupported(
@@ -1380,8 +1371,9 @@ fn range_step_window(
     Ok((step_ns, window_ns))
 }
 
-/// A histogram_quantile's step and window (the window defaults to the step),
-/// checked against the query's evaluation instants.
+/// A histogram_quantile's step and the window each instant reads: `window`
+/// in rate mode, `lookback` in instant mode, the step when unset. Checked
+/// against the query's evaluation instants.
 fn histogram_step_window(
     hq: &HistogramQuantile,
     range: &ResolvedWindow,
@@ -1392,7 +1384,11 @@ fn histogram_step_window(
         })
     };
     let step_ns = parse(&hq.step)?;
-    let window_ns = hq.window.as_deref().map_or(Ok(step_ns), parse)?;
+    let window = match hq.mode {
+        HistogramMode::Rate => &hq.window,
+        HistogramMode::Instant => &hq.lookback,
+    };
+    let window_ns = window.as_deref().map_or(Ok(step_ns), parse)?;
     check_instants(range.start_ns, range.end_ns, step_ns, window_ns)?;
     Ok((step_ns, window_ns))
 }
@@ -5695,6 +5691,34 @@ mod tests {
         assert_eq!(got, ["bucket", "service_name", "p50"]);
     }
 
+    /// Instant mode reads each series' latest point in `(t - lookback, t]`;
+    /// without `lookback` the window is the step.
+    #[tokio::test]
+    async fn histogram_quantile_instant_lookback_reaches_past_the_step() {
+        const S: i64 = 1_000_000_000;
+        let rows: &[(&str, i64, &[i64])] =
+            &[("s", 10 * S, &[0, 0, 4, 0]), ("s", 20 * S, &[0, 4, 0, 0])];
+        for (lookback, want) in [(None, vec![]), (Some("15s"), vec![1.5])] {
+            let mut hq =
+                serde_json::json!({ "q": 0.5, "step": "5s", "mode": "instant", "as": "p50" });
+            if let Some(l) = lookback {
+                hq["lookback"] = l.into();
+            }
+            let d = doc(serde_json::json!({
+                "irVersion": 10, "from": "metrics", "result": "series",
+                "range": { "from": 30 * S, "to": 30 * S },
+                "pipeline": [{ "histogram_quantile": hq }]
+            }));
+            let svc = IrService::new(histogram_points_ctx("histogram", rows));
+            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+            // The 20s point [0,4,0,0]: rank 2 of 4 halfway into (1, 2].
+            assert_eq!(
+                histogram_value(&df.collect().await.unwrap(), "p50", None),
+                want
+            );
+        }
+    }
+
     #[tokio::test]
     async fn histogram_quantile_rate_window_widens_the_step() {
         const S: i64 = 1_000_000_000;
@@ -5753,9 +5777,9 @@ mod tests {
             ),
             (
                 "metrics",
-                serde_json::json!([{ "histogram_quantile": {
-                    "q": 0.5, "step": "1m", "mode": "instant", "lookback": "5m", "as": "p" } }]),
-                "histogram_quantile lookback is not supported yet",
+                serde_json::json!([{ "histogram_fraction": {
+                    "lower": 0.0, "upper": 1.0, "step": "1m", "as": "f" } }]),
+                "histogram_fraction stage is not supported yet",
             ),
         ] {
             let d = doc(serde_json::json!({
