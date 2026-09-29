@@ -717,3 +717,46 @@ async fn a_long_window_over_a_short_range_is_fine() {
     assert_eq!(rows.len(), 21, "{rows:?}");
     assert!(rows.iter().all(|(_, _, v)| *v == 2.0), "{rows:?}");
 }
+
+#[tokio::test]
+async fn a_staleness_marker_without_a_value_ends_latest() {
+    let points = [
+        gauge(30 * S, "a", 1.0, json!({})),
+        stale(Pt {
+            value: None,
+            ..gauge(90 * S, "a", 0.0, json!({}))
+        }),
+    ];
+    let latest = sample_values(&points, 60, 120, json!({ "fn": "latest" })).await;
+    assert_eq!(latest, [(60, 1.0)]);
+}
+
+/// A recorded point and a staleness marker at the same timestamp: the
+/// marker wins, whatever the input order, so the series has ended.
+#[tokio::test]
+async fn a_marker_tied_with_a_point_ends_latest() {
+    let point = gauge(90 * S, "a", 2.0, json!({}));
+    let marker = stale(gauge(90 * S, "a", 3.0, json!({})));
+    let early = gauge(30 * S, "a", 1.0, json!({}));
+    for points in [
+        [early.clone(), point.clone(), marker.clone()],
+        [marker.clone(), point.clone(), early.clone()],
+    ] {
+        let latest = sample_values(&points, 60, 120, json!({ "fn": "latest" })).await;
+        assert_eq!(latest, [(60, 1.0)]);
+    }
+}
+
+#[tokio::test]
+async fn rate_and_increase_read_across_a_staleness_marker() {
+    let points = [
+        counter(30 * S, "a", 1.0, json!({})),
+        stale(counter(60 * S, "a", f64::NAN, json!({}))),
+        counter(90 * S, "a", 7.0, json!({})),
+    ];
+    let window = |func| json!({ "fn": func, "window": "100s" });
+    let increase = sample_values(&points, 120, 120, window("increase")).await;
+    assert_eq!(increase, [(120, 6.0)]);
+    let rate = sample_values(&points, 120, 120, window("rate")).await;
+    assert_eq!(rate, [(120, 0.06)]);
+}

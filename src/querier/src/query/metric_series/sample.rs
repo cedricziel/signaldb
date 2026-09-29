@@ -275,8 +275,13 @@ pub(crate) fn lower_sample(
     let mut aggs = vec![range.alias("value")];
     let mut kept = col("value").is_not_null();
     if latest_stale {
-        let newest = col("timestamp").sort(true, true);
-        aggs.push(last_value(col(STALE), vec![newest]).alias(STALE));
+        // A marker sorts after a recorded point at the same timestamp, so a
+        // tie ends the series whatever the input order.
+        let newest = vec![
+            col("timestamp").sort(true, true),
+            col(STALE).sort(true, true),
+        ];
+        aggs.push(last_value(col(STALE), newest).alias(STALE));
         kept = kept.and(!col(STALE));
     }
     let evaluated = points
