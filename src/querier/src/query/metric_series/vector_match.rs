@@ -48,6 +48,8 @@ use self::fold::{SideBuilder, fold_scalar};
 use crate::query::error::QuerierError;
 use crate::query::planner::with_querier_planner;
 
+#[cfg(test)]
+mod edge_tests;
 mod eval;
 mod fold;
 #[cfg(test)]
