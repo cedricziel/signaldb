@@ -12,3 +12,4 @@ mod hist_state;
 pub mod instants;
 pub mod range;
 pub mod range_math;
+pub(crate) mod range_plan;
