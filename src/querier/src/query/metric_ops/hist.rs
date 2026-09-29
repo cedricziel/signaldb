@@ -184,7 +184,7 @@ impl Accumulator for HistAcc {
             return Ok(ScalarValue::Float64(None));
         };
         let mut order: Vec<&Row> = self.rows.iter().collect();
-        order.sort_by_cached_key(|r| r.sort_key());
+        order.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
         let mut by_series: BTreeMap<&str, Vec<HistPt>> = BTreeMap::new();
         for row in order {
             by_series.entry(&row.series).or_default().push(row.point()?);

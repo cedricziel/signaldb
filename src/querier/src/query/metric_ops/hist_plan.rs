@@ -15,7 +15,6 @@ use super::hist_math::Mode;
 use super::hist_state::column_types;
 use super::instants::covering_instants;
 use crate::query::error::QuerierError;
-use crate::query::histogram::NON_SCALAR_METRIC_TYPES;
 use crate::query::table_lookup::metric_type_filter;
 
 /// The stored columns [`histogram_udaf`] reads, in argument order.
@@ -41,6 +40,9 @@ const POINT_COLUMNS: [&str; 18] = [
 ];
 
 const INSTANT: &str = "__instant";
+
+/// The metric types a histogram statistic reads; every other row is ignored.
+const HISTOGRAM_TYPES: &[&str] = &["histogram", "exponential_histogram"];
 
 /// One histogram statistic evaluated at `first + k·step <= last`, each instant
 /// `t` reading the window `(t - window, t]` and labelled `t + offset`.
@@ -101,7 +103,13 @@ pub(crate) fn histogram_series(
     ];
     out.extend(groups.iter().map(|(_, a)| ident(a)));
     out.push(ident(value));
-    df.filter(metric_type_filter(NON_SCALAR_METRIC_TYPES).and(fits_bounds()))
+    let rows = metric_type_filter(HISTOGRAM_TYPES);
+    let rows = if present.contains("explicit_bounds") && present.contains("bucket_counts") {
+        rows.and(fits_bounds())
+    } else {
+        rows
+    };
+    df.filter(rows)
         .and_then(|df| df.select(proj))
         .and_then(|df| df.unnest_columns(&[INSTANT]))
         .and_then(|df| df.filter(ident(INSTANT).is_not_null()))
@@ -112,18 +120,19 @@ pub(crate) fn histogram_series(
 }
 
 /// An exponential point, or an explicit one whose `bucket_counts` hold one
-/// more entry than its non-empty `explicit_bounds`; other explicit rows are
-/// skipped, as the row-wise quantile always did.
+/// more entry than its `explicit_bounds`. Other rows the accumulator cannot
+/// read are skipped there.
 fn fits_bounds() -> Expr {
-    let bounds = || cardinality(col("explicit_bounds"));
-    col("metric_type").not_eq(lit("histogram")).or(bounds()
-        .gt(lit(0u64))
-        .and(cardinality(col("bucket_counts")).eq(bounds() + lit(1u64))))
+    col("metric_type")
+        .not_eq(lit("histogram"))
+        .or(cardinality(col("bucket_counts")).eq(cardinality(col("explicit_bounds")) + lit(1u64)))
 }
 
 #[cfg(test)]
 mod tests {
-    use datafusion::arrow::array::AsArray;
+    use std::sync::Arc;
+
+    use datafusion::arrow::array::{AsArray, ListArray, RecordBatch};
     use datafusion::arrow::datatypes::{Float64Type, TimestampNanosecondType};
     use datafusion::prelude::SessionContext;
 
@@ -146,9 +155,22 @@ mod tests {
     }
 
     async fn p50_of(mode: Mode, rows: &[(&str, i64, &[i64])]) -> Vec<(i64, f64)> {
-        let df = SessionContext::new()
-            .read_batch(histogram_points("histogram", rows))
-            .unwrap();
+        p50_over(mode, histogram_points("histogram", rows)).await
+    }
+
+    /// `batch` with every row's `explicit_bounds` replaced by `bounds`.
+    fn with_bounds(batch: RecordBatch, bounds: &[f64]) -> RecordBatch {
+        let i = batch.schema().index_of("explicit_bounds").unwrap();
+        let mut cols = batch.columns().to_vec();
+        cols[i] = Arc::new(ListArray::from_iter_primitive::<Float64Type, _, _>(
+            (0..batch.num_rows())
+                .map(|_| Some(bounds.iter().map(|b| Some(*b)).collect::<Vec<_>>())),
+        ));
+        RecordBatch::try_new(batch.schema(), cols).unwrap()
+    }
+
+    async fn p50_over(mode: Mode, batch: RecordBatch) -> Vec<(i64, f64)> {
+        let df = SessionContext::new().read_batch(batch).unwrap();
         let eval = HistEval {
             stat: HistStat::Quantile(0.5),
             mode,
@@ -189,6 +211,21 @@ mod tests {
     async fn malformed_explicit_rows_are_skipped() {
         let rows: &[(&str, i64, &[i64])] = &[("s", 10, &[1, 1, 0, 0]), ("s", 20, &[5, 5])];
         assert_eq!(p50_of(Mode::Instant, rows).await, vec![(20, 1.0)]);
+        let rows: &[(&str, i64, &[i64])] = &[("s", 10, &[1, 1, 0, 0]), ("s", 20, &[1, -1, 0, 0])];
+        assert_eq!(p50_of(Mode::Instant, rows).await, vec![(20, 1.0)]);
+        let unsorted = with_bounds(histogram_points("histogram", rows), &[2.0, 1.0, 4.0]);
+        assert!(p50_over(Mode::Instant, unsorted).await.is_empty());
+    }
+
+    /// A single `+Inf` bucket is a histogram too; summaries are not read.
+    #[tokio::test]
+    async fn single_bucket_histograms_are_read_and_summaries_ignored() {
+        let rows: &[(&str, i64, &[i64])] = &[("s", 10, &[3])];
+        let single = with_bounds(histogram_points("histogram", rows), &[]);
+        let out = p50_over(Mode::Instant, single).await;
+        assert!(out.len() == 1 && out[0].1.is_nan(), "{out:?}");
+        let summary = histogram_points("summary", TWO_SERIES);
+        assert!(p50_over(Mode::Instant, summary).await.is_empty());
     }
 
     #[tokio::test]

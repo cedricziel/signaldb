@@ -5624,34 +5624,6 @@ mod tests {
         assert_eq!(total_rows, 1, "limit narrows the 2-service result to 1");
     }
 
-    async fn histogram_quantile_over_leak(leak_type: &str) -> QuerierError {
-        let svc = IrService::new(histogram_ctx_with_leak(leak_type));
-        let d = doc(serde_json::json!({
-            "irVersion": 3, "from": "metrics", "range": { "from": 100, "to": 1000 },
-            "result": "series",
-            "pipeline": [
-                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
-                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "as": "p50" } }
-            ]
-        }));
-        match svc.plan(&d, "t", "d", 0).await {
-            Ok(Some((df, _))) => df.collect().await.map(|_| ()).map_err(QuerierError::from),
-            Ok(None) => panic!("the metrics table is registered"),
-            Err(err) => Err(err),
-        }
-        .unwrap_err()
-    }
-
-    #[tokio::test]
-    async fn histogram_quantile_over_a_summary_is_a_typed_error() {
-        let err = histogram_quantile_over_leak("summary").await;
-        assert!(
-            matches!(&err, QuerierError::InvalidInput(m)
-                if m == "histogram_quantile is not supported on summary metrics"),
-            "{err}"
-        );
-    }
-
     fn histogram_points_ctx(kind: &str, rows: &[(&str, i64, &[i64])]) -> SessionContext {
         points_ctx(histogram_points(kind, rows))
     }
@@ -5806,7 +5778,13 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_on_metrics_reads_only_histogram_rows() {
-        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
+        for leak in ["gauge", "summary"] {
+            histogram_quantile_ignores_leak(leak).await;
+        }
+    }
+
+    async fn histogram_quantile_ignores_leak(leak: &str) {
+        let svc = IrService::new(histogram_ctx_with_leak(leak));
         let d = doc(serde_json::json!({
             "irVersion": 3, "from": "metrics", "range": { "from": 100, "to": 1000 },
             "result": "series",
