@@ -1007,15 +1007,29 @@ impl IrService {
     }
 }
 
-/// The series-algebra shapes (`irVersion` 10) validate but have no lowering
-/// yet: refuse them up front, before any scan, as `Unsupported` (501).
-fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
-    if common::query_ir::is_pseudo_source(&doc.from) {
-        return Err(QuerierError::Unsupported(format!(
-            "{} source is not supported yet",
-            doc.from
+/// A pseudo-source has no table to scan, so it is refused before the scan:
+/// below `irVersion` 10 it is invalid (400), from 10 on it has no lowering
+/// yet (501).
+fn reject_pseudo_source(doc: &Document) -> Result<(), QuerierError> {
+    if !common::query_ir::is_pseudo_source(&doc.from) {
+        return Ok(());
+    }
+    if doc.ir_version < 10 {
+        return Err(QuerierError::InvalidInput(format!(
+            "the {} source requires irVersion 10 (document declares {})",
+            doc.from, doc.ir_version
         )));
     }
+    Err(QuerierError::Unsupported(format!(
+        "{} source is not supported yet",
+        doc.from
+    )))
+}
+
+/// The series-algebra shapes (`irVersion` 10) validate but have no lowering
+/// yet: refused after validation, so an invalid document still gets its 400,
+/// as `Unsupported` (501).
+fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
     if let Some(stage) = doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
         return Err(unsupported_stage(stage));
     }
@@ -1078,7 +1092,7 @@ pub(crate) async fn plan_document(
         correlate_max_rows,
         attribute_type_request,
     } = request;
-    reject_unexecutable(doc)?;
+    reject_pseudo_source(doc)?;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
@@ -1125,6 +1139,7 @@ pub(crate) async fn plan_document(
     };
     validate(doc, &SourceRegistry::core(), &resolver)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    reject_unexecutable(doc)?;
 
     // Resolve the time window once against the injected clock.
     let window = resolve_window(doc, now_ns)?;

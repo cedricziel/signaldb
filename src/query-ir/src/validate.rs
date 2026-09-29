@@ -36,9 +36,9 @@ use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
-    DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramQuantile,
-    Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce, ReduceFn, Sample, SampleFn, Stage,
-    SubDocument, is_expression_string,
+    DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramMode,
+    HistogramQuantile, Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce, ReduceFn, Sample,
+    SampleFn, Stage, SubDocument, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -726,6 +726,10 @@ impl InferCtx<'_> {
         };
         let (l, r) = match (as_series(left), as_series(right)) {
             (None, None) => {
+                rule(
+                    !op.is_comparison() || binop.bool,
+                    "comparing two scalars needs `bool`",
+                )?;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
                 return Ok(());
             }
@@ -1199,6 +1203,7 @@ impl InferCtx<'_> {
             &hq.by,
             &hq.step,
             hq.window.as_ref(),
+            hq.mode,
             &hq.as_name,
         )
     }
@@ -1216,6 +1221,7 @@ impl InferCtx<'_> {
             &hf.by,
             &hf.step,
             hf.window.as_ref(),
+            hf.mode,
             &hf.as_name,
         )
     }
@@ -1237,6 +1243,7 @@ impl InferCtx<'_> {
         by: &[String],
         step: &str,
         window: Option<&String>,
+        mode: HistogramMode,
         as_name: &str,
     ) -> Result<(), IrError> {
         let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
@@ -1254,6 +1261,11 @@ impl InferCtx<'_> {
                 &format!("{stage} `window`"),
             )?;
             positive_duration(&format!("{stage}.window"), window)?;
+            if mode == HistogramMode::Instant {
+                return Err(IrError::Invalid(format!(
+                    "{stage} `window` is the rate-mode lookback and is not valid with `mode: instant`"
+                )));
+            }
         }
         if by.iter().any(|f| f == "metric.name") {
             return Err(IrError::Invalid(format!(

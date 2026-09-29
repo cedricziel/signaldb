@@ -86,3 +86,11 @@ fn histogram_fraction_and_window_require_irversion_10() {
         assert_eq!(parsed.minimum_ir_version(), 10);
     }
 }
+
+#[test]
+fn window_is_rejected_in_instant_mode() {
+    let e = err(metrics(json!({"histogram_quantile": {
+        "q": 0.5, "step": "1m", "mode": "instant", "window": "5m", "as": "p50"
+    }})));
+    assert!(e.contains("mode: instant"), "{e}");
+}
