@@ -1,3 +1,4 @@
+use datafusion::arrow::error::ArrowError;
 use datafusion::error::DataFusionError;
 
 #[derive(Debug, thiserror::Error)]
@@ -5,7 +6,7 @@ pub enum QuerierError {
     #[error("Trace not found")]
     TraceNotFound,
     #[error("Query failed: {0}")]
-    QueryFailed(#[from] DataFusionError),
+    QueryFailed(#[source] DataFusionError),
     #[error("Invalid input: {0}")]
     InvalidInput(String),
     #[error("Unsupported query feature: {0}")]
@@ -14,6 +15,42 @@ pub enum QuerierError {
         "PromQL query produced too many groups for row-wise evaluation: {count} groups exceeds the limit of {limit}; narrow the label selectors or time range"
     )]
     TooManyGroups { count: usize, limit: usize },
+}
+
+/// Finds a caller error an operator raised inside execution
+/// (`DataFusionError::External(QuerierError::InvalidInput)`), looking through
+/// the wrappers DataFusion and Arrow add around it.
+fn invalid_input_in(err: &DataFusionError) -> Option<String> {
+    match err {
+        DataFusionError::External(inner) => external(inner.as_ref()),
+        DataFusionError::ArrowError(arrow, _) => match arrow.as_ref() {
+            ArrowError::ExternalError(inner) => external(inner.as_ref()),
+            _ => None,
+        },
+        DataFusionError::Context(_, inner) | DataFusionError::Diagnostic(_, inner) => {
+            invalid_input_in(inner)
+        }
+        DataFusionError::Shared(inner) => invalid_input_in(inner),
+        DataFusionError::Collection(errs) => errs.iter().find_map(invalid_input_in),
+        _ => None,
+    }
+}
+
+fn external(err: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<String> {
+    if let Some(QuerierError::InvalidInput(msg)) = err.downcast_ref::<QuerierError>() {
+        return Some(msg.clone());
+    }
+    err.downcast_ref::<DataFusionError>()
+        .and_then(invalid_input_in)
+}
+
+impl From<DataFusionError> for QuerierError {
+    fn from(err: DataFusionError) -> Self {
+        match invalid_input_in(&err) {
+            Some(msg) => QuerierError::InvalidInput(msg),
+            None => QuerierError::QueryFailed(err),
+        }
+    }
 }
 
 /// The TraceQL parser's two rejection classes map 1:1 onto ours, and the
@@ -45,5 +82,57 @@ impl From<ql_ir::LowerError> for QuerierError {
             ql_ir::LowerError::Inexpressible(msg) => QuerierError::Unsupported(msg),
             other => QuerierError::Unsupported(other.to_string()),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::Arc;
+
+    use super::*;
+
+    fn raised() -> DataFusionError {
+        DataFusionError::External(Box::new(QuerierError::InvalidInput("bad".into())))
+    }
+
+    #[test]
+    fn execution_invalid_input_stays_invalid_input() {
+        let wrapped = DataFusionError::Shared(Arc::new(DataFusionError::Context(
+            "ctx".into(),
+            Box::new(raised()),
+        )));
+        assert!(matches!(
+            QuerierError::from(wrapped),
+            QuerierError::InvalidInput(m) if m == "bad"
+        ));
+    }
+
+    #[test]
+    fn invalid_input_is_found_through_arrow_and_collection_wrappers() {
+        let via_arrow = DataFusionError::ArrowError(
+            Box::new(ArrowError::ExternalError(Box::new(raised()))),
+            None,
+        );
+        let collected =
+            DataFusionError::Collection(vec![DataFusionError::Plan("x".into()), via_arrow]);
+        assert!(matches!(
+            QuerierError::from(collected),
+            QuerierError::InvalidInput(m) if m == "bad"
+        ));
+    }
+
+    #[test]
+    fn query_failed_keeps_its_source() {
+        let err = QuerierError::from(DataFusionError::Plan("x".into()));
+        assert!(std::error::Error::source(&err).is_some());
+    }
+
+    #[test]
+    fn other_datafusion_errors_stay_query_failed() {
+        let err = DataFusionError::Plan("x".into());
+        assert!(matches!(
+            QuerierError::from(err),
+            QuerierError::QueryFailed(_)
+        ));
     }
 }
