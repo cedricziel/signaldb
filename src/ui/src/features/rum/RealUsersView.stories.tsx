@@ -15,6 +15,7 @@ import { irCatchAll, type JsonRoute } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
 import { DarkScope } from "../../stories/DarkScope";
 import { growingPageFrame } from "../../stories/PageFrame";
+import { errorGroupKey } from "../../api/rumErrorGroups";
 import { RealUsersRoute } from "./RealUsersRoute";
 
 const MS = 1_000_000;
@@ -517,6 +518,21 @@ function singleDocResponse(b: IrDoc): unknown {
         rows: SESSION_SPAN_ROWS,
       };
     }
+    // The Errors tab detail's occurrences read (`buildErrorOccurrencesDoc`)
+    // is also `logs`/`rows`, distinguished from the session-detail logs read
+    // below by its own projected fields.
+    if (b.from === "logs" && b.fields?.includes("exception.stacktrace")) {
+      return {
+        result: "rows",
+        rows: [
+          [
+            1_700_002_612_800 * MS,
+            null,
+            "TypeError: Cannot read properties of undefined (reading 'total')\n  at Checkout.render (checkout.js:42)",
+          ],
+        ],
+      };
+    }
     if (b.from === "logs") {
       return {
         result: "rows",
@@ -563,6 +579,27 @@ function singleDocResponse(b: IrDoc): unknown {
   // browser.brands attribute (design.md — Context) until the next SDK
   // update ships it.
   if (by[0] === "resource.browser.brands") {
+    // The Errors tab detail's by-browser breakdown groups by (brands, UA)
+    // for one pinned group — distinguished from the Overview's plain
+    // single-field breakdown by `by.length`.
+    if (by.length === 2) {
+      return {
+        result: "table",
+        rows: [
+          [
+            null,
+            "Mozilla/5.0 (Windows NT 10.0) Chrome/128.0.0.0 Safari/537.36",
+            260,
+          ],
+          [
+            null,
+            "Mozilla/5.0 (iPhone; CPU iPhone OS 17_4) Version/17.4 Safari/604.1",
+            130,
+          ],
+          [null, "Mozilla/5.0 (X11; Linux x86_64) Firefox/128.0", 22],
+        ],
+      };
+    }
     return { result: "table", rows: [] };
   }
   if (by[0] === "resource.browser.mobile") {
@@ -654,7 +691,25 @@ function singleDocResponse(b: IrDoc): unknown {
   // and `last_session` matches `SESSIONS_ROWS`'s first row, so the Errors
   // and Sessions tabs tell the same incident consistently; `other_version`
   // is 0 (the group is "new" in whatever version the selected app reports).
+  // The detail panel's own volume read (`buildErrorGroupVolumeDoc`) groups
+  // by the same field but adds a `step`, distinguishing it from the list.
   if (by[0] === "exception.type") {
+    if (agg?.step) {
+      const stepMs = Number(agg.step.replace("s", "")) * 1000 || 60_000;
+      return {
+        result: "series",
+        series: [
+          {
+            labels: {},
+            points: seriesPoints(
+              1_700_002_000_000,
+              1_700_002_600_000,
+              wave(1, 6, 4, Math.max(1, Math.round(600_000 / stepMs))),
+            ),
+          },
+        ],
+      };
+    }
     return {
       result: "table",
       rows: [
@@ -672,6 +727,12 @@ function singleDocResponse(b: IrDoc): unknown {
         ],
       ],
     };
+  }
+
+  // The Errors tab detail's release read (`buildErrorGroupReleaseDoc`) — an
+  // ungrouped scalar aggregate, unlike every other `by`-keyed branch above.
+  if (by.length === 0 && agg?.aggs?.[0]?.as === "release") {
+    return { result: "table", rows: [["2026.09.26-3"]] };
   }
 
   return { result: "table", rows: [] };
@@ -870,4 +931,18 @@ export const Interactions: Story = {
 
 export const Errors: Story = {
   render: () => <RealUsersPage path="/rum/errors?app=storefront-web" />,
+};
+
+const ERROR_GROUP_KEY = errorGroupKey({
+  exceptionType: "TypeError",
+  exceptionMessage: "Cannot read properties of undefined (reading 'total')",
+  escaped: "true",
+});
+
+export const ErrorsBackendCause: Story = {
+  render: () => (
+    <RealUsersPage
+      path={`/rum/errors?app=storefront-web&errgroup=${encodeURIComponent(ERROR_GROUP_KEY)}`}
+    />
+  ),
 };

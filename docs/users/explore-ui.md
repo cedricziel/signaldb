@@ -360,7 +360,12 @@ the **Overview**, **Pages**, **Sessions**, **Errors**, **Network**,
   across every listed group's sessions in one call and joins each group,
   client-side, to the latest one that preceded its last occurrence within 30
   seconds in the same session — the row's "backend cause" pill. Picking a
-  group writes `?errgroup=` and opens its detail.
+  group writes `?errgroup=` and opens its detail: events, distinct users and
+  sessions, first/last seen and the group's own release, a volume histogram,
+  the latest occurrence's stack frames (with source context, same as the
+  trace and standalone Errors views), a by-browser breakdown, and — when a
+  backend cause was found — that request's own trace, named by the first
+  span with error status below it, and a link to the group's latest session.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced
