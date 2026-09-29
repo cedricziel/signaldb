@@ -174,3 +174,16 @@ fn binop_requires_irversion_10() {
     let parsed: Document = serde_json::from_value(d).unwrap();
     assert_eq!(parsed.minimum_ir_version(), 10);
 }
+
+#[test]
+fn scalar_comparison_needs_bool() {
+    let cmp = |b: bool| {
+        check(doc(
+            "time",
+            "scalar",
+            json!([{ "binop": { "op": "gt", "right": 1.0, "bool": b } }]),
+        ))
+    };
+    assert!(err(cmp(false)).contains("needs `bool`"));
+    assert!(matches!(cmp(true), Ok(RelationType::Scalar(_))));
+}

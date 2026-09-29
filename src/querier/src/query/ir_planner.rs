@@ -1007,19 +1007,51 @@ impl IrService {
     }
 }
 
-/// The series-algebra shapes (`irVersion` 10) validate but have no lowering
-/// yet: refuse them up front, before any scan, as `Unsupported` (501).
-fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
-    if common::query_ir::is_pseudo_source(&doc.from) {
-        return Err(QuerierError::Unsupported(format!(
-            "{} source is not supported yet",
-            doc.from
+/// A pseudo-source has no table to scan, so it is refused before the scan:
+/// below `irVersion` 10 it is invalid (400), from 10 on it has no lowering
+/// yet (501).
+fn reject_pseudo_source(doc: &Document) -> Result<(), QuerierError> {
+    if !common::query_ir::is_pseudo_source(&doc.from) {
+        return Ok(());
+    }
+    if doc.ir_version < 10 {
+        return Err(QuerierError::InvalidInput(format!(
+            "the {} source requires irVersion 10 (document declares {})",
+            doc.from, doc.ir_version
         )));
     }
-    match doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
-        Some(stage) => Err(unsupported_stage(stage)),
-        None => Ok(()),
+    Err(QuerierError::Unsupported(format!(
+        "{} source is not supported yet",
+        doc.from
+    )))
+}
+
+/// The series-algebra shapes (`irVersion` 10) validate but have no lowering
+/// yet: refused after validation, so an invalid document still gets its 400,
+/// as `Unsupported` (501).
+fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
+    if let Some(stage) = doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
+        return Err(unsupported_stage(stage));
     }
+    if doc
+        .pipeline
+        .iter()
+        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.window.is_some()))
+    {
+        return Err(QuerierError::Unsupported(
+            "histogram_quantile window is not supported yet".to_string(),
+        ));
+    }
+    if doc
+        .pipeline
+        .iter()
+        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.per_series))
+    {
+        return Err(QuerierError::Unsupported(
+            "histogram_quantile per_series is not supported yet".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn is_series_algebra(stage: &Stage) -> bool {
@@ -1036,6 +1068,7 @@ fn is_series_algebra(stage: &Stage) -> bool {
             | Stage::Absent(_)
             | Stage::OverTime(_)
             | Stage::Binop(_)
+            | Stage::HistogramFraction(_)
     )
 }
 
@@ -1068,7 +1101,7 @@ pub(crate) async fn plan_document(
         correlate_max_rows,
         attribute_type_request,
     } = request;
-    reject_unexecutable(doc)?;
+    reject_pseudo_source(doc)?;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
@@ -1115,6 +1148,7 @@ pub(crate) async fn plan_document(
     };
     validate(doc, &SourceRegistry::core(), &resolver)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
+    reject_unexecutable(doc)?;
 
     // Resolve the time window once against the injected clock.
     let window = resolve_window(doc, now_ns)?;
@@ -1539,7 +1573,8 @@ impl Lowering<'_> {
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
-            | Stage::Binop(_) => Err(unsupported_stage(stage)),
+            | Stage::Binop(_)
+            | Stage::HistogramFraction(_) => Err(unsupported_stage(stage)),
         }
     }
 
@@ -5767,6 +5802,11 @@ mod tests {
                 "metrics",
                 serde_json::json!({ "sample": { "fn": "latest" } }),
                 "sample stage is not supported yet",
+            ),
+            (
+                "metrics",
+                serde_json::json!({ "histogram_quantile": { "q": 0.5, "step": "1m", "window": "5m", "as": "p" } }),
+                "histogram_quantile window is not supported yet",
             ),
             (
                 "time",
