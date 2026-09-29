@@ -35,9 +35,9 @@ use super::relation::{
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
-    Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract, Heatmap,
-    HistogramQuantile, Labels, Map, Order, Rank, Reduce, ReduceFn, Sample, SampleFn, Stage,
-    is_expression_string,
+    Absent, Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract,
+    Filter, Heatmap, HistogramQuantile, Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce,
+    ReduceFn, Sample, SampleFn, Stage, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -288,6 +288,10 @@ impl InferCtx<'_> {
             Stage::Reduce(reduce) => self.apply_reduce(reduce),
             Stage::Map(map) => self.apply_map(map),
             Stage::Labels(op) => self.apply_labels(op),
+            Stage::Filter(filter) => self.apply_filter(filter),
+            Stage::Sort(_) => self.require_series("sort").map(|_| ()),
+            Stage::Absent(absent) => self.apply_absent(absent),
+            Stage::OverTime(over) => self.apply_over_time(over),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -557,6 +561,58 @@ impl InferCtx<'_> {
         {
             push_label(&mut s.labels, dst);
         }
+        Ok(())
+    }
+
+    /// `filter`: compare every value with a number; `bool` yields 0/1 and
+    /// drops the metric name.
+    fn apply_filter(&mut self, filter: &Filter) -> Result<(), IrError> {
+        self.require_series("filter")?;
+        if !filter.value.is_finite() {
+            return Err(IrError::Invalid(
+                "filter `value` must be finite".to_string(),
+            ));
+        }
+        if filter.bool
+            && let RelationType::Series(s) = &mut self.relation
+        {
+            s.labels.retain(|l| l != METRIC_NAME);
+            s.value = ValueType::Float64;
+        }
+        Ok(())
+    }
+
+    /// `absent`: one series, labelled by `labels`, where the input has none.
+    fn apply_absent(&mut self, absent: &Absent) -> Result<(), IrError> {
+        let step_ns = self.require_series("absent")?.step_ns;
+        for name in absent.labels.keys() {
+            check_label_name("absent", name)?;
+        }
+        self.relation = RelationType::Series(Series {
+            labels: absent.labels.keys().cloned().collect(),
+            open_labels: false,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// `over_time`: re-window a Series evaluated at its own step.
+    fn apply_over_time(&mut self, over: &OverTime) -> Result<(), IrError> {
+        let input = self.require_series("over_time")?.clone();
+        positive_duration("over_time.window", &over.window)?;
+        check_quantile_arg("over_time", over.arg, over.func == OverTimeFn::Quantile)?;
+        let step_ns = self.stage_step("over_time", over.step.as_ref())?;
+        if step_ns < input.step_ns {
+            return Err(IrError::Invalid(
+                "over_time `step` must not be finer than its input series' step".to_string(),
+            ));
+        }
+        self.relation = RelationType::Series(Series {
+            value: ValueType::Float64,
+            step_ns,
+            ..input
+        });
         Ok(())
     }
 
