@@ -21,12 +21,12 @@
 //! up with more than one partition, including partitioning decisions later
 //! optimizer passes make after this module's own planning.
 //!
-//! [`CorrelateCapQueryPlanner`] is a [`QueryPlanner`] that recognizes
-//! [`LogicalPlan::Extension`] nodes wrapping a [`CorrelateCapNode`]; it is
-//! installed on a per-query [`SessionState`] built from the ambient session's
-//! own state (see [`wrap_with_cap`]), so it never needs registering globally
-//! and every other query on the shared, long-lived `SessionContext` is
-//! unaffected.
+//! [`CorrelateCapPlanner`] lowers [`LogicalPlan::Extension`] nodes wrapping a
+//! [`CorrelateCapNode`]; [`wrap_with_cap`] installs it, through the querier's
+//! shared per-query planner ([`super::planner`]), on a `SessionState` built
+//! from the ambient session's own state, so it never needs registering
+//! globally and every other query on the shared, long-lived `SessionContext`
+//! is unaffected.
 
 use std::cmp::Ordering;
 use std::fmt;
@@ -43,8 +43,7 @@ use datafusion::catalog::Session;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{DFSchemaRef, Result as DFResult};
 use datafusion::dataframe::DataFrame;
-use datafusion::execution::context::QueryPlanner;
-use datafusion::execution::{SendableRecordBatchStream, SessionStateBuilder, TaskContext};
+use datafusion::execution::{SendableRecordBatchStream, TaskContext};
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{Expr, Extension, LogicalPlan, UserDefinedLogicalNodeCore};
 use datafusion::physical_expr::{EquivalenceProperties, PhysicalExpr};
@@ -52,10 +51,11 @@ use datafusion::physical_plan::execution_plan::{Boundedness, EmissionType};
 use datafusion::physical_plan::{
     DisplayAs, DisplayFormatType, ExecutionPlan, PlanProperties, RecordBatchStream,
 };
-use datafusion::physical_planner::{DefaultPhysicalPlanner, ExtensionPlanner, PhysicalPlanner};
+use datafusion::physical_planner::{ExtensionPlanner, PhysicalPlanner};
 use futures::{Stream, StreamExt};
 
 use super::error::QuerierError;
+use super::planner::with_querier_planner;
 
 /// Logical node: "the input relation, capped at `cap` rows; report overflow
 /// on `truncated`." Carries the `Arc<AtomicBool>` by value through ordinary
@@ -156,30 +156,7 @@ pub(super) fn wrap_with_cap(
     let capped_plan = LogicalPlan::Extension(Extension {
         node: Arc::new(node),
     });
-    let state = SessionStateBuilder::new_from_existing(state)
-        .with_query_planner(Arc::new(CorrelateCapQueryPlanner))
-        .build();
-    Ok(DataFrame::new(state, capped_plan))
-}
-
-/// [`QueryPlanner`] that recognizes [`CorrelateCapNode`] via
-/// [`CorrelateCapPlanner`], delegating everything else to DataFusion's own
-/// default planning — the same shape as DataFusion's internal
-/// `DefaultQueryPlanner`, just with our extension planner attached.
-#[derive(Debug)]
-struct CorrelateCapQueryPlanner;
-
-#[async_trait]
-impl QueryPlanner for CorrelateCapQueryPlanner {
-    async fn create_physical_plan(
-        &self,
-        logical_plan: &LogicalPlan,
-        session: &dyn Session,
-    ) -> DFResult<Arc<dyn ExecutionPlan>> {
-        let planner =
-            DefaultPhysicalPlanner::with_extension_planners(vec![Arc::new(CorrelateCapPlanner)]);
-        planner.create_physical_plan(logical_plan, session).await
-    }
+    Ok(DataFrame::new(with_querier_planner(state), capped_plan))
 }
 
 /// Lowers [`CorrelateCapNode`] to [`CorrelateCapExec`]. The cap must be
@@ -193,7 +170,7 @@ impl QueryPlanner for CorrelateCapQueryPlanner {
 /// tree — a fixed coalesce inserted here, before those passes run, would
 /// miss that case and silently execute only one of several partitions.
 #[derive(Debug)]
-struct CorrelateCapPlanner;
+pub(super) struct CorrelateCapPlanner;
 
 #[async_trait]
 impl ExtensionPlanner for CorrelateCapPlanner {

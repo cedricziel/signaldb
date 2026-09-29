@@ -9,6 +9,7 @@ pub mod logs;
 pub mod metric_ops;
 pub(crate) mod metric_series;
 pub mod metrics;
+mod planner;
 pub mod profile;
 pub mod promql;
 pub mod search_filter;
