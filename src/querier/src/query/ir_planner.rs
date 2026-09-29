@@ -1186,6 +1186,9 @@ pub(crate) async fn plan_document(
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
                 lookback = lookback.max(range_step_window(agg, a)?.1);
             }
+            Stage::Aggregate(agg) if let Some(step) = instant_grid_step(agg, &source) => {
+                lookback = lookback.max(parse_step(step)?);
+            }
             _ => {}
         }
     }
@@ -1224,6 +1227,9 @@ pub(crate) async fn plan_document(
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
                 lowering.lower_rate_aggregate(df, agg, a, &window)?
+            }
+            Stage::Aggregate(agg) if instant_grid_step(agg, &source).is_some() => {
+                lowering.lower_aggregate(df, agg, Some(&window))?
             }
             // Needs its own scan of the traces table (the parent side) and
             // the resolved window, both only available here.
@@ -1338,6 +1344,17 @@ fn range_agg(agg: &Aggregate) -> Option<&common::query_ir::Agg> {
         (Some(_), [a]) if a.func.is_range_fn() => Some(a),
         _ => None,
     }
+}
+
+/// A stepped aggregate over metrics buckets on the evaluation-instant grid
+/// (D11); other sources keep epoch-aligned `date_bin` buckets.
+fn instant_grid_step<'a>(agg: &'a Aggregate, source: &SourcePlan) -> Option<&'a str> {
+    agg.step.as_deref().filter(|_| source.name == "metrics")
+}
+
+fn parse_step(step: &str) -> Result<i64, QuerierError> {
+    common::query_ir::parse_duration_ns(step)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("invalid step duration '{step}'")))
 }
 
 /// A range aggregate's step and window (the window defaults to the step).
@@ -1601,7 +1618,7 @@ impl Lowering<'_> {
                 let expr = self.lower_predicate(pred)?;
                 df.filter(expr).map_err(QuerierError::QueryFailed)
             }
-            Stage::Aggregate(agg) => self.lower_aggregate(df, agg),
+            Stage::Aggregate(agg) => self.lower_aggregate(df, agg, None),
             Stage::Topk(rank) => self.lower_rank(df, &rank.of, rank.n, false),
             Stage::Bottomk(rank) => self.lower_rank(df, &rank.of, rank.n, true),
             Stage::Order(keys) => {
@@ -1911,27 +1928,46 @@ impl Lowering<'_> {
             .map_err(QuerierError::QueryFailed)
     }
 
+    /// A stepped aggregate buckets on `instants`' evaluation grid when given
+    /// (metric series, D11), else epoch-aligned `date_bin` buckets.
     fn lower_aggregate(
         &mut self,
-        df: DataFrame,
+        mut df: DataFrame,
         agg: &Aggregate,
+        instants: Option<&ResolvedWindow>,
     ) -> Result<DataFrame, QuerierError> {
         // Group expressions: each `by` field, aliased to a safe identifier.
         let mut group_exprs = Vec::new();
         let mut new_col_of = HashMap::new();
         if let Some(step) = &agg.step {
-            let step_ns = common::query_ir::parse_duration_ns(step).ok_or_else(|| {
-                QuerierError::InvalidInput(format!("invalid step duration '{step}'"))
-            })?;
-            let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
-                IntervalMonthDayNano::new(0, 0, step_ns),
-            )));
-            let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-            let ts_ns = cast(
-                col(self.source.time_col),
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-            );
-            group_exprs.push(date_bin(stride, ts_ns, origin).alias("bucket"));
+            let step_ns = parse_step(step)?;
+            let ts_type = DataType::Timestamp(TimeUnit::Nanosecond, None);
+            let bucket = if let Some(w) = instants {
+                // The one instant `t = from + k·step` whose `(t - step, t]`
+                // holds the point: `k` is the ceiling of `(ts - from) / step`,
+                // which integer division gives for every `ts > from - step`.
+                const INSTANT: &str = "__instant";
+                let ts = cast(
+                    cast(col(self.source.time_col), ts_type.clone()),
+                    DataType::Int64,
+                );
+                let at = lit(w.start_ns)
+                    + (ts.clone() - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns)
+                        * lit(step_ns);
+                df = df
+                    .filter(ts.gt(lit(w.start_ns.saturating_sub(step_ns))))
+                    .and_then(|df| df.with_column(INSTANT, at))
+                    .and_then(|df| df.filter(ident(INSTANT).lt_eq(lit(w.end_ns))))
+                    .map_err(QuerierError::QueryFailed)?;
+                cast(ident(INSTANT), ts_type)
+            } else {
+                let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
+                    IntervalMonthDayNano::new(0, 0, step_ns),
+                )));
+                let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
+                date_bin(stride, cast(col(self.source.time_col), ts_type), origin)
+            };
+            group_exprs.push(bucket.alias("bucket"));
         }
         for by in &agg.by {
             self.record_field_demand(by);
@@ -3462,6 +3498,7 @@ mod tests {
     use datafusion::arrow::datatypes::{Field, Fields, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     /// `FLAMEGRAPH_PROFILE_CAP`'s doc comment claims it matches
@@ -4076,6 +4113,90 @@ mod tests {
         }
     }
 
+    async fn bucket_points(svc: &IrService, d: &Document, value: &str) -> BTreeMap<i64, f64> {
+        let (df, _) = svc
+            .plan(d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let mut out = BTreeMap::new();
+        for b in df.collect().await.unwrap() {
+            let t = b
+                .column_by_name("bucket")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap();
+            let v = b
+                .column_by_name(value)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            for i in 0..b.num_rows() {
+                out.insert(t.value(i), v.value(i));
+            }
+        }
+        out
+    }
+
+    // D11: a plain stepped metric aggregate and a range function share the
+    // evaluation-instant grid `from + k·step`, each instant reading
+    // `(t - step, t]`, so a formula over both joins on their timestamps.
+    #[tokio::test]
+    async fn plain_and_range_metric_aggregates_share_the_instant_grid() {
+        const S: i64 = 1_000_000_000;
+        let svc = IrService::new(rate_ctx());
+        let stepped = |agg: serde_json::Value| {
+            doc(serde_json::json!({
+                "irVersion": 6, "from": "metrics",
+                "range": { "from": 5 * S, "to": 65 * S },
+                "result": "series",
+                "pipeline": [{ "aggregate": {
+                    "by": ["metric.name"], "aggs": [agg], "step": "30s"
+                } }]
+            }))
+        };
+        let plain = bucket_points(
+            &svc,
+            &stepped(serde_json::json!({ "fn": "sum", "of": "metric.value", "as": "r" })),
+            "r",
+        )
+        .await;
+        let range = bucket_points(
+            &svc,
+            &stepped(serde_json::json!({ "fn": "increase", "of": "metric.value", "as": "r" })),
+            "r",
+        )
+        .await;
+        // Points 0,10,20,29s valued 10,20,5,15: t=5s reads (-25s, 5s], t=35s
+        // reads (5s, 35s]; t=65s is empty.
+        assert_eq!(
+            plain,
+            BTreeMap::from([(5 * S, 10.0), (35 * S, 40.0)]),
+            "plain"
+        );
+        assert_eq!(range.keys().copied().collect::<Vec<_>>(), vec![35 * S]);
+
+        let series = |points: BTreeMap<i64, f64>| {
+            vec![common::query_ir::EvalSeries {
+                labels: BTreeMap::new(),
+                points,
+            }]
+        };
+        let inputs = HashMap::from([
+            ("A".to_string(), series(range.clone())),
+            ("B".to_string(), series(plain)),
+        ]);
+        let expr = common::query_ir::parse_formula_expr("A / B").unwrap();
+        let out = common::query_ir::evaluate_formula(&expr, &inputs);
+        assert_eq!(out.len(), 1, "A / B joins on the shared instant");
+        assert_eq!(
+            out[0].points,
+            BTreeMap::from([(35 * S, range[&(35 * S)] / 40.0)])
+        );
+    }
+
     #[tokio::test]
     async fn rate_rejects_a_document_declaring_less_than_ir_version_6() {
         let svc = IrService::new(rate_ctx());
@@ -4602,7 +4723,7 @@ mod tests {
     async fn metrics_filtered_to_gauge_and_sum_filters_by_name_and_aggregates() {
         let svc = IrService::new(metrics_ctx_with_summary_leak());
         let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1_000_000 },
             "result": "series",
             "pipeline": [
                 { "where": { "and": [
@@ -4621,13 +4742,13 @@ mod tests {
             window,
             ResolvedWindow {
                 start_ns: 0,
-                end_ns: 1000
+                end_ns: 1_000_000
             }
         );
         let plan = format!("{}", df.logical_plan().display_indent());
         assert!(plan.contains("Aggregate"), "plan:\n{plan}");
         assert!(plan.contains("Filter"), "plan:\n{plan}");
-        assert!(plan.contains("date_bin"), "plan:\n{plan}");
+        assert!(!plan.contains("date_bin"), "plan:\n{plan}");
         // 5 + 7 (gauge) + 3 (sum) = 15. The `summary` row's 999.0 would
         // corrupt this total if the `metric.type` filter failed.
         let batches = df.collect().await.unwrap();
