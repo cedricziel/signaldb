@@ -1028,6 +1028,29 @@ document `step`:
 `time` is each instant in seconds since the epoch; `constant` is the given
 value at every instant.
 
+### Series algebra
+
+These stages take a Series from `sample` (or `vector`) and return a Series,
+with PromQL's semantics. Over a Series from anything else (an `aggregate`
+with `step`, a `histogram_quantile`) they are not supported yet (501).
+
+#### `labels`
+
+Rewrite one label of every series, as PromQL's `label_replace` and
+`label_join` do. The metric name is kept.
+
+```jsonc
+{ "labels": { "replace": { "dst": "class", "replacement": "${1}xx", "src": "code", "regex": "(\\d).." } } }
+{ "labels": { "join": { "dst": "hostport", "separator": ":", "src": ["host", "port"] } } }
+```
+
+`replace` sets `dst` to the expanded `replacement` when `regex` matches the
+**whole** value of `src` (an absent label reads as `""`, and so does an empty
+`src`: `{"dst": "d", "replacement": "v", "src": "", "regex": ""}` adds a
+constant label); otherwise the series is unchanged. `join` sets `dst` to the
+values of `src` (absent as `""`) joined by `separator`. Either way an empty
+result removes `dst`.
+
 ## Histograms
 
 A histogram row of the `metrics` source carries a whole OTLP histogram data

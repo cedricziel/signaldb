@@ -123,12 +123,10 @@ pub(crate) fn labels_get_udf() -> ScalarUDF {
     udf(Op::Get)
 }
 /// `label_replace(labels, dst, replacement, src, regex)`, PromQL semantics.
-#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn label_replace_udf() -> ScalarUDF {
     udf(Op::Replace)
 }
 /// `label_join(labels, dst, sep, src…)`, PromQL semantics.
-#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn label_join_udf() -> ScalarUDF {
     udf(Op::Join)
 }
