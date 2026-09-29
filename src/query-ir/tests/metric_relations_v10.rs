@@ -1,5 +1,6 @@
 //! `irVersion` 10: the metric point stream, the `Scalar` relation and
-//! envelope, and the `scalar`/`vector` stages.
+//! envelope, the `scalar`/`vector` stages, the document `step`/`constant`
+//! and the `time`/`constant` pseudo-sources.
 
 use query_ir::{
     Document, IrError, RelationType, ScalarRelation, SourceRegistry, ValueType, validate,
@@ -137,4 +138,67 @@ fn minimum_ir_version_covers_the_v10_shapes() {
         let d: Document = serde_json::from_value(v).unwrap();
         assert_eq!(d.minimum_ir_version(), 10, "{d:?}");
     }
+}
+
+fn pseudo(from: &str) -> Value {
+    json!({
+        "irVersion": 10, "from": from, "step": "15s",
+        "range": { "from": "now-1h", "to": "now" }, "result": "scalar",
+    })
+}
+
+#[test]
+fn the_time_and_constant_pseudo_sources_seed_a_scalar() {
+    let expected = RelationType::Scalar(ScalarRelation {
+        step_ns: 15_000_000_000,
+    });
+    assert_eq!(check(pseudo("time")).unwrap(), expected);
+    let mut c = pseudo("constant");
+    c["constant"] = json!(2.5);
+    assert_eq!(check(c).unwrap(), expected);
+    let mut v = pseudo("time");
+    v["result"] = json!("series");
+    v["pipeline"] = json!([{ "vector": {} }]);
+    assert!(matches!(check(v).unwrap(), RelationType::Series(_)));
+}
+
+#[test]
+fn pseudo_source_rules() {
+    assert!(err_text(check(pseudo("constant"))).contains("constant"));
+    let mut t = pseudo("time");
+    t["constant"] = json!(1.0);
+    assert!(err_text(check(t)).contains("constant"));
+    let mut m = metrics("series", json!([count_series()]));
+    m["constant"] = json!(1.0);
+    assert!(err_text(check(m)).contains("constant"));
+
+    let mut no_step = pseudo("time");
+    no_step.as_object_mut().unwrap().remove("step");
+    assert!(err_text(check(no_step)).contains("step"));
+    let mut bad_step = pseudo("time");
+    bad_step["step"] = json!("0s");
+    assert!(err_text(check(bad_step)).contains("step"));
+
+    let mut where_on_time = pseudo("time");
+    where_on_time["pipeline"] = json!([{ "where": { "field": "metric.name", "op": "exists" } }]);
+    assert!(err_text(check(where_on_time)).contains("scalar"));
+
+    let names = SourceRegistry::core().names();
+    assert!(!names.iter().any(|n| n == "time" || n == "constant"));
+}
+
+#[test]
+fn document_step_and_pseudo_sources_require_irversion_10() {
+    let mut t = pseudo("time");
+    t["irVersion"] = json!(9);
+    t["result"] = json!("rows");
+    assert!(err_text(check(t)).contains("irVersion 10"));
+    let mut m = metrics("series", json!([count_series()]));
+    m["irVersion"] = json!(9);
+    m["step"] = json!("1m");
+    assert!(err_text(check(m.clone())).contains("irVersion 10"));
+    let d: Document = serde_json::from_value(m).unwrap();
+    assert_eq!(d.minimum_ir_version(), 10);
+    let d: Document = serde_json::from_value(pseudo("time")).unwrap();
+    assert_eq!(d.minimum_ir_version(), 10);
 }

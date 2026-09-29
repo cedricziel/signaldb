@@ -44,6 +44,8 @@ fn lower_log_query(q: &LogQuery, from: &str, to: &str) -> Result<Document, Lower
         focus: None,
         depth: None,
         trace_id: None,
+        step: None,
+        constant: None,
     })
 }
 
@@ -279,6 +281,8 @@ fn lower_metric_query(q: &MetricQuery, from: &str, to: &str) -> Result<Document,
         focus: None,
         depth: None,
         trace_id: None,
+        step: None,
+        constant: None,
     };
     doc.ir_version = doc.minimum_ir_version();
     Ok(doc)

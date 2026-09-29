@@ -33,10 +33,10 @@ use super::relation::{
     Scalar, Series,
 };
 use super::resolver::FieldResolver;
-use super::source::{SourceDef, SourceRegistry};
+use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract, Heatmap,
-    HistogramQuantile, Order, Rank, Stage, is_expression_string,
+    HistogramQuantile, Order, Rank, Sample, SampleFn, Stage, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -166,8 +166,30 @@ pub fn validate(
     if doc.result == ResultEnvelope::Scalar {
         require_feature(&registry, Feature::ScalarEnvelope, "scalar result envelope")?;
     }
-    // 2. Source resolution — unknown source is a clear error, not a parse fail.
-    let source_def = resolve_source(doc, sources)?;
+    let doc_step_ns = check_document_step(doc, &registry)?;
+
+    // 2. Source resolution — unknown source is a clear error, not a parse
+    // fail. A pseudo-source reads no signal and seeds a Scalar instead.
+    let (source_def, relation) = if is_pseudo_source(&doc.from) {
+        (None, seed_pseudo_source(doc, &registry, doc_step_ns)?)
+    } else {
+        if doc.constant.is_some() {
+            return Err(IrError::Invalid(
+                "`constant` is only valid with `from: \"constant\"`".to_string(),
+            ));
+        }
+        let def = resolve_source(doc, sources)?;
+        let seed = RelationType::RowSet(RowSet {
+            source: doc.from.clone(),
+            columns: Vec::new(),
+            grain: def.grain,
+            aggregated: false,
+            open: true,
+            correlated: false,
+            identity: def.grain == Grain::Point,
+        });
+        (Some(def), seed)
+    };
 
     // Range literals must be coercible to timestamps (relative anchors stay
     // symbolic; only well-formedness is checked here).
@@ -179,17 +201,10 @@ pub fn validate(
         source_def,
         resolver,
         registry,
-        relation: RelationType::RowSet(RowSet {
-            source: doc.from.clone(),
-            columns: Vec::new(),
-            grain: source_def.grain,
-            aggregated: false,
-            open: true,
-            correlated: false,
-            identity: source_def.grain == Grain::Point,
-        }),
+        relation,
         names: Vec::new(),
         declared_result: doc.result,
+        doc_step_ns,
     };
     match describe {
         // Introspection: no records flow through the pipeline, so there is
@@ -219,7 +234,8 @@ pub fn validate(
 
 struct InferCtx<'a> {
     source: &'a str,
-    source_def: &'a SourceDef,
+    /// `None` for a pseudo-source.
+    source_def: Option<&'a SourceDef>,
     resolver: &'a dyn FieldResolver,
     relation: RelationType,
     /// Names introduced by extract/aggregate — unique across the pipeline.
@@ -231,6 +247,8 @@ struct InferCtx<'a> {
     /// aggregate function, a `divisor` — gate on it here rather than in the
     /// up-front scans, which only see stage kinds.
     registry: OperatorRegistry,
+    /// The document `step`, the default of the series-algebra stages.
+    doc_step_ns: Option<i64>,
 }
 
 impl InferCtx<'_> {
@@ -265,6 +283,7 @@ impl InferCtx<'_> {
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
             Stage::Correlate(correlate) => self.apply_correlate(correlate),
+            Stage::Sample(sample) => self.apply_sample(sample),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -346,6 +365,86 @@ impl InferCtx<'_> {
                 ),
             }),
         }
+    }
+
+    /// A stage's own `step`, else the document's; one of them is required.
+    fn stage_step(&self, stage: &str, step: Option<&String>) -> Result<i64, IrError> {
+        match step {
+            Some(step) => positive_duration(&format!("{stage}.step"), step),
+            None => self.doc_step_ns.ok_or_else(|| {
+                IrError::Invalid(format!(
+                    "{stage} requires a `step`, on the stage or the document"
+                ))
+            }),
+        }
+    }
+
+    /// `sample`: evaluate a point stream into an open-labelled series.
+    fn apply_sample(&mut self, sample: &Sample) -> Result<(), IrError> {
+        self.require_point_stream("sample")?;
+        let is_latest = sample.func == SampleFn::Latest;
+        match (&sample.window, is_latest) {
+            (Some(_), true) => {
+                return Err(IrError::Invalid(
+                    "sample `latest` takes `lookback`, not `window`".to_string(),
+                ));
+            }
+            (None, false) => {
+                return Err(IrError::Invalid(
+                    "sample range functions require a `window`".to_string(),
+                ));
+            }
+            (Some(window), false) => {
+                positive_duration("sample.window", window)?;
+            }
+            (None, true) => {}
+        }
+        if let Some(lookback) = &sample.lookback {
+            if !is_latest {
+                return Err(IrError::Invalid(
+                    "sample `lookback` is only valid with `latest`".to_string(),
+                ));
+            }
+            positive_duration("sample.lookback", lookback)?;
+        }
+        check_quantile_arg(
+            "sample",
+            sample.arg,
+            sample.func == SampleFn::QuantileOverTime,
+        )?;
+        if let Some(offset) = &sample.offset {
+            positive_duration("sample.offset", offset)?;
+        }
+        if let Some(at) = &sample.at {
+            coerce_for("sample.at", at, &ValueType::TimestampNs)?;
+        }
+        if let Some(name) = &sample.as_name {
+            self.check_output_name(name)?;
+        }
+        let step_ns = self.stage_step("sample", sample.step.as_ref())?;
+        self.relation = RelationType::Series(Series {
+            labels: Vec::new(),
+            open_labels: true,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// A series-algebra output name: a plain, pipeline-unique name.
+    fn check_output_name(&mut self, name: &str) -> Result<(), IrError> {
+        if name.is_empty() || is_expression_string(name) {
+            return Err(IrError::ExpressionString {
+                operand: name.to_string(),
+            });
+        }
+        if self.names.iter().any(|n| n == name) {
+            return Err(IrError::DuplicateName {
+                name: name.to_string(),
+            });
+        }
+        self.names.push(name.to_string());
+        Ok(())
     }
 
     fn require_rowset(&self, stage: &str) -> Result<&RowSet, IrError> {
@@ -517,7 +616,7 @@ impl InferCtx<'_> {
     }
 
     fn apply_extract(&mut self, extract: &Extract) -> Result<(), IrError> {
-        if !self.source_def.allows_extract {
+        if !self.source_def.is_some_and(|def| def.allows_extract) {
             return Err(IrError::IllegalStage {
                 stage: "extract".to_string(),
                 reason: format!(
@@ -1132,6 +1231,33 @@ fn check_range(range: &Range) -> Result<(), IrError> {
     Ok(())
 }
 
+/// A positive duration operand, in nanoseconds.
+fn positive_duration(field: &str, value: &str) -> Result<i64, IrError> {
+    match parse_duration_ns(value) {
+        Some(ns) if ns > 0 => Ok(ns),
+        Some(_) => Err(IrError::Invalid(format!("`{field}` must be > 0"))),
+        None => Err(IrError::Coercion {
+            field: field.to_string(),
+            value: value.to_string(),
+            target: ValueType::DurationNs.to_string(),
+        }),
+    }
+}
+
+/// A quantile `arg`: required in `[0, 1]` when `needed`, rejected otherwise.
+fn check_quantile_arg(stage: &str, arg: Option<f64>, needed: bool) -> Result<(), IrError> {
+    match (arg, needed) {
+        (Some(q), true) if (0.0..=1.0).contains(&q) => Ok(()),
+        (None, false) => Ok(()),
+        (_, true) => Err(IrError::Invalid(format!(
+            "{stage} quantile requires an `arg` within [0, 1]"
+        ))),
+        (Some(_), false) => Err(IrError::Invalid(format!(
+            "{stage} `arg` is only valid for a quantile"
+        ))),
+    }
+}
+
 /// Gate a versioned feature on the document's registry.
 fn require_feature(
     registry: &OperatorRegistry,
@@ -1146,6 +1272,59 @@ fn require_feature(
         OperatorRegistry::feature_min_version(feature),
         registry.version
     )))
+}
+
+/// The document-level `step`/`constant` (`irVersion` 10): the `step`, if
+/// present, in nanoseconds.
+fn check_document_step(
+    doc: &Document,
+    registry: &OperatorRegistry,
+) -> Result<Option<i64>, IrError> {
+    if doc.step.is_some() || doc.constant.is_some() {
+        require_feature(
+            registry,
+            Feature::DocumentStep,
+            "document `step`/`constant`",
+        )?;
+    }
+    doc.step
+        .as_deref()
+        .map(|step| positive_duration("step", step))
+        .transpose()
+}
+
+/// The Scalar a `time`/`constant` pseudo-source seeds.
+fn seed_pseudo_source(
+    doc: &Document,
+    registry: &OperatorRegistry,
+    doc_step_ns: Option<i64>,
+) -> Result<RelationType, IrError> {
+    require_feature(
+        registry,
+        Feature::PseudoSource,
+        &format!("pseudo-source '{}'", doc.from),
+    )?;
+    let step_ns = doc_step_ns.ok_or_else(|| {
+        IrError::Invalid(format!(
+            "pseudo-source '{}' requires a document `step`",
+            doc.from
+        ))
+    })?;
+    match (doc.from == "constant", doc.constant) {
+        (true, Some(c)) if c.is_finite() => {}
+        (true, _) => {
+            return Err(IrError::Invalid(
+                "`from: \"constant\"` requires a finite document `constant`".to_string(),
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(IrError::Invalid(
+                "`constant` is only valid with `from: \"constant\"`".to_string(),
+            ));
+        }
+        (false, None) => {}
+    }
+    Ok(RelationType::Scalar(Scalar { step_ns }))
 }
 
 fn is_numeric(t: &ValueType) -> bool {
