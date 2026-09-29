@@ -67,6 +67,14 @@ pub enum Feature {
     Map,
     /// The `labels` stage.
     Labels,
+    /// The `filter` stage.
+    Filter,
+    /// The `sort` stage.
+    Sort,
+    /// The `absent` stage.
+    Absent,
+    /// The `over_time` stage.
+    OverTime,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -130,6 +138,10 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::Reduce, 10),
     (Feature::Map, 10),
     (Feature::Labels, 10),
+    (Feature::Filter, 10),
+    (Feature::Sort, 10),
+    (Feature::Absent, 10),
+    (Feature::OverTime, 10),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -348,6 +360,10 @@ mod tests {
             Feature::Reduce,
             Feature::Map,
             Feature::Labels,
+            Feature::Filter,
+            Feature::Sort,
+            Feature::Absent,
+            Feature::OverTime,
         ];
         for feature in all {
             assert!(

@@ -586,6 +586,70 @@ pub enum Labels {
     Join(LabelJoin),
 }
 
+/// A comparison against a number.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CompareOp {
+    Eq,
+    Ne,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+}
+
+/// The `filter` stage: keep the values that compare true, or with `bool`
+/// replace every value by 0/1.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Filter {
+    pub op: CompareOp,
+    pub value: f64,
+    #[serde(default)]
+    pub bool: bool,
+}
+
+/// The `absent` stage: one series valued 1 where the input has none.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Absent {
+    #[serde(default)]
+    pub labels: std::collections::BTreeMap<String, String>,
+}
+
+/// An `over_time` function (`irVersion` 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum OverTimeFn {
+    Avg,
+    Min,
+    Max,
+    Sum,
+    Count,
+    Last,
+    Stddev,
+    Stdvar,
+    Present,
+    Quantile,
+    Delta,
+    Deriv,
+    Changes,
+    Resets,
+}
+
+/// The `over_time` stage: re-window a Series evaluated at its own step (a
+/// subquery).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OverTime {
+    #[serde(rename = "fn")]
+    pub func: OverTimeFn,
+    pub window: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg: Option<f64>,
+}
 /// The operand of a stage that takes none (`{"scalar": {}}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -614,6 +678,10 @@ pub enum Stage {
     Reduce(Reduce),
     Map(Map),
     Labels(Labels),
+    Filter(Filter),
+    Sort(Direction),
+    Absent(Absent),
+    OverTime(OverTime),
 }
 
 impl Stage {
@@ -637,6 +705,10 @@ impl Stage {
             Stage::Reduce(_) => "reduce",
             Stage::Map(_) => "map",
             Stage::Labels(_) => "labels",
+            Stage::Filter(_) => "filter",
+            Stage::Sort(_) => "sort",
+            Stage::Absent(_) => "absent",
+            Stage::OverTime(_) => "over_time",
         }
     }
 
@@ -653,6 +725,10 @@ impl Stage {
             Stage::Reduce(_) => Feature::Reduce,
             Stage::Map(_) => Feature::Map,
             Stage::Labels(_) => Feature::Labels,
+            Stage::Filter(_) => Feature::Filter,
+            Stage::Sort(_) => Feature::Sort,
+            Stage::Absent(_) => Feature::Absent,
+            Stage::OverTime(_) => Feature::OverTime,
             _ => return None,
         })
     }
