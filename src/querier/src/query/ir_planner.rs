@@ -1052,10 +1052,7 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 }
 
 fn is_series_algebra(stage: &Stage) -> bool {
-    matches!(
-        stage,
-        Stage::Absent(_) | Stage::OverTime(_) | Stage::Binop(_) | Stage::HistogramFraction(_)
-    )
+    matches!(stage, Stage::Binop(_) | Stage::HistogramFraction(_))
 }
 
 fn unsupported_stage(stage: &Stage) -> QuerierError {
@@ -1169,6 +1166,13 @@ pub(crate) async fn plan_document(
         correlate_truncated: None,
     };
 
+    let doc_step = doc.step.as_deref();
+    let windows = metric_series::stage_windows(&doc.pipeline, window, None, doc_step);
+    let sample_window = doc
+        .pipeline
+        .iter()
+        .position(|stage| matches!(stage, Stage::Sample(_)))
+        .map_or(window, |i| windows[i]);
     // An operator at the first instant reads the window before it.
     let mut lookback = 0;
     for stage in &doc.pipeline {
@@ -1185,7 +1189,7 @@ pub(crate) async fn plan_document(
             _ => {}
         }
     }
-    let scan = metric_series::sample::scan_window(doc, window, now_ns)?;
+    let scan = metric_series::sample::scan_window(doc, sample_window, now_ns)?;
     let scan = ResolvedWindow {
         start_ns: scan.start_ns.min(window.start_ns.saturating_sub(lookback)),
         ..scan
@@ -1193,7 +1197,7 @@ pub(crate) async fn plan_document(
     let mut df = lowering.apply_time_window(base, &scan)?;
     let mut metric_frame = false;
     let mut series_step = None;
-    for stage in &doc.pipeline {
+    for (stage, &stage_window) in doc.pipeline.iter().zip(&windows) {
         // A limit keeps the first rows, so it needs the frame's final order.
         if metric_frame && matches!(stage, Stage::Limit(_)) {
             df = metric_series::sort_frame(df, None)?;
@@ -1203,14 +1207,12 @@ pub(crate) async fn plan_document(
                 lowering.series_shaped = true;
                 metric_frame = true;
                 let env = metric_series::sample::SampleEnv {
-                    window,
-                    doc_step: doc.step.as_deref(),
+                    window: stage_window,
+                    doc_step,
                     now_ns,
                     schema_cols: &lowering.schema_cols,
                 };
-                let (df, step_ns) = metric_series::sample::lower_sample(df, sample, &env)?;
-                series_step = Some(step_ns);
-                df
+                metric_series::sample::lower_sample(df, sample, &env)?
             }
             Stage::Scalar(_)
             | Stage::Vector(_)
@@ -1218,11 +1220,14 @@ pub(crate) async fn plan_document(
             | Stage::Labels(_)
             | Stage::Map(_)
             | Stage::Filter(_)
-            | Stage::Sort(_) => {
+            | Stage::Sort(_)
+            | Stage::Absent(_)
+            | Stage::OverTime(_) => {
                 let env = metric_series::FrameEnv {
                     ctx,
-                    window,
+                    window: stage_window,
                     step_ns: series_step,
+                    doc_step,
                 };
                 metric_series::lower_stage(df, stage, &env)?
             }
@@ -1253,6 +1258,7 @@ pub(crate) async fn plan_document(
             }
             other => lowering.lower_stage(df, other)?,
         };
+        series_step = metric_series::output_step(stage, series_step, doc_step);
     }
     if metric_frame {
         df = metric_series::sort_frame(df, metric_series::terminal_order(doc, window))?;
@@ -5743,8 +5749,8 @@ mod tests {
         for (from, pipeline, expected) in [
             (
                 "metrics",
-                serde_json::json!([{ "sample": { "fn": "latest" } }, { "absent": {} }]),
-                "absent stage is not supported yet",
+                serde_json::json!([{ "sample": { "fn": "latest" } }, { "binop": { "op": "add", "right": 1 } }]),
+                "binop stage is not supported yet",
             ),
             (
                 "metrics",

@@ -16,6 +16,9 @@ pub mod scalar;
 mod stages;
 mod value_fn;
 pub(crate) mod vector_match;
+mod window;
+
+pub(crate) use window::{output_step, stage_windows};
 
 #[cfg(test)]
 mod stage_tests;
@@ -30,6 +33,9 @@ pub(crate) struct FrameEnv<'a> {
     /// `sample` (a step aggregate, a histogram quantile), which sits on
     /// epoch-aligned buckets rather than on the evaluation instants.
     pub step_ns: Option<i64>,
+    /// The document's `step`, which an `over_time` without its own
+    /// evaluates at.
+    pub doc_step: Option<&'a str>,
 }
 
 /// Lower one Series/Scalar stage that needs nothing but its input frame.
@@ -51,6 +57,13 @@ pub(crate) fn lower_stage(
         Stage::Labels(op) => stages::lower_labels(df, op),
         Stage::Map(map) => stages::lower_map(df, map),
         Stage::Filter(filter) => stages::lower_filter(df, filter),
+        Stage::Absent(absent) => window::lower_absent(df, absent, env, step_ns),
+        Stage::OverTime(over) => {
+            let out_step = output_step(stage, None, env.doc_step).ok_or_else(|| {
+                QuerierError::InvalidInput("over_time requires a `step`".to_string())
+            })?;
+            window::lower_over_time(df, over, env.window, out_step)
+        }
         // Only the terminal order changes (see `terminal_order`).
         Stage::Sort(_) => Ok(df),
         other => Err(QuerierError::Unsupported(format!(

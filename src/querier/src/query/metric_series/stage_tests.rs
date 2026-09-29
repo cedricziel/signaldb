@@ -322,3 +322,47 @@ async fn count_values_counts_series_per_value_under_a_new_label() {
     ];
     assert_eq!(got, pairs(&want));
 }
+
+#[tokio::test]
+async fn absent_is_one_labelled_series_where_the_input_has_none() {
+    let points = [gauge(60 * S, "a", 1.0, json!({}))];
+    let doc = json!({
+        "irVersion": 10, "from": "metrics", "step": "60s",
+        "range": { "from": 60 * S, "to": 180 * S }, "result": "series",
+        "pipeline": [
+            { "sample": { "fn": "latest", "lookback": "30s" } },
+            { "absent": { "labels": { "job": "x" } } }
+        ]
+    });
+    let got = series_rows(&run(&points, doc).await.unwrap());
+    let l = r#"{"job":"x"}"#;
+    assert_eq!(got, rows(&[(120, l, 1.0), (180, l, 1.0)]));
+}
+
+/// PromQL `f(temperature[3m:1m])` lowered by `ql_ir`, over a gauge valued
+/// 1, 5, 2, 4, 3 at 0s, 60s, …, 240s, evaluated at 120s and 240s.
+async fn subquery(func: &str) -> Vec<(i64, String, f64)> {
+    let points: Vec<_> = [1.0, 5.0, 2.0, 4.0, 3.0]
+        .into_iter()
+        .enumerate()
+        .map(|(i, v)| gauge(60 * i as i64 * S, "a", v, json!({})))
+        .collect();
+    let params = ql_ir::PromqlParams::range(120 * S, 240 * S, 120 * S);
+    let doc = ql_ir::promql_to_ir(&format!("{func}(temperature[3m:1m])"), &params).unwrap();
+    let doc = serde_json::to_value(doc).unwrap();
+    series_rows(&run(&points, doc).await.unwrap())
+}
+
+#[tokio::test]
+async fn over_time_re_windows_the_inner_series_at_the_outer_instants() {
+    // At 120s the window (-60s, 120s] reads the inner instants 0s, 60s and
+    // 120s, which lie before the range start.
+    let unnamed = r#"{"service.name":"svc"}"#;
+    let got = subquery("max_over_time").await;
+    assert_eq!(got, rows(&[(120, unnamed, 5.0), (240, unnamed, 4.0)]));
+    let got = subquery("count_over_time").await;
+    assert_eq!(got, rows(&[(120, unnamed, 3.0), (240, unnamed, 3.0)]));
+    let named = r#"{"metric.name":"temperature","service.name":"svc"}"#;
+    let got = subquery("last_over_time").await;
+    assert_eq!(got, rows(&[(120, named, 2.0), (240, named, 3.0)]));
+}
