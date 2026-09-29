@@ -14,18 +14,13 @@ path = "src/lib.rs"
 
 [dependencies]
 # Workspace crates
-acceptor = { path = "../src/acceptor" }
 common = { path = "../src/common", features = ["testing", "testing-containers"] }
 compactor = { path = "../src/compactor" }
 querier = { path = "../src/querier" }
-ql-ir = { path = "../src/ql-ir" }
-router = { path = "../src/router" }
 writer = { path = "../src/writer" }
 tempo-api = { path = "../src/tempo-api" }
 pyroscope-api = { path = "../src/pyroscope-api" }
 signaldb-sdk = { path = "../src/signaldb-sdk" }
-signaldb-cli = { path = "../src/signaldb-cli" }
-mcp-server = { path = "../src/mcp-server" }
 
 # External dependencies
 anyhow.workspace = true
@@ -68,6 +63,11 @@ criterion = { workspace = true, optional = true }
 workspace-hack = { version = "0.1", path = "../workspace-hack" }
 
 [dev-dependencies]
+acceptor = { path = "../src/acceptor" }
+mcp-server = { path = "../src/mcp-server" }
+ql-ir = { path = "../src/ql-ir" }
+router = { path = "../src/router" }
+signaldb-cli = { path = "../src/signaldb-cli" }
 base64.workspace = true
 wiremock.workspace = true
 
