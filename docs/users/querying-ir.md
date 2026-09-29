@@ -927,8 +927,7 @@ restriction. `rate`/`increase`/`irate`/`*_over_time` over `metrics` are
 aggregate functions (see
 [Counter rate](#counter-rate-rateincrease-v6) and
 [More range functions](#more-range-functions-across-and-window-v7));
-cross-series arithmetic stays PromQL-only until it has an HTTP surface of its
-own.
+cross-series arithmetic is the [`binop`](#binop) stage of a metric Series.
 
 ## Metric Series (IR v10)
 
@@ -1031,8 +1030,9 @@ value at every instant.
 ### Series algebra
 
 These stages take a Series from `sample` (or `vector`) and return a Series,
-with PromQL's semantics. Over a Series from anything else (an `aggregate`
-with `step`, a `histogram_quantile`) they are not supported yet (501).
+with PromQL's semantics: they are what a PromQL expression lowers to. Over a
+Series from anything else (an `aggregate` with `step`, a
+`histogram_quantile`) they are not supported yet (501).
 
 #### `reduce`
 

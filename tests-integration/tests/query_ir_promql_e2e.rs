@@ -117,3 +117,41 @@ async fn a_sample_reads_points_in_the_hour_its_window_opens_in() {
     assert_eq!(got.len(), 1, "{got:?}");
     assert_eq!(got[0].1, 60.0);
 }
+
+#[tokio::test]
+async fn lowered_promql_reduces_and_matches_series_end_to_end() {
+    let (_services, app) = ingest(vec![
+        counter("x", "api", "1", &[0.0, 60.0]),
+        counter("x", "api", "2", &[0.0, 120.0]),
+        counter("x", "web", "1", &[0.0, 300.0]),
+        counter("y", "api", "1", &[0.0, 30.0]),
+        counter("y", "web", "1", &[0.0, 150.0]),
+    ])
+    .await;
+
+    // Rates over 5m: x api 0.2 + 0.4, x web 1.0; y api 0.1, y web 0.5.
+    let ratio = promql(
+        &app,
+        "sum by (job) (rate(x[5m])) / on(job) group_left sum by (job) (rate(y[5m]))",
+    )
+    .await;
+    let ratio: Vec<_> = ratio
+        .into_iter()
+        .map(|(labels, v)| (labels.to_string(), (v * 1e9).round() / 1e9))
+        .collect();
+    assert_eq!(
+        ratio,
+        [
+            (r#"{"service.name":"api"}"#.to_string(), 6.0),
+            (r#"{"service.name":"web"}"#.to_string(), 2.0),
+        ]
+    );
+
+    let top = promql(&app, "topk(1, x)").await;
+    assert_eq!(top.len(), 1, "{top:?}");
+    let (labels, value) = &top[0];
+    assert_eq!(*value, 300.0);
+    assert_eq!(labels["metric.name"], "x");
+    assert_eq!(labels["service.name"], "web");
+    assert_eq!(labels["inst"], "1");
+}
