@@ -255,7 +255,12 @@ impl SourcePlan {
                 time_col: "timestamp",
                 time_is_timestamp: true,
                 containers: &["attributes", "resource_attributes"],
-                attr_prefixes: &[("resource.", "resource_attributes")],
+                // `point.` addresses a data-point attribute whose key a
+                // Series label set qualifies (`metric_series::labels`).
+                attr_prefixes: &[
+                    ("point.", "attributes"),
+                    ("resource.", "resource_attributes"),
+                ],
                 row_defaults: &[
                     "timestamp",
                     "service_name",
