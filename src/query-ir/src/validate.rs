@@ -289,7 +289,7 @@ impl InferCtx<'_> {
             Stage::Map(map) => self.apply_map(map),
             Stage::Labels(op) => self.apply_labels(op),
             Stage::Filter(filter) => self.apply_filter(filter),
-            Stage::Sort(_) => self.require_series("sort").map(|_| ()),
+            Stage::Sort(_) => self.require_numeric_series("sort").map(|_| ()),
             Stage::Absent(absent) => self.apply_absent(absent),
             Stage::OverTime(over) => self.apply_over_time(over),
             Stage::Scalar(_) => {
@@ -360,6 +360,20 @@ impl InferCtx<'_> {
                 ),
             }),
         }
+    }
+
+    fn require_numeric_series(&self, stage: &str) -> Result<&Series, IrError> {
+        let series = self.require_series(stage)?;
+        if !is_numeric(&series.value) {
+            return Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "expects a numeric series, but its values are {}",
+                    series.value
+                ),
+            });
+        }
+        Ok(series)
     }
 
     fn require_scalar(&self, stage: &str) -> Result<Scalar, IrError> {
@@ -567,7 +581,7 @@ impl InferCtx<'_> {
     /// `filter`: compare every value with a number; `bool` yields 0/1 and
     /// drops the metric name.
     fn apply_filter(&mut self, filter: &Filter) -> Result<(), IrError> {
-        self.require_series("filter")?;
+        self.require_numeric_series("filter")?;
         if !filter.value.is_finite() {
             return Err(IrError::Invalid(
                 "filter `value` must be finite".to_string(),
@@ -599,7 +613,7 @@ impl InferCtx<'_> {
 
     /// `over_time`: re-window a Series evaluated at its own step.
     fn apply_over_time(&mut self, over: &OverTime) -> Result<(), IrError> {
-        let input = self.require_series("over_time")?.clone();
+        let input = self.require_numeric_series("over_time")?.clone();
         positive_duration("over_time.window", &over.window)?;
         check_quantile_arg("over_time", over.arg, over.func == OverTimeFn::Quantile)?;
         let step_ns = self.stage_step("over_time", over.step.as_ref())?;
