@@ -93,12 +93,15 @@ fn is_reset(prev: &HistPt, cur: &HistPt) -> bool {
     }
 }
 
-/// The increase from `prev` to `cur`: `cur` whole on a reset or an incomparable shape.
-fn step(prev: &HistPt, cur: &HistPt) -> HistPoint {
-    if is_reset(prev, cur) {
-        return cur.h.clone();
+/// The increase from `prev` to `cur`: `cur` whole on a reset, `None` (a new baseline) when
+/// the layout changed without a new start.
+fn step(prev: &HistPt, cur: &HistPt) -> Option<HistPoint> {
+    let restarted = prev.start > 0 && cur.start > 0 && cur.start > prev.start;
+    if !restarted && !same_shape(&prev.h, &cur.h) {
+        return None;
     }
-    cur.h.checked_sub(&prev.h).unwrap_or_else(|| cur.h.clone())
+    let diff = (!restarted && !is_reset(prev, cur)).then(|| cur.h.checked_sub(&prev.h));
+    Some(diff.flatten().unwrap_or_else(|| cur.h.clone()))
 }
 
 fn invalid(msg: &str) -> QuerierError {
@@ -214,7 +217,13 @@ pub fn series_value(
         } else {
             let prior = prev.replace(p);
             match prior {
-                Some(pr) => step(pr, p),
+                Some(pr) => match step(pr, p) {
+                    Some(inc) => inc,
+                    None => {
+                        acc = None;
+                        continue;
+                    }
+                },
                 None if p.start > 0 && p.start > lo && p.start <= t => p.h.clone(),
                 None => continue,
             }
