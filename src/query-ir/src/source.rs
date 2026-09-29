@@ -8,6 +8,17 @@ use std::collections::BTreeMap;
 
 use super::relation::Grain;
 
+/// The Scalar pseudo-sources (`irVersion` 10): `time` (the evaluation
+/// instant in seconds) and `constant` (the document's `constant`). They read
+/// no signal, so they are not registered sources and never appear in
+/// [`SourceRegistry::names`].
+pub const PSEUDO_SOURCES: [&str; 2] = ["time", "constant"];
+
+/// Whether `name` is a Scalar pseudo-source rather than a signal source.
+pub fn is_pseudo_source(name: &str) -> bool {
+    PSEUDO_SOURCES.contains(&name)
+}
+
 /// A registered signal source and the static facts the validator needs about it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SourceDef {

@@ -33,7 +33,7 @@ use super::relation::{
     Scalar, Series,
 };
 use super::resolver::FieldResolver;
-use super::source::{SourceDef, SourceRegistry};
+use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract, Heatmap,
     HistogramQuantile, Order, Rank, Stage, is_expression_string,
@@ -166,8 +166,30 @@ pub fn validate(
     if doc.result == ResultEnvelope::Scalar {
         require_feature(&registry, Feature::ScalarEnvelope, "scalar result envelope")?;
     }
-    // 2. Source resolution — unknown source is a clear error, not a parse fail.
-    let source_def = resolve_source(doc, sources)?;
+    let doc_step_ns = check_document_step(doc, &registry)?;
+
+    // 2. Source resolution — unknown source is a clear error, not a parse
+    // fail. A pseudo-source reads no signal and seeds a Scalar instead.
+    let (source_def, relation) = if is_pseudo_source(&doc.from) {
+        (None, seed_pseudo_source(doc, &registry, doc_step_ns)?)
+    } else {
+        if doc.constant.is_some() {
+            return Err(IrError::Invalid(
+                "`constant` is only valid with `from: \"constant\"`".to_string(),
+            ));
+        }
+        let def = resolve_source(doc, sources)?;
+        let seed = RelationType::RowSet(RowSet {
+            source: doc.from.clone(),
+            columns: Vec::new(),
+            grain: def.grain,
+            aggregated: false,
+            open: true,
+            correlated: false,
+            identity: def.grain == Grain::Point,
+        });
+        (Some(def), seed)
+    };
 
     // Range literals must be coercible to timestamps (relative anchors stay
     // symbolic; only well-formedness is checked here).
@@ -179,15 +201,7 @@ pub fn validate(
         source_def,
         resolver,
         registry,
-        relation: RelationType::RowSet(RowSet {
-            source: doc.from.clone(),
-            columns: Vec::new(),
-            grain: source_def.grain,
-            aggregated: false,
-            open: true,
-            correlated: false,
-            identity: source_def.grain == Grain::Point,
-        }),
+        relation,
         names: Vec::new(),
         declared_result: doc.result,
     };
@@ -219,7 +233,8 @@ pub fn validate(
 
 struct InferCtx<'a> {
     source: &'a str,
-    source_def: &'a SourceDef,
+    /// `None` for a pseudo-source.
+    source_def: Option<&'a SourceDef>,
     resolver: &'a dyn FieldResolver,
     relation: RelationType,
     /// Names introduced by extract/aggregate — unique across the pipeline.
@@ -517,7 +532,7 @@ impl InferCtx<'_> {
     }
 
     fn apply_extract(&mut self, extract: &Extract) -> Result<(), IrError> {
-        if !self.source_def.allows_extract {
+        if !self.source_def.is_some_and(|def| def.allows_extract) {
             return Err(IrError::IllegalStage {
                 stage: "extract".to_string(),
                 reason: format!(
@@ -1132,6 +1147,19 @@ fn check_range(range: &Range) -> Result<(), IrError> {
     Ok(())
 }
 
+/// A positive duration operand, in nanoseconds.
+fn positive_duration(field: &str, value: &str) -> Result<i64, IrError> {
+    match parse_duration_ns(value) {
+        Some(ns) if ns > 0 => Ok(ns),
+        Some(_) => Err(IrError::Invalid(format!("`{field}` must be > 0"))),
+        None => Err(IrError::Coercion {
+            field: field.to_string(),
+            value: value.to_string(),
+            target: ValueType::DurationNs.to_string(),
+        }),
+    }
+}
+
 /// Gate a versioned feature on the document's registry.
 fn require_feature(
     registry: &OperatorRegistry,
@@ -1146,6 +1174,59 @@ fn require_feature(
         OperatorRegistry::feature_min_version(feature),
         registry.version
     )))
+}
+
+/// The document-level `step`/`constant` (`irVersion` 10): the `step`, if
+/// present, in nanoseconds.
+fn check_document_step(
+    doc: &Document,
+    registry: &OperatorRegistry,
+) -> Result<Option<i64>, IrError> {
+    if doc.step.is_some() || doc.constant.is_some() {
+        require_feature(
+            registry,
+            Feature::DocumentStep,
+            "document `step`/`constant`",
+        )?;
+    }
+    doc.step
+        .as_deref()
+        .map(|step| positive_duration("step", step))
+        .transpose()
+}
+
+/// The Scalar a `time`/`constant` pseudo-source seeds.
+fn seed_pseudo_source(
+    doc: &Document,
+    registry: &OperatorRegistry,
+    doc_step_ns: Option<i64>,
+) -> Result<RelationType, IrError> {
+    require_feature(
+        registry,
+        Feature::PseudoSource,
+        &format!("pseudo-source '{}'", doc.from),
+    )?;
+    let step_ns = doc_step_ns.ok_or_else(|| {
+        IrError::Invalid(format!(
+            "pseudo-source '{}' requires a document `step`",
+            doc.from
+        ))
+    })?;
+    match (doc.from == "constant", doc.constant) {
+        (true, Some(c)) if c.is_finite() => {}
+        (true, _) => {
+            return Err(IrError::Invalid(
+                "`from: \"constant\"` requires a finite document `constant`".to_string(),
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(IrError::Invalid(
+                "`constant` is only valid with `from: \"constant\"`".to_string(),
+            ));
+        }
+        (false, None) => {}
+    }
+    Ok(RelationType::Scalar(Scalar { step_ns }))
 }
 
 fn is_numeric(t: &ValueType) -> bool {

@@ -94,6 +94,14 @@ pub struct Document {
     /// Mutually exclusive with `focus`/`depth`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub trace_id: Option<String>,
+    /// The default evaluation step of the series-algebra stages; required by
+    /// the `time`/`constant` pseudo-sources (`irVersion` 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// The value of the `constant` pseudo-source, and legal only there
+    /// (`irVersion` 10).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constant: Option<f64>,
 }
 
 impl Document {
@@ -120,6 +128,12 @@ impl Document {
             needed = needed.max(OperatorRegistry::feature_min_version(
                 Feature::ScalarEnvelope,
             ));
+        }
+        if self.step.is_some() || self.constant.is_some() {
+            needed = needed.max(OperatorRegistry::feature_min_version(Feature::DocumentStep));
+        }
+        if super::source::is_pseudo_source(&self.from) {
+            needed = needed.max(OperatorRegistry::feature_min_version(Feature::PseudoSource));
         }
         for stage in &self.pipeline {
             needed = needed.max(match stage {

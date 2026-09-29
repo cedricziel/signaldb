@@ -1010,6 +1010,12 @@ impl IrService {
 /// The series-algebra shapes (`irVersion` 10) validate but have no lowering
 /// yet: refuse them up front, before any scan, as `Unsupported` (501).
 fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
+    if common::query_ir::is_pseudo_source(&doc.from) {
+        return Err(QuerierError::Unsupported(format!(
+            "{} source is not supported yet",
+            doc.from
+        )));
+    }
     match doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
         Some(stage) => Err(unsupported_stage(stage)),
         None => Ok(()),
@@ -5733,18 +5739,28 @@ mod tests {
     #[tokio::test]
     async fn series_algebra_is_not_supported_yet() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
-        let d = doc(serde_json::json!({
-            "irVersion": 10, "from": "metrics", "range": { "from": 0, "to": 1000 },
-            "result": "scalar", "pipeline": [
-                { "aggregate": { "aggs": [{ "fn": "count", "as": "n" }], "step": "1m" } },
-                { "scalar": {} }
-            ]
-        }));
-        let err = svc.plan(&d, "t", "d", 0).await.unwrap_err();
-        assert!(
-            matches!(&err, QuerierError::Unsupported(m) if m == "scalar stage is not supported yet"),
-            "{err}"
-        );
+        for (from, stage, expected) in [
+            (
+                "metrics",
+                serde_json::json!({ "scalar": {} }),
+                "scalar stage is not supported yet",
+            ),
+            (
+                "time",
+                serde_json::json!({ "vector": {} }),
+                "time source is not supported yet",
+            ),
+        ] {
+            let d = doc(serde_json::json!({
+                "irVersion": 10, "from": from, "step": "1m", "range": { "from": 0, "to": 1000 },
+                "result": "series", "pipeline": [stage]
+            }));
+            let err = svc.plan(&d, "t", "d", 0).await.unwrap_err();
+            assert!(
+                matches!(&err, QuerierError::Unsupported(m) if m == expected),
+                "{err}"
+            );
+        }
     }
 
     #[tokio::test]

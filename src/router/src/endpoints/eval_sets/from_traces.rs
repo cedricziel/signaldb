@@ -259,6 +259,8 @@ fn build_document(
         focus: None,
         depth: None,
         trace_id: None,
+        step: None,
+        constant: None,
     };
     doc.ir_version = doc.minimum_ir_version();
     doc

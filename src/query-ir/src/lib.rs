@@ -45,7 +45,7 @@ pub use relation::{
     Scalar as ScalarRelation, Series,
 };
 pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
-pub use source::{SourceDef, SourceRegistry};
+pub use source::{PSEUDO_SOURCES, SourceDef, SourceRegistry, is_pseudo_source};
 pub use stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, DerivedField, Describe, DescribeTarget,
     Direction, Extract, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode,
