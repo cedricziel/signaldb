@@ -45,6 +45,14 @@ describe("SetupTab", () => {
     expect(snippet.textContent).toContain("BatchLogRecordProcessor");
   });
 
+  it("passes the log exporter as an options object, as sdk-logs requires", async () => {
+    renderSetup();
+    const snippet = await screen.findByText(/LoggerProvider/);
+    expect(snippet.textContent).toMatch(
+      /new BatchLogRecordProcessor\(\{\s*exporter: new OTLPLogExporter\(/,
+    );
+  });
+
   it("registers the Web Vitals, navigation, resource-timing, errors and user-action instrumentations", async () => {
     renderSetup();
     const snippet = await screen.findByText(/WebVitalsInstrumentation/);
