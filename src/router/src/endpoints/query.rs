@@ -394,6 +394,7 @@ async fn query_ir_single(
             .await
             .map(axum::Json);
     }
+    reject_unshaped_envelope(&req.result)?;
     let ticket = query_ir_ticket(ctx, &document, now)?;
 
     let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
@@ -519,6 +520,17 @@ fn parse_envelope(s: &str) -> Result<common::query_ir::ResultEnvelope, ApiError>
             )));
         }
     })
+}
+
+/// The IR accepts `result: "scalar"` (`irVersion` 10) but this endpoint has
+/// no response shape for it yet, so it is refused like an unknown envelope.
+fn reject_unshaped_envelope(result: &str) -> Result<(), ApiError> {
+    if result == common::query_ir::ResultEnvelope::Scalar.as_str() {
+        return Err(ApiError::bad_request(format!(
+            "unknown result envelope '{result}'"
+        )));
+    }
+    Ok(())
 }
 
 /// Build the [`common::query_ir::MultiDocument`] a [`MultiQueryIrRequest`]
@@ -1764,7 +1776,7 @@ mod tests {
     use super::{
         GRAPH_NODE_LIMIT, MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange,
         ResolvedWindow, build_envelope, check_multi_source_scopes, parse_envelope,
-        source_read_scope, to_multi_document,
+        reject_unshaped_envelope, source_read_scope, to_multi_document,
     };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
@@ -2454,6 +2466,9 @@ mod tests {
     #[test]
     fn parse_envelope_rejects_an_unknown_result() {
         assert!(parse_envelope("bogus").is_err());
+        assert!(parse_envelope("scalar").is_err());
+        assert!(reject_unshaped_envelope("scalar").is_err());
+        assert!(reject_unshaped_envelope("series").is_ok());
         assert_eq!(
             parse_envelope("series").unwrap(),
             common::query_ir::ResultEnvelope::Series
