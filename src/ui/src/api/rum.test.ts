@@ -95,8 +95,10 @@ describe("buildKpisDoc", () => {
 
   it("bundles every metric into one multi-query document with an identity formula each", () => {
     const doc = buildKpisDoc("storefront-web", range, 30, metrics);
-    expect(Object.keys(doc.queries)).toEqual([...metrics]);
-    expect(doc.formulas).toEqual(metrics.map((m) => ({ name: m, expr: m })));
+    expect(Object.keys(doc.queries)).toEqual(metrics.map((m) => `q_${m}`));
+    expect(doc.formulas).toEqual(
+      metrics.map((m) => ({ name: m, expr: `q_${m}` })),
+    );
     expect(doc.result).toBe("series");
   });
 
@@ -104,7 +106,7 @@ describe("buildKpisDoc", () => {
     const doc = buildKpisDoc("storefront-web", range, 30, metrics);
     const span = range.toMs - range.fromMs;
     for (const m of metrics) {
-      const sub = doc.queries[m] as {
+      const sub = doc.queries[`q_${m}`] as {
         range: { from: string; to: string };
         pipeline: { aggregate?: { aggs: unknown[]; step: string } }[];
       };
@@ -119,7 +121,7 @@ describe("buildKpisDoc", () => {
   it("counts distinct sessions for sessions, scoped to exception for sessions_with_errors", () => {
     const doc = buildKpisDoc("storefront-web", range, 30, metrics);
     const sessionsAgg = (
-      doc.queries.sessions!.pipeline!.find(
+      doc.queries.q_sessions!.pipeline!.find(
         (s) => (s as { aggregate?: unknown }).aggregate,
       ) as { aggregate: { aggs: { fn?: string; of?: string }[] } }
     ).aggregate.aggs[0]!;
@@ -128,7 +130,7 @@ describe("buildKpisDoc", () => {
       of: "session.id",
     });
     const errAgg = (
-      doc.queries.sessions_with_errors!.pipeline!.find(
+      doc.queries.q_sessions_with_errors!.pipeline!.find(
         (s) => (s as { aggregate?: unknown }).aggregate,
       ) as {
         aggregate: { aggs: { where?: unknown }[] };
@@ -144,7 +146,7 @@ describe("buildKpisDoc", () => {
   it("counts a plain (not distinct) browser.navigation for page_views", () => {
     const doc = buildKpisDoc("storefront-web", range, 30, metrics);
     const agg = (
-      doc.queries.page_views!.pipeline!.find(
+      doc.queries.q_page_views!.pipeline!.find(
         (s) => (s as { aggregate?: unknown }).aggregate,
       ) as { aggregate: { aggs: { fn?: string; where?: unknown }[] } }
     ).aggregate.aggs[0]!;
@@ -186,10 +188,10 @@ describe("kpisFromResponse", () => {
 describe("buildSessionsOverTimeDoc / sessionsOverTimeFromResponse", () => {
   it("bundles total and with_errors into one multi-query document", () => {
     const doc = buildSessionsOverTimeDoc("storefront-web", range, 60);
-    expect(Object.keys(doc.queries)).toEqual(["total", "with_errors"]);
+    expect(Object.keys(doc.queries)).toEqual(["q_total", "q_with_errors"]);
     expect(doc.formulas).toEqual([
-      { name: "total", expr: "total" },
-      { name: "with_errors", expr: "with_errors" },
+      { name: "total", expr: "q_total" },
+      { name: "with_errors", expr: "q_with_errors" },
     ]);
   });
 
@@ -462,7 +464,7 @@ describe("buildTracedShareDoc / tracedShareFromResponse", () => {
   it("leaves SDK export requests out of both operands", () => {
     const doc = buildTracedShareDoc("storefront-web", range, 30);
     const pipelineOf = (name: string) =>
-      JSON.stringify((doc.queries[name] as { pipeline: unknown }).pipeline);
+      JSON.stringify((doc.queries[`q_${name}`] as { pipeline: unknown }).pipeline);
     expect(pipelineOf("total")).toContain(
       '{"not":{"field":"url.full","op":"regex"',
     );
@@ -473,13 +475,13 @@ describe("buildTracedShareDoc / tracedShareFromResponse", () => {
 
   it("bundles a client-span total and a correlate-joined traced count behind identity formulas", () => {
     const doc = buildTracedShareDoc("storefront-web", range, 30);
-    expect(Object.keys(doc.queries)).toEqual(["traced", "total"]);
+    expect(Object.keys(doc.queries)).toEqual(["q_traced", "q_total"]);
     expect(doc.formulas).toEqual([
-      { name: "traced", expr: "traced" },
-      { name: "total", expr: "total" },
+      { name: "traced", expr: "q_traced" },
+      { name: "total", expr: "q_total" },
     ]);
     const tracedPipeline = (
-      doc.queries.traced as { pipeline: { correlate?: unknown }[] }
+      doc.queries.q_traced as { pipeline: { correlate?: unknown }[] }
     ).pipeline;
     expect(tracedPipeline[0]!.correlate).toEqual({
       to: "parent",
@@ -490,7 +492,7 @@ describe("buildTracedShareDoc / tracedShareFromResponse", () => {
   it("counts distinct parent spans for the traced query", () => {
     const doc = buildTracedShareDoc("storefront-web", range, 30);
     const agg = (
-      doc.queries.traced as {
+      doc.queries.q_traced as {
         pipeline: { aggregate?: { aggs: { fn?: string; of?: string }[] } }[];
       }
     ).pipeline.find((s) => s.aggregate)!.aggregate!;
