@@ -75,7 +75,11 @@ export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
       })),
     );
     // Every Real users tab (`rumModel.ts`'s `RUM_TABS`) — a later group's
-    // new tab shows up here automatically.
+    // new tab shows up here automatically. Labels stay the tabs' default
+    // (browser) ones rather than the selected app's platform-aware labels
+    // (`rumTabLabel`): the palette has no reason to have that app's platform
+    // loaded, and ids/hrefs — the part that actually has to be right — don't
+    // change per platform.
     const rumSearch = crossSignalSearch(state);
     for (const t of RUM_TABS) {
       pages.push({

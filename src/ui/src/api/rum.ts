@@ -91,6 +91,11 @@ export interface RumApp {
    * (`webjs`, `swift`, …) — drives the platform-aware labels; absent when
    * no record carries it. */
   sdkLanguage: string | null;
+  /** `resource.os.name` of the app's most recent record — the Android
+   * detection signal for `rumModel.ts`'s `detectPlatform` (a `java`/`kotlin`
+   * SDK language alone doesn't tell Android from any other JVM host); absent
+   * when no record carries it. */
+  osName: string | null;
   /** `resource.deployment.environment.name` of the app's most recent
    * record — shown next to the app switcher; absent when no record
    * carries it. */
@@ -122,6 +127,7 @@ export function buildRumAppsDoc(range: ResolvedRange): QueryIrRequest {
               of: "resource.telemetry.sdk.language",
               as: "sdk_lang",
             },
+            { fn: "last", of: "resource.os.name", as: "os_name" },
             {
               fn: "last",
               of: "resource.deployment.environment.name",
@@ -139,9 +145,10 @@ export function buildRumAppsDoc(range: ResolvedRange): QueryIrRequest {
 
 export function rumAppsFromResponse(res: QueryIrResponse): RumApp[] {
   return (res.rows ?? []).map((row) => {
-    const [serviceName, n, sdkLang, env, version] = row as [
+    const [serviceName, n, sdkLang, osName, env, version] = row as [
       string,
       number,
+      string | null,
       string | null,
       string | null,
       string | null,
@@ -149,6 +156,7 @@ export function rumAppsFromResponse(res: QueryIrResponse): RumApp[] {
     return {
       serviceName,
       sdkLanguage: sdkLang ?? null,
+      osName: osName ?? null,
       env: env ?? null,
       version: version ?? null,
       count: typeof n === "number" ? n : 0,

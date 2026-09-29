@@ -21,10 +21,12 @@ import {
   type RoutedPageRow,
 } from "../../api/rum";
 import {
+  isMobilePlatform,
   loadBreakdownPhases,
   vitalFigure,
   VITAL_LABELS,
   VITAL_NAMES,
+  type RumPlatform,
 } from "./rumModel";
 import {
   useRumBackendCalls,
@@ -36,6 +38,10 @@ import {
 
 interface Props {
   scope: RumScope;
+  /** The selected app's platform — hides the (browser-only) load breakdown
+   * panel on mobile (`rum-explore-tabs`'s "Platform-aware labels"
+   * requirement). */
+  platform: RumPlatform;
   route: string;
   onSelectRoute: (route: string) => void;
   onOpenSetup: () => void;
@@ -44,6 +50,7 @@ interface Props {
 
 export function PagesTab({
   scope,
+  platform,
   route,
   onSelectRoute,
   onOpenSetup,
@@ -79,6 +86,7 @@ export function PagesTab({
       {selected && (
         <RouteDetail
           scope={scope}
+          platform={platform}
           row={selected}
           onOpenNetwork={onOpenNetwork}
         />
@@ -173,10 +181,12 @@ function PagesTable({
 
 function RouteDetail({
   scope,
+  platform,
   row,
   onOpenNetwork,
 }: {
   scope: RumScope;
+  platform: RumPlatform;
   row: RoutedPageRow;
   onOpenNetwork: () => void;
 }) {
@@ -203,20 +213,22 @@ function RouteDetail({
         </div>
       </Panel>
 
-      <Panel
-        title="Load breakdown"
-        meta="p75 of each navigation phase, from fetchStart"
-      >
-        {loadBreakdown.isError ? (
-          <QueryError what="load breakdown" error={loadBreakdown.error} />
-        ) : loadBreakdown.isPending ? (
-          <div className="rum-placeholder">Loading…</div>
-        ) : !loadBreakdown.data ? (
-          <EmptyState title="No navigation timing recorded for this route" />
-        ) : (
-          <LoadWaterfall phases={loadBreakdownPhases(loadBreakdown.data)} />
-        )}
-      </Panel>
+      {!isMobilePlatform(platform) && (
+        <Panel
+          title="Load breakdown"
+          meta="p75 of each navigation phase, from fetchStart"
+        >
+          {loadBreakdown.isError ? (
+            <QueryError what="load breakdown" error={loadBreakdown.error} />
+          ) : loadBreakdown.isPending ? (
+            <div className="rum-placeholder">Loading…</div>
+          ) : !loadBreakdown.data ? (
+            <EmptyState title="No navigation timing recorded for this route" />
+          ) : (
+            <LoadWaterfall phases={loadBreakdownPhases(loadBreakdown.data)} />
+          )}
+        </Panel>
+      )}
 
       <Panel
         title="Backend calls"

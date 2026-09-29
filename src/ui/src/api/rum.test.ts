@@ -54,24 +54,26 @@ describe("buildRumAppsDoc", () => {
 });
 
 describe("rumAppsFromResponse", () => {
-  it("decodes apps busiest first, with their sdk language, env and version", () => {
+  it("decodes apps busiest first, with their sdk language, os name, env and version", () => {
     const res = table([
-      ["storefront-web", 184210, "webjs", "production", "2026.09.26-3"],
-      ["admin-web", 512, "webjs", "production", "2026.09.20-1"],
+      ["storefront-web", 184210, "webjs", null, "production", "2026.09.26-3"],
+      ["checkout-ios", 512, "swift", "iOS", "production", "1.4.0"],
     ]);
     expect(rumAppsFromResponse(res)).toEqual([
       {
         serviceName: "storefront-web",
         sdkLanguage: "webjs",
+        osName: null,
         env: "production",
         version: "2026.09.26-3",
         count: 184210,
       },
       {
-        serviceName: "admin-web",
-        sdkLanguage: "webjs",
+        serviceName: "checkout-ios",
+        sdkLanguage: "swift",
+        osName: "iOS",
         env: "production",
-        version: "2026.09.20-1",
+        version: "1.4.0",
         count: 512,
       },
     ]);
@@ -81,9 +83,10 @@ describe("rumAppsFromResponse", () => {
     expect(rumAppsFromResponse(table([]))).toEqual([]);
   });
 
-  it("treats a missing sdk language, env or version as null, not a crash", () => {
-    const res = table([["mystery-app", 3, null, null, null]]);
+  it("treats a missing sdk language, os name, env or version as null, not a crash", () => {
+    const res = table([["mystery-app", 3, null, null, null, null]]);
     expect(rumAppsFromResponse(res)[0]?.sdkLanguage).toBeNull();
+    expect(rumAppsFromResponse(res)[0]?.osName).toBeNull();
   });
 });
 

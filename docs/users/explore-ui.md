@@ -282,12 +282,20 @@ window, 30 buckets wide, and every row links into the view that explains it
 that sent at least one RUM event (a `browser.web_vital`,
 `browser.navigation`, `browser.user_action.click` or
 `browser.resource_timing` record, or any record carrying `session.id`) in
-the window. The app switcher lists every such app, busiest first, and
-defaults to the busiest; picking one writes `?app=` and keeps the
-current tab. With no frontend app yet, the page shows an
-empty state pointing at **Setup** instead of empty panels. This build ships
-the **Overview**, **Pages**, **Sessions**, **Errors**, **Network**,
-**Interactions** and **Setup** tabs.
+the window. The app switcher lists every such app, busiest first, showing
+each one's platform (Browser · JS, iOS · Swift, Android · Kotlin/Java, from
+`telemetry.sdk.language` and, for Android, `os.name`) with a matching icon,
+and defaults to the busiest; picking one writes `?app=`, keeps the current
+tab, and clears any selected route, error group and session (they belong to
+the app you're leaving). With no frontend app yet, the page shows an empty
+state pointing at **Setup** instead of empty panels. This build ships the
+**Overview**, **Pages**, **Sessions**, **Errors**, **Network**,
+**Interactions** and **Setup** tabs. For an iOS or Android app, Pages, Errors
+and Interactions read Screens, Crashes and Taps instead (same tab ids and
+URLs — only the label changes), and the browser-only panels — Overview's
+Core Web Vitals, Network's Resources table and Pages' load breakdown — are
+hidden or, where a Web Vitals panel would otherwise show, replaced by an
+empty state: mobile vitals aren't supported yet.
 
 - **Overview.** Sessions, users, sessions-with-errors and traced requests
   (distinct `session.id`/`user.id`, the error share scoped to a session

@@ -1,6 +1,6 @@
 // The Real users page (`/rum/{tab}`): an app switcher, a tab strip, and one
 // tab body per selected tab.
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
 import { rangeScopeKey, resolveRange } from "../../lib/time";
 import { EmptyState } from "../../components/EmptyState";
@@ -9,7 +9,14 @@ import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { NavIcon } from "../shell/NavIcon";
 import { useRumApps } from "./useRumData";
 import type { RumApp } from "../../api/rum";
-import { RUM_TABS, type RumTab } from "./rumModel";
+import {
+  detectPlatform,
+  platformLabel,
+  RUM_TABS,
+  rumTabLabel,
+  type RumPlatform,
+  type RumTab,
+} from "./rumModel";
 import { ErrorsTab } from "./ErrorsTab";
 import { InteractionsTab } from "./InteractionsTab";
 import { NetworkTab } from "./NetworkTab";
@@ -75,6 +82,10 @@ export function RealUsersView({
     current?.env && current?.version
       ? `${current.env} · ${current.version}`
       : current?.env || current?.version || "";
+  const platform = detectPlatform(
+    current?.sdkLanguage ?? null,
+    current?.osName ?? null,
+  );
 
   return (
     <div className="rum-body">
@@ -84,6 +95,7 @@ export function RealUsersView({
             <AppSwitcher
               apps={appList}
               selected={selectedApp}
+              platform={platform}
               onSelect={selectApp}
             />
           )}
@@ -109,7 +121,7 @@ export function RealUsersView({
             aria-current={t.id === tab ? "page" : undefined}
             onClick={() => onTabChange(t.id)}
           >
-            {t.label}
+            {rumTabLabel(t.id, platform)}
           </button>
         ))}
       </nav>
@@ -130,10 +142,15 @@ export function RealUsersView({
             </button>
           </EmptyState>
         ) : tab === "network" ? (
-          <NetworkTab scope={scope} onOpenSetup={() => onTabChange("setup")} />
+          <NetworkTab
+            scope={scope}
+            platform={platform}
+            onOpenSetup={() => onTabChange("setup")}
+          />
         ) : tab === "pages" ? (
           <PagesTab
             scope={scope}
+            platform={platform}
             route={state.rumRoute}
             onSelectRoute={(route) => update({ rumRoute: route })}
             onOpenSetup={() => onTabChange("setup")}
@@ -159,6 +176,7 @@ export function RealUsersView({
         ) : (
           <OverviewTab
             scope={scope}
+            platform={platform}
             currentVersion={current?.version ?? null}
             onOpenSetup={() => onTabChange("setup")}
             onOpenNetwork={() => onTabChange("network")}
@@ -175,16 +193,8 @@ export function RealUsersView({
   );
 }
 
-/** The app's platform, from `resource.telemetry.sdk.language` — browser
- * only for now (other platforms are the `rum-explore-tabs` change's
- * "Platform-aware labels" requirement), so anything else reads as "Unknown". */
-function platformLabel(sdkLanguage: string | null): string {
-  return sdkLanguage === "webjs" ? "Browser · JS" : "Unknown platform";
-}
-
-/** A plain globe glyph standing in for a per-platform icon (iOS/Android
- * icons are a later change — see `rum-explore-tabs`). */
-function PlatformIcon() {
+/** The shared outer `<svg>` every `PlatformIcon` shape draws into. */
+function PlatformIconSvg({ children }: { children: ReactNode }) {
   return (
     <svg
       width="14"
@@ -196,9 +206,39 @@ function PlatformIcon() {
       aria-hidden="true"
       className="rum-platform-icon"
     >
+      {children}
+    </svg>
+  );
+}
+
+/** A distinct inline glyph per platform: a globe for browser, a rounded
+ * "phone" outline for iOS, and an angular one for Android — cheap enough to
+ * draw inline rather than pulling in an icon set for three shapes. */
+function PlatformIcon({ platform }: { platform: RumPlatform }) {
+  if (platform === "ios") {
+    return (
+      <PlatformIconSvg>
+        <rect x="4" y="1.5" width="8" height="13" rx="2" />
+        <path d="M7 12.3 H9" strokeLinecap="round" />
+      </PlatformIconSvg>
+    );
+  }
+  if (platform === "android") {
+    return (
+      <PlatformIconSvg>
+        <rect x="3" y="5" width="10" height="8" rx="1.5" />
+        <path
+          d="M5.5 5 3.8 2.8 M10.5 5 12.2 2.8 M5 8 V10.5 M11 8 V10.5"
+          strokeLinecap="round"
+        />
+      </PlatformIconSvg>
+    );
+  }
+  return (
+    <PlatformIconSvg>
       <circle cx="8" cy="8" r="6.5" />
       <path d="M1.5 8 H14.5 M8 1.5 C10.3 4 10.3 12 8 14.5 C5.7 12 5.7 4 8 1.5" />
-    </svg>
+    </PlatformIconSvg>
   );
 }
 
@@ -211,10 +251,14 @@ function PlatformIcon() {
 function AppSwitcher({
   apps,
   selected,
+  platform,
   onSelect,
 }: {
   apps: RumApp[];
   selected: string;
+  /** The selected app's platform — already computed by the caller from the
+   * same `apps`/`selected` pair, so this avoids re-deriving it here. */
+  platform: RumPlatform;
   onSelect: (app: string) => void;
 }) {
   const [open, setOpen] = useState(false);
@@ -246,10 +290,10 @@ function AppSwitcher({
         aria-expanded={open}
         onClick={() => setOpen((o) => !o)}
       >
-        <PlatformIcon />
+        <PlatformIcon platform={platform} />
         <span>{current?.serviceName ?? "Select app"}</span>
         <span className="dim rum-appbtn-platform">
-          {platformLabel(current?.sdkLanguage ?? null)}
+          {platformLabel(current?.sdkLanguage ?? null, current?.osName ?? null)}
         </span>
       </button>
       {open && (
@@ -268,13 +312,15 @@ function AppSwitcher({
                 setOpen(false);
               }}
             >
-              <PlatformIcon />
+              <PlatformIcon
+                platform={detectPlatform(a.sdkLanguage, a.osName)}
+              />
               <span className="rum-menu-item-text">
                 <span className="mono rum-menu-item-label">
                   {a.serviceName}
                 </span>
                 <span className="dim rum-menu-item-platform">
-                  {platformLabel(a.sdkLanguage)}
+                  {platformLabel(a.sdkLanguage, a.osName)}
                 </span>
               </span>
               {a.serviceName === selected && <NavIcon name="check" size={14} />}
