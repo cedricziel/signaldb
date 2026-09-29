@@ -135,7 +135,7 @@ registerInstrumentations({
     new DocumentLoadInstrumentation(),
     new FetchInstrumentation({
       // Sends traceparent to your own API origins — required to join a
-      // client span to its backend trace (see step 4 below).
+      // client span to its backend trace (see step 5 below).
       propagateTraceHeaderCorsUrls: [/^https:\\/\\/api\\.example\\.com\\//],
     }),
     new WebVitalsInstrumentation(),
