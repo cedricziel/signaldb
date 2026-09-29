@@ -24,9 +24,10 @@ use promql_parser::parser::{
 use promql_parser::util::{ExprVisitor, walk_expr};
 use query_ir::{
     Absent, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, ComparisonOp, Direction, Document,
-    Filter, GroupSide, LabelJoin, LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, OverTime,
-    OverTimeFn, Predicate, Range, Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf,
-    Stage, SubDocument, is_pseudo_source,
+    Filter, GroupSide, HistogramFraction, HistogramMode, HistogramQuantile, LabelJoin,
+    LabelReplace, Labels, Leaf, Map, MapFn, NoOperands, OverTime, OverTimeFn, Predicate, Range,
+    Reduce, ReduceFn, ResultEnvelope, Sample, SampleFn, SampleOf, Stage, SubDocument,
+    is_pseudo_source,
 };
 
 use crate::LowerError;
@@ -288,6 +289,22 @@ impl Lowerer<'_> {
         let map = |func, args| Stage::Map(Map { func, args });
         let stage = match name {
             "pi" => return Ok(Operand::Number(std::f64::consts::PI)),
+            "histogram_quantile" | "histogram_fraction" => return self.histogram(call),
+            "histogram_count" => {
+                return Ok(Operand::Pipe(self.histogram_value(call, SampleOf::Count)?));
+            }
+            "histogram_sum" => {
+                return Ok(Operand::Pipe(self.histogram_value(call, SampleOf::Sum)?));
+            }
+            // The mean observation: sum over count, series by series.
+            "histogram_avg" => {
+                let count = self.histogram_value(call, SampleOf::Count)?;
+                let sum = self.histogram_value(call, SampleOf::Sum)?;
+                return Ok(Operand::Pipe(sum.push(Stage::Binop(Binop {
+                    right: BinopOperand::Document(Box::new(sub_document(count))),
+                    ..number_binop(BinopOp::Div, 0.0, false, false)
+                }))));
+            }
             "time" => return Ok(Operand::Pipe(time())),
             "vector" => {
                 let scalar = self.lower(arg(call, 0)?)?.into_pipe()?;
@@ -431,6 +448,127 @@ impl Lowerer<'_> {
             step: self.stage_step(),
             arg,
         }))))
+    }
+
+    /// `histogram_quantile`/`histogram_fraction` over SignalDB's whole stored
+    /// histograms.
+    fn histogram(&self, call: &Call) -> Result<Operand, LowerError> {
+        let quantile = call.func.name == "histogram_quantile";
+        let input = self.histogram_input(call, if quantile { 1 } else { 2 })?;
+        let step = duration_ns(self.step_ns);
+        let (by, per_series, mode, window) = (input.by, input.per_series, input.mode, input.window);
+        // Instant mode reads each series' latest point, as an instant vector.
+        let lookback = (mode == HistogramMode::Instant).then(|| LOOKBACK.to_string());
+        let stage = if quantile {
+            Stage::HistogramQuantile(HistogramQuantile {
+                q: self.number_arg(call, 0)?,
+                by,
+                per_series,
+                step,
+                mode,
+                window,
+                lookback,
+                as_name: "quantile".to_string(),
+            })
+        } else {
+            Stage::HistogramFraction(HistogramFraction {
+                lower: self.number_arg(call, 0)?,
+                upper: self.number_arg(call, 1)?,
+                by,
+                per_series,
+                step,
+                mode,
+                window,
+                lookback,
+                as_name: "fraction".to_string(),
+            })
+        };
+        Ok(Operand::Pipe(input.pipe.push(stage)))
+    }
+
+    /// A histogram function's operand: a selector, optionally rated
+    /// (`rate`/`increase`, whose scale a quantile or fraction ignores) and
+    /// summed `by` labels. SignalDB stores each histogram whole rather than
+    /// as `le`-labelled bucket series, so `le` is implicit. Without a `sum`
+    /// the function applies to each series on its own, as in Prometheus.
+    fn histogram_input(&self, call: &Call, i: usize) -> Result<HistogramInput, LowerError> {
+        let name = call.func.name;
+        let (expr, by, per_series) = match unparen(arg(call, i)?) {
+            Expr::Aggregate(agg) if agg.op.id() == token::T_SUM => {
+                // The output carries neither the name nor the implicit `le`.
+                let by = match &agg.modifier {
+                    None => Vec::new(),
+                    Some(LabelModifier::Include(ls)) => label_fields(&ls.labels)
+                        .into_iter()
+                        .filter(|l| l != "le" && l != "metric.name")
+                        .collect(),
+                    Some(LabelModifier::Exclude(_)) => {
+                        return Err(inexpressible(&format!("{name}() over `sum without`")));
+                    }
+                };
+                (unparen(&agg.expr), by, false)
+            }
+            other => (other, Vec::new(), true),
+        };
+        let (vs, mode, window) = match expr {
+            Expr::VectorSelector(vs) => (vs, HistogramMode::Instant, None),
+            Expr::Call(c) if matches!(c.func.name, "rate" | "increase") => {
+                match c.args.args.first().map(|a| unparen(a)) {
+                    Some(Expr::MatrixSelector(ms)) => {
+                        (&ms.vs, HistogramMode::Rate, Some(duration(ms.range)))
+                    }
+                    _ => return Err(inexpressible(&format!("{name}() over a rated subquery"))),
+                }
+            }
+            other => {
+                return Err(inexpressible(&format!(
+                    "{name}() over {}",
+                    describe_histogram_operand(other)
+                )));
+            }
+        };
+        if vs.offset.is_some() || vs.at.is_some() {
+            return Err(inexpressible(&format!("{name}() with offset or @")));
+        }
+        Ok(HistogramInput {
+            pipe: where_pipe(vs),
+            by,
+            per_series,
+            mode,
+            window,
+        })
+    }
+
+    /// `histogram_count`/`histogram_sum`: a histogram's count or sum as a
+    /// plain value, of a selector or through a range function.
+    fn histogram_value(&self, call: &Call, of: SampleOf) -> Result<Pipe, LowerError> {
+        let name = call.func.name;
+        match unparen(arg(call, 0)?) {
+            Expr::VectorSelector(vs) => self.select(vs, Sample { of, ..latest() }),
+            Expr::Call(c) => match (
+                range_function(c.func.name),
+                c.args.args.first().map(|a| unparen(a)),
+            ) {
+                (Some(func), Some(Expr::MatrixSelector(ms)))
+                    if func != SampleFn::QuantileOverTime =>
+                {
+                    let window = Some(duration(ms.range));
+                    self.select(
+                        &ms.vs,
+                        Sample {
+                            of,
+                            window,
+                            ..sample(func)
+                        },
+                    )
+                }
+                _ => Err(inexpressible(&format!("{name}() over {}()", c.func.name))),
+            },
+            other => Err(inexpressible(&format!(
+                "{name}() over {}",
+                describe_histogram_operand(other)
+            ))),
+        }
     }
 
     /// The `i`-th call argument, which must fold to a number.
@@ -790,6 +928,23 @@ fn fold(op: BinopOp, a: f64, b: f64) -> Option<f64> {
         BinopOp::Le => truth(a <= b),
         BinopOp::And | BinopOp::Or | BinopOp::Unless => return None,
     })
+}
+
+/// A histogram function's operand, before its histogram stage.
+struct HistogramInput {
+    pipe: Pipe,
+    by: Vec<String>,
+    per_series: bool,
+    mode: HistogramMode,
+    window: Option<String>,
+}
+
+fn describe_histogram_operand(expr: &Expr) -> String {
+    match expr {
+        Expr::Call(c) => format!("{}()", c.func.name),
+        Expr::Aggregate(a) => format!("{}()", a.op),
+        other => format!("a {}", expr_kind(other)),
+    }
 }
 
 fn sub_document(pipe: Pipe) -> SubDocument {

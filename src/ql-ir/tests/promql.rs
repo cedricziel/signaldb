@@ -33,6 +33,12 @@ impl FieldResolver for Permissive {
             },
         })
     }
+
+    /// Only the declared fields are known, so an output name may not collide
+    /// with an attribute the permissive fallback merely resolves.
+    fn is_known(&self, source: &str, field: &str) -> bool {
+        source == "metrics" && matches!(field, "metric.name" | "service.name")
+    }
 }
 
 /// Lower, validate, and return the document as JSON.
@@ -643,6 +649,94 @@ fn functions() {
     }
 }
 
+/// A `histogram_quantile` stage; `by: None` is the bare, per-series form.
+/// Instant mode reads each series' latest point within the lookback.
+fn hq(q: f64, by: Option<Value>, mode: &str, window: Option<&str>) -> Value {
+    let mut h = json!({ "q": q, "step": "1m", "mode": mode, "as": "quantile" });
+    if mode == "instant" {
+        h["lookback"] = json!("5m");
+    }
+    match by {
+        Some(by) => h["by"] = by,
+        None => {
+            h["by"] = json!([]);
+            h["per_series"] = json!(true);
+        }
+    }
+    if let Some(w) = window {
+        h["window"] = json!(w);
+    }
+    json!({ "histogram_quantile": h })
+}
+
+#[test]
+fn histograms() {
+    cases(&[
+        (
+            "histogram_quantile(0.95, x)",
+            json!([name("x"), hq(0.95, None, "instant", None)]),
+        ),
+        (
+            "histogram_quantile(0.9, rate(x[5m]))",
+            json!([name("x"), hq(0.9, None, "rate", Some("5m"))]),
+        ),
+        (
+            "histogram_quantile(0.9, sum by (le, job) (rate(x[5m])))",
+            json!([
+                name("x"),
+                hq(0.9, Some(json!(["service.name"])), "rate", Some("5m"))
+            ]),
+        ),
+        // A quantile ignores the scale `increase` has over `rate`.
+        (
+            "histogram_quantile(0.9, sum(increase(x[10m])))",
+            json!([name("x"), hq(0.9, Some(json!([])), "rate", Some("10m"))]),
+        ),
+        (
+            "histogram_quantile(0.5, x) * 1000",
+            json!([
+                name("x"),
+                hq(0.5, None, "instant", None),
+                binop("mul", json!(1000.0), json!({}))
+            ]),
+        ),
+        (
+            "histogram_fraction(0, 1, x)",
+            json!([name("x"), { "histogram_fraction": {
+                "lower": 0.0, "upper": 1.0, "by": [], "per_series": true, "step": "1m",
+                "mode": "instant", "lookback": "5m", "as": "fraction" } }]),
+        ),
+        (
+            "histogram_fraction(0, 0.25, sum by (le) (rate(x[5m])))",
+            json!([name("x"), { "histogram_fraction": {
+                "lower": 0.0, "upper": 0.25, "by": [], "step": "1m", "mode": "rate",
+                "window": "5m", "as": "fraction" } }]),
+        ),
+        // Neither the name nor `le` labels a merged histogram.
+        (
+            "histogram_quantile(0.9, sum by (le, __name__) (rate(x[5m])))",
+            json!([name("x"), hq(0.9, Some(json!([])), "rate", Some("5m"))]),
+        ),
+    ]);
+    let by_job = "histogram_quantile(0.9, sum by (le, job) (rate(x[5m])))";
+    assert_eq!(labels(by_job), (vec!["service.name".into()], false));
+    assert_eq!(labels("histogram_quantile(0.9, x)"), (vec![], true));
+    // An instant query evaluates at one instant, at its nominal step.
+    let instant = |q: &str| lower_with(q, &PromqlParams::instant(END))["pipeline"].clone();
+    let mut bare = hq(0.9, None, "instant", None);
+    bare["histogram_quantile"]["step"] = json!("1s");
+    assert_eq!(
+        instant("histogram_quantile(0.9, x)"),
+        json!([name("x"), bare])
+    );
+    let mut rated = hq(0.9, Some(json!([])), "rate", Some("5m"));
+    rated["histogram_quantile"]["step"] = json!("1s");
+    assert_eq!(
+        instant("histogram_quantile(0.9, sum by (le) (rate(x[5m])))"),
+        json!([name("x"), rated])
+    );
+}
+
 #[test]
 fn subqueries() {
     let over = |f: &str, window: &str| json!({ "over_time": { "fn": f, "window": window } });
@@ -717,6 +811,58 @@ fn subqueries() {
         ("max_over_time((x - time())[1h:30s])", "time()"),
         ("max_over_time(x[1h:30s] offset 5m)", "offset"),
         ("max_over_time(x[1h:30s] @ 1700000000)", "@"),
+    ] {
+        let msg = inexpressible(q);
+        assert!(msg.contains(needle), "{q}: {msg}");
+    }
+}
+
+/// A histogram's count and sum read as plain values, and the histogram
+/// operands the IR cannot express.
+#[test]
+fn histogram_values_and_refusals() {
+    let of = |f: &str, of: &str, window: Option<&str>| {
+        let mut s = match window {
+            Some(w) => ranged(f, w),
+            None => latest(),
+        };
+        s["sample"]["of"] = json!(of);
+        s
+    };
+    cases(&[
+        (
+            "histogram_count(x)",
+            json!([name("x"), of("latest", "metric.count", None)]),
+        ),
+        (
+            "histogram_sum(rate(x[5m]))",
+            json!([name("x"), of("rate", "metric.sum", Some("5m"))]),
+        ),
+        (
+            "histogram_avg(rate(x[5m]))",
+            json!([
+                name("x"),
+                of("rate", "metric.sum", Some("5m")),
+                binop(
+                    "div",
+                    json!({
+                        "from": "metrics", "pipeline": [name("x"), of("rate", "metric.count", Some("5m"))]
+                    }),
+                    json!({})
+                )
+            ]),
+        ),
+    ]);
+    for (q, needle) in [
+        (
+            "histogram_quantile(0.9, sum without (pod) (rate(x[5m])))",
+            "sum without",
+        ),
+        ("histogram_quantile(0.9, max(x))", "max()"),
+        ("histogram_quantile(0.9, x offset 5m)", "offset"),
+        ("histogram_fraction(0, 1, irate(x[5m]))", "irate()"),
+        ("histogram_count(sum(x))", "sum()"),
+        ("histogram_stddev(x)", "histogram_stddev"),
     ] {
         let msg = inexpressible(q);
         assert!(msg.contains(needle), "{q}: {msg}");
