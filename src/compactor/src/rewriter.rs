@@ -1589,19 +1589,7 @@ mod tests {
     /// compactor and the table metadata drifting apart.
     #[test]
     fn the_canonical_sort_key_covers_every_known_signal_table() {
-        for table in [
-            "traces",
-            "logs",
-            "metrics_gauge",
-            "metrics_sum",
-            "metrics_histogram",
-            "metrics_exponential_histogram",
-            "metrics_summary",
-            "profiles",
-            // otel-native-schema layer 7 (D10) cutover prep.
-            "metrics",
-            "metric_exemplars",
-        ] {
+        for table in ["traces", "logs", "profiles", "metrics", "metric_exemplars"] {
             assert!(
                 crate::retention::SignalType::from_table_name(table).is_ok(),
                 "table '{table}' is not classified by this crate"

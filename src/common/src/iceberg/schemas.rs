@@ -110,8 +110,7 @@ pub fn create_profiles_schema() -> Result<Schema> {
 
 /// Create Iceberg schema for the wide metrics table (otel-native-schema
 /// layer 7, D10) using TOML definitions, plus any configured
-/// materialized-label columns. Declaration only -- not yet reachable through
-/// [`TableSchema::all`]/table creation.
+/// materialized-label columns.
 pub fn create_metrics_schema_with(labels: &[String]) -> Result<Schema> {
     TableSchema::Metrics
         .resolved_schema()?
@@ -124,7 +123,6 @@ pub fn create_metrics_schema() -> Result<Schema> {
 }
 
 /// Create Iceberg schema for the metric exemplars table paired with
-/// [`create_metrics_schema_with`]. Declaration only, same inert status as
 /// [`create_metrics_schema_with`].
 pub fn create_metric_exemplars_schema_with(labels: &[String]) -> Result<Schema> {
     TableSchema::MetricExemplars
@@ -253,9 +251,7 @@ pub fn create_metric_exemplars_partition_spec() -> Result<PartitionSpec> {
     create_hour_partition_spec(&schema, "timestamp", "timestamp_hour")
 }
 
-/// The only version of the typed `metrics`/`metric_exemplars` tables. Pinned
-/// here instead of read from `current_metric_version`, which still names the
-/// legacy per-type tables' version until the cutover.
+/// The version of the typed `metrics`/`metric_exemplars` tables.
 pub const TYPED_METRIC_VERSION: &str = "physical-v4";
 
 /// The legacy per-type metric tables' version, pinned so they still resolve
@@ -283,12 +279,9 @@ pub enum TableSchema {
     MetricsExponentialHistogram,
     MetricsSummary,
     Profiles,
-    /// The wide metrics table (otel-native-schema layer 7, D10). Not yet
-    /// created anywhere: absent from [`Self::all`]/[`Self::all_from_config`]
-    /// until the cutover PR switches ingestion and the table reconciler over
-    /// to it.
+    /// The wide metrics table (otel-native-schema layer 7, D10).
     Metrics,
-    /// The exemplars table paired with [`Self::Metrics`]. Same inert status.
+    /// The exemplars table paired with [`Self::Metrics`].
     MetricExemplars,
     Custom(String), // For custom schemas from configuration
 }

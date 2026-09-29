@@ -1096,10 +1096,7 @@ mod tests {
         for (table_name, expected) in [
             ("traces", vec!["timestamp", "trace_id"]),
             ("logs", vec!["timestamp", "service_name", "severity_text"]),
-            (
-                "metrics_gauge",
-                vec!["timestamp", "metric_name", "service_name"],
-            ),
+            ("metrics", vec!["timestamp", "metric_name", "service_name"]),
             ("profiles", vec!["timestamp", "service_name"]),
         ] {
             let table = table_manager

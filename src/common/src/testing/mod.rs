@@ -29,6 +29,7 @@ mod containers;
 mod flush;
 mod github_config;
 mod github_pem;
+mod legacy_tables;
 mod metrics_layout;
 mod otel_capture;
 mod otlp_fixtures;
@@ -43,6 +44,7 @@ pub use containers::{connect_catalog_with_retry, start_container_with_retry};
 pub use flush::flush_storage_writers;
 pub use github_config::github_test_config;
 pub use github_pem::GITHUB_TEST_PEM;
+pub use legacy_tables::create_legacy_metric_table;
 pub use metrics_layout::to_wide;
 pub use otel_capture::OtelExportProbe;
 pub use otlp_fixtures::{
