@@ -6,6 +6,7 @@ pub mod ir_planner;
 pub mod logql;
 pub mod logql_metric;
 pub mod logs;
+pub mod metric_ops;
 pub mod metrics;
 pub mod profile;
 pub mod promql;
