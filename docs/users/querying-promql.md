@@ -73,7 +73,12 @@ Unlike Prometheus text-format histograms (a fan of `_bucket` series keyed by
 **histogram metric name itself**, not a `sum by (le) (rate(..._bucket[5m]))`
 expression. The quantile is interpolated per series from the metric's stored
 buckets, assuming a uniform spread within the containing bucket — the same
-estimate Prometheus's `histogram_quantile` produces.
+estimate Prometheus's `histogram_quantile` produces. Values are labelled on
+the epoch-aligned step buckets like every other range query (the bucket
+starting at `b` is evaluated at `b + step` and labelled `b`); a plain
+selector reads each series' latest point within max(5m, step), and
+`rate(metric[range])` differences each series against itself over the range.
+`@` pins the evaluation instant.
 
 `histogram_quantile` and `histogram_fraction` read explicit-bucket and
 exponential histograms (exponential buckets merge by the OTel rule). Rows of

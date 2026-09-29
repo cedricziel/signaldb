@@ -52,7 +52,8 @@ the grammar. `ql-ir` lowers the parsed expression onto a `query-ir` document
 (`ql_ir::promql_to_ir`), the same way it lowers LogQL and TraceQL. That
 lowering is not wired in yet: the Prometheus endpoints still evaluate through
 `src/querier/src/query/promql.rs` until the planner executes every stage the
-lowering emits, and the router switches over. Constructs the IR can't
+lowering emits, and the router switches over (the `histogram_quantile`
+stage's `window` and `lookback` now execute rather than returning 501). Constructs the IR can't
 express come back as `LowerError::Inexpressible`, naming the construct; a query
 that doesn't parse, or bad range parameters, as `LowerError::InvalidPromql`.
 
