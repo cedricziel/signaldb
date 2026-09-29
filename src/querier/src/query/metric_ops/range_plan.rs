@@ -10,6 +10,7 @@ use datafusion::scalar::ScalarValue;
 use super::instants::covering_instants;
 use super::range::range_udaf;
 use super::range_math::RangeFn;
+use super::series_key::series_key;
 use crate::query::error::QuerierError;
 
 const INSTANT: &str = "__instant";
@@ -26,7 +27,7 @@ pub(crate) struct RangeEval {
 /// One row per (series, instant) with a value: `bucket` (the instant), the
 /// `groups` aliases (constant within a series) and Float64 `out`. `df` must
 /// already hold the points of `(first - window, last]`; a stored column the
-/// table lacks reads as null.
+/// table lacks reads as null, and a missing `series_id` is derived.
 pub(crate) fn range_series(
     df: DataFrame,
     value: Expr,
@@ -53,7 +54,7 @@ pub(crate) fn range_series(
     ];
     let names: Vec<String> = (0..args.len()).map(|i| format!("__r{i}")).collect();
     proj.extend(args.into_iter().zip(&names).map(|(e, n)| e.alias(n)));
-    proj.push(stored("series_id", DataType::Utf8)?.alias("__series"));
+    proj.push(series_key(df.schema()).alias("__series"));
     proj.push(
         covering_instants(eval.first_ns, eval.last_ns, eval.step_ns, eval.window_ns).alias(INSTANT),
     );
@@ -90,7 +91,40 @@ mod tests {
     use datafusion::prelude::SessionContext;
 
     use super::*;
-    use crate::query::metric_ops::fixtures::counter_points;
+    use crate::query::metric_ops::fixtures::{counter_points, without_series_id};
+
+    /// Without a `series_id`, series are told apart by their identity columns.
+    #[tokio::test]
+    async fn a_missing_series_id_falls_back_to_the_identity_columns() {
+        let rows: &[(&str, i64, f64)] = &[
+            ("s1", 10, 10.0),
+            ("s2", 15, 100.0),
+            ("s1", 20, 20.0),
+            ("s2", 25, 110.0),
+        ];
+        for drop in [true, false] {
+            let batch = without_series_id(counter_points("sum", rows), drop);
+            let df = SessionContext::new().read_batch(batch).unwrap();
+            let eval = RangeEval {
+                f: RangeFn::Increase,
+                first_ns: 30,
+                last_ns: 30,
+                step_ns: 10,
+                window_ns: 30,
+            };
+            let out = range_series(df, col("value"), &[], &eval, "v")
+                .unwrap()
+                .collect()
+                .await
+                .unwrap();
+            let mut got: Vec<f64> = out
+                .iter()
+                .flat_map(|b| b.column(1).as_primitive::<Float64Type>().values().to_vec())
+                .collect();
+            got.sort_by(f64::total_cmp);
+            assert_eq!(got, vec![10.0, 10.0], "drop={drop}");
+        }
+    }
 
     #[tokio::test]
     async fn increase_is_per_series_at_each_instant() {

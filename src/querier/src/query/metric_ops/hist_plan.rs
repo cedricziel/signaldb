@@ -14,6 +14,7 @@ use super::hist::{HistStat, histogram_udaf};
 use super::hist_math::Mode;
 use super::hist_state::column_types;
 use super::instants::covering_instants;
+use super::series_key::series_key;
 use crate::query::error::QuerierError;
 use crate::query::table_lookup::metric_type_filter;
 
@@ -59,7 +60,7 @@ pub(crate) struct HistEval {
 /// Reduces metric points to `bucket` (the evaluation instant), the `groups`
 /// aliases (Utf8) and a non-null Float64 `value` column. `df` must already
 /// hold the points of `(first - window, last]`. A column the table lacks
-/// reads as null.
+/// reads as null, and a missing `series_id` is derived.
 pub(crate) fn histogram_series(
     df: DataFrame,
     groups: &[(Expr, String)],
@@ -78,7 +79,9 @@ pub(crate) fn histogram_series(
         .collect();
     let mut args = Vec::with_capacity(POINT_COLUMNS.len() + 1);
     for (i, (name, t)) in POINT_COLUMNS.iter().zip(column_types()).enumerate() {
-        let e = if present.contains(*name) {
+        let e = if *name == "series_id" {
+            series_key(df.schema())
+        } else if present.contains(*name) {
             col(*name)
         } else {
             lit(ScalarValue::try_from(&t).map_err(QuerierError::QueryFailed)?)
@@ -137,7 +140,7 @@ mod tests {
     use datafusion::prelude::SessionContext;
 
     use super::*;
-    use crate::query::metric_ops::fixtures::histogram_points;
+    use crate::query::metric_ops::fixtures::{histogram_points, without_series_id};
 
     /// One service's two cumulative series `s1`, `s2`.
     const TWO_SERIES: &[(&str, i64, &[i64])] = &[
@@ -226,6 +229,20 @@ mod tests {
         assert!(out.len() == 1 && out[0].1.is_nan(), "{out:?}");
         let summary = histogram_points("summary", TWO_SERIES);
         assert!(p50_over(Mode::Instant, summary).await.is_empty());
+    }
+
+    /// Without a `series_id`, series are told apart by their identity
+    /// columns: the rate answer is the per-series one either way.
+    #[tokio::test]
+    async fn a_missing_series_id_falls_back_to_the_identity_columns() {
+        for drop in [true, false] {
+            let batch = without_series_id(histogram_points("histogram", TWO_SERIES), drop);
+            assert_eq!(
+                p50_over(Mode::Rate, batch).await,
+                vec![(20, 1.5), (40, 1.5)],
+                "drop={drop}"
+            );
+        }
     }
 
     #[tokio::test]
