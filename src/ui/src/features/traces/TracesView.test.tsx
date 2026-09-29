@@ -1750,16 +1750,16 @@ describe("TracesView detail", () => {
     expect(cssVar()).toBe("320px");
 
     // Dragging left (negative dx) widens the sidebar, which sits to its right.
-    fireEvent.mouseDown(resizer, { clientX: 500 });
-    fireEvent.mouseMove(window, { clientX: 400 });
-    fireEvent.mouseUp(window);
+    fireEvent.pointerDown(resizer, { clientX: 500 });
+    fireEvent.pointerMove(resizer, { clientX: 400 });
+    fireEvent.pointerUp(resizer);
     expect(cssVar()).toBe("420px");
     expect(spanDetailWidth.read()).toBe(420);
 
     // Clamped to the configured max (320 + 1000 would be 1320, way over 640).
-    fireEvent.mouseDown(resizer, { clientX: 500 });
-    fireEvent.mouseMove(window, { clientX: -500 });
-    fireEvent.mouseUp(window);
+    fireEvent.pointerDown(resizer, { clientX: 500 });
+    fireEvent.pointerMove(resizer, { clientX: -500 });
+    fireEvent.pointerUp(resizer);
     expect(cssVar()).toBe("640px");
   });
 

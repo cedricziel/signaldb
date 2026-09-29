@@ -51,8 +51,8 @@ dependency kinds and every response field.
 - **At a glance:** the [Overview](explore-ui.md#the-overview) (`/overview`,
   the UI's landing page) shows the whole-system map scoped to the selected
   environment, with zoom buttons, ⌘/Ctrl + scroll to zoom and drag to pan.
-  The zoom buttons are hidden while the map is empty.
-  Click a node to open that service's catalog entry.
+  **FIT** zooms out until the whole map shows. The zoom buttons are hidden
+  while the map is empty. Click a node to open that service's catalog entry.
 - **Whole system:** Catalog → Services → **Map**. The URL keeps
   `?cview=map`, so the link reopens the map. Click a node for its side panel;
   use **Hide external** to show only instrumented services.
@@ -63,8 +63,9 @@ dependency kinds and every response field.
   service node to filter the waterfall to its spans.
 
 On a narrow screen the maps stop shrinking once labels would get too small to
-read: the Catalog map scrolls sideways instead, and on the Overview you drag
-to pan to the rest of the map.
+read: the Catalog map scrolls sideways instead. On the Overview, the side
+that has more map fades out and **FIT** is highlighted; drag to pan to the
+rest, or select **FIT** to see it all.
 
 [Explore UI](explore-ui.md) describes each view in full.
 

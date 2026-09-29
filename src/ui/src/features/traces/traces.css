@@ -438,6 +438,7 @@
 
 .trace-resizer {
   flex: 0 0 5px;
+  position: relative;
   cursor: col-resize;
   background: transparent;
   border-left: 1px solid var(--border);

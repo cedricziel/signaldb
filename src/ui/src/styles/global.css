@@ -857,6 +857,20 @@ th[aria-sort="descending"] .th-sort::after {
   content: " ↓";
 }
 
+/* ---------- pane resizer (components/SidebarResizer.tsx) ---------- */
+
+/* Behaviour every resizer handle needs; placement and size live with each
+   feature's own resizer class. The drag uses pointer capture, so the handle
+   must not start a touch scroll. */
+.pane-resizer {
+  touch-action: none;
+}
+
+.pane-resizer:focus-visible {
+  outline: none;
+  background: var(--info-bar);
+}
+
 /* A table wider than the viewport scrolls on its own axis instead of
    blowing out the page — these tables don't reasonably reflow. Every data
    table sits in one.
@@ -1297,7 +1311,8 @@ button.attrtable-section {
 
   .attrtable-actions button::after,
   .copy-value-button::after,
-  .attribute-value-toggle::after {
+  .attribute-value-toggle::after,
+  .pane-resizer::after {
     content: "";
     position: absolute;
     top: 50%;

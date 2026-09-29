@@ -1,6 +1,8 @@
 // Zoom and pan around a child that has no zoom of its own (the service map):
 // +/−/FIT buttons, ⌘/Ctrl + wheel zooming at the pointer, and dragging
-// empty space to pan. Clicks on buttons and graph nodes pass through.
+// empty space to pan. Clicks on buttons and graph nodes pass through. A
+// child wider than the host (the map stops shrinking at MIN_GRAPH_SCALE)
+// fades out on each clipped side, and FIT zooms out until it all shows.
 
 import {
   useCallback,
@@ -20,6 +22,30 @@ interface View {
 }
 
 const HOME: View = { z: 1, x: 0, y: 0 };
+
+interface Size {
+  hostW: number;
+  contentW: number;
+}
+
+/** The view that shows all of a `contentW`-wide child in a `hostW`-wide
+ * host: natural size when it fits, zoomed out (down to MIN_ZOOM) when not. */
+export function fitView({ hostW, contentW }: Size): View {
+  if (hostW <= 0 || contentW <= hostW) return HOME;
+  return { z: Math.max(MIN_ZOOM, hostW / contentW), x: 0, y: 0 };
+}
+
+/** Which sides of the host clip the child under `view`, give or take a
+ * pixel of rounding. */
+export function clippedSides(
+  view: View,
+  { hostW, contentW }: Size,
+): { left: boolean; right: boolean } {
+  return {
+    left: view.x < -1,
+    right: view.x + contentW * view.z > hostW + 1,
+  };
+}
 
 /** `view` zoomed by `k` around the point (`cx`, `cy`) in host coordinates,
  * which stays put on screen. */
@@ -47,8 +73,30 @@ export function ZoomPan({
   controls?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
+  const innerRef = useRef<HTMLDivElement>(null);
   const [view, setView] = useState<View>(HOME);
   const [dragging, setDragging] = useState(false);
+  const [hostW, setHostW] = useState(0);
+  const [contentW, setContentW] = useState(0);
+  const size: Size = { hostW, contentW };
+
+  // The inner box's scrollWidth is the child's untransformed width, as long
+  // as the child lets its overflow spill (overview.css does for
+  // `.service-graph`), which is why useContainerWidth, reporting only the
+  // observed box's own width, doesn't fit here. Observe both boxes.
+  useEffect(() => {
+    const host = hostRef.current;
+    const inner = innerRef.current;
+    if (!host || !inner) return;
+    const measure = () => {
+      setHostW(host.clientWidth);
+      setContentW(inner.scrollWidth);
+    };
+    const observer = new ResizeObserver(measure);
+    observer.observe(host);
+    observer.observe(inner);
+    return () => observer.disconnect();
+  }, []);
 
   const zoomBy = useCallback((k: number, cx?: number, cy?: number) => {
     const r = hostRef.current?.getBoundingClientRect();
@@ -100,13 +148,23 @@ export function ZoomPan({
   };
 
   const moved = view.z !== 1 || view.x !== 0 || view.y !== 0;
+  const clipped = clippedSides(view, size);
+  const hidden = clipped.left || clipped.right;
+  let hint = " · ⌘/ctrl + scroll to zoom";
+  if (hidden) hint = " · drag to pan or FIT to see all";
+  else if (moved) hint = " · drag to pan";
+  const className = [
+    "zoompan",
+    dragging && "dragging",
+    clipped.left && "clipped-left",
+    clipped.right && "clipped-right",
+  ]
+    .filter(Boolean)
+    .join(" ");
   return (
-    <div
-      ref={hostRef}
-      className={`zoompan${dragging ? " dragging" : ""}`}
-      onPointerDown={onPointerDown}
-    >
+    <div ref={hostRef} className={className} onPointerDown={onPointerDown}>
       <div
+        ref={innerRef}
         className="zoompan-inner"
         style={{
           transform: `translate(${view.x}px, ${view.y}px) scale(${view.z})`,
@@ -135,16 +193,16 @@ export function ZoomPan({
             </button>
             <button
               type="button"
-              aria-label="Reset zoom"
-              title="Reset zoom"
-              onClick={() => setView(HOME)}
+              className={hidden ? "zoompan-cue" : undefined}
+              aria-label="Fit to view"
+              title="Fit to view"
+              onClick={() => setView(fitView(size))}
             >
               <span className="zoompan-fit">FIT</span>
             </button>
           </div>
           <div className="zoompan-readout" aria-live="polite">
-            {Math.round(view.z * 100)}%
-            {moved ? " · drag to pan" : " · ⌘/ctrl + scroll to zoom"}
+            {Math.round(view.z * 100)}%{hint}
           </div>
         </>
       )}
