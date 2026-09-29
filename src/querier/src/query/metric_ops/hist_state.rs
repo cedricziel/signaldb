@@ -106,6 +106,12 @@ impl Row {
             })?;
             HistPoint::Exp(exp, self.sum)
         } else {
+            if !self.bounds.iter().all(|b| b.is_finite()) || !self.bounds.is_sorted_by(|a, b| a < b)
+            {
+                return Err(invalid(
+                    "explicit_bounds must be finite and strictly increasing",
+                ));
+            }
             let total = self.count.map(|c| count("count", c)).transpose()?;
             // No bounds and no buckets: one bucket holding every observation.
             let counts = if self.bounds.is_empty() && self.bucket_counts.is_empty() {
