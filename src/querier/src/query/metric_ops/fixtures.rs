@@ -1,9 +1,10 @@
-//! Wide `metrics` table fixtures shared by the IR and PromQL histogram tests.
+//! Wide `metrics` table fixtures shared by the IR and PromQL metric tests.
 
 use std::sync::Arc;
 
 use datafusion::arrow::array::{
-    ArrayRef, Int32Array, Int64Array, ListArray, RecordBatch, StringArray, TimestampNanosecondArray,
+    ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, ListArray, RecordBatch,
+    StringArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Float64Type, Int64Type, Schema};
 
@@ -91,4 +92,35 @@ pub(crate) fn with_series_id(batch: RecordBatch) -> RecordBatch {
     let mut columns = batch.columns().to_vec();
     columns.push(Arc::new(ids));
     RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
+}
+
+/// Points of metric `reqs` from service `svc`, as `(series_id, ts, value)`:
+/// cumulative and monotonic when `kind` is `sum`.
+pub(crate) fn counter_points(kind: &str, rows: &[(&str, i64, f64)]) -> RecordBatch {
+    let n = rows.len();
+    let columns: Vec<(&str, ArrayRef)> = vec![
+        (
+            "timestamp",
+            Arc::new(TimestampNanosecondArray::from_iter_values(
+                rows.iter().map(|r| r.1),
+            )),
+        ),
+        ("service_name", Arc::new(StringArray::from(vec!["svc"; n]))),
+        ("metric_name", Arc::new(StringArray::from(vec!["reqs"; n]))),
+        ("metric_type", Arc::new(StringArray::from(vec![kind; n]))),
+        (
+            "series_id",
+            Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.0))),
+        ),
+        (
+            "value",
+            Arc::new(Float64Array::from_iter_values(rows.iter().map(|r| r.2))),
+        ),
+        (
+            "aggregation_temporality",
+            Arc::new(Int32Array::from(vec![2; n])),
+        ),
+        ("is_monotonic", Arc::new(BooleanArray::from(vec![true; n]))),
+    ];
+    batch(columns)
 }
