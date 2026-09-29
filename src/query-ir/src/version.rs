@@ -49,6 +49,8 @@ pub enum Feature {
     SpanCorrelate,
     /// The `graph` result envelope over `traces`.
     ServiceGraph,
+    /// The `sample` stage (metric point stream → series).
+    Sample,
     /// The `scalar` stage (series → scalar).
     ScalarStage,
     /// The `vector` stage (scalar → series).
@@ -113,6 +115,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::AggregateWindow, 7),
     (Feature::SpanCorrelate, 8),
     (Feature::ServiceGraph, 8),
+    (Feature::Sample, 10),
     (Feature::ScalarStage, 10),
     (Feature::VectorStage, 10),
     (Feature::ScalarEnvelope, 10),
@@ -327,6 +330,7 @@ mod tests {
             Feature::AggregateWindow,
             Feature::SpanCorrelate,
             Feature::ServiceGraph,
+            Feature::Sample,
             Feature::ScalarStage,
             Feature::VectorStage,
             Feature::ScalarEnvelope,

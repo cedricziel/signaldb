@@ -1023,7 +1023,10 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 }
 
 fn is_series_algebra(stage: &Stage) -> bool {
-    matches!(stage, Stage::Scalar(_) | Stage::Vector(_))
+    matches!(
+        stage,
+        Stage::Sample(_) | Stage::Scalar(_) | Stage::Vector(_)
+    )
 }
 
 fn unsupported_stage(stage: &Stage) -> QuerierError {
@@ -1516,7 +1519,7 @@ impl Lowering<'_> {
             Stage::Correlate(_) => Err(QuerierError::InvalidInput(
                 "correlate requires async lowering".into(),
             )),
-            Stage::Scalar(_) | Stage::Vector(_) => Err(unsupported_stage(stage)),
+            Stage::Sample(_) | Stage::Scalar(_) | Stage::Vector(_) => Err(unsupported_stage(stage)),
         }
     }
 
@@ -5742,8 +5745,8 @@ mod tests {
         for (from, stage, expected) in [
             (
                 "metrics",
-                serde_json::json!({ "scalar": {} }),
-                "scalar stage is not supported yet",
+                serde_json::json!({ "sample": { "fn": "latest" } }),
+                "sample stage is not supported yet",
             ),
             (
                 "time",

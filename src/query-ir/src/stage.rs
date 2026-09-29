@@ -385,6 +385,77 @@ pub struct Correlate {
     pub kind: JoinKind,
 }
 
+/// A function a `sample` stage evaluates over each series' point stream
+/// (`irVersion` 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SampleFn {
+    /// The latest point in `(t - lookback, t]`.
+    Latest,
+    Rate,
+    Increase,
+    Irate,
+    Delta,
+    Idelta,
+    Deriv,
+    Resets,
+    Changes,
+    AvgOverTime,
+    MinOverTime,
+    MaxOverTime,
+    SumOverTime,
+    CountOverTime,
+    LastOverTime,
+    StddevOverTime,
+    StdvarOverTime,
+    PresentOverTime,
+    QuantileOverTime,
+}
+
+/// Which value of a metric point a `sample` reads.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub enum SampleOf {
+    #[default]
+    #[serde(rename = "metric.value")]
+    Value,
+    #[serde(rename = "metric.count")]
+    Count,
+    #[serde(rename = "metric.sum")]
+    Sum,
+}
+
+/// The `sample` stage: evaluate a metric point stream into a `Series` at
+/// every evaluation instant (`irVersion` 10).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Sample {
+    #[serde(rename = "fn")]
+    pub func: SampleFn,
+    #[serde(default)]
+    pub of: SampleOf,
+    /// The range read by every function but `latest`: `(t - window, t]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
+    /// `latest` only: how far back a point still counts (default `5m`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lookback: Option<String>,
+    /// The evaluation step; defaults to the document `step`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub step: Option<String>,
+    /// Shift the read window back by this duration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offset: Option<String>,
+    /// Pin every evaluation instant to this timestamp literal.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub at: Option<serde_json::Value>,
+    /// `quantile_over_time` only: the quantile in `[0, 1]`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub arg: Option<f64>,
+    /// The output value name (default `value`).
+    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
+    pub as_name: Option<String>,
+}
+
 /// The operand of a stage that takes none (`{"scalar": {}}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -407,6 +478,7 @@ pub enum Stage {
     HistogramQuantile(HistogramQuantile),
     Describe(Describe),
     Correlate(Correlate),
+    Sample(Sample),
     Scalar(NoOperands),
     Vector(NoOperands),
 }
@@ -426,6 +498,7 @@ impl Stage {
             Stage::HistogramQuantile(_) => "histogram_quantile",
             Stage::Describe(_) => "describe",
             Stage::Correlate(_) => "correlate",
+            Stage::Sample(_) => "sample",
             Stage::Scalar(_) => "scalar",
             Stage::Vector(_) => "vector",
         }
@@ -438,6 +511,7 @@ impl Stage {
             Stage::HistogramQuantile(_) => Feature::HistogramQuantile,
             Stage::Describe(_) => Feature::Describe,
             Stage::Correlate(_) => Feature::SpanCorrelate,
+            Stage::Sample(_) => Feature::Sample,
             Stage::Scalar(_) => Feature::ScalarStage,
             Stage::Vector(_) => Feature::VectorStage,
             _ => return None,

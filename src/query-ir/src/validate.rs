@@ -36,7 +36,7 @@ use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract, Heatmap,
-    HistogramQuantile, Order, Rank, Stage, is_expression_string,
+    HistogramQuantile, Order, Rank, Sample, SampleFn, Stage, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -204,6 +204,7 @@ pub fn validate(
         relation,
         names: Vec::new(),
         declared_result: doc.result,
+        doc_step_ns,
     };
     match describe {
         // Introspection: no records flow through the pipeline, so there is
@@ -246,6 +247,8 @@ struct InferCtx<'a> {
     /// aggregate function, a `divisor` — gate on it here rather than in the
     /// up-front scans, which only see stage kinds.
     registry: OperatorRegistry,
+    /// The document `step`, the default of the series-algebra stages.
+    doc_step_ns: Option<i64>,
 }
 
 impl InferCtx<'_> {
@@ -280,6 +283,7 @@ impl InferCtx<'_> {
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
             Stage::Correlate(correlate) => self.apply_correlate(correlate),
+            Stage::Sample(sample) => self.apply_sample(sample),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -361,6 +365,86 @@ impl InferCtx<'_> {
                 ),
             }),
         }
+    }
+
+    /// A stage's own `step`, else the document's; one of them is required.
+    fn stage_step(&self, stage: &str, step: Option<&String>) -> Result<i64, IrError> {
+        match step {
+            Some(step) => positive_duration(&format!("{stage}.step"), step),
+            None => self.doc_step_ns.ok_or_else(|| {
+                IrError::Invalid(format!(
+                    "{stage} requires a `step`, on the stage or the document"
+                ))
+            }),
+        }
+    }
+
+    /// `sample`: evaluate a point stream into an open-labelled series.
+    fn apply_sample(&mut self, sample: &Sample) -> Result<(), IrError> {
+        self.require_point_stream("sample")?;
+        let is_latest = sample.func == SampleFn::Latest;
+        match (&sample.window, is_latest) {
+            (Some(_), true) => {
+                return Err(IrError::Invalid(
+                    "sample `latest` takes `lookback`, not `window`".to_string(),
+                ));
+            }
+            (None, false) => {
+                return Err(IrError::Invalid(
+                    "sample range functions require a `window`".to_string(),
+                ));
+            }
+            (Some(window), false) => {
+                positive_duration("sample.window", window)?;
+            }
+            (None, true) => {}
+        }
+        if let Some(lookback) = &sample.lookback {
+            if !is_latest {
+                return Err(IrError::Invalid(
+                    "sample `lookback` is only valid with `latest`".to_string(),
+                ));
+            }
+            positive_duration("sample.lookback", lookback)?;
+        }
+        check_quantile_arg(
+            "sample",
+            sample.arg,
+            sample.func == SampleFn::QuantileOverTime,
+        )?;
+        if let Some(offset) = &sample.offset {
+            positive_duration("sample.offset", offset)?;
+        }
+        if let Some(at) = &sample.at {
+            coerce_for("sample.at", at, &ValueType::TimestampNs)?;
+        }
+        if let Some(name) = &sample.as_name {
+            self.check_output_name(name)?;
+        }
+        let step_ns = self.stage_step("sample", sample.step.as_ref())?;
+        self.relation = RelationType::Series(Series {
+            labels: Vec::new(),
+            open_labels: true,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// A series-algebra output name: a plain, pipeline-unique name.
+    fn check_output_name(&mut self, name: &str) -> Result<(), IrError> {
+        if name.is_empty() || is_expression_string(name) {
+            return Err(IrError::ExpressionString {
+                operand: name.to_string(),
+            });
+        }
+        if self.names.iter().any(|n| n == name) {
+            return Err(IrError::DuplicateName {
+                name: name.to_string(),
+            });
+        }
+        self.names.push(name.to_string());
+        Ok(())
     }
 
     fn require_rowset(&self, stage: &str) -> Result<&RowSet, IrError> {
@@ -1157,6 +1241,20 @@ fn positive_duration(field: &str, value: &str) -> Result<i64, IrError> {
             value: value.to_string(),
             target: ValueType::DurationNs.to_string(),
         }),
+    }
+}
+
+/// A quantile `arg`: required in `[0, 1]` when `needed`, rejected otherwise.
+fn check_quantile_arg(stage: &str, arg: Option<f64>, needed: bool) -> Result<(), IrError> {
+    match (arg, needed) {
+        (Some(q), true) if (0.0..=1.0).contains(&q) => Ok(()),
+        (None, false) => Ok(()),
+        (_, true) => Err(IrError::Invalid(format!(
+            "{stage} quantile requires an `arg` within [0, 1]"
+        ))),
+        (Some(_), false) => Err(IrError::Invalid(format!(
+            "{stage} `arg` is only valid for a quantile"
+        ))),
     }
 }
 
