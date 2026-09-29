@@ -211,3 +211,114 @@ async fn sort_orders_an_instant_by_value_with_nan_last() {
         rows(&[(60, A, 1.0), (120, A, 2.0), (60, B, 10.0), (120, B, 20.0)])
     );
 }
+
+/// `(labels, value)` at 60s of `stages` over `job=api,code=200` (1),
+/// `job=api,code=500` (10) and `job=web,code=200` (`web`).
+async fn over_three(web: f64, stages: JsonValue) -> Vec<(String, f64)> {
+    let points = [
+        gauge(60 * S, "a", 1.0, json!({"job": "api", "code": 200})),
+        gauge(60 * S, "b", 10.0, json!({"job": "api", "code": 500})),
+        gauge(60 * S, "c", web, json!({"job": "web", "code": 200})),
+    ];
+    let mut doc = doc(stages);
+    doc["range"]["to"] = json!(60 * S);
+    let batch = run(&points, doc).await.unwrap();
+    series_rows(&batch)
+        .into_iter()
+        .map(|(_, l, v)| (l, v))
+        .collect()
+}
+
+fn pairs(want: &[(&str, f64)]) -> Vec<(String, f64)> {
+    want.iter().map(|(l, v)| (l.to_string(), *v)).collect()
+}
+
+#[tokio::test]
+async fn reduce_by_keeps_exactly_the_listed_labels() {
+    let sum_by = json!([{ "reduce": { "fn": "sum", "by": ["job"] } }]);
+    let got = over_three(100.0, sum_by).await;
+    assert_eq!(
+        got,
+        pairs(&[(r#"{"job":"api"}"#, 11.0), (r#"{"job":"web"}"#, 100.0)])
+    );
+    let by_name = json!([{ "reduce": { "fn": "count", "by": ["metric.name"] } }]);
+    let got = over_three(100.0, by_name).await;
+    assert_eq!(got, pairs(&[(r#"{"metric.name":"temperature"}"#, 3.0)]));
+    let all = json!([{ "reduce": { "fn": "avg" } }]);
+    assert_eq!(over_three(100.0, all).await, pairs(&[("{}", 37.0)]));
+}
+
+#[tokio::test]
+async fn reduce_without_drops_the_listed_labels_and_the_name() {
+    let without = json!([{ "reduce": { "fn": "max", "without": ["code"] } }]);
+    let got = over_three(100.0, without).await;
+    let want = [
+        (r#"{"job":"api","service.name":"svc"}"#, 10.0),
+        (r#"{"job":"web","service.name":"svc"}"#, 100.0),
+    ];
+    assert_eq!(got, pairs(&want));
+}
+
+#[tokio::test]
+async fn reduce_functions_follow_promql() {
+    let by_job = |func: &str, arg: Option<f64>| {
+        let mut reduce = json!({ "fn": func, "by": ["job"] });
+        if let Some(arg) = arg {
+            reduce["arg"] = json!(arg);
+        }
+        json!([{ "reduce": reduce }])
+    };
+    let cases = [
+        ("min", None, [1.0, 7.0]),
+        ("group", None, [1.0, 1.0]),
+        ("stddev", None, [4.5, 0.0]),
+        ("stdvar", None, [20.25, 0.0]),
+        ("quantile", Some(0.25), [3.25, 7.0]),
+    ];
+    for (func, arg, want) in cases {
+        let got: Vec<f64> = over_three(7.0, by_job(func, arg))
+            .await
+            .into_iter()
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(got, want, "{func}");
+    }
+    // A NaN is ignored by min/max unless every value is NaN.
+    let got = over_three(f64::NAN, by_job("max", None)).await;
+    assert_eq!(got[0], (r#"{"job":"api"}"#.to_string(), 10.0));
+    assert!(got[1].1.is_nan(), "{got:?}");
+}
+
+#[tokio::test]
+async fn topk_and_bottomk_keep_each_groups_extreme_series_with_all_labels() {
+    let topk = json!([{ "reduce": { "fn": "topk", "arg": 1.0, "by": ["job"] } }]);
+    let got = over_three(100.0, topk).await;
+    let want = [
+        (
+            r#"{"code":"200","job":"web","metric.name":"temperature","service.name":"svc"}"#,
+            100.0,
+        ),
+        (
+            r#"{"code":"500","job":"api","metric.name":"temperature","service.name":"svc"}"#,
+            10.0,
+        ),
+    ];
+    assert_eq!(got, pairs(&want));
+    // NaN ranks last for bottomk as for topk.
+    let bottomk = json!([{ "reduce": { "fn": "bottomk", "arg": 2.0 } }]);
+    let got = over_three(f64::NAN, bottomk).await;
+    let values: Vec<f64> = got.into_iter().map(|(_, v)| v).collect();
+    assert_eq!(values, [1.0, 10.0]);
+}
+
+#[tokio::test]
+async fn count_values_counts_series_per_value_under_a_new_label() {
+    let count_values =
+        json!([{ "reduce": { "fn": "count_values", "label": "v", "by": ["code"] } }]);
+    let got = over_three(1.0, count_values).await;
+    let want = [
+        (r#"{"code":"200","v":"1"}"#, 2.0),
+        (r#"{"code":"500","v":"10"}"#, 1.0),
+    ];
+    assert_eq!(got, pairs(&want));
+}

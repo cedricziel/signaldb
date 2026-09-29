@@ -1034,6 +1034,33 @@ These stages take a Series from `sample` (or `vector`) and return a Series,
 with PromQL's semantics. Over a Series from anything else (an `aggregate`
 with `step`, a `histogram_quantile`) they are not supported yet (501).
 
+#### `reduce`
+
+PromQL's aggregation operators: fold the series into groups at every
+instant.
+
+```json
+{ "reduce": { "fn": "sum", "by": ["service.name"] } }
+{ "reduce": { "fn": "topk", "arg": 3, "without": ["instance"] } }
+```
+
+| Operand   | Meaning                                                                                   |
+| --------- | ----------------------------------------------------------------------------------------- |
+| `fn`      | `sum`, `avg`, `min`, `max`, `count`, `group`, `stddev`, `stdvar`, `quantile`, `topk`, `bottomk`, `count_values` |
+| `by`      | group by exactly these labels (`metric.name` only when listed)                            |
+| `without` | group by every label but these and `metric.name`                                          |
+| `arg`     | `topk`/`bottomk`: the integer k; `quantile`: the quantile in `[0, 1]`                     |
+| `label`   | `count_values`: the label each distinct value is written to                               |
+
+With neither `by` nor `without` every series is one group with no labels.
+The result is labelled by the group, except `topk`/`bottomk`, which keep the
+k largest (smallest) series of each group with all their labels (`NaN` ranks
+last; ties by label set). `min`/`max` ignore `NaN` unless every value is
+`NaN`; `stddev`/`stdvar` are the population deviation/variance; `quantile`
+interpolates linearly between the closest ranks. `count_values` counts the
+series per distinct value, the value written to `label` as Prometheus prints
+it (`1`, `0.5`, `+Inf`, `NaN`).
+
 #### `labels`
 
 Rewrite one label of every series, as PromQL's `label_replace` and

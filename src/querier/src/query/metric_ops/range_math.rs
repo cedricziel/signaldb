@@ -205,7 +205,7 @@ fn variance(vals: impl Iterator<Item = f64> + Clone, n: usize) -> f64 {
     vals.map(|v| (v - mean).powi(2)).sum::<f64>() / n as f64
 }
 
-fn quantile(q: f64, mut vals: Vec<f64>) -> f64 {
+pub(crate) fn quantile(q: f64, mut vals: Vec<f64>) -> f64 {
     if q.is_nan() {
         return f64::NAN;
     }
