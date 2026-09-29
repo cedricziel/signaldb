@@ -303,15 +303,17 @@ impl Lowerer<'_> {
             "pi" => return Ok(Operand::Number(std::f64::consts::PI)),
             "histogram_quantile" | "histogram_fraction" => return self.histogram(call),
             "histogram_count" => {
-                return Ok(Operand::Pipe(self.histogram_value(call, SampleOf::Count)?));
+                return Ok(Operand::Pipe(
+                    self.histogram_unnamed(call, SampleOf::Count)?,
+                ));
             }
             "histogram_sum" => {
-                return Ok(Operand::Pipe(self.histogram_value(call, SampleOf::Sum)?));
+                return Ok(Operand::Pipe(self.histogram_unnamed(call, SampleOf::Sum)?));
             }
             // The mean observation: sum over count, series by series.
             "histogram_avg" => {
-                let count = self.histogram_value(call, SampleOf::Count)?;
-                let sum = self.histogram_value(call, SampleOf::Sum)?;
+                let (count, _) = self.histogram_value(call, SampleOf::Count)?;
+                let (sum, _) = self.histogram_value(call, SampleOf::Sum)?;
                 return Ok(Operand::Pipe(sum.push(Stage::Binop(Binop {
                     right: BinopOperand::Document(Box::new(sub_document(count))),
                     ..number_binop(BinopOp::Div, 0.0, false, false)
@@ -465,15 +467,15 @@ impl Lowerer<'_> {
     /// `histogram_quantile`/`histogram_fraction` over SignalDB's whole stored
     /// histograms.
     fn histogram(&self, call: &Call) -> Result<Operand, LowerError> {
-        let quantile = call.func.name == "histogram_quantile";
-        let input = self.histogram_input(call, if quantile { 1 } else { 2 })?;
+        let is_quantile = call.func.name == "histogram_quantile";
+        let input = self.histogram_input(call, if is_quantile { 1 } else { 2 })?;
         let step = duration_ns(self.step_ns);
         let (by, per_series, mode, window) = (input.by, input.per_series, input.mode, input.window);
         // Instant mode reads each series' latest point, as an instant vector.
         let lookback = (mode == HistogramMode::Instant).then(|| LOOKBACK.to_string());
-        let stage = if quantile {
+        let stage = if is_quantile {
             Stage::HistogramQuantile(HistogramQuantile {
-                q: self.number_arg(call, 0)?,
+                q: quantile("histogram_quantile()", self.number_arg(call, 0)?)?,
                 by,
                 per_series,
                 step,
@@ -483,9 +485,13 @@ impl Lowerer<'_> {
                 as_name: "quantile".to_string(),
             })
         } else {
+            let (lower, upper) = (self.number_arg(call, 0)?, self.number_arg(call, 1)?);
+            if lower > upper {
+                return Err(inexpressible("histogram_fraction() with lower above upper"));
+            }
             Stage::HistogramFraction(HistogramFraction {
-                lower: self.number_arg(call, 0)?,
-                upper: self.number_arg(call, 1)?,
+                lower,
+                upper,
                 by,
                 per_series,
                 step,
@@ -542,6 +548,15 @@ impl Lowerer<'_> {
         if vs.offset.is_some() || vs.at.is_some() {
             return Err(inexpressible(&format!("{name}() with offset or @")));
         }
+        let multi_name = |m: &Matcher| m.name == "__name__" && m.op != MatchOp::Equal;
+        if per_series
+            && (vs.matchers.matchers.iter().any(multi_name)
+                || vs.matchers.or_matchers.iter().flatten().any(multi_name))
+        {
+            return Err(inexpressible(&format!(
+                "{name}() over a selector matching several metric names"
+            )));
+        }
         Ok(HistogramInput {
             pipe: where_pipe(vs),
             by,
@@ -551,28 +566,51 @@ impl Lowerer<'_> {
         })
     }
 
-    /// `histogram_count`/`histogram_sum`: a histogram's count or sum as a
-    /// plain value, of a selector or through a range function.
-    fn histogram_value(&self, call: &Call, of: SampleOf) -> Result<Pipe, LowerError> {
+    /// `histogram_count`/`histogram_sum`, which drop the metric name as
+    /// Prometheus does: `* 1` where the sample alone would keep it.
+    fn histogram_unnamed(&self, call: &Call, of: SampleOf) -> Result<Pipe, LowerError> {
+        let (pipe, keeps_name) = self.histogram_value(call, of)?;
+        Ok(if keeps_name {
+            pipe.push(Stage::Binop(number_binop(BinopOp::Mul, 1.0, false, false)))
+        } else {
+            pipe
+        })
+    }
+
+    /// A histogram's count or sum as a plain value, of a selector or through
+    /// a range function that yields histograms; and whether that sample keeps
+    /// the metric name (`latest`, `last_over_time`).
+    fn histogram_value(&self, call: &Call, of: SampleOf) -> Result<(Pipe, bool), LowerError> {
         let name = call.func.name;
         match unparen(arg(call, 0)?) {
-            Expr::VectorSelector(vs) => self.select(vs, Sample { of, ..latest() }),
+            Expr::VectorSelector(vs) => Ok((self.select(vs, Sample { of, ..latest() })?, true)),
             Expr::Call(c) => match (
                 range_function(c.func.name),
                 c.args.args.first().map(|a| unparen(a)),
             ) {
                 (Some(func), Some(Expr::MatrixSelector(ms)))
-                    if func != SampleFn::QuantileOverTime =>
+                    if matches!(
+                        func,
+                        SampleFn::Rate
+                            | SampleFn::Increase
+                            | SampleFn::Irate
+                            | SampleFn::Delta
+                            | SampleFn::Idelta
+                            | SampleFn::AvgOverTime
+                            | SampleFn::SumOverTime
+                            | SampleFn::LastOverTime
+                    ) =>
                 {
                     let window = Some(duration(ms.range));
-                    self.select(
+                    let pipe = self.select(
                         &ms.vs,
                         Sample {
                             of,
                             window,
                             ..sample(func)
                         },
-                    )
+                    )?;
+                    Ok((pipe, func == SampleFn::LastOverTime))
                 }
                 _ => Err(inexpressible(&format!("{name}() over {}()", c.func.name))),
             },
@@ -1169,8 +1207,16 @@ fn disjoin(mut parts: Vec<Predicate>) -> Predicate {
     Predicate::Or(parts)
 }
 
+/// PromQL label names as IR fields, first occurrence kept: several names
+/// (`job`, `service_name`) map to the same field.
 fn label_fields(labels: &[String]) -> Vec<String> {
-    labels.iter().map(|l| promql_label_field(l)).collect()
+    let mut fields = Vec::new();
+    for field in labels.iter().map(|l| promql_label_field(l)) {
+        if !fields.contains(&field) {
+            fields.push(field);
+        }
+    }
+    fields
 }
 
 /// A positive `offset` as a duration; zero is no offset.
