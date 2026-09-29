@@ -412,3 +412,27 @@ async fn more_than_11000_instants_is_invalid_input() {
         );
     }
 }
+
+/// A point flagged NO_RECORDED_VALUE (a staleness marker).
+fn stale(p: Pt) -> Pt {
+    Pt { flags: 1, ..p }
+}
+
+#[tokio::test]
+async fn range_functions_skip_stale_points_and_a_stale_newest_point_ends_latest() {
+    let points = [
+        gauge(30 * S, "a", 1.0, json!({})),
+        stale(gauge(90 * S, "a", 100.0, json!({}))),
+    ];
+    let values = |sample| async {
+        let batch = run(&points, sample_doc(60, 120, sample)).await.unwrap();
+        series_rows(&batch)
+            .into_iter()
+            .map(|(t, _, v)| (t, v))
+            .collect::<Vec<_>>()
+    };
+    let sum = values(json!({ "fn": "sum_over_time", "window": "2m" })).await;
+    assert_eq!(sum, [(60, 1.0), (120, 1.0)]);
+    let latest = values(json!({ "fn": "latest" })).await;
+    assert_eq!(latest, [(60, 1.0)]);
+}
