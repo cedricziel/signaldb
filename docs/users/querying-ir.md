@@ -1083,6 +1083,14 @@ replace every value by `1`/`0` and drop `metric.name`.
 
 `NaN` compares false to everything but `ne`, as in Prometheus.
 
+#### `sort`
+
+`{ "sort": "asc" }` or `"desc"`. As the last stage of a document whose range
+is one instant, it orders the series by value, `NaN` last either way (ties by
+label set), as PromQL's `sort`/`sort_desc` order an instant query. Anywhere
+else it changes nothing: series are returned in label-set order, as
+Prometheus returns a range query.
+
 ## Histograms
 
 A histogram row of the `metrics` source carries a whole OTLP histogram data

@@ -1,7 +1,8 @@
 //! Metric Series planning (D11): the Series frame `(bucket, __labels, value)`
 //! and the label-set UDFs its stages group, match and rewrite by.
 
-use common::query_ir::Stage;
+use common::query_ir::{Direction, Document, Stage};
+use datafusion::functions::math::expr_fn::isnan;
 use datafusion::prelude::{DataFrame, SessionContext, ident};
 
 use crate::query::error::QuerierError;
@@ -48,6 +49,8 @@ pub(crate) fn lower_stage(
         Stage::Labels(op) => stages::lower_labels(df, op),
         Stage::Map(map) => stages::lower_map(df, map),
         Stage::Filter(filter) => stages::lower_filter(df, filter),
+        // Only the terminal order changes (see `terminal_order`).
+        Stage::Sort(_) => Ok(df),
         other => Err(QuerierError::Unsupported(format!(
             "{} stage is not supported yet",
             other.name()
@@ -55,10 +58,28 @@ pub(crate) fn lower_stage(
     }
 }
 
-/// Order a terminal metric frame by label set (when it has one), then
-/// instant — once, after every Series stage has run.
-pub(crate) fn sort_frame(df: DataFrame) -> Result<DataFrame, QuerierError> {
+/// The value order a terminal `sort` asks for. As in Prometheus it orders
+/// the series of an instant query (a range that is one instant); over a range
+/// the series stay in label-set order.
+pub(crate) fn terminal_order(doc: &Document, window: ResolvedWindow) -> Option<Direction> {
+    match doc.pipeline.last() {
+        Some(Stage::Sort(direction)) if window.start_ns == window.end_ns => Some(*direction),
+        _ => None,
+    }
+}
+
+/// Order a terminal metric frame — by value first when `by_value` (NaN
+/// last either way, as in Prometheus), then by label set (when it has one),
+/// then instant — once, after every Series stage has run.
+pub(crate) fn sort_frame(
+    df: DataFrame,
+    by_value: Option<Direction>,
+) -> Result<DataFrame, QuerierError> {
     let mut keys = Vec::new();
+    if let Some(direction) = by_value {
+        keys.push(isnan(ident("value")).sort(true, true));
+        keys.push(ident("value").sort(direction == Direction::Asc, true));
+    }
     if df
         .schema()
         .has_column_with_unqualified_name(labels::LABELS_COLUMN)

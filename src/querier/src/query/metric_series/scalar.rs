@@ -99,5 +99,5 @@ pub(crate) fn plan_pseudo_source(
     for stage in &doc.pipeline {
         df = super::lower_stage(df, stage, &env)?;
     }
-    super::sort_frame(df)
+    super::sort_frame(df, super::terminal_order(doc, window))
 }

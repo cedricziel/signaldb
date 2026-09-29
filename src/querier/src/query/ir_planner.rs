@@ -1055,7 +1055,6 @@ fn is_series_algebra(stage: &Stage) -> bool {
     matches!(
         stage,
         Stage::Reduce(_)
-            | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
             | Stage::Binop(_)
@@ -1201,7 +1200,7 @@ pub(crate) async fn plan_document(
     for stage in &doc.pipeline {
         // A limit keeps the first rows, so it needs the frame's final order.
         if metric_frame && matches!(stage, Stage::Limit(_)) {
-            df = metric_series::sort_frame(df)?;
+            df = metric_series::sort_frame(df, None)?;
         }
         df = match stage {
             Stage::Sample(sample) => {
@@ -1221,7 +1220,8 @@ pub(crate) async fn plan_document(
             | Stage::Vector(_)
             | Stage::Labels(_)
             | Stage::Map(_)
-            | Stage::Filter(_) => {
+            | Stage::Filter(_)
+            | Stage::Sort(_) => {
                 let env = metric_series::FrameEnv {
                     ctx,
                     window,
@@ -1258,7 +1258,7 @@ pub(crate) async fn plan_document(
         };
     }
     if metric_frame {
-        df = metric_series::sort_frame(df)?;
+        df = metric_series::sort_frame(df, metric_series::terminal_order(doc, window))?;
     }
     df = lowering.apply_projection(df, doc)?;
     Ok(Some((df, window, lowering.correlate_truncated)))
@@ -5787,11 +5787,6 @@ mod tests {
                 serde_json::json!([{ "histogram_quantile": {
                     "q": 0.5, "step": "1m", "mode": "instant", "lookback": "5m", "as": "p" } }]),
                 "histogram_quantile lookback is not supported yet",
-            ),
-            (
-                "metrics",
-                serde_json::json!([{ "sample": { "fn": "latest" } }, { "sort": "asc" }]),
-                "sort stage is not supported yet",
             ),
         ] {
             let d = doc(serde_json::json!({
