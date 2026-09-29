@@ -59,7 +59,7 @@ impl SourceRegistry {
             SourceDef {
                 name: "metrics".to_string(),
                 // One raw metric data point per row, of any metric type.
-                grain: Grain::Event,
+                grain: Grain::Point,
                 allows_extract: false,
             },
         );

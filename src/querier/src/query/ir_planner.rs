@@ -1007,6 +1007,23 @@ impl IrService {
     }
 }
 
+/// The series-algebra shapes (`irVersion` 10) validate but have no lowering
+/// yet: refuse them up front, before any scan, as `Unsupported` (501).
+fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
+    match doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
+        Some(stage) => Err(unsupported_stage(stage)),
+        None => Ok(()),
+    }
+}
+
+fn is_series_algebra(stage: &Stage) -> bool {
+    matches!(stage, Stage::Scalar(_) | Stage::Vector(_))
+}
+
+fn unsupported_stage(stage: &Stage) -> QuerierError {
+    QuerierError::Unsupported(format!("{} stage is not supported yet", stage.name()))
+}
+
 /// Lower a validated [`Document`] to a `DataFrame`, over the given session
 /// context and tenant/dataset scope. The planner's one entry point (D1 of
 /// `ir-single-lowering`): [`IrService::plan`] calls this, and so will every
@@ -1032,6 +1049,7 @@ pub(crate) async fn plan_document(
         correlate_max_rows,
         attribute_type_request,
     } = request;
+    reject_unexecutable(doc)?;
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
@@ -1492,6 +1510,7 @@ impl Lowering<'_> {
             Stage::Correlate(_) => Err(QuerierError::InvalidInput(
                 "correlate requires async lowering".into(),
             )),
+            Stage::Scalar(_) | Stage::Vector(_) => Err(unsupported_stage(stage)),
         }
     }
 
@@ -5705,6 +5724,25 @@ mod tests {
         assert!(
             matches!(&err, QuerierError::Unsupported(m)
                 if m == "histogram_quantile is not yet supported on exponential_histogram metrics"),
+            "{err}"
+        );
+    }
+
+    /// `irVersion` 10 series-algebra shapes validate but are refused before
+    /// any scan until their lowering lands.
+    #[tokio::test]
+    async fn series_algebra_is_not_supported_yet() {
+        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "result": "scalar", "pipeline": [
+                { "aggregate": { "aggs": [{ "fn": "count", "as": "n" }], "step": "1m" } },
+                { "scalar": {} }
+            ]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::Unsupported(m) if m == "scalar stage is not supported yet"),
             "{err}"
         );
     }

@@ -20,7 +20,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 9;
+pub const MAX_IR_VERSION: i64 = 10;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -49,6 +49,12 @@ pub enum Feature {
     SpanCorrelate,
     /// The `graph` result envelope over `traces`.
     ServiceGraph,
+    /// The `scalar` stage (series → scalar).
+    ScalarStage,
+    /// The `vector` stage (scalar → series).
+    VectorStage,
+    /// The `scalar` result envelope.
+    ScalarEnvelope,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -103,6 +109,9 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::AggregateWindow, 7),
     (Feature::SpanCorrelate, 8),
     (Feature::ServiceGraph, 8),
+    (Feature::ScalarStage, 10),
+    (Feature::VectorStage, 10),
+    (Feature::ScalarEnvelope, 10),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -174,7 +183,8 @@ mod tests {
         assert!(is_supported(7));
         assert!(is_supported(8));
         assert!(is_supported(9));
-        assert!(!is_supported(10));
+        assert!(is_supported(10));
+        assert!(!is_supported(11));
     }
 
     #[test]
@@ -311,6 +321,9 @@ mod tests {
             Feature::AggregateWindow,
             Feature::SpanCorrelate,
             Feature::ServiceGraph,
+            Feature::ScalarStage,
+            Feature::VectorStage,
+            Feature::ScalarEnvelope,
         ];
         for feature in all {
             assert!(

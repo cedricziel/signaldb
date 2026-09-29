@@ -32,6 +32,9 @@ pub enum ResultEnvelope {
     /// for the `traces` source at IR version 8 or later; see
     /// `query_ir::validate`.
     Graph,
+    /// One value per evaluation instant, no labels: a terminal `Scalar`
+    /// relation (`irVersion` 10).
+    Scalar,
 }
 
 impl ResultEnvelope {
@@ -44,6 +47,7 @@ impl ResultEnvelope {
             ResultEnvelope::Flamegraph => "flamegraph",
             ResultEnvelope::Metadata => "metadata",
             ResultEnvelope::Graph => "graph",
+            ResultEnvelope::Scalar => "scalar",
         }
     }
 }
@@ -103,7 +107,6 @@ impl Document {
     /// which made the same fact true in three places and free to drift apart.
     /// `validate` rejects a document declaring less than this.
     pub fn minimum_ir_version(&self) -> i64 {
-        use super::stage::Stage;
         use super::version::{Feature, OperatorRegistry};
 
         let mut needed = 1;
@@ -113,13 +116,13 @@ impl Document {
         if self.result == ResultEnvelope::Metadata {
             needed = needed.max(OperatorRegistry::feature_min_version(Feature::Describe));
         }
+        if self.result == ResultEnvelope::Scalar {
+            needed = needed.max(OperatorRegistry::feature_min_version(
+                Feature::ScalarEnvelope,
+            ));
+        }
         for stage in &self.pipeline {
             needed = needed.max(match stage {
-                Stage::Heatmap(_) => OperatorRegistry::feature_min_version(Feature::Heatmap),
-                Stage::HistogramQuantile(_) => {
-                    OperatorRegistry::feature_min_version(Feature::HistogramQuantile)
-                }
-                Stage::Describe(_) => OperatorRegistry::feature_min_version(Feature::Describe),
                 Stage::Aggregate(a) => a
                     .aggs
                     .iter()
@@ -144,7 +147,9 @@ impl Document {
                     })
                     .max()
                     .unwrap_or(1),
-                _ => 1,
+                other => other
+                    .feature()
+                    .map_or(1, OperatorRegistry::feature_min_version),
             });
         }
         needed
