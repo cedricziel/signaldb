@@ -309,13 +309,20 @@ layer. The IR grows whatever PromQL needs.
   is a validation error (400).
 - **Series labels.** A Series produced from a point stream carries the full
   label set of its series: `metric.name`, resource attributes as
-  `resource.<key>` (with `service.name` as itself), and point attributes by
-  their own key — the IR's logical names, stringified. The encoding is
-  injective: a point attribute whose key would collide with that namespace
-  (`metric.*`, `resource.*`, `service.name`) is emitted scope-qualified, as
-  the field resolver addresses it, so no two attributes share a label. The relation type
-  records the label set as *known* (after a `by`) or *open*. In the querier a
-  Series is `(bucket, labels Map<Utf8,Utf8>, value Float64)`; grouping and
+  `resource.<key>` (with `service.name` as itself), the instrumentation scope
+  as `otel.scope.name`/`otel.scope.version`, and point attributes by their
+  own key — the IR's logical names, stringified; an empty value is absent.
+  The encoding is injective: a point attribute whose key would collide with
+  that namespace (`metric.*`, `resource.*`, `service.name`, the scope labels)
+  is emitted qualified as `point.<key>`, as the field resolver addresses it,
+  so no two attributes share a label (see *Metric name* below for which
+  functions keep `metric.name`). The relation type records the label set as
+  *known* (after a `by`) or *open*.
+  In the querier a Series is `(bucket Timestamp(ns), __labels Utf8, value
+  Float64)`, `__labels` being the label set as canonical JSON (an object of
+  string values, keys sorted, compact), so equal label sets are equal strings
+  and a label set is a hashable, sortable key; two series of one result
+  sharing a label set at an instant are a 400. Grouping and
   matching go through label-set UDFs (keep / drop / fingerprint / replace /
   join), so `without`, `ignoring` and `label_replace` work on label sets not
   known at plan time. The PromQL surface maps names at its own boundary and
@@ -329,6 +336,10 @@ layer. The IR grows whatever PromQL needs.
   and labelled `t`. An instant value is a series' latest point in
   `(t − lookback, t]` (lookback default `5m`); range operators read
   `(t − window, t]`. `offset` shifts the read window back, `at` pins `t`.
+  A query evaluates at most 11,000 instants (Prometheus' limit); more is a
+  400. A point flagged `NO_RECORDED_VALUE` is a staleness marker: range
+  operators skip it, and an instant whose newest point in the lookback is
+  one has no value.
   Log/trace/profile aggregates keep epoch-aligned `date_bin` buckets.
 - **Range operators** (rate / increase / irate / delta / deriv / resets /
   changes / `*_over_time` / the instant `latest`) are one windowed

@@ -6,6 +6,7 @@ sources:
   - src/router/src/endpoints/query.rs
   - src/query-ir/src/**
   - src/querier/src/query/ir_planner.rs
+  - src/querier/src/query/metric_series/**
   - src/querier/src/query/graph.rs
   - src/common/src/profile/aggregation.rs
   - src/signaldb-cli/src/commands/query.rs
@@ -90,15 +91,18 @@ different things. Each arrives as a JSON object you can index by key.
 The `pipeline` is an ordered list of transform stages. Each stage is a
 single-key object naming the stage:
 
-| Stage              | Shape                            | Role                                             |
-| ------------------ | -------------------------------- | ------------------------------------------------ |
-| `where`            | a predicate tree                 | filter                                           |
-| `extract`          | `{ parser, as: [{name, type}] }` | derive typed fields from log content (logs only) |
-| `aggregate`        | `{ by, aggs, step? }`            | group-reduce; with `step` → a time series        |
-| `topk` / `bottomk` | `{ n, of }`                      | rank by a numeric column                         |
-| `order`            | `[{ of, dir }]`                  | sort                                             |
-| `limit`            | integer                          | bound the row count                              |
-| `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate    |
+| Stage              | Shape                            | Role                                              |
+| ------------------ | -------------------------------- | ------------------------------------------------- |
+| `where`            | a predicate tree                 | filter                                            |
+| `extract`          | `{ parser, as: [{name, type}] }` | derive typed fields from log content (logs only)  |
+| `aggregate`        | `{ by, aggs, step? }`            | group-reduce; with `step` → a time series         |
+| `topk` / `bottomk` | `{ n, of }`                      | rank by a numeric column                          |
+| `order`            | `[{ of, dir }]`                  | sort                                              |
+| `limit`            | integer                          | bound the row count                               |
+| `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate     |
+| `sample` (v10)     | `{ fn, window?, lookback?, … }`  | a metric point stream → a Series (`metrics` only) |
+| `scalar` (v10)     | `{}`                             | a Series → a Scalar                               |
+| `vector` (v10)     | `{}`                             | a Scalar → a Series                               |
 
 With `step`, an `aggregate` on the `metrics` source is evaluated at instants
 `t = from + k·step` (`t ≤ to`), each reading the left-open window
@@ -547,7 +551,7 @@ The declared `result` selects one canonical response shape:
 { "result": "rows",  "window": {...}, "columns": [{name, type}], "rows": [[...]] }
 // table  (a grouped aggregate)
 { "result": "table", "window": {...}, "columns": [{name, type}], "rows": [[...]] }
-// series (a step aggregate)
+// series (an aggregate with `step`, or a metric Series from `sample`)
 { "result": "series", "window": {...},
   "series": [ { "labels": {...}, "points": [[t_ns, value], ...] } ] }
 ```
@@ -563,10 +567,13 @@ its records — see [Discovery](#discovery-what-can-i-query).
 result of a `scalar` stage or of the `time`/`constant` pseudo-sources:
 
 ```jsonc
-{ "result": "scalar", "window": {...}, "points": [[t_ns, value], ...] }
+{ "result": "scalar", "window": {...}, "step_ns": 60000000000,
+  "points": [[t_ns, value], ...] }
 ```
 
-A `NaN` value (e.g. `scalar` over zero or several series) is `null`.
+JSON has no NaN or infinity, so a `NaN`, `+Inf` or `-Inf` value in a
+`series` or `scalar` envelope is `null` (e.g. `scalar` over zero or several
+series). See [Metric Series](#metric-series-ir-v10).
 
 Values follow the value type: timestamps/durations are integer nanoseconds,
 bytes are base64, everything else its JSON-native form.
@@ -922,6 +929,100 @@ aggregate functions (see
 [More range functions](#more-range-functions-across-and-window-v7));
 cross-series arithmetic stays PromQL-only until it has an HTTP surface of its
 own.
+
+## Metric Series (IR v10)
+
+`irVersion` 10 evaluates metrics the way Prometheus does: at the instants
+`t = from + k·step` of the range (`step` on the stage, else the document's
+`step`), per series, into a **Series**. At most 11,000 instants per query;
+more is a 400.
+
+### `sample`
+
+`sample` reads the `metrics` point stream (after any `where`) and evaluates
+one function per series at every instant:
+
+```json
+{
+  "irVersion": 10,
+  "from": "metrics",
+  "range": { "from": "now-1h", "to": "now" },
+  "step": "1m",
+  "result": "series",
+  "pipeline": [
+    {
+      "where": {
+        "field": "metric.name",
+        "op": "eq",
+        "value": "http.server.requests"
+      }
+    },
+    { "sample": { "fn": "rate", "window": "5m" } }
+  ]
+}
+```
+
+| Operand    | Meaning                                                                              |
+| ---------- | ------------------------------------------------------------------------------------ |
+| `fn`       | `latest`, or one of the range functions below                                        |
+| `window`   | range functions: read the points in `(t − window, t]`                                |
+| `lookback` | `latest`: the newest point in `(t − lookback, t]` (default `5m`)                     |
+| `of`       | `metric.value` (default), or `metric.count` / `metric.sum` of a histogram or summary |
+| `step`     | the evaluation step, overriding the document's                                       |
+| `offset`   | shift every read window back by this duration (`>= 0`)                               |
+| `at`       | read at this one timestamp and repeat its value at every instant                     |
+| `arg`      | `quantile_over_time`: the quantile in `[0, 1]`                                       |
+
+The range functions are `rate`, `increase`, `irate`, `delta`, `idelta`,
+`deriv`, `resets`, `changes`, and `avg_`, `min_`, `max_`, `sum_`, `count_`,
+`last_`, `stddev_`, `stdvar_`, `present_` and `quantile_over_time`, with
+PromQL's semantics.
+
+`rate`, `increase` and `irate` reject gauges and non-monotonic sums with a
+400 naming `delta`/`deriv` instead. A cumulative histogram's `metric.count` and `metric.sum` sample as counters. A series with
+no point in an instant's window has no value there. A point flagged
+`NO_RECORDED_VALUE` (OTLP's staleness marker) is skipped by range functions,
+and `latest` has no value at an instant whose newest point is one.
+
+### Labels
+
+Each series of a Series carries the full label set of its OTLP identity,
+with string values:
+
+- `metric.name`: kept by `latest` and `last_over_time`, dropped by every
+  other function (the value is no longer the metric), as PromQL drops
+  `__name__`.
+- `service.name`, and every other resource attribute as `resource.<key>`.
+- `otel.scope.name` / `otel.scope.version`: the instrumentation scope.
+- Point attributes under their own key, or as `point.<key>` when the key
+  would collide with the labels above (`point.metric.name` is the point
+  attribute `metric.name`).
+
+Structured values (arrays, maps) are compact JSON; an empty value is absent.
+Two series whose label sets end up equal at an instant (two metrics after
+`rate` drops `metric.name`, say) cannot be told apart, and the query is a
+400 "several series share the label set …"; narrow the stream to one metric
+with a `where` first.
+
+### Scalars: `scalar`, `vector`, `time`, `constant`
+
+A **Scalar** is one value per instant with no labels, returned as the
+[`scalar` envelope](#result-envelopes). `scalar` turns a Series from `sample`
+into one: at each instant the value of its only series, `NaN` when it has
+none or several. `scalar` over any other Series (an aggregate with `step`,
+say) is not supported yet (501). `vector` turns a Scalar back into a Series
+of one series with no labels.
+
+Two pseudo-sources produce a Scalar without reading data; both need the
+document `step`:
+
+```jsonc
+{ "irVersion": 10, "from": "time", "range": {...}, "step": "1m", "result": "scalar" }
+{ "irVersion": 10, "from": "constant", "constant": 2.5, "range": {...}, "step": "1m", "result": "scalar" }
+```
+
+`time` is each instant in seconds since the epoch; `constant` is the given
+value at every instant.
 
 ## Histograms
 

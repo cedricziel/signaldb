@@ -330,7 +330,11 @@ before the request
 ever reaches the querier. A multi-query request (`queries` + `formulas`) checks
 that scope for every inner query before any of them runs, executes each inner
 `series` query the same way, and evaluates the formulas in the router,
-joining series on identical labels and timestamps. Any envelope may carry a `warnings` array — non-fatal
+joining series on identical labels and timestamps. Metric Series documents (IR
+v10 `sample`, `scalar`, `vector`, `time`/`constant`) arrive as `bucket`/`__labels`/`value`
+batches; the router keys each series on the canonical `__labels` string, returns
+400 when two series share a label set at one instant, serializes NaN/±Inf as
+`null`, and answers a `scalar` document with the `scalar` envelope. Any envelope may carry a `warnings` array — non-fatal
 diagnostics with a stable `code`; today `unknown_group_by_field`, raised when an
 `aggregate.by` field is neither a logical field of the source nor carried by any
 record in the window, so the grouping produced one `null` label. It is a warning
