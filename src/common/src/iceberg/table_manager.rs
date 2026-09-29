@@ -218,26 +218,6 @@ impl IcebergTableManager {
                 &SCHEMA_DEFINITIONS.logs,
                 SCHEMA_DEFINITIONS.metadata.current_log_version.as_str(),
             )),
-            "metrics_gauge" => Some((
-                &SCHEMA_DEFINITIONS.metrics_gauge,
-                schemas::LEGACY_METRIC_VERSION,
-            )),
-            "metrics_sum" => Some((
-                &SCHEMA_DEFINITIONS.metrics_sum,
-                schemas::LEGACY_METRIC_VERSION,
-            )),
-            "metrics_histogram" => Some((
-                &SCHEMA_DEFINITIONS.metrics_histogram,
-                schemas::LEGACY_METRIC_VERSION,
-            )),
-            "metrics_exponential_histogram" => Some((
-                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                schemas::LEGACY_METRIC_VERSION,
-            )),
-            "metrics_summary" => Some((
-                &SCHEMA_DEFINITIONS.metrics_summary,
-                schemas::LEGACY_METRIC_VERSION,
-            )),
             "profiles" => Some((
                 &SCHEMA_DEFINITIONS.profiles,
                 SCHEMA_DEFINITIONS.metadata.current_profile_version.as_str(),
@@ -806,21 +786,6 @@ mod tests {
         assert_eq!(version, schemas::TYPED_METRIC_VERSION);
     }
 
-    #[test]
-    fn schema_target_for_pins_legacy_metric_tables_to_v3() {
-        for name in [
-            "metrics_gauge",
-            "metrics_sum",
-            "metrics_histogram",
-            "metrics_exponential_histogram",
-            "metrics_summary",
-        ] {
-            let (_, version) = IcebergTableManager::schema_target_for(name)
-                .unwrap_or_else(|| panic!("{name} should be schemas.toml-sourced"));
-            assert_eq!(version, schemas::LEGACY_METRIC_VERSION);
-        }
-    }
-
     #[tokio::test]
     async fn ensure_table_evolves_an_existing_table_behind_the_current_version()
     -> anyhow::Result<()> {
@@ -966,60 +931,11 @@ mod tests {
         Ok(())
     }
 
-    /// A `physical-v1` metrics_gauge table (legacy `map<string,string>`
-    /// attributes) is behind a *typed* current version (v3), so
-    /// `ensure_table` cannot evolve it -- `diff_schema` doesn't support
-    /// adding/removing map columns. It is dropped and recreated fresh
-    /// instead (`recreate_as_typed`), landing directly on the current
-    /// typed schema, `resource_identity` included.
-    #[tokio::test]
-    async fn ensure_table_recreates_a_stale_v1_metrics_gauge_table_as_typed() -> anyhow::Result<()>
-    {
-        let manager = CatalogManager::new_in_memory().await?;
-        let catalog = manager.catalog();
-        create_v1_table(
-            &catalog,
-            &SCHEMA_DEFINITIONS.metrics_gauge,
-            "evo_tenant3",
-            "evo_dataset3",
-            "metrics_gauge",
-        )
-        .await?;
-
-        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
-        let table = table_manager
-            .ensure_table(
-                "evo_tenant3",
-                "evo_dataset3",
-                "metrics_gauge",
-                &MaterializedLabels::default(),
-            )
-            .await?;
-
-        let schema = table.current_schema()?;
-        assert!(
-            typed_attributes::is_typed_layout(schema.fields().iter().map(|f| f.name.as_str())),
-            "recreated table should be in the typed attribute layout"
-        );
-        assert!(
-            schema
-                .fields()
-                .iter()
-                .any(|f| f.name == "resource_identity"),
-            "resource_identity should be present on the recreated table"
-        );
-        assert_eq!(
-            table
-                .metadata()
-                .properties
-                .get(evolution::SCHEMA_VERSION_PROPERTY),
-            Some(&schemas::LEGACY_METRIC_VERSION.to_string()),
-            "legacy-named metric tables stay pinned to the legacy version after recreation"
-        );
-        Ok(())
-    }
-
-    /// Same as the metrics_gauge case above, for profiles.
+    /// A `physical-v1` profiles table (legacy `map<string,string>`
+    /// attributes) is behind a *typed* current version, so `ensure_table`
+    /// cannot evolve it -- `diff_schema` doesn't support adding/removing map
+    /// columns. It is dropped and recreated fresh instead
+    /// (`recreate_as_typed`), landing directly on the current typed schema.
     #[tokio::test]
     async fn ensure_table_recreates_a_stale_v1_profiles_table_as_typed() -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;

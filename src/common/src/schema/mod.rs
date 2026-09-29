@@ -819,8 +819,8 @@ mod tests {
 
         assert!(
             bloom_filter_properties_for_table(
-                &TableSchema::MetricsGauge,
-                &TableSchema::MetricsGauge.schema().unwrap()
+                &TableSchema::Metrics,
+                &TableSchema::Metrics.schema().unwrap()
             )
             .is_empty()
         );
