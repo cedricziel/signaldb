@@ -11,55 +11,21 @@
 //! reimplements a piece of it.
 
 use common::auth::validation::{self, ValidationError};
-use common::iceberg::schemas::{MetricsLayout, TableSchema};
+use common::iceberg::schemas::LEGACY_METRIC_TABLE_NAMES;
 use common::wal::WalOperation;
 
-/// The table a metrics batch goes to when its metadata names none, under the
-/// legacy per-type layout.
-const DEFAULT_METRICS_TABLE: &str = "metrics_gauge";
-
-/// The table a metrics batch goes to when its metadata names none, under the
-/// wide layout.
-const WIDE_METRICS_TABLE: &str = "metrics";
-
-/// The table a metrics batch goes to when its metadata names none, under
-/// `layout`.
-fn default_metrics_table(layout: MetricsLayout) -> &'static str {
-    match layout {
-        MetricsLayout::Legacy => DEFAULT_METRICS_TABLE,
-        MetricsLayout::Wide => WIDE_METRICS_TABLE,
-    }
-}
+/// The table every metrics batch commits to.
+const METRICS_TABLE: &str = "metrics";
 
 /// Whether `table_name` is one of the metrics signal tables a `WriteMetrics`
-/// batch may target under `layout`.
+/// batch may target.
 ///
-/// Under [`MetricsLayout::Wide`] this also accepts the five legacy per-type
-/// names: a WAL entry can still carry one of them in flight across the
-/// upgrade (written before the flip, committed after), and its wire format
-/// is identical to a `metrics` batch, so [`table_for`] redirects it to the
-/// wide table rather than rejecting it.
-fn is_known_metrics_table(table_name: &str, layout: MetricsLayout) -> bool {
-    match TableSchema::from_table_name(table_name) {
-        Some(
-            TableSchema::MetricsGauge
-            | TableSchema::MetricsSum
-            | TableSchema::MetricsHistogram
-            | TableSchema::MetricsExponentialHistogram
-            | TableSchema::MetricsSummary,
-        ) => true,
-        Some(TableSchema::Metrics) => layout == MetricsLayout::Wide,
-        _ => false,
-    }
-}
-
-/// The table a metrics batch actually commits to under `layout`, given the
-/// (already-validated-known) table its metadata named.
-fn table_for(named: &str, layout: MetricsLayout) -> &str {
-    match layout {
-        MetricsLayout::Wide => WIDE_METRICS_TABLE,
-        MetricsLayout::Legacy => named,
-    }
+/// This also accepts the five legacy per-type names: a WAL entry can still
+/// carry one of them in flight across the upgrade (written before the flip,
+/// committed after), and its wire format is identical to a `metrics` batch,
+/// so [`route`] redirects it to the wide table rather than rejecting it.
+fn is_known_metrics_table(table_name: &str) -> bool {
+    table_name == METRICS_TABLE || LEGACY_METRIC_TABLE_NAMES.contains(&table_name)
 }
 
 /// A batch's destination.
@@ -120,33 +86,16 @@ pub fn route(
     fallback_tenant: &str,
     fallback_dataset: &str,
 ) -> Result<RouteTarget, RoutingError> {
-    route_with_layout(
-        operation,
-        metadata,
-        fallback_tenant,
-        fallback_dataset,
-        MetricsLayout::current(),
-    )
-}
-
-/// Like [`route`], with the metrics layout as a parameter.
-pub fn route_with_layout(
-    operation: &WalOperation,
-    metadata: RouteMetadata<'_>,
-    fallback_tenant: &str,
-    fallback_dataset: &str,
-    layout: MetricsLayout,
-) -> Result<RouteTarget, RoutingError> {
     let table_name = match operation {
         WalOperation::WriteTraces => "traces".to_string(),
         WalOperation::WriteLogs => "logs".to_string(),
         WalOperation::WriteProfiles => "profiles".to_string(),
         WalOperation::WriteMetrics => {
-            let table = present(metadata.target_table).unwrap_or(default_metrics_table(layout));
-            if !is_known_metrics_table(table, layout) {
+            let table = present(metadata.target_table).unwrap_or(METRICS_TABLE);
+            if !is_known_metrics_table(table) {
                 return Err(RoutingError::UnknownTable(table.to_string()));
             }
-            table_for(table, layout).to_string()
+            METRICS_TABLE.to_string()
         }
         // A `Flush` marker carries no data; the processor force-commits its
         // scope and marks it processed without ever routing it.
@@ -249,7 +198,7 @@ mod tests {
             (WalOperation::WriteTraces, "traces"),
             (WalOperation::WriteLogs, "logs"),
             (WalOperation::WriteProfiles, "profiles"),
-            (WalOperation::WriteMetrics, WIDE_METRICS_TABLE),
+            (WalOperation::WriteMetrics, METRICS_TABLE),
         ] {
             let target = on_ingest(&operation, RouteMetadata::default());
             assert_eq!(target.table_name, table);
@@ -265,7 +214,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(with_table.table_name, WIDE_METRICS_TABLE);
+        assert_eq!(with_table.table_name, METRICS_TABLE);
 
         // Absent or blank falls back rather than routing to a nameless table.
         for target_table in [None, Some(""), Some("  ")] {
@@ -276,7 +225,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            assert_eq!(target.table_name, WIDE_METRICS_TABLE);
+            assert_eq!(target.table_name, METRICS_TABLE);
         }
     }
 
@@ -331,13 +280,13 @@ mod tests {
         );
     }
 
-    /// Under [`MetricsLayout::Wide`] every shape of `target_table` --
+    /// Every shape of `target_table` --
     /// absent (the default), the wide name itself, or a WAL entry still
     /// naming a legacy per-type table (written before the flip, committed
     /// after) -- must route to `metrics`. The legacy-named case is never
     /// rejected: its wire format is identical to a `metrics` batch.
     #[test]
-    fn wide_layout_routes_every_shape_of_target_table_to_metrics() {
+    fn routes_every_shape_of_target_table_to_metrics() {
         for target_table in [
             None,
             Some("metrics"),
@@ -347,7 +296,7 @@ mod tests {
             Some("metrics_exponential_histogram"),
             Some("metrics_summary"),
         ] {
-            let target = route_with_layout(
+            let target = route(
                 &WalOperation::WriteMetrics,
                 RouteMetadata {
                     target_table,
@@ -355,7 +304,6 @@ mod tests {
                 },
                 DEFAULT_TENANT_ID,
                 DEFAULT_DATASET_ID,
-                MetricsLayout::Wide,
             )
             .unwrap();
             assert_eq!(
@@ -363,32 +311,6 @@ mod tests {
                 "{target_table:?} must route to metrics"
             );
         }
-    }
-
-    #[test]
-    fn legacy_layout_unchanged_default_and_rejects_the_wide_table() {
-        let target = route_with_layout(
-            &WalOperation::WriteMetrics,
-            RouteMetadata::default(),
-            DEFAULT_TENANT_ID,
-            DEFAULT_DATASET_ID,
-            MetricsLayout::Legacy,
-        )
-        .unwrap();
-        assert_eq!(target.table_name, DEFAULT_METRICS_TABLE);
-
-        let err = route_with_layout(
-            &WalOperation::WriteMetrics,
-            RouteMetadata {
-                target_table: Some("metrics"),
-                ..Default::default()
-            },
-            DEFAULT_TENANT_ID,
-            DEFAULT_DATASET_ID,
-            MetricsLayout::Legacy,
-        )
-        .unwrap_err();
-        assert!(matches!(err, RoutingError::UnknownTable(ref t) if t == "metrics"));
     }
 
     #[test]

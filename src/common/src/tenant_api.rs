@@ -148,7 +148,6 @@ fn table_info_for_schema(schema: iceberg_schemas::TableSchema) -> TableInfo {
         }
         iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
         iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
-        // Reachable once `MetricsLayout::current()` is Wide.
         iceberg_schemas::TableSchema::Metrics => "OpenTelemetry metrics",
         iceberg_schemas::TableSchema::MetricExemplars => "OpenTelemetry metric exemplars",
         iceberg_schemas::TableSchema::Custom(ref name) => {

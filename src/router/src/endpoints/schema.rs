@@ -1852,7 +1852,7 @@ fn physical_schemas_for_source(
     )
 )]
 pub(crate) async fn get_schema(Extension(_ctx): Extension<TenantContext>) -> Response {
-    use common::iceberg::schemas::{LEGACY_METRIC_VERSION, MetricsLayout, TYPED_METRIC_VERSION};
+    use common::iceberg::schemas::TYPED_METRIC_VERSION;
     use common::schema::SCHEMA_DEFINITIONS;
     use common::schema::logical::LogicalSchema;
 
@@ -1881,38 +1881,14 @@ pub(crate) async fn get_schema(Extension(_ctx): Extension<TenantContext>) -> Res
         &SCHEMA_DEFINITIONS.logs,
         &SCHEMA_DEFINITIONS.metadata.current_log_version,
     ));
-    // Gated on the metrics layout: today (Legacy) this lists the same three
-    // per-type sources it always has, pinned to the legacy version rather
-    // than read from `current_metric_version` (which still names it today,
-    // but will name the wide layout's version once the cutover flips it).
-    // Once Wide, the wide `metrics`/`metric_exemplars` tables replace them.
-    let metrics_sources: Vec<(&str, &_, &str)> = match MetricsLayout::current() {
-        MetricsLayout::Legacy => vec![
-            (
-                "metrics_gauge",
-                &SCHEMA_DEFINITIONS.metrics_gauge,
-                LEGACY_METRIC_VERSION,
-            ),
-            (
-                "metrics_sum",
-                &SCHEMA_DEFINITIONS.metrics_sum,
-                LEGACY_METRIC_VERSION,
-            ),
-            (
-                "metrics_histogram",
-                &SCHEMA_DEFINITIONS.metrics_histogram,
-                LEGACY_METRIC_VERSION,
-            ),
-        ],
-        MetricsLayout::Wide => vec![
-            ("metrics", &SCHEMA_DEFINITIONS.metrics, TYPED_METRIC_VERSION),
-            (
-                "metric_exemplars",
-                &SCHEMA_DEFINITIONS.metric_exemplars,
-                TYPED_METRIC_VERSION,
-            ),
-        ],
-    };
+    let metrics_sources: [(&str, &_, &str); 2] = [
+        ("metrics", &SCHEMA_DEFINITIONS.metrics, TYPED_METRIC_VERSION),
+        (
+            "metric_exemplars",
+            &SCHEMA_DEFINITIONS.metric_exemplars,
+            TYPED_METRIC_VERSION,
+        ),
+    ];
     for (source, versions, current_version) in metrics_sources {
         physical.extend(physical_schemas_for_source(
             source,
@@ -1975,10 +1951,8 @@ mod core_schema_tests {
         }
     }
 
-    // otel-native-schema layer 7 (D10) cutover prep: proves the wide
-    // metrics/metric_exemplars tables resolve at TYPED_METRIC_VERSION, the
-    // version `get_schema`'s metrics_sources loop uses for them once
-    // `MetricsLayout::current()` is Wide.
+    // The wide metrics/metric_exemplars tables resolve at TYPED_METRIC_VERSION,
+    // the version `get_schema`'s metrics_sources loop uses for them.
     #[test]
     fn wide_metrics_tables_resolve_at_the_typed_version() {
         use common::iceberg::schemas::TYPED_METRIC_VERSION;
@@ -1996,25 +1970,6 @@ mod core_schema_tests {
             TYPED_METRIC_VERSION,
         );
         assert!(exemplars.iter().any(|s| s.version == TYPED_METRIC_VERSION));
-    }
-
-    // Legacy tables must keep resolving at LEGACY_METRIC_VERSION, the pinned
-    // version `get_schema`'s metrics_sources loop uses for them today.
-    #[test]
-    fn legacy_metrics_tables_resolve_at_the_pinned_legacy_version() {
-        use common::iceberg::schemas::LEGACY_METRIC_VERSION;
-
-        for (source, versions) in [
-            ("metrics_gauge", &SCHEMA_DEFINITIONS.metrics_gauge),
-            ("metrics_sum", &SCHEMA_DEFINITIONS.metrics_sum),
-            ("metrics_histogram", &SCHEMA_DEFINITIONS.metrics_histogram),
-        ] {
-            let schemas = physical_schemas_for_source(source, versions, LEGACY_METRIC_VERSION);
-            assert!(
-                schemas.iter().any(|s| s.version == LEGACY_METRIC_VERSION),
-                "{source} must resolve at {LEGACY_METRIC_VERSION}"
-            );
-        }
     }
 
     #[test]

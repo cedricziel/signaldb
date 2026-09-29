@@ -120,11 +120,9 @@ The current metrics layout (`otel-native-schema` layer 7, D10) is two wide
 tables, `metrics.physical-v4` and `metric_exemplars.physical-v4`
 (`schemas.toml`), replacing the five legacy per-type tables
 (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
-`metrics_exponential_histogram`, `metrics_summary`). `MetricsLayout::current()`
-(`common::iceberg::schemas`) reads `current_metric_version` and returns
-`Wide` for `physical-v4`; `Legacy` for anything else. Under `Wide`, the writer
-runs two transforms per wire metrics batch instead of the five hand-written
-per-type ones:
+`metrics_exponential_histogram`, `metrics_summary`). The writer runs two
+transforms per wire metrics batch instead of the five hand-written per-type
+ones:
 
 - `transform_metrics_to_wide` (`src/writer/src/schema_transform.rs`) fans
   each OTLP data point into one `metrics` row, typed by `metric_type`
