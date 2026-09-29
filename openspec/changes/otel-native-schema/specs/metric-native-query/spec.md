@@ -106,6 +106,13 @@ assuming Prometheus `le`-bucket layout.
   threshold is used, folding buckets inside it into the zero count, and the
   result is clamped to the recorded `min`/`max` when present
 
+#### Scenario: A merged zero threshold that cuts a bucket absorbs it
+
+- **WHEN** the largest zero threshold of the merged points falls inside a
+  populated bucket
+- **THEN** the threshold is raised to that bucket's upper boundary and the
+  bucket's count is folded into the zero count
+
 ### Requirement: Metric series are evaluated at evaluation instants
 
 A metric series SHALL be evaluated at instants `start + k·step` and labelled
@@ -136,10 +143,17 @@ surface syntax.
 
 #### Scenario: Many-to-many match is rejected
 
-- **WHEN** both sides of a binary operation hold more than one series for the
-  same match key and no group side is declared
+- **WHEN** both sides of an arithmetic or comparison operation hold more than
+  one series for the same match key and no group side is declared
 - **THEN** the query is rejected (HTTP 400) rather than pairing series
   arbitrarily
+
+#### Scenario: Set operators allow many-to-many
+
+- **WHEN** `and`, `or` or `unless` combine sides that each hold several series
+  per match key
+- **THEN** the result keeps or drops series by whether a match exists on the
+  other side, without a cardinality error
 
 ### Requirement: PromQL is a projection of the metric model
 

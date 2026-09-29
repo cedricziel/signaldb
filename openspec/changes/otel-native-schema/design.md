@@ -310,14 +310,20 @@ layer. The IR grows whatever PromQL needs.
 - **Series labels.** A Series produced from a point stream carries the full
   label set of its series: `metric.name`, resource attributes as
   `resource.<key>` (with `service.name` as itself), and point attributes by
-  their own key — the IR's logical names, stringified. The relation type
+  their own key — the IR's logical names, stringified. The encoding is
+  injective: a point attribute whose key would collide with that namespace
+  (`metric.*`, `resource.*`, `service.name`) is emitted scope-qualified, as
+  the field resolver addresses it, so no two attributes share a label. The relation type
   records the label set as *known* (after a `by`) or *open*. In the querier a
   Series is `(bucket, labels Map<Utf8,Utf8>, value Float64)`; grouping and
   matching go through label-set UDFs (keep / drop / fingerprint / replace /
   join), so `without`, `ignoring` and `label_replace` work on label sets not
   known at plan time. The PromQL surface maps names at its own boundary
   (`__name__` ↔ `metric.name`, `job`/`service_name` ↔ `service.name`, other
-  dots ↔ `_`), never inside the model.
+  dots ↔ `_`), never inside the model. When two labels of one series map to
+  the same Prometheus name (`foo.bar` and `foo_bar`), their values are joined
+  with `;` in key order — the Prometheus OTLP translation rule — and a
+  PromQL matcher on that name matches any logical key that escapes to it.
 - **Evaluation instants.** Metric Series are evaluated at `t = from + k·step`
   and labelled `t`. An instant value is a series' latest point in
   `(t − lookback, t]` (lookback default `5m`); range operators read
@@ -334,14 +340,18 @@ layer. The IR grows whatever PromQL needs.
   moved forward is a reset and contributes its full value; the first point
   contributes its full value only when its `start_timestamp` lies inside the
   window, else it is the baseline; with no `start_timestamp` (0/null — e.g.
-  Prometheus remote-write) a value decrease is the reset signal. Delta: the
-  sum of the points in the window. `rate = increase / window_seconds`; no
+  Prometheus remote-write) a value decrease is the reset signal. Delta
+  temporality: the sum of the points in the window. (The PromQL `delta()`
+  *function* is separate: last minus first over the window, for gauges, with
+  no extrapolation to the window edges — which is what SignalDB's PromQL
+  already does, so no result changes; Prometheus extrapolates.) `rate = increase / window_seconds`; no
   extrapolation. Gauges and non-monotonic sums are rejected (400, naming
   `delta`/`deriv`) — on the IR and on PromQL.
 - **Histograms.** A UDAF merges bucket data across series (explicit bounds
-  must match; exponential buckets are downscaled to the smallest scale and
-  the largest zero threshold wins, folding buckets inside it into the zero
-  count — the OTel SDK merge rule); a scalar UDF interpolates the quantile.
+  must match; exponential buckets are downscaled to the smallest scale, the
+  largest zero threshold wins and is raised to the upper boundary of any
+  populated bucket it cuts through, and every bucket at or below it is
+  folded into the zero count — the OTel merge rule); a scalar UDF interpolates the quantile.
   Explicit: linear within the bucket, as today. Exponential: bucket `i` is
   `(base^i, base^(i+1)]`, `base = 2^(2^−scale)`; rank walk negative (largest
   magnitude first) → zero → positive; exponential interpolation inside a
@@ -351,10 +361,12 @@ layer. The IR grows whatever PromQL needs.
 - **Vector matching** is a `binop` stage whose right operand is a sub-document
   (or a number). It plans as one custom logical node + `ExecutionPlan`
   (the `correlate_cap` pattern) that joins on the fingerprint of the matched
-  label set (`on` / `ignoring`), enforces one-to-one or the declared
-  `group: left|right` side, and rejects many-to-many and a duplicate output
-  label set with a 400. Arithmetic drops `metric.name`; `bool` comparisons
-  yield 0/1; `and`/`or`/`unless` are set operations on label sets. A Scalar
+  label set (`on` / `ignoring`). For arithmetic and comparison operators it
+  enforces one-to-one or the declared `group: left|right` side and rejects
+  many-to-many and a duplicate output label set with a 400; arithmetic drops
+  `metric.name` and `bool` comparisons yield 0/1. `and`/`or`/`unless` are
+  existence-based set operations: they match on the same label set but allow
+  any number of series on both sides, as in PromQL. A Scalar
   operand broadcasts. `formulas` remain the multi-query convenience.
 - **Series algebra stages (`irVersion` 10).** `sample` (point stream → Series:
   latest, rate/increase/irate/delta/idelta/deriv/resets/changes,
