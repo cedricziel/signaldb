@@ -10,6 +10,7 @@
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_grpc::TraceHandler;
 use acceptor::handler::otlp_log_handler::LogHandler;
+use acceptor::handler::otlp_metrics_handler::MetricsHandler;
 use axum::{
     Router,
     body::Body,
@@ -48,6 +49,7 @@ pub(crate) struct TestServices {
     pub(crate) flight_transport: Arc<InMemoryFlightTransport>,
     pub(crate) log_handler: Arc<LogHandler>,
     pub(crate) trace_handler: Arc<TraceHandler>,
+    pub(crate) metrics_handler: MetricsHandler,
     /// Shared with the router built by `build_router`, so a processor
     /// created through `POST /api/v1/processors` is visible to the next
     /// `for_request` lookup the ingest handlers make (task 3.3).
@@ -279,6 +281,11 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         wal_manager.clone(),
         processor_registry.clone(),
     ));
+    let metrics_handler = MetricsHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
     let trace_handler = Arc::new(
         TraceHandler::new(
             flight_transport.clone(),
@@ -309,6 +316,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         flight_transport,
         log_handler,
         trace_handler,
+        metrics_handler,
         processor_registry,
         catalog: processor_catalog,
         config,

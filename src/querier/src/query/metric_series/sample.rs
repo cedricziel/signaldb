@@ -244,9 +244,13 @@ pub(crate) fn lower_sample(
         let flags = coalesce(vec![cast(ident("flags"), DataType::Int64), lit(0_i64)]);
         binary_expr(flags, Operator::BitwiseAnd, lit(1_i64)).eq(lit(1_i64))
     });
+    // `ts >= lo + 1`, not `ts > lo`: the Iceberg scan turns a strict bound
+    // into a strict bound on the `Hour(timestamp)` partition, which would
+    // prune the hour the window opens in.
+    let lo = r.first.saturating_sub(r.window_ns).saturating_add(1);
     let mut points = df.filter(
         ts.clone()
-            .gt(ts_lit(r.first.saturating_sub(r.window_ns)))
+            .gt_eq(ts_lit(lo))
             .and(ts.clone().lt_eq(ts_lit(r.last))),
     )?;
     // A range function reads recorded values only; `latest` keeps the
