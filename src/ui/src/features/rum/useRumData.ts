@@ -21,12 +21,21 @@ import {
   type RumBreakdownOptions,
   type RumKpiMetric,
 } from "../../api/rum";
-import { fetchRumErrorGroupsWithBackendCause } from "../../api/rumErrorGroups";
+import {
+  errorGroupKey,
+  fetchErrorGroupBrowserBreakdown,
+  fetchErrorGroupRelease,
+  fetchRumErrorGroupsWithBackendCause,
+  toErrorsPageGroup,
+  type RumErrorGroupWithCause,
+} from "../../api/rumErrorGroups";
+import { fetchErrorGroupVolume, fetchErrorOccurrences } from "../../api/errors";
 import { fetchSessions } from "../../api/rumSessions";
 import {
   fetchSessionDetail,
   type SessionEvent,
 } from "../../api/rumSessionDetail";
+import { fetchTraceDetail } from "../../api/traceDetail";
 import {
   durationToSeconds,
   stepForRange,
@@ -335,6 +344,84 @@ export function useRumBreakdown(
     queryKey: ["rum-breakdown", field, rangeKey, app],
     queryFn: () => fetchBreakdown(app, range, field, opts),
     enabled: app !== "",
+    staleTime: STALE,
+  });
+}
+
+// ---- Errors tab: selected-group detail -----------------------------------
+//
+// Every read below is issued only for the group the tab has open (`group`
+// non-null), never for the whole list — the occurrences/volume reads reuse
+// `api/errors.ts`'s already-shipped queries via `toErrorsPageGroup`.
+
+export function useRumErrorOccurrences(
+  scope: RumScope,
+  group: RumErrorGroupWithCause | null,
+) {
+  const { range, rangeKey, app } = scope;
+  const key = group ? errorGroupKey(group) : "";
+  return useQuery({
+    queryKey: ["rum-error-occurrences", rangeKey, app, key],
+    queryFn: () => fetchErrorOccurrences(toErrorsPageGroup(group!, app), range),
+    enabled: group !== null,
+    staleTime: STALE,
+  });
+}
+
+export function useRumErrorVolume(
+  scope: RumScope,
+  group: RumErrorGroupWithCause | null,
+) {
+  const { range, rangeKey, app } = scope;
+  const key = group ? errorGroupKey(group) : "";
+  const step = stepForRange(range, 20);
+  return useQuery({
+    queryKey: ["rum-error-volume", rangeKey, app, key, step],
+    queryFn: () =>
+      fetchErrorGroupVolume(toErrorsPageGroup(group!, app), range, step),
+    enabled: group !== null,
+    staleTime: STALE,
+  });
+}
+
+export function useRumErrorBrowserBreakdown(
+  scope: RumScope,
+  group: RumErrorGroupWithCause | null,
+) {
+  const { range, rangeKey, app } = scope;
+  const key = group ? errorGroupKey(group) : "";
+  return useQuery({
+    queryKey: ["rum-error-browsers", rangeKey, app, key],
+    queryFn: () => fetchErrorGroupBrowserBreakdown(app, range, group!),
+    enabled: group !== null,
+    staleTime: STALE,
+  });
+}
+
+export function useRumErrorRelease(
+  scope: RumScope,
+  group: RumErrorGroupWithCause | null,
+) {
+  const { range, rangeKey, app } = scope;
+  const key = group ? errorGroupKey(group) : "";
+  return useQuery({
+    queryKey: ["rum-error-release", rangeKey, app, key],
+    queryFn: () => fetchErrorGroupRelease(app, range, group!),
+    enabled: group !== null,
+    staleTime: STALE,
+  });
+}
+
+/** The backend-cause request's own trace, for the inline waterfall — fetched
+ * only once a group with a `backendCause` is selected. Keyed like
+ * `SessionEventDetail`'s own trace-detail query (`["trace-detail", traceId,
+ * rangeScopeKey(...)]`, and `scope.rangeKey` is exactly that value) so the
+ * two tabs share one cache entry for the same trace. */
+export function useRumErrorCauseTrace(scope: RumScope, traceId: string) {
+  return useQuery({
+    queryKey: ["trace-detail", traceId, scope.rangeKey],
+    queryFn: () => fetchTraceDetail(traceId, scope.range),
+    enabled: traceId !== "",
     staleTime: STALE,
   });
 }
