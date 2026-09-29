@@ -483,4 +483,58 @@ mod tests {
         let f = fraction(&HistPoint::Exp(h, None), f64::NEG_INFINITY, q);
         assert!((f - 0.25).abs() < 1e-12, "{f}");
     }
+
+    #[test]
+    fn layout_change_discards_earlier_increments() {
+        let wide = |c: &[u64]| HistPoint::Explicit {
+            bounds: vec![1.0, 2.0, 4.0, 8.0],
+            counts: c.to_vec(),
+            sum: None,
+            count: c.iter().sum(),
+        };
+        let pts = [
+            pt(100, 5, 2, eb(&[1, 0, 0, 0], 1.0)),
+            pt(110, 5, 2, eb(&[2, 0, 0, 0], 2.0)),
+            pt(120, 5, 2, wide(&[3, 0, 0, 0, 0])),
+            pt(130, 5, 2, wide(&[4, 1, 0, 0, 0])),
+        ];
+        // The layout change at 120 is a new baseline (contributes 0) and discards the
+        // 100 -> 110 increment, which cannot merge with it; only 120 -> 130 counts.
+        assert_eq!(val(&pts, Mode::Rate, 130, 60), Some(wide(&[1, 1, 0, 0, 0])));
+    }
+
+    #[test]
+    fn mixed_temporality_is_pointwise() {
+        let pts = [
+            pt(100, 5, 2, eb(&[1, 0, 0, 0], 1.0)),
+            pt(110, 5, 2, eb(&[3, 0, 0, 0], 3.0)),
+            pt(120, 0, 1, eb(&[0, 4, 0, 0], 4.0)),
+        ];
+        assert_eq!(val(&pts, Mode::Rate, 130, 60), Some(eb(&[2, 4, 0, 0], 6.0)));
+    }
+
+    #[test]
+    fn layout_change_then_comparable_increment() {
+        let wide = |c: &[u64]| HistPoint::Explicit {
+            bounds: vec![1.0, 2.0, 4.0, 8.0],
+            counts: c.to_vec(),
+            sum: None,
+            count: c.iter().sum(),
+        };
+        let pts = [
+            pt(120, 5, 2, eb(&[10, 0, 0, 0], 1.0)),
+            pt(130, 5, 2, wide(&[12, 0, 0, 0, 0])),
+            pt(140, 5, 2, wide(&[15, 0, 0, 0, 0])),
+        ];
+        assert_eq!(val(&pts, Mode::Rate, 140, 50), Some(wide(&[3, 0, 0, 0, 0])));
+        // A start moving forward together with the layout change is a genuine reset.
+        let reset = [
+            pt(120, 5, 2, eb(&[10, 0, 0, 0], 1.0)),
+            pt(130, 125, 2, wide(&[12, 0, 0, 0, 0])),
+        ];
+        assert_eq!(
+            val(&reset, Mode::Rate, 140, 50),
+            Some(wide(&[12, 0, 0, 0, 0]))
+        );
+    }
 }

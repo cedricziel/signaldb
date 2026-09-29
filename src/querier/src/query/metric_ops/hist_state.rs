@@ -392,6 +392,7 @@ mod tests {
     use datafusion::arrow::datatypes::Int64Type as I64;
 
     use super::*;
+    use crate::query::error::QuerierError;
 
     /// 18 columns for `n` identical rows of the given kind.
     fn cols(kind: &str, n: usize, bounds: Option<Vec<f64>>, counts: Vec<i64>) -> Vec<ArrayRef> {
@@ -472,5 +473,93 @@ mod tests {
         for (s, t) in scalars.iter().zip(types) {
             assert_eq!(s.data_type(), list_of(t));
         }
+    }
+
+    fn invalid_msg(cols: Vec<ArrayRef>) -> String {
+        match QuerierError::from(parse_rows(&cols).unwrap_err()) {
+            QuerierError::InvalidInput(m) => m,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_points_are_invalid_input_naming_the_column() {
+        let m = invalid_msg(cols("histogram", 1, Some(vec![1.0]), vec![1, 2, 3]));
+        assert!(m.contains("bucket_counts"), "{m}");
+        let m = invalid_msg(cols("histogram", 1, Some(vec![1.0]), vec![1, -2]));
+        assert!(m.contains("bucket_counts") && m.contains("negative"), "{m}");
+        let m = invalid_msg(cols("exponential_histogram", 1, None, vec![1, -2]));
+        assert!(m.contains("positive_bucket_counts"), "{m}");
+        assert!(invalid_msg(cols("mystery", 1, None, vec![])).contains("metric_type"));
+        for bounds in [
+            vec![f64::NAN],
+            vec![f64::INFINITY],
+            vec![2.0, 1.0],
+            vec![1.0, 1.0],
+        ] {
+            let n = bounds.len() + 1;
+            let m = invalid_msg(cols("histogram", 1, Some(bounds), vec![1; n]));
+            assert!(m.contains("strictly increasing"), "{m}");
+        }
+    }
+
+    #[test]
+    fn null_elements_offsets_and_scale_are_rejected() {
+        let mut c = cols("histogram", 1, Some(vec![1.0]), vec![1, 2]);
+        c[6] = Arc::new(ListArray::from_iter_primitive::<I64, _, _>([Some(vec![
+            Some(1),
+            None,
+        ])]));
+        assert!(invalid_msg(c).contains("nulls"));
+        let mut c = cols("exponential_histogram", 1, None, vec![1, 2]);
+        c[12] = Arc::new(Int32Array::from(vec![None::<i32>]));
+        assert!(invalid_msg(c).contains("positive_offset"));
+        let mut c = cols("exponential_histogram", 1, None, vec![1, 2]);
+        c[9] = Arc::new(Int32Array::from(vec![Some(99)]));
+        assert!(invalid_msg(c).contains("scale"));
+        let mut c = cols("exponential_histogram", 1, None, vec![1, 2]);
+        c[9] = Arc::new(Int32Array::from(vec![None::<i32>]));
+        assert!(invalid_msg(c).contains("scale"));
+    }
+
+    #[test]
+    fn empty_bounds_and_buckets_is_one_bucket_holding_the_count() {
+        let mut c = cols("histogram", 1, None, vec![]);
+        c[7] = Arc::new(Int64Array::from(vec![Some(9)]));
+        let rows = parse_rows(&c).unwrap();
+        assert!(matches!(
+            &points(&rows)[0],
+            HistPoint::Explicit { bounds, counts, count: 9, .. } if bounds.is_empty() && counts == &[9]
+        ));
+    }
+
+    #[test]
+    fn decode_checks_the_state_width() {
+        assert!(decode(&[]).is_err());
+    }
+
+    #[test]
+    fn parses_explicit_and_exponential_rows_and_skips_other_kinds() {
+        let rows = parse_rows(&cols("histogram", 2, Some(vec![1.0, 2.0]), vec![1, 2, 3])).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(
+            &points(&rows)[0],
+            HistPoint::Explicit { count: 6, .. }
+        ));
+        let rows = parse_rows(&cols("exponential_histogram", 1, None, vec![4, 5])).unwrap();
+        assert!(matches!(&points(&rows)[0], HistPoint::Exp(h, Some(_)) if h.count() == 9));
+        assert!(
+            parse_rows(&cols("gauge", 3, None, vec![]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exponential_state_round_trips() {
+        let exp = parse_rows(&cols("exponential_histogram", 1, None, vec![4, 5])).unwrap();
+        let (back, instant) = decode(&state_arrays(&exp, None)).unwrap();
+        assert_eq!(instant, None);
+        assert_eq!(points(&back), points(&exp));
     }
 }

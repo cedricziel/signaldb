@@ -462,4 +462,57 @@ mod tests {
             .unwrap_err();
         assert!(matches!(err, QuerierError::InvalidInput(_)), "{err:?}");
     }
+
+    #[tokio::test]
+    async fn delta_points_sum_across_series() {
+        let d = |mut p: P| {
+            p.temp = 1;
+            p
+        };
+        let rows = [
+            d(eh("a", 50, &[1, 0, 0, 0], 1.0, 100)),
+            d(eh("a", 70, &[0, 2, 0, 0], 2.0, 100)),
+            d(eh("b", 90, &[0, 0, 3, 0], 3.0, 100)),
+        ];
+        let out = run(&rows, HistStat::Count, Mode::Rate, 60).await.unwrap();
+        assert_eq!(out, vec![Some(6.0)]);
+        let out = run(&rows, HistStat::Sum, Mode::Rate, 60).await.unwrap();
+        assert_eq!(out, vec![Some(6.0)]);
+    }
+
+    #[tokio::test]
+    async fn start_moving_forward_is_a_reset() {
+        let mut later = eh("a", 70, &[1, 0, 0, 0], 1.0, 100);
+        later.start = 65;
+        let rows = [eh("a", 50, &[5, 5, 0, 0], 9.0, 100), later];
+        let out = run(&rows, HistStat::Count, Mode::Rate, 60).await.unwrap();
+        assert_eq!(out, vec![Some(1.0)]);
+    }
+
+    #[tokio::test]
+    async fn mismatched_bounds_across_series_are_invalid_input() {
+        let mut b = eh("b", 70, &[1, 0, 0], 1.0, 100);
+        b.bounds = vec![1.0, 3.0];
+        let rows = [eh("a", 70, &[1, 0, 0, 0], 1.0, 100), b];
+        let err = run(&rows, HistStat::Count, Mode::Instant, 60)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("bucket bounds")),
+            "{err:?}"
+        );
+    }
+
+    #[test]
+    fn udaf_names_include_their_parameters() {
+        let name = |s, m, w| histogram_udaf(s, m, w).name().to_owned();
+        assert_eq!(
+            name(HistStat::Quantile(0.95), Mode::Rate, 300),
+            "hist_quantile_q0.95_rate_w300"
+        );
+        assert_ne!(
+            name(HistStat::Quantile(0.5), Mode::Rate, 300),
+            name(HistStat::Quantile(0.9), Mode::Rate, 300)
+        );
+    }
 }
