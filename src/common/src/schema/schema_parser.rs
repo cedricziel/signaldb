@@ -12,19 +12,8 @@ pub struct SchemaDefinitions {
     pub metadata: SchemaMetadata,
     pub traces: HashMap<String, TableSchemaDefinition>,
     pub logs: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_gauge: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_sum: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_histogram: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_exponential_histogram: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_summary: HashMap<String, TableSchemaDefinition>,
     /// The wide, one-row-per-datapoint metrics table (otel-native-schema
-    /// layer 7, D10) replacing the five `metrics_*` tables above.
-    /// Declared at `physical-v4`, the current metric version.
+    /// layer 7, D10). Declared at `physical-v4` only.
     #[serde(default)]
     pub metrics: HashMap<String, TableSchemaDefinition>,
     /// The exemplars table paired with [`Self::metrics`] (otel-native-schema
@@ -144,7 +133,7 @@ impl SchemaDefinitions {
     /// Generic schema resolver that handles inheritance. Public so callers
     /// with a source-keyed map they don't have a dedicated
     /// `resolve_*_schema` wrapper for (e.g. admin schema introspection over
-    /// `metrics_gauge`/`metrics_sum`/`metrics_histogram`) can still resolve
+    /// `metrics`/`metric_exemplars`) can still resolve
     /// it without duplicating the inheritance/rename/addition logic.
     #[allow(clippy::only_used_in_recursion)]
     pub fn resolve_table_schema(
@@ -554,7 +543,7 @@ mod tests {
         // module.
         let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
         let resolved = defs
-            .resolve_table_schema(&defs.metrics_gauge, "physical-v1")
+            .resolve_table_schema(&defs.metrics, "physical-v4")
             .unwrap();
         assert!(
             resolved.fields.iter().any(|f| f.name == "metric_name"),
@@ -1194,23 +1183,6 @@ fields = [
                 resolved.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
             );
         }
-    }
-
-    #[test]
-    fn existing_metrics_gauge_v3_top_level_ids_are_unchanged_by_the_list_type_addition() {
-        // Adding list<int64>/list<double> support must not renumber
-        // top-level field ids for tables that don't use it.
-        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
-        let resolved = defs
-            .resolve_table_schema(&defs.metrics_gauge, "physical-v3")
-            .unwrap();
-        let schema = resolved.to_iceberg_schema().unwrap();
-        let timestamp = schema
-            .fields()
-            .iter()
-            .find(|f| f.name == "timestamp")
-            .unwrap();
-        assert_eq!(timestamp.id, 1);
     }
 
     #[test]
