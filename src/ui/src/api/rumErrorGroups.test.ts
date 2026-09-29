@@ -308,6 +308,12 @@ describe("errorGroupKey", () => {
     expect(errorGroupKey(a)).not.toBe(errorGroupKey(c));
   });
 
+  it("keeps a null field distinct from the literal string NOT_SET", () => {
+    expect(errorGroupKey({ ...group, exceptionMessage: null })).not.toBe(
+      errorGroupKey({ ...group, exceptionMessage: "NOT_SET" }),
+    );
+  });
+
   it("is stable for a group with no message or escaped value", () => {
     const a: RumErrorGroup = {
       ...group,

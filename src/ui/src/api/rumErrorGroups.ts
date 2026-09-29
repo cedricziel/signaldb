@@ -31,7 +31,6 @@ import {
 } from "./queryIr";
 import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
 import { serviceWhere } from "./rum";
-import { compositeKey } from "../lib/traceGroups";
 import type { ErrorGroup } from "./errors";
 
 /** Groups shown before the list would need its own truncation notice. */
@@ -173,13 +172,13 @@ export async function fetchRumErrorGroups(
   );
 }
 
-/** A stable, URL-safe identity for a group — the same `compositeKey`
- * encoding the catalog and trace grouping already use for a multi-field
- * selection in one search param (`?errgroup=`). */
+/** A stable identity for a group, used as the `?errgroup=` value and the
+ * row key. JSON keeps a `null` field distinct from any literal string and
+ * keeps field boundaries unambiguous. */
 export function errorGroupKey(
   group: Pick<RumErrorGroup, "exceptionType" | "exceptionMessage" | "escaped">,
 ): string {
-  return compositeKey([
+  return JSON.stringify([
     group.exceptionType,
     group.exceptionMessage,
     group.escaped,
