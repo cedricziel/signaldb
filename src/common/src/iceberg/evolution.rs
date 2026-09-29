@@ -1738,9 +1738,7 @@ mod tests {
     /// version, not the typed `current_*_version()` -- see the traces test
     /// above for why that hop is off-limits to live evolution), and asserts
     /// the version property and the new nullable `resource_identity` column
-    /// both land. Shared by the `metrics_gauge` and `profiles` tests below;
-    /// `metrics_gauge` stands in for the other four metrics representations,
-    /// which go through the identical mechanism.
+    /// both land. Used by the `profiles` test below.
     async fn assert_v1_table_evolves_in_resource_identity(
         schemas_map: &HashMap<String, TableSchemaDefinition>,
         table_name: &str,
@@ -1792,17 +1790,6 @@ mod tests {
         assert!(!added.required, "resource_identity must be nullable");
         assert_eq!(added.field_type, Type::Primitive(PrimitiveType::String));
         Ok(())
-    }
-
-    #[tokio::test]
-    async fn ensure_schema_current_adds_resource_identity_to_a_real_metrics_gauge_v1_table()
-    -> anyhow::Result<()> {
-        assert_v1_table_evolves_in_resource_identity(
-            &SCHEMA_DEFINITIONS.metrics_gauge,
-            "metrics_gauge_v1",
-            "physical-v2",
-        )
-        .await
     }
 
     #[tokio::test]

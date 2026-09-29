@@ -140,13 +140,6 @@ fn table_info_for_schema(schema: iceberg_schemas::TableSchema) -> TableInfo {
     let description = match schema {
         iceberg_schemas::TableSchema::Traces => "OpenTelemetry traces and spans",
         iceberg_schemas::TableSchema::Logs => "OpenTelemetry log entries",
-        iceberg_schemas::TableSchema::MetricsGauge => "OpenTelemetry gauge metrics",
-        iceberg_schemas::TableSchema::MetricsSum => "OpenTelemetry sum/counter metrics",
-        iceberg_schemas::TableSchema::MetricsHistogram => "OpenTelemetry histogram metrics",
-        iceberg_schemas::TableSchema::MetricsExponentialHistogram => {
-            "OpenTelemetry exponential histogram metrics"
-        }
-        iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
         iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
         iceberg_schemas::TableSchema::Metrics => "OpenTelemetry metrics",
         iceberg_schemas::TableSchema::MetricExemplars => "OpenTelemetry metric exemplars",
