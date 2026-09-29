@@ -306,7 +306,28 @@ pub struct HistogramQuantile {
     pub step: String,
     #[serde(default)]
     pub mode: HistogramMode,
+    /// Rate mode's lookback (default: `step`), `irVersion` 10.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     /// The output value column name.
+    #[serde(rename = "as")]
+    pub as_name: String,
+}
+
+/// The fraction of histogram observations within `[lower, upper]`: the
+/// `histogram_quantile` sibling (`irVersion` 10).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct HistogramFraction {
+    pub lower: f64,
+    pub upper: f64,
+    #[serde(default)]
+    pub by: Vec<String>,
+    pub step: String,
+    #[serde(default)]
+    pub mode: HistogramMode,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<String>,
     #[serde(rename = "as")]
     pub as_name: String,
 }
@@ -776,6 +797,7 @@ pub enum Stage {
     Absent(Absent),
     OverTime(OverTime),
     Binop(Binop),
+    HistogramFraction(HistogramFraction),
 }
 
 impl Stage {
@@ -804,6 +826,7 @@ impl Stage {
             Stage::Absent(_) => "absent",
             Stage::OverTime(_) => "over_time",
             Stage::Binop(_) => "binop",
+            Stage::HistogramFraction(_) => "histogram_fraction",
         }
     }
 
@@ -825,6 +848,7 @@ impl Stage {
             Stage::Absent(_) => Feature::Absent,
             Stage::OverTime(_) => Feature::OverTime,
             Stage::Binop(_) => Feature::Binop,
+            Stage::HistogramFraction(_) => Feature::HistogramFraction,
             _ => return None,
         })
     }
@@ -1049,6 +1073,7 @@ mod tests {
             by: vec!["service.name".to_string()],
             step: "5m".to_string(),
             mode: HistogramMode::Instant,
+            window: None,
             as_name: "p99".to_string(),
         };
         let encoded = serde_json::to_value(Stage::HistogramQuantile(hq.clone())).unwrap();

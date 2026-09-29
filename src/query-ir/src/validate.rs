@@ -36,9 +36,9 @@ use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
-    DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramQuantile, Labels, Map, Order,
-    OverTime, OverTimeFn, Rank, Reduce, ReduceFn, Sample, SampleFn, Stage, SubDocument,
-    is_expression_string,
+    DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramQuantile,
+    Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce, ReduceFn, Sample, SampleFn, Stage,
+    SubDocument, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -310,6 +310,7 @@ impl InferCtx<'_> {
             Stage::Absent(absent) => self.apply_absent(absent),
             Stage::OverTime(over) => self.apply_over_time(over),
             Stage::Binop(binop) => self.apply_binop(binop),
+            Stage::HistogramFraction(hf) => self.apply_histogram_fraction(hf),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -1187,34 +1188,79 @@ impl InferCtx<'_> {
     /// independent scalar values, `check_agg` below) — different algorithm,
     /// different source shape.
     fn apply_histogram_quantile(&mut self, hq: &HistogramQuantile) -> Result<(), IrError> {
-        if self.source != "metrics" {
-            return Err(IrError::IllegalStage {
-                stage: "histogram_quantile".into(),
-                reason: "is only supported on the metrics source".into(),
-            });
-        }
-        self.require_point_stream("histogram_quantile")?;
+        self.require_histogram_input("histogram_quantile")?;
         if !hq.q.is_finite() || !(0.0..=1.0).contains(&hq.q) {
             return Err(IrError::Invalid(
                 "histogram_quantile q must be within [0, 1]".to_string(),
             ));
         }
-        let step_ns = parse_duration_ns(&hq.step).ok_or_else(|| IrError::Coercion {
-            field: "histogram_quantile.step".into(),
-            value: hq.step.clone(),
+        self.apply_histogram(
+            "histogram_quantile",
+            &hq.by,
+            &hq.step,
+            hq.window.as_ref(),
+            &hq.as_name,
+        )
+    }
+
+    /// `histogram_fraction`: `histogram_quantile`'s sibling (`irVersion` 10).
+    fn apply_histogram_fraction(&mut self, hf: &HistogramFraction) -> Result<(), IrError> {
+        self.require_histogram_input("histogram_fraction")?;
+        if !hf.lower.is_finite() || !hf.upper.is_finite() || hf.lower > hf.upper {
+            return Err(IrError::Invalid(
+                "histogram_fraction needs finite bounds with `lower` <= `upper`".to_string(),
+            ));
+        }
+        self.apply_histogram(
+            "histogram_fraction",
+            &hf.by,
+            &hf.step,
+            hf.window.as_ref(),
+            &hf.as_name,
+        )
+    }
+
+    fn require_histogram_input(&self, stage: &str) -> Result<(), IrError> {
+        if self.source != "metrics" {
+            return Err(IrError::IllegalStage {
+                stage: stage.into(),
+                reason: "is only supported on the metrics source".into(),
+            });
+        }
+        self.require_point_stream(stage)
+    }
+
+    /// The shared operands of the histogram stages.
+    fn apply_histogram(
+        &mut self,
+        stage: &str,
+        by: &[String],
+        step: &str,
+        window: Option<&String>,
+        as_name: &str,
+    ) -> Result<(), IrError> {
+        let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
+            field: format!("{stage}.step"),
+            value: step.to_string(),
             target: ValueType::DurationNs.to_string(),
         })?;
         if step_ns <= 0 {
-            return Err(IrError::Invalid(
-                "histogram_quantile step must be > 0".into(),
-            ));
+            return Err(IrError::Invalid(format!("{stage} step must be > 0")));
         }
-        if hq.by.iter().any(|f| f == "metric.name") {
-            return Err(IrError::Invalid(
-                "histogram_quantile by may not include metric.name (already implicit)".to_string(),
-            ));
+        if let Some(window) = window {
+            require_feature(
+                &self.registry,
+                Feature::HistogramWindow,
+                &format!("{stage} `window`"),
+            )?;
+            positive_duration(&format!("{stage}.window"), window)?;
         }
-        for by in &hq.by {
+        if by.iter().any(|f| f == "metric.name") {
+            return Err(IrError::Invalid(format!(
+                "{stage} by may not include metric.name (already implicit)"
+            )));
+        }
+        for by in by {
             self.require_filterable(by)?;
             let _ = self.ref_type(by)?;
         }
@@ -1226,31 +1272,31 @@ impl InferCtx<'_> {
         // alias would produce an ambiguous or duplicate output column.
         let mut output_idents: std::collections::HashSet<String> =
             std::collections::HashSet::from(["bucket".to_string()]);
-        for by in &hq.by {
+        for by in by {
             let alias = super::alias::safe_ident(by);
             if !output_idents.insert(alias.clone()) {
                 return Err(IrError::Invalid(format!(
-                    "histogram_quantile by fields collide after normalization: '{alias}'"
+                    "{stage} by fields collide after normalization: '{alias}'"
                 )));
             }
         }
-        if output_idents.contains(&hq.as_name) {
+        if output_idents.contains(as_name) {
             return Err(IrError::DuplicateName {
-                name: hq.as_name.clone(),
+                name: as_name.to_string(),
             });
         }
-        self.guard_logical_name(&hq.as_name)?;
-        let collides = self.names.iter().any(|n| n == &hq.as_name)
-            || hq.by.iter().any(|b| b == &hq.as_name)
-            || self.resolver.is_known(self.source, &hq.as_name);
+        self.guard_logical_name(as_name)?;
+        let collides = self.names.iter().any(|n| n == as_name)
+            || by.iter().any(|b| b == as_name)
+            || self.resolver.is_known(self.source, as_name);
         if collides {
             return Err(IrError::DuplicateName {
-                name: hq.as_name.clone(),
+                name: as_name.to_string(),
             });
         }
-        self.names.push(hq.as_name.clone());
+        self.names.push(as_name.to_string());
         let mut labels = vec!["metric.name".to_string()];
-        labels.extend(hq.by.clone());
+        labels.extend(by.to_vec());
         self.relation = RelationType::Series(Series {
             labels,
             open_labels: false,

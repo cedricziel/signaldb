@@ -137,6 +137,9 @@ impl Document {
         }
         for stage in &self.pipeline {
             needed = needed.max(match stage {
+                Stage::HistogramQuantile(hq) if hq.window.is_some() => {
+                    OperatorRegistry::feature_min_version(Feature::HistogramWindow)
+                }
                 Stage::Aggregate(a) => a
                     .aggs
                     .iter()

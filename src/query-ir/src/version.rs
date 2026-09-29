@@ -77,6 +77,10 @@ pub enum Feature {
     OverTime,
     /// The `binop` stage.
     Binop,
+    /// The `histogram_fraction` stage.
+    HistogramFraction,
+    /// A histogram stage's `window`.
+    HistogramWindow,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -145,6 +149,8 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::Absent, 10),
     (Feature::OverTime, 10),
     (Feature::Binop, 10),
+    (Feature::HistogramFraction, 10),
+    (Feature::HistogramWindow, 10),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -368,6 +374,8 @@ mod tests {
             Feature::Absent,
             Feature::OverTime,
             Feature::Binop,
+            Feature::HistogramFraction,
+            Feature::HistogramWindow,
         ];
         for feature in all {
             assert!(

@@ -1016,10 +1016,19 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
             doc.from
         )));
     }
-    match doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
-        Some(stage) => Err(unsupported_stage(stage)),
-        None => Ok(()),
+    if let Some(stage) = doc.pipeline.iter().find(|stage| is_series_algebra(stage)) {
+        return Err(unsupported_stage(stage));
     }
+    if doc
+        .pipeline
+        .iter()
+        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.window.is_some()))
+    {
+        return Err(QuerierError::Unsupported(
+            "histogram_quantile window is not supported yet".to_string(),
+        ));
+    }
+    Ok(())
 }
 
 fn is_series_algebra(stage: &Stage) -> bool {
@@ -1036,6 +1045,7 @@ fn is_series_algebra(stage: &Stage) -> bool {
             | Stage::Absent(_)
             | Stage::OverTime(_)
             | Stage::Binop(_)
+            | Stage::HistogramFraction(_)
     )
 }
 
@@ -1539,7 +1549,8 @@ impl Lowering<'_> {
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
-            | Stage::Binop(_) => Err(unsupported_stage(stage)),
+            | Stage::Binop(_)
+            | Stage::HistogramFraction(_) => Err(unsupported_stage(stage)),
         }
     }
 
@@ -5767,6 +5778,11 @@ mod tests {
                 "metrics",
                 serde_json::json!({ "sample": { "fn": "latest" } }),
                 "sample stage is not supported yet",
+            ),
+            (
+                "metrics",
+                serde_json::json!({ "histogram_quantile": { "q": 0.5, "step": "1m", "window": "5m", "as": "p" } }),
+                "histogram_quantile window is not supported yet",
             ),
             (
                 "time",
