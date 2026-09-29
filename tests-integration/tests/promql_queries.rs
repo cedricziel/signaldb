@@ -540,6 +540,13 @@ fn window() -> String {
     format!("start={start}&end={end}&step=1h")
 }
 
+/// A window whose first evaluation instant is the ingested point: histogram
+/// functions evaluate at `start + k·step`, reading `(t - step, t]`.
+fn instant_window() -> String {
+    let start = (BASE_NS / 1_000_000_000) as i64;
+    format!("start={start}&end={}&step=1h", start + 60)
+}
+
 /// The ingested metrics' timestamp, in unix seconds (Prometheus param units).
 fn at_timestamp() -> u64 {
     BASE_NS / 1_000_000_000
@@ -1068,7 +1075,7 @@ async fn promql_series_endpoint_negated_name_regex_excludes_matches() {
 #[tokio::test]
 async fn promql_histogram_quantile_interpolates_median() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = instant_window();
 
     // histogram_quantile over the stored latency histogram: the median
     // interpolates to 3.333… within the (2,4] bucket.
@@ -1134,7 +1141,7 @@ async fn promql_comparison_filter_keeps_matching_series() {
 #[tokio::test]
 async fn promql_histogram_fraction_computes_bucket_ratio() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = instant_window();
 
     // histogram_fraction over the latency histogram: (0, 2] = 3/10 = 0.3.
     let (status, body) = get(
