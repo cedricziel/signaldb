@@ -321,10 +321,12 @@ layer. The IR grows whatever PromQL needs.
   In the querier a Series is `(bucket Timestamp(ns), __labels Utf8, value
   Float64)`, `__labels` being the label set as canonical JSON (an object of
   string values, keys sorted, compact), so equal label sets are equal strings
-  and a label set is a hashable, sortable key; two series of one result
-  sharing a label set at an instant are a 400. Grouping and
-  matching go through label-set UDFs (keep / drop / fingerprint / replace /
-  join), so `without`, `ignoring` and `label_replace` work on label sets not
+  and a label set is a hashable, sortable key. `sample` keys series on
+  this label set, so stored series it cannot tell apart (metric type, an
+  attribute's value type, empty vs absent) are one series; two series that
+  share a label set only after `metric.name` is dropped are a 400, as in
+  Prometheus. Grouping and matching go through label-set UDFs (keep / drop /
+  get / drop-name / replace / join), so `without`, `ignoring` and `label_replace` work on label sets not
   known at plan time. The PromQL surface maps names at its own boundary and
   never inside the model: `__name__` ↔ `metric.name` and `job`/`service`/
   `service_name` ↔ `service.name`. Every other label name passes through
@@ -339,7 +341,7 @@ layer. The IR grows whatever PromQL needs.
   A query evaluates at most 11,000 instants (Prometheus' limit); more is a
   400. A point flagged `NO_RECORDED_VALUE` is a staleness marker: range
   operators skip it, and an instant whose newest point in the lookback is
-  one has no value.
+  one (a marker tied with a recorded point counts as newest) has no value.
   Log/trace/profile aggregates keep epoch-aligned `date_bin` buckets.
 - **Range operators** (rate / increase / irate / delta / deriv / resets /
   changes / `*_over_time` / the instant `latest`) are one windowed
