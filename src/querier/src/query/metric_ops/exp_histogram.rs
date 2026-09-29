@@ -30,7 +30,7 @@ pub struct ExpHistogram {
     pub max: Option<f64>,
 }
 
-fn bounds_at(scale: i32, index: i64) -> (f64, f64) {
+pub(super) fn bounds_at(scale: i32, index: i64) -> (f64, f64) {
     let step = 2f64.powi(scale.saturating_neg());
     (
         (index as f64 * step).exp2(),
@@ -206,6 +206,13 @@ impl ExpHistogram {
         let (nc, nu) = self.negative.fold_within(self.scale, t);
         self.zero_count = self.zero_count.saturating_add(pc).saturating_add(nc);
         self.zero_threshold = pu.max(nu);
+    }
+
+    /// A copy with the zero bucket widened over any bucket inside its threshold.
+    pub(super) fn normalised(&self) -> ExpHistogram {
+        let mut h = self.clone();
+        h.widen_zero(0.0);
+        h
     }
 
     fn aligned(&self, other: &ExpHistogram) -> (ExpHistogram, ExpHistogram) {
