@@ -34,6 +34,9 @@ const RESOURCE_PREFIX: &str = "resource.";
 /// The metrics source's point-attribute qualifier (its `SourcePlan` prefix).
 pub(crate) const POINT_PREFIX: &str = "point.";
 
+/// The column a planned Series carries its label set in.
+pub(crate) const LABELS_COLUMN: &str = "__labels";
+
 pub(crate) fn encode(labels: &LabelSet) -> Result<String> {
     serde_json::to_string(labels).map_err(|e| DataFusionError::External(Box::new(e)))
 }

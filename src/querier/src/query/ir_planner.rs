@@ -70,6 +70,7 @@ use super::error::QuerierError;
 use super::metric_ops::hist::HistStat;
 use super::metric_ops::hist_math::Mode;
 use super::metric_ops::hist_plan::{HistEval, histogram_series};
+use super::metric_series;
 use super::profile::batch_to_models;
 use super::table_lookup::{optional_table_provider, scan_provider};
 use super::typed_attrs::{CanonicalTypeLookup, CanonicalTypes};
@@ -896,7 +897,7 @@ impl IrService {
             .collect()
             .instrument(exec_span.clone())
             .await
-            .map_err(QuerierError::QueryFailed)?;
+            .map_err(QuerierError::from)?;
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
@@ -1058,8 +1059,7 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 fn is_series_algebra(stage: &Stage) -> bool {
     matches!(
         stage,
-        Stage::Sample(_)
-            | Stage::Scalar(_)
+        Stage::Scalar(_)
             | Stage::Vector(_)
             | Stage::Reduce(_)
             | Stage::Map(_)
@@ -1186,13 +1186,26 @@ pub(crate) async fn plan_document(
             lookback = lookback.max(histogram_step_window(hq)?.1);
         }
     }
+    let scan = metric_series::sample::scan_window(doc, window, now_ns)?;
     let scan = ResolvedWindow {
-        start_ns: window.start_ns.saturating_sub(lookback),
-        ..window
+        start_ns: scan.start_ns.min(window.start_ns.saturating_sub(lookback)),
+        ..scan
     };
     let mut df = lowering.apply_time_window(base, &scan)?;
+    let mut metric_frame = false;
     for stage in &doc.pipeline {
         df = match stage {
+            Stage::Sample(sample) => {
+                lowering.series_shaped = true;
+                metric_frame = true;
+                let env = metric_series::sample::SampleEnv {
+                    window,
+                    doc_step: doc.step.as_deref(),
+                    now_ns,
+                    schema_cols: &lowering.schema_cols,
+                };
+                metric_series::sample::lower_sample(df, sample, &env)?.0
+            }
             // Needs the resolved window for its evaluation instants.
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
             // Needs its own scan of the traces table (the parent side) and
@@ -1214,6 +1227,9 @@ pub(crate) async fn plan_document(
             }
             other => lowering.lower_stage(df, other)?,
         };
+    }
+    if metric_frame {
+        df = metric_series::sort_frame(df)?;
     }
     df = lowering.apply_projection(df, doc)?;
     Ok(Some((df, window, lowering.correlate_truncated)))
@@ -5724,32 +5740,32 @@ mod tests {
     #[tokio::test]
     async fn series_algebra_is_not_supported_yet() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
-        for (from, stage, expected) in [
+        for (from, pipeline, expected) in [
             (
                 "metrics",
-                serde_json::json!({ "sample": { "fn": "latest" } }),
-                "sample stage is not supported yet",
+                serde_json::json!([{ "sample": { "fn": "latest" } }, { "reduce": { "fn": "sum" } }]),
+                "reduce stage is not supported yet",
             ),
             (
                 "metrics",
-                serde_json::json!({ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }),
+                serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
                 "histogram_quantile per_series is not supported yet",
             ),
             (
                 "metrics",
-                serde_json::json!({ "histogram_quantile": {
-                    "q": 0.5, "step": "1m", "mode": "instant", "lookback": "5m", "as": "p" } }),
+                serde_json::json!([{ "histogram_quantile": {
+                    "q": 0.5, "step": "1m", "mode": "instant", "lookback": "5m", "as": "p" } }]),
                 "histogram_quantile lookback is not supported yet",
             ),
             (
                 "time",
-                serde_json::json!({ "vector": {} }),
+                serde_json::json!([{ "vector": {} }]),
                 "time source is not supported yet",
             ),
         ] {
             let d = doc(serde_json::json!({
                 "irVersion": 10, "from": from, "step": "1m", "range": { "from": 0, "to": 1000 },
-                "result": "series", "pipeline": [stage]
+                "result": "series", "pipeline": pipeline
             }));
             let err = svc.plan(&d, "t", "d", 0).await.unwrap_err();
             assert!(
