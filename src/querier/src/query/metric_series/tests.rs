@@ -36,6 +36,7 @@ pub(super) struct Pt {
     pub monotonic: Option<bool>,
     pub flags: i32,
     pub scope: Option<&'static str>,
+    pub scope_version: Option<&'static str>,
     pub resource: JsonValue,
     pub attrs: JsonValue,
 }
@@ -66,6 +67,7 @@ pub(super) fn gauge(ts: i64, series: &'static str, value: f64, attrs: JsonValue)
         monotonic: None,
         flags: 0,
         scope: None,
+        scope_version: None,
         resource: json!({"service.name": "svc"}),
         attrs,
     }
@@ -99,6 +101,10 @@ pub(super) fn batch(points: &[Pt]) -> RecordBatch {
         (
             "scope_name".into(),
             col::<_, StringArray>(points, |p| p.scope),
+        ),
+        (
+            "scope_version".into(),
+            col::<_, StringArray>(points, |p| p.scope_version),
         ),
         ("value".into(), col::<_, Float64Array>(points, |p| p.value)),
         ("count".into(), col::<_, Int64Array>(points, |p| p.count)),
@@ -598,13 +604,9 @@ async fn a_metrics_table_without_the_sampled_column_is_a_clear_error() {
         matches!(&err, QuerierError::InvalidInput(m) if m.contains("`count`")),
         "{err}"
     );
-    let err = run_batch(without("series_id"), doc("metric.value"))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&err, QuerierError::Unsupported(m) if m.contains("series_id")),
-        "{err}"
-    );
+    // Series are keyed on their label sets, so `series_id` is not needed.
+    let rows = run_batch(without("series_id"), doc("metric.value")).await;
+    assert_eq!(series_rows(&rows.unwrap()).len(), 1);
 }
 
 #[tokio::test]
@@ -618,5 +620,81 @@ async fn rate_over_a_gauge_is_invalid_input() {
     assert!(
         matches!(&err, QuerierError::InvalidInput(m) if m.contains("delta")),
         "{err}"
+    );
+}
+
+/// Series whose label sets render identically, as Prometheus sees one series.
+#[tokio::test]
+async fn series_indistinguishable_by_their_labels_are_one_series() {
+    let as_requests = |p: Pt| Pt {
+        metric: "requests",
+        ..p
+    };
+    let cases: [(&str, Vec<Pt>); 3] = [
+        (
+            "int vs string attribute",
+            vec![
+                counter(30 * S, "int", 1.0, json!({"code": 200})),
+                counter(60 * S, "str", 4.0, json!({"code": "200"})),
+                counter(90 * S, "int", 7.0, json!({"code": 200})),
+            ],
+        ),
+        (
+            "gauge vs sum",
+            vec![
+                as_requests(gauge(30 * S, "g", 1.0, json!({"code": 200}))),
+                counter(60 * S, "c", 4.0, json!({"code": 200})),
+                counter(90 * S, "c", 7.0, json!({"code": 200})),
+            ],
+        ),
+        (
+            "empty vs absent scope version",
+            vec![
+                Pt {
+                    scope_version: Some(""),
+                    ..counter(30 * S, "empty", 1.0, json!({"code": 200}))
+                },
+                counter(60 * S, "none", 4.0, json!({"code": 200})),
+                Pt {
+                    scope_version: Some(""),
+                    ..counter(90 * S, "empty", 7.0, json!({"code": 200}))
+                },
+            ],
+        ),
+    ];
+    let labels = r#"{"code":"200","metric.name":"requests","service.name":"svc"}"#;
+    for (case, points) in cases {
+        let latest = run(&points, sample_doc(120, 120, json!({ "fn": "latest" })));
+        let latest = series_rows(&latest.await.unwrap());
+        assert_eq!(latest, [(120, labels.to_string(), 7.0)], "{case}");
+        let rate = json!({ "fn": "rate", "window": "100s" });
+        let rate = series_rows(&run(&points, sample_doc(120, 120, rate)).await.unwrap());
+        let unnamed = r#"{"code":"200","service.name":"svc"}"#;
+        // The merged, time-ordered points 1, 4, 7: an increase of 6.
+        assert_eq!(rate, [(120, unnamed.to_string(), 0.06)], "{case}");
+    }
+}
+
+/// Dropping `metric.name` can make two metrics' results collide; the Series
+/// frame keeps both rows so the router rejects them, as Prometheus does.
+#[tokio::test]
+async fn a_collision_after_dropping_the_name_keeps_both_rows() {
+    let other = |p: Pt| Pt {
+        metric: "other",
+        ..p
+    };
+    let points = [
+        counter(30 * S, "a", 1.0, json!({})),
+        counter(90 * S, "a", 7.0, json!({})),
+        other(counter(30 * S, "b", 1.0, json!({}))),
+        other(counter(90 * S, "b", 4.0, json!({}))),
+    ];
+    let doc = sample_doc(120, 120, json!({ "fn": "rate", "window": "100s" }));
+    let rows = series_rows(&run(&points, doc).await.unwrap());
+    let unnamed = r#"{"service.name":"svc"}"#;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter().all(|(t, l, _)| *t == 120 && l == unnamed),
+        "{rows:?}"
     );
 }

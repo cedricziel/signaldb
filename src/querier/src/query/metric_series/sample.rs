@@ -3,8 +3,13 @@
 //!
 //! Each point is assigned to every instant whose read window
 //! `(t − offset − window, t − offset]` covers it, then one windowed
-//! accumulator per `(series_id, instant)` evaluates the function. `at` pins
+//! accumulator per `(label set, instant)` evaluates the function. `at` pins
 //! the read window to `at − offset` and repeats its value at every instant.
+//!
+//! Series are keyed on their rendered label set, not `series_id`: stored
+//! series that differ only in what the label set drops or flattens (metric
+//! type, an attribute's value type, an empty vs absent value) are one series
+//! to Prometheus, so their points are evaluated together.
 
 use common::query_ir::{
     Document, Literal, Sample, SampleFn, SampleOf, Stage, ValueType, coerce, parse_duration_ns,
@@ -12,7 +17,7 @@ use common::query_ir::{
 use common::schema::typed_attributes::has_typed_container;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::functions::core::expr_fn::coalesce;
-use datafusion::functions_aggregate::expr_fn::{first_value, last_value};
+use datafusion::functions_aggregate::expr_fn::last_value;
 use datafusion::functions_nested::expr_fn::gen_series;
 use datafusion::logical_expr::{Expr, Operator, binary_expr, cast, col, lit};
 use datafusion::prelude::{DataFrame, ident};
@@ -32,16 +37,8 @@ const DEFAULT_LOOKBACK_NS: i64 = 5 * 60 * 1_000_000_000;
 pub(crate) const MAX_INSTANTS: i64 = 11_000;
 const INSTANT: &str = "__instant";
 const STALE: &str = "__stale";
-/// The raw columns a series' labels derive from, carried through the
-/// aggregate so `series_labels` runs once per output row, not per point.
-const LABEL_INPUTS: [&str; 6] = [
-    "metric_name",
-    "service_name",
-    "scope_name",
-    "scope_version",
-    "__resource",
-    "__attrs",
-];
+/// The plain columns a series' labels derive from, before its attribute bags.
+const LABEL_COLUMNS: [&str; 4] = ["metric_name", "service_name", "scope_name", "scope_version"];
 
 /// What a `sample` stage needs from the document beyond the stage itself.
 pub(crate) struct SampleEnv<'a> {
@@ -211,11 +208,6 @@ pub(crate) fn lower_sample(
             has_typed_container(env.schema_cols.iter().map(String::as_str), c),
         )
     };
-    if !has("series_id") {
-        return Err(QuerierError::Unsupported(
-            "sample needs the metrics table's `series_id` column".into(),
-        ));
-    }
     let (of, value) = match sample.of {
         SampleOf::Value => ("value", ident("value")),
         SampleOf::Count => ("count", cast(ident("count"), DataType::Float64)),
@@ -237,8 +229,13 @@ pub(crate) fn lower_sample(
         lit(step),
         lit(r.window_ns),
     ]);
+    // The full label set, rendered once per point (before the instants
+    // fan it out) and dropped of `metric.name` after evaluation.
+    let mut inputs: Vec<Expr> = LABEL_COLUMNS.iter().map(|c| or_null(c)).collect();
+    inputs.push(bag("resource_attributes"));
+    inputs.push(bag("attributes"));
     let mut columns = vec![
-        ident("series_id"),
+        series_labels_udf().call(inputs).alias(LABELS_COLUMN),
         ts.clone(),
         value.alias("__value"),
         or_null("start_timestamp").alias("__start"),
@@ -247,9 +244,6 @@ pub(crate) fn lower_sample(
         or_null("metric_type").alias("__kind"),
         instants.alias(INSTANT),
     ];
-    columns.extend(LABEL_INPUTS[..4].iter().map(|c| or_null(c).alias(*c)));
-    columns.push(bag("resource_attributes").alias("__resource"));
-    columns.push(bag("attributes").alias("__attrs"));
     // OTLP's NO_RECORDED_VALUE flag (bit 0) marks a point stale, where the
     // Prometheus receiver puts a staleness marker.
     let stale = has("flags").then(|| {
@@ -285,11 +279,6 @@ pub(crate) fn lower_sample(
         col(INSTANT),
     ]);
     let mut aggs = vec![range.alias("value")];
-    aggs.extend(
-        LABEL_INPUTS
-            .iter()
-            .map(|c| first_value(ident(*c), vec![]).alias(*c)),
-    );
     let mut kept = col("value").is_not_null();
     if latest_stale {
         let newest = col("timestamp").sort(true, true);
@@ -297,9 +286,9 @@ pub(crate) fn lower_sample(
         kept = kept.and(!col(STALE));
     }
     let evaluated = points
-        .aggregate(vec![ident("series_id"), col(INSTANT)], aggs)?
+        .aggregate(vec![col(LABELS_COLUMN), col(INSTANT)], aggs)?
         .filter(kept)?;
-    let mut labels = series_labels_udf().call(LABEL_INPUTS.iter().map(|c| ident(*c)).collect());
+    let mut labels = col(LABELS_COLUMN);
     if drops_name(sample.func) {
         labels = labels_drop_name_udf().call(vec![labels]);
     }

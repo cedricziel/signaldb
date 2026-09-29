@@ -18,7 +18,7 @@ use super::instants::{as_ns, invalid};
 use super::range_math::{Pt, RangeFn, eval_points};
 
 /// Aggregate UDF: one value per group; the planner groups by
-/// `(series_id, evaluation instant)`. Arguments: `timestamp`, `value`,
+/// `(series, evaluation instant)`. Arguments: `timestamp`, `value`,
 /// `start_timestamp`, `aggregation_temporality`, `is_monotonic`, `metric_type`,
 /// `instant`. Returns Float64, null when the series has no point in the window.
 pub fn range_udaf(f: RangeFn, window_ns: i64) -> AggregateUDF {
@@ -69,7 +69,7 @@ impl AggregateUDFImpl for RangeUdaf {
             f: self.f,
             window_ns: self.window_ns,
             pts: Vec::new(),
-            kind: None,
+            newest_kind: None,
             instant: None,
         }))
     }
@@ -80,7 +80,10 @@ struct RangeAcc {
     f: RangeFn,
     window_ns: i64,
     pts: Vec<Pt>,
-    kind: Option<String>,
+    /// The metric type of the newest point and that point's timestamp. A
+    /// Series merges stored series whose label sets coincide, which may
+    /// differ in type; the newest point decides, the greater type on a tie.
+    newest_kind: Option<(i64, String)>,
     instant: Option<i64>,
 }
 
@@ -93,11 +96,15 @@ fn list_scalar(vals: Vec<ScalarValue>, t: DataType) -> ScalarValue {
 }
 
 impl RangeAcc {
-    fn absorb(&mut self, kind: Option<&str>, instant: Option<i64>) {
-        if self.kind.is_none() {
-            self.kind = kind.map(str::to_owned);
+    fn absorb_kind(&mut self, ts: i64, kind: Option<&str>) {
+        let Some(kind) = kind else { return };
+        let newer = self
+            .newest_kind
+            .as_ref()
+            .is_none_or(|(t, k)| (ts, kind) > (*t, k.as_str()));
+        if newer {
+            self.newest_kind = Some((ts, kind.to_owned()));
         }
-        self.instant = self.instant.or(instant);
     }
 }
 
@@ -126,11 +133,9 @@ impl Accumulator for RangeAcc {
                     temporality: opt(temporality, i).then(|| temporality.value(i)),
                     monotonic: opt(monotonic, i).then(|| monotonic.value(i)),
                 });
+                self.absorb_kind(ts.value(i), opt(kind, i).then(|| kind.value(i)));
             }
-            self.absorb(
-                opt(kind, i).then(|| kind.value(i)),
-                opt(&instant, i).then(|| instant.value(i)),
-            );
+            self.instant = self.instant.or(opt(&instant, i).then(|| instant.value(i)));
         }
         Ok(())
     }
@@ -158,6 +163,9 @@ impl Accumulator for RangeAcc {
                     s.as_primitive::<Int64Type>(),
                 );
                 let (tp, mo) = (tp.as_primitive::<Int32Type>(), mo.as_boolean());
+                if let Some(newest) = t.values().iter().max() {
+                    self.absorb_kind(*newest, opt(kind, row).then(|| kind.value(row)));
+                }
                 for i in 0..t.len() {
                     self.pts.push(Pt {
                         ts: t.value(i),
@@ -168,10 +176,9 @@ impl Accumulator for RangeAcc {
                     });
                 }
             }
-            self.absorb(
-                opt(kind, row).then(|| kind.value(row)),
-                opt(instant, row).then(|| instant.value(row)),
-            );
+            self.instant = self
+                .instant
+                .or(opt(instant, row).then(|| instant.value(row)));
         }
         Ok(())
     }
@@ -186,7 +193,7 @@ impl Accumulator for RangeAcc {
             col(|p| ScalarValue::Int64(Some(p.start)), DataType::Int64),
             col(|p| ScalarValue::Int32(p.temporality), DataType::Int32),
             col(|p| ScalarValue::Boolean(p.monotonic), DataType::Boolean),
-            ScalarValue::Utf8(self.kind.clone()),
+            ScalarValue::Utf8(self.newest_kind.as_ref().map(|(_, k)| k.clone())),
             ScalarValue::Int64(self.instant),
         ])
     }
@@ -198,7 +205,7 @@ impl Accumulator for RangeAcc {
         let out = eval_points(
             self.f,
             &self.pts,
-            self.kind.as_deref(),
+            self.newest_kind.as_ref().map(|(_, k)| k.as_str()),
             instant,
             self.window_ns,
         )
@@ -410,5 +417,25 @@ mod tests {
         }
         assert_eq!(one(&rows, RangeFn::Delta, 60).await, Some(4.0));
         assert_eq!(one(&rows, RangeFn::Deriv, 60).await, Some(0.4));
+    }
+
+    #[tokio::test]
+    async fn the_newest_point_decides_the_metric_type() {
+        let gauge = |ts, v| Row {
+            kind: "gauge",
+            ..cum("a", ts, v, None, 30)
+        };
+        let rows = [
+            gauge(10, 1.0),
+            cum("a", 20, 5.0, None, 30),
+            cum("a", 30, 9.0, None, 30),
+        ];
+        let mut swapped = rows.clone();
+        swapped.reverse();
+        assert_eq!(one(&rows, RangeFn::Increase, 60).await, Some(8.0));
+        assert_eq!(one(&swapped, RangeFn::Increase, 60).await, Some(8.0));
+        let rows = [cum("a", 10, 1.0, None, 30), gauge(20, 5.0)];
+        let err = run(&rows, RangeFn::Rate, 60).await.unwrap_err();
+        assert!(matches!(err, QuerierError::InvalidInput(_)), "{err:?}");
     }
 }
