@@ -537,4 +537,29 @@ mod tests {
     fn decode_checks_the_state_width() {
         assert!(decode(&[]).is_err());
     }
+
+    #[test]
+    fn parses_explicit_and_exponential_rows_and_skips_other_kinds() {
+        let rows = parse_rows(&cols("histogram", 2, Some(vec![1.0, 2.0]), vec![1, 2, 3])).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(
+            &points(&rows)[0],
+            HistPoint::Explicit { count: 6, .. }
+        ));
+        let rows = parse_rows(&cols("exponential_histogram", 1, None, vec![4, 5])).unwrap();
+        assert!(matches!(&points(&rows)[0], HistPoint::Exp(h, Some(_)) if h.count() == 9));
+        assert!(
+            parse_rows(&cols("gauge", 3, None, vec![]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exponential_state_round_trips() {
+        let exp = parse_rows(&cols("exponential_histogram", 1, None, vec![4, 5])).unwrap();
+        let (back, instant) = decode(&state_arrays(&exp, None)).unwrap();
+        assert_eq!(instant, None);
+        assert_eq!(points(&back), points(&exp));
+    }
 }
