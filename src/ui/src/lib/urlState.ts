@@ -145,6 +145,10 @@ export interface ExploreState {
    * means no session is selected, showing the session list only. Like
    * `rumApp`, only `/rum` reads it. */
   rumSession: string;
+  /** The Real users Errors tab's selected group — a `compositeKey` of
+   * (exception type, message, escaped), "" meaning no group is selected.
+   * Like `rumApp`, only `/rum` reads it. */
+  rumErrorGroup: string;
 }
 
 export type EvalSource = "offline" | "production" | "both";
@@ -238,6 +242,7 @@ export const DEFAULT_STATE: ExploreState = {
   rumApp: "",
   rumRoute: "",
   rumSession: "",
+  rumErrorGroup: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -415,6 +420,7 @@ export function parseExploreState(search: string): ExploreState {
     rumApp: p.get("app") ?? "",
     rumRoute: p.get("route") ?? "",
     rumSession: p.get("session") ?? "",
+    rumErrorGroup: p.get("errgroup") ?? "",
   };
 }
 
@@ -507,6 +513,7 @@ export function buildSearch(state: ExploreState): string {
   if (state.rumApp) p.set("app", state.rumApp);
   if (state.rumRoute) p.set("route", state.rumRoute);
   if (state.rumSession) p.set("session", state.rumSession);
+  if (state.rumErrorGroup) p.set("errgroup", state.rumErrorGroup);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }

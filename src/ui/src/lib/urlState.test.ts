@@ -272,6 +272,15 @@ describe("buildSearch", () => {
     expect(buildSearch(state)).toContain("session=sess-1");
     expect(parseExploreState(buildSearch(state)).rumSession).toBe("sess-1");
   });
+
+  it("round-trips the Real users Errors tab's selected group through ?errgroup=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("errgroup");
+    const state = { ...DEFAULT_STATE, rumErrorGroup: "TypeError\u001fboom" };
+    expect(buildSearch(state)).toContain("errgroup=");
+    expect(parseExploreState(buildSearch(state)).rumErrorGroup).toBe(
+      "TypeError\u001fboom",
+    );
+  });
 });
 
 describe("chart scale", () => {

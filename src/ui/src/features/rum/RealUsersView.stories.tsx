@@ -359,6 +359,36 @@ const SESSION_SPAN_ROWS: (string | number | null)[][] = [
   ],
 ];
 
+/** Column names (`irColumn`-mapped) for the Errors tab's backend-cause
+ * batch read (`buildBackendCauseRequestsDoc`). */
+const FAILED_REQUEST_COLUMNS = [
+  "session_id",
+  "start_time_unix_nano",
+  "trace_id",
+  "span_id",
+  "http_request_method",
+  "url_full",
+  "http_response_status_code",
+  "duration",
+];
+
+/** The same failed checkout request the session-detail fixture below shows
+ * (`SESSION_SPAN_ROWS`) — one incident, told consistently across the Errors
+ * and Sessions tabs: the exception the error group's "last seen" points at
+ * was caused by this request, in the same session. */
+const FAILED_REQUEST_ROWS: (string | number | null)[][] = [
+  [
+    "8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+    "1700002610000000000",
+    "trace-501",
+    "span-501",
+    "POST",
+    "https://api.storefront.example.com/api/checkout",
+    502,
+    "180000000",
+  ],
+];
+
 const SESSION_LOG_ROWS: (string | number | null)[][] = [
   [
     "1700002600000000000",
@@ -470,6 +500,16 @@ function singleDocResponse(b: IrDoc): unknown {
   // `buildSessionLogsDoc`) are `rows` queries with no `aggregate` stage —
   // handled before the aggregate-keyed branches below, which all assume one.
   if (b.result === "rows") {
+    // The Errors tab's backend-cause batch (`buildBackendCauseRequestsDoc`)
+    // is also a `traces`/`rows` read, distinguished from the session-detail
+    // one below by its own leading projected field.
+    if (b.from === "traces" && b.fields?.[0] === "session.id") {
+      return {
+        result: "rows",
+        columns: FAILED_REQUEST_COLUMNS.map((name) => ({ name })),
+        rows: FAILED_REQUEST_ROWS,
+      };
+    }
     if (b.from === "traces") {
       return {
         result: "rows",
@@ -489,8 +529,6 @@ function singleDocResponse(b: IrDoc): unknown {
   const pipe = b.pipeline ?? [];
   const agg = pipe.find((s) => s.aggregate)?.aggregate;
   const by = agg?.by ?? [];
-  const toMs = Number(b.range?.to ?? 0) / MS || 1_700_003_600_000;
-  const fromMs = Number(b.range?.from ?? 0) / MS || toMs - 3_600_000;
 
   // App discovery (rumEventWhere + aggregate by service.name).
   if (by[0] === "service.name") {
@@ -611,26 +649,29 @@ function singleDocResponse(b: IrDoc): unknown {
     return { result: "table", rows: RESOURCE_ROWS };
   }
 
-  // Error groups (api/errors.ts's shared shape).
+  // The Errors tab's group list (`buildRumErrorGroupsDoc`) — `last` matches
+  // the exception timestamp `SESSION_LOG_ROWS` records for the same session,
+  // and `last_session` matches `SESSIONS_ROWS`'s first row, so the Errors
+  // and Sessions tabs tell the same incident consistently; `other_version`
+  // is 0 (the group is "new" in whatever version the selected app reports).
   if (by[0] === "exception.type") {
-    const ago = (s: number) => (toMs - s * 1000) * MS;
-    if (b.from === "traces") {
-      return {
-        result: "table",
-        rows: [
-          [
-            "TypeError",
-            "Cannot read properties of undefined (reading 'total')",
-            "storefront-web",
-            "true",
-            412,
-            fromMs * MS,
-            ago(120),
-          ],
+    return {
+      result: "table",
+      rows: [
+        [
+          "TypeError",
+          "Cannot read properties of undefined (reading 'total')",
+          "true",
+          412,
+          1_700_000_000_000 * MS,
+          1_700_002_612_800 * MS,
+          "8f14e45f-ceea-467e-adc0-fb62a1a8be22",
+          180,
+          210,
+          0,
         ],
-      };
-    }
-    return { result: "table", rows: [] };
+      ],
+    };
   }
 
   return { result: "table", rows: [] };
@@ -825,4 +866,8 @@ export const SessionDetail: Story = {
 
 export const Interactions: Story = {
   render: () => <RealUsersPage path="/rum/interactions?app=storefront-web" />,
+};
+
+export const Errors: Story = {
+  render: () => <RealUsersPage path="/rum/errors?app=storefront-web" />,
 };

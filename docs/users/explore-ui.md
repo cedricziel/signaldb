@@ -286,9 +286,8 @@ the window. The app switcher lists every such app, busiest first, and
 defaults to the busiest; picking one writes `?app=` and keeps the
 current tab. With no frontend app yet, the page shows an
 empty state pointing at **Setup** instead of empty panels. This build ships
-the **Overview**, **Pages**, **Sessions**, **Network**, **Interactions** and
-**Setup** tabs; Errors follows in a later change and is not shown as a
-placeholder.
+the **Overview**, **Pages**, **Sessions**, **Errors**, **Network**,
+**Interactions** and **Setup** tabs.
 
 - **Overview.** Sessions, users, sessions-with-errors and traced requests
   (distinct `session.id`/`user.id`, the error share scoped to a session
@@ -303,8 +302,9 @@ placeholder.
   colour; a vital with no records in the window reads `—`, never `0`. Each
   card's good/needs-improvement/poor distribution bar's tooltip lists every
   share and its threshold. **Sessions over time** stacks sessions with and
-  without errors. **Top errors** reuses the Errors grouping, scoped to the
-  app. **Frontend → backend** shows the app's top requests split into
+  without errors. **Top errors** shows the app's exception groups (the same
+  ones the Errors tab lists); a row opens Errors with that group selected.
+  **Frontend → backend** shows the app's top requests split into
   client+network and backend time (see Network below), linking to the full
   table. **Sessions by browser** and **by device** break down the window's
   records by `browser.brands` (when the SDK sends it — many deployments
@@ -351,6 +351,16 @@ placeholder.
   logs. Selecting an exception shows its stack frames (with source context,
   same as the trace and errors views) and, when a failed request preceded
   it, names that request as the likely cause with a button that selects it.
+- **Errors.** Exception groups (the same `exception.type`/`exception.message`
+  grouping the standalone Errors view uses) scoped to the app, one `logs`
+  aggregate that also carries each group's latest session, distinct users
+  and sessions, and a "new in `<version>`" flag (no occurrence in the window
+  carries a different `resource.service.version` than the app's current
+  one). A second, batched read fetches the app's failed client requests
+  across every listed group's sessions in one call and joins each group,
+  client-side, to the latest one that preceded its last occurrence within 30
+  seconds in the same session — the row's "backend cause" pill. Picking a
+  group writes `?errgroup=` and opens its detail.
 - **Network.** The app's client HTTP spans, grouped by method and URL
   template (derived client-side from `url.full` when the record carries no
   `url.template`), each with calls, p75 duration, error share and traced

@@ -246,6 +246,7 @@ describe("RUM_TABS / rumTabFromParam", () => {
       "overview",
       "pages",
       "sessions",
+      "errors",
       "network",
       "interactions",
       "setup",

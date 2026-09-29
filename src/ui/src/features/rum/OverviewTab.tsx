@@ -35,14 +35,15 @@ import {
   type RumPageRow,
   type RumRequestRow,
 } from "../../api/rum";
+import { errorGroupKey } from "../../api/rumErrorGroups";
 import { SplitBar } from "./NetworkTab";
 import {
   useRumBreakdown,
+  useRumErrorGroups,
   useRumKpis,
   useRumNetworkRequests,
   useRumPages,
   useRumSessionsOverTime,
-  useRumTopErrors,
   useRumTracedShare,
   useRumVitals,
   type RumScope,
@@ -50,12 +51,22 @@ import {
 
 interface Props {
   scope: RumScope;
+  /** The app's current `service.version`, for the same "new in release"
+   * comparison the Errors tab makes — `null` when unknown. */
+  currentVersion: string | null;
   onOpenSetup: () => void;
   onOpenNetwork: () => void;
   onOpenPages: (route: string) => void;
+  onOpenErrors: (groupKey: string) => void;
 }
 
-export function OverviewTab({ scope, onOpenNetwork, onOpenPages }: Props) {
+export function OverviewTab({
+  scope,
+  currentVersion,
+  onOpenNetwork,
+  onOpenPages,
+  onOpenErrors,
+}: Props) {
   const kpis = useRumKpis(scope);
   const sessions = kpis.data?.sessions;
   const users = kpis.data?.users;
@@ -64,7 +75,7 @@ export function OverviewTab({ scope, onOpenNetwork, onOpenPages }: Props) {
   const tracedShare = useRumTracedShare(scope);
   const vitals = useRumVitals(scope);
   const sessionsOverTime = useRumSessionsOverTime(scope);
-  const topErrors = useRumTopErrors(scope);
+  const topErrors = useRumErrorGroups(scope, currentVersion);
   const network = useRumNetworkRequests(scope);
   const pages = useRumPages(scope);
   const browser = useRumBreakdown(scope, "resource.browser.brands", {
@@ -255,12 +266,17 @@ export function OverviewTab({ scope, onOpenNetwork, onOpenPages }: Props) {
             <QueryError what="top errors" error={topErrors.error} />
           ) : topErrors.isPending ? (
             <div className="rum-placeholder">Loading…</div>
-          ) : (topErrors.data?.groups.length ?? 0) === 0 ? (
+          ) : (topErrors.data?.length ?? 0) === 0 ? (
             <EmptyState title="No errors in this window" />
           ) : (
             <div className="rum-error-list">
-              {topErrors.data!.groups.slice(0, 6).map((g, i) => (
-                <div key={i} className="rum-row">
+              {topErrors.data!.slice(0, 6).map((g) => (
+                <button
+                  key={errorGroupKey(g)}
+                  type="button"
+                  className="rum-row"
+                  onClick={() => onOpenErrors(errorGroupKey(g))}
+                >
                   <span className="rum-row-main">
                     <span className="ell rum-row-title">
                       <span style={{ color: "var(--err)" }}>
@@ -271,10 +287,13 @@ export function OverviewTab({ scope, onOpenNetwork, onOpenPages }: Props) {
                       </span>
                     </span>
                   </span>
+                  {g.backendCause && (
+                    <span className="rum-pill warn">backend cause</span>
+                  )}
                   <span className="mono dim rum-row-count">
                     {compactCount(g.count)} occurrences
                   </span>
-                </div>
+                </button>
               ))}
             </div>
           )}

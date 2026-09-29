@@ -29,8 +29,9 @@ import {
   runIrQuery,
   type IrRow,
 } from "./queryIr";
-import { nanosToMs, type ResolvedRange } from "../lib/time";
+import { msToNanos, nanosToMs, type ResolvedRange } from "../lib/time";
 import { serviceWhere } from "./rum";
+import type { ErrorGroup } from "./errors";
 
 /** Groups shown before the list would need its own truncation notice. */
 const GROUP_LIMIT = 200;
@@ -169,6 +170,41 @@ export async function fetchRumErrorGroups(
   return errorGroupsFromResponse(
     await runIrQuery(buildRumErrorGroupsDoc(app, range, currentVersion)),
   );
+}
+
+/** A stable identity for a group, used as the `?errgroup=` value and the
+ * row key. JSON keeps a `null` field distinct from any literal string and
+ * keeps field boundaries unambiguous. */
+export function errorGroupKey(
+  group: Pick<RumErrorGroup, "exceptionType" | "exceptionMessage" | "escaped">,
+): string {
+  return JSON.stringify([
+    group.exceptionType,
+    group.exceptionMessage,
+    group.escaped,
+  ]);
+}
+
+/** Adapts a RUM group to `api/errors.ts`'s `ErrorGroup` shape so the Errors
+ * tab's detail panel can reuse that module's already-shipped occurrences and
+ * volume queries instead of re-implementing them — the two only disagree on
+ * ns-vs-ms timestamps and on always being a `logs` group here (RUM
+ * exceptions are logs, not traced span events — see `api/rum.ts`'s module
+ * doc). */
+export function toErrorsPageGroup(
+  group: RumErrorGroup,
+  app: string,
+): ErrorGroup {
+  return {
+    source: "logs",
+    exceptionType: group.exceptionType,
+    exceptionMessage: group.exceptionMessage,
+    serviceName: app,
+    escaped: group.escaped,
+    count: group.count,
+    firstNs: msToNanos(group.firstMs),
+    lastNs: msToNanos(group.lastMs),
+  };
 }
 
 // ---- Backend cause: one batched read over every listed group's session --
@@ -310,8 +346,15 @@ export async function fetchRumErrorGroupsWithBackendCause(
     new Set(groups.flatMap((g) => (g.lastSessionId ? [g.lastSessionId] : []))),
   );
   if (sessionIds.length === 0) return groups;
-  const failedRequests = failedRequestsFromResponse(
-    await runIrQuery(buildBackendCauseRequestsDoc(app, range, sessionIds)),
-  );
+  // The backend cause is an enrichment: if its read fails, still show the
+  // groups rather than failing the whole list.
+  let failedRequests: RumFailedRequest[];
+  try {
+    failedRequests = failedRequestsFromResponse(
+      await runIrQuery(buildBackendCauseRequestsDoc(app, range, sessionIds)),
+    );
+  } catch {
+    return groups;
+  }
   return joinBackendCause(groups, failedRequests);
 }

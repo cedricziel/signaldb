@@ -291,4 +291,10 @@ test("sidebar → Real users → Overview renders", async ({ page }) => {
     "aria-current",
     "page",
   );
+  await page.getByRole("button", { name: "Errors" }).click();
+  await expect(page).toHaveURL(/\/rum\/errors$/);
+  await expect(page.getByRole("button", { name: "Errors" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 });
