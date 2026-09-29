@@ -10,7 +10,7 @@
 //! are bounded, each side's series count is capped, and the state is
 //! reserved against the memory pool) and emits one sorted batch.
 
-#![expect(dead_code, reason = "not wired into a planner yet")]
+#![cfg_attr(not(test), expect(dead_code, reason = "not wired into a planner yet"))]
 
 use std::cmp::Ordering;
 use std::collections::BTreeMap;
@@ -50,6 +50,8 @@ use crate::query::planner::with_querier_planner;
 
 mod eval;
 mod fold;
+#[cfg(test)]
+mod tests;
 
 const BUCKET: &str = "bucket";
 const LABELS: &str = "__labels";
