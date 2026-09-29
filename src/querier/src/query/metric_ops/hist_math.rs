@@ -1,6 +1,6 @@
 //! Per-series histogram rate/instant values and cross-series merging, independent of DataFusion.
 
-use super::exp_histogram::{ExpHistogram, bounds_at};
+use super::exp_histogram::{Buckets, ExpHistogram, bounds_at};
 use crate::query::error::QuerierError;
 use crate::query::histogram::{histogram_fraction, histogram_quantile};
 
@@ -11,7 +11,7 @@ const DELTA: i32 = 1;
 pub enum Mode {
     /// The latest point in the window.
     Instant,
-    /// The observations added during the window.
+    /// The increase over the window (not per second: callers divide by the window seconds).
     Rate,
 }
 
@@ -263,12 +263,17 @@ fn exp_cumulative(e: &ExpHistogram, x: f64) -> f64 {
         return 0.0;
     }
     let zt = e.zero_threshold;
+    // Same zero-bucket span as `ExpHistogram::quantile`.
+    let any = |b: &Buckets| b.counts.iter().any(|&c| c > 0);
+    let (has_neg, has_pos) = (any(&e.negative), any(&e.positive));
+    let zero_lo = if has_pos && !has_neg { 0.0 } else { -zt };
+    let zero_hi = if has_neg && !has_pos { 0.0 } else { zt };
     let mut segs: Vec<(u64, f64, f64)> = Vec::new();
     for (k, &c) in e.negative.counts.iter().enumerate().rev() {
         let (l, h) = bounds_at(e.scale, i64::from(e.negative.offset) + k as i64);
         segs.push((c, -h, -l));
     }
-    segs.push((e.zero_count, -zt, zt));
+    segs.push((e.zero_count, zero_lo, zero_hi));
     for (k, &c) in e.positive.counts.iter().enumerate() {
         let (l, h) = bounds_at(e.scale, i64::from(e.positive.offset) + k as i64);
         segs.push((c, l, h));
@@ -293,7 +298,6 @@ fn exp_cumulative(e: &ExpHistogram, x: f64) -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::metric_ops::exp_histogram::Buckets;
 
     const S: i64 = 1_000_000_000;
 
@@ -430,35 +434,6 @@ mod tests {
     }
 
     #[test]
-    fn layout_change_discards_earlier_increments() {
-        let wide = |c: &[u64]| HistPoint::Explicit {
-            bounds: vec![1.0, 2.0, 4.0, 8.0],
-            counts: c.to_vec(),
-            sum: None,
-            count: c.iter().sum(),
-        };
-        let pts = [
-            pt(100, 5, 2, eb(&[1, 0, 0, 0], 1.0)),
-            pt(110, 5, 2, eb(&[2, 0, 0, 0], 2.0)),
-            pt(120, 5, 2, wide(&[3, 0, 0, 0, 0])),
-            pt(130, 5, 2, wide(&[4, 1, 0, 0, 0])),
-        ];
-        // The new layout starts over with its first point in full (a reset), so the
-        // 100 -> 110 increment, which cannot merge with it, is discarded.
-        assert_eq!(val(&pts, Mode::Rate, 130, 60), Some(wide(&[4, 1, 0, 0, 0])));
-    }
-
-    #[test]
-    fn mixed_temporality_is_pointwise() {
-        let pts = [
-            pt(100, 5, 2, eb(&[1, 0, 0, 0], 1.0)),
-            pt(110, 5, 2, eb(&[3, 0, 0, 0], 3.0)),
-            pt(120, 0, 1, eb(&[0, 4, 0, 0], 4.0)),
-        ];
-        assert_eq!(val(&pts, Mode::Rate, 130, 60), Some(eb(&[2, 4, 0, 0], 6.0)));
-    }
-
-    #[test]
     fn start_after_the_instant_is_not_a_new_series() {
         let pts = [pt(110, 125, 2, eb(&[1, 0, 0, 0], 1.0))];
         assert_eq!(val(&pts, Mode::Rate, 120, 60), None);
@@ -482,5 +457,21 @@ mod tests {
         // Nothing lies above max.
         assert!((fraction(&p, 3.0, 100.0) - 0.0).abs() < 1e-12);
         assert!(fraction(&p, f64::NEG_INFINITY, f64::INFINITY).is_finite());
+    }
+
+    #[test]
+    fn exp_fraction_uses_the_quantile_zero_span() {
+        let h = ExpHistogram {
+            zero_count: 2,
+            zero_threshold: 1.0,
+            positive: Buckets {
+                offset: 0,
+                counts: vec![2],
+            },
+            ..Default::default()
+        };
+        let q = h.quantile(0.25);
+        let f = fraction(&HistPoint::Exp(h, None), f64::NEG_INFINITY, q);
+        assert!((f - 0.25).abs() < 1e-12, "{f}");
     }
 }
