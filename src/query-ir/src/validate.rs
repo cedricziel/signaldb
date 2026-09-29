@@ -454,13 +454,10 @@ impl InferCtx<'_> {
             sample.func == SampleFn::QuantileOverTime,
         )?;
         if let Some(offset) = &sample.offset {
-            positive_duration("sample.offset", offset)?;
+            non_negative_duration("sample.offset", offset)?;
         }
         if let Some(at) = &sample.at {
             coerce_for("sample.at", at, &ValueType::TimestampNs)?;
-        }
-        if let Some(name) = &sample.as_name {
-            self.check_output_name(name)?;
         }
         let step_ns = self.stage_step("sample", sample.step.as_ref())?;
         // As in Prometheus, only the functions that return a point's own
@@ -816,22 +813,6 @@ impl InferCtx<'_> {
                 other.describe()
             ))),
         }
-    }
-
-    /// A series-algebra output name: a plain, pipeline-unique name.
-    fn check_output_name(&mut self, name: &str) -> Result<(), IrError> {
-        if name.is_empty() || is_expression_string(name) {
-            return Err(IrError::ExpressionString {
-                operand: name.to_string(),
-            });
-        }
-        if self.names.iter().any(|n| n == name) {
-            return Err(IrError::DuplicateName {
-                name: name.to_string(),
-            });
-        }
-        self.names.push(name.to_string());
-        Ok(())
     }
 
     fn require_rowset(&self, stage: &str) -> Result<&RowSet, IrError> {
@@ -1705,6 +1686,21 @@ fn positive_duration(field: &str, value: &str) -> Result<i64, IrError> {
     match parse_duration_ns(value) {
         Some(ns) if ns > 0 => Ok(ns),
         Some(_) => Err(IrError::Invalid(format!("`{field}` must be > 0"))),
+        None => Err(IrError::Coercion {
+            field: field.to_string(),
+            value: value.to_string(),
+            target: ValueType::DurationNs.to_string(),
+        }),
+    }
+}
+
+/// A non-negative duration operand, in nanoseconds (a negative one does not
+/// parse).
+fn non_negative_duration(field: &str, value: &str) -> Result<i64, IrError> {
+    match parse_duration_ns(value) {
+        // A sign check, not `ns >= 0`: a tiny negative duration rounds to 0.
+        Some(ns) if !value.contains('-') => Ok(ns),
+        Some(_) => Err(IrError::Invalid(format!("`{field}` must be >= 0"))),
         None => Err(IrError::Coercion {
             field: field.to_string(),
             value: value.to_string(),

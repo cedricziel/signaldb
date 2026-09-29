@@ -483,7 +483,7 @@ pub struct Sample {
     /// The evaluation step; defaults to the document `step`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step: Option<String>,
-    /// Shift the read window back by this duration.
+    /// Shift the read window back by this non-negative duration.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub offset: Option<String>,
     /// Pin every evaluation instant to this timestamp literal.
@@ -492,9 +492,6 @@ pub struct Sample {
     /// `quantile_over_time` only: the quantile in `[0, 1]`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg: Option<f64>,
-    /// The output value name (default `value`).
-    #[serde(rename = "as", default, skip_serializing_if = "Option::is_none")]
-    pub as_name: Option<String>,
 }
 
 /// A `reduce` function: folds series into groups at every instant
