@@ -38,6 +38,11 @@ pub(crate) fn encode(labels: &LabelSet) -> Result<String> {
     serde_json::to_string(labels).map_err(|e| DataFusionError::External(Box::new(e)))
 }
 
+pub(crate) fn decode(labels: &str) -> Result<LabelSet> {
+    serde_json::from_str(labels)
+        .map_err(|e| DataFusionError::Internal(format!("malformed series label set: {e}")))
+}
+
 /// A string argument as a `Utf8` array of `rows` rows.
 pub(super) fn utf8_array(arg: &ColumnarValue, rows: usize) -> Result<ArrayRef> {
     Ok(cast(&arg.to_array(rows)?, &DataType::Utf8)?)

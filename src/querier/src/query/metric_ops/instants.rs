@@ -18,7 +18,7 @@ use crate::query::error::QuerierError;
 /// Most evaluation instants one point may contribute to (Prometheus' 11k-point limit).
 const MAX_INSTANTS_PER_POINT: i64 = 11_000;
 
-pub(super) fn invalid(msg: impl Into<String>) -> DataFusionError {
+pub(crate) fn invalid(msg: impl Into<String>) -> DataFusionError {
     DataFusionError::External(Box::new(QuerierError::InvalidInput(msg.into())))
 }
 
