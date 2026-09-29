@@ -241,8 +241,16 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
-        // histogram_quantile / histogram_fraction target the histogram table
-        // with a distinct (row-wise, interpolated) execution path.
+        // `@` modifier: evaluate at the pinned instant and replicate the
+        // result across every output step.
+        if let Some(at) = plan.at {
+            return self
+                .eval_at(plan, at, start, end, step, tenant_slug, dataset_slug)
+                .await;
+        }
+
+        // histogram_quantile / histogram_fraction read the histogram rows
+        // through the histogram UDAF at evaluation instants.
         if plan.quantile.is_some() || plan.histogram_fraction.is_some() {
             let phi = plan.quantile.unwrap_or(0.0);
             return self
@@ -262,14 +270,6 @@ impl MetricsService {
         if let Some(sf) = plan.sequence_fn {
             return self
                 .sequence_query(plan, sf, start, end, step, tenant_slug, dataset_slug)
-                .await;
-        }
-
-        // `@` modifier: evaluate at the pinned instant and replicate the
-        // result across every output step.
-        if let Some(at) = plan.at {
-            return self
-                .eval_at(plan, at, start, end, step, tenant_slug, dataset_slug)
                 .await;
         }
 
@@ -770,21 +770,19 @@ impl MetricsService {
             AtSpec::Start => start,
             AtSpec::End => end,
         };
-        const LOOKBACK: i64 = 300_000_000_000; // 5 minutes
         let mut inner = plan.clone();
         inner.at = None;
-        // One bucket spanning the lookback → the value at/just before `at`.
-        let big = LOOKBACK + step;
+        // One bucket spanning the lookback → the value at/just before `at`;
+        // a histogram statistic is evaluated at the instant `at` itself.
+        let (from, pinned_step) = if plan.quantile.is_some() || plan.histogram_fraction.is_some() {
+            (at_ns, 1)
+        } else {
+            (at_ns - INSTANT_LOOKBACK_NS, INSTANT_LOOKBACK_NS + step)
+        };
         // Box the recursive call to give the async future a finite size.
-        let pinned = Box::pin(self.eval_plan(
-            &inner,
-            at_ns - LOOKBACK,
-            at_ns,
-            big,
-            tenant_slug,
-            dataset_slug,
-        ))
-        .await?;
+        let pinned =
+            Box::pin(self.eval_plan(&inner, from, at_ns, pinned_step, tenant_slug, dataset_slug))
+                .await?;
 
         // Keep the latest (metric, value) per series.
         let mut series: BTreeMap<String, (i64, String, f64)> = BTreeMap::new();
@@ -1137,9 +1135,12 @@ impl MetricsService {
         df.select(proj).map_err(QuerierError::QueryFailed)
     }
 
-    /// `histogram_quantile`/`histogram_fraction` per (metric, service) at each
-    /// instant `t = start + k·step`: each series is reduced over `(t - window, t]`
-    /// (latest point, or its increase under `rate(v[range])`), then merged.
+    /// `histogram_quantile`/`histogram_fraction` per (metric, service) on the
+    /// step buckets `bucket_expr` labels with: the bucket starting at `b` is
+    /// evaluated at its end `t = b + step` (the data scanned stops at `end`)
+    /// and labelled `b`. Each series is reduced over `(t - window, t]` — its
+    /// latest point within `max(5m, step)`, or its increase over
+    /// `rate(v[range])` — then merged.
     /// Output: `bucket`, `metric_name`, `service_name`, `value`.
     #[allow(clippy::too_many_arguments)]
     async fn histogram_query(
@@ -1152,18 +1153,22 @@ impl MetricsService {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Vec<RecordBatch>, QuerierError> {
+        if step <= 0 {
+            return Err(QuerierError::InvalidInput("step must be positive".into()));
+        }
         let rate_window = plan.range.map(|r| (r.seconds * 1e9).round() as i64);
+        let bucket_end = |ns: i64| ns.div_euclid(step) * step + step - plan.offset_ns;
         let eval = HistEval {
             stat: match plan.histogram_fraction {
                 Some((lo, hi)) => HistStat::Fraction(lo, hi),
                 None => HistStat::Quantile(phi),
             },
             mode: rate_window.map_or(Mode::Instant, |_| Mode::Rate),
-            first_ns: start - plan.offset_ns,
-            last_ns: end - plan.offset_ns,
+            first_ns: bucket_end(start),
+            last_ns: bucket_end(end),
             step_ns: step,
-            window_ns: rate_window.unwrap_or(step),
-            offset_ns: plan.offset_ns,
+            window_ns: rate_window.unwrap_or(INSTANT_LOOKBACK_NS.max(step)),
+            offset_ns: plan.offset_ns - step,
         };
         check_instants(eval.first_ns, eval.last_ns, eval.step_ns, eval.window_ns)?;
         // No histogram table yet → empty result. A catalog failure still errors.
@@ -1173,7 +1178,8 @@ impl MetricsService {
         else {
             return Ok(vec![]);
         };
-        let df = apply_filters(df, plan, eval.first_ns - eval.window_ns, eval.last_ns)?;
+        let scan_end = end - plan.offset_ns;
+        let df = apply_filters(df, plan, eval.first_ns - eval.window_ns, scan_end)?;
         let groups = ["metric_name", "service_name"].map(|c| (col(c), c.to_string()));
         let df = histogram_series(df, &groups, &eval, "value")?;
         let mut df = apply_transforms_df(df, &plan.transforms, &["service_name".to_string()])?;
@@ -2535,6 +2541,9 @@ fn cast_value_f64(expr: Expr) -> Expr {
 
 /// The step-aligned `date_bin` bucket expression, aligned to the epoch.
 /// The microsecond storage timestamp is cast to nanoseconds first.
+/// Prometheus' instant-vector lookback: 5 minutes.
+const INSTANT_LOOKBACK_NS: i64 = 300_000_000_000;
+
 fn bucket_expr(step: i64, offset_ns: i64) -> Expr {
     let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
         IntervalMonthDayNano::new(0, 0, step),
@@ -2806,8 +2815,26 @@ mod tests {
         query: &str,
         step: i64,
     ) -> Vec<(String, Option<String>, f64)> {
+        matrix_until(service, query, 1000, step).await
+    }
+
+    /// One 1000ns bucket starting at 0: a histogram query evaluates it at
+    /// its end, reading the points at or before 999ns.
+    async fn hist_matrix(
+        service: &MetricsService,
+        query: &str,
+    ) -> Vec<(String, Option<String>, f64)> {
+        matrix_until(service, query, 999, 1000).await
+    }
+
+    async fn matrix_until(
+        service: &MetricsService,
+        query: &str,
+        end: i64,
+        step: i64,
+    ) -> Vec<(String, Option<String>, f64)> {
         let batches = service
-            .query_range(query, 0, 1000, step, "t", "d")
+            .query_range(query, 0, end, step, "t", "d")
             .await
             .expect("query");
         let mut out = Vec::new();
@@ -3666,7 +3693,7 @@ mod tests {
     #[tokio::test]
     async fn histogram_quantile_query_interpolates_merged_series() {
         let service = service_with_histogram();
-        let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
+        let out = hist_matrix(&service, "histogram_quantile(0.5, latency)").await;
         assert_eq!(out.len(), 1);
         let (name, svc, value) = &out[0];
         assert_eq!(name, "latency");
@@ -3682,7 +3709,7 @@ mod tests {
         let service = service_with_histogram();
         // counts go [1,2,3,4] → [2,4,6,8] over the window; the delta [1,2,3,4]
         // has the same shape, so the 0.5-quantile is the same 3.333….
-        let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
+        let out = hist_matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))").await;
         assert_eq!(out.len(), 1);
         assert!(
             (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
@@ -3696,11 +3723,11 @@ mod tests {
         let service = service_with_histogram();
         // The latest point [2,4,6,8] over bounds [1,2,4], total 20.
         // Observations in (0, 2] = 2+4 = 6 → fraction 0.3.
-        let out = matrix(&service, "histogram_fraction(0, 2, latency)", 1000).await;
+        let out = hist_matrix(&service, "histogram_fraction(0, 2, latency)").await;
         assert_eq!(out.len(), 1);
         assert!((out[0].2 - 0.3).abs() < 1e-9, "got {}", out[0].2);
         // (0, 4] covers three finite buckets = 12/20 = 0.6.
-        let out = matrix(&service, "histogram_fraction(0, 4, latency)", 1000).await;
+        let out = hist_matrix(&service, "histogram_fraction(0, 4, latency)").await;
         assert!((out[0].2 - 0.6).abs() < 1e-9, "got {}", out[0].2);
     }
 
@@ -3855,7 +3882,7 @@ mod tests {
     #[tokio::test]
     async fn histogram_quantile_instant_mode_excludes_other_metric_types() {
         let service = histogram_service_with_leak("gauge");
-        let out = matrix(&service, "histogram_quantile(0.5, latency)", 1000).await;
+        let out = hist_matrix(&service, "histogram_quantile(0.5, latency)").await;
         assert_eq!(out.len(), 1, "{out:?}");
         let (name, svc, value) = &out[0];
         assert_eq!(name, "latency");
@@ -3875,7 +3902,7 @@ mod tests {
         // 1 observation in (1, 2] and 3 in (2, 4]: the median lies in (2, 4].
         let rows: &[(&str, i64, &[i64])] = &[("x", 10, &[1, 3])];
         let service = wide_metrics_service(vec![histogram_points("exponential_histogram", rows)]);
-        let out = matrix(&service, "histogram_quantile(0.5, lat)", 1000).await;
+        let out = hist_matrix(&service, "histogram_quantile(0.5, lat)").await;
         assert!(
             out.len() == 1 && out[0].2 > 2.0 && out[0].2 <= 4.0,
             "{out:?}"
@@ -3895,7 +3922,7 @@ mod tests {
             ("s2", 35, &[1, 3, 1, 0]),
         ];
         let service = wide_metrics_service(vec![histogram_points("histogram", rows)]);
-        let out = matrix(&service, "histogram_quantile(0.5, rate(lat[5m]))", 1000).await;
+        let out = hist_matrix(&service, "histogram_quantile(0.5, rate(lat[5m]))").await;
         assert_eq!(out.len(), 1, "{out:?}");
         assert!((out[0].2 - 1.5).abs() < 1e-9, "{out:?}");
     }
@@ -3904,7 +3931,7 @@ mod tests {
     async fn histogram_quantile_rate_mode_excludes_other_metric_types() {
         for leak in ["gauge", "summary"] {
             let service = histogram_service_with_leak(leak);
-            let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
+            let out = hist_matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))").await;
             assert_eq!(out.len(), 1, "{leak}");
             assert!(
                 (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
@@ -3912,6 +3939,79 @@ mod tests {
                 out[0].2
             );
         }
+    }
+
+    /// `(bucket, value)` rows of a range query.
+    async fn points(
+        service: &MetricsService,
+        query: &str,
+        start: i64,
+        end: i64,
+        step: i64,
+    ) -> Vec<(i64, f64)> {
+        use datafusion::arrow::array::AsArray;
+        use datafusion::arrow::datatypes::{Float64Type, TimestampNanosecondType};
+        let batches = service
+            .query_range(query, start, end, step, "t", "d")
+            .await
+            .expect("query");
+        batches
+            .iter()
+            .flat_map(|b| {
+                let t = b
+                    .column_by_name("bucket")
+                    .unwrap()
+                    .as_primitive::<TimestampNanosecondType>();
+                let v = b
+                    .column_by_name("value")
+                    .unwrap()
+                    .as_primitive::<Float64Type>();
+                (0..b.num_rows())
+                    .map(|i| (t.value(i), v.value(i)))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// Histogram values are labelled with the epoch-aligned step buckets the
+    /// other PromQL paths use, so a comparison or binop lines up with them.
+    #[tokio::test]
+    async fn histogram_quantile_instants_sit_on_the_step_grid() {
+        let service = service_with_histogram();
+        let median = 2.0 + 2.0 * 2.0 / 3.0;
+        for query in [
+            "histogram_quantile(0.5, latency) > 0",
+            "histogram_quantile(0.5, latency) / histogram_quantile(0.5, latency)",
+        ] {
+            // Buckets 0 and 1000, as bucket_expr labels them; both ends see
+            // the points at 100 and 200 in their 5m lookback.
+            let got = points(&service, query, 500, 1500, 1000).await;
+            let steps: Vec<i64> = got.iter().map(|p| p.0).collect();
+            assert_eq!(steps, vec![0, 1000], "{query}: {got:?}");
+            let want = if query.contains('/') { 1.0 } else { median };
+            assert!(
+                got.iter().all(|p| (p.1 - want).abs() < 1e-9),
+                "{query}: {got:?}"
+            );
+        }
+    }
+
+    /// `@` pins a histogram query's evaluation instant like any other.
+    #[tokio::test]
+    async fn histogram_quantile_honours_at() {
+        const S: i64 = 1_000_000_000;
+        let rows: &[(&str, i64, &[i64])] =
+            &[("s", 10 * S, &[0, 4, 0, 0]), ("s", 20 * S, &[0, 0, 4, 0])];
+        let service = wide_metrics_service(vec![histogram_points("histogram", rows)]);
+        // Unpinned, nothing is in the 5m before the instants 0..2000ns.
+        assert!(
+            points(&service, "histogram_quantile(0.5, lat)", 0, 2000, 1000)
+                .await
+                .is_empty()
+        );
+        // Pinned at 15s, the 10s point [0,4,0,0] (median 1.5) fills every step.
+        let got = points(&service, "histogram_quantile(0.5, lat @ 15)", 0, 2000, 1000).await;
+        assert_eq!(got, vec![(0, 1.5), (1000, 1.5), (2000, 1.5)]);
     }
 
     #[tokio::test]
@@ -3933,8 +4033,8 @@ mod tests {
         // rank = 0.99 * 10 = 9.9, landing in the open `+Inf` bucket, which
         // clamps to the top bound.
         let out = matrix(&service, "histogram_quantile(0.99, latency_inf)", 1000).await;
-        assert_eq!(out.len(), 1, "{out:?}");
-        assert_eq!(out[0].2, f64::INFINITY);
+        assert!(!out.is_empty(), "{out:?}");
+        assert!(out.iter().all(|p| p.2 == f64::INFINITY), "{out:?}");
     }
 
     #[tokio::test]
