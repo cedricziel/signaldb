@@ -25,9 +25,9 @@
  * each metric is its own single-output sub-query, bundled into **one HTTP
  * request** via the multi-query/formula document (`{queries, formulas,
  * result: "series"}`, D5) that `api/ir/metrics.ts` already sends for the
- * Metrics tab's formulas — an identity formula (`{name: k, expr: k}`) per
- * metric surfaces its own series under that name in the combined response,
- * with no arithmetic between them. This combined shape couldn't be
+ * Metrics tab's formulas — an identity formula per metric (see
+ * `identityFormulaDoc`) surfaces its own series under that name in the
+ * combined response, with no arithmetic between them. This combined shape couldn't be
  * validated against hive: the MCP `query_ir` tool used for the shapes above
  * only accepts the single-document schema (confirmed by testing — it
  * rejects a `queries`-keyed body as a malformed single document, at every
@@ -223,10 +223,9 @@ export function buildKpisDoc(
   const stepMs = Math.max(1000, Math.round(span / bucketCount));
   const doubled = { fromMs: range.fromMs - span, toMs: range.toMs };
   const step = `${Math.round(stepMs / 1000)}s`;
-  const queries: Record<string, QueryIrRequest> = {};
-  const formulas: QueryFormula[] = [];
+  const subs: Record<string, QueryIrRequest> = {};
   for (const metric of metrics) {
-    queries[metric] = {
+    subs[metric] = {
       irVersion: 9,
       from: "logs",
       range: rangeDoc(doubled),
@@ -237,9 +236,34 @@ export function buildKpisDoc(
         { aggregate: { aggs: [kpiAgg(metric)], step } },
       ],
     };
-    formulas.push({ name: metric, expr: metric });
+  }
+  return identityFormulaDoc(subs);
+}
+
+/** Bundles single-output sub-queries so each one's series comes back under
+ * `labels.formula === name`. The server rejects a formula named like a
+ * query, hence the `q_` prefix on query keys. */
+function identityFormulaDoc(
+  subs: Record<string, QueryIrRequest>,
+): MultiQueryIrRequest {
+  const queries: Record<string, QueryIrRequest> = {};
+  const formulas: QueryFormula[] = [];
+  for (const [name, query] of Object.entries(subs)) {
+    queries[`q_${name}`] = query;
+    formulas.push({ name, expr: `q_${name}` });
   }
   return { queries, formulas, result: "series" };
+}
+
+function seriesByFormula(
+  res: QueryIrResponse,
+): Map<string, RumKpiSeriesPoint[]> {
+  const out = new Map<string, RumKpiSeriesPoint[]>();
+  for (const s of res.series ?? []) {
+    const f = s.labels?.formula;
+    if (typeof f === "string") out.set(f, decodePoints(s.points));
+  }
+  return out;
 }
 
 /** Decodes the combined KPIs response, keyed by metric — each named
@@ -250,14 +274,9 @@ export function kpisFromResponse(
   res: QueryIrResponse,
   metrics: readonly RumKpiMetric[],
 ): Record<string, RumKpiSeriesPoint[]> {
+  const byFormula = seriesByFormula(res);
   const out: Record<string, RumKpiSeriesPoint[]> = {};
-  for (const metric of metrics) out[metric] = [];
-  for (const s of res.series ?? []) {
-    const metric = s.labels?.formula;
-    if (typeof metric === "string" && metric in out) {
-      out[metric] = decodePoints(s.points);
-    }
-  }
+  for (const metric of metrics) out[metric] = byFormula.get(metric) ?? [];
   return out;
 }
 
@@ -465,24 +484,13 @@ export function buildSessionsOverTimeDoc(
       ],
     };
   }
-  return {
-    queries: { total: sub(false), with_errors: sub(true) },
-    formulas: [
-      { name: "total", expr: "total" },
-      { name: "with_errors", expr: "with_errors" },
-    ],
-    result: "series",
-  };
+  return identityFormulaDoc({ total: sub(false), with_errors: sub(true) });
 }
 
 export function sessionsOverTimeFromResponse(
   res: QueryIrResponse,
 ): RumSessionSeries {
-  const byFormula = new Map<string, RumKpiSeriesPoint[]>();
-  for (const s of res.series ?? []) {
-    const f = s.labels?.formula;
-    if (typeof f === "string") byFormula.set(f, decodePoints(s.points));
-  }
+  const byFormula = seriesByFormula(res);
   return {
     total: byFormula.get("total") ?? [],
     withErrors: byFormula.get("with_errors") ?? [],
@@ -1027,19 +1035,11 @@ export function buildTracedShareDoc(
       },
     ],
   };
-  return {
-    queries: { traced: tracedQuery, total: totalQuery },
-    // Identity formulas expose each operand's own series (same trick as
-    // `buildKpisDoc`) — `splitTracedShare` divides their summed halves
-    // itself rather than trusting a per-bucket `traced / total` average,
-    // which a bucket with no client spans would turn into a division by
-    // zero.
-    formulas: [
-      { name: "traced", expr: "traced" },
-      { name: "total", expr: "total" },
-    ],
-    result: "series",
-  };
+  // Identity formulas expose each operand's own series — `splitTracedShare`
+  // divides their summed halves itself rather than trusting a per-bucket
+  // `traced / total` average, which a bucket with no client spans would turn
+  // into a division by zero.
+  return identityFormulaDoc({ traced: tracedQuery, total: totalQuery });
 }
 
 export interface RumTracedShareSeries {
@@ -1050,11 +1050,7 @@ export interface RumTracedShareSeries {
 export function tracedShareFromResponse(
   res: QueryIrResponse,
 ): RumTracedShareSeries {
-  const byFormula = new Map<string, RumKpiSeriesPoint[]>();
-  for (const s of res.series ?? []) {
-    const f = s.labels?.formula;
-    if (typeof f === "string") byFormula.set(f, decodePoints(s.points));
-  }
+  const byFormula = seriesByFormula(res);
   return {
     traced: byFormula.get("traced") ?? [],
     total: byFormula.get("total") ?? [],
