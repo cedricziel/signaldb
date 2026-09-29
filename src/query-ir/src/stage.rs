@@ -302,6 +302,10 @@ pub struct HistogramQuantile {
     /// different metrics carry different bucket bounds.
     #[serde(default)]
     pub by: Vec<String>,
+    /// One result per stored series instead of merging them (`irVersion`
+    /// 10). Excludes `by`; the output keeps each series' labels.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub per_series: bool,
     /// Time-bucket width. The result is always a `series`.
     pub step: String,
     #[serde(default)]
@@ -323,6 +327,10 @@ pub struct HistogramFraction {
     pub upper: f64,
     #[serde(default)]
     pub by: Vec<String>,
+    /// One result per stored series instead of merging them (`irVersion`
+    /// 10). Excludes `by`; the output keeps each series' labels.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub per_series: bool,
     pub step: String,
     #[serde(default)]
     pub mode: HistogramMode,
@@ -1071,6 +1079,7 @@ mod tests {
         let hq = HistogramQuantile {
             q: 0.99,
             by: vec!["service.name".to_string()],
+            per_series: false,
             step: "5m".to_string(),
             mode: HistogramMode::Instant,
             window: None,

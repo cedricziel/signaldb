@@ -1042,6 +1042,15 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
             "histogram_quantile window is not supported yet".to_string(),
         ));
     }
+    if doc
+        .pipeline
+        .iter()
+        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.per_series))
+    {
+        return Err(QuerierError::Unsupported(
+            "histogram_quantile per_series is not supported yet".to_string(),
+        ));
+    }
     Ok(())
 }
 

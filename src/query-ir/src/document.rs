@@ -140,6 +140,9 @@ impl Document {
                 Stage::HistogramQuantile(hq) if hq.window.is_some() => {
                     OperatorRegistry::feature_min_version(Feature::HistogramWindow)
                 }
+                Stage::HistogramQuantile(hq) if hq.per_series => {
+                    OperatorRegistry::feature_min_version(Feature::HistogramPerSeries)
+                }
                 Stage::Aggregate(a) => a
                     .aggs
                     .iter()

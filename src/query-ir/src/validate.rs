@@ -1200,11 +1200,14 @@ impl InferCtx<'_> {
         }
         self.apply_histogram(
             "histogram_quantile",
-            &hq.by,
-            &hq.step,
-            hq.window.as_ref(),
-            hq.mode,
-            &hq.as_name,
+            HistogramShape {
+                by: &hq.by,
+                per_series: hq.per_series,
+                step: &hq.step,
+                window: hq.window.as_ref(),
+                mode: hq.mode,
+                as_name: &hq.as_name,
+            },
         )
     }
 
@@ -1218,11 +1221,14 @@ impl InferCtx<'_> {
         }
         self.apply_histogram(
             "histogram_fraction",
-            &hf.by,
-            &hf.step,
-            hf.window.as_ref(),
-            hf.mode,
-            &hf.as_name,
+            HistogramShape {
+                by: &hf.by,
+                per_series: hf.per_series,
+                step: &hf.step,
+                window: hf.window.as_ref(),
+                mode: hf.mode,
+                as_name: &hf.as_name,
+            },
         )
     }
 
@@ -1237,15 +1243,15 @@ impl InferCtx<'_> {
     }
 
     /// The shared operands of the histogram stages.
-    fn apply_histogram(
-        &mut self,
-        stage: &str,
-        by: &[String],
-        step: &str,
-        window: Option<&String>,
-        mode: HistogramMode,
-        as_name: &str,
-    ) -> Result<(), IrError> {
+    fn apply_histogram(&mut self, stage: &str, shape: HistogramShape<'_>) -> Result<(), IrError> {
+        let HistogramShape {
+            by,
+            per_series,
+            step,
+            window,
+            mode,
+            as_name,
+        } = shape;
         let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
             field: format!("{stage}.step"),
             value: step.to_string(),
@@ -1264,6 +1270,18 @@ impl InferCtx<'_> {
             if mode == HistogramMode::Instant {
                 return Err(IrError::Invalid(format!(
                     "{stage} `window` is the rate-mode lookback and is not valid with `mode: instant`"
+                )));
+            }
+        }
+        if per_series {
+            require_feature(
+                &self.registry,
+                Feature::HistogramPerSeries,
+                &format!("{stage} `per_series`"),
+            )?;
+            if !by.is_empty() {
+                return Err(IrError::Invalid(format!(
+                    "{stage} `per_series` keeps every series and cannot be combined with `by`"
                 )));
             }
         }
@@ -1311,7 +1329,7 @@ impl InferCtx<'_> {
         labels.extend(by.to_vec());
         self.relation = RelationType::Series(Series {
             labels,
-            open_labels: false,
+            open_labels: per_series,
             value: ValueType::Float64,
             step_ns,
         });
@@ -1716,6 +1734,16 @@ fn push_label(labels: &mut Vec<String>, name: &str) {
 }
 
 /// Gate a versioned feature on the document's registry.
+/// The operands the histogram stages share.
+struct HistogramShape<'a> {
+    by: &'a [String],
+    per_series: bool,
+    step: &'a str,
+    window: Option<&'a String>,
+    mode: HistogramMode,
+    as_name: &'a str,
+}
+
 fn require_feature(
     registry: &OperatorRegistry,
     feature: Feature,

@@ -94,3 +94,23 @@ fn window_is_rejected_in_instant_mode() {
     }})));
     assert!(e.contains("mode: instant"), "{e}");
 }
+
+#[test]
+fn per_series_keeps_each_series_and_excludes_by() {
+    for stage in [
+        json!({ "histogram_quantile": { "q": 0.9, "per_series": true, "step": "1m", "mode": "rate", "as": "p" } }),
+        json!({ "histogram_fraction": { "lower": 0, "upper": 1, "per_series": true, "step": "1m", "as": "f" } }),
+    ] {
+        let s = series(metrics(stage));
+        assert_eq!(
+            (s.labels, s.open_labels),
+            (vec!["metric.name".to_string()], true)
+        );
+    }
+    let both = metrics(json!({ "histogram_quantile": {
+        "q": 0.9, "per_series": true, "by": ["service.name"], "step": "1m", "as": "p" } }));
+    assert!(err(both).contains("per_series"));
+    let v9 = json!({ "irVersion": 9, "from": "metrics", "range": { "from": "now-1h", "to": "now" },
+        "result": "series", "pipeline": [{ "histogram_quantile": { "q": 0.9, "per_series": true, "step": "1m", "as": "p" } }] });
+    assert!(check(v9).is_err());
+}

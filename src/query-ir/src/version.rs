@@ -81,6 +81,8 @@ pub enum Feature {
     HistogramFraction,
     /// A histogram stage's `window`.
     HistogramWindow,
+    /// A histogram stage's `per_series`.
+    HistogramPerSeries,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -151,6 +153,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::Binop, 10),
     (Feature::HistogramFraction, 10),
     (Feature::HistogramWindow, 10),
+    (Feature::HistogramPerSeries, 10),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -376,6 +379,7 @@ mod tests {
             Feature::Binop,
             Feature::HistogramFraction,
             Feature::HistogramWindow,
+            Feature::HistogramPerSeries,
         ];
         for feature in all {
             assert!(
