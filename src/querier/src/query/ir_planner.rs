@@ -1202,6 +1202,10 @@ pub(crate) async fn plan_document(
     let mut metric_frame = false;
     let mut series_step = None;
     for stage in &doc.pipeline {
+        // A limit keeps the first rows, so it needs the frame's final order.
+        if metric_frame && matches!(stage, Stage::Limit(_)) {
+            df = metric_series::sort_frame(df)?;
+        }
         df = match stage {
             Stage::Sample(sample) => {
                 lowering.series_shaped = true;

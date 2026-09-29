@@ -262,6 +262,24 @@ async fn rate_over_two_series_of_one_service_stays_per_series() {
 }
 
 #[tokio::test]
+async fn a_limit_after_sample_keeps_the_first_rows_of_the_sorted_frame() {
+    let points: Vec<_> = (0..40)
+        .rev()
+        .map(|i| gauge(60 * S, "a", i as f64, json!({ "k": format!("{i:02}") })))
+        .collect();
+    let mut doc = sample_doc(60, 60, json!({ "fn": "latest" }));
+    doc["pipeline"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "limit": 3 }));
+    let values: Vec<_> = series_rows(&run(&points, doc).await.unwrap())
+        .into_iter()
+        .map(|(_, _, v)| v)
+        .collect();
+    assert_eq!(values, [0.0, 1.0, 2.0]);
+}
+
+#[tokio::test]
 async fn latest_takes_the_last_point_within_the_lookback() {
     let points = [
         gauge(0, "a", 1.0, json!({})),
