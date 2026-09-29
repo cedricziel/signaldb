@@ -20,6 +20,13 @@ interface Props {
   scope: RumScope;
 }
 
+/** The `docs/users` instrumentation guide's own copy of this tab's steps,
+ * linked the way other pages link out to a docs page (`EvalBits.tsx`'s
+ * `DOCS` constant) — full walkthrough, troubleshooting and every resource
+ * attribute the app switcher reads. */
+const INSTRUMENT_BROWSER_APP_DOC =
+  "https://github.com/cedricziel/signaldb/blob/main/docs/users/instrument-browser-app.md";
+
 const COLLECTED_KV: [string, string][] = [
   [
     "logs",
@@ -60,13 +67,35 @@ export function SetupTab({ app, scope }: Props) {
       ? Math.round(tracedShare.data.value * 100)
       : null;
 
-  const installSnippet = `npm install @opentelemetry/sdk-trace-web @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http @opentelemetry/instrumentation-document-load`;
+  const installSnippet = `npm install @opentelemetry/api-logs @opentelemetry/sdk-trace-base \\
+  @opentelemetry/sdk-trace-web @opentelemetry/sdk-logs \\
+  @opentelemetry/exporter-trace-otlp-http @opentelemetry/exporter-logs-otlp-http \\
+  @opentelemetry/resources @opentelemetry/semantic-conventions \\
+  @opentelemetry/instrumentation @opentelemetry/instrumentation-fetch \\
+  @opentelemetry/instrumentation-document-load \\
+  @opentelemetry/browser-instrumentation`;
 
   const initSnippet = `import { WebTracerProvider } from "@opentelemetry/sdk-trace-web";
+import {
+  LoggerProvider,
+  BatchLogRecordProcessor,
+} from "@opentelemetry/sdk-logs";
+import { BatchSpanProcessor } from "@opentelemetry/sdk-trace-base";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
 import { OTLPLogExporter } from "@opentelemetry/exporter-logs-otlp-http";
 import { resourceFromAttributes } from "@opentelemetry/resources";
 import { ATTR_SERVICE_NAME } from "@opentelemetry/semantic-conventions";
+import { logs } from "@opentelemetry/api-logs";
+import { registerInstrumentations } from "@opentelemetry/instrumentation";
+import { FetchInstrumentation } from "@opentelemetry/instrumentation-fetch";
+import { DocumentLoadInstrumentation } from "@opentelemetry/instrumentation-document-load";
+import { WebVitalsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/web-vitals";
+import { NavigationInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation";
+import { NavigationTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/navigation-timing";
+import { ResourceTimingInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/resource-timing";
+import { ErrorsInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/errors";
+import { UserActionInstrumentation } from "@opentelemetry/browser-instrumentation/experimental/user-action";
+import { SessionProcessor } from "./sessionProcessor"; // see "Stamp session.id" below
 
 // This origin's own collector/backend endpoint — never point the SDK
 // straight at SignalDB with a key baked into browser code.
@@ -76,14 +105,70 @@ const resource = resourceFromAttributes({
   [ATTR_SERVICE_NAME]: "${serviceName}",
 });
 
-const traceExporter = new OTLPTraceExporter({
-  url: \`\${COLLECTOR_URL}/v1/traces\`,
+const tracerProvider = new WebTracerProvider({
+  resource,
+  spanProcessors: [
+    new BatchSpanProcessor(
+      new OTLPTraceExporter({ url: \`\${COLLECTOR_URL}/v1/traces\` }),
+    ),
+  ],
 });
-const logExporter = new OTLPLogExporter({
-  url: \`\${COLLECTOR_URL}/v1/logs\`,
+tracerProvider.register();
+
+const loggerProvider = new LoggerProvider({
+  resource,
+  processors: [
+    new SessionProcessor(),
+    new BatchLogRecordProcessor(
+      new OTLPLogExporter({ url: \`\${COLLECTOR_URL}/v1/logs\` }),
+    ),
+  ],
 });
-// No Authorization header, no SignalDB API key — this exporter carries
-// only the app's own resource attributes to its own origin.`;
+logs.setGlobalLoggerProvider(loggerProvider);
+// No Authorization header, no SignalDB API key anywhere above — every
+// exporter carries only the app's own resource attributes to its own origin.
+
+registerInstrumentations({
+  tracerProvider,
+  loggerProvider,
+  instrumentations: [
+    new DocumentLoadInstrumentation(),
+    new FetchInstrumentation({
+      // Sends traceparent to your own API origins — required to join a
+      // client span to its backend trace (see step 5 below).
+      propagateTraceHeaderCorsUrls: [/^https:\\/\\/api\\.example\\.com\\//],
+    }),
+    new WebVitalsInstrumentation(),
+    new NavigationInstrumentation(),
+    new NavigationTimingInstrumentation(),
+    new ResourceTimingInstrumentation({
+      ignoreUrls: [/\\/v1\\/(traces|logs)$/], // skip the SDK's own exports
+    }),
+    new ErrorsInstrumentation(),
+    new UserActionInstrumentation(),
+  ],
+});`;
+
+  const sessionSnippet = `import type {
+  LogRecordProcessor,
+  SdkLogRecord,
+} from "@opentelemetry/sdk-logs";
+
+// Sessions and Web Vitals are grouped by session.id on each record — the
+// Real users page shows nothing without it.
+export class SessionProcessor implements LogRecordProcessor {
+  onEmit(record: SdkLogRecord): void {
+    record.setAttribute("session.id", getSessionId()); // your session logic
+    const userId = currentUserId(); // optional
+    if (userId) record.setAttribute("user.id", userId);
+  }
+  forceFlush() {
+    return Promise.resolve();
+  }
+  shutdown() {
+    return Promise.resolve();
+  }
+}`;
 
   const collectorSnippet = connection.data
     ? `# otel-collector-config.yaml — run by this app's operator, holds the key
@@ -113,7 +198,7 @@ service:
 
   const corsSnippet = `# The collector/backend must propagate traceparent and allow it in CORS
 # for every API origin the app calls, so client spans join their server
-# children in the same trace (see the Network tab, a later group).
+# children in the same trace (see the Network tab).
 Access-Control-Allow-Headers: traceparent, tracestate, content-type`;
 
   return (
@@ -137,16 +222,30 @@ Access-Control-Allow-Headers: traceparent, tracestate, content-type`;
                 Initialize with your service name and a collector endpoint
               </div>
               <p className="rum-setup-note">
-                SignalDB API keys are bearer credentials with no origin
-                restriction — any key shipped to a browser is public. Export to
-                an OpenTelemetry Collector or your own backend instead; it
-                forwards to SignalDB holding the key server-side.
+                There must be no SignalDB API key in browser code: SignalDB keys
+                are bearer credentials with no origin restriction, and any key
+                shipped to a browser is public. Export to an OpenTelemetry
+                Collector or your own backend instead; it forwards to SignalDB
+                holding the key server-side.
               </p>
               <SnippetBlock label="init.ts" code={initSnippet} />
             </div>
           </li>
           <li>
             <span className="rum-stepn">3</span>
+            <div className="rum-step-body">
+              <div className="rum-step-title">Stamp session.id</div>
+              <p className="rum-setup-note">
+                Sessions, Web Vitals and page views are grouped by{" "}
+                <code className="mono">session.id</code> on each log record —
+                without a processor setting it, the Real users page shows
+                nothing for this app.
+              </p>
+              <SnippetBlock label="sessionProcessor.ts" code={sessionSnippet} />
+            </div>
+          </li>
+          <li>
+            <span className="rum-stepn">4</span>
             <div className="rum-step-body">
               <div className="rum-step-title">
                 Forward from the collector to SignalDB
@@ -164,7 +263,7 @@ Access-Control-Allow-Headers: traceparent, tracestate, content-type`;
             </div>
           </li>
           <li>
-            <span className="rum-stepn">4</span>
+            <span className="rum-stepn">5</span>
             <div className="rum-step-body">
               <div className="rum-step-title">
                 Propagate traceparent, allow it in CORS
@@ -173,6 +272,14 @@ Access-Control-Allow-Headers: traceparent, tracestate, content-type`;
             </div>
           </li>
         </ol>
+        <p className="rum-setup-note">
+          Full walkthrough, troubleshooting and the resource attributes the app
+          switcher reads:{" "}
+          <a href={INSTRUMENT_BROWSER_APP_DOC} target="_blank" rel="noreferrer">
+            Instrument a browser app
+          </a>
+          .
+        </p>
       </Panel>
 
       <div className="rum-stack">

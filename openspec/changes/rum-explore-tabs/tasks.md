@@ -29,4 +29,4 @@ proposal — Why).
 
 - [x] 5.1 Failing tests for platform detection from `telemetry.sdk.language`; relabel tabs and hide browser-only panels for mobile.
 - [x] 5.2 Switching apps clears the selected route, error group and session.
-- [ ] 5.3 Docs: extend the "Real users" section in `docs/users/explore-ui.md` per tab; a user guide for instrumenting a browser app (routed via the docs skill), linked from the Setup tab.
+- [x] 5.3 Docs: extend the "Real users" section in `docs/users/explore-ui.md` per tab; a user guide for instrumenting a browser app (routed via the docs skill), linked from the Setup tab.
