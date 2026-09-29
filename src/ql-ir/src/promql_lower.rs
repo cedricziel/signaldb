@@ -1081,7 +1081,6 @@ fn sample(func: SampleFn) -> Sample {
         offset: None,
         at: None,
         arg: None,
-        as_name: None,
     }
 }
 

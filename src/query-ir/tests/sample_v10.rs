@@ -94,12 +94,15 @@ fn sample_operand_rules() {
         (json!({ "fn": "rate", "window": "5m", "arg": 0.5 }), "arg"),
         (json!({ "fn": "rate", "window": "0s" }), "window"),
         (json!({ "fn": "latest", "lookback": "-1m" }), "lookback"),
-        (json!({ "fn": "latest", "offset": "0s" }), "offset"),
+        (json!({ "fn": "latest", "offset": "-1m" }), "offset"),
+        (
+            json!({ "fn": "latest", "offset": "-0.0000000001s" }),
+            "offset",
+        ),
         (
             json!({ "fn": "latest", "at": "yesterday-ish" }),
             "sample.at",
         ),
-        (json!({ "fn": "latest", "as": "a b" }), "a b"),
     ];
     for (op, needle) in bad {
         let msg = err_text(check(metrics(json!([sample(op.clone())]))));
@@ -108,11 +111,19 @@ fn sample_operand_rules() {
     let good = [
         json!({ "fn": "latest", "lookback": "2m", "offset": "1h", "at": "now-1h" }),
         json!({ "fn": "quantile_over_time", "window": "5m", "arg": 0.99, "of": "metric.sum" }),
-        json!({ "fn": "increase", "window": "10m", "of": "metric.count", "as": "inc" }),
+        json!({ "fn": "increase", "window": "10m", "of": "metric.count", "offset": "0s" }),
     ];
     for op in good {
         assert!(check(metrics(json!([sample(op.clone())]))).is_ok(), "{op}");
     }
+}
+
+/// The Series frame's value column is always `value`: `sample` names none.
+#[test]
+fn sample_takes_no_output_name() {
+    let doc = metrics(json!([sample(json!({ "fn": "latest", "as": "v" }))]));
+    let err = serde_json::from_value::<Document>(doc).expect_err("`as` is unknown");
+    assert!(err.to_string().contains("as"), "{err}");
 }
 
 #[test]
