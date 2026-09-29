@@ -1361,22 +1361,13 @@ mod tests {
         );
     }
 
-    // otel-native-schema layer 7, D10 cutover prep.
     async fn manager_with_legacy_metric_tables() -> CatalogManager {
         let manager = provisioning_manager(vec![provisioning_tenant("acme")]).await;
-        manager
-            .ensure_tables_named(
-                "acme",
-                "production",
-                &[
-                    "metrics_gauge",
-                    "metrics_sum",
-                    "metrics_histogram",
-                    "metrics_exponential_histogram",
-                    "metrics_summary",
-                ],
-            )
-            .await;
+        for table in crate::iceberg::schemas::LEGACY_METRIC_TABLE_NAMES {
+            crate::testing::create_legacy_metric_table(&manager, "acme", "production", table)
+                .await
+                .unwrap();
+        }
         manager
     }
 

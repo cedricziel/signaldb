@@ -23,13 +23,12 @@ pub struct SchemaDefinitions {
     #[serde(default)]
     pub metrics_summary: HashMap<String, TableSchemaDefinition>,
     /// The wide, one-row-per-datapoint metrics table (otel-native-schema
-    /// layer 7, D10) replacing the five `metrics_*` tables above at cutover.
-    /// Declared at `physical-v4` only; not yet `current_metric_version` and
-    /// not wired into table creation.
+    /// layer 7, D10) replacing the five `metrics_*` tables above.
+    /// Declared at `physical-v4`, the current metric version.
     #[serde(default)]
     pub metrics: HashMap<String, TableSchemaDefinition>,
     /// The exemplars table paired with [`Self::metrics`] (otel-native-schema
-    /// layer 7, D10). Same inert status as `metrics` above.
+    /// layer 7, D10). Declared at `physical-v4`.
     #[serde(default)]
     pub metric_exemplars: HashMap<String, TableSchemaDefinition>,
     #[serde(default)]

@@ -2,14 +2,12 @@ use anyhow::Result;
 use common::CatalogManager;
 use common::config::{Configuration, SchemaConfig, StorageConfig};
 use common::schema::type_authority::TypeAuthority;
-use datafusion::arrow::array::{
-    Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
-};
-use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+use datafusion::arrow::array::{BooleanArray, Int32Array, RecordBatch, StringArray, UInt64Array};
+use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use std::sync::Arc;
 use writer::IcebergTableWriter;
 
-/// `metrics_gauge`'s current `schemas.toml` version is the typed attribute
+/// `metrics`' current `schemas.toml` version is the typed attribute
 /// layout, so a writer that actually commits a batch needs a `TypeAuthority`
 /// attached (see `IcebergTableWriter::with_type_authority`).
 async fn create_writer(config: Configuration, tenant_id: &str) -> Result<IcebergTableWriter> {
@@ -25,7 +23,7 @@ async fn create_writer(config: Configuration, tenant_id: &str) -> Result<Iceberg
         &catalog_manager,
         tenant_id.to_string(),
         "test_dataset".to_string(),
-        "metrics_gauge".to_string(),
+        "metrics".to_string(),
     )
     .await?;
     Ok(writer.with_type_authority(type_authority))
@@ -46,74 +44,63 @@ fn create_simple_test_config() -> Configuration {
     }
 }
 
-/// Create simple test data for metrics_gauge table
+/// Create simple wire-format (`data_json`) gauge data, the shape the acceptor
+/// hands the writer before the wide-table transform runs.
 fn create_simple_test_data(num_rows: usize) -> Result<RecordBatch> {
     let schema = Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
+        Field::new("name", DataType::Utf8, false),
+        Field::new("description", DataType::Utf8, true),
+        Field::new("unit", DataType::Utf8, true),
+        Field::new("start_time_unix_nano", DataType::UInt64, true),
+        Field::new("time_unix_nano", DataType::UInt64, false),
+        Field::new("attributes_json", DataType::Utf8, true),
+        Field::new("resource_json", DataType::Utf8, true),
+        Field::new("scope_json", DataType::Utf8, true),
+        Field::new("metric_type", DataType::Utf8, false),
+        Field::new("data_json", DataType::Utf8, false),
+        Field::new("aggregation_temporality", DataType::Int32, true),
+        Field::new("is_monotonic", DataType::Boolean, true),
     ]));
 
-    let timestamps: Vec<i64> = (0..num_rows)
-        .map(|i| 1_000_000_000 + (i as i64 * 1_000_000))
+    let times: Vec<u64> = (0..num_rows)
+        .map(|i| 1_700_000_001_000_000_000 + (i as u64 * 1_000_000))
         .collect();
-    let values: Vec<f64> = (0..num_rows).map(|i| i as f64).collect();
+    let data_json: Vec<String> = times
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            format!(
+                r#"[{{"time_unix_nano":{t},"start_time_unix_nano":1700000000000000000,"value":{i}.0,"attributes":{{"host":"simple-test"}}}}]"#
+            )
+        })
+        .collect();
 
     let batch = RecordBatch::try_new(
         schema,
         vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(vec![None; num_rows])),
-            Arc::new(StringArray::from(vec!["e2e-simple-service"; num_rows])),
             Arc::new(StringArray::from(vec!["simple.metric"; num_rows])),
             Arc::new(StringArray::from(vec![
                 Some("Simple test metric");
                 num_rows
             ])),
             Arc::new(StringArray::from(vec![Some("count"); num_rows])),
-            Arc::new(Float64Array::from(values)),
-            Arc::new(Int32Array::from(vec![None; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![
-                Some("{\"host\":\"simple-test\"}");
+            Arc::new(UInt64Array::from(vec![
+                Some(1_700_000_000_000_000_000u64);
                 num_rows
             ])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(Int32Array::from(vec![None; num_rows])),
+            Arc::new(UInt64Array::from(times)),
+            Arc::new(StringArray::from(vec![Some("{}"); num_rows])),
             Arc::new(StringArray::from(vec![
-                Some("{\"type\":\"simple\"}");
+                Some(
+                    r#"{"service.name":"e2e-simple-service"}"#
+                );
                 num_rows
             ])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(Date32Array::from(vec![19000; num_rows])),
-            Arc::new(Int32Array::from(vec![10; num_rows])),
+            Arc::new(StringArray::from(vec![Some(r#"{"name":"e2e"}"#); num_rows])),
+            Arc::new(StringArray::from(vec!["gauge"; num_rows])),
+            Arc::new(StringArray::from(data_json)),
+            Arc::new(Int32Array::from(vec![None::<i32>; num_rows])),
+            Arc::new(BooleanArray::from(vec![None::<bool>; num_rows])),
         ],
     )?;
 

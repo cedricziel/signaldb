@@ -1131,7 +1131,7 @@ mod tests {
         let metrics = RetentionMetrics::new_mock();
         let enforcer = RetentionEnforcer::new(catalog_manager.clone(), config, metrics).unwrap();
 
-        for table in ["traces", "logs", "metrics_gauge", "profiles"] {
+        for table in ["traces", "logs", "metrics", "profiles"] {
             catalog_manager
                 .ensure_table("test_tenant", "test_dataset", table)
                 .await
@@ -1147,7 +1147,7 @@ mod tests {
             tables,
             vec![
                 ("logs".to_string(), SignalType::Logs),
-                ("metrics_gauge".to_string(), SignalType::Metrics),
+                ("metrics".to_string(), SignalType::Metrics),
                 ("profiles".to_string(), SignalType::Profiles),
                 ("traces".to_string(), SignalType::Traces),
             ]
