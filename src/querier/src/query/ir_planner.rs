@@ -1035,6 +1035,7 @@ fn is_series_algebra(stage: &Stage) -> bool {
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
+            | Stage::Binop(_)
     )
 }
 
@@ -1537,7 +1538,8 @@ impl Lowering<'_> {
             | Stage::Filter(_)
             | Stage::Sort(_)
             | Stage::Absent(_)
-            | Stage::OverTime(_) => Err(unsupported_stage(stage)),
+            | Stage::OverTime(_)
+            | Stage::Binop(_) => Err(unsupported_stage(stage)),
         }
     }
 
