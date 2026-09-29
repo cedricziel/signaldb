@@ -1849,7 +1849,7 @@ export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
  * `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
- * `flamegraph`; `graph` fills `graph`; `scalar` fills `points`.
+ * `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
@@ -1859,7 +1859,7 @@ export type QueryIrResponse = {
     metadata?: null | MetadataResult;
     /**
      * Present iff `result == "scalar"`: one `[t_ns, value]` point per
-     * evaluation instant, with no labels (`null` is NaN).
+     * evaluation instant, with no labels (`null` is NaN or ±Inf).
      */
     points?: Array<Array<unknown>> | null;
     /**

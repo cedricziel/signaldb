@@ -9554,7 +9554,7 @@
       },
       "QueryIrResponse": {
         "type": "object",
-        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`; `scalar` fills `points`.",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.",
         "required": [
           "result",
           "window"
@@ -9611,7 +9611,7 @@
               "type": "array",
               "items": {}
             },
-            "description": "Present iff `result == \"scalar\"`: one `[t_ns, value]` point per\nevaluation instant, with no labels (`null` is NaN)."
+            "description": "Present iff `result == \"scalar\"`: one `[t_ns, value]` point per\nevaluation instant, with no labels (`null` is NaN or ±Inf)."
           },
           "result": {
             "type": "string",

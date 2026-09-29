@@ -301,7 +301,7 @@ pub struct QueryWarning {
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-/// `flamegraph`; `graph` fills `graph`; `scalar` fills `points`.
+/// `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
     /// The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
@@ -317,7 +317,7 @@ pub struct QueryIrResponse {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub series: Vec<ResultSeries>,
     /// Present iff `result == "scalar"`: one `[t_ns, value]` point per
-    /// evaluation instant, with no labels (`null` is NaN).
+    /// evaluation instant, with no labels (`null` is NaN or ±Inf).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[schema(value_type = Option<Vec<Vec<serde_json::Value>>>)]
     pub points: Option<Vec<[serde_json::Value; 2]>>,
@@ -585,7 +585,7 @@ async fn execute_inner_series_query(
     let window = resolve_window(&req.range, now_ns)?;
     let ticket = query_ir_ticket(ctx, req, now_ns)?;
     let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
-    let (series, _step_ns) = to_series(&batches);
+    let series = to_series(&batches)?;
     let eval_series = series
         .into_iter()
         .map(|s| common::query_ir::EvalSeries {
@@ -939,7 +939,7 @@ fn build_envelope(
 ) -> Result<QueryIrResponse, ApiError> {
     match result {
         "series" => {
-            let (series, step_ns) = to_series(batches);
+            let series = to_series(batches)?;
             Ok(QueryIrResponse {
                 result: result.to_string(),
                 window,
@@ -947,7 +947,7 @@ fn build_envelope(
                 rows: Vec::new(),
                 series,
                 points: None,
-                step_ns,
+                step_ns: evaluation_step_ns(document),
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 graph: None,
@@ -957,7 +957,7 @@ fn build_envelope(
         }
         "scalar" => {
             // A Scalar frame is `(bucket, value)`: one label-less series.
-            let points = to_series(batches).0.into_iter().next();
+            let points = to_series(batches)?.into_iter().next();
             Ok(QueryIrResponse {
                 result: result.to_string(),
                 window,
@@ -965,7 +965,7 @@ fn build_envelope(
                 rows: Vec::new(),
                 series: Vec::new(),
                 points: Some(points.map(|s| s.points).unwrap_or_default()),
-                step_ns: None,
+                step_ns: evaluation_step_ns(document),
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 graph: None,
@@ -1425,14 +1425,31 @@ pub(super) fn ir_table(
     (columns, rows)
 }
 
+/// The step a Series or Scalar result is evaluated at: the `sample` or
+/// `aggregate` stage's own `step`, else the document's.
+fn evaluation_step_ns(document: &serde_json::Value) -> Option<i64> {
+    let doc = common::query_ir::Document::deserialize(document).ok()?;
+    let stage_step = doc.pipeline.iter().find_map(|stage| match stage {
+        common::query_ir::Stage::Sample(s) => s.step.as_deref(),
+        common::query_ir::Stage::Aggregate(a) => a.step.as_deref(),
+        _ => None,
+    });
+    common::query_ir::parse_duration_ns(stage_step.or(doc.step.as_deref())?)
+}
+
 /// The column a metric Series frame carries its canonical label set in
 /// (`querier::query::metric_series::labels::LABELS_COLUMN`).
 const SERIES_LABELS_COLUMN: &str = "__labels";
 
 /// Reshape series batches into series: a metric Series frame
-/// (`[bucket, __labels, value]`, the label set as a JSON object) or a legacy
-/// step aggregate (`[bucket, labels…, value]`, one column per label).
-fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
+/// (`[bucket, __labels, value]`, the label set as a JSON object, sorted by
+/// label set then bucket) or a legacy step aggregate (`[bucket, labels…,
+/// value]`, one column per label).
+///
+/// A Series frame is keyed on its canonical `__labels` string. Two of its
+/// rows sharing a label set and a bucket came from series the label sets
+/// cannot tell apart, which is a 400 as in Prometheus.
+fn to_series(batches: &[RecordBatch]) -> Result<Vec<ResultSeries>, ApiError> {
     let mut order: Vec<String> = Vec::new();
     let mut series: BTreeMap<String, ResultSeries> = BTreeMap::new();
 
@@ -1462,28 +1479,27 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
                 },
             )
             .collect();
-        let label_set =
-            (label_cols.len() == 1 && schema.field(1).name() == SERIES_LABELS_COLUMN).then_some(1);
+        let label_set = label_cols.len() == 1 && schema.field(1).name() == SERIES_LABELS_COLUMN;
         for r in 0..batch.num_rows() {
-            let mut labels = BTreeMap::new();
-            if let Some(c) = label_set
-                && let serde_json::Value::String(set) = cell(casted[c].as_ref(), r)
-            {
-                labels = serde_json::from_str(&set).unwrap_or_default();
-            }
-            for &c in label_cols.iter().filter(|_| label_set.is_none()) {
-                let name = schema.field(c).name().clone();
-                let v = match cell(casted[c].as_ref(), r) {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                labels.insert(name, v);
-            }
-            let key = labels
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(",");
+            let (key, labels) = if label_set {
+                series_label_set(cell(casted[1].as_ref(), r))?
+            } else {
+                let mut labels = BTreeMap::new();
+                for &c in &label_cols {
+                    let name = schema.field(c).name().clone();
+                    let v = match cell(casted[c].as_ref(), r) {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    labels.insert(name, v);
+                }
+                let key = labels
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (key, labels)
+            };
             let t = cell(casted[0].as_ref(), r);
             let value = cell(casted[value_col].as_ref(), r);
             let entry = series.entry(key.clone()).or_insert_with(|| {
@@ -1493,15 +1509,42 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
                     points: Vec::new(),
                 }
             });
+            if label_set && entry.points.last().is_some_and(|[last, _]| *last == t) {
+                return Err(ApiError::bad_request(format!(
+                    "several series share the label set {key} at {t}; \
+                     keep a label that tells them apart"
+                )));
+            }
             entry.points.push([t, value]);
         }
     }
 
-    let ordered = order
+    Ok(order
         .into_iter()
         .filter_map(|k| series.remove(&k))
-        .collect();
-    (ordered, None)
+        .collect())
+}
+
+/// One `__labels` cell: its canonical string (the series key) and its
+/// labels. The querier writes it, so a malformed one is a server bug.
+fn series_label_set(
+    cell: serde_json::Value,
+) -> Result<(String, BTreeMap<String, String>), ApiError> {
+    let serde_json::Value::String(set) = cell else {
+        return Err(malformed_label_set(format!("not a string: {cell}")));
+    };
+    match serde_json::from_str(&set) {
+        Ok(labels) => Ok((set, labels)),
+        Err(e) => Err(malformed_label_set(e.to_string())),
+    }
+}
+
+fn malformed_label_set(error: String) -> ApiError {
+    tracing::error!(%error, "querier returned a malformed series label set");
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the query returned a malformed series label set",
+    )
 }
 
 #[cfg(test)]
@@ -2590,6 +2633,91 @@ mod tests {
                 { "labels": { "code": "500", "metric.name": "m" }, "points": [[60, 2.0]] }
             ])
         );
+    }
+
+    fn series_frame(labels: Vec<&str>, buckets_ns: Vec<i64>, values: Vec<f64>) -> RecordBatch {
+        frame(vec![
+            ("bucket", buckets(buckets_ns)),
+            ("__labels", Arc::new(StringArray::from(labels))),
+            ("value", Arc::new(Float64Array::from(values))),
+        ])
+    }
+
+    const WINDOW: ResolvedWindow = ResolvedWindow {
+        start_ns: 60,
+        end_ns: 120,
+    };
+
+    #[test]
+    fn a_malformed_label_set_is_an_internal_error() {
+        let batch = series_frame(vec!["{not json"], vec![60], vec![1.0]);
+        let err = build_envelope("series", WINDOW, &[batch], &serde_json::json!({})).unwrap_err();
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Two series whose label sets collide (e.g. after `rate` drops
+    /// `metric.name`) cannot be told apart, as in Prometheus.
+    #[test]
+    fn two_series_sharing_a_label_set_at_one_instant_is_a_bad_request() {
+        let set = r#"{"code":"200"}"#;
+        let batch = series_frame(vec![set, set], vec![60, 60], vec![1.0, 2.0]);
+        let err = build_envelope("series", WINDOW, &[batch], &serde_json::json!({})).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(
+            err.message.contains("several series share the label set"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// JSON has no NaN or infinity: such a value is `null`.
+    #[test]
+    fn nan_and_infinities_serialize_as_null() {
+        let values = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+        let batch = series_frame(vec!["{}"; 3], vec![60, 90, 120], values.clone());
+        let doc = serde_json::json!({});
+        let series = build_envelope("series", WINDOW, &[batch], &doc).unwrap();
+        let points = serde_json::to_value(&series.series[0].points).unwrap();
+        assert_eq!(
+            points,
+            serde_json::json!([[60, null], [90, null], [120, null]])
+        );
+        let scalar = frame(vec![
+            ("bucket", buckets(vec![60, 90, 120])),
+            ("value", Arc::new(Float64Array::from(values))),
+        ]);
+        let scalar = build_envelope("scalar", WINDOW, &[scalar], &doc).unwrap();
+        let points = serde_json::to_value(&scalar.points).unwrap();
+        assert_eq!(
+            points,
+            serde_json::json!([[60, null], [90, null], [120, null]])
+        );
+    }
+
+    #[test]
+    fn series_and_scalar_envelopes_carry_the_evaluation_step() {
+        let doc = |pipeline| {
+            serde_json::json!({
+                "irVersion": 10, "from": "metrics", "range": { "from": 0, "to": 1 },
+                "result": "series", "step": "1m", "pipeline": pipeline
+            })
+        };
+        let batch = series_frame(vec!["{}"], vec![60], vec![1.0]);
+        let step = |result, doc| {
+            build_envelope(result, WINDOW, std::slice::from_ref(&batch), &doc)
+                .unwrap()
+                .step_ns
+        };
+        let minute = Some(60_000_000_000);
+        assert_eq!(step("series", doc(serde_json::json!([]))), minute);
+        let sample = serde_json::json!([{ "sample": { "fn": "latest", "step": "30s" } }]);
+        assert_eq!(step("series", doc(sample)), Some(30_000_000_000));
+        let scalar = frame(vec![
+            ("bucket", buckets(vec![60])),
+            ("value", Arc::new(Float64Array::from(vec![1.0]))),
+        ]);
+        let scalar = build_envelope("scalar", WINDOW, &[scalar], &doc(serde_json::json!([])));
+        assert_eq!(scalar.unwrap().step_ns, minute);
     }
 
     /// `step`/`constant` survive the router's re-serialization into the

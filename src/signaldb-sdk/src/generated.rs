@@ -2774,7 +2774,7 @@ pub mod types {
     /**The single canonical response contract. `result` discriminates which fields
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
     `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-    `flamegraph`; `graph` fills `graph`; `scalar` fills `points`.*/
+    `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -2794,7 +2794,7 @@ pub mod types {
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
         /**Present iff `result == "scalar"`: one `[t_ns, value]` point per
-        evaluation instant, with no labels (`null` is NaN).*/
+        evaluation instant, with no labels (`null` is NaN or ±Inf).*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub points: ::std::option::Option<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
         /**The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
