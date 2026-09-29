@@ -650,6 +650,99 @@ pub struct OverTime {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub arg: Option<f64>,
 }
+/// A `binop` operator (`irVersion` 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BinopOp {
+    Add,
+    Sub,
+    Mul,
+    Div,
+    Mod,
+    Pow,
+    Atan2,
+    Eq,
+    Ne,
+    Gt,
+    Ge,
+    Lt,
+    Le,
+    And,
+    Or,
+    Unless,
+}
+
+impl BinopOp {
+    pub fn is_comparison(self) -> bool {
+        matches!(
+            self,
+            BinopOp::Eq | BinopOp::Ne | BinopOp::Gt | BinopOp::Ge | BinopOp::Lt | BinopOp::Le
+        )
+    }
+
+    /// `and`/`or`/`unless`: set operations on label sets.
+    pub fn is_set(self) -> bool {
+        matches!(self, BinopOp::And | BinopOp::Or | BinopOp::Unless)
+    }
+}
+
+/// Which operand of a `binop` holds many series per match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum GroupSide {
+    Left,
+    Right,
+}
+
+/// A `binop`'s one-to-many (`group_left`/`group_right`) match.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct BinopGroup {
+    pub side: GroupSide,
+    /// Labels copied from the "one" side onto the result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub include: Vec<String>,
+}
+
+/// A `binop`'s right operand as a sub-document: it inherits `irVersion`,
+/// `range` and `step` from the enclosing document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SubDocument {
+    pub from: String,
+    #[serde(default)]
+    pub pipeline: Vec<Stage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constant: Option<f64>,
+}
+
+/// A `binop`'s right operand: a number or a sub-document.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum BinopOperand {
+    Number(f64),
+    Document(Box<SubDocument>),
+}
+
+/// The `binop` stage: combine the pipeline (left) with `right`.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Binop {
+    pub op: BinopOp,
+    pub right: BinopOperand,
+    /// Evaluate `right op left` (e.g. `2 - series`).
+    #[serde(default)]
+    pub reverse: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ignoring: Option<Vec<String>>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub group: Option<BinopGroup>,
+    /// Comparison ops only: yield 0/1 instead of filtering.
+    #[serde(default)]
+    pub bool: bool,
+}
 /// The operand of a stage that takes none (`{"scalar": {}}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -682,6 +775,7 @@ pub enum Stage {
     Sort(Direction),
     Absent(Absent),
     OverTime(OverTime),
+    Binop(Binop),
 }
 
 impl Stage {
@@ -709,6 +803,7 @@ impl Stage {
             Stage::Sort(_) => "sort",
             Stage::Absent(_) => "absent",
             Stage::OverTime(_) => "over_time",
+            Stage::Binop(_) => "binop",
         }
     }
 
@@ -729,6 +824,7 @@ impl Stage {
             Stage::Sort(_) => Feature::Sort,
             Stage::Absent(_) => Feature::Absent,
             Stage::OverTime(_) => Feature::OverTime,
+            Stage::Binop(_) => Feature::Binop,
             _ => return None,
         })
     }

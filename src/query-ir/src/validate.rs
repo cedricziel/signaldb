@@ -35,9 +35,10 @@ use super::relation::{
 use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
-    Absent, Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract,
-    Filter, Heatmap, HistogramQuantile, Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce,
-    ReduceFn, Sample, SampleFn, Stage, is_expression_string,
+    Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
+    DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramQuantile, Labels, Map, Order,
+    OverTime, OverTimeFn, Rank, Reduce, ReduceFn, Sample, SampleFn, Stage, SubDocument,
+    is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -115,6 +116,24 @@ pub fn validate(
     sources: &SourceRegistry,
     resolver: &dyn FieldResolver,
 ) -> Result<Validated, IrError> {
+    let ctx = infer(doc, sources, resolver)?;
+
+    // 4. Envelope + fields validation against the terminal relation.
+    validate_envelope(doc.result, &doc.from, &ctx.relation)?;
+    validate_fields(doc, &ctx)?;
+
+    Ok(Validated {
+        terminal: ctx.relation,
+    })
+}
+
+/// Steps 1–3 of [`validate`]: the relation `doc`'s pipeline produces. Also
+/// validates a `binop`'s right sub-document, which declares no envelope.
+fn infer<'a>(
+    doc: &'a Document,
+    sources: &'a SourceRegistry,
+    resolver: &'a dyn FieldResolver,
+) -> Result<InferCtx<'a>, IrError> {
     // 1. Version range.
     let registry = check_version(doc.ir_version)?;
     if !registry.supports_feature(Feature::Heatmap)
@@ -206,6 +225,8 @@ pub fn validate(
         names: Vec::new(),
         declared_result: doc.result,
         doc_step_ns,
+        doc,
+        sources,
     };
     match describe {
         // Introspection: no records flow through the pipeline, so there is
@@ -223,14 +244,7 @@ pub fn validate(
             }
         }
     }
-
-    // 4. Envelope + fields validation against the terminal relation.
-    validate_envelope(doc.result, &doc.from, &ctx.relation)?;
-    validate_fields(doc, &ctx)?;
-
-    Ok(Validated {
-        terminal: ctx.relation,
-    })
+    Ok(ctx)
 }
 
 struct InferCtx<'a> {
@@ -250,6 +264,9 @@ struct InferCtx<'a> {
     registry: OperatorRegistry,
     /// The document `step`, the default of the series-algebra stages.
     doc_step_ns: Option<i64>,
+    /// The document itself and the registry, for a `binop` sub-document.
+    doc: &'a Document,
+    sources: &'a SourceRegistry,
 }
 
 impl InferCtx<'_> {
@@ -292,6 +309,7 @@ impl InferCtx<'_> {
             Stage::Sort(_) => self.require_numeric_series("sort").map(|_| ()),
             Stage::Absent(absent) => self.apply_absent(absent),
             Stage::OverTime(over) => self.apply_over_time(over),
+            Stage::Binop(binop) => self.apply_binop(binop),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -628,6 +646,159 @@ impl InferCtx<'_> {
             ..input
         });
         Ok(())
+    }
+
+    /// `binop`: combine the pipeline (left) with a number or a sub-document.
+    fn apply_binop(&mut self, binop: &Binop) -> Result<(), IrError> {
+        let left = match &self.relation {
+            RelationType::Series(_) | RelationType::Scalar(_) => self.relation.clone(),
+            other => {
+                return Err(IrError::IllegalStage {
+                    stage: "binop".to_string(),
+                    reason: format!(
+                        "expects a series or scalar input, but the input is {}",
+                        other.describe()
+                    ),
+                });
+            }
+        };
+        let step_ns = relation_step(&left);
+        let right = match &binop.right {
+            BinopOperand::Number(_) => RelationType::Scalar(Scalar { step_ns }),
+            BinopOperand::Document(sub) => self.infer_operand(sub)?,
+        };
+        if relation_step(&right) != step_ns {
+            return Err(IrError::Invalid(
+                "binop `right` must have the same step as the pipeline".to_string(),
+            ));
+        }
+        let (left, right) = if binop.reverse {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        let op = binop.op;
+        let both_series = matches!(
+            (&left, &right),
+            (RelationType::Series(_), RelationType::Series(_))
+        );
+        let rule = |ok: bool, msg: &str| {
+            if ok {
+                Ok(())
+            } else {
+                Err(IrError::Invalid(format!("binop {msg}")))
+            }
+        };
+        rule(
+            !(binop.on.is_some() && binop.ignoring.is_some()),
+            "`on` and `ignoring` are mutually exclusive",
+        )?;
+        rule(
+            both_series || (binop.on.is_none() && binop.ignoring.is_none()),
+            "`on`/`ignoring` need a series on both sides",
+        )?;
+        rule(
+            binop.group.is_none() || both_series,
+            "`group` needs a series on both sides",
+        )?;
+        rule(
+            !op.is_set() || both_series,
+            "`and`/`or`/`unless` need a series on both sides",
+        )?;
+        rule(
+            !op.is_set() || binop.group.is_none(),
+            "`group` is not valid for a set operation",
+        )?;
+        rule(
+            !binop.bool || op.is_comparison(),
+            "`bool` is only valid for a comparison",
+        )?;
+        let names = binop.on.iter().chain(&binop.ignoring).flatten();
+        let include = binop.group.iter().flat_map(|g| &g.include);
+        for name in names.chain(include) {
+            check_label_name("binop", name)?;
+        }
+
+        let as_series = |r: RelationType| match r {
+            RelationType::Series(s) => Some(s),
+            _ => None,
+        };
+        let (l, r) = match (as_series(left), as_series(right)) {
+            (None, None) => {
+                self.relation = RelationType::Scalar(Scalar { step_ns });
+                return Ok(());
+            }
+            (Some(l), r) => (l, r),
+            (None, Some(s)) => (s, None),
+        };
+        let (mut labels, open_labels) = match (&r, &binop.group, &binop.on) {
+            (None, _, _) => (l.labels.clone(), l.open_labels),
+            (Some(_), _, _) if op.is_set() => (l.labels.clone(), l.open_labels),
+            (Some(r), Some(group), _) => {
+                let many = if group.side == GroupSide::Left { &l } else { r };
+                let mut labels = many.labels.clone();
+                for name in &group.include {
+                    push_label(&mut labels, name);
+                }
+                (labels, many.open_labels)
+            }
+            (Some(_), None, Some(on)) => (on.clone(), false),
+            (Some(r), None, None) => {
+                let ignoring = binop.ignoring.as_deref().unwrap_or_default();
+                let labels = l
+                    .labels
+                    .iter()
+                    .filter(|name| !ignoring.contains(name))
+                    .cloned()
+                    .collect();
+                (labels, l.open_labels || r.open_labels)
+            }
+        };
+        if !op.is_set() && (!op.is_comparison() || binop.bool) {
+            labels.retain(|name| name != METRIC_NAME);
+        }
+        self.relation = RelationType::Series(Series {
+            labels,
+            open_labels,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// Validate a `binop`'s right sub-document: it inherits this document's
+    /// version, range and step, and resolves fields against the same
+    /// resolver — which serves one source, so it must read this document's
+    /// source or a pseudo-source.
+    fn infer_operand(&self, sub: &SubDocument) -> Result<RelationType, IrError> {
+        if sub.from != self.doc.from && !is_pseudo_source(&sub.from) {
+            return Err(IrError::Invalid(format!(
+                "binop `right.from` must be '{}' or a pseudo-source: fields resolve against \
+                     the document's own source",
+                self.doc.from
+            )));
+        }
+        let child = Document {
+            ir_version: self.doc.ir_version,
+            from: sub.from.clone(),
+            range: self.doc.range.clone(),
+            result: ResultEnvelope::Series,
+            fields: None,
+            pipeline: sub.pipeline.clone(),
+            focus: None,
+            depth: None,
+            trace_id: None,
+            step: self.doc.step.clone(),
+            constant: sub.constant,
+        };
+        let terminal = infer(&child, self.sources, self.resolver)?.relation;
+        match terminal {
+            RelationType::Series(_) | RelationType::Scalar(_) => Ok(terminal),
+            other => Err(IrError::Invalid(format!(
+                "binop `right` must yield a series or scalar, not {}",
+                other.describe()
+            ))),
+        }
     }
 
     /// A series-algebra output name: a plain, pipeline-unique name.
@@ -1454,6 +1625,15 @@ fn check_quantile_arg(stage: &str, arg: Option<f64>, needed: bool) -> Result<(),
         (Some(_), false) => Err(IrError::Invalid(format!(
             "{stage} `arg` is only valid for a quantile"
         ))),
+    }
+}
+
+/// The step of a Series or Scalar (0 for any other relation).
+fn relation_step(relation: &RelationType) -> i64 {
+    match relation {
+        RelationType::Series(s) => s.step_ns,
+        RelationType::Scalar(s) => s.step_ns,
+        _ => 0,
     }
 }
 

@@ -47,11 +47,11 @@ pub use relation::{
 pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
 pub use source::{PSEUDO_SOURCES, SourceDef, SourceRegistry, is_pseudo_source};
 pub use stage::{
-    Absent, Agg, AggFn, Aggregate, CompareOp, Correlate, CorrelateTarget, DerivedField, Describe,
-    DescribeTarget, Direction, Extract, Filter, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue,
-    HistogramMode, HistogramQuantile, JoinKind, LabelJoin, LabelReplace, Labels, Map, MapFn,
-    NoOperands, Order, OverTime, OverTimeFn, Parser, Rank, Reduce, ReduceFn, Sample, SampleFn,
-    SampleOf, Stage,
+    Absent, Agg, AggFn, Aggregate, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, Correlate,
+    CorrelateTarget, DerivedField, Describe, DescribeTarget, Direction, Extract, Filter, GroupSide,
+    Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue, HistogramMode, HistogramQuantile, JoinKind,
+    LabelJoin, LabelReplace, Labels, Map, MapFn, NoOperands, Order, OverTime, OverTimeFn, Parser,
+    Rank, Reduce, ReduceFn, Sample, SampleFn, SampleOf, Stage, SubDocument,
 };
 pub use validate::{IrError, Validated, validate, validate_describe};
 pub use value::{

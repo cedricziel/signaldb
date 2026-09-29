@@ -75,6 +75,8 @@ pub enum Feature {
     Absent,
     /// The `over_time` stage.
     OverTime,
+    /// The `binop` stage.
+    Binop,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -142,6 +144,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::Sort, 10),
     (Feature::Absent, 10),
     (Feature::OverTime, 10),
+    (Feature::Binop, 10),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -364,6 +367,7 @@ mod tests {
             Feature::Sort,
             Feature::Absent,
             Feature::OverTime,
+            Feature::Binop,
         ];
         for feature in all {
             assert!(
