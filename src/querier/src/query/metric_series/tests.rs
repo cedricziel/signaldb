@@ -398,6 +398,7 @@ async fn more_than_11000_instants_is_invalid_input() {
         json!({ "from": "time" }),
         json!({ "from": "constant", "constant": 1.0 }),
         json!({ "pipeline": [latest, { "scalar": {} }] }),
+        json!({ "result": "series", "pipeline": [{ "sample": { "fn": "latest", "at": 0 } }] }),
     ];
     for extra in docs {
         let mut doc = scalar_doc(json!([]));
@@ -435,4 +436,187 @@ async fn range_functions_skip_stale_points_and_a_stale_newest_point_ends_latest(
     assert_eq!(sum, [(60, 1.0), (120, 1.0)]);
     let latest = values(json!({ "fn": "latest" })).await;
     assert_eq!(latest, [(60, 1.0)]);
+}
+
+/// `(bucket seconds, value)` of a `sample` Series over `[from, to]`.
+async fn sample_values(points: &[Pt], from: i64, to: i64, sample: JsonValue) -> Vec<(i64, f64)> {
+    let batch = run(points, sample_doc(from, to, sample)).await.unwrap();
+    series_rows(&batch)
+        .into_iter()
+        .map(|(t, _, v)| (t, v))
+        .collect()
+}
+
+#[tokio::test]
+async fn two_series_differing_only_by_scope_keep_apart_by_their_scope_labels() {
+    let points = [
+        Pt {
+            scope: Some("lib.a"),
+            ..gauge(50 * S, "a", 1.0, json!({}))
+        },
+        Pt {
+            scope: Some("lib.b"),
+            ..gauge(50 * S, "b", 2.0, json!({}))
+        },
+    ];
+    let batch = run(&points, sample_doc(60, 60, json!({ "fn": "latest" })))
+        .await
+        .unwrap();
+    let labels = |scope| {
+        format!(
+            r#"{{"metric.name":"temperature","otel.scope.name":"{scope}","service.name":"svc"}}"#
+        )
+    };
+    assert_eq!(
+        series_rows(&batch),
+        [(60, labels("lib.a"), 1.0), (60, labels("lib.b"), 2.0)]
+    );
+}
+
+#[tokio::test]
+async fn last_over_time_keeps_the_metric_name_and_other_functions_drop_it() {
+    let points = [
+        gauge(20 * S, "a", 1.0, json!({})),
+        gauge(50 * S, "a", 2.0, json!({})),
+    ];
+    for (func, keeps) in [
+        ("last_over_time", true),
+        ("max_over_time", false),
+        ("delta", false),
+    ] {
+        let doc = sample_doc(60, 60, json!({ "fn": func, "window": "60s" }));
+        let rows = series_rows(&run(&points, doc).await.unwrap());
+        let named = rows.iter().all(|(_, l, _)| l.contains("metric.name"));
+        assert!(!rows.is_empty(), "{func}");
+        assert_eq!(named, keeps, "{func}: {rows:?}");
+    }
+}
+
+/// A cumulative histogram point: only `count` and `sum` are set.
+fn histogram(ts: i64, count: i64, sum: f64) -> Pt {
+    Pt {
+        kind: "histogram",
+        metric: "latency",
+        value: None,
+        count: Some(count),
+        sum: Some(sum),
+        temporality: Some(2),
+        ..gauge(ts, "h", 0.0, json!({}))
+    }
+}
+
+#[tokio::test]
+async fn count_and_sum_of_a_cumulative_histogram_behave_as_counters() {
+    let (counts, sums) = ([4, 9, 12, 20], [1.0, 3.5, 4.0, 9.0]);
+    let at = |i: usize| (30 * (i as i64 + 1)) * S;
+    let hist: Vec<_> = (0..4)
+        .map(|i| histogram(at(i), counts[i], sums[i]))
+        .collect();
+    let as_counter = |v: &dyn Fn(usize) -> f64| -> Vec<Pt> {
+        (0..4)
+            .map(|i| counter(at(i), "c", v(i), json!({})))
+            .collect()
+    };
+    for (of, func, expected) in [
+        ("metric.count", "rate", as_counter(&|i| counts[i] as f64)),
+        ("metric.sum", "increase", as_counter(&|i| sums[i])),
+    ] {
+        let sample = |of: Option<&str>| {
+            let mut s = json!({ "fn": func, "window": "90s" });
+            if let Some(of) = of {
+                s["of"] = json!(of);
+            }
+            s
+        };
+        let got = sample_values(&hist, 60, 120, sample(Some(of))).await;
+        let want = sample_values(&expected, 60, 120, sample(None)).await;
+        assert_eq!(got.len(), 2, "{of}");
+        assert_eq!(got, want, "{of}");
+    }
+}
+
+#[tokio::test]
+async fn instants_start_at_from_even_off_the_step_grid() {
+    let points = [gauge(50 * S, "a", 1.0, json!({}))];
+    let got = sample_values(&points, 70, 190, json!({ "fn": "latest" })).await;
+    assert_eq!(got, [(70, 1.0), (130, 1.0), (190, 1.0)]);
+}
+
+#[tokio::test]
+async fn at_reads_far_outside_the_range_and_combines_with_offset() {
+    let points = [
+        gauge(5_000 * S, "a", 1.0, json!({})),
+        gauge(5_100 * S, "a", 2.0, json!({})),
+    ];
+    let at = |extra: JsonValue| {
+        let mut s = json!({ "fn": "latest", "at": 5_100 * S });
+        s.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        s
+    };
+    let pinned = sample_values(&points, 60, 120, at(json!({}))).await;
+    assert_eq!(pinned, [(60, 2.0), (120, 2.0)]);
+    let shifted = sample_values(&points, 60, 120, at(json!({ "offset": "1m" }))).await;
+    assert_eq!(shifted, [(60, 1.0), (120, 1.0)]);
+    let empty = at(json!({ "at": 1_000_000 * S }));
+    assert!(sample_values(&points, 60, 120, empty).await.is_empty());
+}
+
+#[tokio::test]
+async fn nan_and_infinities_pass_through_sample_functions() {
+    let points = [
+        gauge(50 * S, "nan", f64::NAN, json!({"k": "nan"})),
+        gauge(50 * S, "inf", f64::INFINITY, json!({"k": "inf"})),
+        gauge(50 * S, "-inf", f64::NEG_INFINITY, json!({"k": "-inf"})),
+    ];
+    let latest = json!({ "fn": "latest" });
+    let sum = json!({ "fn": "sum_over_time", "window": "60s" });
+    for (func, sample) in [("latest", latest), ("sum_over_time", sum)] {
+        let got = sample_values(&points, 60, 60, sample).await;
+        let got: Vec<_> = got.into_iter().map(|(_, v)| v).collect();
+        // Sorted by label set: `-inf`, `inf`, `nan`.
+        assert_eq!(got[..2], [f64::NEG_INFINITY, f64::INFINITY], "{func}");
+        assert!(got[2].is_nan(), "{func}: {got:?}");
+    }
+}
+
+#[tokio::test]
+async fn a_metrics_table_without_the_sampled_column_is_a_clear_error() {
+    let full = batch(&[gauge(50 * S, "a", 1.0, json!({}))]);
+    let without = |name: &str| {
+        let keep: Vec<_> = (0..full.num_columns())
+            .filter(|i| full.schema().field(*i).name() != name)
+            .collect();
+        full.project(&keep).unwrap()
+    };
+    let doc = |of: &str| sample_doc(60, 60, json!({ "fn": "latest", "of": of }));
+    let err = run_batch(without("count"), doc("metric.count"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, QuerierError::InvalidInput(m) if m.contains("`count`")),
+        "{err}"
+    );
+    let err = run_batch(without("series_id"), doc("metric.value"))
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, QuerierError::Unsupported(m) if m.contains("series_id")),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn rate_over_a_gauge_is_invalid_input() {
+    let points = [
+        gauge(30 * S, "a", 1.0, json!({})),
+        gauge(60 * S, "a", 2.0, json!({})),
+    ];
+    let doc = sample_doc(60, 60, json!({ "fn": "rate", "window": "60s" }));
+    let err = run(&points, doc).await.unwrap_err();
+    assert!(
+        matches!(&err, QuerierError::InvalidInput(m) if m.contains("delta")),
+        "{err}"
+    );
 }
