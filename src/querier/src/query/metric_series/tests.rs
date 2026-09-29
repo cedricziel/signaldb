@@ -760,3 +760,23 @@ async fn rate_and_increase_read_across_a_staleness_marker() {
     let rate = sample_values(&points, 120, 120, window("rate")).await;
     assert_eq!(rate, [(120, 0.06)]);
 }
+
+/// The scan reads exactly what `sample` reads, not the hull of the range and
+/// a far-away `at`.
+#[test]
+fn the_scan_window_is_the_sample_read_window() {
+    use crate::query::ir_planner::ResolvedWindow;
+    let window = ResolvedWindow {
+        start_ns: 10_000 * S,
+        end_ns: 10_600 * S,
+    };
+    let scan = |sample: JsonValue| {
+        let doc = serde_json::from_value(sample_doc(0, 0, sample)).unwrap();
+        let w = super::sample::scan_window(&doc, window, 20_000 * S).unwrap();
+        (w.start_ns / S, w.end_ns / S)
+    };
+    let at = json!({ "fn": "rate", "window": "1m", "at": 100 * S, "offset": "30s" });
+    assert_eq!(scan(at), (10, 70));
+    let offset = json!({ "fn": "latest", "lookback": "1m", "offset": "1h" });
+    assert_eq!(scan(offset), (6_340, 7_000));
+}

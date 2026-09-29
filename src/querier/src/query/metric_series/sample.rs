@@ -155,9 +155,10 @@ fn read(
     })
 }
 
-/// The scan window a document needs: its range, widened to the `sample`
-/// stage's read windows (which reach back by `window + offset`, or sit at
-/// `at`). Validation allows at most one `sample`, on the point stream.
+/// The scan window a document needs: with a `sample` stage, exactly its read
+/// windows' span `[first − window, last]` (which reaches back by
+/// `window + offset`, or sits at `at`), else the range. Validation allows at
+/// most one `sample`, on the point stream, and it reads nothing else.
 pub(crate) fn scan_window(
     doc: &Document,
     window: ResolvedWindow,
@@ -171,8 +172,8 @@ pub(crate) fn scan_window(
     };
     let r = read(sample, window, doc.step.as_deref(), now_ns)?;
     Ok(ResolvedWindow {
-        start_ns: window.start_ns.min(r.first.saturating_sub(r.window_ns)),
-        end_ns: window.end_ns.max(r.last),
+        start_ns: r.first.saturating_sub(r.window_ns),
+        end_ns: r.last,
     })
 }
 
