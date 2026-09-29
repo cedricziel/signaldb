@@ -6019,6 +6019,7 @@ name = "ql-ir"
 version = "0.1.0"
 dependencies = [
  "logql-parser",
+ "promql-parser",
  "query-ir",
  "serde_json",
  "thiserror 2.0.20",
@@ -6075,6 +6076,7 @@ version = "0.1.0"
 dependencies = [
  "base64 0.23.1",
  "chrono",
+ "regex",
  "serde",
  "serde_json",
  "thiserror 2.0.20",
