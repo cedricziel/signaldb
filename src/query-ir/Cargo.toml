@@ -18,3 +18,5 @@ thiserror.workspace = true
 # Both are leaf registry crates — nothing here reaches the FDAP stack.
 base64.workspace = true
 chrono.workspace = true
+# `labels.replace` regexes are compiled at validation, as the engine will.
+regex.workspace = true

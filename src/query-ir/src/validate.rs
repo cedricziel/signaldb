@@ -36,7 +36,8 @@ use super::resolver::FieldResolver;
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Agg, AggFn, Aggregate, Correlate, CorrelateTarget, Describe, DescribeTarget, Extract, Heatmap,
-    HistogramQuantile, Order, Rank, Sample, SampleFn, Stage, is_expression_string,
+    HistogramQuantile, Labels, Map, Order, Rank, Reduce, ReduceFn, Sample, SampleFn, Stage,
+    is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -284,6 +285,9 @@ impl InferCtx<'_> {
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
             Stage::Correlate(correlate) => self.apply_correlate(correlate),
             Stage::Sample(sample) => self.apply_sample(sample),
+            Stage::Reduce(reduce) => self.apply_reduce(reduce),
+            Stage::Map(map) => self.apply_map(map),
+            Stage::Labels(op) => self.apply_labels(op),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -428,6 +432,131 @@ impl InferCtx<'_> {
             value: ValueType::Float64,
             step_ns,
         });
+        Ok(())
+    }
+
+    /// `reduce`: fold series into groups at every instant.
+    fn apply_reduce(&mut self, reduce: &Reduce) -> Result<(), IrError> {
+        let input = self.require_series("reduce")?.clone();
+        if reduce.by.is_some() && reduce.without.is_some() {
+            return Err(IrError::Invalid(
+                "reduce `by` and `without` are mutually exclusive".to_string(),
+            ));
+        }
+        for name in reduce.by.iter().chain(&reduce.without).flatten() {
+            check_label_name("reduce", name)?;
+        }
+        match reduce.func {
+            ReduceFn::Topk | ReduceFn::Bottomk => match reduce.arg {
+                Some(k) if k >= 1.0 && k.fract() == 0.0 => {}
+                _ => {
+                    return Err(IrError::Invalid(
+                        "reduce topk/bottomk requires an integer `arg` > 0".to_string(),
+                    ));
+                }
+            },
+            func => check_quantile_arg("reduce", reduce.arg, func == ReduceFn::Quantile)?,
+        }
+        let is_count_values = reduce.func == ReduceFn::CountValues;
+        match (&reduce.label, is_count_values) {
+            (Some(label), true) => check_label_name("reduce", label)?,
+            (None, false) => {}
+            (None, true) => {
+                return Err(IrError::Invalid(
+                    "reduce count_values requires a `label`".to_string(),
+                ));
+            }
+            (Some(_), false) => {
+                return Err(IrError::Invalid(
+                    "reduce `label` is only valid for count_values".to_string(),
+                ));
+            }
+        }
+        let (mut labels, open_labels) = match (&reduce.by, &reduce.without) {
+            _ if matches!(reduce.func, ReduceFn::Topk | ReduceFn::Bottomk) => {
+                (input.labels.clone(), input.open_labels)
+            }
+            (Some(by), _) => (by.clone(), false),
+            (None, Some(without)) => (
+                input
+                    .labels
+                    .iter()
+                    .filter(|l| !without.contains(l))
+                    .cloned()
+                    .collect(),
+                true,
+            ),
+            (None, None) => (Vec::new(), false),
+        };
+        if let Some(label) = &reduce.label {
+            push_label(&mut labels, label);
+        }
+        self.relation = RelationType::Series(Series {
+            labels,
+            open_labels,
+            value: ValueType::Float64,
+            step_ns: input.step_ns,
+        });
+        Ok(())
+    }
+
+    /// `map`: a per-value function, on a Series or (math only) a Scalar.
+    fn apply_map(&mut self, map: &Map) -> Result<(), IrError> {
+        let name = serde_json::to_value(map.func)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let arity = map.func.arity();
+        if !arity.contains(&map.args.len()) {
+            return Err(IrError::Invalid(format!(
+                "map {name} takes {} to {} `args`, got {}",
+                arity.start(),
+                arity.end(),
+                map.args.len()
+            )));
+        }
+        match &mut self.relation {
+            RelationType::Series(s) => {
+                s.labels.retain(|l| l != METRIC_NAME);
+                s.value = ValueType::Float64;
+                Ok(())
+            }
+            RelationType::Scalar(_) if map.func.is_math() => Ok(()),
+            other => Err(IrError::IllegalStage {
+                stage: "map".to_string(),
+                reason: format!(
+                    "{name} expects a series (or, for a math function, a scalar), but the \
+                     input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    /// `labels`: rewrite one label of every series.
+    fn apply_labels(&mut self, op: &Labels) -> Result<(), IrError> {
+        self.require_series("labels")?;
+        let dst = match op {
+            Labels::Replace(r) => {
+                check_label_name("labels", &r.src)?;
+                regex::Regex::new(&r.regex).map_err(|e| {
+                    IrError::Invalid(format!("labels replace `regex` does not compile: {e}"))
+                })?;
+                &r.dst
+            }
+            Labels::Join(j) => {
+                for src in &j.src {
+                    check_label_name("labels", src)?;
+                }
+                &j.dst
+            }
+        };
+        check_label_name("labels", dst)?;
+        if let RelationType::Series(s) = &mut self.relation
+            && !s.open_labels
+        {
+            push_label(&mut s.labels, dst);
+        }
         Ok(())
     }
 
@@ -1255,6 +1384,26 @@ fn check_quantile_arg(stage: &str, arg: Option<f64>, needed: bool) -> Result<(),
         (Some(_), false) => Err(IrError::Invalid(format!(
             "{stage} `arg` is only valid for a quantile"
         ))),
+    }
+}
+
+/// The label every metric series carries its metric name under.
+const METRIC_NAME: &str = "metric.name";
+
+/// A label name operand: non-empty.
+fn check_label_name(stage: &str, name: &str) -> Result<(), IrError> {
+    if name.trim().is_empty() {
+        return Err(IrError::Invalid(format!(
+            "{stage} label names must be non-empty"
+        )));
+    }
+    Ok(())
+}
+
+/// Add `name` to a known label set, once.
+fn push_label(labels: &mut Vec<String>, name: &str) {
+    if !labels.iter().any(|l| l == name) {
+        labels.push(name.to_string());
     }
 }
 

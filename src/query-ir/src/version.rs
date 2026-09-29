@@ -61,6 +61,12 @@ pub enum Feature {
     DocumentStep,
     /// The `time` and `constant` pseudo-sources.
     PseudoSource,
+    /// The `reduce` stage.
+    Reduce,
+    /// The `map` stage.
+    Map,
+    /// The `labels` stage.
+    Labels,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -121,6 +127,9 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::ScalarEnvelope, 10),
     (Feature::DocumentStep, 10),
     (Feature::PseudoSource, 10),
+    (Feature::Reduce, 10),
+    (Feature::Map, 10),
+    (Feature::Labels, 10),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -336,6 +345,9 @@ mod tests {
             Feature::ScalarEnvelope,
             Feature::DocumentStep,
             Feature::PseudoSource,
+            Feature::Reduce,
+            Feature::Map,
+            Feature::Labels,
         ];
         for feature in all {
             assert!(
