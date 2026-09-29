@@ -75,11 +75,12 @@ expression. The quantile is interpolated per series from the metric's stored
 buckets, assuming a uniform spread within the containing bucket — the same
 estimate Prometheus's `histogram_quantile` produces.
 
-`histogram_quantile` and `histogram_fraction` over a **summary** metric fail
-with a `bad_data` error (`histogram_quantile is not supported on summary
-metrics`) instead of returning an empty result: a summary carries precomputed
-quantiles, not buckets. Over an exponential histogram they fail with a
-`not_implemented` error until exponential-histogram quantiles land.
+`histogram_quantile` and `histogram_fraction` read explicit-bucket and
+exponential histograms (exponential buckets merge by the OTel rule). Rows of
+any other type are ignored, as Prometheus ignores non-histogram series, so a
+**summary** metric yields no result: it carries precomputed quantiles, not
+buckets. Histograms with different explicit bounds merge over the union of
+their bounds, and malformed rows are skipped.
 
 `histogram_count` and `histogram_sum` read the stored count and sum, which
 histograms, exponential histograms and summaries all carry, so they sum rows

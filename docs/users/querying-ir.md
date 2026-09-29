@@ -1260,13 +1260,14 @@ completely different source shape. Neither is a substitute for the other:
 `histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
 `quantile` needs raw numeric samples.
 
-Rows the stage cannot interpolate are refused, never skipped. If the rows
-matched by the stage's source and filters include a **summary** metric, the
-query fails with `histogram_quantile is not supported on summary metrics`
-(HTTP 400): a summary carries precomputed quantiles, not buckets, so read them
-from `metric.quantiles`/`metric.quantile_values` instead. Rows of an
-**exponential histogram** fail with `histogram_quantile is not yet supported
-on exponential_histogram metrics` (HTTP 501). Gauge and sum rows are ignored.
+The stage reads explicit-bucket and **exponential** histogram rows; every
+other row is ignored, as Prometheus ignores non-histogram series. A
+**summary** carries precomputed quantiles, not buckets, so it contributes
+nothing here: read it from `metric.quantiles`/`metric.quantile_values`
+instead. Histogram rows that cannot be interpolated (unsorted bounds, a
+count list that doesn't match the bounds, negative counts) are skipped.
+Explicit histograms with different bounds merge over the union of their
+bounds; exponential histograms merge by the OTel rule.
 Filter by `metric.name` (or `metric.type`) to keep the stage on histograms.
 
 `histogram_fraction()` (the
