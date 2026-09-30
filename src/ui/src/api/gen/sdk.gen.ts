@@ -1016,8 +1016,9 @@ export const promqlLabels = <ThrowOnError extends boolean = false>(options?: Opt
 /**
  * GET|POST /prometheus/api/v1/query — instant query.
  *
- * Evaluated as a one-bucket range at `time`, returning the latest sample
- * per series as a vector.
+ * Evaluated once, at `time` (default: now): each series' value at that
+ * instant, its latest point in the 5-minute lookback, as a vector, or a
+ * scalar for a scalar expression.
  */
 export const promqlQuery = <ThrowOnError extends boolean = false>(options: Options<PromqlQueryData, ThrowOnError>): RequestResult<PromqlQueryResponses, PromqlQueryErrors, ThrowOnError> => (options.client ?? client).get<PromqlQueryResponses, PromqlQueryErrors, ThrowOnError>({
     security: [{

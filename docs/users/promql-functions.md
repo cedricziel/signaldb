@@ -22,8 +22,9 @@ Prometheus. Anything the IR cannot express is rejected before execution with a
 [below](#constructs-that-return-400)).
 
 Aggregation operators (`sum`, `avg`, `min`, `max`, `count`, … with or without
-`by`/`without`) first reduce each series to its latest sample in the step,
-then aggregate across series, as Prometheus does. Only the `_over_time` and
+`by`/`without`) first reduce each series to its latest sample in the 5-minute
+lookback ending at the instant, then aggregate across series, as Prometheus
+does. Only the `_over_time` and
 range functions fold across time within a series.
 
 ## Selectors

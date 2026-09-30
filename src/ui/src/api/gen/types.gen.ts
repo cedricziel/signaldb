@@ -6726,6 +6726,10 @@ export type PromqlQueryData = {
 
 export type PromqlQueryErrors = {
     /**
+     * Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)
+     */
+    400: ApiErrorBody;
+    /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
@@ -6752,6 +6756,14 @@ export type PromqlQueryErrors = {
          */
         status: string;
     };
+    /**
+     * The querier does not implement the query (`not_implemented`)
+     */
+    501: ApiErrorBody;
+    /**
+     * No querier service available (`unavailable`)
+     */
+    503: ApiErrorBody;
 };
 
 export type PromqlQueryError = PromqlQueryErrors[keyof PromqlQueryErrors];
@@ -6789,6 +6801,10 @@ export type PromqlQueryRangeData = {
 
 export type PromqlQueryRangeErrors = {
     /**
+     * Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)
+     */
+    400: ApiErrorBody;
+    /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
@@ -6815,6 +6831,14 @@ export type PromqlQueryRangeErrors = {
          */
         status: string;
     };
+    /**
+     * The querier does not implement the query (`not_implemented`)
+     */
+    501: ApiErrorBody;
+    /**
+     * No querier service available (`unavailable`)
+     */
+    503: ApiErrorBody;
 };
 
 export type PromqlQueryRangeError = PromqlQueryRangeErrors[keyof PromqlQueryRangeErrors];

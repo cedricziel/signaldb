@@ -1810,8 +1810,8 @@ impl Lowering<'_> {
                 .map_err(QuerierError::QueryFailed),
             Stage::Extract(extract) => self.lower_extract(df, extract),
             Stage::Heatmap(heatmap) => self.lower_heatmap(df, heatmap),
-            // Handled directly in `plan()`'s stage loop (needs an async
-            // `.collect()` this sync method can't perform) — never reached.
+            // Lowered by `plan_operand`'s stage loop through `lower_histogram`
+            // (it needs the stage's resolved window) — never reached.
             Stage::HistogramQuantile(_) | Stage::HistogramFraction(_) => Err(
                 QuerierError::InvalidInput(format!("{} requires async lowering", stage.name())),
             ),
