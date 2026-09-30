@@ -479,9 +479,10 @@ async fn scalar_over_a_step_aggregate_is_not_supported() {
     assert!(matches!(err, QuerierError::Unsupported(_)), "{err}");
 }
 
-/// Every entry point that enumerates instants refuses more than 11000.
+/// Every entry point that enumerates instants refuses more than 11000
+/// steps.
 #[tokio::test]
-async fn more_than_11000_instants_is_invalid_input() {
+async fn more_than_11000_steps_is_invalid_input() {
     let latest = json!({ "sample": { "fn": "latest", "lookback": "1s" } });
     let docs = [
         json!({ "from": "time" }),
@@ -497,7 +498,7 @@ async fn more_than_11000_instants_is_invalid_input() {
             .extend(extra.as_object().unwrap().clone());
         let err = run(&[], doc.clone()).await.unwrap_err();
         assert!(
-            matches!(&err, QuerierError::InvalidInput(m) if m.contains("11000 instants")),
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("11000 steps")),
             "{doc}: {err}"
         );
     }

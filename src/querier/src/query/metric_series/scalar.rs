@@ -11,22 +11,22 @@ use datafusion::logical_expr::{Expr, cast, col, lit, when};
 use datafusion::prelude::{DataFrame, SessionContext};
 
 use super::labels::LABELS_COLUMN;
-use super::sample::check_instant_count;
 use crate::query::error::QuerierError;
 use crate::query::ir_planner::ResolvedWindow;
+use crate::query::metric_ops::instants::check_grid;
 
 fn bucket_type() -> DataType {
     DataType::Timestamp(TimeUnit::Nanosecond, None)
 }
 
 /// Every evaluation instant `t = start + k·step <= end`, as `bucket` and as
-/// nanoseconds `__t`; at most [`MAX_INSTANTS`](super::sample::MAX_INSTANTS).
+/// nanoseconds `__t`; see [`check_grid`].
 pub(super) fn instants(
     ctx: &SessionContext,
     window: ResolvedWindow,
     step_ns: i64,
 ) -> Result<DataFrame, QuerierError> {
-    check_instant_count(window, step_ns)?;
+    check_grid(window.start_ns, window.end_ns, step_ns)?;
     let all = gen_series(lit(window.start_ns), lit(window.end_ns), lit(step_ns));
     Ok(ctx
         .read_empty()?

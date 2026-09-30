@@ -27,14 +27,12 @@ use super::labels::{LABELS_COLUMN, bag_arg, series_labels_udf};
 use super::stages::drop_name;
 use crate::query::error::QuerierError;
 use crate::query::ir_planner::ResolvedWindow;
-use crate::query::metric_ops::instants::covering_instants_udf;
+use crate::query::metric_ops::instants::{check_grid, covering_instants_udf};
 use crate::query::metric_ops::range::range_udaf;
 use crate::query::metric_ops::range_math::RangeFn;
 
 /// `latest`'s lookback when the stage names none.
 const DEFAULT_LOOKBACK_NS: i64 = 5 * 60 * 1_000_000_000;
-/// Most evaluation instants one query may evaluate (Prometheus' 11k-point limit).
-pub(crate) const MAX_INSTANTS: i64 = 11_000;
 const INSTANT: &str = "__instant";
 const STALE: &str = "__stale";
 /// The plain columns a series' labels derive from, before its attribute bags.
@@ -65,21 +63,6 @@ fn duration(field: &str, value: &str, min: i64) -> Result<i64, QuerierError> {
     parse_duration_ns(value)
         .filter(|ns| *ns >= min)
         .ok_or_else(|| QuerierError::InvalidInput(format!("invalid {field} duration '{value}'")))
-}
-
-/// Reject a range that evaluates more than [`MAX_INSTANTS`] instants.
-pub(crate) fn check_instant_count(
-    window: ResolvedWindow,
-    step_ns: i64,
-) -> Result<(), QuerierError> {
-    let span = window.end_ns.saturating_sub(window.start_ns);
-    if span >= 0 && span / step_ns >= MAX_INSTANTS {
-        return Err(QuerierError::InvalidInput(format!(
-            "the range evaluates more than {MAX_INSTANTS} instants at this step; \
-             increase the step or narrow the range"
-        )));
-    }
-    Ok(())
 }
 
 fn range_fn(sample: &Sample) -> RangeFn {
@@ -127,7 +110,6 @@ fn read(
         QuerierError::InvalidInput("sample requires a `step`, on the stage or the document".into())
     })?;
     let step_ns = duration("sample.step", step, 1)?;
-    check_instant_count(window, step_ns)?;
     let offset_ns = match &sample.offset {
         Some(o) => duration("sample.offset", o, 0)?,
         None => 0,
@@ -144,6 +126,7 @@ fn read(
         None => None,
     };
     let (first, last) = at.map_or((window.start_ns, window.end_ns), |at| (at, at));
+    check_grid(first, last, step_ns)?;
     Ok(Read {
         f: range_fn(sample),
         window_ns,

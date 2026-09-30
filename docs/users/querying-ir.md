@@ -936,8 +936,10 @@ cross-series arithmetic is the [`binop`](#binop) stage of a metric Series.
 
 `irVersion` 10 evaluates metrics the way Prometheus does: at the instants
 `t = from + k·step` of the range (`step` on the stage, else the document's
-`step`), per series, into a **Series**. At most 11,000 instants per query;
-more is a 400.
+`step`), per series, into a **Series**. A range may span at most 11,000
+steps (11,001 instants) of its output step, as in Prometheus; more is a
+400. The instants an `over_time` reads its input at do not count toward
+that limit, but no grid may hold more than 1,000,000 instants.
 
 A dataset with no `metrics` table yet reads as an empty one, so it still
 answers what PromQL answers from nothing: `sum(x) or vector(0)` is `{}` = 0,
