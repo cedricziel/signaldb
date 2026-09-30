@@ -1126,6 +1126,40 @@ Combine the pipeline (the left operand, a Series or a Scalar) with `right`:
 and names where it holds, or with `"bool": true` yields `1`/`0` and drops
 `metric.name`; between two scalars it needs `bool`.
 
+`right` may also be a sub-document — `from` (the document's own source or a
+pseudo-source), `pipeline`, and `constant` — which inherits the document's
+`irVersion`, range and `step` and must yield a Series or a Scalar:
+
+```json
+{
+  "binop": {
+    "op": "div",
+    "right": {
+      "from": "metrics",
+      "pipeline": [
+        { "where": { "field": "metric.name", "op": "eq", "value": "limit" } },
+        { "sample": { "fn": "latest" } }
+      ]
+    },
+    "on": ["service.name"],
+    "group": { "side": "left", "include": ["resource.region"] }
+  }
+}
+```
+
+A Scalar operand applies to every series. Two Series match series by label
+set, as PromQL's vector matching does: by default on every label but
+`metric.name`, with `ignoring` on every label but `metric.name` and the listed
+ones, with `on` on exactly the listed ones. Without `group` each match must be
+one-to-one; `group: {"side": "left"}` (`"right"`) lets several series of that
+side match one series of the other, the result keeping the many side's labels
+plus the `include` labels copied from the one side. Several series on both
+sides of one match (many-to-many), or two results with one label set, is a
+400. `and` keeps the left series with a match on the right, `unless` those
+without one, and `or` all left series plus the right series without a left
+match; set operators allow any number of series per match and keep labels,
+names and values.
+
 #### `absent`
 
 `{ "absent": { "labels": { "job": "api" } } }`: at every instant where the

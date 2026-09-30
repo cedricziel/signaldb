@@ -65,13 +65,14 @@ pub(crate) fn to_vector(scalar: DataFrame) -> Result<DataFrame, QuerierError> {
     ])?)
 }
 
-/// Plan a document reading the `time` or `constant` pseudo-source: a Scalar
-/// over the document's instants, then its (Scalar/Series) stages.
-pub(crate) fn plan_pseudo_source(
+/// The frame a document reading the `time` or `constant` pseudo-source
+/// starts from: a Scalar at the document step (also returned) over the
+/// instants its first stage evaluates at.
+pub(crate) fn pseudo_source_frame(
     ctx: &SessionContext,
     doc: &Document,
     window: ResolvedWindow,
-) -> Result<DataFrame, QuerierError> {
+) -> Result<(DataFrame, i64), QuerierError> {
     validate(doc, &SourceRegistry::core(), &InMemoryResolver::new())
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     let step_ns = doc
@@ -89,21 +90,8 @@ pub(crate) fn plan_pseudo_source(
         Some(c) => lit(c),
         None => cast(col("__t"), DataType::Float64) / lit(1e9),
     };
-    let doc_step = doc.step.as_deref();
-    let windows = super::stage_windows(&doc.pipeline, window, Some(step_ns), doc_step);
+    let windows = super::stage_windows(&doc.pipeline, window, Some(step_ns), doc.step.as_deref());
     let first = windows.first().copied().unwrap_or(window);
-    let mut df =
-        instants(ctx, first, step_ns)?.select(vec![col("bucket"), value.alias("value")])?;
-    let mut step = Some(step_ns);
-    for (stage, window) in doc.pipeline.iter().zip(windows) {
-        let env = super::FrameEnv {
-            ctx,
-            window,
-            step_ns: step,
-            doc_step,
-        };
-        df = super::lower_stage(df, stage, &env)?;
-        step = super::output_step(stage, step, doc_step);
-    }
-    super::sort_frame(df, super::terminal_order(doc, window))
+    let frame = instants(ctx, first, step_ns)?.select(vec![col("bucket"), value.alias("value")])?;
+    Ok((frame, step_ns))
 }
