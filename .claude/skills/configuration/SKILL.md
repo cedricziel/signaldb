@@ -90,7 +90,7 @@ Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-u
 logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 ```
 
-Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
+Per-signal allowlists of attribute keys copied, as strings, into dedicated `label_<key>` columns at ingest, for the compatibility dialects (LogQL, TraceQL, Tempo, PromQL). The value also stays in its typed home map, and the IR reads the typed home (a `label_<key>` column only stands in for a String-canonical key recorded at one level). Default empty. Applies to tables created after the change; older tables read the key's typed home instead. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
 
 #### Attribute type overrides
 
@@ -104,6 +104,20 @@ dataset = "prod"        # optional; omitted = every dataset of the tenant
 ```
 
 Pins the canonical type of one attribute key instead of leaving it to the first-observed value or a semantic-convention hint. Values of another type still arrive losslessly but aren't typed-queryable. A dataset-specific entry wins over one with no `dataset`. Per-tenant: a tenant schema override replaces the global list wholesale, same as `[schema.materialized_labels]` above.
+
+#### Warm index
+
+```toml
+[schema.warm_index]
+signals = ["logs"]           # logs | traces | metrics | profiles; empty (default) = off everywhere
+datasets = ["prod"]          # optional; omitted = every dataset of an opted-in signal
+fpp = 0.01                   # bloom filter false-positive probability
+rows_per_row_group = 10000   # Parquet rows per row group (NDV factor)
+attrs_per_row = 16           # typed attributes per row (NDV factor)
+max_bloom_ndv = 2000000      # cap on rows_per_row_group * attrs_per_row
+```
+
+Opt-in containment index: an `attr_index` `List<Binary>` column with a bloom filter, used to skip files for an equality predicate on an unpromoted typed attribute (the typed maps carry no per-key statistics). Only tables on the typed attribute layout gain it. It costs extra storage and write time, which is why it is off by default. Per-tenant: a tenant schema override replaces the whole `[schema]` block, including this one. Querier-side gating lives in `[querier.warm_index]` (`enabled = true`, `min_files = 4`, `sample_files = 16`, `max_keep_ratio = 0.5`, `probe_concurrency = 16`): no probe below `min_files` candidate files, and the full probe is skipped when more than `max_keep_ratio` of a `sample_files` sample survives. See `docs/architecture/storage-layout.md#attribute-storage-tiers`.
 
 ### Authentication
 
