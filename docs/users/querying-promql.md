@@ -130,10 +130,10 @@ curl -sG http://localhost:3000/prometheus/api/v1/series \
   --data-urlencode 'match[]=http_requests_total' ...
 ```
 
-Labels and metric names are also reachable without raw HTTP: `signaldb-cli
-discover attributes --signal metrics [--tag NAME]` / `discover metrics`, and
-the MCP `discover_attributes`(`signal: "metrics"`) / `discover_metrics` tools
-for AI agents — see [the MCP server doc](mcp.md).
+First-party discovery does not use these endpoints: `signaldb-cli discover
+attributes --signal metrics [--tag NAME]` / `discover metrics`, and the MCP
+`discover_attributes`(`signal: "metrics"`) / `discover_metrics` tools go
+through the Query IR `describe` stage — see [the MCP server doc](mcp.md).
 
 Prometheus labels map onto SignalDB fields: `__name__` is the metric name, and
 `job`, `service` and `service_name` all address the service name. Any other

@@ -43,9 +43,10 @@ APIs (see [Authentication](authentication.md)):
 | `GET /loki/api/v1/detected_fields`     | Discover attribute fields in a window: name, inferred type, approximate cardinality (samples the data; no declaration or indexing needed) |
 | `GET /loki/api/v1/tail`                | Not implemented — live tail is tracked separately                                                                                         |
 
-Labels are also reachable without raw HTTP: `signaldb-cli discover
-attributes --signal logs [--tag NAME]`, and the MCP `discover_attributes`
-(`signal: "logs"`) tool for AI agents — see [the MCP server doc](mcp.md).
+First-party discovery does not use these endpoints: `signaldb-cli discover
+attributes --signal logs [--tag NAME]` and the MCP `discover_attributes`
+(`signal: "logs"`) tool go through the Query IR `describe` stage — see
+[the MCP server doc](mcp.md).
 
 Common query parameters: `query` (the LogQL string), `start`/`end`
 (unix nanoseconds, unix seconds, or RFC3339), `limit`, `direction`
