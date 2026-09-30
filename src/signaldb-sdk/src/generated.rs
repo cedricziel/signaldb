@@ -19970,8 +19970,9 @@ impl Client {
     }
     /**GET|POST /prometheus/api/v1/query — instant query
 
-    Evaluated as a one-bucket range at `time`, returning the latest sample
-    per series as a vector.
+    Evaluated once, at `time` (default: now): each series' value at that
+    instant, its latest point in the 5-minute lookback, as a vector, or a
+    scalar for a scalar expression.
 
     Sends a `GET` request to `/prometheus/api/v1/query`
 
@@ -26194,7 +26195,9 @@ pub mod builder {
             self
         }
         ///Sends a `GET` request to `/prometheus/api/v1/query`
-        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<::serde_json::Value>, Error<types::ApiErrorBody>> {
             let Self {
                 client,
                 query,
@@ -26229,7 +26232,18 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
-                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                501u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                503u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }
@@ -26292,7 +26306,9 @@ pub mod builder {
             self
         }
         ///Sends a `GET` request to `/prometheus/api/v1/query_range`
-        pub async fn send(self) -> Result<ResponseValue<::serde_json::Value>, Error<()>> {
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<::serde_json::Value>, Error<types::ApiErrorBody>> {
             let Self {
                 client,
                 end,
@@ -26333,7 +26349,18 @@ pub mod builder {
             let response = result?;
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
-                429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                429u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                501u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                503u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

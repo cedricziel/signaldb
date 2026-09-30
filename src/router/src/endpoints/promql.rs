@@ -88,11 +88,14 @@ pub struct MetadataParams {
     ),
     responses(
         (status = 200, description = "Prometheus range-query response (matrix)", body = serde_json::Value),
+        (status = 400, description = "Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 501, description = "The querier does not implement the query (`not_implemented`)", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 503, description = "No querier service available (`unavailable`)", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
 #[tracing::instrument(
-    skip(state, tenant_ctx, params),
+    skip_all,
     fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
 pub async fn query_range(
@@ -116,8 +119,9 @@ pub async fn query_range(
 
 /// GET|POST /prometheus/api/v1/query — instant query.
 ///
-/// Evaluated as a one-bucket range at `time`, returning the latest sample
-/// per series as a vector.
+/// Evaluated once, at `time` (default: now): each series' value at that
+/// instant, its latest point in the 5-minute lookback, as a vector, or a
+/// scalar for a scalar expression.
 #[utoipa::path(
     get,
     path = "/prometheus/api/v1/query",
@@ -130,11 +134,14 @@ pub async fn query_range(
     ),
     responses(
         (status = 200, description = "Prometheus instant-query response (vector)", body = serde_json::Value),
+        (status = 400, description = "Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 501, description = "The querier does not implement the query (`not_implemented`)", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 503, description = "No querier service available (`unavailable`)", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
 #[tracing::instrument(
-    skip(state, tenant_ctx, params),
+    skip_all,
     fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
 pub async fn query(

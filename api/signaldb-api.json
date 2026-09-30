@@ -4814,7 +4814,7 @@
           "metrics"
         ],
         "summary": "GET|POST /prometheus/api/v1/query — instant query.",
-        "description": "Evaluated as a one-bucket range at `time`, returning the latest sample\nper series as a vector.",
+        "description": "Evaluated once, at `time` (default: now): each series' value at that\ninstant, its latest point in the 5-minute lookback, as a vector, or a\nscalar for a scalar expression.",
         "operationId": "promql_query",
         "parameters": [
           {
@@ -4845,8 +4845,38 @@
               }
             }
           },
+          "400": {
+            "description": "Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "501": {
+            "description": "The querier does not implement the query (`not_implemented`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No querier service available (`unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -4910,8 +4940,38 @@
               }
             }
           },
+          "400": {
+            "description": "Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "501": {
+            "description": "The querier does not implement the query (`not_implemented`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
+          "503": {
+            "description": "No querier service available (`unavailable`)",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
