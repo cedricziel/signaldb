@@ -27,10 +27,9 @@
 //!   than executed.
 
 use std::borrow::Cow;
-use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
+use std::sync::{Arc, Mutex, PoisonError};
 
 use common::attrs::expr::typed_compat_attr_expr;
 use common::attrs::expr::typed_home_expr;
@@ -1227,12 +1226,8 @@ async fn plan_operand(
         now_ns,
         aggregated: false,
         series_shaped: false,
-        demand: common::discovery::signal_for_source(source.name).map(|signal| AttrDemandScope {
-            tenant_slug,
-            dataset_slug,
-            signal,
-            seen: RefCell::new(HashSet::new()),
-        }),
+        demand: common::discovery::signal_for_source(source.name)
+            .map(|signal| AttrDemandScope::new(tenant_slug, dataset_slug, signal)),
         col_of: HashMap::new(),
         derived_types: HashMap::new(),
         schema_cols: base
@@ -1893,10 +1888,14 @@ impl CorrelateTargetSide {
                 (Some(base), resolver)
             }
             // A missing table joins as an empty one of the canonical schema,
-            // so the output has the same target columns either way.
+            // so the output has the same target columns either way. The typed
+            // registry is consulted for it like a present table's, so
+            // `<target>.x` keeps its canonical type.
             None => match empty_canonical_scan(ctx, &plan)? {
                 Some(empty) => {
-                    let resolver = SchemaResolver::new(empty.schema(), &plan);
+                    let resolver =
+                        schema_resolver(empty.schema(), &plan, request, tenant_slug, dataset_slug)
+                            .await?;
                     (Some(empty), resolver)
                 }
                 None => (
@@ -1965,19 +1964,15 @@ fn target_frame(
     window: &ResolvedWindow,
     correlate: &Correlate,
     now_ns: i64,
-    demand_slugs: Option<(&str, &str)>,
+    demand: Option<&AttrDemandScope<'_>>,
 ) -> Result<DataFrame, QuerierError> {
     let mut lowering = Lowering {
         source: &target.plan,
         resolver: &target.resolver,
         now_ns,
-        demand: demand_slugs.and_then(|(tenant_slug, dataset_slug)| {
-            common::discovery::signal_for_source(target.plan.name).map(|signal| AttrDemandScope {
-                tenant_slug,
-                dataset_slug,
-                signal,
-                seen: RefCell::new(HashSet::new()),
-            })
+        demand: demand.and_then(|scope| {
+            common::discovery::signal_for_source(target.plan.name)
+                .map(|signal| scope.for_signal(signal))
         }),
         aggregated: false,
         series_shaped: false,
@@ -2184,17 +2179,43 @@ struct CorrelateScan<'a> {
     correlate_max_source_rows: usize,
 }
 
+/// One recorded demand hit: (signal, level, key).
+type DemandKey = (&'static str, AttributeLevel, String);
+
 /// Where to record per-level attribute-promotion demand for one document
 /// (change: otel-native-schema layer 6) — the tenant/dataset slugs and
 /// signal the compactor's analyzer keys `attribute_level_stats` by, plus
 /// this document's own dedup set so a key hit more than once (e.g. the same
 /// filter repeated, or a key used in both a filter and a group-by) counts
-/// once, mirroring the compat paths' flat demand counters.
+/// once, mirroring the compat paths' flat demand counters. The set is keyed
+/// per (signal, level, key) and shared with a `correlate` target's
+/// sub-pipeline ([`Self::for_signal`]), so one document counts a key once per
+/// signal however many pipelines reference it.
 struct AttrDemandScope<'a> {
     tenant_slug: &'a str,
     dataset_slug: &'a str,
     signal: &'static str,
-    seen: RefCell<HashSet<(AttributeLevel, String)>>,
+    seen: Arc<Mutex<HashSet<DemandKey>>>,
+}
+
+impl<'a> AttrDemandScope<'a> {
+    fn new(tenant_slug: &'a str, dataset_slug: &'a str, signal: &'static str) -> Self {
+        Self {
+            tenant_slug,
+            dataset_slug,
+            signal,
+            seen: Arc::default(),
+        }
+    }
+
+    fn for_signal(&self, signal: &'static str) -> Self {
+        Self {
+            tenant_slug: self.tenant_slug,
+            dataset_slug: self.dataset_slug,
+            signal,
+            seen: Arc::clone(&self.seen),
+        }
+    }
 }
 
 struct Lowering<'a> {
@@ -2242,6 +2263,9 @@ struct CorrelateScope<'a> {
     prefix: String,
     plan: &'a SourcePlan,
     resolver: &'a SchemaResolver,
+    /// The signal attribute demand for this scope's references records
+    /// under; `None` when the far side has no signal.
+    signal: Option<&'static str>,
 }
 
 impl<'a> Lowering<'a> {
@@ -2516,6 +2540,7 @@ impl<'a> Lowering<'a> {
             prefix: PARENT_COLUMN_PREFIX.to_string(),
             plan: self.source,
             resolver: self.resolver,
+            signal: self.demand.as_ref().map(|demand| demand.signal),
         }
     }
 
@@ -2652,6 +2677,7 @@ impl<'a> Lowering<'a> {
                 prefix: format!("{}.", target.plan.name),
                 plan: &target.plan,
                 resolver: &target.resolver,
+                signal: common::discovery::signal_for_source(target.plan.name),
             });
         }
         let (schema, batches) = with_row_ordinal(&schema, batches)?;
@@ -2665,9 +2691,7 @@ impl<'a> Lowering<'a> {
                 &target_window,
                 correlate,
                 self.now_ns,
-                self.demand
-                    .as_ref()
-                    .map(|scope| (scope.tenant_slug, scope.dataset_slug)),
+                self.demand.as_ref(),
             )?),
             _ => None,
         };
@@ -3193,6 +3217,12 @@ impl<'a> Lowering<'a> {
 
     fn agg_expr(&self, a: &common::query_ir::Agg) -> Result<Expr, QuerierError> {
         use common::query_ir::AggFn;
+        // The rate family's `of` is a metric value column, never a typed
+        // attribute: `lower_rate_aggregate` deliberately records no demand
+        // for it.
+        if let Some(of) = a.of.as_deref() {
+            self.record_field_demand(of);
+        }
         let expr = match a.func {
             AggFn::Count => count(lit(1i64)),
             AggFn::Sum => sum(self.numeric_of(a)?),
@@ -3475,13 +3505,14 @@ impl<'a> Lowering<'a> {
     }
 
     /// Record per-level attribute-promotion demand for a field used in a
-    /// filter or grouping position (change: otel-native-schema layer 6):
-    /// only a [`Resolved::TypedAttribute`] with at least one committed home
-    /// counts — a key with no committed type has nothing to promote. One
-    /// hit per (level, key) per document, whichever level(s) the resolved
+    /// filter, grouping, ordering, aggregate-operand or `fields` position
+    /// (change: otel-native-schema layer 6): only a
+    /// [`Resolved::TypedAttribute`] with at least one committed home counts
+    /// — a key with no committed type has nothing to promote. One hit per
+    /// (signal, level, key) per document, whichever level(s) the resolved
     /// homes actually read (an unqualified reference coalescing more than
     /// one level counts each of them).
-    fn record_attr_demand(&self, resolved: &Resolved) {
+    fn record_attr_demand(&self, signal: &'static str, resolved: &Resolved) {
         let Some(scope) = &self.demand else { return };
         let Resolved::TypedAttribute { homes, key, .. } = resolved else {
             return;
@@ -3491,11 +3522,16 @@ impl<'a> Lowering<'a> {
                 continue;
             };
             let level = typed_attributes::container_level(container);
-            if scope.seen.borrow_mut().insert((level, key.clone())) {
+            let first_hit = scope
+                .seen
+                .lock()
+                .unwrap_or_else(PoisonError::into_inner)
+                .insert((signal, level, key.clone()));
+            if first_hit {
                 common::attr_demand::record_level(
                     scope.tenant_slug,
                     scope.dataset_slug,
-                    scope.signal,
+                    signal,
                     level,
                     key,
                 );
@@ -3503,19 +3539,25 @@ impl<'a> Lowering<'a> {
         }
     }
 
-    /// Resolve `logical` and record its attribute demand, for a grouping or
-    /// ordering position ([`Self::lower_aggregate`], [`Self::lower_rank`],
-    /// `Stage::Order`) — the filter path ([`Self::lower_leaf`]) already has
-    /// its `Resolved` in hand and calls [`Self::record_attr_demand`]
-    /// directly.
+    /// Resolve `logical` and record its attribute demand, for a filter,
+    /// grouping, ordering, aggregate-operand or `fields` position. A name
+    /// under the correlate scope records under the scope's signal (the
+    /// target's for `<target>.`, the source's for `parent.`); any other name
+    /// under the source signal. Extract-derived fields and aggregate aliases
+    /// ([`Self::col_of`]) are not attributes and record nothing.
     fn record_field_demand(&self, logical: &str) {
-        // Demand is recorded against the source signal, so a scoped name
-        // (another table's field) records none.
-        if self.scoped(logical).is_some() {
+        if self.col_of.contains_key(logical) {
             return;
         }
-        if let Some(resolved) = self.resolver.resolve("", logical) {
-            self.record_attr_demand(&resolved);
+        let (signal, resolved) = match self.scoped(logical) {
+            Some((scope, field)) => (scope.signal, scope.resolver.resolve("", field)),
+            None => (
+                self.demand.as_ref().map(|demand| demand.signal),
+                self.resolver.resolve("", logical),
+            ),
+        };
+        if let (Some(signal), Some(resolved)) = (signal, resolved) {
+            self.record_attr_demand(signal, &resolved);
         }
     }
 
@@ -3571,8 +3613,11 @@ impl<'a> Lowering<'a> {
             (false, ty, ident(alias.clone()), false, false, None)
         } else if let Some((scope, field)) = self.scoped(&leaf.field) {
             let (expr, ty, advisory) = self.scoped_field(scope, field)?;
-            let typed_attr =
-                Self::promoted_typed_attribute(scope.resolver.resolve("", field), &scope.prefix);
+            let scope_resolved = scope.resolver.resolve("", field);
+            if let (Some(signal), Some(resolved)) = (scope.signal, &scope_resolved) {
+                self.record_attr_demand(signal, resolved);
+            }
+            let typed_attr = Self::promoted_typed_attribute(scope_resolved, &scope.prefix);
             (advisory, ty, expr, false, advisory, typed_attr)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
@@ -3592,7 +3637,9 @@ impl<'a> Lowering<'a> {
             // committed canonical type, not a permissive-fallback default.
             let untyped = !self.resolver.has_declared_type(&leaf.field)
                 && !matches!(&resolved, Resolved::TypedAttribute { .. });
-            self.record_attr_demand(&resolved);
+            if let Some(demand) = &self.demand {
+                self.record_attr_demand(demand.signal, &resolved);
+            }
             // The physical `body` column is JSON-encoded at ingest (issue
             // #1410): a plain-string body is stored quoted. `eq`/`ne`/`in`
             // stay pushdown-friendly by JSON-encoding the *literal* instead
@@ -3931,6 +3978,9 @@ impl<'a> Lowering<'a> {
             Some(fields) => fields
                 .iter()
                 .map(|f| {
+                    if !self.aggregated || self.scoped(f).is_some() {
+                        self.record_field_demand(f);
+                    }
                     Ok(if self.col_of.contains_key(f) {
                         // Aggregate output or extract-derived column.
                         ident(self.df_col(f))
@@ -8459,6 +8509,311 @@ mod tests {
         );
     }
 
+    fn catalog_under(
+        tenant: &str,
+        dataset: &str,
+        tables: Vec<(&str, RecordBatch)>,
+    ) -> SessionContext {
+        let sp = Arc::new(MemorySchemaProvider::new());
+        for (name, batch) in tables {
+            let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+            sp.register_table(name.to_string(), Arc::new(table))
+                .unwrap();
+        }
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema(dataset, sp).unwrap();
+        let ctx = SessionContext::new();
+        ctx.register_catalog(tenant, cat);
+        ctx
+    }
+
+    /// `traces` plus a one-row typed `logs` table carrying record-level
+    /// `keys` (each `(key, value)`), under its own tenant/dataset.
+    fn traces_and_typed_logs_ctx(
+        tenant: &str,
+        dataset: &str,
+        keys: &[(&str, serde_json::Value)],
+    ) -> SessionContext {
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("trace_id", DataType::Utf8, true),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![120_i64])),
+            Arc::new(StringArray::from(vec![hex_id(1)])),
+        ];
+        extend_typed_container(
+            &mut fields,
+            &mut columns,
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &[row(keys)],
+            |_, observed| standard_placement(observed),
+        );
+        let logs = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        catalog_under(
+            tenant,
+            dataset,
+            vec![("traces", signal_traces(false)), ("logs", logs)],
+        )
+    }
+
+    fn record_lookup(keys: &[(&str, CanonicalType)]) -> Arc<dyn CanonicalTypeLookup> {
+        let entries: Vec<_> = keys
+            .iter()
+            .map(|(key, ty)| (*key, AttributeLevel::Record, *ty))
+            .collect();
+        Arc::new(StaticLookup(canonical_types(&entries)))
+    }
+
+    async fn collect_documents(
+        ctx: &SessionContext,
+        tenant: &str,
+        dataset: &str,
+        lookup: &Arc<dyn CanonicalTypeLookup>,
+        docs: impl IntoIterator<Item = serde_json::Value>,
+    ) {
+        for d in docs {
+            let (df, ..) = plan_document(
+                ctx,
+                &doc(d),
+                PlanRequest::new(tenant, dataset, 0).with_attribute_type_request(
+                    AttributeTypeRequest::Resolve(Some(lookup.clone())),
+                ),
+            )
+            .await
+            .unwrap()
+            .expect("typed table scans");
+            df.collect().await.unwrap();
+        }
+    }
+
+    /// Drains the recorded demand for `tenant`/`dataset` as
+    /// `(signal, level, key) -> hits`.
+    fn drain_demand(tenant: &str, dataset: &str) -> HashMap<(String, AttributeLevel, String), u64> {
+        common::attr_demand::drain_level()
+            .into_iter()
+            .filter(|((t, d, _, _, _), _)| t == tenant && d == dataset)
+            .map(|((_, _, signal, level, key), count)| ((signal, level, key), count))
+            .collect()
+    }
+
+    fn demand_once(signal: &str, keys: &[&str]) -> HashMap<(String, AttributeLevel, String), u64> {
+        keys.iter()
+            .map(|key| {
+                (
+                    (signal.to_string(), AttributeLevel::Record, key.to_string()),
+                    1,
+                )
+            })
+            .collect()
+    }
+
+    fn inner_logs_correlate() -> serde_json::Value {
+        serde_json::json!({ "correlate": {
+            "to": "logs", "on": "trace_id", "kind": "inner", "pipeline": []
+        }})
+    }
+
+    fn traces_document(
+        result: &str,
+        fields: &[&str],
+        pipeline: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        serde_json::json!({
+            "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": result, "fields": fields, "pipeline": pipeline
+        })
+    }
+
+    /// Every typed-attribute reference under a correlate target prefix
+    /// (where, aggregate by/of, order, topk, fields, also after an
+    /// aggregate) records demand once, under the target signal.
+    #[tokio::test]
+    async fn correlate_target_prefixed_references_record_demand_under_target_signal() {
+        let _drain = ATTR_DEMAND_DRAIN.lock().await;
+        let tenant = "attr-demand-prefixed-tenant";
+        let dataset = "attr-demand-prefixed-dataset";
+        let keys = [
+            ("priority", serde_json::json!(7)),
+            ("region", serde_json::json!("eu")),
+            ("weight", serde_json::json!(1.5)),
+            ("note", serde_json::json!("x")),
+            ("rank", serde_json::json!(2)),
+            ("score", serde_json::json!(3)),
+            ("tag", serde_json::json!("t")),
+        ];
+        let ctx = traces_and_typed_logs_ctx(tenant, dataset, &keys);
+        let lookup = record_lookup(&[
+            ("priority", CanonicalType::Int64),
+            ("region", CanonicalType::String),
+            ("weight", CanonicalType::Float64),
+            ("note", CanonicalType::String),
+            ("rank", CanonicalType::Int64),
+            ("score", CanonicalType::Int64),
+            ("tag", CanonicalType::String),
+        ]);
+        let docs = [
+            traces_document(
+                "table",
+                &["logs.region", "total"],
+                vec![
+                    inner_logs_correlate(),
+                    serde_json::json!({ "where": { "field": "logs.priority", "op": "eq", "value": 7 } }),
+                    serde_json::json!({ "aggregate": {
+                        "by": ["logs.region"],
+                        "aggs": [{ "fn": "sum", "of": "logs.weight", "as": "total" }]
+                    }}),
+                ],
+            ),
+            traces_document(
+                "rows",
+                &["trace_id", "logs.note"],
+                vec![inner_logs_correlate()],
+            ),
+            traces_document(
+                "rows",
+                &["trace_id"],
+                vec![
+                    inner_logs_correlate(),
+                    serde_json::json!({ "order": [{ "of": "logs.rank", "dir": "desc" }] }),
+                ],
+            ),
+            traces_document(
+                "rows",
+                &["trace_id"],
+                vec![
+                    inner_logs_correlate(),
+                    serde_json::json!({ "topk": { "n": 1, "of": "logs.score" } }),
+                ],
+            ),
+            traces_document(
+                "table",
+                &["trace_id", "n", "logs.tag"],
+                vec![
+                    serde_json::json!({ "aggregate": {
+                        "by": ["trace_id"], "aggs": [{ "fn": "count", "as": "n" }]
+                    }}),
+                    inner_logs_correlate(),
+                ],
+            ),
+        ];
+        collect_documents(&ctx, tenant, dataset, &lookup, docs).await;
+
+        assert_eq!(
+            drain_demand(tenant, dataset),
+            demand_once(
+                "logs",
+                &[
+                    "priority", "region", "weight", "note", "rank", "score", "tag"
+                ]
+            )
+        );
+    }
+
+    /// A key used in the target sub-pipeline and again as `<target>.x` in
+    /// the outer pipeline counts once, under the target signal.
+    #[tokio::test]
+    async fn correlate_target_and_prefixed_references_count_the_key_once() {
+        let _drain = ATTR_DEMAND_DRAIN.lock().await;
+        let tenant = "attr-demand-once-tenant";
+        let dataset = "attr-demand-once-dataset";
+        let ctx = traces_and_typed_logs_ctx(tenant, dataset, &[("priority", serde_json::json!(7))]);
+        let lookup = record_lookup(&[("priority", CanonicalType::Int64)]);
+        let d = traces_document(
+            "rows",
+            &["trace_id"],
+            vec![
+                serde_json::json!({ "correlate": {
+                    "to": "logs", "on": "trace_id", "kind": "inner",
+                    "pipeline": [{ "where": { "field": "priority", "op": "eq", "value": 7 } }]
+                }}),
+                serde_json::json!({ "where": { "field": "logs.priority", "op": "eq", "value": 7 } }),
+            ],
+        );
+        collect_documents(&ctx, tenant, dataset, &lookup, [d]).await;
+
+        assert_eq!(
+            drain_demand(tenant, dataset),
+            demand_once("logs", &["priority"])
+        );
+    }
+
+    /// `parent.x` and `x` in one document are the same traces key, counted
+    /// once under traces.
+    #[tokio::test]
+    async fn parent_prefixed_and_source_references_count_once_under_traces() {
+        let _drain = ATTR_DEMAND_DRAIN.lock().await;
+        let tenant = "attr-demand-parent-tenant";
+        let dataset = "attr-demand-parent-dataset";
+        let (_, batch) = correlate_attrs_batch();
+        let batch =
+            common::testing::to_typed_layout("traces", "physical-v5", &batch, &["span_attributes"]);
+        let ctx = catalog_under(tenant, dataset, vec![("traces", batch)]);
+        let lookup = record_lookup(&[("http.route", CanonicalType::String)]);
+        let d = serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["span_id"],
+            "pipeline": [
+                { "correlate": { "to": "parent", "kind": "inner" } },
+                { "where": { "field": "parent.http.route", "op": "exists" } },
+                { "where": { "field": "http.route", "op": "exists" } }
+            ]
+        });
+        collect_documents(&ctx, tenant, dataset, &lookup, [d]).await;
+
+        assert_eq!(
+            drain_demand(tenant, dataset),
+            demand_once("traces", &["http.route"])
+        );
+    }
+
+    /// `fields` and an aggregate operand on the source signal record demand,
+    /// while an extract-derived field and an aggregate alias record none.
+    #[tokio::test]
+    async fn source_fields_and_aggregate_operands_record_attribute_demand() {
+        let _drain = ATTR_DEMAND_DRAIN.lock().await;
+        let tenant = "attr-demand-source-ops-tenant";
+        let dataset = "attr-demand-source-ops-dataset";
+        let ctx = attr_demand_logs_ctx(tenant, dataset);
+        let lookup = record_lookup(&[
+            ("http.status_code", CanonicalType::Int64),
+            ("region", CanonicalType::String),
+        ]);
+        let docs = [
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["region"]
+            }),
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table", "fields": ["total"],
+                "pipeline": [{ "aggregate": {
+                    "aggs": [{ "fn": "sum", "of": "http.status_code", "as": "total" }]
+                }}]
+            }),
+            serde_json::json!({
+                "irVersion": 1, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "table", "fields": ["total"],
+                "pipeline": [
+                    { "aggregate": { "aggs": [{ "fn": "count", "as": "total" }] }},
+                    { "order": [{ "of": "total", "dir": "desc" }] }
+                ]
+            }),
+        ];
+        collect_documents(&ctx, tenant, dataset, &lookup, docs).await;
+
+        assert_eq!(
+            drain_demand(tenant, dataset),
+            demand_once("logs", &["http.status_code", "region"])
+        );
+    }
+
     /// A `logs` table with `service.tier` (`String`-canonical) and
     /// `retry.count` (`Int64`-canonical), plus a `label_<key>` column for
     /// each — `label_service_tier` (relevant, since its type is `String`)
@@ -11046,7 +11401,10 @@ mod tests {
         ctx: SessionContext,
         params: &IrQueryParams,
     ) -> (Vec<String>, CorrelateReport) {
-        let (batches, _, report) = IrService::new(ctx).query(params, "t", "d").await.unwrap();
+        let (batches, _, report) = with_empty_lookup(IrService::new(ctx))
+            .query(params, "t", "d")
+            .await
+            .unwrap();
         let mut ids = Vec::new();
         for batch in &batches {
             let col = batch.column_by_name("trace_id").unwrap();
@@ -11295,7 +11653,10 @@ mod tests {
 
     /// The `trace_id` column of every returned row, in result order.
     async fn trace_id_rows(ctx: SessionContext, params: &IrQueryParams) -> Vec<Option<String>> {
-        let (batches, _, _) = IrService::new(ctx).query(params, "t", "d").await.unwrap();
+        let (batches, _, _) = with_empty_lookup(IrService::new(ctx))
+            .query(params, "t", "d")
+            .await
+            .unwrap();
         batches
             .iter()
             .flat_map(|batch| {
@@ -11746,7 +12107,10 @@ mod tests {
         params: &IrQueryParams,
         columns: &[&str],
     ) -> (Vec<Vec<Option<String>>>, CorrelateReport) {
-        let (batches, _, report) = IrService::new(ctx).query(params, "t", "d").await.unwrap();
+        let (batches, _, report) = with_empty_lookup(IrService::new(ctx))
+            .query(params, "t", "d")
+            .await
+            .unwrap();
         let mut rows = Vec::new();
         for batch in &batches {
             let cols: Vec<StringArray> = columns
@@ -11930,13 +12294,95 @@ mod tests {
             serde_json::json!([inner_logs(serde_json::json!({}))]),
         )
         .document);
-        let (df, _) = IrService::new(ctx())
+        let (df, _) = with_empty_lookup(IrService::new(ctx()))
             .plan(&inner, "t", "d", 0)
             .await
             .unwrap()
             .unwrap();
         assert!(df.schema().has_column_with_unqualified_name("logs.body"));
         assert_eq!(df.count().await.unwrap(), 0);
+    }
+
+    /// An `IrService` whose registry holds no attribute types, so a typed
+    /// empty target frame resolves the way a present one does.
+    fn with_empty_lookup(service: IrService) -> IrService {
+        service.with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))))
+    }
+
+    /// A left correlate to a missing `logs` table reading `logs.priority`,
+    /// followed by `extra` stages.
+    fn missing_target_doc(extra: serde_json::Value) -> Document {
+        let mut d = serde_json::json!({
+            "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows", "fields": ["trace_id", "logs.priority"],
+            "pipeline": [inner_logs(serde_json::json!({ "kind": "left" }))]
+        });
+        d["pipeline"]
+            .as_array_mut()
+            .unwrap()
+            .extend(extra.as_array().unwrap().clone());
+        doc(d)
+    }
+
+    fn missing_target_types() -> CanonicalTypes {
+        canonical_types(&[("priority", AttributeLevel::Record, CanonicalType::Int64)])
+    }
+
+    /// `<target>.x` on a missing target table keeps its canonical type: a
+    /// typed Int64 null on the left-joined row, not a Utf8 null.
+    #[tokio::test]
+    async fn a_missing_target_table_resolves_target_prefixed_typed_attributes() {
+        let ctx = catalog_ctx(vec![("traces", signal_traces(false))]);
+        let batches = plan_typed_rows(
+            &ctx,
+            &missing_target_doc(serde_json::json!([])),
+            missing_target_types(),
+        )
+        .await;
+        let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+        assert_eq!(rows, 4);
+        for batch in &batches {
+            let column = batch
+                .column_by_name(&safe_ident("logs.priority"))
+                .expect("target column present");
+            assert_eq!(column.data_type(), &DataType::Int64);
+            assert_eq!(column.null_count(), column.len());
+        }
+    }
+
+    /// A literal the canonical type cannot represent is rejected for a
+    /// target-prefixed field even when the target table is missing.
+    #[tokio::test]
+    async fn a_missing_target_table_rejects_an_uncoercible_target_prefixed_literal() {
+        let ctx = catalog_ctx(vec![("traces", signal_traces(false))]);
+        let d = missing_target_doc(serde_json::json!([
+            { "where": { "field": "logs.priority", "op": "eq", "value": "abc" } }
+        ]));
+        let err = plan_typed_err(&ctx, &d, missing_target_types()).await;
+        assert!(
+            matches!(err, QuerierError::InvalidInput(ref m) if m.contains("logs.priority")),
+            "{err:?}"
+        );
+    }
+
+    /// With no attribute registry attached, a missing target table errors the
+    /// way a present typed one does.
+    #[tokio::test]
+    async fn a_missing_target_table_without_a_registry_errors_like_a_present_one() {
+        let ctx = catalog_ctx(vec![("traces", signal_traces(false))]);
+        let err = plan_document(
+            &ctx,
+            &missing_target_doc(serde_json::json!([])),
+            PlanRequest::new("t", "d", 0)
+                .with_attribute_type_request(AttributeTypeRequest::Resolve(None)),
+        )
+        .await
+        .expect_err("a typed target frame needs the registry");
+        assert!(
+            err.to_string()
+                .contains("attribute type registry not configured"),
+            "{err:?}"
+        );
     }
 
     #[tokio::test]
@@ -12177,7 +12623,7 @@ mod tests {
                 }),
                 now_ns: 0,
             };
-            let (batches, _, _) = IrService::new(ctx())
+            let (batches, _, _) = with_empty_lookup(IrService::new(ctx()))
                 .query(&params, "t", "d")
                 .await
                 .unwrap();
