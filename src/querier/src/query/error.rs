@@ -135,6 +135,24 @@ mod tests {
     }
 
     #[test]
+    fn a_wrapped_query_failed_is_looked_through() {
+        let inner =
+            DataFusionError::External(Box::new(QuerierError::ResourceExhausted("bound".into())));
+        let raised = DataFusionError::External(Box::new(QuerierError::QueryFailed(inner)));
+        assert!(matches!(
+            QuerierError::from(raised),
+            QuerierError::ResourceExhausted(m) if m == "bound"
+        ));
+        let plain = DataFusionError::External(Box::new(QuerierError::QueryFailed(
+            DataFusionError::Plan("x".into()),
+        )));
+        assert!(matches!(
+            QuerierError::from(plain),
+            QuerierError::QueryFailed(_)
+        ));
+    }
+
+    #[test]
     fn query_failed_keeps_its_source() {
         let err = QuerierError::from(DataFusionError::Plan("x".into()));
         assert!(std::error::Error::source(&err).is_some());
