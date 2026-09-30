@@ -4821,12 +4821,15 @@ mod tests {
         let svc = IrService::new(points_ctx(counter_points("sum", rows)));
         let range = serde_json::json!({ "from": 0, "to": 100_000_000_000_000i64 });
         let hq = serde_json::json!({ "histogram_quantile": { "q": 0.5, "step": "1s", "as": "p" } });
+        let hf = serde_json::json!({ "histogram_fraction": {
+            "lower": 0.0, "upper": 1.0, "step": "1s", "as": "f"
+        } });
         let rate = serde_json::json!({ "aggregate": {
             "aggs": [{ "fn": "rate", "of": "metric.value", "as": "r" }], "step": "1s"
         } });
-        for stage in [hq, rate] {
+        for stage in [hq, hf, rate] {
             let d = doc(serde_json::json!({
-                "irVersion": 7, "from": "metrics", "range": range, "result": "series",
+                "irVersion": 10, "from": "metrics", "range": range, "result": "series",
                 "pipeline": [stage]
             }));
             let err = svc.plan(&d, "t", "d", 0).await.map(|_| ()).unwrap_err();
