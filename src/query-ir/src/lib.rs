@@ -44,7 +44,7 @@ pub use relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
     Scalar as ScalarRelation, Series,
 };
-pub use resolver::{FieldResolver, InMemoryResolver, Resolved};
+pub use resolver::{FieldResolver, InMemoryResolver, Resolved, SpanListField};
 pub use source::{PSEUDO_SOURCES, SourceDef, SourceRegistry, is_pseudo_source};
 pub use stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, Correlate,
