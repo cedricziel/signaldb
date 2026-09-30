@@ -358,7 +358,8 @@ and off-type handling are described once, in
 - **Discovery**: `GET /api/v1/schema/attributes/{key}` and the batch form
   `GET /api/v1/schema/attributes?keys=a,b` (`schema:read`; MCP
   `resolve_attribute`) return `canonical_types`, one entry per
-  dataset/signal/level the key has been seen in, with `off_type_count`. The
+  dataset/signal/level where a type is established (by data or a config pin),
+  with `off_type_count`. The
   field is omitted when nothing is established, and a dataset-restricted key
   only sees its own datasets (`src/router/src/endpoints/schema.rs`).
 

@@ -132,7 +132,7 @@ attribute level (resource, scope or record). How it is chosen (a pin, a
 semantic-convention hint, or the first value SignalDB stored) is described in
 [Canonical types](schema-registry.md#canonical-types). It never changes on its
 own. A value sent with a different type (say `http.status_code` as the string
-`"404"` once the key is an integer) is still stored exactly as sent. It can be
+`"404"` once the key is an integer) is still stored exactly as sent, except that a non-finite double is stored as null. It can be
 retrieved through the raw attribute bag, but it can't be filtered as a typed
 value (see [Querying with the IR](querying-ir.md)).
 

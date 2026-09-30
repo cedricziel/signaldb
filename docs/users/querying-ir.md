@@ -104,7 +104,7 @@ single-key object naming the stage:
 | `limit`            | integer                          | bound the row count                               |
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate     |
 | `histogram_quantile` (v3) | `{ q, by?, step, mode?, … }` | quantile from histogram buckets (`metrics` only)  |
-| `histogram_fraction` (v10) | `{ lower, upper, … }`    | fraction of observations in `(lower, upper]`      |
+| `histogram_fraction` (v10) | `{ lower, upper, … }`    | fraction of observations in `(lower, upper]` (`metrics` only) |
 | `describe` (v4)    | `{ target, field?, limit?, … }`  | terminal; field and source discovery (`metadata`) |
 | `correlate` (v8, v11) | `{ to, on?, kind, window?, … }` | join to the parent span, or to another signal     |
 | `sample` (v10)     | `{ fn, window?, lookback?, … }`  | a metric point stream → a Series (`metrics` only) |
@@ -133,7 +133,7 @@ truth is `src/query-ir/src/version.rs`):
 
 | Version | Adds |
 | ------- | ---- |
-| 1 | `where`, `extract`, `aggregate`, `topk`/`bottomk`, `order`, `limit`; the `rows`, `series` and `table` results |
+| 1 | `where`, `extract`, `aggregate`, `topk`/`bottomk`, `order`, `limit`; the `rows`, `series` and `table` results, and `flamegraph` (`profiles` only) |
 | 2 | `heatmap` |
 | 3 | `histogram_quantile` |
 | 4 | `describe` and the `metadata` envelope |

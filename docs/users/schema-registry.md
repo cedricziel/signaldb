@@ -123,7 +123,8 @@ The response lists every visible definition:
 }
 ```
 
-`canonical_types` appears only once data for the key has been stored; see
+`canonical_types` appears once a canonical type is established for the key,
+by stored data or by a configuration pin; see
 [Canonical types](#canonical-types).
 
 Deprecated keys carry their replacement (`"deprecated": {"reason": "renamed",
@@ -182,7 +183,8 @@ semconv hint, then the type of the first value SignalDB stored for the key.
 Once set, the type does not change because later data disagrees. What happens
 to a value that does not fit depends on its shape:
 
-- A **scalar of another type** is kept exactly as sent but cannot be filtered as
+- A **scalar of another type** is kept exactly as sent (a non-finite double
+  is stored as null) but cannot be filtered as
   a typed value. It increments the key's `off_type_count`, and the sender's OTLP
   response carries a `partial_success` warning naming the keys.
 - An **array, key-value list or bytes value** is kept as sent and can be read
