@@ -95,9 +95,9 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 ## 10. Structural-trace matching
 
-- [ ] 10.1 Failing tests: descendant matches at any depth OR explicit error (never silent cap); predicate references `events`/`links`; non-trace source rejected; `trace` envelope (spec `structural-trace-query`)
-- [ ] 10.2 Implement the **per-trace evaluator** baseline (partition by `trace_id`, in-memory adjacency + closure) — recursive-CTE is not a viable strategy; materialized ancestry (writer+schema+Iceberg migration) is an optional fast-path sub-stack
-- [ ] 10.3 `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+- [x] 10.1 Failing tests: descendant matches at any depth OR explicit error (never silent cap); predicate references `events`/`links`; non-trace source rejected; `trace` envelope (spec `structural-trace-query`)
+- [x] 10.2 Implement the **per-trace evaluator** baseline (partition by `trace_id`, in-memory adjacency + linear descendant passes) — recursive-CTE is not a viable strategy; materialized ancestry (writer+schema+Iceberg migration) is an optional fast-path sub-stack
+- [x] 10.3 `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
 
 ## 11. Surface parity + subsumption + docs
 
