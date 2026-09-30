@@ -1196,14 +1196,19 @@ pub(crate) async fn plan_document(
         }
     }
     let scan = metric_series::sample::scan_window(doc, sample_window, now_ns)?;
+    // A subquery widens the window of the stages before it.
+    let earliest = windows
+        .iter()
+        .map(|w| w.start_ns)
+        .fold(window.start_ns, i64::min);
     let scan = ResolvedWindow {
-        start_ns: scan.start_ns.min(window.start_ns.saturating_sub(lookback)),
+        start_ns: scan.start_ns.min(earliest.saturating_sub(lookback)),
         ..scan
     };
     let mut df = lowering.apply_time_window(base, &scan)?;
     let mut metric_frame = false;
     let mut series_step = None;
-    for (stage, &stage_window) in doc.pipeline.iter().zip(&windows) {
+    for (i, (stage, &stage_window)) in doc.pipeline.iter().zip(&windows).enumerate() {
         // A limit keeps the first rows, so it needs the frame's final order.
         if metric_frame && matches!(stage, Stage::Limit(_)) {
             df = metric_series::sort_frame(df, None)?;
@@ -1238,8 +1243,20 @@ pub(crate) async fn plan_document(
                 };
                 lower_frame_stage(df, stage, &env, doc, &operand_request).await?
             }
-            // Needs the resolved window for its evaluation instants.
-            _ if let Some(h) = HistStage::of(stage) => lowering.lower_histogram(df, &h, &window)?,
+            // Needs its stage's window for its evaluation instants.
+            _ if let Some(h) = HistStage::of(stage) => {
+                let df = lowering.lower_histogram(df, &h, &stage_window)?;
+                // Series stages after it read it as a Series.
+                if doc.pipeline[i + 1..]
+                    .iter()
+                    .any(metric_series::is_frame_stage)
+                {
+                    metric_frame = true;
+                    metric_series::histogram_as_series(df, h.by, h.as_name)?
+                } else {
+                    df
+                }
+            }
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
                 lowering.lower_rate_aggregate(df, agg, a, &window)?
             }
@@ -1314,10 +1331,19 @@ async fn lower_frame_stage(
     let BinopOperand::Document(sub) = &binop.right else {
         return metric_series::lower_stage(df, stage, env);
     };
-    if env.step_ns.is_none() {
+    let Some(step_ns) = env.step_ns else {
         return Err(QuerierError::Unsupported(
             "binop over a non-sampled Series".to_string(),
         ));
+    };
+    let sub_step = metric_series::pipeline_step(&sub.from, &sub.pipeline, doc.step.as_deref());
+    if let Some(sub_step) = sub_step
+        && sub_step != step_ns
+    {
+        return Err(QuerierError::InvalidInput(format!(
+            "binop operand evaluates every {sub_step}ns but its input every {step_ns}ns; \
+             give both the same step"
+        )));
     }
     let child = Document {
         ir_version: doc.ir_version,
@@ -5757,6 +5783,92 @@ mod tests {
         let batches = df.collect().await.unwrap();
         let total_rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total_rows, 1, "limit narrows the 2-service result to 1");
+    }
+
+    #[tokio::test]
+    async fn series_stages_read_a_histogram_quantile_as_a_series() {
+        use datafusion::arrow::array::AsArray;
+        use datafusion::arrow::compute::concat_batches;
+        use datafusion::arrow::datatypes::Float64Type;
+
+        // `sum(histogram_quantile(0.5, sum by (service.name) (latency)))`
+        let svc = IrService::new(histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "range": { "from": 100, "to": 1000 },
+            "step": "1000ms", "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "instant", "as": "p50" } },
+                { "filter": { "op": "gt", "value": 0.0 } },
+                { "reduce": { "fn": "sum" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let batch = concat_batches(&batches[0].schema(), &batches).unwrap();
+        let labels = batch.column_by_name("__labels").unwrap().as_string::<i32>();
+        let values = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_primitive::<Float64Type>();
+        assert_eq!(batch.num_rows(), 1, "{batch:?}");
+        assert_eq!(labels.value(0), "{}");
+        // Both services' p50 is 0.5.
+        assert!((values.value(0) - 1.0).abs() < 1e-9, "{batch:?}");
+    }
+
+    #[tokio::test]
+    async fn a_subquery_over_a_histogram_quantile_reads_its_widened_window() {
+        use datafusion::arrow::array::AsArray;
+        use datafusion::arrow::datatypes::Float64Type;
+
+        // `min_over_time(histogram_quantile(0.5, …)[70ns:10ns])` at 60ns:
+        // the inner instant 0ns sees the 0ns point (p50 0.1), 50ns the 50ns
+        // point (0.5), which lie before the range.
+        let svc = IrService::new(histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "range": { "from": 60, "to": 60 },
+            "step": "10ns", "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                { "histogram_quantile": { "q": 0.5, "by": ["service.name"], "step": "10ns", "mode": "instant", "as": "p50" } },
+                { "over_time": { "fn": "min", "window": "70ns" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let batches = df.collect().await.unwrap();
+        let values: Vec<f64> = batches
+            .iter()
+            .flat_map(|b| {
+                let v = b
+                    .column_by_name("value")
+                    .unwrap()
+                    .as_primitive::<Float64Type>();
+                v.values().to_vec()
+            })
+            .collect();
+        assert_eq!(values.len(), 2, "{batches:?}");
+        assert!(values.iter().all(|v| (v - 0.1).abs() < 1e-9), "{values:?}");
+    }
+
+    #[tokio::test]
+    async fn two_metrics_quantiles_with_one_label_set_are_invalid_input() {
+        let svc = IrService::new(histogram_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "range": { "from": 100, "to": 1000 },
+            "step": "1000ms", "result": "series",
+            "pipeline": [
+                { "where": { "field": "metric.name", "op": "in", "value": ["latency", "solo"] } },
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "mode": "instant", "as": "p50" } },
+                { "filter": { "op": "ge", "value": 0.0 } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let err = QuerierError::from(df.collect().await.unwrap_err());
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("same labelset")),
+            "{err}"
+        );
     }
 
     fn histogram_points_ctx(kind: &str, rows: &[(&str, i64, &[i64])]) -> SessionContext {

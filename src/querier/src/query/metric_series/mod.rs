@@ -3,10 +3,11 @@
 
 use std::sync::Arc;
 
-use common::query_ir::{BinopOperand, Direction, Document, Stage, is_pseudo_source};
+use common::query_ir::{BinopOperand, Direction, Document, Stage, is_pseudo_source, safe_ident};
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::functions::math::expr_fn::isnan;
+use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::{DataFrame, SessionContext, ident};
 
 use crate::query::error::QuerierError;
@@ -35,9 +36,8 @@ mod tests;
 pub(crate) struct FrameEnv<'a> {
     pub ctx: &'a SessionContext,
     pub window: ResolvedWindow,
-    /// The input's evaluation step; `None` for a Series from anything but
-    /// `sample` (a step aggregate, a histogram quantile), which sits on
-    /// epoch-aligned buckets rather than on the evaluation instants.
+    /// The input's evaluation step; `None` for a frame not on the
+    /// evaluation instants (a step aggregate's epoch-aligned buckets).
     pub step_ns: Option<i64>,
     /// The document's `step`, which an `over_time` without its own
     /// evaluates at.
@@ -85,6 +85,18 @@ pub(crate) fn lower_stage(
     }
 }
 
+/// The step a pipeline over `from` outputs at: a pseudo-source starts at
+/// the document `step`, and each stage's [`output_step`] follows.
+pub(crate) fn pipeline_step(from: &str, pipeline: &[Stage], doc_step: Option<&str>) -> Option<i64> {
+    let start = is_pseudo_source(from)
+        .then(|| doc_step.and_then(common::query_ir::parse_duration_ns))
+        .flatten()
+        .filter(|ns| *ns > 0);
+    pipeline
+        .iter()
+        .fold(start, |step, stage| output_step(stage, step, doc_step))
+}
+
 /// Whether a `binop` sub-document yields a Scalar rather than a Series.
 pub(crate) fn yields_scalar(from: &str, pipeline: &[Stage]) -> bool {
     pipeline
@@ -113,6 +125,44 @@ pub(crate) fn operand(df: DataFrame) -> vector_match::Operand {
     } else {
         vector_match::Operand::Scalar(df)
     }
+}
+
+/// A `histogram_quantile` frame (`bucket`, a column per `by` label, and
+/// `value`) as a Series labelled by the `by` labels. Several metrics
+/// matching one `by` label set are two series with one label set: a 400,
+/// as in Prometheus.
+pub(crate) fn histogram_as_series(
+    df: DataFrame,
+    by: &[String],
+    value: &str,
+) -> Result<DataFrame, QuerierError> {
+    let labels = if by.is_empty() {
+        lit("{}")
+    } else {
+        let columns = by.iter().map(|b| ident(safe_ident(b))).collect();
+        labels::labels_of_udf(by.to_vec()).call(columns)
+    };
+    let df = df
+        .with_column("value", ident(value))?
+        .filter(col("value").is_not_null())?;
+    stages::rewrite_labels(df, labels)
+}
+
+/// Whether [`lower_stage`] (or the planner's `binop`) lowers `stage`.
+pub(crate) fn is_frame_stage(stage: &Stage) -> bool {
+    matches!(
+        stage,
+        Stage::Scalar(_)
+            | Stage::Vector(_)
+            | Stage::Reduce(_)
+            | Stage::Labels(_)
+            | Stage::Map(_)
+            | Stage::Filter(_)
+            | Stage::Sort(_)
+            | Stage::Absent(_)
+            | Stage::OverTime(_)
+            | Stage::Binop(_)
+    )
 }
 
 /// A Series with no series: the operand read from a dataset without the

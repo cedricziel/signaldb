@@ -132,6 +132,125 @@ pub(crate) fn bag_arg(container: &str, has_container: bool) -> Expr {
     named_struct(args)
 }
 
+/// `labels_of(value…)`: each row's label set `{names[i]: value[i]}`, less
+/// the null and empty values.
+pub(crate) fn labels_of_udf(names: Vec<String>) -> ScalarUDF {
+    // Key order and escaping are fixed per call: sort once, as `encode`'s
+    // BTreeMap would, keeping a repeated name's first argument.
+    let mut keys: Vec<(String, usize)> = names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| (name.clone(), i))
+        .collect();
+    keys.sort_by(|a, b| a.0.cmp(&b.0));
+    keys.dedup_by(|b, a| a.0 == b.0);
+    let keys = keys
+        .into_iter()
+        .map(|(name, i)| (JsonValue::String(name).to_string(), i))
+        .collect();
+    ScalarUDF::new_from_impl(LabelsOf {
+        keys,
+        signature: Signature::variadic_any(Volatility::Immutable),
+    })
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct LabelsOf {
+    /// Each label's JSON-escaped name and argument index, in key order.
+    keys: Vec<(String, usize)>,
+    signature: Signature,
+}
+
+impl ScalarUDFImpl for LabelsOf {
+    fn name(&self) -> &str {
+        "labels_of"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _: &[DataType]) -> Result<DataType> {
+        Ok(DataType::Utf8)
+    }
+    fn invoke_with_args(&self, args: ScalarFunctionArgs) -> Result<ColumnarValue> {
+        let rows = args.number_rows;
+        let arrays = args
+            .args
+            .iter()
+            .map(|arg| utf8_array(arg, rows))
+            .collect::<Result<Vec<_>>>()?;
+        let values: Vec<_> = arrays.iter().map(|a| a.as_string::<i32>()).collect();
+        let mut out = StringBuilder::new();
+        let mut buf = Vec::new();
+        for row in 0..rows {
+            buf.clear();
+            buf.push(b'{');
+            for (key, i) in &self.keys {
+                let Some(values) = values.get(*i) else {
+                    return Err(DataFusionError::Internal(
+                        "labels_of: fewer values than names".into(),
+                    ));
+                };
+                if values.is_null(row) || values.value(row).is_empty() {
+                    continue;
+                }
+                if buf.len() > 1 {
+                    buf.push(b',');
+                }
+                buf.extend_from_slice(key.as_bytes());
+                buf.push(b':');
+                serde_json::to_writer(&mut buf, values.value(row))
+                    .map_err(|e| DataFusionError::External(Box::new(e)))?;
+            }
+            buf.push(b'}');
+            let text =
+                std::str::from_utf8(&buf).map_err(|e| DataFusionError::External(Box::new(e)))?;
+            out.append_value(text);
+        }
+        Ok(ColumnarValue::Array(Arc::new(out.finish())))
+    }
+}
+
+#[cfg(test)]
+mod labels_of_tests {
+    use super::*;
+
+    #[test]
+    fn labels_of_writes_the_canonical_label_set() {
+        use datafusion::arrow::array::StringArray;
+        use datafusion::arrow::datatypes::Field;
+        use datafusion::config::ConfigOptions;
+
+        let udf = labels_of_udf(vec!["z".into(), "a\"b".into(), "e".into()]);
+        let col = |v: Vec<Option<&str>>| ColumnarValue::Array(Arc::new(StringArray::from(v)));
+        let args = ScalarFunctionArgs {
+            args: vec![
+                col(vec![Some("1"), None]),
+                col(vec![Some("q\""), Some("2")]),
+                col(vec![Some(""), Some("3")]),
+            ],
+            arg_fields: (0..3)
+                .map(|i| Arc::new(Field::new(format!("a{i}"), DataType::Utf8, true)))
+                .collect(),
+            number_rows: 2,
+            return_field: Arc::new(Field::new("out", DataType::Utf8, true)),
+            config_options: Arc::new(ConfigOptions::default()),
+        };
+        let out = udf.invoke_with_args(args).unwrap().to_array(2).unwrap();
+        let out = out.as_string::<i32>();
+        let want = |pairs: &[(&str, &str)]| {
+            encode(
+                &pairs
+                    .iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+            )
+            .unwrap()
+        };
+        assert_eq!(out.value(0), want(&[("a\"b", "q\""), ("z", "1")]));
+        assert_eq!(out.value(1), want(&[("a\"b", "2"), ("e", "3")]));
+    }
+}
+
 /// `series_labels(metric_name, service_name, scope_name, scope_version,
 /// resource_bag, attrs_bag)`: the canonical label set of each row's series;
 /// bags as built by [`bag_arg`].
