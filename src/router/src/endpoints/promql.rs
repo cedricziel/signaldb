@@ -340,7 +340,7 @@ async fn run_promql(
             .as_any()
             .downcast_ref::<Float64Array>()
             .filter(|values| values.is_valid(row))
-            .map_or(f64::NAN, |values| values.value(row))
+            .map(|values| values.value(row))
     })?;
     Ok((document.result, series))
 }
@@ -590,11 +590,13 @@ mod tests {
 
     fn decode(batch: RecordBatch) -> Vec<DecodedSeries<f64>> {
         super::super::query::decode_series(&[batch], |array, row| {
-            array
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap()
-                .value(row)
+            Some(
+                array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(row),
+            )
         })
         .unwrap()
     }
@@ -832,6 +834,16 @@ mod tests {
         send(uri, None).await
     }
 
+    /// A Series frame whose value cells may be null.
+    fn nullable_series_batch(rows: Vec<(i64, &str, Option<f64>)>) -> RecordBatch {
+        let batch = series_batch(rows.iter().map(|r| (r.0, r.1, 0.0)).collect());
+        let mut columns = batch.columns().to_vec();
+        columns[2] = Arc::new(Float64Array::from(
+            rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+        ));
+        RecordBatch::try_new(batch.schema(), columns).unwrap()
+    }
+
     #[tokio::test]
     async fn invalid_or_inexpressible_promql_is_bad_data_before_any_querier() {
         // No querier is registered: a 400 proves the lowering rejected the
@@ -890,6 +902,29 @@ mod tests {
         let result = &body["data"]["result"];
         assert_eq!(result[0].as_f64(), Some(1_700_000_000.0), "{body}");
         assert_eq!(result[1], "3", "{body}");
+    }
+
+    /// A null value is no sample: it is dropped, not turned into NaN, and a
+    /// series left with no samples is dropped with it.
+    #[tokio::test]
+    async fn null_values_are_dropped_not_nan() {
+        let frame = nullable_series_batch(vec![
+            (1_000_000_000, API, Some(2.0)),
+            (2_000_000_000, API, None),
+            (1_000_000_000, WEB, None),
+        ]);
+        let (status, body) = send(
+            "/prometheus/api/v1/query_range?query=up&start=1&end=2&step=1",
+            Some(Reply::Batches(vec![frame])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let matrix = body["data"]["result"].as_array().unwrap();
+        assert_eq!(matrix.len(), 1, "{body}");
+        let values = matrix[0]["values"].as_array().unwrap();
+        assert_eq!(values.len(), 1, "{body}");
+        assert_eq!(values[0][0].as_f64(), Some(1.0), "{body}");
+        assert_eq!(values[0][1], "2", "{body}");
     }
 
     /// The querier's Flight status decides the HTTP status.

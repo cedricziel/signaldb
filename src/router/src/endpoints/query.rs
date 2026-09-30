@@ -1454,7 +1454,7 @@ const SERIES_LABELS_COLUMN: &str = "__labels";
 /// rows sharing a label set and a bucket came from series the label sets
 /// cannot tell apart, which is a 400 as in Prometheus.
 fn to_series(batches: &[RecordBatch]) -> Result<Vec<ResultSeries>, ApiError> {
-    Ok(decode_series(batches, cell)?
+    Ok(decode_series(batches, |array, row| Some(cell(array, row)))?
         .into_iter()
         .map(|(labels, points)| ResultSeries {
             labels,
@@ -1468,9 +1468,11 @@ pub(super) type DecodedSeries<V> = (BTreeMap<String, String>, Vec<(serde_json::V
 
 /// The decoding behind [`to_series`], with the value cell read by `value`:
 /// the Prometheus endpoints keep NaN and ±Inf, which a JSON number cannot.
+/// A cell `value` reads as `None` is no sample: its point is left out, and
+/// so is a series with no other.
 pub(super) fn decode_series<V>(
     batches: &[RecordBatch],
-    value: impl Fn(&dyn Array, usize) -> V,
+    value: impl Fn(&dyn Array, usize) -> Option<V>,
 ) -> Result<Vec<DecodedSeries<V>>, ApiError> {
     let mut order: Vec<String> = Vec::new();
     let mut series: BTreeMap<String, DecodedSeries<V>> = BTreeMap::new();
@@ -1503,6 +1505,9 @@ pub(super) fn decode_series<V>(
             .collect();
         let label_set = label_cols.len() == 1 && schema.field(1).name() == SERIES_LABELS_COLUMN;
         for r in 0..batch.num_rows() {
+            let Some(v) = value(casted[value_col].as_ref(), r) else {
+                continue;
+            };
             let (key, labels) = if label_set {
                 series_label_set(cell(casted[1].as_ref(), r))?
             } else {
@@ -1523,7 +1528,6 @@ pub(super) fn decode_series<V>(
                 (key, labels)
             };
             let t = cell(casted[0].as_ref(), r);
-            let v = value(casted[value_col].as_ref(), r);
             let (_, points) = series.entry(key.clone()).or_insert_with(|| {
                 order.push(key.clone());
                 (labels, Vec::new())
