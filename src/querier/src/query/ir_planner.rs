@@ -46,10 +46,9 @@ use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, Logi
 use common::schema::type_authority::CanonicalType;
 use common::schema::typed_attributes::{self, has_typed_container, home_column, typed_columns};
 use datafusion::arrow::array::{
-    Array, AsArray, BooleanArray, Int64Array, LargeStringArray, StringArray, StringBuilder,
-    StringViewArray,
+    Array, AsArray, BooleanArray, LargeStringArray, StringArray, StringBuilder, StringViewArray,
+    UInt64Array,
 };
-use datafusion::arrow::compute;
 use datafusion::arrow::datatypes::Int64Type;
 use datafusion::arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, TimeUnit};
 use datafusion::catalog::MemTable;
@@ -1019,6 +1018,9 @@ impl IrService {
     /// two-tuple form is exercised by the planner's own tests only —
     /// `#[cfg_attr(not(test), allow(dead_code))]` says exactly that, rather
     /// than a blanket allow.
+    ///
+    /// A signal-target `correlate` executes its source pipeline while
+    /// planning (see [`plan_document`]).
     #[cfg_attr(not(test), allow(dead_code))]
     pub async fn plan(
         &self,
@@ -1096,6 +1098,10 @@ fn unsupported_stage(stage: &Stage) -> QuerierError {
 /// resolver a caller could hand in stale or wrong) and is exactly the
 /// coupling `pub(crate)`-only visibility (task 1.2) exists to prevent a
 /// caller from second-guessing.
+///
+/// Not pure planning: a signal-target `correlate` executes its source
+/// pipeline here (bounded by `correlate_max_source_rows`) to learn the key
+/// set and time envelope the target scan is built from.
 pub(crate) async fn plan_document(
     ctx: &SessionContext,
     doc: &Document,
@@ -1656,12 +1662,123 @@ pub(crate) struct CorrelateOutcome {
     pub window: Option<ResolvedWindow>,
 }
 
-/// Source-side helper columns of a signal-target `correlate`: the canonical
-/// key columns (suffixed by key-field index) and the time envelope.
+/// Helper columns of a signal-target `correlate`: the canonical key columns
+/// (suffixed by key-field index), the time envelope inputs and the source
+/// row ordinal. A source column under [`CORRELATE_HELPER_PREFIX`] is
+/// rejected so a helper can never shadow it.
+const CORRELATE_HELPER_PREFIX: &str = "__correlate_";
 const CORRELATE_KEY_PREFIX: &str = "__correlate_key_";
 const CORRELATE_TARGET_KEY_PREFIX: &str = "__correlate_target_key_";
 const CORRELATE_START: &str = "__correlate_start";
-const CORRELATE_END: &str = "__correlate_end";
+const CORRELATE_DURATION: &str = "__correlate_duration";
+const CORRELATE_ROW: &str = "__correlate_row";
+
+/// How long before the target window a `traces` target's span may start and
+/// still overlap it. Spans are stored by start time, so the overlap test
+/// needs a prunable lower bound; a span longer than this matches only when
+/// `window.before` covers the difference.
+const TRACE_TARGET_LOOKBACK_NS: i64 = 3_600 * 1_000_000_000;
+
+/// The `[min start, max end]` of the materialized source rows, each row
+/// ending at `start + duration` when a [`CORRELATE_DURATION`] column is
+/// present (negative durations count as zero; the end saturates).
+fn source_envelope(batches: &[RecordBatch]) -> Option<(i64, i64)> {
+    let mut envelope: Option<(i64, i64)> = None;
+    for batch in batches {
+        let Some(starts) = batch
+            .column_by_name(CORRELATE_START)
+            .and_then(|c| c.as_primitive_opt::<Int64Type>())
+        else {
+            continue;
+        };
+        let durations = batch
+            .column_by_name(CORRELATE_DURATION)
+            .and_then(|c| c.as_primitive_opt::<Int64Type>());
+        for (row, start) in starts.iter().enumerate() {
+            let Some(start) = start else { continue };
+            let duration = durations
+                .filter(|d| d.is_valid(row))
+                .map_or(0, |d| d.value(row).max(0));
+            let end = start.saturating_add(duration);
+            envelope = Some(envelope.map_or((start, end), |(lo, hi)| (lo.min(start), hi.max(end))));
+        }
+    }
+    envelope
+}
+
+/// Whether the writer stores `column` of `source` in the canonical key form
+/// (trace/span ids as lowercase hex, identity/series digests), so the key
+/// set can bound the raw column directly.
+fn writer_stores_canonical_key(source: &str, column: &str) -> bool {
+    match column {
+        "trace_id" | "span_id" => matches!(source, "traces" | "logs" | "exemplars" | "profiles"),
+        "resource_identity" | "series_id" => true,
+        _ => false,
+    }
+}
+
+/// The physical column `field` reads from, or `None` when it resolves to
+/// anything else (an attribute read, a derived value) or not at all.
+fn stored_column(resolver: &SchemaResolver, field: &str) -> Option<String> {
+    match resolver.resolve("", field) {
+        Some(Resolved::Column { name, .. }) => Some(name),
+        _ => None,
+    }
+}
+
+/// The stored duration column of a `traces` relation. Only a span covers
+/// an interval; other signals' durations (a profile's) describe something
+/// else.
+fn span_duration_column(plan: &SourcePlan, resolver: &SchemaResolver) -> Option<String> {
+    (plan.name == "traces")
+        .then(|| stored_column(resolver, "duration"))
+        .flatten()
+}
+
+/// Reject a correlate key that does not read a stored column on `side`:
+/// an attribute fallback (e.g. an older table without the column) would
+/// silently match nothing.
+fn require_stored_key(
+    resolver: &SchemaResolver,
+    fields: &[&str],
+    key: &str,
+    side: &str,
+    source: &str,
+) -> Result<(), QuerierError> {
+    match fields.iter().find(|f| stored_column(resolver, f).is_none()) {
+        Some(field) => Err(QuerierError::InvalidInput(format!(
+            "correlate key `{key}`: field `{field}` has no stored column on the {side} \
+             `{source}`, so it cannot be joined"
+        ))),
+        None => Ok(()),
+    }
+}
+
+/// Append a [`CORRELATE_ROW`] ordinal to the materialized source batches so
+/// the join result can be put back in source order.
+fn with_row_ordinal(
+    schema: &Schema,
+    batches: Vec<RecordBatch>,
+) -> Result<(Arc<Schema>, Vec<RecordBatch>), QuerierError> {
+    let mut fields = schema.fields().to_vec();
+    fields.push(Arc::new(Field::new(CORRELATE_ROW, DataType::UInt64, false)));
+    let schema = Arc::new(Schema::new(fields));
+    let mut offset = 0_u64;
+    let batches = batches
+        .into_iter()
+        .map(|batch| {
+            let rows = batch.num_rows() as u64;
+            let mut columns = batch.columns().to_vec();
+            columns.push(Arc::new(UInt64Array::from_iter_values(
+                offset..offset + rows,
+            )));
+            offset += rows;
+            RecordBatch::try_new(Arc::clone(&schema), columns)
+        })
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|e| QuerierError::QueryFailed(e.into()))?;
+    Ok((schema, batches))
+}
 
 /// The signal source a document's `correlate` stage targets, if any.
 fn signal_target(doc: &Document) -> Option<&str> {
@@ -1775,9 +1892,14 @@ impl FieldResolver for SourceResolvers<'_> {
 /// The distinct canonical keys of a signal `correlate`'s target rows within
 /// `window`, restricted to `keys` and narrowed by the target `pipeline`.
 ///
-/// The writer stores Utf8 join keys in canonical form, so only a Utf8 column
-/// gets a literal IN-list on the raw column (prunable); any other encoding
-/// is compared through its canonical form, correct but without pushdown.
+/// Only a Utf8 column the writer is known to store canonically (see
+/// [`writer_stores_canonical_key`]) gets a literal IN-list on the raw column
+/// (prunable); anything else is compared through its canonical form,
+/// correct but without pushdown.
+///
+/// A `traces` target matches spans *overlapping* `window` (a log emitted
+/// mid-span belongs to a span that started earlier), with the start bounded
+/// below by [`TRACE_TARGET_LOOKBACK_NS`] so the scan stays prunable.
 fn target_key_frame(
     target: &CorrelateTargetSide,
     base: DataFrame,
@@ -1806,18 +1928,34 @@ fn target_key_frame(
         correlate_truncated: None,
         correlate_window: None,
     };
-    let mut df = lowering.apply_time_window(base, window)?;
+    let mut df = match span_duration_column(&target.plan, &target.resolver) {
+        Some(duration) => {
+            let scan = ResolvedWindow {
+                start_ns: window.start_ns.saturating_sub(TRACE_TARGET_LOOKBACK_NS),
+                end_ns: window.end_ns,
+            };
+            let start = cast(col(target.plan.time_col), DataType::Int64);
+            let duration = coalesce(vec![cast(ident(duration), DataType::Int64), lit(0_i64)]);
+            // `start + max(duration, 0) >= window.start`, rearranged so the
+            // arithmetic cannot overflow.
+            let overlaps = start
+                .clone()
+                .gt_eq(lit(window.start_ns))
+                .or(duration.gt_eq(lit(window.start_ns) - start));
+            lowering.apply_time_window(base, &scan)?.filter(overlaps)?
+        }
+        None => lowering.apply_time_window(base, window)?,
+    };
     let mut select = Vec::with_capacity(fields.len());
     for (i, (field, keys)) in fields.iter().zip(keys).enumerate() {
         let expr = lowering.value_expr(field)?;
         let data_type = expr.get_type(df.schema())?;
-        let stored_canonical = matches!(
-            lowering.resolver.resolve("", field),
-            Some(Resolved::Column { .. })
-        ) && matches!(
-            data_type,
-            DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
-        );
+        let stored_canonical = stored_column(lowering.resolver, field)
+            .is_some_and(|column| writer_stores_canonical_key(target.plan.name, &column))
+            && matches!(
+                data_type,
+                DataType::Utf8 | DataType::LargeUtf8 | DataType::Utf8View
+            );
         let key = if stored_canonical {
             expr
         } else {
@@ -2212,6 +2350,10 @@ impl Lowering<'_> {
     /// target only within that envelope (widened by `window`) and for those
     /// keys, then semi/anti-joins the source rows against the target's
     /// distinct keys. A missing target table matches nothing.
+    ///
+    /// A source row whose key is null or empty never matches: semi drops it,
+    /// anti keeps it. The result keeps the source row order, so a preceding
+    /// `topk`/`order` survives the join.
     async fn lower_signal_correlate(
         &mut self,
         ctx: &SessionContext,
@@ -2231,13 +2373,43 @@ impl Lowering<'_> {
                 )));
             }
         };
-        let (Some(source_fields), Some(target_fields)) = correlate
-            .on
-            .map(|key| (key.fields(self.source.name), key.fields(target.plan.name)))
-            .unwrap_or_default()
-        else {
+        let Some((key, source_fields, target_fields)) = correlate.on.and_then(|key| {
+            Some((
+                key.as_str(),
+                key.fields(self.source.name)?,
+                key.fields(target.plan.name)?,
+            ))
+        }) else {
             return Err(internal("correlate key missing after validation".into()));
         };
+        require_stored_key(
+            self.resolver,
+            source_fields,
+            key,
+            "source",
+            self.source.name,
+        )?;
+        if target.base.is_some() {
+            require_stored_key(
+                &target.resolver,
+                target_fields,
+                key,
+                "target",
+                target.plan.name,
+            )?;
+        }
+        if let Some(reserved) = df
+            .schema()
+            .fields()
+            .iter()
+            .find(|f| f.name().starts_with(CORRELATE_HELPER_PREFIX))
+        {
+            return Err(QuerierError::InvalidInput(format!(
+                "column `{}` uses the reserved `{CORRELATE_HELPER_PREFIX}` prefix; rename it \
+                 before correlate",
+                reserved.name()
+            )));
+        }
 
         let output: Vec<Expr> = df
             .schema()
@@ -2254,26 +2426,22 @@ impl Lowering<'_> {
                 canonical_key(expr, &data_type),
             )?;
         }
-        let has_time = !self.aggregated
+        if !self.aggregated
             && src
                 .schema()
-                .has_column_with_unqualified_name(self.source.time_col);
-        if has_time {
+                .has_column_with_unqualified_name(self.source.time_col)
+        {
             let ts_type = DataType::Timestamp(TimeUnit::Nanosecond, None);
             let start = cast(cast(col(self.source.time_col), ts_type), DataType::Int64);
-            let end = match self.resolver.resolve("", "duration") {
-                Some(Resolved::Column { name, .. })
-                    if src.schema().has_column_with_unqualified_name(&name) =>
-                {
-                    start.clone() + coalesce(vec![cast(ident(name), DataType::Int64), lit(0_i64)])
-                }
-                _ => start.clone(),
-            };
-            src = src
-                .with_column(CORRELATE_START, start)?
-                .with_column(CORRELATE_END, end)?;
+            src = src.with_column(CORRELATE_START, start)?;
+            let span_duration = span_duration_column(self.source, self.resolver)
+                .filter(|name| src.schema().has_column_with_unqualified_name(name));
+            if let Some(duration) = span_duration {
+                src =
+                    src.with_column(CORRELATE_DURATION, cast(ident(duration), DataType::Int64))?;
+            }
         }
-        let schema = Arc::new(src.schema().as_arrow().clone());
+        let schema = src.schema().as_arrow().clone();
         let batches = src
             .limit(0, Some(max_source_rows.saturating_add(1)))?
             .collect()
@@ -2287,7 +2455,6 @@ impl Lowering<'_> {
         }
 
         let mut keys = vec![BTreeSet::new(); source_fields.len()];
-        let mut envelope: Option<(i64, i64)> = None;
         for batch in &batches {
             for (i, set) in keys.iter_mut().enumerate() {
                 let values = batch
@@ -2296,22 +2463,9 @@ impl Lowering<'_> {
                     .ok_or_else(|| internal("correlate key column is not Utf8".into()))?;
                 set.extend(values.iter().flatten().map(str::to_string));
             }
-            if has_time {
-                let bound = |name: &str, pick: fn(&Int64Array) -> Option<i64>| {
-                    batch
-                        .column_by_name(name)
-                        .and_then(|c| c.as_primitive_opt::<Int64Type>())
-                        .and_then(pick)
-                };
-                if let (Some(lo), Some(hi)) = (
-                    bound(CORRELATE_START, compute::min),
-                    bound(CORRELATE_END, compute::max),
-                ) {
-                    envelope = Some(envelope.map_or((lo, hi), |(l, h)| (l.min(lo), h.max(hi))));
-                }
-            }
         }
-        let (start, end) = envelope.unwrap_or((doc_window.start_ns, doc_window.end_ns));
+        let (start, end) =
+            source_envelope(&batches).unwrap_or((doc_window.start_ns, doc_window.end_ns));
         let widening = correlate.window.clone().unwrap_or_default();
         let widen = |d: Option<String>| d.as_deref().and_then(parse_duration_ns).unwrap_or(0);
         let target_window = ResolvedWindow {
@@ -2320,6 +2474,7 @@ impl Lowering<'_> {
         };
         self.correlate_window = Some(target_window);
 
+        let (schema, batches) = with_row_ordinal(&schema, batches)?;
         let source = ctx.read_table(Arc::new(MemTable::try_new(schema, vec![batches])?))?;
         let joined = match &target.base {
             Some(base) if keys.iter().all(|set| !set.is_empty()) => {
@@ -2343,7 +2498,9 @@ impl Lowering<'_> {
             _ if join_type == JoinType::LeftSemi => source.limit(0, Some(0))?,
             _ => source,
         };
-        Ok(joined.select(output)?)
+        Ok(joined
+            .sort(vec![ident(CORRELATE_ROW).sort(true, false)])?
+            .select(output)?)
     }
 
     /// Resolve a `parent.<logical>` reference to the expression that reads
@@ -10204,7 +10361,10 @@ mod tests {
     }
 
     fn catalog_ctx(tables: Vec<(&str, RecordBatch)>) -> SessionContext {
-        let ctx = SessionContext::new();
+        register_catalog(SessionContext::new(), tables)
+    }
+
+    fn register_catalog(ctx: SessionContext, tables: Vec<(&str, RecordBatch)>) -> SessionContext {
         let sp = Arc::new(MemorySchemaProvider::new());
         for (name, batch) in tables {
             let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
@@ -10495,6 +10655,421 @@ mod tests {
         assert!(correlated_trace_ids(ctx(), &semi).await.0.is_empty());
         let anti = signal_params("traces", error_logs_correlate("anti"));
         assert_eq!(correlated_trace_ids(ctx(), &anti).await.0.len(), 4);
+    }
+
+    /// Spans as `(trace_id, span_id, start, duration)`.
+    fn spans(rows: &[(Option<&str>, &str, i64, i64)]) -> RecordBatch {
+        RecordBatch::try_from_iter(vec![
+            (
+                "trace_id",
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )) as ArrayRef,
+            ),
+            (
+                "span_id",
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+            ),
+            (
+                "span_name",
+                Arc::new(StringArray::from(vec!["op"; rows.len()])),
+            ),
+            (
+                "start_time_unix_nano",
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+            ),
+            (
+                "duration_nanos",
+                Arc::new(Int64Array::from(
+                    rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+            ),
+        ])
+        .unwrap()
+    }
+
+    /// Log records as `(timestamp, trace_id, span_id)`.
+    fn span_logs(rows: &[(i64, &str, &str)]) -> RecordBatch {
+        RecordBatch::try_from_iter(vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )) as ArrayRef,
+            ),
+            (
+                "trace_id",
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+            ),
+            (
+                "span_id",
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+            ),
+        ])
+        .unwrap()
+    }
+
+    /// The `trace_id` column of every returned row, in result order.
+    async fn trace_id_rows(ctx: SessionContext, params: &IrQueryParams) -> Vec<Option<String>> {
+        let (batches, _, _) = IrService::new(ctx).query(params, "t", "d").await.unwrap();
+        batches
+            .iter()
+            .flat_map(|batch| {
+                let col = batch.column_by_name("trace_id").unwrap();
+                let col = col.as_any().downcast_ref::<StringArray>().unwrap();
+                col.iter()
+                    .map(|v| v.map(str::to_string))
+                    .collect::<Vec<_>>()
+            })
+            .collect()
+    }
+
+    /// A log emitted mid-span (t=150, span `[100, 200]`) belongs to that
+    /// span even though the span started before the log's envelope; a span
+    /// that ended before the log (`[10, 30]`) does not match.
+    #[tokio::test]
+    async fn a_traces_target_matches_spans_overlapping_the_envelope() {
+        let (t1, t2) = (hex_id(1), hex_id(2));
+        let ctx = || {
+            catalog_ctx(vec![
+                (
+                    "traces",
+                    spans(&[(Some(&t1), "s1", 100, 100), (Some(&t2), "s2", 10, 20)]),
+                ),
+                ("logs", span_logs(&[(150, &t1, "s1"), (150, &t2, "s2")])),
+            ])
+        };
+        let correlate = |kind: &str| {
+            signal_params(
+                "logs",
+                serde_json::json!({ "to": "traces", "on": "trace_id", "kind": kind }),
+            )
+        };
+        let (semi, _) = correlated_trace_ids(ctx(), &correlate("semi")).await;
+        assert_eq!(semi, vec![t1.clone()]);
+        let (anti, _) = correlated_trace_ids(ctx(), &correlate("anti")).await;
+        assert_eq!(anti, vec![t2]);
+    }
+
+    /// A span that started more than [`TRACE_TARGET_LOOKBACK_NS`] before the
+    /// envelope is out of the default scan; `window.before` brings it back.
+    #[tokio::test]
+    async fn a_traces_target_looks_back_a_bounded_span_length() {
+        let hour = TRACE_TARGET_LOOKBACK_NS;
+        let t1 = hex_id(1);
+        let ctx = || {
+            catalog_ctx(vec![
+                ("traces", spans(&[(Some(&t1), "s1", 0, 3 * hour)])),
+                ("logs", span_logs(&[(2 * hour, &t1, "s1")])),
+            ])
+        };
+        let params = |correlate: serde_json::Value| IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 11, "from": "logs", "range": { "from": 0, "to": 3 * hour },
+                "result": "rows", "pipeline": [{ "correlate": correlate }]
+            }),
+            now_ns: 0,
+        };
+        let default =
+            params(serde_json::json!({ "to": "traces", "on": "trace_id", "kind": "semi" }));
+        assert!(correlated_trace_ids(ctx(), &default).await.0.is_empty());
+        let widened = params(serde_json::json!({
+            "to": "traces", "on": "trace_id", "kind": "semi", "window": { "before": "1h" }
+        }));
+        assert_eq!(correlated_trace_ids(ctx(), &widened).await.0, vec![t1]);
+    }
+
+    /// `aggregate → topk → correlate` keeps the topk order through the join.
+    #[tokio::test]
+    async fn a_signal_correlate_keeps_the_source_row_order() {
+        let ids: Vec<String> = (1..=12).map(hex_id).collect();
+        // Durations interleave so topk order differs from id and hash order.
+        let durations = [5_i64, 90, 20, 70, 10, 110, 40, 60, 30, 100, 50, 80];
+        let span_rows: Vec<_> = ids
+            .iter()
+            .zip(durations)
+            .map(|(id, d)| (Some(id.as_str()), "s", 100, d))
+            .collect();
+        let logs: Vec<_> = ids.iter().map(|id| (150, id.as_str(), "s")).collect();
+        // A partitioned hash join, as over large tables, hash-repartitions
+        // both sides and scrambles the source order.
+        let config = datafusion::prelude::SessionConfig::new()
+            .with_target_partitions(4)
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold",
+                0,
+            )
+            .set_usize(
+                "datafusion.optimizer.hash_join_single_partition_threshold_rows",
+                0,
+            );
+        let ctx = register_catalog(
+            SessionContext::new_with_config(config),
+            vec![("traces", spans(&span_rows)), ("logs", span_logs(&logs))],
+        );
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "aggregate": { "by": ["trace_id"],
+                        "aggs": [{ "fn": "max", "of": "duration", "as": "d" }] } },
+                    { "topk": { "n": 6, "of": "d" } },
+                    { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }
+                ]
+            }),
+            now_ns: 0,
+        };
+        let expected: Vec<Option<String>> = [6, 10, 2, 12, 4, 8]
+            .into_iter()
+            .map(|n| Some(hex_id(n)))
+            .collect();
+        for _ in 0..5 {
+            assert_eq!(trace_id_rows(ctx.clone(), &params).await, expected);
+        }
+    }
+
+    /// A null or empty source key never matches: semi drops the row, anti
+    /// keeps it.
+    #[tokio::test]
+    async fn null_and_empty_source_keys_never_match() {
+        let t1 = hex_id(1);
+        let ctx = || {
+            catalog_ctx(vec![
+                (
+                    "traces",
+                    spans(&[
+                        (Some(&t1), "s1", 100, 10),
+                        (None, "s2", 100, 10),
+                        (Some(""), "s3", 100, 10),
+                    ]),
+                ),
+                ("logs", span_logs(&[(105, &t1, "s1"), (105, "", "s3")])),
+            ])
+        };
+        let correlate = |kind: &str| {
+            signal_params(
+                "traces",
+                serde_json::json!({ "to": "logs", "on": "trace_id", "kind": kind }),
+            )
+        };
+        assert_eq!(
+            trace_id_rows(ctx(), &correlate("semi")).await,
+            vec![Some(t1.clone())]
+        );
+        let mut anti = trace_id_rows(ctx(), &correlate("anti")).await;
+        anti.sort();
+        assert_eq!(anti, vec![None, Some(String::new())]);
+    }
+
+    /// `on: span_id` matches the (trace_id, span_id) pair, not either alone.
+    #[tokio::test]
+    async fn the_span_id_key_matches_the_trace_and_span_pair() {
+        let (t1, t2) = (hex_id(1), hex_id(2));
+        let ctx = catalog_ctx(vec![
+            (
+                "traces",
+                spans(&[(Some(&t1), "s1", 100, 10), (Some(&t2), "s2", 100, 10)]),
+            ),
+            // t2's log names t1's span id: same span id, different trace.
+            ("logs", span_logs(&[(105, &t1, "s1"), (105, &t2, "s1")])),
+        ]);
+        let params = signal_params(
+            "traces",
+            serde_json::json!({ "to": "logs", "on": "span_id", "kind": "semi" }),
+        );
+        assert_eq!(correlated_trace_ids(ctx, &params).await.0, vec![t1]);
+    }
+
+    #[tokio::test]
+    async fn window_before_widens_the_target_scan_backwards() {
+        let t1 = hex_id(1);
+        let ctx = || {
+            catalog_ctx(vec![
+                ("traces", spans(&[(Some(&t1), "s1", 100, 10)])),
+                ("logs", span_logs(&[(40, &t1, "s1")])),
+            ])
+        };
+        let mut correlate = serde_json::json!({ "to": "logs", "on": "trace_id", "kind": "semi" });
+        let (ids, _) =
+            correlated_trace_ids(ctx(), &signal_params("traces", correlate.clone())).await;
+        assert!(ids.is_empty());
+        correlate["window"] = serde_json::json!({ "before": "60" });
+        let (ids, report) = correlated_trace_ids(ctx(), &signal_params("traces", correlate)).await;
+        assert_eq!(ids, vec![t1]);
+        assert_eq!(
+            report.window,
+            Some(CorrelateWindowReport {
+                start_ns: 40,
+                end_ns: 110
+            })
+        );
+    }
+
+    /// An aggregate drops the source time column, so the target scan falls
+    /// back to the document window: trace 4's error log at t=700, past the
+    /// row envelope, now matches.
+    #[tokio::test]
+    async fn an_aggregated_source_scans_the_target_over_the_document_window() {
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                    { "correlate": error_logs_correlate("semi") }
+                ]
+            }),
+            now_ns: 0,
+        };
+        let (ids, report) = correlated_trace_ids(signal_ctx(false, false), &params).await;
+        assert_eq!(ids, vec![hex_id(1), hex_id(4)]);
+        assert_eq!(
+            report.window,
+            Some(CorrelateWindowReport {
+                start_ns: 0,
+                end_ns: 1000
+            })
+        );
+    }
+
+    /// Only a traces source's rows end at `start + duration`; a profile's
+    /// duration does not stretch the envelope.
+    #[tokio::test]
+    async fn only_a_traces_source_extends_the_envelope_by_duration() {
+        let profiles = RecordBatch::try_from_iter(vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from(vec![100_i64, 200])) as ArrayRef,
+            ),
+            (
+                "trace_id",
+                Arc::new(StringArray::from(vec![hex_id(1), hex_id(2)])),
+            ),
+            (
+                "duration_nano",
+                Arc::new(Int64Array::from(vec![10_000_i64, 10_000])),
+            ),
+        ])
+        .unwrap();
+        let ctx = catalog_ctx(vec![
+            ("profiles", profiles),
+            ("traces", signal_traces(false)),
+        ]);
+        let params = signal_params(
+            "profiles",
+            serde_json::json!({ "to": "traces", "on": "trace_id", "kind": "semi" }),
+        );
+        let (_, report) = correlated_trace_ids(ctx, &params).await;
+        assert_eq!(
+            report.window,
+            Some(CorrelateWindowReport {
+                start_ns: 100,
+                end_ns: 200
+            })
+        );
+    }
+
+    #[test]
+    fn the_source_envelope_clamps_negative_durations_and_saturates() {
+        let batch = RecordBatch::try_from_iter(vec![
+            (
+                CORRELATE_START,
+                Arc::new(Int64Array::from(vec![
+                    Some(100_i64),
+                    Some(i64::MAX - 5),
+                    Some(50),
+                ])) as ArrayRef,
+            ),
+            (
+                CORRELATE_DURATION,
+                Arc::new(Int64Array::from(vec![Some(-1_000_i64), Some(100), None])),
+            ),
+        ])
+        .unwrap();
+        assert_eq!(
+            source_envelope(std::slice::from_ref(&batch)),
+            Some((50, i64::MAX))
+        );
+        assert_eq!(source_envelope(&[batch.slice(0, 1)]), Some((100, 100)));
+        let starts_only = batch.project(&[0]).unwrap();
+        assert_eq!(source_envelope(&[starts_only]), Some((50, i64::MAX - 5)));
+    }
+
+    #[test]
+    fn only_writer_canonical_key_columns_get_the_raw_in_list() {
+        for source in ["traces", "logs", "exemplars", "profiles"] {
+            assert!(writer_stores_canonical_key(source, "trace_id"));
+            assert!(writer_stores_canonical_key(source, "span_id"));
+        }
+        assert!(writer_stores_canonical_key("metrics", "resource_identity"));
+        assert!(writer_stores_canonical_key("exemplars", "series_id"));
+        assert!(!writer_stores_canonical_key("metrics", "trace_id"));
+        assert!(!writer_stores_canonical_key("logs", "service_name"));
+    }
+
+    /// A key that would fall back to an attribute read (an older logs table
+    /// without a `trace_id` column) is a caller error, not a silent no-match.
+    #[tokio::test]
+    async fn an_unstored_key_column_is_rejected_naming_key_and_side() {
+        let logs = RecordBatch::try_from_iter(vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from(vec![120_i64])) as ArrayRef,
+            ),
+            ("severity_number", Arc::new(Int64Array::from(vec![17_i64]))),
+            (
+                "log_attributes",
+                Arc::new(StringArray::from(vec![r#"{"trace_id":"x"}"#])),
+            ),
+        ])
+        .unwrap();
+        let ctx = catalog_ctx(vec![("traces", signal_traces(false)), ("logs", logs)]);
+        let err = IrService::new(ctx)
+            .query(
+                &signal_params("traces", error_logs_correlate("semi")),
+                "t",
+                "d",
+            )
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QuerierError::InvalidInput(ref m)
+                if m.contains("trace_id") && m.contains("target `logs`")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_source_column_named_like_a_correlate_helper_is_rejected() {
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "aggregate": { "by": ["trace_id"],
+                        "aggs": [{ "fn": "count", "as": "__correlate_key_0" }] } },
+                    { "correlate": error_logs_correlate("semi") }
+                ]
+            }),
+            now_ns: 0,
+        };
+        let err = IrService::new(signal_ctx(false, false))
+            .query(&params, "t", "d")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QuerierError::InvalidInput(ref m) if m.contains("__correlate_key_0")),
+            "{err:?}"
+        );
     }
 
     /// Like [`traces_ctx`], plus the `events` column: three spans, one
