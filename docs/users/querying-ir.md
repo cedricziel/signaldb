@@ -939,6 +939,10 @@ cross-series arithmetic is the [`binop`](#binop) stage of a metric Series.
 `step`), per series, into a **Series**. At most 11,000 instants per query;
 more is a 400.
 
+A dataset with no `metrics` table yet reads as an empty one, so it still
+answers what PromQL answers from nothing: `sum(x) or vector(0)` is `{}` = 0,
+`absent(x)` is 1 and `scalar(x)` NaN at every instant.
+
 ### `sample`
 
 `sample` reads the `metrics` point stream (after any `where`) and evaluates
@@ -1187,10 +1191,9 @@ input's instants in `(t − window, t]`:
 `present`, `quantile` (with `arg`), `delta`, `deriv`, `changes` or `resets`,
 with the `*_over_time` semantics of `sample`, reading the values as a gauge;
 `metric.name` survives `last` only. The stages before an `over_time` are
-evaluated from `window` before the range start on, at instants
-`from + k·step` of their own step (aligned to the query start, where
-Prometheus aligns a subquery to the epoch). Its `step` may not be finer than
-its input's.
+evaluated from `window` before the range start on, at the multiples of
+their own step since the epoch (as Prometheus aligns a subquery's instants,
+whatever the query start). Its `step` may not be finer than its input's.
 
 #### `sort`
 

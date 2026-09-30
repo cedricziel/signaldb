@@ -171,6 +171,24 @@ pub(super) async fn run_batch(
     Ok(concat_batches(&schema, &batches).unwrap())
 }
 
+/// Plan and run `doc` over a dataset without a metrics table; `None` when
+/// the planner answers "no rows" without a plan.
+pub(super) async fn run_without_table(doc: JsonValue) -> Result<Option<RecordBatch>, QuerierError> {
+    let doc = serde_json::from_value(doc).unwrap();
+    let catalog = Arc::new(MemoryCatalogProvider::new());
+    catalog
+        .register_schema("d", Arc::new(MemorySchemaProvider::new()))
+        .unwrap();
+    let ctx = SessionContext::new();
+    ctx.register_catalog("t", catalog);
+    let Some((df, _)) = IrService::new(ctx).plan(&doc, "t", "d", 0).await? else {
+        return Ok(None);
+    };
+    let schema = df.schema().inner().clone();
+    let batches = df.collect().await.map_err(QuerierError::from)?;
+    Ok(Some(concat_batches(&schema, &batches).unwrap()))
+}
+
 pub(super) fn strings(batch: &RecordBatch, name: &str) -> Vec<String> {
     let col = batch
         .column_by_name(name)

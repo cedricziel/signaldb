@@ -327,9 +327,17 @@ impl SourcePlan {
     }
 }
 
+fn internal(msg: String) -> QuerierError {
+    QuerierError::QueryFailed(datafusion::error::DataFusionError::Internal(msg))
+}
+
 /// Scans this source's table. The scan keeps the table's full raw schema —
 /// `SchemaResolver`'s promoted-attribute discovery depends on seeing every
 /// column the table actually has, not just `row_defaults`.
+///
+/// A missing `metrics` table reads as an empty one with the canonical
+/// schema, so a Series pipeline still answers what PromQL answers from
+/// nothing (`sum(x) or vector(0)`, `absent(x)`, `scalar(x)`).
 async fn scan_source(
     ctx: &SessionContext,
     tenant_slug: &str,
@@ -339,7 +347,18 @@ async fn scan_source(
     let Some((table_ref, provider)) =
         optional_table_provider(ctx, tenant_slug, dataset_slug, source.table).await?
     else {
-        return Ok(None);
+        if source.table != "metrics" {
+            return Ok(None);
+        }
+        let schema = common::iceberg::schemas::create_metrics_schema()
+            .map_err(|e| internal(format!("metrics schema: {e}")))?;
+        let schema: Schema = schema
+            .fields()
+            .try_into()
+            .map_err(|e| internal(format!("metrics schema as Arrow: {e:?}")))?;
+        return Ok(Some(
+            ctx.read_batch(RecordBatch::new_empty(Arc::new(schema)))?,
+        ));
     };
     Ok(Some(scan_provider(ctx, table_ref, provider)?))
 }
@@ -1080,9 +1099,9 @@ pub(crate) async fn plan_document(
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
-    // A dataset with none of this source's tables has no rows to plan
-    // over. The document's schema-dependent validation is skipped along
-    // with the scan — there is no schema to validate against.
+    // A dataset with none of this source's tables (but `metrics`) has no
+    // rows to plan over. The document's schema-dependent validation is
+    // skipped along with the scan — there is no schema to validate against.
     let Some(base) = scan_source(ctx, tenant_slug, dataset_slug, &source).await? else {
         return Ok(None);
     };
@@ -6010,7 +6029,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn histogram_quantile_missing_table_returns_none() {
+    async fn histogram_quantile_missing_table_is_empty() {
         let ctx = SessionContext::new();
         let sp = Arc::new(MemorySchemaProvider::new());
         let cat = Arc::new(MemoryCatalogProvider::new());
@@ -6025,7 +6044,15 @@ mod tests {
                 { "histogram_quantile": { "q": 0.5, "step": "1000ms", "as": "p50" } }
             ]
         }));
-        assert!(svc.plan(&d, "t", "d", 0).await.unwrap().is_none());
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let rows: usize = df
+            .collect()
+            .await
+            .unwrap()
+            .iter()
+            .map(|b| b.num_rows())
+            .sum();
+        assert_eq!(rows, 0);
     }
 
     #[tokio::test]

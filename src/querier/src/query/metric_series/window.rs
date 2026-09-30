@@ -42,8 +42,9 @@ pub(crate) fn output_step(
 
 /// The window each stage evaluates over. An `over_time` reads its input in
 /// `(t − window, t]` at every instant `t` of its own window, so the stages
-/// before it evaluate from `start − window` on, on the query start's grid
-/// of their step (a subquery's instants, aligned to the query start).
+/// before it evaluate from the first multiple of their step after
+/// `start − window` on: as in Prometheus, a subquery's instants are the
+/// multiples of its resolution since the epoch, whatever the query start.
 pub(crate) fn stage_windows(
     pipeline: &[Stage],
     window: ResolvedWindow,
@@ -60,13 +61,12 @@ pub(crate) fn stage_windows(
     let mut current = window;
     for (i, stage) in pipeline.iter().enumerate().rev() {
         windows[i] = current;
-        let reach = match (stage, steps[i]) {
-            (Stage::OverTime(over), Some(step)) => parse_duration_ns(&over.window)
-                .filter(|w| *w > 0)
-                .map(|w| (w - 1) / step * step),
-            _ => None,
-        };
-        current.start_ns = current.start_ns.saturating_sub(reach.unwrap_or(0));
+        if let (Stage::OverTime(over), Some(step)) = (stage, steps[i])
+            && let Some(w) = parse_duration_ns(&over.window).filter(|w| *w > 0)
+        {
+            let from = current.start_ns.saturating_sub(w);
+            current.start_ns = from.div_euclid(step).saturating_add(1).saturating_mul(step);
+        }
     }
     windows
 }
@@ -200,5 +200,23 @@ mod tests {
             .collect();
         // max reads 1h of its 2m input (58m back); avg 5m of its 1m input.
         assert_eq!(starts, [38, 42, 100, 100]);
+    }
+
+    #[test]
+    fn subquery_instants_are_multiples_of_the_resolution_since_the_epoch() {
+        let pipeline: Vec<Stage> = serde_json::from_value(serde_json::json!([
+            { "sample": { "fn": "latest", "step": "1m" } },
+            { "over_time": { "fn": "max", "window": "5m" } }
+        ]))
+        .unwrap();
+        let s = 1_000_000_000;
+        let range = ResolvedWindow {
+            start_ns: 1000 * s,
+            end_ns: 1300 * s,
+        };
+        let windows = stage_windows(&pipeline, range, None, Some("90s"));
+        // (700s, 1000s] holds the 1m multiples 720s, 780s, …, 960s.
+        assert_eq!(windows[0].start_ns, 720 * s);
+        assert_eq!(windows[1], range);
     }
 }

@@ -368,6 +368,25 @@ async fn over_time_re_windows_the_inner_series_at_the_outer_instants() {
 }
 
 #[tokio::test]
+async fn subquery_instants_are_epoch_aligned_whatever_the_query_start() {
+    // At 150s, `[2m:1m]` reads the inner instants 60s and 120s (latest 1
+    // and 2), not 90s and 150s (which would see the 9 at 70s).
+    let points = [
+        gauge(0, "a", 1.0, json!({})),
+        gauge(70 * S, "a", 9.0, json!({})),
+        gauge(120 * S, "a", 2.0, json!({})),
+    ];
+    let params = ql_ir::PromqlParams::instant(150 * S);
+    let doc = ql_ir::promql_to_ir("max_over_time(temperature[2m:1m])", &params).unwrap();
+    let got = series_rows(
+        &run(&points, serde_json::to_value(doc).unwrap())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(got, rows(&[(150, r#"{"service.name":"svc"}"#, 2.0)]));
+}
+
+#[tokio::test]
 async fn binop_with_a_number_is_per_value_and_drops_the_name_unless_filtering() {
     let binop = |op: &str, reverse: bool, bool: bool| json!([{ "binop": { "op": op, "right": 10.0, "reverse": reverse, "bool": bool } }]);
     // `10 - v`
@@ -408,4 +427,58 @@ async fn binop_between_a_scalar_and_a_number_is_a_scalar() {
     }]);
     let got = super::tests::scalar_rows(&run(&[], doc(pow)).await.unwrap());
     assert_eq!(got, [(60, 1.0), (120, 0.0)]);
+}
+
+/// `pipeline` after `latest` over `[60s, 120s]` of a dataset with no metrics
+/// table.
+async fn without_table(pipeline: JsonValue) -> Option<datafusion::arrow::array::RecordBatch> {
+    super::tests::run_without_table(doc(pipeline))
+        .await
+        .unwrap()
+}
+
+#[tokio::test]
+async fn a_dataset_without_metrics_still_answers_what_promql_answers_from_nothing() {
+    // `sum(x) or vector(0)`
+    let or_zero = json!([{ "reduce": { "fn": "sum" } }, { "binop": { "op": "or", "right": {
+        "from": "constant", "constant": 0.0, "pipeline": [{ "vector": {} }]
+    } } }]);
+    let got = series_rows(&without_table(or_zero).await.unwrap());
+    assert_eq!(got, rows(&[(60, "{}", 0.0), (120, "{}", 0.0)]));
+    // `absent(x{job="x"})`
+    let absent = json!([{ "absent": { "labels": { "job": "x" } } }]);
+    let got = series_rows(&without_table(absent).await.unwrap());
+    let l = r#"{"job":"x"}"#;
+    assert_eq!(got, rows(&[(60, l, 1.0), (120, l, 1.0)]));
+    // `scalar(x)`
+    let mut scalar = doc(json!([{ "scalar": {} }]));
+    scalar["result"] = json!("scalar");
+    let batch = super::tests::run_without_table(scalar)
+        .await
+        .unwrap()
+        .unwrap();
+    let got = super::tests::scalar_rows(&batch);
+    assert!(got.iter().map(|r| r.0).eq([60, 120]), "{got:?}");
+    assert!(got.iter().all(|r| r.1.is_nan()), "{got:?}");
+    // `sum(x)` is empty.
+    let sum = without_table(json!([{ "reduce": { "fn": "sum" } }])).await;
+    assert_eq!(sum.unwrap().num_rows(), 0);
+}
+
+#[tokio::test]
+async fn a_dataset_without_metrics_still_rejects_a_malformed_document() {
+    let bad = json!([{ "reduce": { "fn": "topk" } }, { "absent": {} }]);
+    let err = super::tests::run_without_table(doc(bad)).await.unwrap_err();
+    assert!(
+        matches!(err, crate::query::error::QuerierError::InvalidInput(_)),
+        "{err}"
+    );
+    // PromQL's `absent(x{job="api"})` still validates.
+    let params = ql_ir::PromqlParams::range(60 * S, 120 * S, 60 * S);
+    let doc = ql_ir::promql_to_ir(r#"absent(x{job="api"})"#, &params).unwrap();
+    let batch = super::tests::run_without_table(serde_json::to_value(doc).unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(batch.num_rows(), 2);
 }
