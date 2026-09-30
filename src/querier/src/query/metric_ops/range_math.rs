@@ -96,11 +96,7 @@ pub struct Pt {
 
 /// A cumulative counter restarted between two consecutive points.
 fn is_reset(prev: &Pt, cur: &Pt) -> bool {
-    if prev.start > 0 && cur.start > 0 {
-        cur.start > prev.start
-    } else {
-        cur.v < prev.v
-    }
+    (prev.start > 0 && cur.start > 0 && cur.start > prev.start) || cur.v < prev.v
 }
 
 fn step(prev: &Pt, cur: &Pt) -> f64 {
@@ -153,16 +149,25 @@ pub fn eval_points(
     let window_secs = window_ns as f64 / NS_PER_SEC;
     let vals = || pts.iter().map(|p| p.v);
     let prev = (n >= 2).then(|| pts[n - 2]);
+    // Pointwise temporality: a delta point adds its value; a cumulative one
+    // adds its step from the previous cumulative point, or its whole value
+    // when it is the first and its series began inside the window.
     let increase = || -> Option<f64> {
-        if is_delta {
-            return Some(vals().sum());
+        let mut total = None;
+        let mut prev: Option<&Pt> = None;
+        for p in &pts {
+            let inc = if p.temporality == Some(DELTA) {
+                p.v
+            } else {
+                match prev.replace(p) {
+                    Some(pr) => step(pr, p),
+                    None if p.start > 0 && p.start > lo && p.start <= t => p.v,
+                    None => continue,
+                }
+            };
+            *total.get_or_insert(0.0) += inc;
         }
-        let began_in_window = first.start > 0 && first.start > lo;
-        if n == 1 && !began_in_window {
-            return None;
-        }
-        let base = if began_in_window { first.v } else { 0.0 };
-        Some(base + pts.windows(2).map(|w| step(&w[0], &w[1])).sum::<f64>())
+        total
     };
     Ok(match f {
         RangeFn::Latest | RangeFn::LastOverTime => Some(last.v),
@@ -350,6 +355,32 @@ mod tests {
                 Some(3.0),
             ),
             (Increase, CUM, vec![(110, 7.0, 5)], 120, 60, None),
+            // equal starts but a lower value: still a reset
+            (
+                Increase,
+                CUM,
+                vec![(110, 20.0, 5), (120, 5.0, 5)],
+                120,
+                60,
+                Some(5.0),
+            ),
+            (
+                Resets,
+                CUM,
+                vec![(110, 20.0, 5), (120, 5.0, 5)],
+                120,
+                60,
+                Some(1.0),
+            ),
+            // a start after the instant is not a series that began in the window
+            (
+                Increase,
+                CUM,
+                vec![(110, 7.0, 130), (120, 10.0, 130)],
+                120,
+                60,
+                Some(3.0),
+            ),
             (Increase, CUM, unknown.clone(), 40, 60, Some(18.0)),
             (Resets, CUM, unknown, 40, 60, Some(1.0)),
             (
@@ -405,7 +436,7 @@ mod tests {
     }
 
     #[test]
-    fn temporality_comes_from_the_latest_point() {
+    fn temporality_is_pointwise() {
         let mk = |ts, v, temporality| Pt {
             ts: ts * S,
             v,
@@ -413,9 +444,20 @@ mod tests {
             temporality,
             monotonic: Some(true),
         };
-        let pts = [mk(10, 3.0, Some(2)), mk(20, 4.0, Some(1))];
-        let out = eval_points(RangeFn::Increase, &pts, Some("sum"), 30 * S, 60 * S).unwrap();
-        assert_eq!(out, Some(7.0));
+        let inc =
+            |pts: &[Pt]| eval_points(RangeFn::Increase, pts, Some("sum"), 40 * S, 60 * S).unwrap();
+        // The cumulative 3 is a baseline; the delta 4 counts.
+        assert_eq!(
+            inc(&[mk(10, 3.0, Some(2)), mk(20, 4.0, Some(1))]),
+            Some(4.0)
+        );
+        // Cumulative points difference against each other across a delta point.
+        let mixed = [
+            mk(10, 3.0, Some(2)),
+            mk(20, 4.0, Some(1)),
+            mk(30, 5.0, Some(2)),
+        ];
+        assert_eq!(inc(&mixed), Some(6.0));
     }
 
     #[test]

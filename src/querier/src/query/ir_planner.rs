@@ -2044,7 +2044,13 @@ impl Lowering<'_> {
             AggFn::MinOverTime => RangeFn::MinOverTime,
             AggFn::MaxOverTime => RangeFn::MaxOverTime,
             AggFn::SumOverTime => RangeFn::SumOverTime,
-            _ => RangeFn::CountOverTime,
+            AggFn::CountOverTime => RangeFn::CountOverTime,
+            other => {
+                return Err(QuerierError::Unsupported(format!(
+                    "'{}' is not a range function",
+                    other.as_str()
+                )));
+            }
         };
         let mut groups = Vec::new();
         let mut new_col_of = HashMap::new();
@@ -2070,7 +2076,13 @@ impl Lowering<'_> {
             AggFn::Min => min(v()),
             AggFn::Max => max(v()),
             AggFn::Count => count(v()),
-            _ => sum(v()),
+            AggFn::Sum => sum(v()),
+            other => {
+                return Err(QuerierError::Unsupported(format!(
+                    "`across` does not support '{}'",
+                    other.as_str()
+                )));
+            }
         };
         let labels = || groups.iter().map(|(_, alias)| ident(alias));
         let keys: Vec<Expr> = std::iter::once(col("bucket")).chain(labels()).collect();
