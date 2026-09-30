@@ -1007,6 +1007,9 @@ describe("Sessions tab", () => {
     };
     vi.mocked(traceDetailApi.fetchTraceDetail).mockResolvedValue(trace);
     renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+    // The detail refetches (and its timeline remounts) once the app list
+    // resolves, so wait for it before touching the timeline's marks.
+    await screen.findByRole("button", { name: /storefront-web/ });
 
     const timeline = await screen.findByTestId("rum-session-timeline");
     const mark = within(timeline).getByRole("button", { name: /POST/ });
@@ -1068,6 +1071,9 @@ describe("Sessions tab", () => {
       hasMore: false,
     });
     renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+    // The detail refetches (and its timeline remounts) once the app list
+    // resolves, so wait for it before touching the timeline's marks.
+    await screen.findByRole("button", { name: /storefront-web/ });
 
     // Generous waits: under coverage instrumentation the detail's chained
     // renders can take over the default 1 s.
