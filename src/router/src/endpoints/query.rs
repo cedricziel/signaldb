@@ -413,14 +413,14 @@ async fn query_ir_single(
     }
     let ticket = query_ir_ticket(ctx, &document, now)?;
 
-    let (batches, correlate_truncated) = execute_ticket(&state, ticket).await?;
+    let (batches, correlate_report) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response
         .warnings
         .extend(unknown_group_by_warnings(&req.from, &document, &batches));
     response
         .warnings
-        .extend(correlate_truncation_warning(correlate_truncated));
+        .extend(correlate_warnings(&correlate_report));
     Ok(axum::Json(response))
 }
 
@@ -584,7 +584,7 @@ async fn execute_inner_series_query(
 ) -> Result<(ResolvedWindow, Vec<common::query_ir::EvalSeries>), ApiError> {
     let window = resolve_window(&req.range, now_ns)?;
     let ticket = query_ir_ticket(ctx, req, now_ns)?;
-    let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
+    let (batches, _correlate_report) = execute_ticket(state, ticket).await?;
     let series = to_series(&batches)?;
     let eval_series = series
         .into_iter()
@@ -630,7 +630,7 @@ pub(super) async fn execute_document_rows(
     now_ns: i64,
 ) -> Result<(Vec<ResultColumn>, Vec<Vec<serde_json::Value>>), ApiError> {
     let ticket = query_ir_ticket(ctx, document, now_ns)?;
-    let (batches, _correlate_truncated) = execute_ticket(state, ticket).await?;
+    let (batches, _correlate_report) = execute_ticket(state, ticket).await?;
     Ok(ir_table(&batches))
 }
 
@@ -717,25 +717,52 @@ fn unknown_group_by_warnings(
 }
 
 const CORRELATE_ROW_LIMIT: &str = "correlate_row_limit";
+const CORRELATE_FANOUT_LIMIT: &str = "correlate_fanout_limit";
+const CORRELATE_WINDOW: &str = "correlate_window";
 
-/// A `correlate` stage's row cap (`[querier].correlate_max_rows`) was
-/// reached. Ground truth, not a heuristic: the querier's `CorrelateCapExec`
-/// operator detects the overflow at the join itself, streaming, before any
-/// `aggregate`/`where`/`limit` stage can shrink or hide the row count, and
-/// [`execute_ticket`] reads it back from the querier's Flight trailer
-/// message (see `common::flight::correlate_truncated_trailer`).
-fn correlate_truncation_warning(truncated: bool) -> Option<QueryWarning> {
-    if !truncated {
-        return None;
+/// Translate a querier [`common::flight::CorrelateReport`] into the
+/// `QueryWarning`s it implies. Ground truth, not a heuristic: the querier
+/// detects each condition at the join itself, streaming, before any
+/// `aggregate`/`where`/`limit` stage can shrink or hide it, and
+/// [`execute_ticket`] reads the report back from the querier's Flight
+/// trailer message (see `common::flight::correlate_report_trailer`).
+fn correlate_warnings(report: &common::flight::CorrelateReport) -> Vec<QueryWarning> {
+    let mut warnings = Vec::new();
+    if report.row_limit {
+        warnings.push(QueryWarning {
+            code: CORRELATE_ROW_LIMIT.to_string(),
+            message: "a correlate stage's joined row count reached the server limit \
+                       ([querier].correlate_max_rows); the result was truncated"
+                .to_string(),
+            field: None,
+            suggestions: Vec::new(),
+        });
     }
-    Some(QueryWarning {
-        code: CORRELATE_ROW_LIMIT.to_string(),
-        message: "a correlate stage's joined row count reached the server limit \
-                   ([querier].correlate_max_rows); the result was truncated"
-            .to_string(),
-        field: None,
-        suggestions: Vec::new(),
-    })
+    if report.fanout_limit {
+        warnings.push(QueryWarning {
+            code: CORRELATE_FANOUT_LIMIT.to_string(),
+            message: "a correlate stage matched more target rows per source row than its \
+                       `fanout` cap; the earliest matches were kept"
+                .to_string(),
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
+    if let Some(window) = report.window {
+        let start = chrono::DateTime::from_timestamp_nanos(window.start_ns).to_rfc3339();
+        let end = chrono::DateTime::from_timestamp_nanos(window.end_ns).to_rfc3339();
+        warnings.push(QueryWarning {
+            code: CORRELATE_WINDOW.to_string(),
+            message: format!(
+                "a correlate stage scanned its target signal over [{start}, {end}]; \
+                 absence or enrichment is judged within that window, widenable with the \
+                 stage's `window` operand"
+            ),
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
+    warnings
 }
 
 /// Whether `column` exists in every batch and is null on every row of a
@@ -839,12 +866,12 @@ pub(super) fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<Resolved
 }
 
 /// Send a `query_ir` Flight ticket to a querier and collect the result
-/// batches, alongside whether a `correlate` stage's join was truncated by
-/// `[querier].correlate_max_rows` (see [`correlate_truncation_warning`]).
+/// batches, alongside the [`common::flight::CorrelateReport`] of what a
+/// `correlate` stage's join did (see [`correlate_warnings`]).
 pub(super) async fn execute_ticket(
     state: &RouterAppState,
     ticket_content: String,
-) -> Result<(Vec<RecordBatch>, bool), ApiError> {
+) -> Result<(Vec<RecordBatch>, common::flight::CorrelateReport), ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
@@ -886,16 +913,24 @@ pub(super) async fn execute_ticket(
             // unbounded result set for up to the timeout.
             let mut data = Vec::new();
             let mut bytes: usize = 0;
-            let mut correlate_truncated = false;
+            let mut correlate_report = common::flight::CorrelateReport::default();
             while let Some(flight_data) = stream.next().await {
                 let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
-                // The trailer the querier appends after a truncated `correlate`
-                // join (see `common::flight::correlate_truncated_trailer`) is a
+                // The trailer the querier appends reporting a `correlate` stage
+                // (see `common::flight::correlate_report_trailer`) is a
                 // data-free message: recognized and dropped here rather than
                 // handed to `decode_flight_batches`, which expects only schema
-                // and record-batch messages.
-                if fd.app_metadata.as_ref() == common::flight::CORRELATE_TRUNCATED_APP_METADATA {
-                    correlate_truncated = true;
+                // and record-batch messages. A malformed payload is a bug in
+                // the querier or the wire, not something to silently ignore.
+                if let Some(parsed) =
+                    common::flight::parse_correlate_report_trailer(&fd.app_metadata)
+                {
+                    correlate_report = parsed.map_err(|e| {
+                        ApiError::new(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("malformed correlate report trailer: {e}"),
+                        )
+                    })?;
                     continue;
                 }
                 bytes = bytes.saturating_add(fd.data_body.len());
@@ -915,7 +950,7 @@ pub(super) async fn execute_ticket(
             let batches = super::flight_decode::decode_flight_batches(data, "query_ir")
                 .await
                 .map_err(ApiError::from)?;
-            Ok((batches, correlate_truncated))
+            Ok((batches, correlate_report))
         }
         .instrument(rpc_span),
     )
@@ -1860,25 +1895,62 @@ mod group_by_warnings {
     }
 }
 
-/// The `correlate` stage's row cap (`[querier].correlate_max_rows`) reached
-/// during the join — the querier truncates rather than fails, and this
-/// warning is the caller's only signal that it happened.
+/// A `correlate` stage's row/fanout caps or scan window, reported through
+/// the querier's Flight trailer — the querier truncates rather than fails,
+/// and these warnings are the caller's only signal that it happened.
 #[cfg(test)]
-mod correlate_warnings {
-    use super::{CORRELATE_ROW_LIMIT, correlate_truncation_warning};
+mod correlate_warnings_tests {
+    use super::{
+        CORRELATE_FANOUT_LIMIT, CORRELATE_ROW_LIMIT, CORRELATE_WINDOW, correlate_warnings,
+    };
+    use common::flight::{CorrelateReport, CorrelateWindowReport};
 
     #[test]
-    fn truncated_flag_warns() {
-        let warnings = correlate_truncation_warning(true);
+    fn row_limit_warns() {
+        let report = CorrelateReport {
+            row_limit: true,
+            ..Default::default()
+        };
+        let warnings = correlate_warnings(&report);
         assert_eq!(
-            warnings.map(|w| w.code),
-            Some(CORRELATE_ROW_LIMIT.to_string())
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![CORRELATE_ROW_LIMIT]
         );
     }
 
     #[test]
-    fn untruncated_flag_does_not_warn() {
-        assert!(correlate_truncation_warning(false).is_none());
+    fn fanout_limit_warns() {
+        let report = CorrelateReport {
+            fanout_limit: true,
+            ..Default::default()
+        };
+        let warnings = correlate_warnings(&report);
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![CORRELATE_FANOUT_LIMIT]
+        );
+    }
+
+    #[test]
+    fn window_warns() {
+        let report = CorrelateReport {
+            window: Some(CorrelateWindowReport {
+                start_ns: 0,
+                end_ns: 1_000_000_000,
+            }),
+            ..Default::default()
+        };
+        let warnings = correlate_warnings(&report);
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![CORRELATE_WINDOW]
+        );
+        assert!(warnings[0].message.contains("1970-01-01T00:00:00"));
+    }
+
+    #[test]
+    fn empty_report_warns_nothing() {
+        assert!(correlate_warnings(&CorrelateReport::default()).is_empty());
     }
 }
 

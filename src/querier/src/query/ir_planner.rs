@@ -34,6 +34,7 @@ use std::sync::atomic::{AtomicBool, Ordering as AtomicOrdering};
 use common::attrs::expr::typed_compat_attr_expr;
 use common::attrs::expr::typed_home_expr;
 use common::attrs::expr::typed_home_filter_expr;
+use common::flight::CorrelateReport;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
@@ -864,17 +865,17 @@ impl IrService {
     }
 
     /// Executes an IR query ticket, returning the projected RecordBatches,
-    /// the resolved window, and whether a `correlate` stage's join was
-    /// truncated by `correlate_max_rows`. The flag is only known once
-    /// `.collect()` below has actually run the stream to completion — it is
-    /// an [`AtomicBool`] flipped by `CorrelateCapExec` (`correlate_cap`) as
-    /// it streams, not something plan-time can predict.
+    /// the resolved window, and a [`CorrelateReport`] of what a `correlate`
+    /// stage's join did. The row-limit flag is only known once `.collect()`
+    /// below has actually run the stream to completion — it is an
+    /// [`AtomicBool`] flipped by `CorrelateCapExec` (`correlate_cap`) as it
+    /// streams, not something plan-time can predict.
     pub async fn query(
         &self,
         params: &IrQueryParams,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, bool), QuerierError> {
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, CorrelateReport), QuerierError> {
         use tracing::Instrument;
 
         let doc: Document = serde_json::from_value(params.document.clone())
@@ -899,7 +900,11 @@ impl IrService {
         else {
             // No storage for this source in this dataset: no rows, but the
             // window is still resolved so the caller can echo it back.
-            return Ok((Vec::new(), resolve_window(&doc, params.now_ns)?, false));
+            return Ok((
+                Vec::new(),
+                resolve_window(&doc, params.now_ns)?,
+                CorrelateReport::default(),
+            ));
         };
         // The flamegraph aggregation happens in Rust, not DataFusion (see
         // `plan`'s doc comment on `apply_projection`'s flamegraph carve-out);
@@ -922,15 +927,18 @@ impl IrService {
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
-        let truncated = correlate_truncated.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed));
+        let report = CorrelateReport {
+            row_limit: correlate_truncated.is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)),
+            ..Default::default()
+        };
         if doc.result == ResultEnvelope::Flamegraph {
             return Ok((
                 vec![encode_flamegraph_batch(&batches, FLAMEGRAPH_PROFILE_CAP)?],
                 window,
-                truncated,
+                report,
             ));
         }
-        Ok((batches, window, truncated))
+        Ok((batches, window, report))
     }
 
     /// A `graph` document: assembled from fixed internal pipelines (see
@@ -941,7 +949,7 @@ impl IrService {
         now_ns: i64,
         tenant_slug: &str,
         dataset_slug: &str,
-    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, bool), QuerierError> {
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, CorrelateReport), QuerierError> {
         use tracing::Instrument;
 
         let limits = super::graph::GraphLimits {
@@ -966,10 +974,14 @@ impl IrService {
                 false,
             ),
         };
+        let report = CorrelateReport {
+            row_limit: truncated,
+            ..Default::default()
+        };
         Ok((
             vec![super::graph::encode_graph_batch(&graph)?],
             window,
-            truncated,
+            report,
         ))
     }
 
@@ -9548,9 +9560,9 @@ mod tests {
             } })],
             "table",
         );
-        let (_, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        let (_, _, report) = svc.query(&params, "t", "d").await.unwrap();
         assert!(
-            truncated,
+            report.row_limit,
             "two rows joined but the cap is 1; the aggregate must not hide the truncation"
         );
     }
@@ -9561,11 +9573,11 @@ mod tests {
     async fn no_truncation_flag_when_the_cap_is_not_reached() {
         let svc = IrService::new(correlate_ctx()).with_correlate_max_rows(2);
         let params = correlate_ir_params("inner", vec![], "rows");
-        let (batches, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, report) = svc.query(&params, "t", "d").await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, 2, "exactly the cap, but not beyond it");
         assert!(
-            !truncated,
+            !report.row_limit,
             "the join produced exactly the cap without overflowing it"
         );
     }
@@ -9584,11 +9596,11 @@ mod tests {
             ],
             "rows",
         );
-        let (batches, _, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, _, report) = svc.query(&params, "t", "d").await.unwrap();
         let total: usize = batches.iter().map(|b| b.num_rows()).sum();
         assert_eq!(total, 1, "limit narrows the final result to 1 row");
         assert!(
-            truncated,
+            report.row_limit,
             "the join itself was already truncated by the cap before where/limit ran"
         );
     }
