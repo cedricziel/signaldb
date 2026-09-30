@@ -2847,8 +2847,9 @@ pub mod types {
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryWarning {
         /**Stable machine-readable identifier — clients branch on this, not on
-        `message`. Today `unknown_group_by_field` and
-        `no_attribute_statistics`.*/
+        `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
+        `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`
+        and `graph_node_limit`.*/
         pub code: ::std::string::String,
         ///The document field the warning is about, when it names one.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]

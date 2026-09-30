@@ -2052,11 +2052,25 @@ never which names are valid.
 
 `origin` says which tier the item came from:
 
-| `origin`   | meaning                                                                                         |
-| ---------- | ----------------------------------------------------------------------------------------------- |
-| `declared` | the canonical logical schema declares it (always valid)                                         |
-| `registry` | statistics observed it and a schema registry defines it, so it carries a type and a description |
-| `observed` | statistics observed it and nothing defines it — treated as a string                             |
+| `origin`    | meaning                                                                                                           |
+| ----------- | ----------------------------------------------------------------------------------------------------------------- |
+| `declared`  | the canonical logical schema declares it (always valid)                                                           |
+| `authority` | the type authority committed a canonical type for it at ingest, listed even before statistics observe it          |
+| `registry`  | statistics observed it and a schema registry defines it, so it carries a description (its type is still `string`) |
+| `observed`  | statistics observed it and nothing defines it — treated as a string                                               |
+
+An attribute's `type` is the canonical type the type authority committed for it
+(first-seen, or pinned by config) — the same type a predicate on it is coerced
+to, so a key whose first value was an integer is `int64` here. A key with no
+authority type is `string`, which is how the planner reads it; a registry
+contributes the description and deprecation, never a type. A key committed at
+more than one attribute level is listed once per level, qualified the way the
+source addresses that level (`resource.region` and `log.region` on logs,
+`span.region` on traces, `point.region` on metrics), and carries no `coverage`
+or `cardinality` because statistics are kept per key. A key that begins with
+its source's own qualifier is listed escaped (`log.log.file.path`), and an
+attribute whose name would read a declared field (a scope attribute called
+`name`, which `scope.name` resolves to the scope's column) is not listed.
 
 `coverage` (the fraction of records carrying the field) and `cardinality` (an
 approximate distinct-value count; `at_least` means the collector hit its cap)

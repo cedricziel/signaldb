@@ -8092,6 +8092,159 @@ mod tests {
         }
     }
 
+    /// The invariant discovery exists to keep: every field `describe` lists
+    /// is valid to reference by its listed name, with its listed type. Feeds
+    /// every name `merge_fields` emits, per source and with types committed at
+    /// several levels, through the planner's typed resolver.
+    #[test]
+    fn every_discovered_field_resolves_with_its_listed_type() {
+        use common::catalog::AttributeStatsRecord;
+        use common::discovery::{FieldOrigin, merge_fields};
+        use std::collections::BTreeMap;
+
+        let authority =
+            |key: &str, level, canonical| common::schema::type_authority::AttributeKeyType {
+                attr_key: key.to_string(),
+                level,
+                canonical_type: canonical,
+            };
+        let rows = vec![
+            authority("k.int", AttributeLevel::Record, CanonicalType::Int64),
+            authority("k.float", AttributeLevel::Record, CanonicalType::Float64),
+            authority("k.res", AttributeLevel::Resource, CanonicalType::Bool),
+            authority("k.scope", AttributeLevel::Scope, CanonicalType::Int64),
+            authority("k.multi", AttributeLevel::Resource, CanonicalType::String),
+            authority("k.multi", AttributeLevel::Scope, CanonicalType::Float64),
+            authority("k.multi", AttributeLevel::Record, CanonicalType::Int64),
+            // Names that begin with a source qualifier, and keys that collide
+            // with a declared field at a level.
+            authority(
+                "log.file.path",
+                AttributeLevel::Record,
+                CanonicalType::Int64,
+            ),
+            authority("span.kind.x", AttributeLevel::Record, CanonicalType::Int64),
+            authority("point.idx", AttributeLevel::Record, CanonicalType::Int64),
+            authority(
+                "resource.foo",
+                AttributeLevel::Resource,
+                CanonicalType::Int64,
+            ),
+            authority("name", AttributeLevel::Scope, CanonicalType::Int64),
+            authority("name", AttributeLevel::Record, CanonicalType::Int64),
+            authority("schema_url", AttributeLevel::Resource, CanonicalType::Int64),
+        ];
+        let stats = vec![AttributeStatsRecord {
+            tenant_id: "t".to_string(),
+            dataset_id: "d".to_string(),
+            signal: "x".to_string(),
+            attr_key: "plain.untyped".to_string(),
+            present_rows: 1,
+            total_rows: 1,
+            distinct_estimate: 1,
+            capped: false,
+            query_hits: 0,
+            promote_streak: 0,
+            updated_at: "2026-01-01 00:00:00".to_string(),
+        }];
+
+        let schema = LogicalSchema::core();
+        for source in ["logs", "traces", "profiles", "metrics", "exemplars"] {
+            let plan = SourcePlan::for_source(source).expect("source");
+            let mut fields = vec![Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            )];
+            for container in plan.containers {
+                fields.extend(
+                    typed_columns(container)
+                        .into_iter()
+                        .map(|name| Field::new(name, DataType::Utf8, true)),
+                );
+            }
+            for column in [
+                "span_name",
+                "scope_name",
+                "scope_version",
+                "scope_schema_url",
+                "resource_schema_url",
+            ] {
+                fields.push(Field::new(column, DataType::Utf8, true));
+            }
+            let df_schema =
+                datafusion::common::DFSchema::try_from(Schema::new(fields)).expect("schema");
+            let resolver = SchemaResolver::new(&df_schema, &plan).with_typed(canonical_types(
+                &rows
+                    .iter()
+                    .map(|r| (r.attr_key.as_str(), r.level, r.canonical_type))
+                    .collect::<Vec<_>>(),
+            ));
+
+            let (listed, _) =
+                merge_fields(source, &schema, &stats, &BTreeMap::new(), &rows, 10_000);
+            let mut checked = 0;
+            for field in &listed {
+                let resolved = resolver
+                    .resolve(source, &field.name)
+                    .unwrap_or_else(|| panic!("{source}: `{}` does not resolve", field.name));
+                if field.origin == FieldOrigin::Declared {
+                    continue;
+                }
+                let Resolved::TypedAttribute {
+                    homes, value_type, ..
+                } = resolved
+                else {
+                    panic!(
+                        "{source}: `{}` is not a typed attribute: {resolved:?}",
+                        field.name
+                    );
+                };
+                assert_eq!(
+                    value_type,
+                    logical_to_value_type(field.value_type),
+                    "{source}: `{}` is listed as {:?}",
+                    field.name,
+                    field.value_type
+                );
+                assert_eq!(
+                    homes.is_empty(),
+                    field.origin != FieldOrigin::Authority,
+                    "{source}: `{}` reads a typed home exactly when the authority typed it",
+                    field.name
+                );
+                checked += 1;
+            }
+            assert!(
+                checked >= 2,
+                "{source}: only {checked} attribute fields listed"
+            );
+
+            // The scope-level columns are listed under the names that read them.
+            if matches!(source, "logs" | "traces") {
+                for (listed_name, column) in [
+                    ("scope.name", "scope_name"),
+                    ("scope.version", "scope_version"),
+                ] {
+                    assert!(
+                        listed.iter().any(|f| f.name == listed_name),
+                        "{source}: {listed_name}"
+                    );
+                    assert!(
+                        matches!(resolver.resolve(source, listed_name), Some(Resolved::Column { name, .. }) if name == column),
+                        "{source}: {listed_name} reads {column}"
+                    );
+                }
+            }
+            if source == "traces" {
+                assert!(
+                    matches!(resolver.resolve(source, "name"), Some(Resolved::Column { name, .. }) if name == "span_name"),
+                    "bare `name` on traces is the span's"
+                );
+            }
+        }
+    }
+
     /// A `SchemaResolver` for `logs` over an all-typed, empty (no rows)
     /// schema: task 4.4's homes/promotion/exclusion rules are schema and
     /// type-map facts, so asserting `resolve()` directly is cheaper and more
