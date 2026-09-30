@@ -400,34 +400,129 @@ pub struct Describe {
     pub sample: bool,
 }
 
-/// What a `correlate` stage joins the current relation to. Closed today (only
-/// `parent`, one hop within `traces`); the cross-signal change
-/// (`query-cross-signal-correlate`) widens this enum with new targets rather
-/// than changing what `"parent"` means (`irVersion` 8).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
+/// What a `correlate` stage joins the current relation to, written as a
+/// plain string: `"parent"` (one hop within `traces`, `irVersion` 8) or the
+/// name of another signal source (`irVersion` 11). An unregistered source
+/// name parses and is rejected by validation as an unknown source.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(from = "String", into = "String")]
 pub enum CorrelateTarget {
     /// The span in the same trace whose `span_id` equals this row's
     /// `parent_span_id`.
     Parent,
+    /// Another signal source, joined on a logical [`CorrelateKey`].
+    Signal(String),
 }
 
-/// A join kind for a `correlate` stage.
+impl From<String> for CorrelateTarget {
+    fn from(name: String) -> Self {
+        if name == "parent" {
+            CorrelateTarget::Parent
+        } else {
+            CorrelateTarget::Signal(name)
+        }
+    }
+}
+
+impl From<CorrelateTarget> for String {
+    fn from(target: CorrelateTarget) -> Self {
+        match target {
+            CorrelateTarget::Parent => "parent".to_string(),
+            CorrelateTarget::Signal(name) => name,
+        }
+    }
+}
+
+/// A join kind for a `correlate` stage. `semi`/`anti` need a signal target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum JoinKind {
     Inner,
     Left,
+    Semi,
+    Anti,
 }
 
-/// The `correlate` stage: join each row to its parent span in the same trace
-/// (`irVersion` 8). Parent-side columns come back under a fixed `parent.`
-/// prefix; see `resolver`/`validate` for how that scope resolves.
+impl JoinKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            JoinKind::Inner => "inner",
+            JoinKind::Left => "left",
+            JoinKind::Semi => "semi",
+            JoinKind::Anti => "anti",
+        }
+    }
+}
+
+/// A logical join key a signal `correlate` matches on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CorrelateKey {
+    TraceId,
+    /// The `(trace_id, span_id)` pair.
+    SpanId,
+    ResourceIdentity,
+    SeriesId,
+}
+
+impl CorrelateKey {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            CorrelateKey::TraceId => "trace_id",
+            CorrelateKey::SpanId => "span_id",
+            CorrelateKey::ResourceIdentity => "resource_identity",
+            CorrelateKey::SeriesId => "series_id",
+        }
+    }
+
+    /// The logical fields that carry this key on `source`, or `None` when
+    /// the source has no such key.
+    pub fn fields(self, source: &str) -> Option<&'static [&'static str]> {
+        Some(match (self, source) {
+            (CorrelateKey::TraceId, "traces" | "logs") => &["trace_id"],
+            (CorrelateKey::TraceId, "profiles" | "exemplars") => &["trace.id"],
+            (CorrelateKey::SpanId, "traces" | "logs") => &["trace_id", "span_id"],
+            (CorrelateKey::SpanId, "profiles" | "exemplars") => &["trace.id", "span.id"],
+            (
+                CorrelateKey::ResourceIdentity,
+                "traces" | "logs" | "profiles" | "metrics" | "exemplars",
+            ) => &["resource.identity"],
+            (CorrelateKey::SeriesId, "metrics" | "exemplars") => &["series.id"],
+            _ => return None,
+        })
+    }
+}
+
+/// How far a signal `correlate` widens its target scan beyond the source
+/// rows' time envelope. Both default to zero.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorrelateWindow {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub before: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<String>,
+}
+
+/// The `correlate` stage. With `to: "parent"` (`irVersion` 8) it joins each
+/// span to its parent span, whose columns come back under a fixed `parent.`
+/// prefix. With a signal target (`irVersion` 11) it joins the relation to
+/// that source `on` a logical key; `pipeline` (`where` stages only) narrows
+/// the target side.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Correlate {
     pub to: CorrelateTarget,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on: Option<CorrelateKey>,
     pub kind: JoinKind,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pipeline: Vec<Stage>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub window: Option<CorrelateWindow>,
+    /// inner/left only: the most target rows kept per source row.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fanout: Option<i64>,
 }
 
 /// A function a `sample` stage evaluates over each series' point stream
@@ -865,7 +960,11 @@ impl Stage {
             Stage::Heatmap(_) => Feature::Heatmap,
             Stage::HistogramQuantile(_) => Feature::HistogramQuantile,
             Stage::Describe(_) => Feature::Describe,
-            Stage::Correlate(_) => Feature::SpanCorrelate,
+            Stage::Correlate(Correlate {
+                to: CorrelateTarget::Parent,
+                ..
+            }) => Feature::SpanCorrelate,
+            Stage::Correlate(_) => Feature::SignalCorrelate,
             Stage::Sample(_) => Feature::Sample,
             Stage::Scalar(_) => Feature::ScalarStage,
             Stage::Vector(_) => Feature::VectorStage,
@@ -949,14 +1048,34 @@ mod tests {
         );
     }
 
+    /// An unregistered target name parses (as a signal target) and is left
+    /// to validation to reject as an unknown source.
     #[test]
-    fn correlate_rejects_unknown_target() {
-        assert!(
-            serde_json::from_value::<Stage>(json!({
-                "correlate": { "to": "grandparent", "kind": "inner" }
-            }))
-            .is_err()
-        );
+    fn correlate_unknown_target_parses_as_a_signal() {
+        let s: Stage = serde_json::from_value(json!({
+            "correlate": { "to": "grandparent", "kind": "inner" }
+        }))
+        .unwrap();
+        let Stage::Correlate(c) = s else {
+            panic!("expected a correlate stage");
+        };
+        assert_eq!(c.to, CorrelateTarget::Signal("grandparent".to_string()));
+    }
+
+    #[test]
+    fn signal_correlate_round_trips() {
+        let v = json!({ "correlate": {
+            "to": "logs", "on": "span_id", "kind": "anti",
+            "pipeline": [{ "where": { "field": "severity_number", "op": "gte", "value": 17 } }],
+            "window": { "after": "10m" }
+        } });
+        let s: Stage = serde_json::from_value(v.clone()).unwrap();
+        let Stage::Correlate(c) = &s else {
+            panic!("expected a correlate stage");
+        };
+        assert_eq!(c.on, Some(CorrelateKey::SpanId));
+        assert_eq!(c.kind, JoinKind::Anti);
+        assert_eq!(serde_json::to_value(&s).unwrap(), v);
     }
 
     #[test]

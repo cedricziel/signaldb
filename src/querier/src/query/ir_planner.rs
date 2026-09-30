@@ -1882,10 +1882,14 @@ impl Lowering<'_> {
             window,
             correlate_max_rows,
         } = scan;
-        let CorrelateTarget::Parent = correlate.to;
-        let join_type = match correlate.kind {
-            JoinKind::Inner => JoinType::Inner,
-            JoinKind::Left => JoinType::Left,
+        let join_type = match (&correlate.to, correlate.kind) {
+            (CorrelateTarget::Parent, JoinKind::Inner) => JoinType::Inner,
+            (CorrelateTarget::Parent, JoinKind::Left) => JoinType::Left,
+            _ => {
+                return Err(QuerierError::Unsupported(
+                    "correlate to a signal target is not supported yet".into(),
+                ));
+            }
         };
 
         let Some(parent_base) =
@@ -9660,7 +9664,11 @@ mod tests {
                 let child_df = no_parent_ctx.read_batches(child_batches).unwrap();
                 let correlate = Correlate {
                     to: CorrelateTarget::Parent,
+                    on: None,
                     kind,
+                    pipeline: Vec::new(),
+                    window: None,
+                    fanout: None,
                 };
                 let scan = CorrelateScan {
                     tenant_slug: "t",
