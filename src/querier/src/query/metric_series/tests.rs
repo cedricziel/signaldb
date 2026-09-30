@@ -261,6 +261,53 @@ async fn rate_over_two_series_of_one_service_stays_per_series() {
     assert_eq!(rows, want);
 }
 
+/// The instant fan-out copies each row once per covering instant (up to
+/// `window / step` times), so only the rendered label string and the range
+/// function's inputs may ride through it, never the attribute bags. Checked
+/// on the plan as built, before the optimizer prunes anything.
+#[tokio::test]
+async fn the_instant_unnest_carries_the_label_string_not_the_attribute_bags() {
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::logical_expr::LogicalPlan;
+
+    let points = [counter(30 * S, "a", 1.0, json!({"code": 200}))];
+    let doc = sample_doc(60, 120, json!({ "fn": "rate", "window": "1h" }));
+    let doc = serde_json::from_value(doc).unwrap();
+    let (df, _) = IrService::new(ctx(batch(&points)))
+        .plan(&doc, "t", "d", 0)
+        .await
+        .unwrap()
+        .expect("the metrics table is registered");
+    let mut carried = Vec::new();
+    df.logical_plan()
+        .apply(|node| {
+            if let LogicalPlan::Unnest(unnest) = node {
+                let names = unnest.input.schema().fields().iter();
+                carried.push(names.map(|f| f.name().clone()).collect::<Vec<_>>());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+    let [carried] = carried.as_slice() else {
+        panic!("want one unnest, got {carried:?}");
+    };
+    let allowed = [
+        "__labels",
+        "timestamp",
+        "__value",
+        "__start",
+        "__temporality",
+        "__monotonic",
+        "__kind",
+        "__instant",
+    ];
+    assert!(
+        carried.iter().all(|c| allowed.contains(&c.as_str())),
+        "the unnest carries {carried:?}"
+    );
+    assert!(carried.iter().any(|c| c == "__labels"), "{carried:?}");
+}
+
 #[tokio::test]
 async fn a_limit_after_sample_keeps_the_first_rows_of_the_sorted_frame() {
     let points: Vec<_> = (0..40)
