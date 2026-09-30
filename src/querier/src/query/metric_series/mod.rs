@@ -163,6 +163,13 @@ pub(crate) fn histogram_as_series(
     stages::rewrite_labels(df, labels)
 }
 
+/// A per-series histogram frame (`bucket`, `__labels`, `value`) as a Series:
+/// each series' label set less `metric.name`, as in Prometheus. Two series
+/// left with one label set are a 400.
+pub(crate) fn histogram_per_series(df: DataFrame) -> Result<DataFrame, QuerierError> {
+    stages::drop_name(df)
+}
+
 /// Whether [`lower_stage`] (or the planner's `binop`) lowers `stage`.
 pub(crate) fn is_frame_stage(stage: &Stage) -> bool {
     matches!(
