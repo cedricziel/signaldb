@@ -51,6 +51,46 @@ const EXCLUDED: &[(&str, &str)] = &[
         "source_context_availability",
         "the Explore UI's read-level probe for whether to offer \"View source\" (change: github-app-source-context); the lookup itself already answers not_configured/no_installation, so no CLI or MCP surface is owed",
     ),
+    (
+        "search_tags",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "search_tag_values",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "search_tags_v2",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "search_tag_values_v2",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "logql_labels",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "logql_label_values",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "promql_labels",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "promql_label_values",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "pyroscope_label_names",
+        "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
+    ),
+    (
+        "pyroscope_label_values",
+        "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
+    ),
 ];
 
 /// How an operation is reached through the CLI: either a subcommand path
@@ -405,48 +445,6 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::QueryFlag("trace_id"),
         "get_trace",
     ),
-    // ---- Discovery auxiliaries (label/tag names and values) — all reachable
-    // through `discover attributes` / `discover_attributes`, signal-selected ----
-    (
-        "search_tags",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "search_tag_values",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "search_tags_v2",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "search_tag_values_v2",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "logql_labels",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "logql_label_values",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "promql_labels",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "promql_label_values",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
     // ---- Identity ----
     ("whoami", CliSurface::Path(&["whoami"]), "server_info"),
     (
@@ -464,16 +462,6 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "pyroscope_render_diff",
         CliSurface::Path(&["profiles", "diff"]),
         "compare_profiles",
-    ),
-    (
-        "pyroscope_label_names",
-        CliSurface::Path(&["profiles", "labels"]),
-        "discover_attributes",
-    ),
-    (
-        "pyroscope_label_values",
-        CliSurface::Path(&["profiles", "label-values"]),
-        "discover_attributes",
     ),
     (
         "pyroscope_profile_types",
