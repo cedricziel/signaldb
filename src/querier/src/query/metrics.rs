@@ -37,15 +37,11 @@ use super::metric_ops::hist_plan::{HistEval, histogram_series};
 use super::metric_ops::instants::check_instants;
 use super::promql::{
     ArithOp, AtSpec, CalendarFn, CmpOp, Grouping, HistogramFn, LabelMatch, LabelOp, LogicalOp,
-    MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_promql,
-    plan_query,
+    MatchKind, MetricAgg, MetricPlan, QueryPlan, SequenceFn, TopKSpec, ValueOp, plan_query,
 };
 use super::{
     error::QuerierError,
-    table_lookup::{
-        LABEL_SCAN_LIMIT, distinct_non_empty, metric_type_filter, optional_table, string_column,
-        time_window,
-    },
+    table_lookup::{metric_type_filter, optional_table, string_column},
 };
 use common::schema::materialized_column_name;
 
@@ -1435,209 +1431,6 @@ impl MetricsService {
                 .map_err(QuerierError::QueryFailed)?,
         ))
     }
-
-    /// List the Prometheus label names present in the window: the
-    /// well-known ones (`__name__`, `job`) plus attribute keys discovered
-    /// in the `attributes`/`resource_attributes` documents.
-    pub async fn get_labels(
-        &self,
-        start: i64,
-        end: i64,
-        tenant_slug: &str,
-        dataset_slug: &str,
-    ) -> Result<Vec<String>, QuerierError> {
-        let mut labels: BTreeSet<String> =
-            ["__name__", "job"].iter().map(|s| s.to_string()).collect();
-        let Some(df) = self
-            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        let df = time_window(df, start, end)?;
-        let df =
-            common::attrs::expr::select_attr_columns(df, &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
-                .map_err(QuerierError::QueryFailed)?;
-        // Arrow's row format cannot sort Map columns; skip the dedup there.
-        let attrs_are_map = df.schema().fields().iter().any(|f| {
-            matches!(
-                f.data_type(),
-                datafusion::arrow::datatypes::DataType::Map(_, _)
-            )
-        });
-        let df = if attrs_are_map {
-            df
-        } else {
-            df.distinct().map_err(QuerierError::QueryFailed)?
-        };
-        let batches = df
-            .limit(0, Some(LABEL_SCAN_LIMIT))
-            .map_err(QuerierError::QueryFailed)?
-            .collect()
-            .await
-            .map_err(QuerierError::QueryFailed)?;
-        for batch in &batches {
-            for column in [LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES] {
-                collect_attribute_keys(batch, column, &mut labels)?;
-            }
-        }
-        Ok(labels.into_iter().collect())
-    }
-
-    /// List the distinct values of one Prometheus label in the window.
-    pub async fn get_label_values(
-        &self,
-        label: &str,
-        start: i64,
-        end: i64,
-        tenant_slug: &str,
-        dataset_slug: &str,
-    ) -> Result<Vec<String>, QuerierError> {
-        if label.is_empty() {
-            return Err(QuerierError::InvalidInput(
-                "label name must not be empty".to_string(),
-            ));
-        }
-        let Some(df) = self
-            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        let df = time_window(df, start, end)?;
-
-        // `__name__` → metric_name; other known labels → their column.
-        let column = match label {
-            "__name__" => Some("metric_name"),
-            _ => column_for_label(label),
-        };
-        if let Some(column) = column {
-            let batches = df
-                .select_columns(&[column])
-                .map_err(QuerierError::QueryFailed)?
-                .distinct()
-                .map_err(QuerierError::QueryFailed)?
-                .collect()
-                .await
-                .map_err(QuerierError::QueryFailed)?;
-            return distinct_non_empty(&batches, column);
-        }
-
-        // Otherwise pull the value out of the attribute documents.
-        let df =
-            common::attrs::expr::select_attr_columns(df, &[LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES])
-                .map_err(QuerierError::QueryFailed)?;
-        // Arrow's row format cannot sort Map columns; skip the dedup there.
-        let attrs_are_map = df.schema().fields().iter().any(|f| {
-            matches!(
-                f.data_type(),
-                datafusion::arrow::datatypes::DataType::Map(_, _)
-            )
-        });
-        let df = if attrs_are_map {
-            df
-        } else {
-            df.distinct().map_err(QuerierError::QueryFailed)?
-        };
-        let batches = df
-            .limit(0, Some(LABEL_SCAN_LIMIT))
-            .map_err(QuerierError::QueryFailed)?
-            .collect()
-            .await
-            .map_err(QuerierError::QueryFailed)?;
-        let mut values = BTreeSet::new();
-        for batch in &batches {
-            for column in [LOG_ATTRIBUTES, RESOURCE_ATTRIBUTES] {
-                collect_attribute_values(batch, column, label, &mut values)?;
-            }
-        }
-        Ok(values.into_iter().collect())
-    }
-
-    /// List the distinct series (label sets) matching a PromQL selector.
-    /// Series identity is `__name__` (metric_name) and `job` (service_name).
-    pub async fn get_series(
-        &self,
-        selector: &str,
-        start: i64,
-        end: i64,
-        tenant_slug: &str,
-        dataset_slug: &str,
-    ) -> Result<Vec<BTreeMap<String, String>>, QuerierError> {
-        let plan = plan_promql(selector.trim())?;
-        let Some(df) = self
-            .scan_metrics(tenant_slug, dataset_slug, GAUGE_SUM_TYPES)
-            .await?
-        else {
-            return Ok(Vec::new());
-        };
-        let df = apply_filters(df, &plan, start, end)?;
-
-        let batches = df
-            .select_columns(&["metric_name", "service_name"])
-            .map_err(QuerierError::QueryFailed)?
-            .distinct()
-            .map_err(QuerierError::QueryFailed)?
-            .limit(0, Some(LABEL_SCAN_LIMIT))
-            .map_err(QuerierError::QueryFailed)?
-            .collect()
-            .await
-            .map_err(QuerierError::QueryFailed)?;
-
-        let mut series = BTreeSet::new();
-        for batch in &batches {
-            let name = string_column(batch, "metric_name")?;
-            let service = string_column(batch, "service_name")?;
-            for i in 0..batch.num_rows() {
-                let mut labels = BTreeMap::new();
-                if !name.is_null(i) && !name.value(i).is_empty() {
-                    labels.insert("__name__".to_string(), name.value(i).to_string());
-                }
-                if !service.is_null(i) && !service.value(i).is_empty() {
-                    labels.insert("job".to_string(), service.value(i).to_string());
-                }
-                if !labels.is_empty() {
-                    series.insert(labels);
-                }
-            }
-        }
-        Ok(series.into_iter().collect())
-    }
-}
-
-/// Add every attribute key from an attribute column (JSON-string or
-/// map-typed) to `keys`.
-fn collect_attribute_keys(
-    batch: &RecordBatch,
-    column: &str,
-    keys: &mut BTreeSet<String>,
-) -> Result<(), QuerierError> {
-    for doc in super::logs::attr_documents(batch, column)?
-        .into_iter()
-        .flatten()
-    {
-        keys.extend(doc.into_keys());
-    }
-    Ok(())
-}
-
-/// Add the value of `label` from each attribute document (JSON-string or
-/// map-typed) to `values`.
-fn collect_attribute_values(
-    batch: &RecordBatch,
-    column: &str,
-    label: &str,
-    values: &mut BTreeSet<String>,
-) -> Result<(), QuerierError> {
-    for mut doc in super::logs::attr_documents(batch, column)?
-        .into_iter()
-        .flatten()
-    {
-        if let Some(value) = doc.remove(label) {
-            values.insert(value);
-        }
-    }
-    Ok(())
 }
 
 /// Extract `(bucket_ns, service_name, value)` rows from a matrix batch.
@@ -3346,58 +3139,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn label_names_include_known_and_attribute_keys() {
-        let service = service_with_data();
-        let labels = service.get_labels(0, 1000, "t", "d").await.unwrap();
-        assert!(labels.contains(&"__name__".to_string()));
-        assert!(labels.contains(&"job".to_string()));
-        assert!(labels.contains(&"code".to_string()));
-    }
-
-    #[tokio::test]
-    async fn label_values_for_name_job_and_attribute() {
-        let service = service_with_data();
-        assert_eq!(
-            service
-                .get_label_values("__name__", 0, 1000, "t", "d")
-                .await
-                .unwrap(),
-            vec!["reqs".to_string()]
-        );
-        assert_eq!(
-            service
-                .get_label_values("job", 0, 1000, "t", "d")
-                .await
-                .unwrap(),
-            vec!["api".to_string(), "web".to_string()]
-        );
-        assert_eq!(
-            service
-                .get_label_values("code", 0, 1000, "t", "d")
-                .await
-                .unwrap(),
-            vec!["200".to_string(), "500".to_string()]
-        );
-    }
-
-    #[tokio::test]
-    async fn series_returns_name_and_job_sets() {
-        let service = service_with_data();
-        let series = service.get_series("reqs", 0, 1000, "t", "d").await.unwrap();
-        assert_eq!(series.len(), 2);
-        assert!(
-            series
-                .iter()
-                .all(|s| s.get("__name__") == Some(&"reqs".to_string()))
-        );
-        let jobs: BTreeSet<_> = series
-            .iter()
-            .filter_map(|s| s.get("job").cloned())
-            .collect();
-        assert_eq!(jobs, BTreeSet::from(["api".to_string(), "web".to_string()]));
-    }
-
-    #[tokio::test]
     async fn over_time_reduces_samples_per_bucket() {
         let service = service_with_data();
         // api has samples [1,3] in one bucket, web has [5].
@@ -4235,27 +3976,6 @@ mod tests {
 
         assert!(
             service
-                .get_labels(0, i64::MAX, "t", "d")
-                .await
-                .expect("get_labels")
-                .is_empty()
-        );
-        assert!(
-            service
-                .get_label_values("__name__", 0, i64::MAX, "t", "d")
-                .await
-                .expect("get_label_values")
-                .is_empty()
-        );
-        assert!(
-            service
-                .get_series("up", 0, i64::MAX, "t", "d")
-                .await
-                .expect("get_series")
-                .is_empty()
-        );
-        assert!(
-            service
                 .query_range("up", 0, 10_000_000_000, 1_000_000_000, "t", "d")
                 .await
                 .expect("query_range")
@@ -4289,13 +4009,6 @@ mod tests {
     #[tokio::test]
     async fn unknown_tenant_still_errors_on_metrics() {
         let service = service_without_metrics_tables();
-        assert!(
-            service
-                .get_labels(0, i64::MAX, "nosuchtenant", "d")
-                .await
-                .is_err(),
-            "unknown tenant must not read as empty"
-        );
         assert!(
             service
                 .query_range("up", 0, 10_000_000_000, 1_000_000_000, "nosuchtenant", "d")

@@ -29,6 +29,7 @@ use tracing::Instrument;
 
 use crate::query::ir_planner::IrService;
 use crate::query::logs::LogsService;
+use crate::query::metric_metadata::MetricMetadataService;
 use crate::query::metrics::MetricsService;
 use crate::query::profile::{
     FindProfileByIdParams, ProfileDiffParams, ProfileDiscoveryParams, ProfileSearchParams,
@@ -408,6 +409,7 @@ pub struct QuerierFlightService {
     profile_service: ProfileService,
     logs_service: LogsService,
     metrics_service: MetricsService,
+    metric_metadata: MetricMetadataService,
     ir_service: IrService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
@@ -602,6 +604,7 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
+        let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_graph_max_nodes(limits.graph_max_nodes);
@@ -613,6 +616,7 @@ impl QuerierFlightService {
             profile_service,
             logs_service,
             metrics_service,
+            metric_metadata,
             ir_service,
             iceberg_catalog: None,
             limits,
@@ -688,6 +692,7 @@ impl QuerierFlightService {
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
         let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
+        let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
         let mut ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_graph_max_nodes(limits.graph_max_nodes);
@@ -710,6 +715,7 @@ impl QuerierFlightService {
             profile_service,
             logs_service,
             metrics_service,
+            metric_metadata,
             ir_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
@@ -1875,7 +1881,7 @@ impl QuerierFlightService {
                 end,
             } => {
                 let labels = self
-                    .metrics_service
+                    .metric_metadata
                     .get_labels(start, end, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_METRICS))?;
@@ -1889,7 +1895,7 @@ impl QuerierFlightService {
                 end,
             } => {
                 let values = self
-                    .metrics_service
+                    .metric_metadata
                     .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_METRICS))?;
@@ -1901,7 +1907,7 @@ impl QuerierFlightService {
                 params,
             } => {
                 let series = self
-                    .metrics_service
+                    .metric_metadata
                     .get_series(
                         &params.selector,
                         params.start,
