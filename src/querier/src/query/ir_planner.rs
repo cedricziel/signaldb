@@ -37,9 +37,9 @@ use common::attrs::expr::typed_home_filter_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
-    FieldResolver, Heatmap, HistogramMode, HistogramQuantile, JoinKind, Leaf, Literal, Parser,
-    Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
-    coerce, safe_ident, validate,
+    FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Parser, Predicate, Resolved,
+    ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, safe_ident,
+    validate,
 };
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use common::schema::type_authority::CanonicalType;
@@ -1027,21 +1027,16 @@ fn reject_pseudo_source(doc: &Document) -> Result<(), QuerierError> {
 /// yet: refused after validation, so an invalid document still gets its 400,
 /// as `Unsupported` (501).
 fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
-    if let Some(stage) = doc
+    if let Some(h) = doc
         .pipeline
         .iter()
-        .find(|stage| matches!(stage, Stage::HistogramFraction(_)))
+        .filter_map(HistStage::of)
+        .find(|h| h.per_series)
     {
-        return Err(unsupported_stage(stage));
-    }
-    if doc
-        .pipeline
-        .iter()
-        .any(|stage| matches!(stage, Stage::HistogramQuantile(hq) if hq.per_series))
-    {
-        return Err(QuerierError::Unsupported(
-            "histogram_quantile per_series is not supported yet".to_string(),
-        ));
+        return Err(QuerierError::Unsupported(format!(
+            "{} per_series is not supported yet",
+            h.name
+        )));
     }
     Ok(())
 }
@@ -1169,8 +1164,8 @@ pub(crate) async fn plan_document(
     let mut lookback = 0;
     for stage in &doc.pipeline {
         match stage {
-            Stage::HistogramQuantile(hq) => {
-                lookback = lookback.max(histogram_step_window(hq, &window)?.1);
+            _ if let Some(h) = HistStage::of(stage) => {
+                lookback = lookback.max(histogram_step_window(&h, &window)?.1);
             }
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
                 lookback = lookback.max(range_step_window(agg, a, &window)?.1);
@@ -1225,7 +1220,7 @@ pub(crate) async fn plan_document(
                 lower_frame_stage(df, stage, &env, doc, &operand_request).await?
             }
             // Needs the resolved window for its evaluation instants.
-            Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
+            _ if let Some(h) = HistStage::of(stage) => lowering.lower_histogram(df, &h, &window)?,
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
                 lowering.lower_rate_aggregate(df, agg, a, &window)?
             }
@@ -1451,24 +1446,67 @@ fn range_step_window(
     Ok((step_ns, window_ns))
 }
 
-/// A histogram_quantile's step and the window each instant reads: `window`
+/// The operands `histogram_quantile` and `histogram_fraction` share, and the
+/// statistic each computes.
+struct HistStage<'a> {
+    name: &'static str,
+    stat: HistStat,
+    by: &'a [String],
+    per_series: bool,
+    step: &'a str,
+    mode: HistogramMode,
+    window: Option<&'a str>,
+    lookback: Option<&'a str>,
+    as_name: &'a str,
+}
+
+impl<'a> HistStage<'a> {
+    fn of(stage: &'a Stage) -> Option<Self> {
+        Some(match stage {
+            Stage::HistogramQuantile(hq) => Self {
+                name: "histogram_quantile",
+                stat: HistStat::Quantile(hq.q),
+                by: &hq.by,
+                per_series: hq.per_series,
+                step: &hq.step,
+                mode: hq.mode,
+                window: hq.window.as_deref(),
+                lookback: hq.lookback.as_deref(),
+                as_name: &hq.as_name,
+            },
+            Stage::HistogramFraction(hf) => Self {
+                name: "histogram_fraction",
+                stat: HistStat::Fraction(hf.lower, hf.upper),
+                by: &hf.by,
+                per_series: hf.per_series,
+                step: &hf.step,
+                mode: hf.mode,
+                window: hf.window.as_deref(),
+                lookback: hf.lookback.as_deref(),
+                as_name: &hf.as_name,
+            },
+            _ => return None,
+        })
+    }
+}
+
+/// A histogram stage's step and the window each instant reads: `window`
 /// in rate mode, `lookback` in instant mode, the step when unset. Checked
 /// against the query's evaluation instants.
 fn histogram_step_window(
-    hq: &HistogramQuantile,
+    h: &HistStage<'_>,
     range: &ResolvedWindow,
 ) -> Result<(i64, i64), QuerierError> {
     let parse = |d: &str| {
-        common::query_ir::parse_duration_ns(d).ok_or_else(|| {
-            QuerierError::InvalidInput(format!("invalid histogram_quantile duration '{d}'"))
-        })
+        common::query_ir::parse_duration_ns(d)
+            .ok_or_else(|| QuerierError::InvalidInput(format!("invalid {} duration '{d}'", h.name)))
     };
-    let step_ns = parse(&hq.step)?;
-    let window = match hq.mode {
-        HistogramMode::Rate => &hq.window,
-        HistogramMode::Instant => &hq.lookback,
+    let step_ns = parse(h.step)?;
+    let window = match h.mode {
+        HistogramMode::Rate => h.window,
+        HistogramMode::Instant => h.lookback,
     };
-    let window_ns = window.as_deref().map_or(Ok(step_ns), parse)?;
+    let window_ns = window.map_or(Ok(step_ns), parse)?;
     check_instants(range.start_ns, range.end_ns, step_ns, window_ns)?;
     Ok((step_ns, window_ns))
 }
@@ -1733,9 +1771,9 @@ impl Lowering<'_> {
             Stage::Heatmap(heatmap) => self.lower_heatmap(df, heatmap),
             // Handled directly in `plan()`'s stage loop (needs an async
             // `.collect()` this sync method can't perform) — never reached.
-            Stage::HistogramQuantile(_) => Err(QuerierError::InvalidInput(
-                "histogram_quantile requires async lowering".into(),
-            )),
+            Stage::HistogramQuantile(_) | Stage::HistogramFraction(_) => Err(
+                QuerierError::InvalidInput(format!("{} requires async lowering", stage.name())),
+            ),
             // Discovery is answered from the registry and maintained
             // statistics in the router; a `describe` document never becomes a
             // plan, so reaching here means one was routed to a querier by
@@ -1758,8 +1796,7 @@ impl Lowering<'_> {
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
-            | Stage::Binop(_)
-            | Stage::HistogramFraction(_) => Err(unsupported_stage(stage)),
+            | Stage::Binop(_) => Err(unsupported_stage(stage)),
         }
     }
 
@@ -2245,27 +2282,28 @@ impl Lowering<'_> {
         .map_err(QuerierError::QueryFailed)
     }
 
-    /// Lower a `histogram_quantile` stage: the quantile of each group's
-    /// merged histogram at every evaluation instant `from + k·step`, each
-    /// series reduced over `(t - window, t]` first (`window` defaults to
-    /// `step`; its latest point, or in rate mode its increase). The output is shaped like
-    /// `lower_aggregate`'s `step` output (`bucket`, label columns, one value).
+    /// Lower a `histogram_quantile` or `histogram_fraction` stage: the
+    /// statistic of each group's merged histogram at every evaluation
+    /// instant `from + k·step`, each series reduced over `(t - window, t]`
+    /// first (`window` defaults to `step`; its latest point, or in rate mode
+    /// its increase). The output is shaped like `lower_aggregate`'s `step`
+    /// output (`bucket`, label columns, one value).
     /// Groups stay per metric, but the Series is labelled by `by` alone.
-    fn lower_histogram_quantile(
+    fn lower_histogram(
         &mut self,
         df: DataFrame,
-        hq: &HistogramQuantile,
+        h: &HistStage<'_>,
         window: &ResolvedWindow,
     ) -> Result<DataFrame, QuerierError> {
-        let (step_ns, window_ns) = histogram_step_window(hq, window)?;
-        let by_aliases: Vec<String> = hq.by.iter().map(|by| safe_ident(by)).collect();
+        let (step_ns, window_ns) = histogram_step_window(h, window)?;
+        let by_aliases: Vec<String> = h.by.iter().map(|by| safe_ident(by)).collect();
         let mut groups = vec![(col("metric_name"), "metric_name".to_string())];
-        for (by, alias) in hq.by.iter().zip(&by_aliases) {
+        for (by, alias) in h.by.iter().zip(&by_aliases) {
             groups.push((self.value_expr(by)?, alias.clone()));
         }
         let eval = HistEval {
-            stat: HistStat::Quantile(hq.q),
-            mode: match hq.mode {
+            stat: h.stat,
+            mode: match h.mode {
                 HistogramMode::Rate => Mode::Rate,
                 HistogramMode::Instant => Mode::Instant,
             },
@@ -2275,15 +2313,15 @@ impl Lowering<'_> {
             window_ns,
             offset_ns: 0,
         };
-        let df = histogram_series(df, &groups, &eval, &hq.as_name)?;
+        let df = histogram_series(df, &groups, &eval, h.as_name)?;
 
         self.aggregated = true;
         self.series_shaped = true;
         let mut new_col_of = HashMap::new();
-        for (by, alias) in hq.by.iter().zip(&by_aliases) {
+        for (by, alias) in h.by.iter().zip(&by_aliases) {
             new_col_of.insert(by.clone(), alias.clone());
         }
-        new_col_of.insert(hq.as_name.clone(), hq.as_name.clone());
+        new_col_of.insert(h.as_name.to_string(), h.as_name.to_string());
         self.col_of = new_col_of;
 
         let mut sort = vec![
@@ -5870,24 +5908,68 @@ mod tests {
         assert!(vs.len() == 1 && vs[0] > 2.0 && vs[0] <= 4.0, "{vs:?}");
     }
 
+    /// `histogram_fraction(0, 3, …)` per service at the one instant 1000,
+    /// reading the 5m before it, through the IR.
+    async fn fraction_ir(ctx: SessionContext, mode: &str) -> Vec<f64> {
+        let mut hf = serde_json::json!({
+            "lower": 0, "upper": 3, "by": ["service.name"], "step": "1us", "mode": mode, "as": "f"
+        });
+        hf[if mode == "rate" { "window" } else { "lookback" }] = "5m".into();
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "result": "series",
+            "range": { "from": 1000, "to": 1000 },
+            "pipeline": [{ "histogram_fraction": hf }]
+        }));
+        let (df, _) = IrService::new(ctx)
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        histogram_value(&df.collect().await.unwrap(), "f", Some("svc"))
+    }
+
+    /// The same through the PromQL path, which reads each series' latest point.
+    async fn fraction_promql(ctx: SessionContext) -> Vec<f64> {
+        let out = crate::query::metrics::MetricsService::new(ctx)
+            .query_range("histogram_fraction(0, 3, lat)", 0, 999, 1000, "t", "d")
+            .await
+            .unwrap();
+        histogram_value(&out, "value", Some("svc"))
+    }
+
+    /// Instant mode answers as PromQL does; rate mode as PromQL does over one
+    /// point holding the merged increase of [`HIVE_SERIES`], [2, 5, 7, 0].
+    #[tokio::test]
+    async fn histogram_fraction_matches_the_promql_path() {
+        let merged: &[(&str, i64, &[i64])] = &[("m", 10, &[2, 5, 7, 0])];
+        for kind in ["histogram", "exponential_histogram"] {
+            let hive = || histogram_points_ctx(kind, HIVE_SERIES);
+            let instant = fraction_ir(hive(), "instant").await;
+            assert!(
+                instant.len() == 1 && instant[0].is_finite(),
+                "{kind}: {instant:?}"
+            );
+            assert_eq!(instant, fraction_promql(hive()).await, "{kind}");
+            let rate = fraction_ir(hive(), "rate").await;
+            assert!(rate.len() == 1 && rate[0].is_finite(), "{kind}: {rate:?}");
+            let want = fraction_promql(histogram_points_ctx(kind, merged)).await;
+            assert_eq!(rate, want, "{kind}");
+        }
+        // Over the explicit bounds [1, 2, 4], 2 + 5 + 7/2 of 14 lie in [0, 3].
+        let rate = fraction_ir(histogram_points_ctx("histogram", HIVE_SERIES), "rate").await;
+        assert_eq!(rate, vec![0.75]);
+    }
+
     /// `irVersion` 10 histogram shapes validate but are refused before any
     /// scan until their lowering lands.
     #[tokio::test]
     async fn unexecutable_histogram_shapes_are_not_supported_yet() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
-        for (from, pipeline, expected) in [
-            (
-                "metrics",
-                serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
-                "histogram_quantile per_series is not supported yet",
-            ),
-            (
-                "metrics",
-                serde_json::json!([{ "histogram_fraction": {
-                    "lower": 0.0, "upper": 1.0, "step": "1m", "as": "f" } }]),
-                "histogram_fraction stage is not supported yet",
-            ),
-        ] {
+        for (from, pipeline, expected) in [(
+            "metrics",
+            serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
+            "histogram_quantile per_series is not supported yet",
+        )] {
             let d = doc(serde_json::json!({
                 "irVersion": 10, "from": from, "step": "1m", "range": { "from": 0, "to": 1000 },
                 "result": "series", "pipeline": pipeline
