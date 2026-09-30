@@ -436,6 +436,48 @@ layer. The IR grows whatever PromQL needs.
   return 400; PromQL honours `on`/`ignoring`/`group_*` and rejects
   many-to-many; `scalar()`/`time()` return scalars.
 
+### D12 — Cross-signal correlate
+
+**Grammar (irVersion 11, `Feature::SignalCorrelate`).** `correlate.to` is a
+plain string: `"parent"` keeps its irVersion 8 meaning (inner/left only, no
+other operands); any other value names a registered signal source other than
+`from` (an unknown name is a validation error, no longer a parse error). A
+signal target requires `on` (a logical key) and takes `kind`
+(`inner|left|semi|anti`), an optional `where`-only target `pipeline`, an
+optional `window: {before, after}` widening, and `fanout` (inner/left only,
+1..=10000, default 100). At most one correlate stage per pipeline.
+
+**Keys.** `trace_id` (traces/logs `trace_id`, profiles/exemplars `trace.id`),
+`span_id` (the trace/span pair), `resource_identity` (`resource.identity`, every
+signal) and `series_id` (`series.id`, metrics and exemplars). A key absent on
+either side, or not a group column of a preceding aggregate, is rejected; so a
+signal correlate may follow aggregate/topk ("slowest traces → their logs").
+
+**Two-phase lowering, never a free join over both tables.** Phase 1
+materializes the source relation, capped at `[querier].correlate_max_source_rows`
+(default 10 000; over it → RESOURCE_EXHAUSTED for every kind), and derives the
+canonical key set (Utf8 → lowercase, binary → lowercase hex, empty/null
+dropped) and the time envelope (min/max of the source time column, traces
+extended by duration; the document window when the column was aggregated
+away). Phase 2 scans the target within `[env.start − before, env.end + after]`
+— not clipped to the document range — then bounds it by key, applies the target
+`where` stages, and joins against the materialized source: semi → LeftSemi,
+anti → LeftAnti against the target's distinct keys (no fan-out cap).
+inner/left namespace target columns under `<target>.` and cap per-source-row
+fan-out by target time order (next layer). A missing target table matches
+nothing: semi/inner empty, anti/left all source rows.
+
+**Pushdown rule.** Only when the stored encoding equals the canonical form (a
+Utf8 key column, which the writer stores lowercase) does the key bound become a
+literal IN-list on the raw column (prunable). Otherwise the canonical form of
+the column is compared: correct, without claiming pruning.
+
+**Window semantics and reporting.** Absence (anti) and enrichment (left) are
+true *within the target window*. The querier reports every bound in the
+`CorrelateReport` Flight trailer (`rowLimit`, `fanoutLimit`, `window`), and the
+router surfaces them as `correlate_row_limit`, `correlate_fanout_limit` and
+`correlate_window` warnings; `window` lets a caller widen the scan for late data.
+
 ## Risks / Trade-offs
 
 - **Warm tier is unpruned without the derived index** → the typed map is cast-free
