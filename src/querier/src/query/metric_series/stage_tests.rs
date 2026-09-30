@@ -182,3 +182,32 @@ async fn filter_never_keeps_nan_but_ne() {
     doc["pipeline"][1] = json!({ "filter": { "op": "ne", "value": 0.0 } });
     assert_eq!(run(&points, doc).await.unwrap().num_rows(), 1);
 }
+
+#[tokio::test]
+async fn sort_orders_an_instant_by_value_with_nan_last() {
+    let points = [
+        gauge(60 * S, "a", 20.0, json!({"k": "a"})),
+        gauge(60 * S, "b", f64::NAN, json!({"k": "b"})),
+        gauge(60 * S, "c", 2.0, json!({"k": "c"})),
+    ];
+    let keys = |direction: &str| {
+        let mut doc = doc(json!([{ "sort": direction }]));
+        doc["range"]["to"] = json!(60 * S);
+        let points = points.clone();
+        async move {
+            let batch = run(&points, doc).await.unwrap();
+            series_rows(&batch)
+                .into_iter()
+                .map(|(_, l, _)| l[6..7].to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+    assert_eq!(keys("asc").await, ["c", "a", "b"]);
+    assert_eq!(keys("desc").await, ["a", "c", "b"]);
+    // Over a range the series stay in label-set order, as in Prometheus.
+    let got = over_two_series(json!([{ "sort": "desc" }])).await;
+    assert_eq!(
+        got,
+        rows(&[(60, A, 1.0), (120, A, 2.0), (60, B, 10.0), (120, B, 20.0)])
+    );
+}
