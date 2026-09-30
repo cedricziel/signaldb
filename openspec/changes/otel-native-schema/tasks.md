@@ -103,7 +103,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 - [ ] 11.1 Discovery/introspection over the logical schema + registry (sources, fields as dotted names + canonical type, value suggestions) — subsumes `query-field-discovery` build-side
 - [ ] 11.2 Expose the query surfaces via HTTP API + regenerate `signaldb-sdk` (CLI) and the UI TypeScript client; UI/CLI consume only generated clients; update the OpenAPI spec
-- [ ] 11.3 Archive superseded changes: `query-metrics-model`, `query-field-discovery`, `query-cross-signal-correlate`, `query-structural-traces`; reframe #811 to point here
+- [x] 11.3 Archive superseded changes: `query-metrics-model`, `query-field-discovery`, `query-cross-signal-correlate`, `query-structural-traces`; reframe #811 to point here
 - [ ] 11.4 Update docs/skills: `flight-schemas`, `storage-layout`, `adding-new-signal`, `tempo-api`, OTLP-ingestion, multi-tenancy/registry — to the logical/physical model (route via the docs skill)
 
 ## 12. Later stack layers (own changes — out of this charter's specs)
