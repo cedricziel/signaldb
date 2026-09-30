@@ -91,6 +91,7 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 - [x] 9.2 Add the `correlate` stage (DAG/sub-pipeline typing, key validation + survival-through-aggregation, post-join namespacing)
 - [x] 9.3 Bespoke two-phase lowering: materialize the source time envelope, inject it as a literal scan bound on the target (not a free equi-join); wide-side pushdown only when canonical key == stored encoding, else correct-without-pushdown
 - [x] 9.4 Inner/semi/anti/left join kinds; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+- [ ] 9.5 Correlate follow-ups deferred from 9.1–9.4 (#2052/#2053): record attribute demand (layer 6) for fields referenced under a correlate target (`<target>.x` in `where`/`aggregate`/`fields`, and the target `pipeline`); report the right `irVersion` for a signal-target correlate below v8 (today it says 8, then 11); resolve typed attributes under the target prefix when the target table is missing (they read null because the resolver falls back to compat mode)
 
 ## 10. Structural-trace matching
 
