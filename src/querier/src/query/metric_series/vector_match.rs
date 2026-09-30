@@ -280,7 +280,6 @@ impl ExecutionPlan for VectorMatchExec {
         self.inputs.iter().collect()
     }
 
-    #[allow(deprecated)]
     fn required_input_distribution(&self) -> Vec<Distribution> {
         vec![Distribution::SinglePartition; self.inputs.len()]
     }
@@ -296,7 +295,6 @@ impl ExecutionPlan for VectorMatchExec {
         Ok(TreeNodeRecursion::Continue)
     }
 
-    #[allow(deprecated)]
     fn with_new_children(
         self: Arc<Self>,
         children: Vec<Arc<dyn ExecutionPlan>>,
