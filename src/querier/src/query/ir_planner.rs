@@ -1009,23 +1009,16 @@ impl IrService {
     }
 }
 
-/// A pseudo-source has no table to scan, so it is refused before the scan:
-/// below `irVersion` 10 it is invalid (400), from 10 on it has no lowering
-/// yet (501).
+/// A pseudo-source below `irVersion` 10 is invalid (400); it has no table to
+/// scan, so this is checked before the scan.
 fn reject_pseudo_source(doc: &Document) -> Result<(), QuerierError> {
-    if !common::query_ir::is_pseudo_source(&doc.from) {
-        return Ok(());
-    }
-    if doc.ir_version < 10 {
+    if common::query_ir::is_pseudo_source(&doc.from) && doc.ir_version < 10 {
         return Err(QuerierError::InvalidInput(format!(
             "the {} source requires irVersion 10 (document declares {})",
             doc.from, doc.ir_version
         )));
     }
-    Err(QuerierError::Unsupported(format!(
-        "{} source is not supported yet",
-        doc.from
-    )))
+    Ok(())
 }
 
 /// The series-algebra shapes (`irVersion` 10) validate but have no lowering
@@ -1059,9 +1052,7 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 fn is_series_algebra(stage: &Stage) -> bool {
     matches!(
         stage,
-        Stage::Scalar(_)
-            | Stage::Vector(_)
-            | Stage::Reduce(_)
+        Stage::Reduce(_)
             | Stage::Map(_)
             | Stage::Labels(_)
             | Stage::Filter(_)
@@ -1103,6 +1094,11 @@ pub(crate) async fn plan_document(
         attribute_type_request,
     } = request;
     reject_pseudo_source(doc)?;
+    if common::query_ir::is_pseudo_source(&doc.from) {
+        let window = resolve_window(doc, now_ns)?;
+        let df = metric_series::scalar::plan_pseudo_source(ctx, doc, window)?;
+        return Ok(Some((df, window, None)));
+    }
     let source = SourcePlan::for_source(&doc.from)
         .ok_or_else(|| QuerierError::InvalidInput(format!("unknown source '{}'", doc.from)))?;
 
@@ -1193,6 +1189,7 @@ pub(crate) async fn plan_document(
     };
     let mut df = lowering.apply_time_window(base, &scan)?;
     let mut metric_frame = false;
+    let mut series_step = None;
     for stage in &doc.pipeline {
         df = match stage {
             Stage::Sample(sample) => {
@@ -1204,8 +1201,18 @@ pub(crate) async fn plan_document(
                     now_ns,
                     schema_cols: &lowering.schema_cols,
                 };
-                metric_series::sample::lower_sample(df, sample, &env)?.0
+                let (df, step_ns) = metric_series::sample::lower_sample(df, sample, &env)?;
+                series_step = Some(step_ns);
+                df
             }
+            // Only `sample` records the step `scalar` evaluates on.
+            Stage::Scalar(_) => {
+                let step_ns = series_step.ok_or_else(|| {
+                    QuerierError::Unsupported("scalar over a non-sampled Series".into())
+                })?;
+                metric_series::scalar::to_scalar(ctx, df, window, step_ns)?
+            }
+            Stage::Vector(_) => metric_series::scalar::to_vector(df)?,
             // Needs the resolved window for its evaluation instants.
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
             // Needs its own scan of the traces table (the parent side) and
@@ -5758,9 +5765,9 @@ mod tests {
                 "histogram_quantile lookback is not supported yet",
             ),
             (
-                "time",
-                serde_json::json!([{ "vector": {} }]),
-                "time source is not supported yet",
+                "metrics",
+                serde_json::json!([{ "sample": { "fn": "latest" } }, { "sort": "asc" }]),
+                "sort stage is not supported yet",
             ),
         ] {
             let d = doc(serde_json::json!({

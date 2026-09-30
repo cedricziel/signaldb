@@ -287,3 +287,128 @@ async fn offset_shifts_the_read_window_and_at_pins_it() {
     let at = values(json!({ "fn": "latest", "at": 30 * S })).await;
     assert_eq!(at, [(180, 1.0), (240, 1.0)]);
 }
+
+/// `(bucket seconds, value)` rows of a Scalar frame.
+fn scalar_rows(batch: &RecordBatch) -> Vec<(i64, f64)> {
+    let names: Vec<_> = batch
+        .schema()
+        .fields()
+        .iter()
+        .map(|f| f.name().clone())
+        .collect();
+    assert_eq!(names, ["bucket", "value"]);
+    let bucket = batch.column(0).as_primitive::<TimestampNanosecondType>();
+    let value = batch.column(1).as_primitive::<Float64Type>();
+    (0..batch.num_rows())
+        .map(|i| (bucket.value(i) / S, value.value(i)))
+        .collect()
+}
+
+fn scalar_doc(pipeline: JsonValue) -> JsonValue {
+    json!({
+        "irVersion": 10, "from": "metrics", "step": "60s",
+        "range": { "from": 60 * S, "to": 180 * S },
+        "result": "scalar", "pipeline": pipeline
+    })
+}
+
+#[tokio::test]
+async fn scalar_is_the_only_series_value_else_nan() {
+    let points = [
+        gauge(50 * S, "a", 1.0, json!({})),
+        gauge(110 * S, "a", 2.0, json!({})),
+        gauge(110 * S, "b", 3.0, json!({"k": "b"})),
+    ];
+    let latest = json!({ "sample": { "fn": "latest", "lookback": "30s" } });
+    let batch = run(&points, scalar_doc(json!([latest, { "scalar": {} }])))
+        .await
+        .unwrap();
+    let rows = scalar_rows(&batch);
+    // One series at 60s, two at 120s, none at 180s.
+    assert_eq!(rows[0], (60, 1.0));
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [60, 120, 180]);
+    assert!(rows[1].1.is_nan() && rows[2].1.is_nan());
+}
+
+#[tokio::test]
+async fn vector_turns_a_scalar_into_one_unlabelled_series() {
+    let points = [gauge(50 * S, "a", 1.0, json!({}))];
+    let pipeline = json!([
+        { "sample": { "fn": "latest", "lookback": "30s" } }, { "scalar": {} }, { "vector": {} }
+    ]);
+    let mut doc = scalar_doc(pipeline);
+    doc["result"] = json!("series");
+    let rows = series_rows(&run(&points, doc).await.unwrap());
+    assert_eq!(rows[0], (60, "{}".to_string(), 1.0));
+    assert_eq!(rows.len(), 3);
+}
+
+#[tokio::test]
+async fn time_and_constant_are_scalars_over_the_document_instants() {
+    let pseudo = |from: &str, extra: JsonValue| {
+        let mut doc = scalar_doc(json!([]));
+        doc["from"] = json!(from);
+        if let JsonValue::Object(extra) = extra {
+            doc.as_object_mut().unwrap().extend(extra);
+        }
+        doc
+    };
+    let time = run(&[], pseudo("time", json!({}))).await.unwrap();
+    assert_eq!(scalar_rows(&time), [(60, 60.0), (120, 120.0), (180, 180.0)]);
+    let constant = pseudo("constant", json!({ "constant": 2.5 }));
+    let constant = run(&[], constant).await.unwrap();
+    assert_eq!(scalar_rows(&constant), [(60, 2.5), (120, 2.5), (180, 2.5)]);
+    let vector = pseudo(
+        "time",
+        json!({ "result": "series", "pipeline": [{ "vector": {} }] }),
+    );
+    let rows = series_rows(&run(&[], vector).await.unwrap());
+    assert_eq!(rows[2], (180, "{}".to_string(), 180.0));
+}
+
+#[tokio::test]
+async fn scalar_over_an_empty_series_is_nan_at_every_instant() {
+    let points = [gauge(0, "a", 1.0, json!({}))];
+    let latest = json!({ "sample": { "fn": "latest", "lookback": "1s" } });
+    let batch = run(&points, scalar_doc(json!([latest, { "scalar": {} }])))
+        .await
+        .unwrap();
+    let rows = scalar_rows(&batch);
+    assert_eq!(rows.iter().map(|r| r.0).collect::<Vec<_>>(), [60, 120, 180]);
+    assert!(rows.iter().all(|r| r.1.is_nan()), "{rows:?}");
+}
+
+#[tokio::test]
+async fn scalar_over_a_step_aggregate_is_not_supported() {
+    let points = [gauge(60 * S, "a", 1.0, json!({}))];
+    let aggregate = json!({ "aggregate": {
+        "by": [], "aggs": [{ "fn": "sum", "of": "metric.value", "as": "v" }], "step": "60s"
+    } });
+    let err = run(&points, scalar_doc(json!([aggregate, { "scalar": {} }])))
+        .await
+        .unwrap_err();
+    assert!(matches!(err, QuerierError::Unsupported(_)), "{err}");
+}
+
+/// Every entry point that enumerates instants refuses more than 11000.
+#[tokio::test]
+async fn more_than_11000_instants_is_invalid_input() {
+    let latest = json!({ "sample": { "fn": "latest", "lookback": "1s" } });
+    let docs = [
+        json!({ "from": "time" }),
+        json!({ "from": "constant", "constant": 1.0 }),
+        json!({ "pipeline": [latest, { "scalar": {} }] }),
+    ];
+    for extra in docs {
+        let mut doc = scalar_doc(json!([]));
+        doc["step"] = json!("10ms");
+        doc.as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        let err = run(&[], doc.clone()).await.unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("11000 instants")),
+            "{doc}: {err}"
+        );
+    }
+}

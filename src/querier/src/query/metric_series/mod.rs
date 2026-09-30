@@ -12,6 +12,7 @@ use crate::query::error::QuerierError;
 pub mod label_ops;
 pub mod labels;
 pub mod sample;
+pub mod scalar;
 pub(crate) mod vector_match;
 
 #[cfg(test)]
