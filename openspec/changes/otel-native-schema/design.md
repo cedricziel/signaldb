@@ -474,9 +474,20 @@ row order (a row ordinal rides through the join), so `aggregate → topk →
 correlate → limit` keeps the topk order. A key field that does not read a
 stored column on either side (e.g. an older table without it) is a 400, not a
 silent no-match.
-inner/left namespace target columns under `<target>.` and cap per-source-row
-fan-out by target time order (next layer). A missing target table matches
-nothing: semi/inner empty, anti/left all source rows.
+
+inner/left namespace target columns under `<target>.` (target fields resolve
+there against the target source, like `parent.`, shadowing any source
+attribute key under that prefix) and keep at most `fanout` matches per source
+row. The cap is applied on the target side before the join, per target key
+tuple, so the join output is bounded by source rows × `fanout`: matches are
+ranked by target time, then the remaining non-nested target columns, and rows
+equal in all of those (differing only in attribute containers) tie in
+unspecified order. The target is first restricted to the key tuples the source
+holds, so a dropped match is a real overflow and is reported; a left join's
+unmatched row is never dropped. The output keeps source row order, then match
+order. A missing target table joins as an empty table of its canonical schema:
+it matches nothing (semi/inner empty, anti/left all source rows) and inner/left
+keep the same target columns.
 
 **Pushdown rule.** Only when the stored encoding equals the canonical form (a
 Utf8 key column the writer is known to store canonically: trace/span ids of
