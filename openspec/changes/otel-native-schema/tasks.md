@@ -71,19 +71,19 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 ## 8. Metric-native query operators
 
-- [ ] 8.1 Failing tests: instant/range/scalar distinct relation types (mismatch = type error); temporality-aware rate/increase with start_time resets; histogram_quantile over typed explicit + exponential buckets; vector-matching output labels + many-to-many rejection; scalar envelope (spec `metric-native-query`)
-- [ ] 8.2 Implement as **custom query-engine operators** (UDWF accumulators for rate/increase, array operators for quantiles, a label-set join + cardinality-validation node for vector matching) over the typed metric substrate — not SQL lowering (design.md D11)
-  - [ ] 8.2.1 windowed range accumulator: rate/increase/irate and the other range functions per (series, evaluation instant) (temporality, start_time resets, gauge rejection)
-  - [ ] 8.2.2 histogram bucket merge UDAF + quantile UDF, explicit buckets
-  - [ ] 8.2.3 exponential-histogram merge + quantile (OTel merge rule, exponential interpolation, min/max clamp)
-  - [ ] 8.2.4 point-stream / Series / Scalar relation typing, `irVersion` 10
-  - [ ] 8.2.5 evaluation-instant planning of metric Series on the new operators (legacy `aggregate` range fns and `histogram_quantile` included)
-  - [ ] 8.2.6 scalar result envelope
-  - [ ] 8.2.7 `binop` stage + vector-matching node
-  - [ ] 8.2.8 series-algebra stages PromQL needs (`sample`, `reduce`, `map`, `labels`, `filter`, `sort`, `absent`, `over_time`, `scalar`/`vector`, `histogram_fraction`, time/constant sources)
-- [ ] 8.3 Re-express the PromQL dialect as a projection onto this model; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
-  - [ ] 8.3.1 `ql-ir` PromQL lowering; the Prometheus endpoints execute IR documents
-  - [ ] 8.3.2 delete the PromQL evaluator (`querier::query::{promql,metrics}` plan/eval paths)
+- [x] 8.1 Failing tests: instant/range/scalar distinct relation types (mismatch = type error); temporality-aware rate/increase with start_time resets; histogram_quantile over typed explicit + exponential buckets; vector-matching output labels + many-to-many rejection; scalar envelope (spec `metric-native-query`)
+- [x] 8.2 Implement as **custom query-engine operators** (UDWF accumulators for rate/increase, array operators for quantiles, a label-set join + cardinality-validation node for vector matching) over the typed metric substrate — not SQL lowering (design.md D11)
+  - [x] 8.2.1 windowed range accumulator: rate/increase/irate and the other range functions per (series, evaluation instant) (temporality, start_time resets, gauge rejection)
+  - [x] 8.2.2 histogram bucket merge UDAF + quantile UDF, explicit buckets
+  - [x] 8.2.3 exponential-histogram merge + quantile (OTel merge rule, exponential interpolation, min/max clamp)
+  - [x] 8.2.4 point-stream / Series / Scalar relation typing, `irVersion` 10
+  - [x] 8.2.5 evaluation-instant planning of metric Series on the new operators (legacy `aggregate` range fns and `histogram_quantile` included)
+  - [x] 8.2.6 scalar result envelope
+  - [x] 8.2.7 `binop` stage + vector-matching node
+  - [x] 8.2.8 series-algebra stages PromQL needs (`sample`, `reduce`, `map`, `labels`, `filter`, `sort`, `absent`, `over_time`, `scalar`/`vector`, `histogram_fraction`, time/constant sources)
+- [x] 8.3 Re-express the PromQL dialect as a projection onto this model; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+  - [x] 8.3.1 `ql-ir` PromQL lowering; the Prometheus endpoints execute IR documents
+  - [x] 8.3.2 delete the PromQL evaluator (`querier::query::{promql,metrics}` plan/eval paths)
 
 ## 9. Cross-signal correlation
 
