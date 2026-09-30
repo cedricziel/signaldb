@@ -23,8 +23,8 @@ use datafusion::logical_expr::{Expr, Operator, binary_expr, cast, col, lit};
 use datafusion::prelude::{DataFrame, ident};
 use datafusion::scalar::ScalarValue;
 
-use super::label_ops::labels_drop_name_udf;
 use super::labels::{LABELS_COLUMN, bag_arg, series_labels_udf};
+use super::stages::drop_name;
 use crate::query::error::QuerierError;
 use crate::query::ir_planner::ResolvedWindow;
 use crate::query::metric_ops::instants::covering_instants_udf;
@@ -291,17 +291,9 @@ pub(crate) fn lower_sample(
     let evaluated = points
         .aggregate(vec![col(LABELS_COLUMN), col(INSTANT)], aggs)?
         .filter(kept)?;
-    let mut labels = col(LABELS_COLUMN);
-    if drops_name(sample.func) {
-        labels = labels_drop_name_udf().call(vec![labels]);
-    }
     // The evaluation instant `t`: the read-window end plus the offset, or,
     // under `at`, every instant of the range.
-    let evaluated = evaluated.select(vec![
-        col(INSTANT),
-        labels.alias(LABELS_COLUMN),
-        col("value"),
-    ])?;
+    let evaluated = evaluated.select(vec![col(INSTANT), col(LABELS_COLUMN), col("value")])?;
     let evaluated = if r.at {
         let all = gen_series(
             lit(env.window.start_ns),
@@ -318,9 +310,13 @@ pub(crate) fn lower_sample(
         col(INSTANT),
         DataType::Timestamp(TimeUnit::Nanosecond, None),
     );
-    Ok(evaluated.select(vec![
+    let out = evaluated.select(vec![
         bucket.alias("bucket"),
         ident(LABELS_COLUMN),
         col("value"),
-    ])?)
+    ])?;
+    if drops_name(sample.func) {
+        return drop_name(out);
+    }
+    Ok(out)
 }

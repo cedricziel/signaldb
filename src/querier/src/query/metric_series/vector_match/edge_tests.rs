@@ -24,10 +24,10 @@ fn as_bool(op: BinopOp) -> Binop {
     }
 }
 
-fn assert_internal(result: Result<Vec<super::tests::Row>, QuerierError>, needle: &str) {
+fn assert_invalid(result: Result<Vec<super::tests::Row>, QuerierError>, needle: &str) {
     match result {
-        Err(QuerierError::QueryFailed(e)) => assert!(e.to_string().contains(needle), "{e}"),
-        other => panic!("expected an internal error containing {needle:?}, got {other:?}"),
+        Err(QuerierError::InvalidInput(e)) => assert!(e.contains(needle), "{e}"),
+        other => panic!("expected invalid input containing {needle:?}, got {other:?}"),
     }
 }
 
@@ -229,7 +229,7 @@ async fn vector_match_rejects_malformed_frames_and_specs() {
         Operand::Number(1.0),
         spec(BinopOp::Add),
     );
-    assert_internal(dup.await, "two rows");
+    assert_invalid(dup.await, "same labelset");
     let both = Binop {
         on: Some(vec!["job".to_string()]),
         ..ignoring(BinopOp::Add, &["inst"])
@@ -240,7 +240,7 @@ async fn vector_match_rejects_malformed_frames_and_specs() {
         both,
     )
     .await;
-    assert_internal(both, "both set");
+    assert_invalid(both, "mutually exclusive");
 }
 
 #[tokio::test]

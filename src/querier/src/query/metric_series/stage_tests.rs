@@ -482,3 +482,63 @@ async fn a_dataset_without_metrics_still_rejects_a_malformed_document() {
         .unwrap();
     assert_eq!(batch.num_rows(), 2);
 }
+
+async fn same_labelset_error(points: &[super::tests::Pt], stages: JsonValue) {
+    let err = run(points, doc(stages)).await.unwrap_err();
+    assert!(
+        matches!(&err, crate::query::error::QuerierError::InvalidInput(m) if m.contains("same labelset")),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn dropping_the_name_to_one_labelset_is_invalid_input() {
+    let points = [
+        gauge(60 * S, "a", 1.0, json!({"code": 200})),
+        super::tests::Pt {
+            metric: "other",
+            ..gauge(60 * S, "b", 2.0, json!({"code": 200}))
+        },
+    ];
+    same_labelset_error(&points, json!([{ "map": { "fn": "abs" } }])).await;
+    let bool_filter = json!([{ "filter": { "op": "gt", "value": 0.0, "bool": true } }]);
+    same_labelset_error(&points, bool_filter).await;
+    let add = json!([{ "binop": { "op": "add", "right": 1.0 } }]);
+    same_labelset_error(&points, add).await;
+    // The check holds when no later stage reads the values.
+    let then_group = json!([{ "map": { "fn": "abs" } }, { "reduce": { "fn": "group" } }]);
+    same_labelset_error(&points, then_group).await;
+    let then_absent = json!([{ "map": { "fn": "abs" } }, { "absent": {} }]);
+    same_labelset_error(&points, then_absent).await;
+    // A filtering comparison keeps the names, and so both series.
+    let gt = json!([{ "filter": { "op": "gt", "value": 0.0 } }]);
+    assert_eq!(run(&points, doc(gt)).await.unwrap().num_rows(), 4);
+}
+
+#[tokio::test]
+async fn a_subquery_dropping_the_name_to_one_labelset_is_invalid_input() {
+    let points = [
+        gauge(60 * S, "a", 1.0, json!({"code": 200})),
+        super::tests::Pt {
+            metric: "other",
+            ..gauge(60 * S, "b", 2.0, json!({"code": 200}))
+        },
+    ];
+    let over = json!([{ "over_time": { "fn": "max", "window": "2m" } }]);
+    same_labelset_error(&points, over).await;
+}
+
+#[tokio::test]
+async fn relabelling_two_series_to_one_labelset_is_invalid_input() {
+    let points = [
+        gauge(60 * S, "a", 1.0, json!({"code": 200})),
+        gauge(60 * S, "b", 10.0, json!({"code": 500})),
+    ];
+    let replace = json!([{ "labels": { "replace": {
+        "dst": "code", "replacement": "x", "src": "code", "regex": ".*"
+    } } }]);
+    same_labelset_error(&points, replace).await;
+    let join =
+        json!([{ "labels": { "join": { "dst": "code", "separator": "", "src": ["nope"] } } }]);
+    same_labelset_error(&points, join).await;
+}

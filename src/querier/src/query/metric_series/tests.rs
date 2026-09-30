@@ -758,10 +758,10 @@ async fn series_indistinguishable_by_their_labels_are_one_series() {
     }
 }
 
-/// Dropping `metric.name` can make two metrics' results collide; the Series
-/// frame keeps both rows so the router rejects them, as Prometheus does.
+/// Dropping `metric.name` can make two metrics' results collide
+/// (`rate({__name__=~"requests|other"}[100s])`): a 400, as in Prometheus.
 #[tokio::test]
-async fn a_collision_after_dropping_the_name_keeps_both_rows() {
+async fn a_collision_after_dropping_the_name_is_invalid_input() {
     let other = |p: Pt| Pt {
         metric: "other",
         ..p
@@ -773,12 +773,10 @@ async fn a_collision_after_dropping_the_name_keeps_both_rows() {
         other(counter(90 * S, "b", 4.0, json!({}))),
     ];
     let doc = sample_doc(120, 120, json!({ "fn": "rate", "window": "100s" }));
-    let rows = series_rows(&run(&points, doc).await.unwrap());
-    let unnamed = r#"{"service.name":"svc"}"#;
-    assert_eq!(rows.len(), 2, "{rows:?}");
+    let err = run(&points, doc).await.unwrap_err();
     assert!(
-        rows.iter().all(|(t, l, _)| *t == 120 && l == unnamed),
-        "{rows:?}"
+        matches!(&err, QuerierError::InvalidInput(m) if m.contains("same labelset")),
+        "{err}"
     );
 }
 

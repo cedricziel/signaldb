@@ -1083,7 +1083,11 @@ Rewrite one label of every series, as PromQL's `label_replace` and
 `src`: `{"dst": "d", "replacement": "v", "src": "", "regex": ""}` adds a
 constant label); otherwise the series is unchanged. `join` sets `dst` to the
 values of `src` (absent as `""`) joined by `separator`. Either way an empty
-result removes `dst`.
+result removes `dst`. Two series rewritten to one label set at one instant
+are a 400 (`vector cannot contain metrics with the same labelset`), as in
+Prometheus; so are two series that dropping `metric.name` (a `sample`
+function such as `rate`, an `over_time`, a `map`, a `bool` `filter`, an
+arithmetic `binop`) leaves with one label set.
 
 #### `map`
 

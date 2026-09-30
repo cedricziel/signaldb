@@ -9,9 +9,9 @@ use datafusion::prelude::DataFrame;
 use datafusion::scalar::ScalarValue;
 
 use super::FrameEnv;
-use super::label_ops::labels_drop_name_udf;
 use super::labels::{LABELS_COLUMN, encode};
 use super::scalar::instants;
+use super::stages::drop_name;
 use crate::query::error::QuerierError;
 use crate::query::ir_planner::ResolvedWindow;
 use crate::query::metric_ops::instants::covering_instants_udf;
@@ -155,15 +155,11 @@ pub(super) fn lower_over_time(
         lit("gauge"),
         col(INSTANT),
     ]);
-    let mut labels = col(LABELS_COLUMN);
-    if over.func != OverTimeFn::Last {
-        labels = labels_drop_name_udf().call(vec![labels]);
-    }
     let bucket = cast(
         col(INSTANT),
         DataType::Timestamp(TimeUnit::Nanosecond, None),
     );
-    Ok(points
+    let out = points
         .aggregate(
             vec![col(LABELS_COLUMN), col(INSTANT)],
             vec![range.alias("value")],
@@ -171,9 +167,13 @@ pub(super) fn lower_over_time(
         .filter(col("value").is_not_null())?
         .select(vec![
             bucket.alias("bucket"),
-            labels.alias(LABELS_COLUMN),
+            col(LABELS_COLUMN),
             col("value"),
-        ])?)
+        ])?;
+    if over.func == OverTimeFn::Last {
+        return Ok(out);
+    }
+    drop_name(out)
 }
 
 #[cfg(test)]

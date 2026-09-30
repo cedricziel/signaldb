@@ -165,3 +165,39 @@ async fn two_scalars_combine_into_a_scalar() {
     let got = super::tests::scalar_rows(&run(&[], doc).await.unwrap());
     assert_eq!(got, [(60, 61.0), (120, 121.0)]);
 }
+
+#[tokio::test]
+async fn on_with_ignoring_is_invalid_input() {
+    let err = x_op_y(
+        &jobs(),
+        json!({ "op": "add", "on": ["job"], "ignoring": ["inst"] }),
+    )
+    .await
+    .unwrap_err();
+    assert!(matches!(&err, QuerierError::InvalidInput(_)), "{err}");
+}
+
+#[tokio::test]
+async fn an_operand_with_two_series_of_one_labelset_is_invalid_input() {
+    // `avg_over_time({__name__=~"x|z"}[1m]) + y`: x and z lose their names
+    // to one label set.
+    let points = [
+        point("x", "x1", 1.0, json!({"job": "api"})),
+        point("z", "z1", 2.0, json!({"job": "api"})),
+        point("y", "y1", 3.0, json!({"job": "api"})),
+    ];
+    let doc = json!({
+        "irVersion": 10, "from": "metrics", "step": "60s",
+        "range": { "from": 60 * S, "to": 60 * S }, "result": "series",
+        "pipeline": [
+            { "where": { "field": "metric.name", "op": "in", "value": ["x", "z"] } },
+            { "sample": { "fn": "avg_over_time", "window": "1m" } },
+            { "binop": { "op": "add", "right": { "from": "metrics", "pipeline": select("y") } } }
+        ]
+    });
+    let err = run(&points, doc).await.unwrap_err();
+    assert!(
+        matches!(&err, QuerierError::InvalidInput(m) if m.contains("same labelset")),
+        "{err}"
+    );
+}

@@ -78,9 +78,9 @@ pub(crate) fn vector_match(
     spec: &Binop,
 ) -> Result<DataFrame, QuerierError> {
     if spec.on.is_some() && spec.ignoring.is_some() {
-        return Err(QuerierError::QueryFailed(DataFusionError::Internal(
-            "binop `on` and `ignoring` are both set".to_string(),
-        )));
+        return Err(QuerierError::InvalidInput(
+            "binop `on` and `ignoring` are mutually exclusive".to_string(),
+        ));
     }
     let (left, right) = if spec.reverse {
         (right, left)
