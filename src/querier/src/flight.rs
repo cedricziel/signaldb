@@ -598,6 +598,7 @@ impl QuerierFlightService {
         let ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_correlate_max_source_rows(limits.correlate_max_source_rows)
+            .with_match_limits(limits.match_max_trace_spans, limits.match_max_trace_bytes)
             .with_graph_max_nodes(limits.graph_max_nodes);
 
         Self {
@@ -685,6 +686,7 @@ impl QuerierFlightService {
         let mut ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_correlate_max_source_rows(limits.correlate_max_source_rows)
+            .with_match_limits(limits.match_max_trace_spans, limits.match_max_trace_bytes)
             .with_graph_max_nodes(limits.graph_max_nodes);
         // Only meaningful with a database tenant source attached — without
         // one, a typed-layout table's query fails loudly instead of

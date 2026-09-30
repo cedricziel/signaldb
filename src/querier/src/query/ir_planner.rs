@@ -39,9 +39,9 @@ use common::flight::{CorrelateReport, CorrelateWindowReport};
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
-    FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Parser, Predicate, Resolved,
-    ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral, ValueType, coerce,
-    parse_duration_ns, safe_ident, validate,
+    FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Match, Parser, Predicate,
+    Resolved, ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral, ValueType,
+    coerce, parse_duration_ns, safe_ident, validate,
 };
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use common::schema::type_authority::CanonicalType;
@@ -82,6 +82,7 @@ use super::metric_ops::range_math::RangeFn;
 use super::metric_ops::range_plan::{RangeEval, range_series};
 use super::metric_series;
 use super::profile::batch_to_models;
+use super::structural_match::{self, MatchLimits};
 use super::table_lookup::{optional_table_provider, scan_provider};
 use super::typed_attrs::{CanonicalTypeLookup, CanonicalTypes};
 use datafusion::common::TableReference;
@@ -846,6 +847,8 @@ pub struct IrService {
     /// Source-row cap of a signal-target `correlate`
     /// (`[querier].correlate_max_source_rows`).
     correlate_max_source_rows: usize,
+    /// `[querier].match_max_trace_spans` / `match_max_trace_bytes`.
+    match_limits: MatchLimits,
     /// Node cap on a `graph` result (`[querier].graph_max_nodes`).
     graph_max_nodes: usize,
     /// Fetches committed canonical attribute types for a typed-layout table
@@ -869,6 +872,7 @@ impl IrService {
             session_context: Arc::new(session_context),
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             correlate_max_source_rows: DEFAULT_CORRELATE_MAX_SOURCE_ROWS,
+            match_limits: MatchLimits::default(),
             graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
             canonical_type_lookup: None,
         }
@@ -899,6 +903,16 @@ impl IrService {
     /// `[querier].correlate_max_source_rows`.
     pub fn with_correlate_max_source_rows(mut self, correlate_max_source_rows: usize) -> Self {
         self.correlate_max_source_rows = correlate_max_source_rows;
+        self
+    }
+
+    /// Override the `match` stage's per-trace bounds, from
+    /// `[querier].match_max_trace_spans` / `match_max_trace_bytes`.
+    pub fn with_match_limits(mut self, max_spans: usize, max_bytes: usize) -> Self {
+        self.match_limits = MatchLimits {
+            max_spans,
+            max_bytes,
+        };
         self
     }
 
@@ -1086,6 +1100,7 @@ impl IrService {
             PlanRequest::new(tenant_slug, dataset_slug, now_ns)
                 .with_correlate_max_rows(self.correlate_max_rows)
                 .with_correlate_max_source_rows(self.correlate_max_source_rows)
+                .with_match_limits(self.match_limits)
                 .with_attribute_type_request(attribute_type_request),
         )
         .await
@@ -1150,9 +1165,13 @@ async fn plan_operand(
         now_ns,
         correlate_max_rows,
         correlate_max_source_rows,
+        match_limits,
         attribute_type_request,
     } = request;
     reject_pseudo_source(doc)?;
+    // Before the missing-table shortcut below skips `validate`.
+    common::query_ir::check_structure(doc)
+        .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
     if common::query_ir::is_pseudo_source(&doc.from) {
         let window = resolve_window(doc, now_ns)?;
         let df = plan_pseudo_document(ctx, doc, window, &operand_request).await?;
@@ -1342,6 +1361,7 @@ async fn plan_operand(
                     _ => lowering.lower_correlate(ctx, df, correlate, scan).await?,
                 }
             }
+            Stage::Match(stage) => lowering.lower_match(df, stage, match_limits)?,
             other => lowering.lower_stage(df, other)?,
         };
         series_step = metric_series::output_step(stage, series_step, doc_step);
@@ -2109,6 +2129,7 @@ pub(crate) struct PlanRequest<'a> {
     pub now_ns: i64,
     pub correlate_max_rows: usize,
     pub correlate_max_source_rows: usize,
+    pub match_limits: MatchLimits,
     pub attribute_type_request: AttributeTypeRequest,
 }
 
@@ -2120,6 +2141,7 @@ impl<'a> PlanRequest<'a> {
             now_ns,
             correlate_max_rows: DEFAULT_CORRELATE_MAX_ROWS,
             correlate_max_source_rows: DEFAULT_CORRELATE_MAX_SOURCE_ROWS,
+            match_limits: MatchLimits::default(),
             attribute_type_request: AttributeTypeRequest::CompatOnly,
         }
     }
@@ -2134,6 +2156,11 @@ impl<'a> PlanRequest<'a> {
         correlate_max_source_rows: usize,
     ) -> Self {
         self.correlate_max_source_rows = correlate_max_source_rows;
+        self
+    }
+
+    pub(crate) fn with_match_limits(mut self, match_limits: MatchLimits) -> Self {
+        self.match_limits = match_limits;
         self
     }
 
@@ -2319,6 +2346,8 @@ impl<'a> Lowering<'a> {
             Stage::Correlate(_) => Err(QuerierError::InvalidInput(
                 "correlate requires async lowering".into(),
             )),
+            // Lowered in `plan_operand`, which holds the request's bounds.
+            Stage::Match(_) => Err(internal("match reached lower_stage".into())),
             Stage::Sample(_)
             | Stage::Scalar(_)
             | Stage::Vector(_)
@@ -2329,8 +2358,7 @@ impl<'a> Lowering<'a> {
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
-            | Stage::Binop(_)
-            | Stage::Match(_) => Err(unsupported_stage(stage)),
+            | Stage::Binop(_) => Err(unsupported_stage(stage)),
         }
     }
 
@@ -2451,6 +2479,36 @@ impl<'a> Lowering<'a> {
         self.scope = Some(self.parent_scope());
         self.correlate_truncated = Some(truncated);
         Ok(joined)
+    }
+
+    /// Lower the `match` stage (`irVersion` 12) through the per-trace
+    /// evaluator in [`structural_match`].
+    fn lower_match(
+        &mut self,
+        df: DataFrame,
+        stage: &Match,
+        limits: MatchLimits,
+    ) -> Result<DataFrame, QuerierError> {
+        if let Some(clash) = self
+            .schema_cols
+            .iter()
+            .find(|c| c.starts_with(structural_match::FLAG_PREFIX) || *c == Match::SPANSETS)
+        {
+            return Err(QuerierError::InvalidInput(format!(
+                "column '{clash}' collides with a name the match stage reserves"
+            )));
+        }
+        let flags = stage
+            .spansets
+            .0
+            .iter()
+            .map(|(_, pred)| Ok(coalesce(vec![self.lower_predicate(pred)?, lit(false)])))
+            .collect::<Result<Vec<_>, QuerierError>>()?;
+        let df = structural_match::lower(df, stage, flags, self.source.time_col, limits)?;
+        self.col_of
+            .insert(Match::SPANSETS.to_string(), Match::SPANSETS.to_string());
+        self.schema_cols.push(Match::SPANSETS.to_string());
+        Ok(df)
     }
 
     fn parent_scope(&self) -> CorrelateScope<'a> {
@@ -3965,6 +4023,9 @@ impl<'a> Lowering<'a> {
                         projection.extend(self.row_default_exprs(scope.plan, &scope.prefix))
                     }
                     None => {}
+                }
+                if self.schema_cols.iter().any(|c| c == Match::SPANSETS) {
+                    projection.push(ident(Match::SPANSETS));
                 }
                 projection
             }
