@@ -8,6 +8,10 @@ sources:
   - src/writer/src/schema_transform.rs
   - src/common/src/schema/schema_parser.rs
   - src/common/src/iceberg/schemas.rs
+  - src/common/src/schema/logical.rs
+  - src/common/src/schema/typed_attributes.rs
+  - src/common/src/schema/type_authority.rs
+  - src/common/src/schema/type_authority/**
 ---
 
 # SignalDB Flight Schemas & Schema Versioning
@@ -35,6 +39,54 @@ Schema resolution in `SchemaDefinitions` (`src/common/src/schema/schema_parser.r
 `SchemaDefinitions::version_chain` separately computes the forward hop order between two named versions by walking `inherits` backward from the target and reversing — version _names_ carry no ordering of their own, only `inherits` pointers do. This is what drives live-table schema evolution (see `docs/architecture/storage-layout.md`'s "Schema Evolution" section) — `resolve_table_schema`'s own step-list above is for resolving one version's field set, not for sequencing versions.
 
 **Positional field IDs, and why evolving a live table can't use them**: `ResolvedSchema::to_iceberg_schema()` assigns Iceberg field IDs by position (`idx + 1`) every time it's called — safe for a table being created fresh, but unsafe to diff against an existing table's live schema (a version that removes a field in the middle would shift every later field's ID, corrupting the mapping already burned into that table's Parquet files). `common::iceberg::evolution`'s live-table functions diff by field _name_ against the table's actual persisted schema instead, reusing existing IDs untouched and minting new ones only for genuine additions.
+
+## Logical schema
+
+`LogicalSchema::core()` (`src/common/src/schema/logical.rs`) is the one
+client-visible schema that ingest, the Query IR and every dialect bind to. It
+names fields the way OpenTelemetry does and says nothing about storage;
+`schemas.toml` is its physical realization, and `common/tests/schema_realization.rs`
+checks that every physical column is a logical field (directly or by alias), an
+attribute container, or `physical_only`.
+
+- **Identity.** A field is `(source, level, name)`: source is `logs`, `traces`,
+  `metrics`, `exemplars` or `profiles`; level is an `AttributeLevel` (`resource`,
+  `scope`, `record`) for attributes and absent for record metadata. A resource
+  and a record attribute with the same dotted name are distinct fields.
+  Unqualified names shadow record, then scope, then resource; `resource.`,
+  `scope.` and `record.` qualify explicitly.
+- **Types.** `LogicalType` is `String`, `Bool`, `Int64`, `Float64`,
+  `TimestampNs`, `DurationNs`, `Bytes` or `AnyValue`. Log `body` is an
+  `AnyValue`.
+- **Record metadata** carries the OTLP fields the records have: log
+  `severity_number`/`severity_text`/`trace_flags`/`event_name`/
+  `observed_timestamp`, `dropped_*_count` on logs and traces, span kind and
+  status numbers.
+- **Join keys.** `trace_id` and `span_id` mean the same thing on `traces` and
+  `logs` (on `profiles` and `exemplars` they are `trace.id` and `span.id`);
+  `series.id` links `metrics` to `exemplars`.
+- **Resource identity.** `resource.identity` is a SignalDB-defined digest of the
+  resource attribute set, flagged non-native.
+- **Retrieval-only fields** can be read but not used in predicates: span
+  events, the `{scope}.attributes` bags (which return the original `AnyValue`s,
+  including residue content), and the metric bucket, bound and quantile lists.
+- **Metrics** are one logical source. `metric.type`, `metric.temporality` and
+  `metric.monotonic` are fields on it, not separate per-type sources.
+  Exemplars are the sibling `exemplars` source (`exemplar.value`,
+  `exemplar.filtered_attributes`, `trace.id`, `span.id`).
+- **`physical_only`** marks columns that exist in a table but are not logical
+  fields: computed and partition columns, and other storage-only columns.
+  Physical names are rejected in queries.
+- **Version.** `LogicalSchema::VERSION` is `otel-2026-09` and must equal
+  `logical_schema_version` in `schemas.toml`. A fingerprint test fails when the
+  field set changes without a bump.
+
+Attribute values are typed by the type authority
+(`src/common/src/schema/type_authority/`): one canonical type (string, int64,
+float64, bool) per tenant, dataset, signal, level and key, chosen by config pin,
+then semconv hint, then first-observed. Values of the canonical type live in
+the matching `{container}_str/_int/_double/_bool` map; everything else stays in
+`{container}_residue` (`typed_attributes.rs` names the columns).
 
 ## Flight Schema (v1) vs Iceberg Schema (physical-v4 intermediate shape)
 
