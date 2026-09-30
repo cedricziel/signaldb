@@ -186,6 +186,9 @@ fn infer<'a>(
     if doc.result == ResultEnvelope::Scalar {
         require_feature(&registry, Feature::ScalarEnvelope, "scalar result envelope")?;
     }
+    if doc.result == ResultEnvelope::Trace {
+        require_feature(&registry, Feature::TraceEnvelope, "trace result envelope")?;
+    }
     let doc_step_ns = check_document_step(doc, &registry)?;
 
     // 2. Source resolution — unknown source is a clear error, not a parse
@@ -2187,7 +2190,9 @@ fn validate_envelope(
         (ResultEnvelope::Flamegraph, RelationType::RowSet(rs)) => {
             source == "profiles" && !rs.aggregated
         }
-        (ResultEnvelope::Graph, RelationType::RowSet(rs)) => source == "traces" && !rs.aggregated,
+        (ResultEnvelope::Graph | ResultEnvelope::Trace, RelationType::RowSet(rs)) => {
+            source == "traces" && !rs.aggregated
+        }
         (ResultEnvelope::Metadata, RelationType::Metadata(_)) => true,
         _ => false,
     };
@@ -2196,8 +2201,13 @@ fn validate_envelope(
     } else {
         let terminal = if declared == ResultEnvelope::Flamegraph && source != "profiles" {
             format!("source '{source}' does not support the flamegraph envelope")
-        } else if declared == ResultEnvelope::Graph && source != "traces" {
-            format!("source '{source}' does not support the graph envelope")
+        } else if matches!(declared, ResultEnvelope::Graph | ResultEnvelope::Trace)
+            && source != "traces"
+        {
+            format!(
+                "source '{source}' does not support the {} envelope",
+                declared.as_str()
+            )
         } else {
             terminal.describe()
         };
@@ -2214,6 +2224,11 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     };
     if envelope_rejects_projection(doc.result) {
         return Err(IrError::FieldsOnSeries);
+    }
+    if doc.result == ResultEnvelope::Trace && !fields.iter().any(|f| f == "trace_id") {
+        return Err(IrError::Invalid(
+            "the trace envelope groups rows by trace_id, so `fields` must include it".to_string(),
+        ));
     }
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
@@ -3334,13 +3349,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(12, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(13, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 12,
-                    max: 11,
+                    found: 13,
+                    max: 12,
                     ..
                 }
             ),
@@ -3868,6 +3883,89 @@ mod tests {
             matches!(err, IrError::EnvelopeMismatch { ref terminal, .. } if terminal.contains("graph")),
             "got {err:?}"
         );
+    }
+
+    // layer 10 — `trace` result envelope (irVersion 12).
+
+    fn trace_doc(version: i64, from: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut doc = json!({
+            "irVersion": version, "from": from, "range": { "from": "now-1h", "to": "now" },
+            "result": "trace", "pipeline": []
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            doc.as_object_mut()
+                .expect("object")
+                .insert(key.clone(), value.clone());
+        }
+        doc
+    }
+
+    #[test]
+    fn trace_envelope_over_traces_rows_validates() {
+        let v = validate_json_with(trace_doc(12, "traces", json!({})), &traces_resolver())
+            .expect("trace envelope over traces at v12 validates");
+        assert!(matches!(v.terminal, RelationType::RowSet(_)));
+        validate_json_with(
+            trace_doc(12, "traces", json!({ "fields": ["trace_id", "span_id"] })),
+            &traces_resolver(),
+        )
+        .expect("a projection that keeps trace_id validates");
+    }
+
+    #[test]
+    fn trace_envelope_requires_trace_id_in_fields() {
+        let err = validate_json_with(
+            trace_doc(12, "traces", json!({ "fields": ["span_id"] })),
+            &traces_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("trace_id")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trace_envelope_rejected_for_non_traces_source() {
+        let err = validate_json(trace_doc(12, "logs", json!({}))).unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { ref terminal, .. } if terminal.contains("trace envelope")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trace_envelope_rejected_after_aggregate() {
+        let doc = trace_doc(
+            12,
+            "traces",
+            json!({ "pipeline": [{ "aggregate": {
+                "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }]
+            } }] }),
+        );
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IrError::EnvelopeMismatch {
+                    declared: "trace",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trace_envelope_below_v12_is_rejected() {
+        let err =
+            validate_json_with(trace_doc(11, "traces", json!({})), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 12")),
+            "got {err:?}"
+        );
+        let doc: Document = serde_json::from_value(trace_doc(12, "traces", json!({}))).unwrap();
+        assert_eq!(doc.minimum_ir_version(), 12);
     }
 
     #[test]

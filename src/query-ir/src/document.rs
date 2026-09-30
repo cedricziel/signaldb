@@ -14,7 +14,7 @@ use serde::{Deserialize, Serialize};
 use super::stage::Stage;
 
 /// The declared result envelope. Validated against the inferred terminal
-/// relation type. (`trace`/`scalar` arrive with their owning sibling changes.)
+/// relation type.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ResultEnvelope {
@@ -35,6 +35,9 @@ pub enum ResultEnvelope {
     /// One value per evaluation instant, no labels: a terminal `Scalar`
     /// relation (`irVersion` 10).
     Scalar,
+    /// Rows of a `traces` source grouped per trace: `traceId` plus its
+    /// spans (`irVersion` 12); see `query_ir::validate`.
+    Trace,
 }
 
 impl ResultEnvelope {
@@ -48,6 +51,7 @@ impl ResultEnvelope {
             ResultEnvelope::Metadata => "metadata",
             ResultEnvelope::Graph => "graph",
             ResultEnvelope::Scalar => "scalar",
+            ResultEnvelope::Trace => "trace",
         }
     }
 }
@@ -127,6 +131,11 @@ impl Document {
         if self.result == ResultEnvelope::Scalar {
             needed = needed.max(OperatorRegistry::feature_min_version(
                 Feature::ScalarEnvelope,
+            ));
+        }
+        if self.result == ResultEnvelope::Trace {
+            needed = needed.max(OperatorRegistry::feature_min_version(
+                Feature::TraceEnvelope,
             ));
         }
         if self.step.is_some() || self.constant.is_some() {
