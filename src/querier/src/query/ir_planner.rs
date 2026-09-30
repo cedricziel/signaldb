@@ -3591,7 +3591,9 @@ fn compile_regex_guard(pattern: &str) -> Result<(), QuerierError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::metric_ops::fixtures::{counter_points, histogram_points, with_series_id};
+    use crate::query::metric_ops::fixtures::{
+        HIVE_MERGED_P50, HIVE_SERIES, counter_points, histogram_points, with_series_id,
+    };
     use common::schema::type_authority::{ObservedKind, Placement};
     use datafusion::arrow::array::{
         ArrayRef, Float64Array, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
@@ -5732,22 +5734,50 @@ mod tests {
         histogram_value(&df.collect().await.unwrap(), "p50", None)
     }
 
-    /// Regression (hive NaN): one service, two cumulative series of one metric.
-    /// Each series is differenced against itself: deltas [2,3,2,0] + [1,2,1,0]
-    /// = [3,5,3,0], whose median (rank 5.5) interpolates to 1.5 in (1, 2].
+    /// Regression (hive NaN): one service, two cumulative series of one metric,
+    /// each differenced against itself before the merge (see [`HIVE_SERIES`]).
     #[tokio::test]
     async fn histogram_quantile_rate_mode_differences_each_series_of_one_service() {
-        let rows: &[(&str, i64, &[i64])] = &[
-            ("s1", 10, &[1, 1, 0, 0]),
-            ("s2", 15, &[0, 1, 0, 0]),
-            ("s1", 20, &[2, 2, 1, 0]),
-            ("s2", 25, &[0, 2, 1, 0]),
-            ("s1", 30, &[3, 4, 2, 0]),
-            ("s2", 35, &[1, 3, 1, 0]),
-        ];
-        let vs = p50(histogram_points_ctx("histogram", rows), "rate").await;
-        assert_eq!(vs.len(), 1, "{vs:?}");
-        assert!((vs[0] - 1.5).abs() < 1e-9, "got {vs:?}");
+        let vs = p50(histogram_points_ctx("histogram", HIVE_SERIES), "rate").await;
+        assert_eq!(vs, vec![HIVE_MERGED_P50]);
+    }
+
+    /// The same through `IrService::query`, the path `POST /api/v1/query` takes.
+    #[tokio::test]
+    async fn histogram_quantile_rate_mode_query_merges_per_series_increases() {
+        let svc = IrService::new(histogram_points_ctx("histogram", HIVE_SERIES));
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 3, "from": "metrics", "range": { "from": 100, "to": 1000 },
+                "result": "series",
+                "pipeline": [{ "histogram_quantile": {
+                    "q": 0.5, "by": ["service.name"], "step": "1000ms", "mode": "rate", "as": "p50"
+                } }]
+            }),
+            now_ns: 0,
+        };
+        let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
+        assert_eq!(
+            histogram_value(&batches, "p50", Some("svc")),
+            vec![HIVE_MERGED_P50]
+        );
+    }
+
+    /// `metric.name` is not a label of the stage's output: a later stage
+    /// naming it is refused by the validator (400), not the planner.
+    #[tokio::test]
+    async fn a_stage_after_histogram_quantile_cannot_read_metric_name() {
+        let svc = IrService::new(histogram_points_ctx("histogram", HIVE_SERIES));
+        let d = doc(serde_json::json!({
+            "irVersion": 3, "from": "metrics", "range": { "from": 100, "to": 1000 },
+            "result": "series",
+            "pipeline": [
+                { "histogram_quantile": { "q": 0.5, "step": "1000ms", "as": "p50" } },
+                { "where": { "field": "metric.name", "op": "eq", "value": "lat" } }
+            ]
+        }));
+        let err = svc.plan(&d, "t", "d", 0).await.map(|_| ()).unwrap_err();
+        assert!(matches!(&err, QuerierError::InvalidInput(_)), "{err}");
     }
 
     /// The output labels are the `by` fields; `metric.name` only keeps

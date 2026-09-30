@@ -2565,7 +2565,9 @@ fn bucket_expr(step: i64, offset_ns: i64) -> Expr {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::metric_ops::fixtures::{histogram_points, with_series_id};
+    use crate::query::metric_ops::fixtures::{
+        HIVE_MERGED_P50, HIVE_SERIES, histogram_points, with_series_id,
+    };
     use datafusion::arrow::array::{Float64Array, StringArray, TimestampNanosecondArray};
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::catalog::memory::MemTable;
@@ -3909,22 +3911,14 @@ mod tests {
         );
     }
 
-    /// Regression (hive NaN): one service, two cumulative series of one metric.
-    /// Deltas [2,3,2,0] + [1,2,1,0] = [3,5,3,0]: rank 5.5 interpolates to 1.5.
+    /// Regression (hive NaN): one service, two cumulative series of one metric,
+    /// each differenced against itself before the merge (see [`HIVE_SERIES`]).
     #[tokio::test]
     async fn histogram_quantile_over_rate_differences_each_series_of_one_service() {
-        let rows: &[(&str, i64, &[i64])] = &[
-            ("s1", 10, &[1, 1, 0, 0]),
-            ("s2", 15, &[0, 1, 0, 0]),
-            ("s1", 20, &[2, 2, 1, 0]),
-            ("s2", 25, &[0, 2, 1, 0]),
-            ("s1", 30, &[3, 4, 2, 0]),
-            ("s2", 35, &[1, 3, 1, 0]),
-        ];
-        let service = wide_metrics_service(vec![histogram_points("histogram", rows)]);
+        let service = wide_metrics_service(vec![histogram_points("histogram", HIVE_SERIES)]);
         let out = hist_matrix(&service, "histogram_quantile(0.5, rate(lat[5m]))").await;
         assert_eq!(out.len(), 1, "{out:?}");
-        assert!((out[0].2 - 1.5).abs() < 1e-9, "{out:?}");
+        assert_eq!(out[0].2, HIVE_MERGED_P50, "{out:?}");
     }
 
     #[tokio::test]

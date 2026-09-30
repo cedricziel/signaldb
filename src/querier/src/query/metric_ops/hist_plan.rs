@@ -140,7 +140,9 @@ mod tests {
     use datafusion::prelude::SessionContext;
 
     use super::*;
-    use crate::query::metric_ops::fixtures::{histogram_points, without_series_id};
+    use crate::query::metric_ops::fixtures::{
+        HIVE_MERGED_P50, HIVE_SERIES, histogram_points, without_series_id,
+    };
 
     /// One service's two cumulative series `s1`, `s2`.
     const TWO_SERIES: &[(&str, i64, &[i64])] = &[
@@ -172,17 +174,24 @@ mod tests {
         RecordBatch::try_new(batch.schema(), cols).unwrap()
     }
 
-    async fn p50_over(mode: Mode, batch: RecordBatch) -> Vec<(i64, f64)> {
-        let df = SessionContext::new().read_batch(batch).unwrap();
-        let eval = HistEval {
+    fn p50_eval(mode: Mode, first_ns: i64, last_ns: i64, step_ns: i64, window_ns: i64) -> HistEval {
+        HistEval {
             stat: HistStat::Quantile(0.5),
             mode,
-            first_ns: 20,
-            last_ns: 40,
-            step_ns: 20,
-            window_ns: 30,
+            first_ns,
+            last_ns,
+            step_ns,
+            window_ns,
             offset_ns: 0,
-        };
+        }
+    }
+
+    async fn p50_over(mode: Mode, batch: RecordBatch) -> Vec<(i64, f64)> {
+        p50_at(p50_eval(mode, 20, 40, 20, 30), batch).await
+    }
+
+    async fn p50_at(eval: HistEval, batch: RecordBatch) -> Vec<(i64, f64)> {
+        let df = SessionContext::new().read_batch(batch).unwrap();
         let groups = [(col("metric_name"), "metric_name".to_string())];
         let out = histogram_series(df, &groups, &eval, "p50")
             .unwrap()
@@ -200,6 +209,14 @@ mod tests {
                     .collect::<Vec<_>>()
             })
             .collect()
+    }
+
+    /// The hive shape, at one instant whose window holds every point.
+    #[tokio::test]
+    async fn rate_merges_each_series_increase() {
+        let batch = histogram_points("histogram", HIVE_SERIES);
+        let out = p50_at(p50_eval(Mode::Rate, 40, 40, 10, 40), batch).await;
+        assert_eq!(out, vec![(40, HIVE_MERGED_P50)]);
     }
 
     #[tokio::test]
