@@ -414,6 +414,49 @@ fn histogram_metrics(service: &str) -> ExportMetricsServiceRequest {
     }
 }
 
+/// A cumulative `commit_duration` histogram from one service with two series
+/// that differ only in the `op` attribute, sampled at `BASE_NS`, +30s, +60s
+/// (the hive NaN shape: several series of one metric per service).
+fn two_series_cumulative_histogram(service: &str) -> ExportMetricsServiceRequest {
+    let series: [(&str, [[u64; 4]; 3]); 2] = [
+        ("a", [[1, 1, 0, 0], [2, 2, 1, 0], [3, 4, 2, 0]]),
+        ("b", [[0, 1, 0, 0], [0, 2, 1, 0], [1, 3, 1, 0]]),
+    ];
+    let data_points = series
+        .iter()
+        .flat_map(|(op, samples)| {
+            samples
+                .iter()
+                .enumerate()
+                .map(|(i, counts)| HistogramDataPoint {
+                    attributes: vec![KeyValue {
+                        key: "op".to_string(),
+                        value: Some(string_value(op)),
+                        ..Default::default()
+                    }],
+                    start_time_unix_nano: BASE_NS - 600_000_000_000,
+                    time_unix_nano: BASE_NS + i as u64 * 30_000_000_000,
+                    count: counts.iter().sum(),
+                    sum: None,
+                    bucket_counts: counts.to_vec(),
+                    explicit_bounds: vec![1.0, 2.0, 4.0],
+                    exemplars: vec![],
+                    flags: 0,
+                    min: None,
+                    max: None,
+                })
+        })
+        .collect();
+    let mut request = histogram_metrics(service);
+    let metric = &mut request.resource_metrics[0].scope_metrics[0].metrics[0];
+    metric.name = "commit_duration".to_string();
+    metric.data = Some(Data::Histogram(Histogram {
+        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+        data_points,
+    }));
+    request
+}
+
 /// A monotonic counter `requests_total` sampled every 10s as
 /// `[10, 20, 5, 15]` — the 20 -> 5 drop is a counter reset (e.g. a process
 /// restart), not a real decrease. Reset-aware Prometheus semantics count
@@ -1092,6 +1135,37 @@ async fn promql_histogram_quantile_interpolates_median() {
         (q - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-6,
         "median latency ≈ 3.333, got {q}: {body}"
     );
+}
+
+/// Regression (hive NaN): `histogram_quantile(q, rate(m[r]))` over one
+/// service's several cumulative series of a metric differences each series
+/// against itself. Increases [2,3,2,0] + [1,2,1,0] = [3,5,3,0]: median 1.5.
+#[tokio::test]
+async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
+    let (services, app) = setup_with_ingested_metrics().await;
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(
+            &test_tenant_context(),
+            two_series_cumulative_histogram("writer"),
+        )
+        .await
+        .expect("ingest two-series histogram");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let t = BASE_NS / 1_000_000_000 + 60;
+    let query = encode_query("histogram_quantile(0.5, rate(commit_duration[2m]))");
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query={query}&start={t}&end={t}&step=60"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let q = matrix_value_sum(&body);
+    assert!((q - 1.5).abs() < 1e-9, "median 1.5, got {q}: {body}");
 }
 
 // The remaining tests exercise newer function families end-to-end through
