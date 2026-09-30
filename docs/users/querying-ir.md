@@ -1320,10 +1320,12 @@ The bounds must be finite, so PromQL's `±Inf` idioms need rewriting:
   includes it.
 - **More than X** (`histogram_fraction(X, +Inf, …)`): compute
   `1 - fraction(lower, X)` with that same `lower`, for instance as the
-  [formula](#formulas-cross-query-arithmetic-d5) `1 - under_x`. A large finite
-  `upper` does not stand in for `+Inf` on an explicit-bucket histogram: the
-  open `+Inf` bucket's observations lie above every finite bound, so
-  `(X, 1e300]` leaves them out.
+  [formula](#formulas-cross-query-arithmetic-d5) `1 - under_x`. This holds
+  only when no observation lies at or below that `lower`; a populated first
+  bucket reaching down to `-Inf` breaks it, so query such a histogram through
+  PromQL, which takes `+Inf` as `upper`. A large finite `upper` does not stand
+  in for `+Inf` on an explicit-bucket histogram: the open `+Inf` bucket's
+  observations lie above every finite bound, so `(X, 1e300]` leaves them out.
 
 ### Heatmap envelope (IR v2)
 
