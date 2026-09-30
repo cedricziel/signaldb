@@ -228,6 +228,7 @@ fn infer<'a>(
         doc,
         sources,
         correlate_seen: false,
+        target_scope: None,
     };
     match describe {
         // Introspection: no records flow through the pipeline, so there is
@@ -270,6 +271,16 @@ struct InferCtx<'a> {
     sources: &'a SourceRegistry,
     /// Whether a `correlate` stage has already been applied.
     correlate_seen: bool,
+    /// The `<target>.` field scope an inner/left signal `correlate` opened.
+    target_scope: Option<TargetScope>,
+}
+
+/// Target fields resolve under `<source>.` against the target source, like
+/// `parent.` against `traces`. A later `aggregate` closes the relation, so
+/// only its group outputs stay addressable (`open` goes false).
+struct TargetScope {
+    source: String,
+    open: bool,
 }
 
 impl InferCtx<'_> {
@@ -859,10 +870,11 @@ impl InferCtx<'_> {
             });
         }
         self.guard_logical_name(name)?;
-        // Under `parent.`, resolution proceeds exactly as it would for the
-        // unprefixed name against the same `traces` source — the scope only
-        // relabels the outcome, it does not change how a field is found.
-        let resolve_name = self.parent_field(name).unwrap_or(name);
+        // Under a correlate scope, resolution proceeds exactly as it would
+        // for the unprefixed name against the scope's source — the scope
+        // only relabels the outcome, it does not change how a field is found.
+        let scoped = self.scoped_field(name);
+        let (source, resolve_name) = scoped.unwrap_or((self.source, name));
         match &self.relation {
             RelationType::Series(_)
             | RelationType::Scalar(_)
@@ -874,13 +886,16 @@ impl InferCtx<'_> {
                 if let Some(col) = rs.columns.iter().find(|c| c.name == name) {
                     return Ok((col.value_type.clone(), false));
                 }
-                if rs.aggregated {
-                    // Closed schema: only the aggregate/group outputs exist.
+                // Closed schema: only the aggregate/group outputs exist — plus
+                // the target scope of a correlate that followed the aggregate.
+                let open_target =
+                    scoped.is_some() && self.target_scope.as_ref().is_some_and(|scope| scope.open);
+                if rs.aggregated && !open_target {
                     return Err(IrError::UnknownReference {
                         name: name.to_string(),
                     });
                 }
-                match self.resolver.resolve(self.source, resolve_name) {
+                match self.resolver.resolve(source, resolve_name) {
                     Some(r) => Ok((r.value_type().clone(), r.is_advisory_type())),
                     // Defined rejection: a field with no canonical type (12.1a).
                     None => Err(IrError::UnknownFieldType {
@@ -978,8 +993,8 @@ impl InferCtx<'_> {
     }
 
     fn require_filterable(&self, field: &str) -> Result<(), IrError> {
-        let effective = self.parent_field(field).unwrap_or(field);
-        if !self.resolver.is_filterable(self.source, effective) {
+        let (source, effective) = self.scoped_field(field).unwrap_or((self.source, field));
+        if !self.resolver.is_filterable(source, effective) {
             return Err(IrError::UnfilterableField {
                 field: field.to_string(),
             });
@@ -1069,6 +1084,9 @@ impl InferCtx<'_> {
             ));
         }
 
+        if let Some(scope) = &mut self.target_scope {
+            scope.open = false;
+        }
         match &agg.step {
             Some(step) => {
                 let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
@@ -1388,12 +1406,22 @@ impl InferCtx<'_> {
                 }
                 Ok(())
             }
-            CorrelateTarget::Signal(target) => self.check_signal_correlate(target, correlate),
+            CorrelateTarget::Signal(target) => {
+                self.check_signal_correlate(target, correlate)?;
+                if matches!(correlate.kind, JoinKind::Inner | JoinKind::Left) {
+                    self.target_scope = Some(TargetScope {
+                        source: target.clone(),
+                        open: true,
+                    });
+                }
+                Ok(())
+            }
         }
     }
 
     /// A signal-target `correlate`: the output is the source relation
-    /// (semi/anti filter it), so only the operands are checked here.
+    /// (semi/anti filter it; inner/left add the `<target>.` scope, see
+    /// [`TargetScope`]), so only the operands are checked here.
     fn check_signal_correlate(&self, target: &str, correlate: &Correlate) -> Result<(), IrError> {
         let def = self
             .sources
@@ -1430,6 +1458,19 @@ impl InferCtx<'_> {
                 )));
             }
         }
+        if matches!(correlate.kind, JoinKind::Inner | JoinKind::Left)
+            && let RelationType::RowSet(rs) = &self.relation
+            && let Some(column) = rs.columns.iter().find(|c| {
+                c.name
+                    .strip_prefix(target)
+                    .is_some_and(|f| f.starts_with('.'))
+            })
+        {
+            return Err(illegal_correlate(&format!(
+                "column `{}` would collide with the `{target}.` fields the join adds; rename it",
+                column.name
+            )));
+        }
         if let Some(window) = &correlate.window {
             for (name, value) in [("before", &window.before), ("after", &window.after)] {
                 if let Some(value) = value {
@@ -1448,12 +1489,6 @@ impl InferCtx<'_> {
                     "`fanout` only applies to inner/left joins",
                 ));
             }
-        }
-        if matches!(correlate.kind, JoinKind::Inner | JoinKind::Left) {
-            return Err(illegal_correlate(&format!(
-                "correlate kind `{}` to a signal target is not supported yet; use `semi`/`anti`",
-                correlate.kind.as_str()
-            )));
         }
         if let Some(stage) = correlate
             .pipeline
@@ -1487,13 +1522,20 @@ impl InferCtx<'_> {
         matches!(&self.relation, RelationType::RowSet(rs) if rs.correlated)
     }
 
-    /// Strip the `parent.` scope prefix from a reference name, once a
-    /// `correlate` stage has joined the relation to its parent span. Returns
-    /// `None` for an unprefixed name, or before `correlate` has run.
-    fn parent_field<'n>(&self, name: &'n str) -> Option<&'n str> {
-        self.is_correlated()
-            .then(|| name.strip_prefix("parent."))
-            .flatten()
+    /// Split a reference under a correlate scope into the source it
+    /// resolves against and its name there: `parent.<f>` against `from`
+    /// once joined to the parent span, `<target>.<f>` against the target
+    /// after an inner/left signal `correlate`. `None` for an unscoped name,
+    /// or before `correlate` has run. Once a scope exists it shadows any
+    /// source attribute whose key starts with its prefix.
+    fn scoped_field<'n>(&self, name: &'n str) -> Option<(&str, &'n str)> {
+        if self.is_correlated() {
+            return name.strip_prefix("parent.").map(|f| (self.source, f));
+        }
+        let target = self.target_scope.as_ref()?.source.as_str();
+        name.strip_prefix(target)?
+            .strip_prefix('.')
+            .map(|f| (target, f))
     }
 
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
@@ -1758,9 +1800,9 @@ impl InferCtx<'_> {
     }
 
     fn guard_logical_name(&self, name: &str) -> Result<(), IrError> {
-        let effective = self.parent_field(name).unwrap_or(name);
-        if self.resolver.is_physical_name(self.source, effective)
-            && !self.resolver.is_known(self.source, effective)
+        let (source, effective) = self.scoped_field(name).unwrap_or((self.source, name));
+        if self.resolver.is_physical_name(source, effective)
+            && !self.resolver.is_known(source, effective)
         {
             return Err(IrError::PhysicalAddressing {
                 field: name.to_string(),
@@ -3999,6 +4041,7 @@ mod tests {
                 ValueType::Int64,
             )
             .with_column("logs", "service.name", "service_name", ValueType::String)
+            .with_column("logs", "body", "body", ValueType::String)
             .with_column("metrics", "metric.name", "metric_name", ValueType::String)
     }
 
@@ -4131,14 +4174,6 @@ mod tests {
                 "1..=10000",
             ),
             (
-                json!({ "to": "logs", "on": "trace_id", "kind": "inner" }),
-                "correlate kind `inner` to a signal target is not supported yet; use `semi`/`anti`",
-            ),
-            (
-                json!({ "to": "logs", "on": "trace_id", "kind": "left" }),
-                "correlate kind `left` to a signal target is not supported yet; use `semi`/`anti`",
-            ),
-            (
                 json!({ "to": "logs", "on": "trace_id", "kind": "semi", "pipeline": [{ "where": { "field": "no.such", "op": "exists" } }] }),
                 "no.such",
             ),
@@ -4163,5 +4198,110 @@ mod tests {
             doc["irVersion"] = json!(8);
             assert_correlate_rejected(doc, needle);
         }
+    }
+
+    fn signal_pipeline_doc(pipeline: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": pipeline
+        })
+    }
+
+    #[test]
+    fn signal_correlate_inner_and_left_validate() {
+        for kind in ["inner", "left"] {
+            let d = signal_doc(
+                "traces",
+                json!({ "to": "logs", "on": "trace_id", "kind": kind, "fanout": 5 }),
+            );
+            validate_json_with(d, &signal_resolver()).unwrap();
+        }
+    }
+
+    #[test]
+    fn target_fields_resolve_only_after_an_inner_or_left_correlate() {
+        let where_body = json!({ "where": { "field": "logs.body", "op": "exists" } });
+        let after = |kind: &str| {
+            signal_pipeline_doc(json!([
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": kind } },
+                where_body.clone()
+            ]))
+        };
+        validate_json_with(after("inner"), &signal_resolver()).unwrap();
+        validate_json_with(after("left"), &signal_resolver()).unwrap();
+        for doc in [
+            after("semi"),
+            signal_pipeline_doc(json!([where_body.clone()])),
+        ] {
+            let err = validate_json_with(doc, &signal_resolver()).unwrap_err();
+            assert!(err.to_string().contains("logs.body"), "got {err}");
+        }
+    }
+
+    /// The source keeps its unprefixed names and the target is always
+    /// namespaced, so a field both sides carry never collides.
+    #[test]
+    fn a_field_on_both_sides_is_unambiguous() {
+        let doc = json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } },
+                { "where": { "field": "logs.severity_number", "op": "gte", "value": 17 } },
+                { "aggregate": {
+                    "by": ["service.name", "logs.service.name"],
+                    "aggs": [{ "fn": "count", "as": "n" }]
+                } }
+            ]
+        });
+        let v = validate_json_with(doc, &signal_resolver()).unwrap();
+        let RelationType::RowSet(rs) = v.terminal else {
+            panic!("expected a table");
+        };
+        let names: Vec<_> = rs.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["service.name", "logs.service.name", "n"]);
+    }
+
+    /// After the "slowest traces" aggregate the source is closed, but the
+    /// target scope stays open until a later aggregate closes it again.
+    #[test]
+    fn target_scope_follows_an_aggregated_source_until_the_next_aggregate() {
+        let pipeline = |tail: serde_json::Value| {
+            let mut doc = signal_pipeline_doc(json!([
+                { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration_nano", "as": "slowest" }] } },
+                { "topk": { "n": 2, "of": "slowest" } },
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } },
+                tail
+            ]));
+            doc["result"] = json!("table");
+            doc
+        };
+        validate_json_with(
+            pipeline(json!({ "where": { "field": "logs.body", "op": "exists" } })),
+            &signal_resolver(),
+        )
+        .unwrap();
+        let mut doc = pipeline(json!({ "limit": 5 }));
+        doc["fields"] = json!(["trace_id", "slowest", "logs.body"]);
+        validate_json_with(doc, &signal_resolver()).unwrap();
+        let mut closed = signal_pipeline_doc(json!([
+            { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } },
+            { "aggregate": { "by": ["logs.service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }
+        ]));
+        closed["result"] = json!("table");
+        closed["fields"] = json!(["logs.body"]);
+        assert_correlate_rejected(closed, "logs.body");
+    }
+
+    /// A source column already named under the target prefix would collide
+    /// with the joined target columns.
+    #[test]
+    fn a_source_column_under_the_target_prefix_is_rejected() {
+        let mut doc = signal_pipeline_doc(json!([
+            { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "count", "as": "logs.body" }] } },
+            { "correlate": { "to": "logs", "on": "trace_id", "kind": "left" } }
+        ]));
+        doc["result"] = json!("table");
+        assert_correlate_rejected(doc, "`logs.body`");
     }
 }
