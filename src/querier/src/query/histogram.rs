@@ -85,6 +85,9 @@ pub(crate) fn histogram_fraction(lower: f64, upper: f64, bounds: &[f64], counts:
 
 /// Cumulative count of observations `<= x`, interpolated within the bucket.
 pub(crate) fn hist_cumulative(x: f64, bounds: &[f64], counts: &[f64]) -> f64 {
+    if x.is_infinite() {
+        return if x > 0.0 { counts.iter().sum() } else { 0.0 };
+    }
     let n = bounds.len();
     // At or above the top finite bound (or with none): all finite-bucket
     // observations count; the `+Inf` bucket's observations are strictly greater.
@@ -165,7 +168,10 @@ mod tests {
         assert!((histogram_fraction(-10.0, 0.0, &bounds, &counts) - 5.0 / 15.0).abs() < 1e-12);
         assert_eq!(histogram_fraction(-10.0, -5.0, &bounds, &counts), 0.0);
         // A positive first bound still starts the first bucket at 0.
-        assert_eq!(histogram_fraction(-1.0, 0.5, &[1.0, 2.0], &[2.0, 2.0, 0.0]), 0.25);
+        assert_eq!(
+            histogram_fraction(-1.0, 0.5, &[1.0, 2.0], &[2.0, 2.0, 0.0]),
+            0.25
+        );
     }
 
     /// Only the `+Inf` bucket: every observation lies above any finite

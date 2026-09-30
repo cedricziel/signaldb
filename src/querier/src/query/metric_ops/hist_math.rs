@@ -273,9 +273,13 @@ fn to_f64(counts: &[u64]) -> Vec<f64> {
     counts.iter().map(|&c| c as f64).collect()
 }
 
-/// Fraction of observations in `(lo, hi]`; NaN when the histogram is empty.
+/// Fraction of observations in `(lo, hi]`; NaN when the histogram is empty
+/// or a bound is NaN, 0 when `lo >= hi`, as in Prometheus.
 pub fn fraction(h: &HistPoint, lo: f64, hi: f64) -> f64 {
-    match h {
+    if lo.is_nan() || hi.is_nan() {
+        return f64::NAN;
+    }
+    let f = match h {
         HistPoint::Explicit { bounds, counts, .. } => {
             histogram_fraction(lo, hi, bounds, &to_f64(counts))
         }
@@ -287,7 +291,8 @@ pub fn fraction(h: &HistPoint, lo: f64, hi: f64) -> f64 {
             }
             (exp_cumulative(&e, hi) - exp_cumulative(&e, lo)) / total
         }
-    }
+    };
+    if lo >= hi && !f.is_nan() { 0.0 } else { f }
 }
 
 /// Observations `<= x`: exponential interpolation inside a boundary bucket, linear across zero.
@@ -478,6 +483,31 @@ mod tests {
         assert!((mid - 0.25).abs() < 1e-9, "{mid}");
     }
 
+    /// PromQL passes these bounds through; Prometheus' `BucketFraction` and
+    /// `HistogramFraction` treat them this way.
+    #[test]
+    fn fraction_bounds_follow_prometheus() {
+        // Bounds [1, 2, 4], counts [1, 2, 3, 4] incl. +Inf: 10 observations.
+        let h = eb(&[1, 2, 3, 4], 1.0);
+        // `+Inf` includes the +Inf bucket: (2, +Inf] holds 3 + 4 of 10.
+        assert_eq!(fraction(&h, 2.0, f64::INFINITY), 0.7);
+        assert_eq!(fraction(&h, f64::NEG_INFINITY, f64::INFINITY), 1.0);
+        let below_zero = HistPoint::Explicit {
+            bounds: vec![-5.0, 1.0],
+            counts: vec![1, 1, 0],
+            sum: None,
+            count: 2,
+        };
+        // `-Inf` includes the (-Inf, -5] bucket.
+        assert_eq!(fraction(&below_zero, f64::NEG_INFINITY, 1.0), 1.0);
+        let e = ex(&[1, 1], 1.0);
+        for h in [&h, &e] {
+            assert_eq!(fraction(h, 3.0, 2.0), 0.0);
+            assert!(fraction(h, f64::NAN, 2.0).is_nan());
+            assert!(fraction(h, 0.0, f64::NAN).is_nan());
+        }
+    }
+
     #[test]
     fn start_after_the_instant_is_not_a_new_series() {
         let pts = [pt(110, 125, 2, eb(&[1, 0, 0, 0], 1.0))];
@@ -524,7 +554,11 @@ mod tests {
         let want = 2.0 * (1.0 - 1.5f64.log2()) / 4.0;
         assert!((fraction(&bounded, 3.0, 100.0) - want).abs() < 1e-12);
         for (lo, hi) in [(3.0, 100.0), (0.0, 2.5), (2.0, 4.0)] {
-            assert_eq!(fraction(&bounded, lo, hi), fraction(&plain, lo, hi), "({lo}, {hi}]");
+            assert_eq!(
+                fraction(&bounded, lo, hi),
+                fraction(&plain, lo, hi),
+                "({lo}, {hi}]"
+            );
         }
     }
 
