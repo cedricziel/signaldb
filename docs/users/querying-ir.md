@@ -25,7 +25,8 @@ This page is the reference for the IR at its foundational scope: **single-signal
 queries over `logs`, `traces`, profile summaries, and metrics**. The `metrics`
 source holds every metric type — group/filter a metric by name, type and
 attributes, aggregate, bucket by `step` — the same as every other source. The
-`histogram_quantile` stage covers percentile-over-buckets, and the `rate`/`increase`/`irate`/`*_over_time`
+`histogram_quantile` and `histogram_fraction` stages cover percentiles and
+fractions over buckets, and the `rate`/`increase`/`irate`/`*_over_time`
 per-series range functions cover counter rates and windowed reductions (see
 [Counter rate](#counter-rate-rateincrease-v6) and
 [More range functions](#more-range-functions-across-and-window-v7)).
@@ -1277,9 +1278,28 @@ bounds; exponential histograms merge by the OTel rule. More than 11,000
 evaluation instants is a 400.
 Filter by `metric.name` (or `metric.type`) to keep the stage on histograms.
 
-`histogram_fraction()` (the
-CDF-inverse of `histogram_quantile()`) has no IR stage yet — stay on PromQL
-for that (see [Roadmap](#roadmap)).
+### `histogram_fraction` (IR v10)
+
+`histogram_fraction` is `histogram_quantile`'s sibling: the fraction of the
+merged histogram's observations that lie in `[lower, upper]`, the IR form of
+PromQL's `histogram_fraction(lower, upper, …)`. It takes `lower` and `upper`
+(finite, `lower <= upper`) in place of `q`, and otherwise the same `by`,
+`step`, `mode`, `window`, `lookback` and `as` fields, reads the same rows and
+evaluates at the same instants, so the two stages over one document answer
+from the same merged histograms:
+
+```json
+{
+  "histogram_fraction": {
+    "lower": 0,
+    "upper": 0.25,
+    "by": ["service.name"],
+    "step": "1m",
+    "window": "5m",
+    "as": "under_250ms"
+  }
+}
+```
 
 ### Heatmap envelope (IR v2)
 
