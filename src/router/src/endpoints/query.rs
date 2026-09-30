@@ -603,7 +603,7 @@ async fn execute_inner_series_query(
 /// The `query_ir:{tenant}:{dataset}:{payload}` Flight ticket for one IR
 /// document, scoped to the caller's tenant and dataset slugs and carrying
 /// the server clock stamp relative anchors resolve against.
-fn query_ir_ticket(
+pub(super) fn query_ir_ticket(
     ctx: &TenantContext,
     document: &impl Serialize,
     now_ns: i64,
@@ -1454,8 +1454,26 @@ const SERIES_LABELS_COLUMN: &str = "__labels";
 /// rows sharing a label set and a bucket came from series the label sets
 /// cannot tell apart, which is a 400 as in Prometheus.
 fn to_series(batches: &[RecordBatch]) -> Result<Vec<ResultSeries>, ApiError> {
+    Ok(decode_series(batches, cell)?
+        .into_iter()
+        .map(|(labels, points)| ResultSeries {
+            labels,
+            points: points.into_iter().map(|(t, v)| [t, v]).collect(),
+        })
+        .collect())
+}
+
+/// One decoded series: its labels and its `(bucket, value)` points.
+pub(super) type DecodedSeries<V> = (BTreeMap<String, String>, Vec<(serde_json::Value, V)>);
+
+/// The decoding behind [`to_series`], with the value cell read by `value`:
+/// the Prometheus endpoints keep NaN and ±Inf, which a JSON number cannot.
+pub(super) fn decode_series<V>(
+    batches: &[RecordBatch],
+    value: impl Fn(&dyn Array, usize) -> V,
+) -> Result<Vec<DecodedSeries<V>>, ApiError> {
     let mut order: Vec<String> = Vec::new();
-    let mut series: BTreeMap<String, ResultSeries> = BTreeMap::new();
+    let mut series: BTreeMap<String, DecodedSeries<V>> = BTreeMap::new();
 
     for batch in batches {
         let ncols = batch.num_columns();
@@ -1505,21 +1523,18 @@ fn to_series(batches: &[RecordBatch]) -> Result<Vec<ResultSeries>, ApiError> {
                 (key, labels)
             };
             let t = cell(casted[0].as_ref(), r);
-            let value = cell(casted[value_col].as_ref(), r);
-            let entry = series.entry(key.clone()).or_insert_with(|| {
+            let v = value(casted[value_col].as_ref(), r);
+            let (_, points) = series.entry(key.clone()).or_insert_with(|| {
                 order.push(key.clone());
-                ResultSeries {
-                    labels,
-                    points: Vec::new(),
-                }
+                (labels, Vec::new())
             });
-            if label_set && entry.points.last().is_some_and(|[last, _]| *last == t) {
+            if label_set && points.last().is_some_and(|(last, _)| *last == t) {
                 return Err(ApiError::bad_request(format!(
                     "several series share the label set {key} at {t}; \
                      keep a label that tells them apart"
                 )));
             }
-            entry.points.push([t, value]);
+            points.push((t, v));
         }
     }
 

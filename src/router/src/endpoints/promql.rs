@@ -7,14 +7,16 @@
 //! - `GET|POST /api/v1/query` — instant query → vector
 //! - `GET /api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series`
 //!
-//! Handlers build a `query_promql` Flight ticket, execute it against a
-//! querier, and convert the returned matrix RecordBatches into Prometheus
-//! JSON. Metadata endpoints (labels/values/series) query the metrics tables via the querier.
+//! The query handlers lower PromQL to a Query IR document
+//! (`ql_ir::promql_to_ir`), run it the way `POST /api/v1/query` runs one, and
+//! shape the metric Series or Scalar result into Prometheus JSON. Metadata
+//! endpoints (labels/values/series) query the metrics tables via the querier.
 
-use std::collections::HashMap;
+use std::collections::{BTreeMap, HashMap};
 use tracing::Instrument;
 
 use super::api_error::ApiError;
+use super::query::DecodedSeries;
 use crate::RouterAppState;
 use arrow_flight::Ticket;
 use axum::{
@@ -26,9 +28,8 @@ use axum::{
 use common::auth::TenantContextExtractor;
 use common::catalog::{AttributeStatsRecord, Catalog};
 use common::flight::transport::ServiceCapability;
-use datafusion::arrow::array::{
-    Array, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
-};
+use common::query_ir::ResultEnvelope;
+use datafusion::arrow::array::{Array, Float64Array, RecordBatch, StringArray};
 use futures::StreamExt;
 use prometheus_api::{
     InstantVector, LabelStat, LabelStatsResponse, LabelsResponse, QueryResponse, QueryResult,
@@ -113,9 +114,12 @@ pub async fn query_range(
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
     let step = parse_step_ns(params.step.as_deref()).unwrap_or_else(|| default_step_ns(start, end));
 
-    let batches = run_promql(&state, &tenant_ctx, &promql, start, end, step).await?;
+    let params = ql_ir::PromqlParams::range(start, end, step);
+    // A range query answers a matrix even for a scalar expression: one
+    // label-less series.
+    let (_, series) = run_promql(&state, &tenant_ctx, &promql, &params).await?;
     Ok(axum::Json(QueryResponse::success(QueryResult::Matrix(
-        batches_to_matrix(&batches),
+        series.into_iter().map(range_vector).collect(),
     ))))
 }
 
@@ -153,16 +157,33 @@ pub async fn query(
             "missing or empty 'query'",
         )));
     };
+    // Evaluated once, at `time`: each series' value at that instant (its
+    // latest point in the lookback), or a scalar for a scalar expression.
     let at = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(super::now_ns);
-    let start = at - HOUR_NS;
-    // One bucket spanning the lookback so each series yields one sample.
-    let step = HOUR_NS;
-
-    let batches = run_promql(&state, &tenant_ctx, &promql, start, at, step).await?;
-    let vector = matrix_to_vector(batches_to_matrix(&batches));
-    Ok(axum::Json(QueryResponse::success(QueryResult::Vector(
-        vector,
-    ))))
+    let params = ql_ir::PromqlParams::instant(at);
+    let (envelope, series) = run_promql(&state, &tenant_ctx, &promql, &params).await?;
+    let result = match envelope {
+        ResultEnvelope::Scalar => {
+            let value = series
+                .into_iter()
+                .next()
+                .and_then(|(_, points)| value_at(points, at))
+                .unwrap_or(f64::NAN);
+            QueryResult::Scalar(sample(at, value))
+        }
+        _ => QueryResult::Vector(
+            series
+                .into_iter()
+                .filter_map(|(labels, points)| {
+                    Some(InstantVector {
+                        metric: prometheus_labels(labels),
+                        value: sample(at, value_at(points, at)?),
+                    })
+                })
+                .collect(),
+        ),
+    };
+    Ok(axum::Json(QueryResponse::success(result)))
 }
 
 /// GET /prometheus/api/v1/labels — metric label names.
@@ -312,26 +333,26 @@ fn label_stat_from_record(record: AttributeStatsRecord) -> LabelStat {
 
 // ---- execution + conversion ----
 
-/// Build and execute a `query_promql` ticket.
+/// Lower PromQL to an IR document and run it the way `POST /api/v1/query`
+/// runs one. Every lowering failure is the caller's (400).
 async fn run_promql(
     state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     promql: &str,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> Result<Vec<RecordBatch>, ApiError> {
-    let payload = serde_json::json!({
-        "query": promql,
-        "start": start,
-        "end": end,
-        "step": step,
-    });
-    let ticket = format!(
-        "query_promql:{}:{}:{payload}",
-        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
-    );
-    execute_ticket(state, ticket).await
+    params: &ql_ir::PromqlParams,
+) -> Result<(ResultEnvelope, Vec<DecodedSeries<f64>>), ApiError> {
+    let document =
+        ql_ir::promql_to_ir(promql, params).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let ticket = super::query::query_ir_ticket(&tenant_ctx.0, &document, super::now_ns())?;
+    let (batches, _correlate_truncated) = super::query::execute_ticket(state, ticket).await?;
+    let series = super::query::decode_series(&batches, |array, row| {
+        array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .filter(|values| values.is_valid(row))
+            .map_or(f64::NAN, |values| values.value(row))
+    })?;
+    Ok((document.result, series))
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
@@ -377,109 +398,59 @@ async fn execute_ticket(
         .map_err(ApiError::from)
 }
 
-/// Group matrix rows (`bucket`, `metric_name`, label columns, `value`)
-/// into Prometheus range vectors. `bucket` is nanoseconds; Prometheus
-/// samples use unix seconds.
-fn batches_to_matrix(batches: &[RecordBatch]) -> Vec<RangeVector> {
-    let mut order: Vec<String> = Vec::new();
-    let mut series: HashMap<String, RangeVector> = HashMap::new();
+fn range_vector((labels, points): DecodedSeries<f64>) -> RangeVector {
+    RangeVector {
+        metric: prometheus_labels(labels),
+        values: points
+            .into_iter()
+            .filter_map(|(t, v)| Some(sample(t.as_i64()?, v)))
+            .collect(),
+    }
+}
 
-    for batch in batches {
-        let Some(buckets) = timestamps_ns(batch, "bucket") else {
-            continue;
-        };
-        let value = batch
-            .column_by_name("value")
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>());
+/// A series' value at the evaluation instant `at_ns`.
+fn value_at(points: Vec<(serde_json::Value, f64)>, at_ns: i64) -> Option<f64> {
+    points
+        .into_iter()
+        .find_map(|(t, v)| (t.as_i64() == Some(at_ns)).then_some(v))
+}
 
-        let schema = batch.schema();
-        let label_cols: Vec<(String, &StringArray)> = schema
-            .fields()
-            .iter()
-            .filter_map(|f| {
-                let name = f.name();
-                if name == "bucket" || name == "value" {
-                    return None;
-                }
-                str_col(batch, name).map(|c| (name.clone(), c))
-            })
-            .collect();
+fn sample(t_ns: i64, v: f64) -> Sample {
+    Sample::new(t_ns as f64 / 1_000_000_000.0, format_value(v))
+}
 
-        for i in 0..batch.num_rows() {
-            let mut metric: HashMap<String, String> = HashMap::new();
-            for (name, col) in &label_cols {
-                if col.is_null(i) || col.value(i).is_empty() {
-                    continue;
-                }
-                // `metric_name` is Prometheus's `__name__`; materialized
-                // `label_<key>` columns surface under their label name.
-                let key = if name == "metric_name" {
-                    "__name__"
-                } else {
-                    name.strip_prefix("label_").unwrap_or(name.as_str())
-                };
-                metric.insert(key.to_string(), col.value(i).to_string());
+/// A Series label set under Prometheus label names: `metric.name` is
+/// `__name__` and `service.name` is `service_name`; every other label keeps
+/// its IR name. A label literally named `service_name` wins over the
+/// renamed `service.name`.
+fn prometheus_labels(labels: BTreeMap<String, String>) -> HashMap<String, String> {
+    let mut metric = HashMap::with_capacity(labels.len());
+    let mut renamed = Vec::new();
+    for (name, value) in labels {
+        match name.as_str() {
+            "metric.name" => renamed.push(("__name__", value)),
+            "service.name" => renamed.push(("service_name", value)),
+            _ => {
+                metric.insert(name, value);
             }
-            let key = label_key(&metric);
-            let seconds = if buckets.is_null(i) {
-                0.0
-            } else {
-                buckets.value(i) as f64 / 1_000_000_000.0
-            };
-            let v = value
-                .map(|c| if c.is_null(i) { f64::NAN } else { c.value(i) })
-                .unwrap_or(f64::NAN);
-            series
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    order.push(key.clone());
-                    RangeVector {
-                        metric,
-                        values: Vec::new(),
-                    }
-                })
-                .values
-                .push(Sample::new(seconds, format_value(v)));
         }
     }
-
-    order
-        .into_iter()
-        .filter_map(|k| series.remove(&k))
-        .collect()
+    for (name, value) in renamed {
+        metric.entry(name.to_string()).or_insert(value);
+    }
+    metric
 }
 
-/// Reduce a matrix to an instant vector: each series' last sample.
-fn matrix_to_vector(matrix: Vec<RangeVector>) -> Vec<InstantVector> {
-    matrix
-        .into_iter()
-        .filter_map(|series| {
-            series.values.into_iter().last().map(|value| InstantVector {
-                metric: series.metric,
-                value,
-            })
-        })
-        .collect()
-}
-
+/// A sample value as Prometheus renders it: Go's shortest float text, with
+/// `NaN`, `+Inf` and `-Inf` spelled out.
 fn format_value(v: f64) -> String {
     if v.is_nan() {
         "NaN".to_string()
-    } else if v.fract() == 0.0 {
-        format!("{}", v as i64)
+    } else if v.is_infinite() {
+        if v > 0.0 { "+Inf" } else { "-Inf" }.to_string()
     } else {
         format!("{v}")
     }
-}
-
-fn label_key(labels: &HashMap<String, String>) -> String {
-    let mut pairs: Vec<_> = labels.iter().collect();
-    pairs.sort();
-    pairs
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn str_col<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
@@ -520,18 +491,6 @@ fn metadata_window(params: &MetadataParams) -> (i64, i64) {
     let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
     let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
     (start, end)
-}
-
-/// Read a timestamp column as nanoseconds, casting from the storage unit.
-fn timestamps_ns(batch: &RecordBatch, name: &str) -> Option<TimestampNanosecondArray> {
-    use datafusion::arrow::compute::cast;
-    use datafusion::arrow::datatypes::{DataType, TimeUnit};
-    let column = batch.column_by_name(name)?;
-    let nanos = cast(column, &DataType::Timestamp(TimeUnit::Nanosecond, None)).ok()?;
-    nanos
-        .as_any()
-        .downcast_ref::<TimestampNanosecondArray>()
-        .cloned()
 }
 
 fn non_empty(value: &Option<String>) -> Option<String> {
@@ -575,71 +534,170 @@ fn default_step_ns(start: i64, end: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::TimestampNanosecondArray;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
     use std::sync::Arc;
 
-    fn matrix_batch() -> RecordBatch {
+    /// An IR metric Series frame: `bucket`, `__labels`, `value`.
+    fn series_batch(rows: Vec<(i64, &str, f64)>) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "bucket",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
                 false,
             ),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("service_name", DataType::Utf8, true),
-            Field::new("value", DataType::Float64, false),
+            Field::new("__labels", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, true),
         ]));
         RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    1_000_000_000,
-                    2_000_000_000,
-                    1_000_000_000,
-                ])),
-                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
-                Arc::new(StringArray::from(vec!["api", "api", "web"])),
-                Arc::new(Float64Array::from(vec![2.0, 3.0, 5.5])),
+                Arc::new(TimestampNanosecondArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
             ],
         )
         .unwrap()
     }
 
+    fn decode(batch: RecordBatch) -> Vec<DecodedSeries<f64>> {
+        super::super::query::decode_series(&[batch], |array, row| {
+            array
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap()
+                .value(row)
+        })
+        .unwrap()
+    }
+
+    const API: &str = r#"{"code":"200","metric.name":"reqs","service.name":"api"}"#;
+    const WEB: &str = r#"{"code":"500","service.name":"web"}"#;
+
     #[test]
-    fn matrix_groups_rows_and_maps_name() {
-        let matrix = batches_to_matrix(&[matrix_batch()]);
+    fn a_series_frame_becomes_a_matrix_under_prometheus_label_names() {
+        let matrix: Vec<RangeVector> = decode(series_batch(vec![
+            (1_000_000_000, API, 2.0),
+            (2_000_000_000, API, f64::NAN),
+            (1_000_000_000, WEB, f64::INFINITY),
+            (2_000_000_000, WEB, f64::NEG_INFINITY),
+        ]))
+        .into_iter()
+        .map(range_vector)
+        .collect();
+
         assert_eq!(matrix.len(), 2);
-        let api = matrix
-            .iter()
-            .find(|s| s.metric.get("service_name") == Some(&"api".to_string()))
-            .unwrap();
-        assert_eq!(api.metric.get("__name__"), Some(&"reqs".to_string()));
+        let api = &matrix[0];
+        assert_eq!(
+            api.metric,
+            HashMap::from([
+                ("__name__".to_string(), "reqs".to_string()),
+                ("service_name".to_string(), "api".to_string()),
+                ("code".to_string(), "200".to_string()),
+            ])
+        );
         assert_eq!(
             api.values,
-            vec![Sample::new(1.0, "2"), Sample::new(2.0, "3")]
+            vec![Sample::new(1.0, "2"), Sample::new(2.0, "NaN")]
         );
-        let web = matrix
-            .iter()
-            .find(|s| s.metric.get("service_name") == Some(&"web".to_string()))
-            .unwrap();
-        assert_eq!(web.values, vec![Sample::new(1.0, "5.5")]);
+        // The lowering dropped `metric.name`; it stays dropped.
+        let web = &matrix[1];
+        assert!(!web.metric.contains_key("__name__"));
+        assert_eq!(
+            web.values,
+            vec![Sample::new(1.0, "+Inf"), Sample::new(2.0, "-Inf")]
+        );
     }
 
     #[test]
-    fn instant_vector_takes_last_sample() {
-        let vector = matrix_to_vector(batches_to_matrix(&[matrix_batch()]));
-        let api = vector
-            .iter()
-            .find(|s| s.metric.get("service_name") == Some(&"api".to_string()))
-            .unwrap();
-        assert_eq!(api.value, Sample::new(2.0, "3"));
+    fn an_instant_value_is_the_point_at_the_evaluation_time() {
+        let series = decode(series_batch(vec![
+            (1_000_000_000, API, 2.0),
+            (2_000_000_000, API, 3.0),
+        ]));
+        let (_, points) = series.into_iter().next().unwrap();
+        assert_eq!(value_at(points.clone(), 1_000_000_000), Some(2.0));
+        assert_eq!(value_at(points, 3_000_000_000), None);
+    }
+
+    #[test]
+    fn a_point_label_named_service_name_wins_over_the_renamed_service() {
+        let labels = BTreeMap::from([
+            ("service.name".to_string(), "api".to_string()),
+            ("service_name".to_string(), "own".to_string()),
+        ]);
+        assert_eq!(
+            prometheus_labels(labels),
+            HashMap::from([("service_name".to_string(), "own".to_string())])
+        );
     }
 
     #[test]
     fn value_formatting() {
         assert_eq!(format_value(3.0), "3");
         assert_eq!(format_value(2.5), "2.5");
+        assert_eq!(format_value(-0.25), "-0.25");
+        assert_eq!(format_value(1e20), "100000000000000000000");
         assert_eq!(format_value(f64::NAN), "NaN");
+        assert_eq!(format_value(f64::INFINITY), "+Inf");
+        assert_eq!(format_value(f64::NEG_INFINITY), "-Inf");
+    }
+
+    async fn get_status(uri: &str) -> (StatusCode, serde_json::Value) {
+        use tower::ServiceExt;
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = common::config::Configuration::default();
+        config.auth.tenants = vec![common::config::TenantConfig {
+            id: "acme".into(),
+            slug: "acme".into(),
+            name: "Acme".into(),
+            default_dataset: Some("default".into()),
+            datasets: vec![],
+            api_keys: vec![common::config::ApiKeyConfig {
+                key: "sk-test-key".into(),
+                name: Some("test".into()),
+            }],
+            schema_config: None,
+            limits: None,
+        }];
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+        let request = axum::http::Request::builder()
+            .uri(uri)
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&body).unwrap())
+    }
+
+    #[tokio::test]
+    async fn invalid_or_inexpressible_promql_is_bad_data_before_any_querier() {
+        // No querier is registered: a 400 proves the lowering rejected the
+        // query before execution was attempted.
+        for query in ["sum(", "requests%5B5m%5D", "requests%20offset%20-5m"] {
+            for uri in [
+                format!("/prometheus/api/v1/query?query={query}&time=1700000000"),
+                format!(
+                    "/prometheus/api/v1/query_range?query={query}&start=1700000000&end=1700000060&step=15"
+                ),
+            ] {
+                let (status, body) = get_status(&uri).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+                assert_eq!(body["status"], "error", "{uri}: {body}");
+                assert_eq!(body["errorType"], "bad_data", "{uri}: {body}");
+            }
+        }
     }
 
     #[test]

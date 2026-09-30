@@ -15,7 +15,6 @@
 
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_metrics_handler::MetricsHandler;
-use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -183,18 +182,26 @@ async fn setup() -> TestServices {
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog mgr"),
-    );
-    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
-        catalog_manager.clone(),
-        writer_wal.clone(),
-        &common::config::WriterConfig::default(),
-    )
-    .await
-    .expect("failed to build writer service with type authority");
+    // One SQL catalog behind both the writer's type authority and the
+    // catalog manager's tenant source, so the querier's IR path resolves the
+    // canonical attribute types the writer commits.
+    let type_authority_catalog = Catalog::new(&config.discovery.as_ref().unwrap().dsn)
+        .await
+        .expect("type authority catalog");
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("catalog mgr");
+    let writer_service =
+        tests_integration::test_support::writer_service_with_type_authority_and_catalog(
+            catalog_manager.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+            type_authority_catalog,
+        );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()

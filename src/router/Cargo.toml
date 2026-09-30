@@ -11,6 +11,7 @@ signaldb-api.workspace = true
 logql.workspace = true
 loki-api.workspace = true
 prometheus-api.workspace = true
+ql-ir.workspace = true
 pyroscope-api.workspace = true
 tempo-api.workspace = true
 ottl.workspace = true
