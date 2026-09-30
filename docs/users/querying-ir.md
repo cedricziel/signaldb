@@ -1388,12 +1388,17 @@ completely different source shape. Neither is a substitute for the other:
 `histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
 `quantile` needs raw numeric samples.
 
-The stage reads explicit-bucket and **exponential** histogram rows; every
-other row is ignored, as Prometheus ignores non-histogram series. A
-**summary** carries precomputed quantiles, not buckets, so it contributes
-nothing here: read it from `metric.quantiles`/`metric.quantile_values`
-instead. Histogram rows that cannot be interpolated (unsorted bounds, a
-count list that doesn't match the bounds, negative counts) are skipped.
+The stage reads explicit-bucket and **exponential** histogram rows; gauge
+and sum rows are ignored, as Prometheus ignores non-histogram series. A
+**summary** carries precomputed quantiles, not buckets, so a summary point in
+the queried range is a 400 (`<function> is not supported on summary metrics`,
+for `histogram_quantile` and `histogram_fraction` alike), never an empty or
+invented value, and it fails the whole query even when histograms are
+selected beside it. A summary with no points in the range stays empty. Read a
+summary from `metric.quantiles`/`metric.quantile_values` instead, or narrow
+the selection with `metric.name`. Histogram rows that cannot be interpolated
+(unsorted bounds, a count list that doesn't match the bounds, negative
+counts) are skipped.
 Explicit histograms with different bounds merge over the union of their
 bounds; exponential histograms merge by the OTel rule. More than 11,000
 evaluation instants is a 400.
