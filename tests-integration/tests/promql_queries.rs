@@ -140,18 +140,26 @@ async fn setup() -> TestServices {
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog mgr"),
-    );
-    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
-        catalog_manager.clone(),
-        writer_wal.clone(),
-        &common::config::WriterConfig::default(),
-    )
-    .await
-    .expect("failed to build writer service with type authority");
+    // One SQL catalog behind both the writer's type authority and the
+    // catalog manager's tenant source, so the querier's IR path resolves the
+    // canonical attribute types the writer commits.
+    let type_authority_catalog = Catalog::new(&config.discovery.as_ref().unwrap().dsn)
+        .await
+        .expect("type authority catalog");
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("catalog mgr");
+    let writer_service =
+        tests_integration::test_support::writer_service_with_type_authority_and_catalog(
+            catalog_manager.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+            type_authority_catalog,
+        );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -461,15 +469,18 @@ fn two_series_cumulative_histogram(service: &str) -> ExportMetricsServiceRequest
 }
 
 /// A monotonic counter `requests_total` sampled every 10s as
-/// `[10, 20, 5, 15]` — the 20 -> 5 drop is a counter reset (e.g. a process
-/// restart), not a real decrease. Reset-aware Prometheus semantics count
-/// the increase from zero after a reset: (20-10) + 5 + (15-5) = 25.
+/// `[10, 20, 5, 15]` — the 20 -> 5 drop is a counter reset (a process
+/// restart), which OTLP marks with a new `start_time`. The counter started
+/// an hour before, so its first point is the baseline; the restarted one
+/// starts inside the range and counts from zero: (20-10) + 5 + (15-5) = 25.
 fn counter_with_reset_metrics(service: &str) -> ExportMetricsServiceRequest {
-    let points: [(u64, f64); 4] = [
-        (BASE_NS, 10.0),
-        (BASE_NS + 10_000_000_000, 20.0),
-        (BASE_NS + 20_000_000_000, 5.0),
-        (BASE_NS + 30_000_000_000, 15.0),
+    let started = BASE_NS - 3_600_000_000_000;
+    let restart = BASE_NS + 15_000_000_000;
+    let points: [(u64, u64, f64); 4] = [
+        (started, BASE_NS, 10.0),
+        (started, BASE_NS + 10_000_000_000, 20.0),
+        (restart, BASE_NS + 20_000_000_000, 5.0),
+        (restart, BASE_NS + 30_000_000_000, 15.0),
     ];
     ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
@@ -491,9 +502,9 @@ fn counter_with_reset_metrics(service: &str) -> ExportMetricsServiceRequest {
                     data: Some(Data::Sum(Sum {
                         data_points: points
                             .iter()
-                            .map(|(ts, value)| NumberDataPoint {
+                            .map(|(start, ts, value)| NumberDataPoint {
                                 attributes: vec![],
-                                start_time_unix_nano: BASE_NS,
+                                start_time_unix_nano: *start,
                                 time_unix_nano: *ts,
                                 value: Some(number_data_point::Value::AsDouble(*value)),
                                 exemplars: vec![],
@@ -578,7 +589,7 @@ async fn instant_query_values(app: &Router, promql: &str, at: u64) -> (StatusCod
     (status, values)
 }
 
-/// The window bracketing the ingested metrics.
+/// The window bracketing the ingested metrics, for the metadata endpoints.
 fn window() -> String {
     // Prometheus params are unix seconds; step 1h covers the point.
     let start = (BASE_NS / 1_000_000_000) as i64 - 60;
@@ -586,9 +597,18 @@ fn window() -> String {
     format!("start={start}&end={end}&step=1h")
 }
 
-/// A window whose one step bucket holds the ingested point: histogram
-/// functions evaluate each bucket at its end, reading back to its start,
-/// and see only the points up to `end`.
+/// A range with one evaluation instant, a minute after the ingested points:
+/// a selector reads its 5-minute lookback ending there, and `[5m]` its
+/// range, as in Prometheus. (Prometheus params are unix seconds; with step
+/// 1h, `start` is the only instant.)
+fn eval_window() -> String {
+    let start = (BASE_NS / 1_000_000_000) as i64 + 60;
+    let end = start + 60;
+    format!("start={start}&end={end}&step=1h")
+}
+
+/// A window whose first evaluation instant is the ingested point: histogram
+/// functions evaluate at `start + k·step`, reading `(t - step, t]`.
 fn instant_window() -> String {
     let start = (BASE_NS / 1_000_000_000) as i64;
     format!("start={start}&end={}&step=1h", start + 60)
@@ -690,10 +710,11 @@ async fn setup_with_repeated_gauge_samples() -> (TestServices, Router) {
     (services, app)
 }
 
-/// The window bracketing every sample in [`setup_with_repeated_gauge_samples`].
+/// A range whose first evaluation instant follows every sample in
+/// [`setup_with_repeated_gauge_samples`], so its lookback sees them all.
 fn repeated_samples_window(step_seconds: i64) -> String {
-    let start = (BASE_NS / 1_000_000_000) as i64 - 60;
-    let end = (BASE_NS / 1_000_000_000) as i64 + 180;
+    let start = (BASE_NS / 1_000_000_000) as i64 + 120;
+    let end = start + 60;
     format!("start={start}&end={end}&step={step_seconds}")
 }
 
@@ -859,7 +880,7 @@ async fn promql_vector_arithmetic_matches_series_and_nests() {
         );
     }
 
-    let w = window();
+    let w = eval_window();
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/query_range?query=failed%2Bfailed_logs&{w}"),
@@ -875,7 +896,7 @@ async fn promql_vector_arithmetic_matches_series_and_nests() {
 #[tokio::test]
 async fn promql_range_query_returns_matrix_with_all_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     let (status, body) = get(
         &app,
@@ -895,7 +916,7 @@ async fn promql_range_query_returns_matrix_with_all_series() {
 #[tokio::test]
 async fn promql_range_query_sum_aggregates_across_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     let (status, body) = get(
         &app,
@@ -930,11 +951,11 @@ async fn promql_rate_and_increase_are_reset_aware_across_a_counter_restart() {
         .expect("flush writer");
 
     let app = build_router(&services).await;
-    let w = window();
+    let w = eval_window();
 
-    // increase() must apply the Prometheus counter-reset rule: the drop
-    // from 20 to 5 is counted from zero, giving 10 + 5 + 10 = 25 — never
-    // the naive last-minus-first (15 - 10 = 5).
+    // increase() recognizes the reset from the new start_time: the drop
+    // from 20 to 5 is counted from zero, giving 10 + 5 + 10 = 25 —
+    // never the naive last-minus-first.
     let (status, body) = get(
         &app,
         &format!("/prometheus/api/v1/query_range?query=increase(requests_total[5m])&{w}"),
@@ -1189,7 +1210,7 @@ async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
 #[tokio::test]
 async fn promql_vector_division_yields_one_per_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // Vector-to-vector arithmetic: requests / requests = 1 per series.
     let (status, body) = get(
@@ -1209,7 +1230,7 @@ async fn promql_vector_division_yields_one_per_series() {
 #[tokio::test]
 async fn promql_comparison_filter_keeps_matching_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // Scalar comparison filters to the matching series (web=20 > 15).
     let (status, body) = get(
@@ -1247,7 +1268,7 @@ async fn promql_histogram_fraction_computes_bucket_ratio() {
 #[tokio::test]
 async fn promql_vector_function_produces_constant_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // vector(42): a synthetic constant series.
     let (status, body) = get(
@@ -1266,7 +1287,7 @@ async fn promql_vector_function_produces_constant_series() {
 #[tokio::test]
 async fn promql_absent_function_reports_missing_metric() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // absent() of a missing metric yields 1.
     let (status, body) = get(
@@ -1285,7 +1306,7 @@ async fn promql_absent_function_reports_missing_metric() {
 #[tokio::test]
 async fn promql_subquery_avg_over_time_executes() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // Subquery under an over_time reducer lowers and executes cleanly.
     let (status, body) = get(
@@ -1301,7 +1322,7 @@ async fn promql_subquery_avg_over_time_executes() {
 #[tokio::test]
 async fn promql_at_modifier_pins_evaluation_time() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
     let at = at_timestamp();
 
     // The @ modifier lowers and executes cleanly over the router.
@@ -1318,7 +1339,7 @@ async fn promql_at_modifier_pins_evaluation_time() {
 #[tokio::test]
 async fn promql_time_function_executes() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // time() lowers and executes cleanly over the router.
     let (status, body) = get(
