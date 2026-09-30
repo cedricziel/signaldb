@@ -13,12 +13,10 @@
 //! endpoints (labels/values/series) query the metrics tables via the querier.
 
 use std::collections::{BTreeMap, HashMap};
-use tracing::Instrument;
 
 use super::api_error::ApiError;
 use super::query::DecodedSeries;
 use crate::RouterAppState;
-use arrow_flight::Ticket;
 use axum::{
     Router,
     extract::{Path, Query, State},
@@ -27,10 +25,8 @@ use axum::{
 };
 use common::auth::TenantContextExtractor;
 use common::catalog::{AttributeStatsRecord, Catalog};
-use common::flight::transport::ServiceCapability;
 use common::query_ir::ResultEnvelope;
 use datafusion::arrow::array::{Array, Float64Array, RecordBatch, StringArray};
-use futures::StreamExt;
 use prometheus_api::{
     InstantVector, LabelStat, LabelStatsResponse, LabelsResponse, QueryResponse, QueryResult,
     RangeVector, Sample, SeriesResponse,
@@ -202,7 +198,7 @@ pub async fn labels(
         "query_metric_labels:{}:{}:{start}:{end}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     );
-    let batches = execute_ticket(&state, ticket).await?;
+    let batches = execute_metadata_ticket(&state, ticket).await?;
     Ok(axum::Json(LabelsResponse::success(string_column(
         &batches, "label",
     ))))
@@ -240,7 +236,7 @@ pub async fn label_values(
         "query_metric_label_values:{}:{}:{name}:{start}:{end}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     );
-    let batches = execute_ticket(&state, ticket).await?;
+    let batches = execute_metadata_ticket(&state, ticket).await?;
     Ok(axum::Json(LabelsResponse::success(string_column(
         &batches, "value",
     ))))
@@ -264,7 +260,7 @@ pub async fn series(
         "query_metric_series:{}:{}:{payload}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     );
-    let batches = execute_ticket(&state, ticket).await?;
+    let batches = execute_metadata_ticket(&state, ticket).await?;
     Ok(axum::Json(SeriesResponse::success(series_from_batches(
         &batches,
     ))))
@@ -345,47 +341,14 @@ async fn run_promql(
     Ok((document.result, series))
 }
 
-/// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket(
+/// Run a metadata ticket (`query_metric_*`) on a querier, bounded like an IR
+/// query by the shared timeout and result size.
+async fn execute_metadata_ticket(
     state: &RouterAppState,
-    ticket_content: String,
+    ticket: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
-    let (mut client, server_address) = state
-        .service_registry()
-        .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to get Flight client for PromQL query");
-            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "no querier available")
-        })?;
-
-    let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
-    let ticket = Ticket::new(ticket_content);
-    let mut flight_request = tonic::Request::new(ticket);
-    let rpc_span = common::flight::trace_context::do_get_client_span(
-        verb.as_deref(),
-        &mut flight_request,
-        Some(&server_address),
-    );
-    if let Some(key) = &state.config().auth.internal_service_key {
-        common::flight::auth::attach_internal_auth(&mut flight_request, key);
-    }
-
-    let mut stream = client
-        .do_get(flight_request)
-        .instrument(rpc_span.clone())
-        .await
-        .map_err(|e| rpc_span.in_scope(|| ApiError::from_flight(&e, "promql")))?
-        .into_inner();
-
-    let mut data = Vec::new();
-    while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "promql"))?);
-    }
-
-    super::flight_decode::decode_flight_batches(data, "promql")
-        .await
-        .map_err(ApiError::from)
+    let (batches, _correlate_truncated) = super::query::execute_ticket(state, ticket).await?;
+    Ok(batches)
 }
 
 fn range_vector((labels, points): DecodedSeries<f64>) -> RangeVector {
@@ -558,6 +521,7 @@ mod tests {
     use super::*;
     use datafusion::arrow::array::TimestampNanosecondArray;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use futures::StreamExt;
     use std::sync::Arc;
 
     /// An IR metric Series frame: `bucket`, `__labels`, `value`.
@@ -698,7 +662,7 @@ mod tests {
 
         async fn do_get(
             &self,
-            _: tonic::Request<Ticket>,
+            _: tonic::Request<arrow_flight::Ticket>,
         ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
             match &self.0 {
                 Reply::Error(code) => Err(tonic::Status::new(*code, "querier says no")),
@@ -925,6 +889,35 @@ mod tests {
         assert_eq!(values.len(), 1, "{body}");
         assert_eq!(values[0][0].as_f64(), Some(1.0), "{body}");
         assert_eq!(values[0][1], "2", "{body}");
+    }
+
+    /// The metadata endpoints read their values off the querier's batches.
+    #[tokio::test]
+    async fn label_names_come_from_the_querier() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "label",
+            DataType::Utf8,
+            false,
+        )]));
+        let labels = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["service.name", "code"]))],
+        )
+        .unwrap();
+        let (status, body) = send(
+            "/prometheus/api/v1/labels",
+            Some(Reply::Batches(vec![labels])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"], serde_json::json!(["service.name", "code"]));
+
+        let (status, body) = send(
+            "/prometheus/api/v1/labels",
+            Some(Reply::Error(tonic::Code::InvalidArgument)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
     }
 
     /// The querier's Flight status decides the HTTP status.
