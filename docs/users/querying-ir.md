@@ -559,6 +559,15 @@ and `graph` (traces only, IR v8+, see [below](#graph-envelope-traces-only-ir-v8)
 A sixth, `metadata`, answers a question about the source instead of returning
 its records — see [Discovery](#discovery-what-can-i-query).
 
+`scalar` (IR v10+) is one value per evaluation instant with no labels — the
+result of a `scalar` stage or of the `time`/`constant` pseudo-sources:
+
+```jsonc
+{ "result": "scalar", "window": {...}, "points": [[t_ns, value], ...] }
+```
+
+A `NaN` value (e.g. `scalar` over zero or several series) is `null`.
+
 Values follow the value type: timestamps/durations are integer nanoseconds,
 bytes are base64, everything else its JSON-native form.
 

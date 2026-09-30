@@ -2710,6 +2710,9 @@ pub mod types {
     `query-ir-core` capability for the full stage/predicate grammar.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrRequest {
+        ///The value of the `constant` pseudo-source (irVersion 10+).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub constant: ::std::option::Option<f64>,
         ///`graph` only: hops from `focus` (1-3, default 1).
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub depth: ::std::option::Option<i64>,
@@ -2719,7 +2722,9 @@ pub mod types {
         ///`graph` only: restrict to this service's neighbourhood.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub focus: ::std::option::Option<::std::string::String>,
-        ///The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
+        /**The registered signal source (`logs`, `traces`, `metrics`,
+        `exemplars`, profile-summary `profiles`), or (irVersion 10+) the
+        Scalar pseudo-source `time` or `constant`.*/
         pub from: ::std::string::String,
         ///IR document version (the server accepts a bounded range).
         #[serde(rename = "irVersion")]
@@ -2730,9 +2735,13 @@ pub mod types {
             ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
         pub range: QueryRange,
         /**Declared result envelope: `rows`, `series`, `table`, `heatmap`,
-        (for the `profiles` source only) `flamegraph`, or (for the `traces`
-        source, irVersion 8+) `graph`.*/
+        (for the `profiles` source only) `flamegraph`, (for the `traces`
+        source, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.*/
         pub result: ::std::string::String,
+        /**The default evaluation step of the series-algebra stages; required by
+        the `time`/`constant` pseudo-sources (irVersion 10+).*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub step: ::std::option::Option<::std::string::String>,
         ///`graph` only: restrict to the services and calls of one trace.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub trace_id: ::std::option::Option<::std::string::String>,
@@ -2765,7 +2774,7 @@ pub mod types {
     /**The single canonical response contract. `result` discriminates which fields
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
     `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-    `flamegraph`; `graph` fills `graph`.*/
+    `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -2784,7 +2793,12 @@ pub mod types {
         about, with the provenance and cost of the answer.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub metadata: ::std::option::Option<MetadataResult>,
-        ///The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`.
+        /**Present iff `result == "scalar"`: one `[t_ns, value]` point per
+        evaluation instant, with no labels (`null` is NaN or ±Inf).*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub points: ::std::option::Option<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
+        /**The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
+        `graph`, `metadata`, or `scalar`.*/
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -14629,6 +14643,7 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct QueryIrRequest {
+            constant: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
             depth: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
             fields: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
@@ -14646,6 +14661,10 @@ pub mod types {
             >,
             range: ::std::result::Result<super::QueryRange, ::std::string::String>,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
+            step: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
             trace_id: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
@@ -14654,6 +14673,7 @@ pub mod types {
         impl ::std::default::Default for QueryIrRequest {
             fn default() -> Self {
                 Self {
+                    constant: Ok(Default::default()),
                     depth: Ok(Default::default()),
                     fields: Ok(Default::default()),
                     focus: Ok(Default::default()),
@@ -14662,11 +14682,22 @@ pub mod types {
                     pipeline: Ok(Default::default()),
                     range: Err("no value supplied for range".to_string()),
                     result: Err("no value supplied for result".to_string()),
+                    step: Ok(Default::default()),
                     trace_id: Ok(Default::default()),
                 }
             }
         }
         impl QueryIrRequest {
+            pub fn constant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.constant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for constant: {e}"));
+                self
+            }
             pub fn depth<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<i64>>,
@@ -14753,6 +14784,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for result: {e}"));
                 self
             }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
             pub fn trace_id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
@@ -14770,6 +14811,7 @@ pub mod types {
                 value: QueryIrRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    constant: value.constant?,
                     depth: value.depth?,
                     fields: value.fields?,
                     focus: value.focus?,
@@ -14778,6 +14820,7 @@ pub mod types {
                     pipeline: value.pipeline?,
                     range: value.range?,
                     result: value.result?,
+                    step: value.step?,
                     trace_id: value.trace_id?,
                 })
             }
@@ -14785,6 +14828,7 @@ pub mod types {
         impl ::std::convert::From<super::QueryIrRequest> for QueryIrRequest {
             fn from(value: super::QueryIrRequest) -> Self {
                 Self {
+                    constant: Ok(value.constant),
                     depth: Ok(value.depth),
                     fields: Ok(value.fields),
                     focus: Ok(value.focus),
@@ -14793,6 +14837,7 @@ pub mod types {
                     pipeline: Ok(value.pipeline),
                     range: Ok(value.range),
                     result: Ok(value.result),
+                    step: Ok(value.step),
                     trace_id: Ok(value.trace_id),
                 }
             }
@@ -14817,6 +14862,10 @@ pub mod types {
                 ::std::option::Option<super::MetadataResult>,
                 ::std::string::String,
             >,
+            points: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
+                ::std::string::String,
+            >,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
             rows: ::std::result::Result<
                 ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -14837,6 +14886,7 @@ pub mod types {
                     graph: Ok(Default::default()),
                     heatmap: Ok(Default::default()),
                     metadata: Ok(Default::default()),
+                    points: Ok(Default::default()),
                     result: Err("no value supplied for result".to_string()),
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
@@ -14895,6 +14945,20 @@ pub mod types {
                 self.metadata = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for metadata: {e}"));
+                self
+            }
+            pub fn points<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<
+                            ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.points = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for points: {e}"));
                 self
             }
             pub fn result<T>(mut self, value: T) -> Self
@@ -14969,6 +15033,7 @@ pub mod types {
                     graph: value.graph?,
                     heatmap: value.heatmap?,
                     metadata: value.metadata?,
+                    points: value.points?,
                     result: value.result?,
                     rows: value.rows?,
                     series: value.series?,
@@ -14986,6 +15051,7 @@ pub mod types {
                     graph: Ok(value.graph),
                     heatmap: Ok(value.heatmap),
                     metadata: Ok(value.metadata),
+                    points: Ok(value.points),
                     result: Ok(value.result),
                     rows: Ok(value.rows),
                     series: Ok(value.series),

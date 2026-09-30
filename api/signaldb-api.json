@@ -9466,6 +9466,14 @@
           "result"
         ],
         "properties": {
+          "constant": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "The value of the `constant` pseudo-source (irVersion 10+)."
+          },
           "depth": {
             "type": [
               "integer",
@@ -9493,7 +9501,7 @@
           },
           "from": {
             "type": "string",
-            "description": "The registered signal source: `logs`, `traces`, or profile-summary `profiles`.",
+            "description": "The registered signal source (`logs`, `traces`, `metrics`,\n`exemplars`, profile-summary `profiles`), or (irVersion 10+) the\nScalar pseudo-source `time` or `constant`.",
             "example": "logs"
           },
           "irVersion": {
@@ -9513,8 +9521,16 @@
           },
           "result": {
             "type": "string",
-            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`,\n(for the `profiles` source only) `flamegraph`, or (for the `traces`\nsource, irVersion 8+) `graph`.",
+            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`,\n(for the `profiles` source only) `flamegraph`, (for the `traces`\nsource, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.",
             "example": "rows"
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The default evaluation step of the series-algebra stages; required by\nthe `time`/`constant` pseudo-sources (irVersion 10+).",
+            "example": "1m"
           },
           "trace_id": {
             "type": [
@@ -9538,7 +9554,7 @@
       },
       "QueryIrResponse": {
         "type": "object",
-        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`.",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.",
         "required": [
           "result",
           "window"
@@ -9586,9 +9602,20 @@
               }
             ]
           },
+          "points": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "array",
+              "items": {}
+            },
+            "description": "Present iff `result == \"scalar\"`: one `[t_ns, value]` point per\nevaluation instant, with no labels (`null` is NaN or ±Inf)."
+          },
           "result": {
             "type": "string",
-            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`, or `graph`."
+            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,\n`graph`, `metadata`, or `scalar`."
           },
           "rows": {
             "type": "array",
