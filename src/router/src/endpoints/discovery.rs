@@ -263,7 +263,7 @@ async fn fields(
         });
 
     let limit = bounded(describe.limit, DEFAULT_FIELD_LIMIT);
-    let (fields, truncated) = merge_fields(source, &schema, &stats, &registry, limit);
+    let (fields, truncated) = merge_fields(source, &schema, &stats, &registry, &[], limit);
     Ok(MetadataResult {
         kind: MetadataKind::Fields,
         sources: Vec::new(),

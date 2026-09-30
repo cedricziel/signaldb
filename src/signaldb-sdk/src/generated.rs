@@ -877,7 +877,8 @@ pub mod types {
         not hidden).*/
         pub filterable: bool,
         /**The OTel attribute level, when known. Statistics carry no level, so an
-        observed key reports `null` rather than a guess.*/
+        observed key the type authority has not typed reports `null` rather
+        than a guess.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub level: ::std::option::Option<AttributeLevel>,
         ///The logical, dotted OTel-native name — directly usable in a predicate.
@@ -1375,6 +1376,8 @@ pub mod types {
         Registry,
         #[serde(rename = "observed")]
         Observed,
+        #[serde(rename = "authority")]
+        Authority,
     }
     impl ::std::fmt::Display for FieldOrigin {
         fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
@@ -1382,6 +1385,7 @@ pub mod types {
                 Self::Declared => f.write_str("declared"),
                 Self::Registry => f.write_str("registry"),
                 Self::Observed => f.write_str("observed"),
+                Self::Authority => f.write_str("authority"),
             }
         }
     }
@@ -1392,6 +1396,7 @@ pub mod types {
                 "declared" => Ok(Self::Declared),
                 "registry" => Ok(Self::Registry),
                 "observed" => Ok(Self::Observed),
+                "authority" => Ok(Self::Authority),
                 _ => Err("invalid value".into()),
             }
         }
