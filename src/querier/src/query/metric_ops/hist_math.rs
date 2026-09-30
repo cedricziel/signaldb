@@ -291,13 +291,8 @@ pub fn fraction(h: &HistPoint, lo: f64, hi: f64) -> f64 {
 }
 
 /// Observations `<= x`: exponential interpolation inside a boundary bucket, linear across zero.
+/// `min`/`max` play no part, as in Prometheus (a rate-mode increase has none).
 fn exp_cumulative(e: &ExpHistogram, x: f64) -> f64 {
-    if e.max.is_some_and(|m| x >= m) {
-        return e.count() as f64;
-    }
-    if e.min.is_some_and(|m| x < m) {
-        return 0.0;
-    }
     let zt = e.zero_threshold;
     // Same zero-bucket span as `ExpHistogram::quantile`.
     let any = |b: &Buckets| b.counts.iter().any(|&c| c > 0);
@@ -490,8 +485,8 @@ mod tests {
     }
 
     #[test]
-    fn exp_fraction_respects_zero_threshold_and_min_max() {
-        let mut h = ExpHistogram {
+    fn exp_fraction_respects_zero_threshold() {
+        let h = ExpHistogram {
             zero_count: 2,
             zero_threshold: 0.5,
             positive: Buckets {
@@ -500,13 +495,37 @@ mod tests {
             },
             ..Default::default()
         };
-        h.max = Some(3.0);
         let p = HistPoint::Exp(h, None);
         // Half the observations are at or below the zero threshold.
         assert!((fraction(&p, -1.0, 0.5) - 0.5).abs() < 1e-12);
-        // Nothing lies above max.
-        assert!((fraction(&p, 3.0, 100.0) - 0.0).abs() < 1e-12);
         assert!(fraction(&p, f64::NEG_INFINITY, f64::INFINITY).is_finite());
+    }
+
+    /// Prometheus never cuts the interpolation off at a point's min/max, and
+    /// a rate-mode increase has none, so instant and rate mode would disagree.
+    #[test]
+    fn exp_fraction_ignores_min_max() {
+        let plain = ExpHistogram {
+            zero_count: 2,
+            zero_threshold: 0.5,
+            positive: Buckets {
+                offset: 0,
+                counts: vec![0, 2],
+            },
+            ..Default::default()
+        };
+        let bounded = ExpHistogram {
+            min: Some(2.5),
+            max: Some(3.0),
+            ..plain.clone()
+        };
+        let (plain, bounded) = (HistPoint::Exp(plain, None), HistPoint::Exp(bounded, None));
+        // (3, 100] takes the part of (2, 4] above 3: 2·(1 - log2 1.5) of 4.
+        let want = 2.0 * (1.0 - 1.5f64.log2()) / 4.0;
+        assert!((fraction(&bounded, 3.0, 100.0) - want).abs() < 1e-12);
+        for (lo, hi) in [(3.0, 100.0), (0.0, 2.5), (2.0, 4.0)] {
+            assert_eq!(fraction(&bounded, lo, hi), fraction(&plain, lo, hi), "({lo}, {hi}]");
+        }
     }
 
     #[test]
