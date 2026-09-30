@@ -45,6 +45,36 @@ impl AttributeLevel {
     }
 }
 
+/// The prefix a query uses to address attributes of `level` on `source`, or
+/// `None` when the source has no such prefix. Mirrors the querier's
+/// `SourcePlan::attr_prefixes` (a test there asserts they agree): the record
+/// level carries the source's own qualifier (`log.`, `span.`, `profile.`,
+/// `point.`), scope and resource are `scope.`/`resource.`. The prefix is
+/// returned without its dot.
+pub fn attribute_qualifier(source: &str, level: AttributeLevel) -> Option<&'static str> {
+    let record = match source {
+        "logs" => Some("log"),
+        "traces" => Some("span"),
+        "profiles" => Some("profile"),
+        name if name == "metrics" || name.starts_with("metrics_") => Some("point"),
+        _ => None,
+    };
+    let has_scope = matches!(source, "logs" | "traces" | "profiles");
+    let has_resource = has_scope || source == "metrics" || source.starts_with("metrics_");
+    match level {
+        AttributeLevel::Record => record,
+        AttributeLevel::Scope => has_scope.then_some("scope"),
+        AttributeLevel::Resource => has_resource.then_some("resource"),
+    }
+}
+
+/// Whether a query can address attributes of `level` on `source` at all.
+/// Exemplars have one attribute container, read by its bare key.
+pub fn level_is_addressable(source: &str, level: AttributeLevel) -> bool {
+    attribute_qualifier(source, level).is_some()
+        || (source == "exemplars" && level == AttributeLevel::Record)
+}
+
 /// The client-visible type of a logical field.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, utoipa::ToSchema)]
 #[serde(rename_all = "snake_case")]
@@ -433,6 +463,22 @@ impl LogicalSchema {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn qualifiers_are_source_aware() {
+        use AttributeLevel::{Record, Resource, Scope};
+        assert_eq!(attribute_qualifier("logs", Record), Some("log"));
+        assert_eq!(attribute_qualifier("traces", Record), Some("span"));
+        assert_eq!(attribute_qualifier("profiles", Record), Some("profile"));
+        assert_eq!(attribute_qualifier("metrics", Record), Some("point"));
+        assert_eq!(attribute_qualifier("logs", Scope), Some("scope"));
+        assert_eq!(attribute_qualifier("metrics", Scope), None);
+        assert_eq!(attribute_qualifier("metrics", Resource), Some("resource"));
+        assert_eq!(attribute_qualifier("exemplars", Record), None);
+        assert!(level_is_addressable("exemplars", Record));
+        assert!(!level_is_addressable("exemplars", Resource));
+        assert!(!level_is_addressable("metrics", Scope));
+    }
     use super::*;
 
     #[test]
