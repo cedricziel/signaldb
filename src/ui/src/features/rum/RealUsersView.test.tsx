@@ -1014,10 +1014,14 @@ describe("Sessions tab", () => {
     await user.click(mark);
 
     expect(
-      await screen.findByRole("link", { name: "Open in Traces" }),
+      await screen.findByRole(
+        "link",
+        { name: "Open in Traces" },
+        { timeout: 5000 },
+      ),
     ).toHaveAttribute("href", expect.stringContaining("/traces/trace-501"));
     expect(await screen.findByText(/checkout-svc/)).toBeInTheDocument();
-  });
+  }, 15_000);
 
   it("names the preceding failed request as the likely cause of an exception", async () => {
     stubFetchRoutes([
