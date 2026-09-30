@@ -2361,7 +2361,7 @@ async fn service_graph_end_to_end_isolated_by_tenant() {
 // 11): `to` a signal source other than `from`, the `semi`/`anti` join kinds,
 // a target-side `where` sub-pipeline, a `window` widening the target scan,
 // and a per-source-row `fanout` cap on `inner`/`left`. Written test-first
-// against `openspec/changes/otel-native-schema/specs/cross-signal-correlate/
+// against `openspec/changes/archive/2026-09-30-otel-native-schema/specs/cross-signal-correlate/
 // spec.md` while the feature lands on another branch: every test below is
 // expected to fail today, since this server does not accept `irVersion: 11`
 // yet. All go through `POST /api/v1/query`, never a compat API.

@@ -1,4 +1,4 @@
-//! Warm-tier containment-index probing (see `openspec/changes/otel-native-schema`,
+//! Warm-tier containment-index probing (see `openspec/changes/archive/2026-09-30-otel-native-schema`,
 //! spec `typed-attribute-storage`, "Warm tier"): [`probe::probe_clauses`]
 //! recognizes an equality predicate over a typed-attribute home as a set of
 //! candidate warm-index tokens for [`prefilter::prefilter_files`]'s Parquet

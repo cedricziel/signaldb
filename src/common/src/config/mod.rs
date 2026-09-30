@@ -2493,7 +2493,7 @@ impl Default for QuerierConfig {
 }
 
 /// Selectivity/cost knobs for the warm containment-index scan prefilter (see
-/// `openspec/changes/otel-native-schema`, spec `typed-attribute-storage`,
+/// `openspec/changes/archive/2026-09-30-otel-native-schema`, spec `typed-attribute-storage`,
 /// "Warm tier"). Has no effect on a table that wasn't written with the warm
 /// index (`[schema].warm_index` on the writer); this only tunes whether and
 /// how aggressively an opted-in table's scans are pruned by it.
