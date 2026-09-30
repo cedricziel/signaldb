@@ -413,6 +413,7 @@ mod tests {
             rows: vec![],
             series: vec![],
             step_ns: None,
+            traces: None,
             warnings: vec![],
             window: signaldb_sdk::types::ResolvedWindow {
                 start_ns: 0,
@@ -576,6 +577,7 @@ mod tests {
             rows: vec![],
             series: vec![],
             step_ns: None,
+            traces: None,
             warnings: vec![],
             window: signaldb_sdk::types::ResolvedWindow {
                 start_ns: 0,

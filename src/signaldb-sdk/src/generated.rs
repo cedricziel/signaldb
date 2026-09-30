@@ -2736,7 +2736,8 @@ pub mod types {
         pub range: QueryRange,
         /**Declared result envelope: `rows`, `series`, `table`, `heatmap`,
         (for the `profiles` source only) `flamegraph`, (for the `traces`
-        source, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.*/
+        source, irVersion 8+) `graph`, (irVersion 10+) `scalar`, or (for the
+        `traces` source, irVersion 12+) `trace`.*/
         pub result: ::std::string::String,
         /**The default evaluation step of the series-algebra stages; required by
         the `time`/`constant` pseudo-sources (irVersion 10+).*/
@@ -2774,7 +2775,7 @@ pub mod types {
     /**The single canonical response contract. `result` discriminates which fields
     are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
     `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-    `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.*/
+    `flamegraph`; `graph` fills `graph`; `trace` fills `traces`; `scalar` fills `points` + `step_ns`.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrResponse {
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -2798,7 +2799,7 @@ pub mod types {
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub points: ::std::option::Option<::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>>,
         /**The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
-        `graph`, `metadata`, or `scalar`.*/
+        `graph`, `metadata`, `scalar`, or `trace`.*/
         pub result: ::std::string::String,
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
         pub rows: ::std::vec::Vec<::std::vec::Vec<::serde_json::Value>>,
@@ -2806,6 +2807,10 @@ pub mod types {
         pub series: ::std::vec::Vec<ResultSeries>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub step_ns: ::std::option::Option<i64>,
+        /**Present iff `result == "trace"` — the result rows grouped per trace, in
+        order of first appearance. `Some` even when no row matched.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub traces: ::std::option::Option<::std::vec::Vec<TraceGroup>>,
         /**Non-fatal diagnostics about this query. Empty (and omitted) when the
         server has nothing to report; a warning never suppresses the result.*/
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
@@ -3669,6 +3674,20 @@ pub mod types {
     }
     impl Trace {
         pub fn builder() -> builder::Trace {
+            Default::default()
+        }
+    }
+    /**One trace in a `trace` result: its spans, each an object keyed by result
+    column name.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct TraceGroup {
+        ///The trace's result rows, in result order.
+        pub spans: ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        ///The trace's `trace_id`.
+        pub trace_id: ::std::string::String,
+    }
+    impl TraceGroup {
+        pub fn builder() -> builder::TraceGroup {
             Default::default()
         }
     }
@@ -14874,6 +14893,10 @@ pub mod types {
             series:
                 ::std::result::Result<::std::vec::Vec<super::ResultSeries>, ::std::string::String>,
             step_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            traces: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<super::TraceGroup>>,
+                ::std::string::String,
+            >,
             warnings:
                 ::std::result::Result<::std::vec::Vec<super::QueryWarning>, ::std::string::String>,
             window: ::std::result::Result<super::ResolvedWindow, ::std::string::String>,
@@ -14891,6 +14914,7 @@ pub mod types {
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
                     step_ns: Ok(Default::default()),
+                    traces: Ok(Default::default()),
                     warnings: Ok(Default::default()),
                     window: Err("no value supplied for window".to_string()),
                 }
@@ -15001,6 +15025,18 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for step_ns: {e}"));
                 self
             }
+            pub fn traces<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<super::TraceGroup>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.traces = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for traces: {e}"));
+                self
+            }
             pub fn warnings<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<super::QueryWarning>>,
@@ -15038,6 +15074,7 @@ pub mod types {
                     rows: value.rows?,
                     series: value.series?,
                     step_ns: value.step_ns?,
+                    traces: value.traces?,
                     warnings: value.warnings?,
                     window: value.window?,
                 })
@@ -15056,6 +15093,7 @@ pub mod types {
                     rows: Ok(value.rows),
                     series: Ok(value.series),
                     step_ns: Ok(value.step_ns),
+                    traces: Ok(value.traces),
                     warnings: Ok(value.warnings),
                     window: Ok(value.window),
                 }
@@ -17974,6 +18012,67 @@ pub mod types {
                     root_trace_name: Ok(value.root_trace_name),
                     span_sets: Ok(value.span_sets),
                     start_time_unix_nano: Ok(value.start_time_unix_nano),
+                    trace_id: Ok(value.trace_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct TraceGroup {
+            spans: ::std::result::Result<
+                ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+                ::std::string::String,
+            >,
+            trace_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for TraceGroup {
+            fn default() -> Self {
+                Self {
+                    spans: Err("no value supplied for spans".to_string()),
+                    trace_id: Err("no value supplied for trace_id".to_string()),
+                }
+            }
+        }
+        impl TraceGroup {
+            pub fn spans<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::vec::Vec<
+                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
+                        >,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.spans = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for spans: {e}"));
+                self
+            }
+            pub fn trace_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.trace_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for trace_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<TraceGroup> for super::TraceGroup {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: TraceGroup,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    spans: value.spans?,
+                    trace_id: value.trace_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::TraceGroup> for TraceGroup {
+            fn from(value: super::TraceGroup) -> Self {
+                Self {
+                    spans: Ok(value.spans),
                     trace_id: Ok(value.trace_id),
                 }
             }

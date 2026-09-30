@@ -564,7 +564,8 @@ A few more envelopes are source-scoped rather than available everywhere:
 `heatmap` (traces only, see [below](#heatmap-envelope-ir-v2)),
 `flamegraph` (profiles only, see [below](#flamegraph-envelope-profiles-only)),
 and `graph` (traces only, IR v8+, see [below](#graph-envelope-traces-only-ir-v8)).
-A sixth, `metadata`, answers a question about the source instead of returning
+`trace` (traces only, IR v12+, see [below](#trace-envelope-traces-only-ir-v12))
+returns the rows grouped per trace. A further envelope, `metadata`, answers a question about the source instead of returning
 its records — see [Discovery](#discovery-what-can-i-query).
 
 `scalar` (IR v10+) is one value per evaluation instant with no labels — the
@@ -588,6 +589,34 @@ whole-bag field (`log.attributes`, and its siblings) arrives as a JSON
 object with each key in its original sent type, so you index a key rather
 than parse a rendering. A `null` cell means the row carried no such
 container; `{}` means it carried one holding no attributes.
+
+### Trace envelope (`traces` only, IR v12+)
+
+`"result": "trace"` returns the rows of a `traces` query grouped by trace, so a
+client gets one entry per trace instead of a flat span list. The pipeline is
+any non-aggregated one over `traces`; if `fields` projects columns it must
+include `trace_id`. Without `fields` the default `traces` projection applies.
+
+```jsonc
+{ "result": "trace", "window": {...},
+  "columns": [{name, type}],
+  "traces": [
+    { "trace_id": "5b8efff798038103d269b633813fc60c",
+      "spans": [ { "trace_id": "5b8e…", "span_id": "eee19b7ec3c1b174", "span_name": "GET /", … },
+                 … ] },
+    …
+  ] }
+```
+
+Traces appear in order of their first row, and each trace's `spans` keep the
+result order (so an `order` stage decides both). Each span is an object keyed
+by result column name, with the same cell encoding as `rows`; `columns` gives
+each column's type, and `rows` is absent. A `limit` bounds spans, not traces,
+so any trace in the result may be incomplete. An empty result is
+`"traces": []`.
+
+The envelope is rejected on any source other than `traces`, after an
+`aggregate`, and below `irVersion` 12.
 
 ### Warnings
 

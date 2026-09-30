@@ -5,7 +5,8 @@
 //! router stamps the server clock, forwards it to a querier as a
 //! `query_ir:{tenant}:{dataset}:{json}` Flight ticket, and shapes the returned
 //! RecordBatches into the declared result envelope
-//! (`rows` | `series` | `table` | `heatmap` | `flamegraph`).
+//! (`rows` | `series` | `table` | `heatmap` | `flamegraph` | `graph` |
+//! `metadata` | `scalar` | `trace`; `trace` needs irVersion 12).
 //!
 //! Auth and tenant scoping are identical to the Tempo/LogQL/Prometheus
 //! surfaces: the endpoint sits behind the auth middleware and derives the
@@ -77,7 +78,8 @@ pub struct QueryIrRequest {
     pub range: QueryRange,
     /// Declared result envelope: `rows`, `series`, `table`, `heatmap`,
     /// (for the `profiles` source only) `flamegraph`, (for the `traces`
-    /// source, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.
+    /// source, irVersion 8+) `graph`, (irVersion 10+) `scalar`, or (for the
+    /// `traces` source, irVersion 12+) `trace`.
     #[schema(example = "rows")]
     pub result: String,
     /// Curated projection (logical field names) for `rows`/`table`.
@@ -165,6 +167,7 @@ impl QueryIrResponse {
             heatmap: HeatmapResult::default(),
             flamegraph: None,
             graph: None,
+            traces: None,
             metadata: Some(metadata),
             warnings,
         }
@@ -298,14 +301,25 @@ pub struct QueryWarning {
     pub suggestions: Vec<String>,
 }
 
+/// One trace in a `trace` result: its spans, each an object keyed by result
+/// column name.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct TraceGroup {
+    /// The trace's `trace_id`.
+    pub trace_id: String,
+    /// The trace's result rows, in result order.
+    #[schema(value_type = Vec<Object>)]
+    pub spans: Vec<serde_json::Map<String, serde_json::Value>>,
+}
+
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-/// `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.
+/// `flamegraph`; `graph` fills `graph`; `trace` fills `traces`; `scalar` fills `points` + `step_ns`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
     /// The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
-    /// `graph`, `metadata`, or `scalar`.
+    /// `graph`, `metadata`, `scalar`, or `trace`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -333,6 +347,10 @@ pub struct QueryIrResponse {
     /// Present iff `result == "graph"` — the service dependency graph.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub graph: Option<common::service_graph::ServiceGraph>,
+    /// Present iff `result == "trace"` — the result rows grouped per trace, in
+    /// order of first appearance. `Some` even when no row matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traces: Option<Vec<TraceGroup>>,
     /// Present iff `result == "metadata"` — what a `describe` document asked
     /// about, with the provenance and cost of the answer.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -502,6 +520,7 @@ async fn query_ir_multi(
         heatmap: HeatmapResult::default(),
         flamegraph: None,
         graph: None,
+        traces: None,
         metadata: None,
         warnings: Vec::new(),
     }))
@@ -564,6 +583,7 @@ fn parse_envelope(s: &str) -> Result<common::query_ir::ResultEnvelope, ApiError>
         "metadata" => Metadata,
         "graph" => Graph,
         "scalar" => Scalar,
+        "trace" => Trace,
         other => {
             return Err(ApiError::bad_request(format!(
                 "unknown result envelope '{other}'"
@@ -1019,6 +1039,7 @@ fn build_envelope(
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 graph: None,
+                traces: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -1037,6 +1058,7 @@ fn build_envelope(
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 graph: None,
+                traces: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -1054,6 +1076,7 @@ fn build_envelope(
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
                 graph: None,
+                traces: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -1106,6 +1129,7 @@ fn build_envelope(
                 },
                 flamegraph: None,
                 graph: None,
+                traces: None,
                 metadata: None,
                 warnings: Vec::new(),
             })
@@ -1121,9 +1145,29 @@ fn build_envelope(
             heatmap: HeatmapResult::default(),
             flamegraph: Some(to_flamegraph_result(batches)?),
             graph: None,
+            traces: None,
             metadata: None,
             warnings: Vec::new(),
         }),
+        "trace" => {
+            let (columns, rows) = ir_table(batches);
+            let traces = group_by_trace(&columns, rows)?;
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns,
+                rows: Vec::new(),
+                series: Vec::new(),
+                points: None,
+                step_ns: None,
+                heatmap: HeatmapResult::default(),
+                flamegraph: None,
+                graph: None,
+                traces: Some(traces),
+                metadata: None,
+                warnings: Vec::new(),
+            })
+        }
         "graph" => {
             let graph = to_graph(batches)?;
             Ok(QueryIrResponse {
@@ -1141,12 +1185,55 @@ fn build_envelope(
                     .into_iter()
                     .collect(),
                 graph: Some(graph),
+                traces: None,
             })
         }
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
         ))),
     }
+}
+
+/// Group result rows by their `trace_id` column, in first-appearance order.
+fn group_by_trace(
+    columns: &[ResultColumn],
+    rows: Vec<Vec<serde_json::Value>>,
+) -> Result<Vec<TraceGroup>, ApiError> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let trace_col = columns
+        .iter()
+        .position(|c| c.name == "trace_id")
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "trace result is missing the trace_id column",
+            )
+        })?;
+    let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<TraceGroup> = Vec::new();
+    for row in rows {
+        let trace_id = match &row[trace_col] {
+            serde_json::Value::String(id) => std::borrow::Cow::Borrowed(id.as_str()),
+            other => std::borrow::Cow::Owned(other.to_string()),
+        };
+        let at = match index.get(trace_id.as_ref()) {
+            Some(&at) => at,
+            None => {
+                index.insert(trace_id.to_string(), groups.len());
+                groups.push(TraceGroup {
+                    trace_id: trace_id.to_string(),
+                    spans: Vec::new(),
+                });
+                groups.len() - 1
+            }
+        };
+        let span = names.iter().map(|n| n.to_string()).zip(row).collect();
+        groups[at].spans.push(span);
+    }
+    Ok(groups)
 }
 
 /// Decode the querier's one-row `graph_json` batch (see
@@ -2506,6 +2593,62 @@ mod tests {
         assert!(flamegraph.names.is_empty());
         assert_eq!(flamegraph.total, 0);
         assert!(!flamegraph.truncated);
+    }
+
+    #[test]
+    fn trace_envelope_groups_rows_by_trace_id_in_first_appearance_order() {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("duration_nano", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["t2", "t1", "t2", "t1", "t3"])),
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    Some("b"),
+                    Some("c"),
+                    None,
+                    Some("e"),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 12, "from": "traces", "range": { "from": "0", "to": "60" },
+            "result": "trace", "pipeline": []
+        });
+        let window = ResolvedWindow {
+            start_ns: 0,
+            end_ns: 60,
+        };
+        let response = build_envelope("trace", window, &[batch], &document).unwrap();
+        assert!(response.rows.is_empty());
+        assert_eq!(response.columns.len(), 3);
+        let traces = response.traces.as_ref().expect("traces populated");
+        let ids: Vec<&str> = traces.iter().map(|t| t.trace_id.as_str()).collect();
+        assert_eq!(ids, ["t2", "t1", "t3"]);
+        assert_eq!(traces[0].spans.len(), 2);
+        assert_eq!(traces[1].spans[1]["span_id"], serde_json::Value::Null);
+        assert_eq!(traces[0].spans[1]["duration_nano"], serde_json::json!(3));
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["result"], "trace");
+        assert_eq!(json["traces"][0]["trace_id"], "t2");
+        assert!(json.get("rows").is_none());
+
+        let empty = build_envelope("trace", window, &[], &document).unwrap();
+        assert_eq!(empty.traces, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["traces"],
+            serde_json::json!([])
+        );
     }
 
     /// Every non-flamegraph envelope carries `flamegraph: None` — the field

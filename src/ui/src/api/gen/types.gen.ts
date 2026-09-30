@@ -1823,7 +1823,8 @@ export type QueryIrRequest = {
     /**
      * Declared result envelope: `rows`, `series`, `table`, `heatmap`,
      * (for the `profiles` source only) `flamegraph`, (for the `traces`
-     * source, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.
+     * source, irVersion 8+) `graph`, (irVersion 10+) `scalar`, or (for the
+     * `traces` source, irVersion 12+) `trace`.
      */
     result: string;
     /**
@@ -1849,7 +1850,7 @@ export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
  * `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
- * `flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.
+ * `flamegraph`; `graph` fills `graph`; `trace` fills `traces`; `scalar` fills `points` + `step_ns`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
@@ -1864,12 +1865,17 @@ export type QueryIrResponse = {
     points?: Array<Array<unknown>> | null;
     /**
      * The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
-     * `graph`, `metadata`, or `scalar`.
+     * `graph`, `metadata`, `scalar`, or `trace`.
      */
     result: string;
     rows?: Array<Array<unknown>>;
     series?: Array<ResultSeries>;
     step_ns?: number | null;
+    /**
+     * Present iff `result == "trace"` — the result rows grouped per trace, in
+     * order of first appearance. `Some` even when no row matched.
+     */
+    traces?: Array<TraceGroup> | null;
     /**
      * Non-fatal diagnostics about this query. Empty (and omitted) when the
      * server has nothing to report; a warning never suppresses the result.
@@ -2396,6 +2402,23 @@ export type Trace = {
     spanSets: Array<SpanSet>;
     startTimeUnixNano: string;
     traceID: string;
+};
+
+/**
+ * One trace in a `trace` result: its spans, each an object keyed by result
+ * column name.
+ */
+export type TraceGroup = {
+    /**
+     * The trace's result rows, in result order.
+     */
+    spans: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * The trace's `trace_id`.
+     */
+    trace_id: string;
 };
 
 export type TypeSource = 'config' | 'semconv' | 'observed';
