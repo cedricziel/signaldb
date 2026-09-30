@@ -10,6 +10,7 @@ use crate::query::ir_planner::ResolvedWindow;
 
 pub mod label_ops;
 pub mod labels;
+mod reduce;
 pub mod sample;
 pub mod scalar;
 mod stages;
@@ -46,6 +47,7 @@ pub(crate) fn lower_stage(
     match stage {
         Stage::Scalar(_) => scalar::to_scalar(env.ctx, df, env.window, step_ns),
         Stage::Vector(_) => scalar::to_vector(df),
+        Stage::Reduce(r) => reduce::lower_reduce(df, r),
         Stage::Labels(op) => stages::lower_labels(df, op),
         Stage::Map(map) => stages::lower_map(df, map),
         Stage::Filter(filter) => stages::lower_filter(df, filter),

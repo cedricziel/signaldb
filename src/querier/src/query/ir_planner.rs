@@ -1054,11 +1054,7 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 fn is_series_algebra(stage: &Stage) -> bool {
     matches!(
         stage,
-        Stage::Reduce(_)
-            | Stage::Absent(_)
-            | Stage::OverTime(_)
-            | Stage::Binop(_)
-            | Stage::HistogramFraction(_)
+        Stage::Absent(_) | Stage::OverTime(_) | Stage::Binop(_) | Stage::HistogramFraction(_)
     )
 }
 
@@ -1218,6 +1214,7 @@ pub(crate) async fn plan_document(
             }
             Stage::Scalar(_)
             | Stage::Vector(_)
+            | Stage::Reduce(_)
             | Stage::Labels(_)
             | Stage::Map(_)
             | Stage::Filter(_)
@@ -5746,8 +5743,8 @@ mod tests {
         for (from, pipeline, expected) in [
             (
                 "metrics",
-                serde_json::json!([{ "sample": { "fn": "latest" } }, { "reduce": { "fn": "sum" } }]),
-                "reduce stage is not supported yet",
+                serde_json::json!([{ "sample": { "fn": "latest" } }, { "absent": {} }]),
+                "absent stage is not supported yet",
             ),
             (
                 "metrics",

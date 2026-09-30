@@ -1,4 +1,4 @@
-//! Label-set UDFs over a Series' canonical `__labels`: keep / drop / get /
+//! Label-set UDFs over a Series' canonical `__labels`: keep / drop /
 //! drop the name, and PromQL's `label_replace` / `label_join` (D11).
 
 use std::collections::HashMap;
@@ -64,7 +64,6 @@ pub(crate) fn anchored_regex(pattern: &str) -> Result<Regex> {
 enum Op {
     Keep,
     Drop,
-    Get,
     Replace,
     Join,
     DropName,
@@ -75,7 +74,6 @@ impl Op {
         match self {
             Op::Keep => "labels_keep",
             Op::Drop => "labels_drop",
-            Op::Get => "labels_get",
             Op::Replace => "label_replace",
             Op::Join => "label_join",
             Op::DropName => "labels_drop_name",
@@ -86,7 +84,6 @@ impl Op {
     fn operands(self) -> (usize, bool) {
         match self {
             Op::Keep | Op::Drop => (0, true),
-            Op::Get => (1, false),
             Op::Replace => (4, false),
             Op::Join => (2, true),
             Op::DropName => (0, false),
@@ -108,19 +105,12 @@ fn udf(op: Op) -> ScalarUDF {
 }
 
 /// `labels_keep(labels, key…)`: only the named labels.
-#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn labels_keep_udf() -> ScalarUDF {
     udf(Op::Keep)
 }
 /// `labels_drop(labels, key…)`: every label but the named ones.
-#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
 pub(crate) fn labels_drop_udf() -> ScalarUDF {
     udf(Op::Drop)
-}
-/// `labels_get(labels, key)`: one label's value, null when absent.
-#[cfg_attr(not(test), expect(dead_code, reason = "no stage rewrites labels yet"))]
-pub(crate) fn labels_get_udf() -> ScalarUDF {
-    udf(Op::Get)
 }
 /// `label_replace(labels, dst, replacement, src, regex)`, PromQL semantics.
 pub(crate) fn label_replace_udf() -> ScalarUDF {
@@ -178,10 +168,9 @@ impl ScalarUDFImpl for LabelOp {
             Op::Replace => Some(anchored_regex(&consts[3])?),
             _ => None,
         };
-        let rewrite = |labels: &str| -> Result<Option<String>> {
+        let rewrite = |labels: &str| -> Result<String> {
             let mut set = decode(labels)?;
             match (self.op, &regex) {
-                (Op::Get, _) => return Ok(set.remove(&consts[0])),
                 (Op::Keep, _) => set.retain(|k, _| consts.contains(k)),
                 (Op::Drop, _) => set.retain(|k, _| !consts.contains(k)),
                 (Op::DropName, _) => {
@@ -195,12 +184,12 @@ impl ScalarUDFImpl for LabelOp {
                 }
                 (Op::Join, _) => label_join(&mut set, &consts[0], &consts[1], &consts[2..]),
             }
-            encode(&set).map(Some)
+            encode(&set)
         };
         let labels = utf8_array(&args.args[0], args.number_rows)?;
         let labels = labels.as_string::<i32>();
         // A batch repeats few label sets many times (one per instant).
-        let mut seen: HashMap<&str, Option<String>> = HashMap::new();
+        let mut seen: HashMap<&str, String> = HashMap::new();
         let mut out = StringBuilder::new();
         for row in 0..labels.len() {
             if labels.is_null(row) {
@@ -211,7 +200,7 @@ impl ScalarUDFImpl for LabelOp {
             if !seen.contains_key(set) {
                 seen.insert(set, rewrite(set)?);
             }
-            out.append_option(seen.get(set).and_then(Option::as_deref));
+            out.append_option(seen.get(set));
         }
         Ok(ColumnarValue::Array(Arc::new(out.finish())))
     }
@@ -294,7 +283,6 @@ mod tests {
                 labels_drop_udf().call(vec![l(), lit("a")]),
                 r#"{"metric.name":"m","service.name":"s"}"#,
             ),
-            (labels_get_udf().call(vec![l(), lit("service.name")]), "s"),
             (
                 labels_drop_name_udf().call(vec![l()]),
                 r#"{"a":"1","service.name":"s"}"#,
@@ -311,19 +299,17 @@ mod tests {
         for (expr, want) in cases {
             assert_eq!(eval(expr).await.unwrap(), [Some(want.to_string()), None]);
         }
-        let absent = labels_get_udf().call(vec![l(), lit("nope")]);
-        assert_eq!(eval(absent).await.unwrap(), [None, None]);
     }
 
     #[tokio::test]
     async fn bad_operands_are_rejected() {
         let bad_regex =
             label_replace_udf().call(vec![ident("l"), lit("a"), lit(""), lit("b"), lit("(")]);
-        let arity = labels_get_udf().call(vec![ident("l")]);
+        let arity = label_join_udf().call(vec![ident("l"), lit("a")]);
         let not_literal = labels_keep_udf().call(vec![ident("l"), ident("l")]);
         for (expr, want) in [
             (bad_regex, "invalid regex"),
-            (arity, "labels_get takes"),
+            (arity, "label_join takes"),
             (not_literal, "string literals"),
         ] {
             let err = crate::query::error::QuerierError::from(eval(expr).await.unwrap_err());
