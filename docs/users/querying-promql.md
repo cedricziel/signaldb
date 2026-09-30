@@ -87,11 +87,16 @@ itself over the window. Under `sum [by (…)]` the series are merged per group
 after that. `offset` and `@` on the histogram operand are a `400`.
 
 `histogram_quantile` and `histogram_fraction` read explicit-bucket and
-exponential histograms (exponential buckets merge by the OTel rule). Rows of
-any other type are ignored, as Prometheus ignores non-histogram series, so a
-**summary** metric yields no result: it carries precomputed quantiles, not
-buckets. Histograms with different explicit bounds merge over the union of
-their bounds, and malformed rows are skipped.
+exponential histograms (exponential buckets merge by the OTel rule). Gauge
+and sum rows are ignored, as Prometheus ignores non-histogram series. A
+**summary** point in the queried range is a `400` (`<function> is not
+supported on summary metrics`): it carries precomputed quantiles, not
+buckets. Unlike Prometheus, which drops such series with an annotation, the
+whole query fails, even when histograms are selected beside the summary (for
+example a nameless `sum(rate({job="api"}[5m]))`), so narrow the selector with
+`__name__`.
+Histograms with different explicit bounds merge over the union of their
+bounds, and malformed rows are skipped.
 
 `histogram_count` and `histogram_sum` read the stored count and sum, which
 histograms, exponential histograms and summaries all carry, so they sum rows

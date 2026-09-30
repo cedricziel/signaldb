@@ -7483,8 +7483,8 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn histogram_quantile_on_metrics_reads_only_histogram_rows() {
-        for leak in ["gauge", "summary"] {
+    async fn histogram_quantile_on_metrics_ignores_gauge_and_sum_rows() {
+        for leak in ["gauge", "sum"] {
             histogram_quantile_ignores_leak(leak).await;
         }
     }
@@ -7507,6 +7507,50 @@ mod tests {
             svc_a.len() == 1 && (svc_a[0] - 0.5).abs() < 1e-9,
             "{svc_a:?}"
         );
+    }
+
+    /// A summary in the selection is a 400, whichever statistic reads it and
+    /// however the result is grouped: ungrouped, `by` (the summary is its own
+    /// group) or `per_series`.
+    #[tokio::test]
+    async fn histogram_statistics_over_a_summary_are_invalid_input() {
+        let svc = IrService::new(histogram_ctx_with_leak("summary"));
+        let shapes = [
+            serde_json::json!({}),
+            serde_json::json!({ "by": ["service.name"] }),
+            serde_json::json!({ "per_series": true }),
+        ];
+        for (stat, name) in [
+            (serde_json::json!({ "q": 0.5 }), "histogram_quantile"),
+            (
+                serde_json::json!({ "lower": 0.0, "upper": 1.0 }),
+                "histogram_fraction",
+            ),
+        ] {
+            for shape in &shapes {
+                let mut args = stat.clone();
+                args["step"] = "1000ms".into();
+                args["as"] = "v".into();
+                args.as_object_mut()
+                    .unwrap()
+                    .extend(shape.as_object().unwrap().clone());
+                let d = doc(serde_json::json!({
+                    "irVersion": 10, "from": "metrics", "range": { "from": 100, "to": 1000 },
+                    "result": "series",
+                    "pipeline": [
+                        { "where": { "field": "metric.name", "op": "eq", "value": "latency" } },
+                        { name: args }
+                    ]
+                }));
+                let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+                let err = QuerierError::from(df.collect().await.unwrap_err());
+                assert!(
+                    matches!(&err, QuerierError::InvalidInput(m)
+                        if m.contains(&format!("{name} is not supported on summary metrics"))),
+                    "{name} {shape}: {err:?}"
+                );
+            }
+        }
     }
 
     #[tokio::test]

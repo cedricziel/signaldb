@@ -80,11 +80,13 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 | `histogram_count`, `histogram_sum`                       | ✅ (sum the stored `count`/`sum` columns, including summary and exponential_histogram rows)                                                                                                                                                                         |
 | `histogram_fraction(lower, upper, metric)`               | ✅ (estimated fraction of observations in `(lower, upper]`, interpolated within the buckets the bounds fall in; `-Inf`/`+Inf` bounds take in the open-ended buckets; the same operand shapes as `histogram_quantile`)                                                |
 
-`histogram_quantile` and `histogram_fraction` ignore rows that are not
-histograms, so a summary metric yields no result. Without a `sum`, two series
-left with one label set once `__name__` is dropped are a `400`, as in
-Prometheus. The operands they reject are listed
-[below](#constructs-that-return-400).
+`histogram_quantile` and `histogram_fraction` ignore gauge and sum rows, but a
+summary point in the queried range is a `400` (`<function> is not supported on
+summary metrics`), where Prometheus would drop the series with an annotation.
+It fails the whole query, so narrow the selector with `__name__` when a
+selection may hold summaries. Without a `sum`, two series left with one label
+set once `__name__` is dropped are a `400`, as in Prometheus. The operands they
+reject are listed [below](#constructs-that-return-400).
 
 ## Binary operators
 

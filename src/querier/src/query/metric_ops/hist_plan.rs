@@ -5,8 +5,8 @@
 use std::collections::HashSet;
 
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
-use datafusion::functions_nested::expr_fn::cardinality;
-use datafusion::logical_expr::{Expr, cast, col, lit};
+use datafusion::functions_nested::expr_fn::{cardinality, make_array};
+use datafusion::logical_expr::{Expr, cast, col, lit, when};
 use datafusion::prelude::{DataFrame, ident};
 use datafusion::scalar::ScalarValue;
 
@@ -42,8 +42,10 @@ const POINT_COLUMNS: [&str; 18] = [
 
 const INSTANT: &str = "__instant";
 
-/// The metric types a histogram statistic reads; every other row is ignored.
-const HISTOGRAM_TYPES: &[&str] = &["histogram", "exponential_histogram"];
+/// The metric types a histogram statistic lets through: the histograms it
+/// reads, and `summary`, which [`histogram_udaf`] rejects as invalid input
+/// rather than skipping. Every other row is ignored.
+const HISTOGRAM_TYPES: &[&str] = &["histogram", "exponential_histogram", "summary"];
 
 /// One histogram statistic evaluated at `first + k·step <= last`, each instant
 /// `t` reading the window `(t - window, t]` and labelled `t + offset`.
@@ -91,9 +93,20 @@ pub(crate) fn histogram_series(
         args.push(ident(arg));
     }
     args.push(ident(INSTANT));
-    proj.push(
-        covering_instants(eval.first_ns, eval.last_ns, eval.step_ns, eval.window_ns).alias(INSTANT),
-    );
+    let covering = covering_instants(eval.first_ns, eval.last_ns, eval.step_ns, eval.window_ns);
+    // A summary joins a fixed instant, so no window geometry can drop it
+    // before the accumulator rejects it.
+    let instants = if present.contains("metric_type") {
+        when(
+            col("metric_type").eq(lit("summary")),
+            make_array(vec![lit(eval.first_ns)]),
+        )
+        .otherwise(covering)
+        .map_err(QuerierError::QueryFailed)?
+    } else {
+        covering
+    };
+    proj.push(instants.alias(INSTANT));
     let mut keys: Vec<Expr> = groups.iter().map(|(_, a)| ident(a)).collect();
     keys.push(ident(INSTANT));
     let udaf = histogram_udaf(eval.stat, eval.mode, eval.window_ns);
@@ -237,15 +250,45 @@ mod tests {
         assert!(p50_over(Mode::Instant, unsorted).await.is_empty());
     }
 
-    /// A single `+Inf` bucket is a histogram too; summaries are not read.
+    /// A single `+Inf` bucket is a histogram too.
     #[tokio::test]
-    async fn single_bucket_histograms_are_read_and_summaries_ignored() {
+    async fn single_bucket_histograms_are_read() {
         let rows: &[(&str, i64, &[i64])] = &[("s", 10, &[3])];
         let single = with_bounds(histogram_points("histogram", rows), &[]);
         let out = p50_over(Mode::Instant, single).await;
         assert!(out.len() == 1 && out[0].1.is_nan(), "{out:?}");
-        let summary = histogram_points("summary", TWO_SERIES);
-        assert!(p50_over(Mode::Instant, summary).await.is_empty());
+    }
+
+    /// The error of `p50` over `batch`, which must hold a summary.
+    async fn p50_error(eval: HistEval, batch: RecordBatch) -> QuerierError {
+        let df = SessionContext::new().read_batch(batch).unwrap();
+        let groups = [(col("metric_name"), "metric_name".to_string())];
+        let err = histogram_series(df, &groups, &eval, "p50")
+            .unwrap()
+            .collect()
+            .await
+            .unwrap_err();
+        QuerierError::from(err)
+    }
+
+    /// A summary is rejected in either mode, also when the window is
+    /// narrower than the step so no instant covers its points.
+    #[tokio::test]
+    async fn summaries_are_rejected_even_when_no_instant_covers_them() {
+        // Instants 20 and 40 with a 5ns window cover (15, 20] and (35, 40]:
+        // neither point below is read.
+        let uncovered: &[(&str, i64, &[i64])] =
+            &[("s", 10, &[1, 1, 0, 0]), ("s", 25, &[1, 1, 0, 0])];
+        for (mode, window) in [(Mode::Instant, 30), (Mode::Rate, 30), (Mode::Instant, 5)] {
+            let batch =
+                histogram_points("summary", if window == 5 { uncovered } else { TWO_SERIES });
+            let err = p50_error(p50_eval(mode, 20, 40, 20, window), batch).await;
+            assert!(
+                matches!(&err, QuerierError::InvalidInput(m)
+                    if m.contains("histogram_quantile is not supported on summary metrics")),
+                "{err:?}"
+            );
+        }
     }
 
     /// Without a `series_id`, series are told apart by their identity
