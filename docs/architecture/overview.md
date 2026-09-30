@@ -122,7 +122,7 @@ flowchart LR
     Client["OTLP client"] -->|"gRPC :4317 / HTTP :4318"| Acceptor
     Acceptor -->|"append + flush"| AWal[("Acceptor WAL")]
     Acceptor -->|"Flight do_put"| Writer["Writer :50061"]
-    Writer -->|"append (v2 schema)"| WWal[("Writer WAL")]
+    Writer -->|"append (physical schema)"| WWal[("Writer WAL")]
     WWal -->|"WalProcessor (5s loop, backoff on failure)"| Iceberg["Iceberg commit"]
     Iceberg --> Store[("Object store (Parquet)")]
     Iceberg --> Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
@@ -147,7 +147,7 @@ flowchart LR
 3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (v1 format).
 4. **Acceptor WAL**: Acceptor appends the Arrow batch to its own WAL (per tenant/dataset/signal type) and flushes it before forwarding.
 5. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.
-6. **Schema Transformation**: Writer transforms v1 Flight schema to the physical-v4 (traces) / physical-v3 (logs) Iceberg schema (field renames, type conversions, computed partition fields). On every table load (not just creation), the writer also brings an existing traces/logs table's schema forward to the current version if it's behind — see [Schema Management](#schema-management).
+6. **Schema Transformation**: Writer transforms the Flight wire schema into each signal's physical shape (traces, logs, profiles, and the `metrics`/`metric_exemplars` pair: field renames, type conversions, computed partition fields). At commit, the table writer splits every attribute container into typed home maps plus a binary residue, resolving each key's canonical type through the attribute type authority (a config pin, else a semconv hint, else the first observed type); values of another type go to the residue unchanged. The acceptor reads the same types from a cached snapshot and reports off-type values to the sender in OTLP `partial_success`. On every table load (not just creation), the writer also brings an existing traces/logs table's schema forward to the current version if it's behind — see [Schema Management](#schema-management).
 7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
 8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
 9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion. Commits are **coalesced** per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`), so freshly-ingested data is queryable only once committed; a caller needing read-your-writes forces a commit with the Writer Flight `do_action("flush")`. See `architecture/flight-communication.md`.
@@ -197,7 +197,7 @@ flowchart LR
 | **Output**       | Iceberg tables (Parquet + metadata) to object store |
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
-- Transforms v1 Flight schema to v2 Iceberg schema before WAL write
+- Transforms the Flight wire schema into the physical schema before WAL write
 - `WalManager` (the same type the acceptor uses) gives the writer one WAL per tenant/dataset/signal, created on that combination's first write; existing directories are opened at startup so a previous run's entries drain
 - `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads every tenant WAL's entries and writes them to Iceberg tables; a WAL it cannot read is skipped for that cycle, never aborting the others
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
@@ -318,8 +318,9 @@ reachable via `signaldb-sdk`, `signaldb-cli profiles`, and the MCP
 **Native Query IR** (`POST /api/v1/query`, `src/router/src/endpoints/query.rs`):
 the first-party structured query surface the UI and CLI build against. The
 router shapes the querier's Arrow batches into the declared envelope, encoding
-attribute containers (`Map<Utf8,Utf8>`) as JSON objects rather than flattening
-them to strings — the compatibility dialects lose the OTel resource/scope/record
+an attribute bag (`{scope}.attributes`, which the querier assembles from the
+typed home maps and the residue) as a JSON object of natively typed values
+rather than flattening it to strings — the compatibility dialects lose the OTel resource/scope/record
 distinction, the IR preserves it. `source_read_scope` gates a document's `from`
 against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`)
 before the request
@@ -567,7 +568,7 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 Schema definitions are managed in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The schema system supports:
 
-- **Versioned schemas** with metadata tracking current physical versions (traces physical-v5, logs physical-v4, metrics physical-v3, profiles physical-v3 — the typed attribute layout, see below) and a separate `logical_schema_version` (`otel-2026-09`) for the client-visible OTel logical schema
+- **Versioned schemas** with metadata tracking current physical versions (traces physical-v5, logs physical-v4, metrics and metric_exemplars physical-v4, profiles physical-v3 — the typed attribute layout, see below) and a separate `logical_schema_version` (`otel-2026-09`) for the client-visible OTel logical schema
 - **Inheritance**: A schema version can inherit fields from a parent version
 - **Field renames**: e.g., `name` -> `span_name` in traces physical-v2
 - **Field additions**: e.g., `timestamp`, `date_day`, `hour` computed partition fields
@@ -576,7 +577,7 @@ Schema definitions are managed in `schemas.toml` at the repository root and comp
 
 The Flight wire format (v1) and Iceberg storage format differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()` / `transform_logs_v1_to_iceberg()`, targeting each signal's last pre-typed intermediate shape (traces physical-v4, logs physical-v3 — fixed literals, not the current typed version); the typed-container splitting that carries a batch the rest of the way to the table's actual current schema (traces physical-v5, logs physical-v4) happens generically afterward, in `IcebergTableWriter::append_batches_with_marker`.
 
-**Schema evolution**: for traces and logs (the two signals whose physical schema is `schemas.toml`-sourced), an existing table's schema is brought forward to the current version on every load, not just at creation — `common::iceberg::evolution::ensure_schema_current` diffs the table's live Iceberg schema against the target version by field name (never by regenerating field IDs positionally, which is only safe for a brand-new table) and commits any missing columns additively. Metrics and profiles are hand-written in `iceberg_schemas.rs`, not yet covered by this mechanism.
+**Schema evolution**: for every signal (all five built-in tables are `schemas.toml`-sourced), an existing table's schema is brought forward to the current version on every load, not just at creation — `common::iceberg::evolution::ensure_schema_current` diffs the table's live Iceberg schema against the target version by field name (never by regenerating field IDs positionally, which is only safe for a brand-new table) and commits any missing columns additively.
 
 For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](storage-layout.md).
 
