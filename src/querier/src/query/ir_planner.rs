@@ -1934,17 +1934,24 @@ impl FieldResolver for SourceResolvers<'_> {
 fn target_frame(
     target: &CorrelateTargetSide,
     base: DataFrame,
-    fields: &[&str],
-    keys: &[BTreeSet<String>],
+    field_keys: &[(&str, &BTreeSet<String>)],
     window: &ResolvedWindow,
-    pipeline: &[Stage],
+    correlate: &Correlate,
     now_ns: i64,
+    demand_slugs: Option<(&str, &str)>,
 ) -> Result<DataFrame, QuerierError> {
     let mut lowering = Lowering {
         source: &target.plan,
         resolver: &target.resolver,
         now_ns,
-        demand: None,
+        demand: demand_slugs.and_then(|(tenant_slug, dataset_slug)| {
+            common::discovery::signal_for_source(target.plan.name).map(|signal| AttrDemandScope {
+                tenant_slug,
+                dataset_slug,
+                signal,
+                seen: RefCell::new(HashSet::new()),
+            })
+        }),
         aggregated: false,
         series_shaped: false,
         col_of: HashMap::new(),
@@ -1978,7 +1985,7 @@ fn target_frame(
         }
         None => lowering.apply_time_window(base, window)?,
     };
-    for (i, (field, keys)) in fields.iter().zip(keys).enumerate() {
+    for (i, (field, keys)) in field_keys.iter().enumerate() {
         let expr = lowering.value_expr(field)?;
         let data_type = expr.get_type(df.schema())?;
         let stored_canonical = stored_column(lowering.resolver, field)
@@ -1997,7 +2004,7 @@ fn target_frame(
             .filter(key.clone().in_list(list, false))?
             .with_column(&format!("{CORRELATE_TARGET_KEY_PREFIX}{i}"), key)?;
     }
-    for stage in pipeline {
+    for stage in &correlate.pipeline {
         df = lowering.lower_stage(df, stage)?;
     }
     Ok(df)
@@ -2588,11 +2595,13 @@ impl<'a> Lowering<'a> {
             Some(base) if enrich || keys.iter().all(|set| !set.is_empty()) => Some(target_frame(
                 target,
                 base.clone(),
-                target_fields,
-                &keys,
+                &target_fields.iter().copied().zip(&keys).collect::<Vec<_>>(),
                 &target_window,
-                &correlate.pipeline,
+                correlate,
                 self.now_ns,
+                self.demand
+                    .as_ref()
+                    .map(|scope| (scope.tenant_slug, scope.dataset_slug)),
             )?),
             _ => None,
         };
@@ -7957,6 +7966,10 @@ mod tests {
         );
     }
 
+    /// `drain_level` empties one process-global registry, so tests that
+    /// drain it must not run concurrently.
+    static ATTR_DEMAND_DRAIN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
     /// A `logs` table on the typed layout with all three attribute
     /// containers (`log_attributes`, `scope_attributes`,
     /// `resource_attributes`) so a per-level attribute-demand test can
@@ -8020,6 +8033,7 @@ mod tests {
     /// times a document repeats them (change: otel-native-schema layer 6).
     #[tokio::test]
     async fn ir_query_records_per_level_attribute_demand_from_filters_and_grouping() {
+        let _drain = ATTR_DEMAND_DRAIN.lock().await;
         let tenant = "attr-demand-tenant";
         let dataset = "attr-demand-dataset";
         let ctx = attr_demand_logs_ctx(tenant, dataset);
@@ -8094,6 +8108,84 @@ mod tests {
             recorded.len(),
             5,
             "no unexpected demand entries: {recorded:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn correlate_target_filter_records_attribute_demand_under_target_signal() {
+        let _drain = ATTR_DEMAND_DRAIN.lock().await;
+        let tenant = "attr-demand-correlate-tenant";
+        let dataset = "attr-demand-correlate-dataset";
+        let mut fields = vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Nanosecond, None),
+                false,
+            ),
+            Field::new("trace_id", DataType::Utf8, true),
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![120_i64])),
+            Arc::new(StringArray::from(vec![hex_id(1)])),
+        ];
+        extend_typed_container(
+            &mut fields,
+            &mut columns,
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &[row(&[("priority", serde_json::json!(7))])],
+            |_, observed| standard_placement(observed),
+        );
+        let schema = Arc::new(Schema::new(fields));
+        let logs = RecordBatch::try_new(schema, columns).unwrap();
+        let ctx = SessionContext::new();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        for (name, batch) in [("traces", signal_traces(false)), ("logs", logs)] {
+            let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+            sp.register_table(name.to_string(), Arc::new(table))
+                .unwrap();
+        }
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema(dataset, sp).unwrap();
+        ctx.register_catalog(tenant, cat);
+        let lookup: Arc<dyn CanonicalTypeLookup> = Arc::new(StaticLookup(canonical_types(&[(
+            "priority",
+            AttributeLevel::Record,
+            CanonicalType::Int64,
+        )])));
+
+        let d = doc(serde_json::json!({
+            "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "pipeline": [{ "correlate": {
+                "to": "logs", "on": "trace_id", "kind": "semi",
+                "pipeline": [{ "where": { "field": "priority", "op": "eq", "value": 7 } }]
+            }}]
+        }));
+        let (df, ..) = plan_document(
+            &ctx,
+            &d,
+            PlanRequest::new(tenant, dataset, 0)
+                .with_attribute_type_request(AttributeTypeRequest::Resolve(Some(lookup))),
+        )
+        .await
+        .unwrap()
+        .expect("typed table scans");
+        df.collect().await.unwrap();
+
+        let recorded: Vec<(String, AttributeLevel, String)> = common::attr_demand::drain_level()
+            .into_iter()
+            .filter(|((t, d, _, _, _), _)| t == tenant && d == dataset)
+            .map(|((_, _, signal, level, key), _)| (signal, level, key))
+            .collect();
+        assert_eq!(
+            recorded,
+            vec![(
+                "logs".to_string(),
+                AttributeLevel::Record,
+                "priority".to_string()
+            )]
         );
     }
 
