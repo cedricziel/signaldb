@@ -535,7 +535,7 @@ pub struct Reduce {
 }
 
 /// A per-value `map` function (`irVersion` 10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MapFn {
     Abs,
@@ -692,7 +692,7 @@ pub struct OverTime {
     pub arg: Option<f64>,
 }
 /// A `binop` operator (`irVersion` 10).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BinopOp {
     Add,

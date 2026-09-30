@@ -12,6 +12,7 @@ pub mod labels;
 pub mod sample;
 pub mod scalar;
 mod stages;
+mod value_fn;
 pub(crate) mod vector_match;
 
 #[cfg(test)]
@@ -35,18 +36,18 @@ pub(crate) fn lower_stage(
     stage: &Stage,
     env: &FrameEnv<'_>,
 ) -> Result<DataFrame, QuerierError> {
-    let step_ns = || {
-        env.step_ns.ok_or_else(|| {
-            QuerierError::Unsupported(format!("{} over a non-sampled Series", stage.name()))
-        })
+    let Some(step_ns) = env.step_ns else {
+        return Err(QuerierError::Unsupported(format!(
+            "{} over a non-sampled Series",
+            stage.name()
+        )));
     };
     match stage {
-        Stage::Scalar(_) => scalar::to_scalar(env.ctx, df, env.window, step_ns()?),
+        Stage::Scalar(_) => scalar::to_scalar(env.ctx, df, env.window, step_ns),
         Stage::Vector(_) => scalar::to_vector(df),
-        Stage::Labels(op) => {
-            step_ns()?;
-            stages::lower_labels(df, op)
-        }
+        Stage::Labels(op) => stages::lower_labels(df, op),
+        Stage::Map(map) => stages::lower_map(df, map),
+        Stage::Filter(filter) => stages::lower_filter(df, filter),
         other => Err(QuerierError::Unsupported(format!(
             "{} stage is not supported yet",
             other.name()
