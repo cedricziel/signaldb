@@ -628,8 +628,8 @@ struct DiscoverAttributesParams {
     /// that level, or with `tag` looks up the level-qualified field
     /// (`resource.<tag>` / `span.<tag>`; not valid for `intrinsic`). Only valid
     /// with `signal: "traces"`. Limits: untyped keys (no attribute level) and
-    /// scope-level attributes are never listed under a scope; `limit` applies
-    /// before the scope filter, so fewer rows can come back; a qualified tag
+    /// scope-level attributes are never listed under a scope; `limit` counts
+    /// the scoped fields; a qualified tag
     /// can land on an intrinsic (`span.kind`).
     #[serde(default)]
     scope: Option<TraceTagScope>,
@@ -698,10 +698,21 @@ impl TraceTagScope {
     }
 }
 
-/// Drops the fields of a `describe: fields` response outside `scope`.
-fn retain_scope(response: &mut signaldb_sdk::types::QueryIrResponse, scope: TraceTagScope) {
+/// Drops the fields of a `describe: fields` response outside `scope`, then
+/// applies `limit`, so the limit counts scoped fields only.
+fn retain_scope(
+    response: &mut signaldb_sdk::types::QueryIrResponse,
+    scope: TraceTagScope,
+    limit: Option<u64>,
+) {
     if let Some(metadata) = response.metadata.as_mut() {
         metadata.fields.retain(|f| scope.keeps(f));
+        if let Some(limit) = limit.and_then(|l| usize::try_from(l).ok())
+            && metadata.fields.len() > limit
+        {
+            metadata.fields.truncate(limit);
+            metadata.truncated = true;
+        }
     }
 }
 
@@ -2850,7 +2861,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover queryable attributes for your tenant, through the Query IR `describe` stage. Call with no arguments to list the trace fields; pass `tag` to list the known values for that field. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to describe that source instead. With `signal: \"traces\"`, pass `scope: \"resource\"|\"span\"|\"intrinsic\"` to narrow to one attribute level (with `tag`, the level-qualified field `resource.<tag>` / `span.<tag>`; `intrinsic` cannot be combined with `tag`). A scope lists only typed keys at that level: untyped keys (no attribute level) and scope-level attributes are never listed, `limit` applies before the scope filter so fewer rows can come back, and a qualified tag can land on an intrinsic such as `span.kind`. Listing fields reads no signal data. Values come from a declared set or maintained statistics; a field nothing covers returns no values plus a `hint`, unless you pass `sample: true`, which reads data bounded by `from`/`to`/`limit`. Names are logical dotted OTel names and the response is the `describe` result (`discover_fields` / `discover_field_values` with a signal-selected source). Use this to construct valid `query_ir` documents.",
+        description = "Discover queryable attributes for your tenant, through the Query IR `describe` stage. Call with no arguments to list the trace fields; pass `tag` to list the known values for that field. Pass `signal: \"logs\"`, `signal: \"metrics\"`, or `signal: \"profiles\"` to describe that source instead. With `signal: \"traces\"`, pass `scope: \"resource\"|\"span\"|\"intrinsic\"` to narrow to one attribute level (with `tag`, the level-qualified field `resource.<tag>` / `span.<tag>`; `intrinsic` cannot be combined with `tag`). A scope lists only typed keys at that level: untyped keys (no attribute level) and scope-level attributes are never listed, `limit` counts the scoped fields, and a qualified tag can land on an intrinsic such as `span.kind`. Listing fields reads no signal data. Values come from a declared set or maintained statistics; a field nothing covers returns no values plus a `hint`, unless you pass `sample: true`, which reads data bounded by `from`/`to`/`limit`. Names are logical dotted OTel names and the response is the `describe` result (`discover_fields` / `discover_field_values` with a signal-selected source). Use this to construct valid `query_ir` documents.",
         annotations(read_only_hint = true)
     )]
     async fn discover_attributes(
@@ -2882,7 +2893,9 @@ impl McpServer {
             (Some(tag), None) => Some(tag.to_string()),
             (None, _) => None,
         };
-        let stage = describe_stage(field.as_deref(), p.limit, p.sample);
+        let scoped_listing = p.scope.is_some() && p.tag.is_none();
+        let stage_limit = if scoped_listing { None } else { p.limit };
+        let stage = describe_stage(field.as_deref(), stage_limit, p.sample);
         let range = (p.signal.source(), p.from.as_str(), p.to.as_str());
         let mut response = self
             .describe(
@@ -2895,7 +2908,7 @@ impl McpServer {
             )
             .await?;
         if let (Some(scope), None) = (p.scope, &p.tag) {
-            retain_scope(&mut response, scope);
+            retain_scope(&mut response, scope, p.limit);
         }
         json_result(&response)
     }
@@ -6548,6 +6561,21 @@ mod tests {
             let result = result.expect("discover_attributes succeeds");
             assert_eq!(listed_names(&result), expected, "{scope:?}");
         }
+    }
+
+    #[tokio::test]
+    async fn discover_attributes_scope_limit_counts_scoped_fields() {
+        let mut params = attributes_params(Signal::Traces, None, Some(TraceTagScope::Resource));
+        params.limit = Some(1);
+        let (result, request) = call_discover_attributes(params, 200, TRACE_FIELDS_RESPONSE).await;
+        let result = result.expect("discover_attributes succeeds");
+        assert_eq!(
+            sent_describe(&request, "traces"),
+            serde_json::json!({"target": "fields"})
+        );
+        assert_eq!(listed_names(&result), vec!["service.name"]);
+        let body = serde_json::to_value(&result).expect("result serializes");
+        assert!(body.to_string().contains(r#"\"truncated\":true"#), "{body}");
     }
 
     #[tokio::test]
