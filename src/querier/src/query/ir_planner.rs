@@ -26,6 +26,7 @@
 //!   limit before it is lowered, so a pathological pattern is rejected rather
 //!   than executed.
 
+use std::borrow::Cow;
 use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::sync::Arc;
@@ -39,8 +40,8 @@ use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
     FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Parser, Predicate, Resolved,
-    ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, parse_duration_ns,
-    safe_ident, validate,
+    ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral, ValueType, coerce,
+    parse_duration_ns, safe_ident, validate,
 };
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use common::schema::type_authority::CanonicalType;
@@ -760,6 +761,12 @@ impl FieldResolver for SchemaResolver {
             return Some(Resolved::SpanEvents {
                 events_column: "events".to_string(),
             });
+        }
+        if self.source == "traces"
+            && let Some(f) = SpanListField::parse(field)
+            && self.physical_names.contains(f.column())
+        {
+            return Some(Resolved::SpanList(f));
         }
         if let Some(logical) = self.logical_schema.resolve(&self.source, field) {
             let value_type = logical_to_value_type(logical.value_type);
@@ -2811,6 +2818,7 @@ impl<'a> Lowering<'a> {
                     Resolved::JsonPath { .. }
                     | Resolved::EventAttribute { .. }
                     | Resolved::SpanEvents { .. }
+                    | Resolved::SpanList(_)
                     | Resolved::AttributeBag { .. }
                     | Resolved::TypedAttribute { .. },
                 )
@@ -3266,6 +3274,7 @@ impl<'a> Lowering<'a> {
                 ..
             }) => Ok(self.event_attr_expr(&events_column, &event_name, &key)),
             Some(Resolved::SpanEvents { events_column }) => Ok(span_events_expr(&events_column)),
+            Some(Resolved::SpanList(_)) => Err(span_list_filter_only(logical)),
             Some(Resolved::PromotedColumn { name, key, .. }) => {
                 Ok(self.promoted_column_expr(&name, &key))
             }
@@ -3545,6 +3554,7 @@ impl<'a> Lowering<'a> {
                     ..
                 } => self.event_attr_expr(events_column, event_name, key),
                 Resolved::SpanEvents { events_column } => span_events_expr(events_column),
+                Resolved::SpanList(f) => return self.lower_span_list_leaf(leaf, f),
                 Resolved::PromotedColumn { name, key, .. } => self.promoted_column_expr(name, key),
                 Resolved::TypedAttribute {
                     homes,
@@ -3667,6 +3677,54 @@ impl<'a> Lowering<'a> {
                 field_expr.clone().gt_eq(lo).and(field_expr.lt_eq(hi))
             }
         })
+    }
+
+    /// Lower a predicate on an `events`/`links` element field to a
+    /// [`SpanListMatchUdf`] call: true when any element satisfies the leaf,
+    /// false (never NULL) for NULL or malformed JSON.
+    fn lower_span_list_leaf(
+        &self,
+        leaf: &Leaf,
+        field: &SpanListField,
+    ) -> Result<Expr, QuerierError> {
+        // Link ids are stored as lowercase hex.
+        let lower = matches!(
+            field,
+            SpanListField::LinkTraceId | SpanListField::LinkSpanId
+        );
+        let raw_text = |v: &serde_json::Value| {
+            coerce(v, &ValueType::String)
+                .map(|l| string_of(&l))
+                .map_err(|e| QuerierError::InvalidInput(format!("field '{}': {e}", leaf.field)))
+        };
+        let text =
+            |v: &serde_json::Value| raw_text(v).map(|t| if lower { t.to_lowercase() } else { t });
+        let op = match leaf.op {
+            ComparisonOp::Exists => SpanListOp::Exists,
+            ComparisonOp::Eq => SpanListOp::Eq(text(self.require_value(leaf)?)?),
+            ComparisonOp::Contains => SpanListOp::Contains(text(self.require_value(leaf)?)?),
+            ComparisonOp::Regex => {
+                let pattern = raw_text(self.require_value(leaf)?)?;
+                SpanListOp::Regex(CompiledRegex(compile_regex_guard(&pattern)?, pattern))
+            }
+            ComparisonOp::In => {
+                let items = leaf
+                    .value
+                    .as_ref()
+                    .and_then(|v| v.as_array())
+                    .ok_or_else(|| QuerierError::InvalidInput("`in` needs an array".to_string()))?;
+                SpanListOp::In(items.iter().map(text).collect::<Result<_, _>>()?)
+            }
+            _ => {
+                return Err(QuerierError::InvalidInput(format!(
+                    "operator '{}' is not supported on list field '{}'",
+                    leaf.op.as_str(),
+                    leaf.field
+                )));
+            }
+        };
+        let udf = SpanListMatchUdf::new(field.clone(), op);
+        Ok(ScalarUDF::from(udf).call(vec![col(field.column())]))
     }
 
     fn require_value<'v>(&self, leaf: &'v Leaf) -> Result<&'v serde_json::Value, QuerierError> {
@@ -3840,6 +3898,9 @@ impl<'a> Lowering<'a> {
                                 .alias(safe_ident(f)),
                             Some(Resolved::SpanEvents { events_column }) => {
                                 span_events_expr(&events_column).alias(safe_ident(f))
+                            }
+                            Some(Resolved::SpanList(_)) => {
+                                return Err(span_list_filter_only(f));
                             }
                             // #816: same treatment as `JsonPath` — the
                             // column alone isn't trustworthy until backfilled.
@@ -4238,12 +4299,7 @@ fn extract_field(body: &str, parser: &str, key: &str) -> Option<String> {
     match parser {
         "json" => {
             let v: serde_json::Value = serde_json::from_str(body).ok()?;
-            let field = v.get(key)?;
-            Some(match field {
-                serde_json::Value::String(s) => s.clone(),
-                serde_json::Value::Null => return None,
-                other => other.to_string(),
-            })
+            json_attr_text(v.get(key)?)
         }
         "logfmt" => {
             for token in body.split_whitespace() {
@@ -4319,10 +4375,163 @@ impl ScalarUDFImpl for EventAttrUdf {
 fn extract_event_attr(events_json: &str, event_name: &str, key: &str) -> Option<String> {
     let events = common::model::span::parse_span_events(events_json);
     let event = events.into_iter().find(|e| e.name == event_name)?;
-    match event.attributes.get(key)? {
+    json_attr_text(event.attributes.get(key)?)
+}
+
+/// A JSON attribute value as text: strings verbatim, `null` as absent,
+/// anything else as its JSON text (`3`, `false`).
+fn json_attr_text(v: &serde_json::Value) -> Option<String> {
+    match v {
         serde_json::Value::String(s) => Some(s.clone()),
         serde_json::Value::Null => None,
         other => Some(other.to_string()),
+    }
+}
+
+fn span_list_filter_only(field: &str) -> QuerierError {
+    QuerierError::InvalidInput(Resolved::filter_only_message(field))
+}
+
+/// The per-element matcher baked into a [`SpanListMatchUdf`] at plan time.
+#[derive(Debug, PartialEq, Eq, Hash)]
+enum SpanListOp {
+    Exists,
+    Eq(String),
+    In(Vec<String>),
+    Contains(String),
+    Regex(CompiledRegex),
+}
+
+/// A compiled regex compared and hashed by its pattern text.
+#[derive(Debug)]
+struct CompiledRegex(regex::Regex, String);
+
+impl PartialEq for CompiledRegex {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+impl Eq for CompiledRegex {}
+impl std::hash::Hash for CompiledRegex {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.1.hash(state);
+    }
+}
+
+/// One element of a stored `events`/`links` JSON array, borrowing from the
+/// row's text; only the fields a [`SpanListField`] can read are decoded.
+#[derive(serde::Deserialize)]
+struct SpanListElement<'a> {
+    #[serde(borrow, default)]
+    name: Cow<'a, str>,
+    #[serde(borrow, default)]
+    trace_id: Cow<'a, str>,
+    #[serde(borrow, default)]
+    span_id: Cow<'a, str>,
+    #[serde(borrow, default)]
+    attributes_json: Option<Cow<'a, str>>,
+}
+
+/// A scalar UDF, `ir_span_list_match(list_json) -> Boolean`, behind
+/// `events.*`/`links.*` predicates (see `Resolved::SpanList`): true when any
+/// element of the stored list satisfies the baked-in matcher on `field`.
+/// NULL or malformed JSON yields false, never NULL, so `not` reads "no
+/// element matches".
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct SpanListMatchUdf {
+    signature: Signature,
+    field: SpanListField,
+    op: SpanListOp,
+}
+
+impl SpanListMatchUdf {
+    fn new(field: SpanListField, op: SpanListOp) -> Self {
+        SpanListMatchUdf {
+            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
+            field,
+            op,
+        }
+    }
+
+    fn element_matches(&self, el: &SpanListElement<'_>) -> bool {
+        let attr = |key: &str| {
+            let attrs: serde_json::Value =
+                serde_json::from_str(el.attributes_json.as_deref()?).ok()?;
+            json_attr_text(attrs.get(key)?).map(Cow::Owned)
+        };
+        let text = match &self.field {
+            SpanListField::EventName => Some(Cow::Borrowed(&*el.name)),
+            SpanListField::LinkTraceId => Some(Cow::Borrowed(&*el.trace_id)),
+            SpanListField::LinkSpanId => Some(Cow::Borrowed(&*el.span_id)),
+            SpanListField::EventAttribute(k) | SpanListField::LinkAttribute(k) => attr(k),
+        };
+        let Some(x) = text.as_deref() else {
+            return false;
+        };
+        match &self.op {
+            SpanListOp::Exists => true,
+            SpanListOp::Eq(v) => x == v,
+            SpanListOp::In(vs) => vs.iter().any(|v| x == v),
+            SpanListOp::Contains(v) => x.contains(v.as_str()),
+            SpanListOp::Regex(re) => re.0.is_match(x),
+        }
+    }
+
+    /// Whether any element of `list_json` matches, stopping at the first hit.
+    fn any_match(&self, list_json: &str) -> bool {
+        struct AnyMatch<'m>(&'m SpanListMatchUdf, &'m mut bool);
+        impl<'de> serde::de::Visitor<'de> for AnyMatch<'_> {
+            type Value = ();
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a JSON array")
+            }
+            fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
+                while let Some(raw) = seq.next_element::<&'de serde_json::value::RawValue>()? {
+                    // A malformed element is skipped, so it cannot hide its
+                    // siblings whatever their order.
+                    let Ok(el) = serde_json::from_str::<SpanListElement<'de>>(raw.get()) else {
+                        continue;
+                    };
+                    if self.0.element_matches(&el) {
+                        // Stop reading; the unread tail makes serde_json
+                        // report an error we deliberately ignore.
+                        *self.1 = true;
+                        return Ok(());
+                    }
+                }
+                Ok(())
+            }
+        }
+        if list_json.is_empty() || list_json == "[]" {
+            return false;
+        }
+        use serde::Deserializer as _;
+        let mut hit = false;
+        let _ =
+            serde_json::Deserializer::from_str(list_json).deserialize_seq(AnyMatch(self, &mut hit));
+        hit
+    }
+}
+
+impl ScalarUDFImpl for SpanListMatchUdf {
+    fn name(&self) -> &str {
+        "ir_span_list_match"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Boolean)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let list = StrArg::try_from(&args.args[0])?;
+        let out: BooleanArray = (0..args.number_rows)
+            .map(|i| Some(list.value_at(i).is_some_and(|l| self.any_match(l))))
+            .collect();
+        Ok(ColumnarValue::Array(Arc::new(out)))
     }
 }
 
@@ -4429,13 +4638,12 @@ fn string_of(literal: &Literal) -> String {
 /// pattern is rejected at plan time rather than executed. (Rust's `regex` is
 /// already immune to catastrophic backtracking; the size limit bounds
 /// compilation blow-up.)
-fn compile_regex_guard(pattern: &str) -> Result<(), QuerierError> {
+fn compile_regex_guard(pattern: &str) -> Result<regex::Regex, QuerierError> {
     const SIZE_LIMIT: usize = 1 << 20;
     regex::RegexBuilder::new(pattern)
         .size_limit(SIZE_LIMIT)
         .dfa_size_limit(SIZE_LIMIT)
         .build()
-        .map(|_| ())
         .map_err(|e| QuerierError::InvalidInput(format!("invalid or oversized regex: {e}")))
 }
 
@@ -11964,6 +12172,180 @@ mod tests {
         cat.register_schema("d", sp).unwrap();
         ctx.register_catalog("t", cat);
         ctx
+    }
+
+    /// Nine spans (`s0`..`s8`) with `events`/`links` JSON: s0 has events
+    /// `start` and `retry` (attempt 3), s1 an `exception` event, s2 a link to
+    /// `aaaa`, s3 NULL events/links, s4 malformed JSON, s5 empty lists, s6/s7
+    /// a `retry` event and an event with a null name (both orders), s8 an
+    /// event named `say "hi" é`.
+    fn traces_lists_ctx() -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("events", DataType::Utf8, true),
+            Field::new("links", DataType::Utf8, true),
+        ]));
+        let events0 = r#"[{"name":"start"},{"name":"retry","attributes_json":"{\"attempt\":3,\"reason\":\"timeout\",\"fatal\":false}"}]"#;
+        let events1 =
+            r#"[{"name":"exception","attributes_json":"{\"exception.type\":\"IoError\"}"}]"#;
+        let links2 = r#"[{"trace_id":"aaaa","span_id":"bbbb","attributes_json":"{\"kind\":\"follows\"}"},{"trace_id":"cccc","span_id":"dddd"}]"#;
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec![
+                    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+                ])),
+                Arc::new(Int64Array::from(vec![1_i64; 9])),
+                Arc::new(StringArray::from(vec![
+                    Some(events0),
+                    Some(events1),
+                    None,
+                    None,
+                    Some("not json"),
+                    Some("[]"),
+                    Some(r#"[{"name":"retry"},{"name":null}]"#),
+                    Some(r#"[{"name":null},{"name":"retry"}]"#),
+                    Some(r#"[{"name":"say \"hi\" é"}]"#),
+                ])),
+                Arc::new(StringArray::from(vec![
+                    None,
+                    None,
+                    Some(links2),
+                    None,
+                    Some("{{"),
+                    Some("[]"),
+                    None,
+                    None,
+                    None,
+                ])),
+            ],
+        )
+        .unwrap();
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    async fn span_ids_where(predicate: serde_json::Value) -> Vec<String> {
+        let svc = IrService::new(traces_lists_ctx());
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+            "result": "rows",
+            "fields": ["span_id"],
+            "pipeline": [ { "where": predicate }, { "order": [{ "of": "span_id", "dir": "asc" }] } ]
+        }));
+        let (df, _) = svc
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let batches = df.collect().await.unwrap();
+        batches
+            .iter()
+            .flat_map(|b| strings_of(b, "span_id"))
+            .collect()
+    }
+
+    #[tokio::test]
+    async fn span_list_predicates_match_any_element() {
+        use serde_json::json;
+        // (field, op, value — null for `exists`, expected span ids)
+        let cases = [
+            ("events.name", "eq", json!("nope"), vec![]),
+            ("events.name", "eq", json!("retry"), vec!["s0", "s6", "s7"]),
+            ("events.name", "eq", json!("say \"hi\" é"), vec!["s8"]),
+            ("links.trace_id", "eq", json!("CCCC"), vec!["s2"]),
+            ("links.span_id", "in", json!(["BBBB"]), vec!["s2"]),
+            ("links.trace_id", "contains", json!("AAA"), vec!["s2"]),
+            (
+                "events.attributes.reason",
+                "eq",
+                json!("timeout"),
+                vec!["s0"],
+            ),
+            ("events.attributes.attempt", "eq", json!(3), vec!["s0"]),
+            ("events.attributes.attempt", "eq", json!("3"), vec!["s0"]),
+            ("events.attributes.fatal", "eq", json!(false), vec!["s0"]),
+            ("links.trace_id", "eq", json!("cccc"), vec!["s2"]),
+            ("links.span_id", "eq", json!("bbbb"), vec!["s2"]),
+            ("links.attributes.kind", "eq", json!("follows"), vec!["s2"]),
+            (
+                "events.name",
+                "in",
+                json!(["exception", "start"]),
+                vec!["s0", "s1"],
+            ),
+            (
+                "events.attributes.reason",
+                "contains",
+                json!("time"),
+                vec!["s0"],
+            ),
+            ("events.name", "regex", json!("^exc.*n$"), vec!["s1"]),
+            (
+                "events.name",
+                "exists",
+                json!(null),
+                vec!["s0", "s1", "s6", "s7", "s8"],
+            ),
+            (
+                "events.attributes.attempt",
+                "exists",
+                json!(null),
+                vec!["s0"],
+            ),
+            ("links.trace_id", "exists", json!(null), vec!["s2"]),
+        ];
+        for (field, op, value, expected) in cases {
+            let mut leaf = json!({"field": field, "op": op});
+            if !value.is_null() {
+                leaf["value"] = value;
+            }
+            let not = json!({"not": leaf});
+            assert_eq!(span_ids_where(leaf.clone()).await, expected, "{leaf}");
+            // `not` keeps exactly the complement: NULL/malformed/empty rows
+            // never match a leaf, so they survive the negation.
+            let complement: Vec<_> = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
+                .into_iter()
+                .filter(|s| !expected.contains(s))
+                .collect();
+            assert_eq!(span_ids_where(not.clone()).await, complement, "{not}");
+        }
+    }
+
+    #[tokio::test]
+    async fn span_list_leaves_in_one_and_match_independently() {
+        use serde_json::json;
+        let both = |a: &str, b: &str| {
+            json!({"and": [
+                {"field": "events.name", "op": "eq", "value": a},
+                {"field": "events.name", "op": "eq", "value": b},
+            ]})
+        };
+        // s0 has `start` and `retry`; s1 has only `exception`.
+        assert_eq!(span_ids_where(both("start", "retry")).await, vec!["s0"]);
+        assert!(span_ids_where(both("start", "exception")).await.is_empty());
+        assert!(span_ids_where(both("exception", "retry")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn span_list_rejects_unsupported_ops_at_plan_time() {
+        for op in ["ne", "gt"] {
+            let svc = IrService::new(traces_lists_ctx());
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "pipeline": [ { "where": {"field": "events.name", "op": op, "value": "x"} } ]
+            }));
+            assert!(svc.plan(&d, "t", "d", 0).await.is_err(), "{op}");
+        }
     }
 
     // exception.type/message/stacktrace are not stored as their own columns —

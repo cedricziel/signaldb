@@ -32,7 +32,7 @@ use super::relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
     Scalar, Series,
 };
-use super::resolver::FieldResolver;
+use super::resolver::{FieldResolver, Resolved, SpanListField};
 use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
@@ -869,6 +869,16 @@ impl InferCtx<'_> {
     /// or a closed aggregated schema's output) is never advisory — only a
     /// resolver-provided [`Resolved`] carries that judgment.
     fn ref_type_and_advisory(&self, name: &str) -> Result<(ValueType, bool), IrError> {
+        let r = self.ref_resolved(name)?;
+        if r.is_filter_only() {
+            return Err(IrError::Invalid(Resolved::filter_only_message(name)));
+        }
+        Ok((r.value_type().clone(), r.is_advisory_type()))
+    }
+
+    /// Resolve `name` once. A relation column reads back as
+    /// [`Resolved::Column`] (authoritative, never advisory).
+    fn ref_resolved(&self, name: &str) -> Result<Resolved, IrError> {
         if is_expression_string(name) {
             return Err(IrError::ExpressionString {
                 operand: name.to_string(),
@@ -889,7 +899,10 @@ impl InferCtx<'_> {
             }),
             RelationType::RowSet(rs) => {
                 if let Some(col) = rs.columns.iter().find(|c| c.name == name) {
-                    return Ok((col.value_type.clone(), false));
+                    return Ok(Resolved::Column {
+                        name: col.name.clone(),
+                        value_type: col.value_type.clone(),
+                    });
                 }
                 // Closed schema: only the aggregate/group outputs exist — plus
                 // the target scope of a correlate that followed the aggregate.
@@ -900,13 +913,12 @@ impl InferCtx<'_> {
                         name: name.to_string(),
                     });
                 }
-                match self.resolver.resolve(source, resolve_name) {
-                    Some(r) => Ok((r.value_type().clone(), r.is_advisory_type())),
-                    // Defined rejection: a field with no canonical type (12.1a).
-                    None => Err(IrError::UnknownFieldType {
+                // Defined rejection: a field with no canonical type (12.1a).
+                self.resolver.resolve(source, resolve_name).ok_or_else(|| {
+                    IrError::UnknownFieldType {
                         field: name.to_string(),
-                    }),
-                }
+                    }
+                })
             }
         }
     }
@@ -925,7 +937,16 @@ impl InferCtx<'_> {
 
     fn check_leaf(&self, leaf: &Leaf) -> Result<(), IrError> {
         self.require_filterable(&leaf.field)?;
-        let (ty, advisory) = self.ref_type_and_advisory(&leaf.field)?;
+        let resolved = self.ref_resolved(&leaf.field)?;
+        if matches!(&resolved, Resolved::SpanList(_)) && !SpanListField::supports(leaf.op) {
+            return Err(IrError::Invalid(format!(
+                "operator '{}' is not supported on list field '{}': it matches when any element does; \
+                 use `not` with `eq` to require that no element equals a value",
+                leaf.op.as_str(),
+                leaf.field
+            )));
+        }
+        let (ty, advisory) = (resolved.value_type().clone(), resolved.is_advisory_type());
         match (leaf.op.takes_value(), &leaf.value) {
             (true, None) => {
                 return Err(IrError::Invalid(format!(
@@ -3105,6 +3126,84 @@ mod tests {
         fn is_filterable(&self, source: &str, field: &str) -> bool {
             self.inner.is_filterable(source, field)
         }
+    }
+
+    struct WithSpanLists(InMemoryResolver);
+
+    impl FieldResolver for WithSpanLists {
+        fn resolve(&self, source: &str, field: &str) -> Option<Resolved> {
+            match SpanListField::parse(field) {
+                Some(f) if source == "traces" => Some(Resolved::SpanList(f)),
+                _ => self.0.resolve(source, field),
+            }
+        }
+    }
+
+    fn validate_span_list(result: &str, stage: serde_json::Value) -> Result<(), IrError> {
+        validate(
+            &doc(json!({
+                "irVersion": 1, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+                "result": result, "pipeline": [stage]
+            })),
+            &SourceRegistry::core(),
+            &WithSpanLists(traces_resolver()),
+        )
+        .map(|_| ())
+    }
+
+    fn span_list_where(
+        field: &str,
+        op: &str,
+        value: Option<serde_json::Value>,
+    ) -> Result<(), IrError> {
+        let mut leaf = json!({ "field": field, "op": op });
+        if let Some(v) = value {
+            leaf["value"] = v;
+        }
+        validate_span_list("rows", json!({ "where": leaf }))
+    }
+
+    #[test]
+    fn span_list_fields_accept_existential_ops() {
+        for (field, op, value) in [
+            ("events.name", "eq", Some(json!("retry"))),
+            ("events.name", "in", Some(json!(["a", "b"]))),
+            ("events.attributes.reason", "contains", Some(json!("time"))),
+            ("links.trace_id", "regex", Some(json!("^ab"))),
+            ("links.attributes.kind", "exists", None),
+            ("events.attributes.attempt", "eq", Some(json!(3))),
+        ] {
+            span_list_where(field, op, value).unwrap_or_else(|e| panic!("{field} {op}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn span_list_fields_reject_ordered_and_negated_ops() {
+        for op in ["ne", "gt", "gte", "lt", "lte", "between"] {
+            let value = if op == "between" {
+                json!(["a", "b"])
+            } else {
+                json!("x")
+            };
+            let err = span_list_where("events.name", op, Some(value)).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("events.name") && m.contains("not")),
+                "{op}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn span_list_fields_are_where_only() {
+        let err = validate_span_list(
+            "table",
+            json!({ "aggregate": { "by": ["events.name"], "aggs": [{ "fn": "count", "as": "n" }] } }),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("events.name")),
+            "{err:?}"
+        );
     }
 
     /// `contains`/`regex` need a `String` field: a non-`String`

@@ -17,7 +17,57 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::predicate::ComparisonOp;
 use super::value::ValueType;
+
+/// A filterable element field of a span's `events`/`links` list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SpanListField {
+    EventName,
+    EventAttribute(String),
+    LinkTraceId,
+    LinkSpanId,
+    LinkAttribute(String),
+}
+
+impl SpanListField {
+    /// `events.name`, `events.attributes.<key>`, `links.trace_id`,
+    /// `links.span_id` or `links.attributes.<key>` (non-empty key).
+    pub fn parse(field: &str) -> Option<Self> {
+        let key = |k: &str| (!k.is_empty()).then(|| k.to_string());
+        Some(match field {
+            "events.name" => Self::EventName,
+            "links.trace_id" => Self::LinkTraceId,
+            "links.span_id" => Self::LinkSpanId,
+            _ => match field.split_once(".attributes.")? {
+                ("events", k) => Self::EventAttribute(key(k)?),
+                ("links", k) => Self::LinkAttribute(key(k)?),
+                _ => return None,
+            },
+        })
+    }
+
+    /// The physical JSON-array column the field reads.
+    pub fn column(&self) -> &'static str {
+        match self {
+            Self::EventName | Self::EventAttribute(_) => "events",
+            Self::LinkTraceId | Self::LinkSpanId | Self::LinkAttribute(_) => "links",
+        }
+    }
+
+    /// Operators with a well-defined existential meaning. `ne`, ordering and
+    /// `between` are rejected: use `not` + `eq` for "no element equals".
+    pub fn supports(op: ComparisonOp) -> bool {
+        matches!(
+            op,
+            ComparisonOp::Eq
+                | ComparisonOp::In
+                | ComparisonOp::Contains
+                | ComparisonOp::Regex
+                | ComparisonOp::Exists
+        )
+    }
+}
 
 /// Where a logical field physically lives, with its canonical type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +96,10 @@ pub enum Resolved {
     /// The whole span-events list, read from an events JSON-array column and
     /// normalized to `[{name, timestamp_unix_nano, attributes}]` (String).
     SpanEvents { events_column: String },
+    /// An element field of a span's `events`/`links` JSON-array column.
+    /// Filter-only, with existential semantics: a leaf holds when any list
+    /// element satisfies it.
+    SpanList(SpanListField),
     /// A promoted attribute column (`label_<key>`) that may still be NULL in
     /// files the compactor hasn't rewritten since promotion — Iceberg schema
     /// evolution null-fills new columns in pre-existing files, and the
@@ -104,11 +158,20 @@ impl Resolved {
             Resolved::Column { value_type, .. } => value_type,
             Resolved::JsonPath { value_type, .. } => value_type,
             Resolved::EventAttribute { value_type, .. } => value_type,
-            Resolved::SpanEvents { .. } => &ValueType::String,
+            Resolved::SpanEvents { .. } | Resolved::SpanList(_) => &ValueType::String,
             Resolved::PromotedColumn { value_type, .. } => value_type,
             Resolved::AttributeBag { .. } => &ValueType::String,
             Resolved::TypedAttribute { value_type, .. } => value_type,
         }
+    }
+
+    pub fn is_filter_only(&self) -> bool {
+        matches!(self, Resolved::SpanList(_))
+    }
+
+    /// The error text for using a filter-only field outside a `where` leaf.
+    pub fn filter_only_message(field: &str) -> String {
+        format!("'{field}' is a span list field and can only be used in a `where` predicate")
     }
 
     /// Whether this resolution's [`ValueType`] is *advisory* rather than

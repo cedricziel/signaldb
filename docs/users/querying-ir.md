@@ -271,6 +271,45 @@ event are different data, finding "all exceptions" means querying both
 sources and combining the results client-side — there is no single query
 that spans both.
 
+### Span events and links
+
+On the `traces` source, a span's events and links are filterable in any
+`where` predicate:
+
+| Field                       | Value                                     |
+| --------------------------- | ----------------------------------------- |
+| `events.name`               | an event's name                           |
+| `events.attributes.<key>`   | an event attribute                        |
+| `links.trace_id`            | a linked span's trace id                  |
+| `links.span_id`             | a linked span's span id                   |
+| `links.attributes.<key>`    | a link attribute                          |
+
+A leaf is **existential**: it holds when _any_ event or link of the span
+satisfies it. Attribute values compare by their JSON text (`3`, `false`).
+Supported operators are `eq`, `in`, `contains`, `regex` and `exists` (`exists`
+on `events.name` means the span has at least one event). `ne`, `gt`, `gte`,
+`lt`, `lte` and `between` are rejected with a 400, because "any element is not
+X" is rarely what was meant: wrap `eq` in `not` for "no element equals X". A
+span with no events or links, or unparsable stored JSON, never matches a leaf
+(so `not` matches it). These fields are filter-only; they cannot be projected,
+grouped or ordered.
+
+These names are reserved on traces: a span attribute literally named
+`events.name` is addressed as `span.events.name`. Each leaf matches
+independently, so `events.name eq retry and events.attributes.attempt eq 3` can
+be satisfied by two different events. Link ids compare as lowercase hex (the
+value you send is lowercased, except for `regex`). The fields are not available
+through correlate scopes: `parent.` and `<target>.` prefixes are rejected. An
+event or link that cannot be parsed is skipped; the others still count.
+
+```jsonc
+// Spans with a retry event but no exception event.
+{ "and": [
+  { "field": "events.name", "op": "eq", "value": "retry" },
+  { "not": { "field": "events.name", "op": "eq", "value": "exception" } }
+] }
+```
+
 ### Structured operands
 
 Aggregate/rank/order operands are structured values, never mini-expression
