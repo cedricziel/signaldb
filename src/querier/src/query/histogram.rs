@@ -73,7 +73,7 @@ pub(crate) fn histogram_quantile(phi: f64, bounds: &[f64], counts: &[f64]) -> f6
 /// `+Inf` bucket sits above the last finite bound. An infinite-width bucket's
 /// observations sit at its infinite edge.
 pub(crate) fn histogram_fraction(lower: f64, upper: f64, bounds: &[f64], counts: &[f64]) -> f64 {
-    if bounds.is_empty() || counts.len() != bounds.len() + 1 {
+    if counts.len() != bounds.len() + 1 {
         return f64::NAN;
     }
     let total: f64 = counts.iter().sum();
@@ -86,9 +86,9 @@ pub(crate) fn histogram_fraction(lower: f64, upper: f64, bounds: &[f64], counts:
 /// Cumulative count of observations `<= x`, interpolated within the bucket.
 pub(crate) fn hist_cumulative(x: f64, bounds: &[f64], counts: &[f64]) -> f64 {
     let n = bounds.len();
-    // At or above the top finite bound: all finite-bucket observations count;
-    // the `+Inf` bucket's observations are strictly greater.
-    if x >= bounds[n - 1] {
+    // At or above the top finite bound (or with none): all finite-bucket
+    // observations count; the `+Inf` bucket's observations are strictly greater.
+    if bounds.last().is_none_or(|&top| x >= top) {
         return counts[..n].iter().sum();
     }
     // First finite bucket whose upper bound is >= x contains x.
@@ -166,5 +166,14 @@ mod tests {
         assert_eq!(histogram_fraction(-10.0, -5.0, &bounds, &counts), 0.0);
         // A positive first bound still starts the first bucket at 0.
         assert_eq!(histogram_fraction(-1.0, 0.5, &[1.0, 2.0], &[2.0, 2.0, 0.0]), 0.25);
+    }
+
+    /// Only the `+Inf` bucket: every observation lies above any finite
+    /// bound, so a finite interval holds none of them (Prometheus: 0).
+    #[test]
+    fn histogram_fraction_of_an_inf_only_histogram_is_zero() {
+        assert_eq!(histogram_fraction(0.0, 1.0, &[], &[9.0]), 0.0);
+        assert_eq!(histogram_fraction(-1.0, 1e300, &[], &[9.0]), 0.0);
+        assert!(histogram_fraction(0.0, 1.0, &[], &[0.0]).is_nan());
     }
 }
