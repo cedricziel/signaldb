@@ -122,7 +122,7 @@ flowchart LR
     Client["OTLP client"] -->|"gRPC :4317 / HTTP :4318"| Acceptor
     Acceptor -->|"append + flush"| AWal[("Acceptor WAL")]
     Acceptor -->|"Flight do_put"| Writer["Writer :50061"]
-    Writer -->|"append (physical schema)"| WWal[("Writer WAL")]
+    Writer -->|"append (traces/logs/profiles: physical shape)"| WWal[("Writer WAL")]
     WWal -->|"WalProcessor (5s loop, backoff on failure)"| Iceberg["Iceberg commit"]
     Iceberg --> Store[("Object store (Parquet)")]
     Iceberg --> Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
@@ -144,10 +144,10 @@ flowchart LR
 1. **OTLP Ingestion**: Client sends traces/logs/metrics via gRPC (port 4317) or HTTP (port 4318) to the Acceptor. The Acceptor also supports Prometheus remote_write at `/api/v1/write`.
 2. **Authentication**: Acceptor validates the API key via `Authorization: Bearer <key>` header, resolves tenant and dataset context.
    2a. **Telemetry processors**: Acceptor applies the tenant's enabled OTTL processors (`common::processors::ProcessorRegistry`, crate `ottl`) matching the request's dataset and signal, directly against the decoded OTLP protobuf — tenant-wide first, then dataset-scoped. This runs before step 3, so the transformed request is the only form ever converted to Arrow, written to WAL, or forwarded. See [Processors](../users/processors.md).
-3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (v1 format).
+3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (the Flight wire format).
 4. **Acceptor WAL**: Acceptor appends the Arrow batch to its own WAL (per tenant/dataset/signal type) and flushes it before forwarding.
 5. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.
-6. **Schema Transformation**: Writer transforms the Flight wire schema into each signal's physical shape (traces, logs, profiles, and the `metrics`/`metric_exemplars` pair: field renames, type conversions, computed partition fields). At commit, the table writer splits every attribute container into typed home maps plus a binary residue, resolving each key's canonical type through the attribute type authority (a config pin, else a semconv hint, else the first observed type); values of another type go to the residue unchanged. The acceptor reads the same types from a cached snapshot and reports off-type values to the sender in OTLP `partial_success`. On every table load (not just creation), the writer also brings an existing traces/logs table's schema forward to the current version if it's behind — see [Schema Management](#schema-management).
+6. **Schema Transformation**: Writer transforms traces, logs and profiles from the Flight wire schema to their last pre-typed physical shape (field renames, type conversions, computed partition fields) before the WAL write. Metrics batches stay in wire format (`data_json`) in the WAL and become rows of `metrics` and `metric_exemplars` at commit. At commit, the table writer also splits every attribute container into typed home maps plus a binary residue, resolving each key's canonical type through the attribute type authority (see [Canonical types](../users/schema-registry.md#canonical-types)). The acceptor reads the same types from a cached snapshot and reports off-type values to the sender in OTLP `partial_success`. On every table load (not just creation), the writer also brings an existing table's schema forward to the current version if it's behind, for every signal table — see [Schema Management](#schema-management).
 7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
 8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
 9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion. Commits are **coalesced** per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`), so freshly-ingested data is queryable only once committed; a caller needing read-your-writes forces a commit with the Writer Flight `do_action("flush")`. See `architecture/flight-communication.md`.
@@ -197,7 +197,7 @@ flowchart LR
 | **Output**       | Iceberg tables (Parquet + metadata) to object store |
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
-- Transforms the Flight wire schema into the physical schema before WAL write
+- Transforms traces, logs and profiles to their physical shape before WAL write; metrics stay in wire format in the WAL and are shaped at commit
 - `WalManager` (the same type the acceptor uses) gives the writer one WAL per tenant/dataset/signal, created on that combination's first write; existing directories are opened at startup so a previous run's entries drain
 - `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads every tenant WAL's entries and writes them to Iceberg tables; a WAL it cannot read is skipped for that cycle, never aborting the others
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination

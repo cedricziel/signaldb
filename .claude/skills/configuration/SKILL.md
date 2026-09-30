@@ -90,7 +90,7 @@ Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-u
 logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 ```
 
-Per-signal allowlists of attribute keys copied, as strings, into dedicated `label_<key>` columns at ingest, for the compatibility dialects (LogQL, TraceQL, Tempo, PromQL). The value also stays in its typed home map, and the IR reads the typed home (a `label_<key>` column only stands in for a String-canonical key recorded at one level). Default empty. Applies to tables created after the change; older tables read the key's typed home instead. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
+Per-signal allowlists of attribute keys copied, as strings, into dedicated `label_<key>` columns at ingest. The value also stays in its typed home map. The dialects that lower to the IR follow the IR's rule: a `label_<key>` column only stands in for a String-canonical key recorded at one level; only non-IR fallback paths read the column directly. Default empty. Applies to tables created after the change; older tables read the key's typed home instead. Per-tenant: a tenant's schema block, `[tenants.tenants.<id>.schema]` (with `enabled = true` on the tenant and `catalog_type`/`catalog_uri` in the block, which have no defaults), replaces the whole global `[schema]` block, not just this list. See `docs/architecture/storage-layout.md#materialized-labels`.
 
 #### Attribute type overrides
 

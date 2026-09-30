@@ -200,14 +200,15 @@ logs_enabled = true
 metrics_enabled = true
 profiles_enabled = true
 
-# Attribute keys to promote from the *_attributes JSON into dedicated,
-# queryable columns per signal type. Materialized labels are matched
-# exactly (and support regex / ordered comparisons) instead of the
-# substring-in-JSON approximation. Keep the lists short and low-cardinality
-# — every entry adds a column. Applies to tables created after the change;
-# pre-existing tables fall back to JSON matching for these keys.
-# Per-tenant override: a tenant schema block replaces the global set
-# wholesale ([[auth.tenants]] -> [auth.tenants.schema.materialized_labels]).
+# Attribute keys to copy, as strings, into dedicated `label_<key>` columns per
+# signal type. The value also stays in its typed attribute map; the Query IR
+# reads the typed home, and only non-IR fallback paths read the label column
+# directly. Keep the lists short and low-cardinality — every entry adds a
+# column. Applies to tables created after the change; older tables read the
+# key's typed home for these keys.
+# Per-tenant override: a tenant's schema block replaces the whole global
+# [schema] block, not only this list ([tenants.tenants.<id>.schema]; the block
+# needs catalog_type and catalog_uri, which have no defaults).
 # [schema.materialized_labels]
 # logs = ["namespace", "pod", "container"]
 # traces = ["http.method", "http.status_code"]

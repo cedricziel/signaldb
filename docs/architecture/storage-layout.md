@@ -8,6 +8,11 @@ sources:
   - src/common/src/catalog_manager.rs
   - src/common/src/iceberg/**
   - schemas.toml
+  - src/common/src/attrs/warm_index.rs
+  - src/common/src/config/mod.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/writer/src/schema_transform.rs
+  - src/querier/src/query/warm_index/probe.rs
 ---
 
 # Storage Layout Design
@@ -459,10 +464,10 @@ per canonical type (`{container}_str`, `_int`, `_double`, `_bool`) plus a
 `{container}_residue` `Binary` column holding one CBOR document per row for
 values that have no typed home -- a value whose sent type doesn't match the
 key's canonical type, an array or key-value list, or bytes. A key lives in
-exactly one typed home; `attribute-type-authority` (see
-`docs/users/querying-ir.md`) picks that home from the first value ever
-observed for the key (or a config override), and later conflicting values go
-to the residue rather than retyping the column.
+exactly one typed home, chosen by the attribute type authority (precedence
+and scoping: [Canonical types](../users/schema-registry.md#canonical-types));
+a later value of another type goes to the residue rather than retyping the
+column.
 
 This landed as a **one-shot cutover**, not an evolution: a table still in the
 legacy single-map layout is dropped and recreated in the typed layout the
@@ -519,11 +524,10 @@ on top of that, from cheapest to fastest:
   from `rows_per_row_group * attrs_per_row`, capped at `max_bloom_ndv`. The
   querier checks the bloom filters of candidate files for an equality predicate
   on a typed home and skips files that cannot match; range and other predicates
-  fall back to the cold scan. `[querier.warm_index]` (`WarmIndexQuerierConfig`)
-  gates it: no probe below `min_files` candidate files, and a sample of
-  `sample_files` files is probed first, with the full probe skipped when more
-  than `max_keep_ratio` of the sample survives. The index costs storage and
-  write time, which is why it is off by default.
+  fall back to the cold scan. `[querier.warm_index]` (`WarmIndexQuerierConfig`,
+  documented in `signaldb.dist.toml`) gates the probe so non-selective
+  predicates skip it. The index costs storage and write time, which is why it
+  is off by default.
 - **Hot: promoted columns.** The compactor copies a demanded `(level, key)` into
   an `attr_<level>_<key>` column typed as the key's canonical type; the typed map
   keeps the value. See [Typed promoted attribute columns](#typed-promoted-attribute-columns).
@@ -534,21 +538,28 @@ how much is read. Queries name the logical attribute, never the physical column.
 ### Materialized labels
 
 `label_<key>` columns predate the typed layout. They are a string copy of a
-chosen attribute key, kept for the compatibility dialects (LogQL, TraceQL,
-Tempo, PromQL), which read a label column when the table has one and otherwise
-read the key's typed home rendered as a string. The IR uses a `label_<key>`
-column only as a stand-in for a key whose canonical type is String and that is
-recorded at exactly one level; for any other key it reads the typed home (or
-the `attr_<level>_<key>` column). Configuring `[schema.materialized_labels]`
-adds these columns to tables created afterwards.
+chosen attribute key. The dialects that lower to the IR (LogQL's primary path,
+PromQL, Tempo search) follow the IR's rule: a `label_<key>` column stands in
+for a key only when its canonical type is String and it is recorded at exactly
+one level; otherwise the query reads the typed home (or the
+`attr_<level>_<key>` column). Only the non-IR paths read a label column
+directly: LogQL's fallback for queries the IR cannot express, and the metric
+metadata matchers. Configuring `[schema.materialized_labels]` adds these
+columns to tables created afterwards.
 
 ```toml
 [schema.materialized_labels]
 logs = ["namespace", "pod"]
 # traces = [...]   # metrics / profiles likewise
 
-# Per-tenant override: replaces the global set wholesale for that tenant
-[auth.tenants.schema.materialized_labels]
+# Per-tenant override: a tenant's schema block replaces the whole global
+# [schema] block. The block needs catalog_type and catalog_uri (no defaults).
+[tenants.tenants.acme]
+enabled = true
+[tenants.tenants.acme.schema]
+catalog_type = "sql"
+catalog_uri = "sqlite://.data/acme_catalog.db"
+[tenants.tenants.acme.schema.materialized_labels]
 logs = ["team", "region"]
 ```
 
@@ -650,9 +661,9 @@ logs = ["team", "region"]
   exactly as if the table simply predated the label, until the table is
   recreated. Actually promoting it still needs a
   dedicated reconciliation path; tracked as a follow-up to #1448.
-- **Querying**: the querier routes a label to its `label_<key>` column when
-  the table has one, else to the key's typed home (see the
-  [LogQL reference](../users/logql-reference.md#materialized-labels)).
+- **Querying**: the IR-lowered dialects follow the stand-in rule above; the
+  non-IR paths route a label to its `label_<key>` column when the table has one
+  (see the [LogQL reference](../users/logql-reference.md#materialized-labels)).
   **Known limitation**: every querier resolution point
   (`SchemaResolver::column_for`/`is_known` in `ir_planner.rs`, plus the
   `logql`/`logs`/`metrics` lowerings) recomputes `materialized_column_name`
@@ -669,22 +680,10 @@ logs = ["team", "region"]
   resolve both mechanisms uniformly by origin key; tracked as a follow-up
   to #1448, out of scope for the writer/schema-creation fix here.
 
-The same mechanism applies across all four signals:
-
-- **logs** — LogQL matches materialized labels exactly, with regex and
-  ordered comparisons;
-- **traces** — the Tempo search API (`tags` / TraceQL attribute selectors)
-  matches them exactly;
-- **metrics** — PromQL label matchers (`metric{key="v"}`) match exactly and
-  by regex on the column; `by (key)` / `without (key)` group on it, and the
-  label is part of each series' natural identity (bare selectors and
-  `rate()` emit one series per label combination);
-- **profiles** — the columns are populated for consistency; the Pyroscope
-  query surface filters only by `service_name` / sample type today.
-
-Each signal's writer transform extracts the label from that signal's
-attribute payload (metrics per exploded data point); the querier routes to the
-column when the queried table has it, else reads the key's typed home.
+The writer fills the columns for all four signals (metrics per exploded data
+point); how a query reads them is the rule above. Profiles populate them for
+consistency only; the Pyroscope query surface filters by `service_name` and
+sample type.
 
 ### Parquet bloom filters
 
@@ -1105,8 +1104,7 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 ### Three version axes
 
 "Version" means three independent things; do not read one as another. The
-`flight-schemas` skill (`.claude/skills/flight-schemas/SKILL.md`) is the
-canonical home for all three, including the wire-to-storage field table.
+`flight-schemas` skill summarises this page.
 
 1. **Flight wire format** vs Iceberg storage: the `*_v1_to_*` transforms in
    `src/writer/src/schema_transform.rs`. "v1"/"v2" in those names is historical
@@ -1117,21 +1115,40 @@ canonical home for all three, including the wire-to-storage field table.
    the client-visible OTel schema in `common::schema::logical`. A field change
    there moves this axis only.
 
+### Flight wire vs Iceberg storage
+
+The two shapes differ intentionally. Traces, as the transform targets them
+(`physical-v4`, before the typed split):
+
+| Aspect           | Flight wire                   | Iceberg (`physical-v4`)         |
+| ---------------- | ----------------------------- | ------------------------------- |
+| Span name field  | `name`                        | `span_name`                     |
+| Duration field   | `duration_nano` (UInt64)      | `duration_nanos` (Long/Int64)   |
+| Attributes field | `attributes_json`             | `span_attributes` (JSON string) |
+| Resource field   | `resource_json`               | `resource_attributes`           |
+| Time fields      | UInt64 (nanoseconds)          | Long/Int64 (nanoseconds)        |
+| Events/Links     | `List<Struct>` (nested Arrow) | `String` (JSON serialized)      |
+| Partition fields | None                          | `timestamp`, `date_day`, `hour` |
+
 ### Write-time transformation
 
-The writer applies the wire-to-storage transform in its Flight `do_put` handler
-before the batch is written to the WAL, so WAL data is already in the writer's
-physical shape. For traces, `transform_trace_v1_to_v2()` targets a fixed
-`physical-v4` (the last version with single-map attribute columns) through a
-compiled plan: field renames, `UInt64` to `Int64` casts, `List<Struct>`
+Traces, logs and profiles are transformed in the writer's Flight `do_put`
+handler before the batch is written to the WAL, to their last pre-typed shape.
+For traces, `transform_trace_v1_to_v2()` targets a fixed `physical-v4` through
+a compiled plan: field renames, `UInt64` to `Int64` casts, `List<Struct>`
 events/links to JSON strings, and the computed `timestamp`/`date_day`/`hour`
-columns. The typed split then happens generically in the table writer
+columns. Logs target `physical-v3` and profiles `physical-v2`.
+
+Metrics are different: a metrics batch stays in wire format (`data_json`) in the
+WAL, and is shaped at commit by `transform_metrics_to_wide` and
+`transform_metric_exemplars` (`storage/iceberg.rs`) into the typed `metrics` and
+`metric_exemplars` tables.
+
+The typed split also happens at commit, generically, in the table writer
 (`IcebergTableWriter`): it resolves each key's canonical type through the
 attribute type authority and splits every attribute container into the five
-typed columns, which is how a `physical-v4` batch reaches the table's
-`physical-v5` schema. Logs (from `physical-v3`) and profiles (from
-`physical-v2`) work the same way; `metrics` and `metric_exemplars` are typed
-from creation and transform straight into their `physical-v4` tables.
+typed columns. That is how a traces `physical-v4` batch reaches the table's
+`physical-v5` schema, and logs and profiles likewise.
 
 ### Label columns can be added to existing tables
 
@@ -1153,7 +1170,7 @@ Attribute promotion adds a redundant typed copy of one (attribute level, key) ho
 - **Naming**: a key made of lowercase alphanumeric segments joined by single `.` or `_` gets a readable name, with `.` → `_` and `_` → `__` (`http.request.method` → `attr_record_http_request_method`, `http.response.status_code` → `attr_record_http_response_status__code`). Any other key gets `attr_<level>_<sanitized stem>___<8-hex FNV-1a hash>`.
 - **Origin in `doc`**: each column's field `doc` records its (level, key). A name already held by a column of another origin is never retyped; the promotion is skipped with a warning.
 - **Field ids** go past both the schema tree's maximum and `last_column_id`, and a dropped id is never reused.
-- **Querying**: the IR reads `coalesce(promoted, home)` per level and uses a promoted column only when it has the canonical Arrow type. The compat dialects (LogQL, PromQL, TraceQL) do not read `attr_*` columns; they keep using `label_<key>`.
+- **Querying**: the IR reads `coalesce(promoted, home)` per level and uses a promoted column only when it has the canonical Arrow type. The dialects that lower to the IR resolve attributes the same way; the non-IR fallback paths read `label_<key>` directly and never `attr_*`.
 
 The decision and demotion rules are operator-facing: see [Attribute Promotion](../operations/compactor/operations.md#attribute-promotion).
 
