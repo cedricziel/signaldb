@@ -62,6 +62,7 @@ use datafusion::functions_aggregate::expr_fn::{
     approx_distinct, approx_percentile_cont, avg, count, first_value, last_value, max, min,
     stddev_pop, sum, var_pop,
 };
+use datafusion::functions_window::expr_fn::row_number;
 use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, ExprSchemable, JoinType, Operator, ScalarFunctionArgs,
@@ -357,17 +358,30 @@ async fn scan_source(
         if source.table != "metrics" {
             return Ok(None);
         }
-        let schema = common::iceberg::schemas::create_metrics_schema()
-            .map_err(|e| internal(format!("metrics schema: {e}")))?;
-        let schema: Schema = schema
-            .fields()
-            .try_into()
-            .map_err(|e| internal(format!("metrics schema as Arrow: {e:?}")))?;
-        return Ok(Some(
-            ctx.read_batch(RecordBatch::new_empty(Arc::new(schema)))?,
-        ));
+        return empty_canonical_scan(ctx, source);
     };
     Ok(Some(scan_provider(ctx, table_ref, provider)?))
+}
+
+/// An empty frame with `source`'s canonical table schema, standing in for a
+/// table that does not exist yet.
+fn empty_canonical_scan(
+    ctx: &SessionContext,
+    source: &SourcePlan,
+) -> Result<Option<DataFrame>, QuerierError> {
+    let Some(table) = common::iceberg::schemas::TableSchema::from_table_name(source.table) else {
+        return Ok(None);
+    };
+    let schema = table
+        .schema()
+        .map_err(|e| internal(format!("{} schema: {e}", source.table)))?;
+    let schema: Schema = schema
+        .fields()
+        .try_into()
+        .map_err(|e| internal(format!("{} schema as Arrow: {e:?}", source.table)))?;
+    Ok(Some(
+        ctx.read_batch(RecordBatch::new_empty(Arc::new(schema)))?,
+    ))
 }
 
 /// Scan the `traces` table a second time for a `correlate` stage's parent
@@ -948,11 +962,13 @@ impl IrService {
             row_limit: outcome
                 .truncated
                 .is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)),
+            fanout_limit: outcome
+                .fanout_limit
+                .is_some_and(|flag| flag.load(AtomicOrdering::Relaxed)),
             window: outcome.window.map(|w| CorrelateWindowReport {
                 start_ns: w.start_ns,
                 end_ns: w.end_ns,
             }),
-            ..Default::default()
         };
         if doc.result == ResultEnvelope::Flamegraph {
             return Ok((
@@ -1199,8 +1215,9 @@ async fn plan_operand(
             .iter()
             .map(|f| f.name().to_string())
             .collect(),
-        correlated: false,
+        scope: None,
         correlate_truncated: None,
+        correlate_fanout: None,
         correlate_window: None,
     };
 
@@ -1299,31 +1316,25 @@ async fn plan_operand(
             Stage::Aggregate(agg) if instant_grid_step(agg, &source).is_some() => {
                 lowering.lower_aggregate(df, agg, Some(&window))?
             }
-            // Needs its own scan of the traces table (the parent side) and
-            // the resolved window, both only available here.
-            Stage::Correlate(correlate) => match (&correlate.to, &target) {
-                (CorrelateTarget::Signal(_), Some(target)) => {
-                    lowering
-                        .lower_signal_correlate(
-                            ctx,
-                            df,
-                            correlate,
-                            target,
-                            &window,
-                            correlate_max_source_rows,
-                        )
-                        .await?
+            // Needs its own scan of the target table (the parent span side
+            // or another signal) and the resolved window, only available here.
+            Stage::Correlate(correlate) => {
+                let scan = CorrelateScan {
+                    tenant_slug,
+                    dataset_slug,
+                    window: &window,
+                    correlate_max_rows,
+                    correlate_max_source_rows,
+                };
+                match (&correlate.to, &target) {
+                    (CorrelateTarget::Signal(_), Some(target)) => {
+                        lowering
+                            .lower_signal_correlate(ctx, df, correlate, target, scan)
+                            .await?
+                    }
+                    _ => lowering.lower_correlate(ctx, df, correlate, scan).await?,
                 }
-                _ => {
-                    let scan = CorrelateScan {
-                        tenant_slug,
-                        dataset_slug,
-                        window: &window,
-                        correlate_max_rows,
-                    };
-                    lowering.lower_correlate(ctx, df, correlate, scan).await?
-                }
-            },
+            }
             other => lowering.lower_stage(df, other)?,
         };
         series_step = metric_series::output_step(stage, series_step, doc_step);
@@ -1334,6 +1345,7 @@ async fn plan_operand(
     df = lowering.apply_projection(df, doc)?;
     let outcome = CorrelateOutcome {
         truncated: lowering.correlate_truncated,
+        fanout_limit: lowering.correlate_fanout,
         window: lowering.correlate_window,
     };
     Ok(Some((df, window, outcome)))
@@ -1634,7 +1646,7 @@ const PARENT_COLUMN_PREFIX: &str = "parent.";
 /// A `TypedAttribute`'s `(homes, promoted, key, prefix)` — the arguments
 /// `typed_home_filter_expr` needs to lower a filter comparison through the
 /// OR-rewrite (see `promoted_typed_attribute`, `ordered`).
-type TypedAttrFilterParts = (Vec<String>, Vec<Option<String>>, String, &'static str);
+type TypedAttrFilterParts = (Vec<String>, Vec<Option<String>>, String, String);
 
 /// A collision-free rename applied to the parent-side scan before the join —
 /// see [`Lowering::lower_correlate`] for why a flat rename is used instead
@@ -1655,10 +1667,11 @@ pub(crate) const DEFAULT_CORRELATE_MAX_ROWS: usize = 5_000_000;
 pub(crate) const DEFAULT_CORRELATE_MAX_SOURCE_ROWS: usize = 10_000;
 
 /// What a `correlate` stage reports once the plan has run: the streaming
-/// row-cap flag (parent target) and the target scan window (signal target).
+/// row-cap and fan-out-cap flags and the target scan window (signal target).
 #[derive(Debug, Default)]
 pub(crate) struct CorrelateOutcome {
     pub truncated: Option<Arc<AtomicBool>>,
+    pub fanout_limit: Option<Arc<AtomicBool>>,
     pub window: Option<ResolvedWindow>,
 }
 
@@ -1672,6 +1685,10 @@ const CORRELATE_TARGET_KEY_PREFIX: &str = "__correlate_target_key_";
 const CORRELATE_START: &str = "__correlate_start";
 const CORRELATE_DURATION: &str = "__correlate_duration";
 const CORRELATE_ROW: &str = "__correlate_row";
+/// A target row's fan-out rank within its key.
+const CORRELATE_RANK: &str = "__correlate_rank";
+/// Default per-source-row match cap of an inner/left signal `correlate`.
+const DEFAULT_CORRELATE_FANOUT: u64 = 100;
 
 /// How long before the target window a `traces` target's span may start and
 /// still overlap it. Spans are stored by start time, so the overlap test
@@ -1841,12 +1858,25 @@ impl CorrelateTargetSide {
         tenant_slug: &str,
         dataset_slug: &str,
     ) -> Result<Self, QuerierError> {
-        let base = scan_source(ctx, tenant_slug, dataset_slug, &plan).await?;
-        let resolver = match &base {
+        let (base, resolver) = match scan_source(ctx, tenant_slug, dataset_slug, &plan).await? {
             Some(base) => {
-                schema_resolver(base.schema(), &plan, request, tenant_slug, dataset_slug).await?
+                let resolver =
+                    schema_resolver(base.schema(), &plan, request, tenant_slug, dataset_slug)
+                        .await?;
+                (Some(base), resolver)
             }
-            None => SchemaResolver::new(&datafusion::common::DFSchema::empty(), &plan),
+            // A missing table joins as an empty one of the canonical schema,
+            // so the output has the same target columns either way.
+            None => match empty_canonical_scan(ctx, &plan)? {
+                Some(empty) => {
+                    let resolver = SchemaResolver::new(empty.schema(), &plan);
+                    (Some(empty), resolver)
+                }
+                None => (
+                    None,
+                    SchemaResolver::new(&datafusion::common::DFSchema::empty(), &plan),
+                ),
+            },
         };
         Ok(Self {
             plan,
@@ -1889,8 +1919,9 @@ impl FieldResolver for SourceResolvers<'_> {
     }
 }
 
-/// The distinct canonical keys of a signal `correlate`'s target rows within
-/// `window`, restricted to `keys` and narrowed by the target `pipeline`.
+/// A signal `correlate`'s target rows within `window`, restricted to `keys`
+/// and narrowed by the target `pipeline`, with each canonical key as a
+/// `CORRELATE_TARGET_KEY_PREFIX` column.
 ///
 /// Only a Utf8 column the writer is known to store canonically (see
 /// [`writer_stores_canonical_key`]) gets a literal IN-list on the raw column
@@ -1900,7 +1931,7 @@ impl FieldResolver for SourceResolvers<'_> {
 /// A `traces` target matches spans *overlapping* `window` (a log emitted
 /// mid-span belongs to a span that started earlier), with the start bounded
 /// below by [`TRACE_TARGET_LOOKBACK_NS`] so the scan stays prunable.
-fn target_key_frame(
+fn target_frame(
     target: &CorrelateTargetSide,
     base: DataFrame,
     fields: &[&str],
@@ -1924,8 +1955,9 @@ fn target_key_frame(
             .iter()
             .map(|f| f.name().to_string())
             .collect(),
-        correlated: false,
+        scope: None,
         correlate_truncated: None,
+        correlate_fanout: None,
         correlate_window: None,
     };
     let mut df = match span_duration_column(&target.plan, &target.resolver) {
@@ -1946,7 +1978,6 @@ fn target_key_frame(
         }
         None => lowering.apply_time_window(base, window)?,
     };
-    let mut select = Vec::with_capacity(fields.len());
     for (i, (field, keys)) in fields.iter().zip(keys).enumerate() {
         let expr = lowering.value_expr(field)?;
         let data_type = expr.get_type(df.schema())?;
@@ -1962,13 +1993,64 @@ fn target_key_frame(
             canonical_key(expr, &data_type)
         };
         let list = keys.iter().map(|k| lit(k.as_str())).collect();
-        df = df.filter(key.clone().in_list(list, false))?;
-        select.push(key.alias(format!("{CORRELATE_TARGET_KEY_PREFIX}{i}")));
+        df = df
+            .filter(key.clone().in_list(list, false))?
+            .with_column(&format!("{CORRELATE_TARGET_KEY_PREFIX}{i}"), key)?;
     }
     for stage in pipeline {
         df = lowering.lower_stage(df, stage)?;
     }
-    Ok(df.select(select)?.distinct()?)
+    Ok(df)
+}
+
+/// `frame`'s target columns renamed to `<target>.<physical>` (a logs `body`
+/// decoded) before the join, so none collides with a source column (see
+/// [`Lowering::lower_correlate`] for why not a table qualifier), keeping at
+/// most `fanout` rows per target key: ranked by target time ascending, then
+/// every other non-nested target column ascending. Rows equal in all of
+/// those (differing only in attribute containers or other nested columns)
+/// tie, and which of them is kept is unspecified. The frame is already
+/// bounded to the source keys, so every key ranked here matches a source
+/// row and a dropped row is a real overflow, flagged on `overflow`.
+fn prefixed_target(
+    frame: DataFrame,
+    plan: &SourcePlan,
+    fanout: u64,
+    overflow: Arc<AtomicBool>,
+) -> Result<(DataFrame, Vec<String>), QuerierError> {
+    let mut select = Vec::new();
+    let mut names = Vec::new();
+    let mut keys = Vec::new();
+    let mut order = Vec::new();
+    for field in frame.schema().fields() {
+        let physical = field.name();
+        if physical.starts_with(CORRELATE_TARGET_KEY_PREFIX) {
+            select.push(ident(physical));
+            keys.push(ident(physical));
+            continue;
+        }
+        let name = format!("{}.{physical}", plan.name);
+        let value = if is_body_column(physical) {
+            body_decode_expr(physical)
+        } else {
+            ident(physical)
+        };
+        select.push(value.alias(&name));
+        if !field.data_type().is_nested() {
+            let key = ident(&name).sort(true, false);
+            if physical == plan.time_col {
+                order.insert(0, key);
+            } else {
+                order.push(key);
+            }
+        }
+        names.push(name);
+    }
+    let rank = row_number().partition_by(keys).order_by(order).build()?;
+    let ranked = frame.select(select)?.with_column(CORRELATE_RANK, rank)?;
+    let capped =
+        super::correlate_cap::wrap_with_rank_cap(ranked, CORRELATE_RANK, fanout, overflow)?;
+    Ok((capped, names))
 }
 
 /// A join key's canonical text form: lowercase text, or lowercase hex for a
@@ -2058,6 +2140,7 @@ struct CorrelateScan<'a> {
     dataset_slug: &'a str,
     window: &'a ResolvedWindow,
     correlate_max_rows: usize,
+    correlate_max_source_rows: usize,
 }
 
 /// Where to record per-level attribute-promotion demand for one document
@@ -2093,11 +2176,9 @@ struct Lowering<'a> {
     derived_types: HashMap<String, ValueType>,
     /// The current base-table physical column names.
     schema_cols: Vec<String>,
-    /// `true` once a `correlate` stage has joined the relation to its parent
-    /// span. Every parent-side physical column is `parent_<child physical
-    /// name>` (see [`Self::lower_correlate`]); [`Self::parent_column`] gates
-    /// on this to resolve a `parent.<field>` reference.
-    correlated: bool,
+    /// The far side of a `correlate` join, once one has run: its
+    /// `<prefix><field>` references resolve through [`Self::scoped_field`].
+    scope: Option<CorrelateScope<'a>>,
     /// `Some` once a `correlate` stage has streamed into `CorrelateCapExec`
     /// (`correlate_cap`) — the shared flag it flips if the join's row count
     /// crosses `correlate_max_rows`. Ground truth captured *during*
@@ -2105,11 +2186,24 @@ struct Lowering<'a> {
     /// ([`IrService::query`] does the read); `None` when the pipeline never
     /// reached `correlate`.
     correlate_truncated: Option<Arc<AtomicBool>>,
+    /// Like `correlate_truncated`, for an inner/left signal `correlate`'s
+    /// per-source-row `fanout` cap.
+    correlate_fanout: Option<Arc<AtomicBool>>,
     /// The target scan window a signal-target `correlate` used.
     correlate_window: Option<ResolvedWindow>,
 }
 
-impl Lowering<'_> {
+/// The far side of a `correlate` join: the parent span (`parent.`) or an
+/// inner/left signal target (`<target>.`). A `<prefix><field>` reference
+/// resolves through `resolver` against `plan`, reading the
+/// `<prefix><physical>` columns the join produced.
+struct CorrelateScope<'a> {
+    prefix: String,
+    plan: &'a SourcePlan,
+    resolver: &'a SchemaResolver,
+}
+
+impl<'a> Lowering<'a> {
     fn apply_time_window(
         &self,
         df: DataFrame,
@@ -2253,6 +2347,7 @@ impl Lowering<'_> {
             dataset_slug,
             window,
             correlate_max_rows,
+            ..
         } = scan;
         let join_type = match (&correlate.to, correlate.kind) {
             (CorrelateTarget::Parent, JoinKind::Inner) => JoinType::Inner,
@@ -2271,7 +2366,7 @@ impl Lowering<'_> {
             // Still mark the relation correlated, so a later `parent.*`
             // reference resolves (to an always-empty/always-null column)
             // rather than erroring as if `correlate` had never run.
-            self.correlated = true;
+            self.scope = Some(self.parent_scope());
             return match join_type {
                 JoinType::Inner => df.limit(0, Some(0)).map_err(QuerierError::QueryFailed),
                 _ => Ok(df),
@@ -2338,18 +2433,27 @@ impl Lowering<'_> {
         )?;
 
         self.schema_cols = schema_cols;
-        self.correlated = true;
+        self.scope = Some(self.parent_scope());
         self.correlate_truncated = Some(truncated);
         Ok(joined)
     }
 
-    /// Lower a signal-target `correlate` (semi/anti) in two phases, never as
-    /// a free join over both full tables. Phase 1 materializes the source
-    /// relation (at most `max_source_rows` rows, else a resource error) and
+    fn parent_scope(&self) -> CorrelateScope<'a> {
+        CorrelateScope {
+            prefix: PARENT_COLUMN_PREFIX.to_string(),
+            plan: self.source,
+            resolver: self.resolver,
+        }
+    }
+
+    /// Lower a signal-target `correlate` in two phases, never as a free
+    /// join over both full tables. Phase 1 materializes the source relation
+    /// (at most `correlate_max_source_rows` rows, else a resource error) and
     /// takes its canonical key set and time envelope. Phase 2 scans the
     /// target only within that envelope (widened by `window`) and for those
     /// keys, then semi/anti-joins the source rows against the target's
-    /// distinct keys. A missing target table matches nothing.
+    /// distinct keys, or inner/left-joins them to the target rows (see
+    /// [`Self::join_target_rows`]). A missing target table matches nothing.
     ///
     /// A source row whose key is null or empty never matches: semi drops it,
     /// anti keeps it. The result keeps the source row order, so a preceding
@@ -2359,20 +2463,18 @@ impl Lowering<'_> {
         ctx: &SessionContext,
         df: DataFrame,
         correlate: &Correlate,
-        target: &CorrelateTargetSide,
-        doc_window: &ResolvedWindow,
-        max_source_rows: usize,
+        target: &'a CorrelateTargetSide,
+        scan: CorrelateScan<'_>,
     ) -> Result<DataFrame, QuerierError> {
+        let doc_window = scan.window;
+        let max_source_rows = scan.correlate_max_source_rows;
         let join_type = match correlate.kind {
             JoinKind::Semi => JoinType::LeftSemi,
             JoinKind::Anti => JoinType::LeftAnti,
-            JoinKind::Inner | JoinKind::Left => {
-                return Err(QuerierError::Unsupported(format!(
-                    "correlate kind `{}` to a signal target is not supported yet",
-                    correlate.kind.as_str()
-                )));
-            }
+            JoinKind::Inner => JoinType::Inner,
+            JoinKind::Left => JoinType::Left,
         };
+        let enrich = matches!(join_type, JoinType::Inner | JoinType::Left);
         let Some((key, source_fields, target_fields)) = correlate.on.and_then(|key| {
             Some((
                 key.as_str(),
@@ -2389,15 +2491,13 @@ impl Lowering<'_> {
             "source",
             self.source.name,
         )?;
-        if target.base.is_some() {
-            require_stored_key(
-                &target.resolver,
-                target_fields,
-                key,
-                "target",
-                target.plan.name,
-            )?;
-        }
+        require_stored_key(
+            &target.resolver,
+            target_fields,
+            key,
+            "target",
+            target.plan.name,
+        )?;
         if let Some(reserved) = df
             .schema()
             .fields()
@@ -2474,93 +2574,175 @@ impl Lowering<'_> {
         };
         self.correlate_window = Some(target_window);
 
+        if enrich {
+            self.scope = Some(CorrelateScope {
+                prefix: format!("{}.", target.plan.name),
+                plan: &target.plan,
+                resolver: &target.resolver,
+            });
+        }
         let (schema, batches) = with_row_ordinal(&schema, batches)?;
+        let source_rows = batches.iter().map(RecordBatch::num_rows).sum::<usize>();
         let source = ctx.read_table(Arc::new(MemTable::try_new(schema, vec![batches])?))?;
-        let joined = match &target.base {
-            Some(base) if keys.iter().all(|set| !set.is_empty()) => {
-                let target_keys = target_key_frame(
-                    target,
-                    base.clone(),
-                    target_fields,
-                    &keys,
-                    &target_window,
-                    &correlate.pipeline,
-                    self.now_ns,
-                )?;
-                let on = (0..keys.len())
-                    .map(|i| {
-                        ident(format!("{CORRELATE_KEY_PREFIX}{i}"))
-                            .eq(ident(format!("{CORRELATE_TARGET_KEY_PREFIX}{i}")))
-                    })
-                    .collect::<Vec<_>>();
-                source.join_on(target_keys, join_type, on)?
+        let frame = match &target.base {
+            Some(base) if enrich || keys.iter().all(|set| !set.is_empty()) => Some(target_frame(
+                target,
+                base.clone(),
+                target_fields,
+                &keys,
+                &target_window,
+                &correlate.pipeline,
+                self.now_ns,
+            )?),
+            _ => None,
+        };
+        let target_keys: Vec<Expr> = (0..keys.len())
+            .map(|i| ident(format!("{CORRELATE_TARGET_KEY_PREFIX}{i}")))
+            .collect();
+        let on: Vec<Expr> = target_keys
+            .iter()
+            .enumerate()
+            .map(|(i, key)| ident(format!("{CORRELATE_KEY_PREFIX}{i}")).eq(key.clone()))
+            .collect();
+        let joined = match frame {
+            Some(frame) if enrich => {
+                let fanout = correlate
+                    .fanout
+                    .and_then(|n| u64::try_from(n).ok())
+                    .unwrap_or(DEFAULT_CORRELATE_FANOUT);
+                // The key bound is per field, so a multi-field key can
+                // still hold tuples no source row has; drop them before
+                // ranking so an overflow is always a real one.
+                let source_keys = source
+                    .clone()
+                    .select(
+                        (0..keys.len())
+                            .map(|i| ident(format!("{CORRELATE_KEY_PREFIX}{i}")))
+                            .collect::<Vec<_>>(),
+                    )?
+                    .distinct()?;
+                let frame = frame.join_on(source_keys, JoinType::LeftSemi, on.clone())?;
+                let overflow = Arc::new(AtomicBool::new(false));
+                let (frame, target_cols) =
+                    prefixed_target(frame, &target.plan, fanout, Arc::clone(&overflow))?;
+                self.correlate_fanout = Some(overflow);
+                let joined = source.join_on(frame, join_type, on)?;
+                let max_rows = scan.correlate_max_rows;
+                // Each source row keeps at most `fanout` matches.
+                let can_truncate = u64::try_from(source_rows)
+                    .unwrap_or(u64::MAX)
+                    .saturating_mul(fanout)
+                    > u64::try_from(max_rows).unwrap_or(u64::MAX);
+                return self.join_target_rows(joined, output, target_cols, max_rows, can_truncate);
             }
-            _ if join_type == JoinType::LeftSemi => source.limit(0, Some(0))?,
-            _ => source,
+            Some(frame) => source.join_on(frame.select(target_keys)?.distinct()?, join_type, on)?,
+            None if matches!(join_type, JoinType::LeftSemi | JoinType::Inner) => {
+                source.limit(0, Some(0))?
+            }
+            None => source,
         };
         Ok(joined
             .sort(vec![ident(CORRELATE_ROW).sort(true, false)])?
             .select(output)?)
     }
 
-    /// Resolve a `parent.<logical>` reference to the expression that reads
-    /// its value, once `correlate` has joined the relation (see
-    /// [`Self::lower_correlate`]) — a physical column, a promoted column
-    /// (coalesced with its attribute fallback, same as
-    /// [`Self::promoted_column_expr`]), or an attribute-container
-    /// extraction ([`Self::parent_attr_expr`]), all read against the
-    /// `parent.<physical>` columns the join produced rather than the
-    /// child's own. Returns the expression plus the field's canonical type
+    /// Finish an inner/left signal `correlate` over `joined` (the source rows
+    /// joined to the [`prefixed_target`] frame): the source's `output`
+    /// columns plus `target_cols`, in source row order then match order,
+    /// under the `correlate_max_rows` cap.
+    ///
+    /// The join holds at most source rows × `fanout` rows. When that can
+    /// exceed `max_rows` (`can_truncate`), the sort is limited to
+    /// `max_rows + 1` rows, a TopK that keeps up to that many joined rows in
+    /// memory without spilling; otherwise the sort runs unlimited (and may
+    /// spill), since the cap can never trigger.
+    fn join_target_rows(
+        &mut self,
+        joined: DataFrame,
+        mut output: Vec<Expr>,
+        target_cols: Vec<String>,
+        max_rows: usize,
+        can_truncate: bool,
+    ) -> Result<DataFrame, QuerierError> {
+        let mut sorted = joined.sort(vec![
+            ident(CORRELATE_ROW).sort(true, false),
+            ident(CORRELATE_RANK).sort(true, false),
+        ])?;
+        if can_truncate {
+            sorted = sorted.limit(0, Some(max_rows.saturating_add(1)))?;
+        }
+        output.extend(target_cols.iter().map(ident));
+        let truncated = Arc::new(AtomicBool::new(false));
+        let out = super::correlate_cap::wrap_with_cap(sorted, max_rows, Arc::clone(&truncated))?
+            .select(output)?;
+        self.schema_cols.extend(target_cols);
+        self.correlate_truncated = Some(truncated);
+        Ok(out)
+    }
+
+    /// Split a reference under the correlate scope into the scope and the
+    /// field name there; `None` for an unscoped name, or before `correlate`.
+    /// Once a scope exists it shadows any source attribute whose key starts
+    /// with its prefix (`parent.`, `<target>.`).
+    fn scoped<'n>(&self, logical: &'n str) -> Option<(&CorrelateScope<'a>, &'n str)> {
+        let scope = self.scope.as_ref()?;
+        logical
+            .strip_prefix(scope.prefix.as_str())
+            .map(|field| (scope, field))
+    }
+
+    /// Resolve a scoped reference (see [`Self::scoped`]) to the expression
+    /// that reads its value, once `correlate` has joined the relation — a
+    /// physical column, a promoted column (coalesced with its attribute
+    /// fallback, same as [`Self::promoted_column_expr`]), or an
+    /// attribute-container extraction, all read against the
+    /// `<prefix><physical>` columns the join produced rather than the
+    /// source's own. Returns the expression plus the field's canonical type
     /// and whether that type is advisory (mirrors
     /// [`Resolved::is_advisory_type`]).
-    fn parent_field(&self, stripped: &str) -> Result<(Expr, ValueType, bool), QuerierError> {
-        if !self.correlated {
-            return Err(QuerierError::InvalidInput(format!(
-                "field 'parent.{stripped}' has no canonical type"
-            )));
-        }
-        match self.resolver.resolve("", stripped) {
-            Some(Resolved::Column { name, value_type }) => Ok((
-                ident(format!("{PARENT_COLUMN_PREFIX}{name}")),
-                value_type,
-                false,
-            )),
+    fn scoped_field(
+        &self,
+        scope: &CorrelateScope<'_>,
+        field: &str,
+    ) -> Result<(Expr, ValueType, bool), QuerierError> {
+        let prefix = scope.prefix.as_str();
+        match scope.resolver.resolve("", field) {
+            Some(Resolved::Column { name, value_type }) => {
+                Ok((ident(format!("{prefix}{name}")), value_type, false))
+            }
             Some(Resolved::JsonPath {
                 key, value_type, ..
-            }) => Ok((self.parent_attr_expr(&key), value_type, true)),
+            }) => Ok((
+                self.attr_expr_in(scope.plan, &key, prefix),
+                value_type,
+                true,
+            )),
             Some(Resolved::PromotedColumn {
                 name,
                 key,
                 value_type,
-            }) => {
-                let parent_name = format!("{PARENT_COLUMN_PREFIX}{name}");
-                Ok((
-                    coalesce(vec![ident(parent_name), self.parent_attr_expr(&key)]),
-                    value_type,
-                    true,
-                ))
-            }
+            }) => Ok((
+                coalesce(vec![
+                    ident(format!("{prefix}{name}")),
+                    self.attr_expr_in(scope.plan, &key, prefix),
+                ]),
+                value_type,
+                true,
+            )),
             Some(Resolved::TypedAttribute {
                 homes,
                 promoted,
                 key,
                 value_type,
             }) => Ok((
-                self.typed_attribute_expr(&homes, &promoted, &key, PARENT_COLUMN_PREFIX),
+                self.typed_attribute_expr(&homes, &promoted, &key, prefix),
                 value_type,
                 false,
             )),
             _ => Err(QuerierError::InvalidInput(format!(
-                "field 'parent.{stripped}' is not yet supported by correlate"
+                "field '{prefix}{field}' is not yet supported by correlate"
             ))),
         }
-    }
-
-    /// Extract an attribute value from the parent side's containers,
-    /// mirroring [`Self::attr_expr`] but reading the `parent.<container>`
-    /// columns the join produced instead of the child's own.
-    fn parent_attr_expr(&self, key: &str) -> Expr {
-        self.attr_expr_with_prefix(key, PARENT_COLUMN_PREFIX)
     }
 
     /// Lower an `extract` stage: derive typed, query-local columns from the log
@@ -3039,10 +3221,11 @@ impl Lowering<'_> {
         let of = a.of.as_deref().ok_or_else(|| {
             QuerierError::InvalidInput(format!("aggregate '{}' requires a field", a.func.as_str()))
         })?;
-        if matches!(
-            self.resolver.resolve("", of),
-            Some(Resolved::TypedAttribute { .. })
-        ) {
+        let resolved = match self.scoped(of) {
+            Some((scope, field)) => scope.resolver.resolve("", field),
+            None => self.resolver.resolve("", of),
+        };
+        if matches!(resolved, Some(Resolved::TypedAttribute { .. })) {
             return self.value_expr(of);
         }
         Ok(cast(self.value_expr(of)?, DataType::Float64))
@@ -3054,8 +3237,8 @@ impl Lowering<'_> {
         if let Some(c) = self.col_of.get(logical) {
             return Ok(ident(c.clone()));
         }
-        if let Some(stripped) = logical.strip_prefix("parent.") {
-            let (expr, ..) = self.parent_field(stripped)?;
+        if let Some((scope, field)) = self.scoped(logical) {
+            let (expr, ..) = self.scoped_field(scope, field)?;
             return Ok(expr);
         }
         match self.resolver.resolve("", logical) {
@@ -3097,27 +3280,26 @@ impl Lowering<'_> {
     /// Extract an attribute value, coalescing over the source's containers that
     /// are present in the scanned schema.
     fn attr_expr(&self, key: &str) -> Expr {
-        self.attr_expr_with_prefix(key, "")
+        self.attr_expr_in(self.source, key, "")
     }
 
-    /// Shared implementation of [`Self::attr_expr`]/[`Self::parent_attr_expr`]:
-    /// extract an attribute value, coalescing over the source's containers
-    /// present in the scanned schema. `prefix` is empty for the child side
-    /// and [`PARENT_COLUMN_PREFIX`] for a `parent.`-scoped reference — the
+    /// Shared implementation of [`Self::attr_expr`]/[`Self::scoped_field`]:
+    /// extract an attribute value, coalescing over `plan`'s containers
+    /// present in the scanned schema. `prefix` is empty for the source side
+    /// and the correlate scope's prefix for a scoped reference — the
     /// container column addressed is `<prefix><container>` either way.
     /// Always built with `ident()`, never `col()`: a prefixed container
     /// name contains a `.` that must not be parsed as a qualifier, and an
     /// unprefixed name has no qualifier to parse regardless.
-    fn attr_expr_with_prefix(&self, key: &str, prefix: &str) -> Expr {
+    fn attr_expr_in(&self, plan: &SourcePlan, key: &str, prefix: &str) -> Expr {
         // An explicit container qualifier reads that container only. Checked
         // before the coalesce so `resource.x` and `log.x` stay distinguishable
         // when the same key exists at both scopes.
-        if let Some((container, bare)) = self.qualified_attr(key) {
+        if let Some((container, bare)) = strip_scope_qualifier(plan.attr_prefixes, key) {
             let container = format!("{prefix}{container}");
             return self.attr_expr_for_container(&container, bare);
         }
-        let mut parts: Vec<Expr> = self
-            .source
+        let mut parts: Vec<Expr> = plan
             .containers
             .iter()
             .map(|c| format!("{prefix}{c}"))
@@ -3192,7 +3374,7 @@ impl Lowering<'_> {
     /// there).
     fn promoted_typed_attribute(
         resolved: Option<Resolved>,
-        prefix: &'static str,
+        prefix: &str,
     ) -> Option<TypedAttrFilterParts> {
         match resolved {
             Some(Resolved::TypedAttribute {
@@ -3200,7 +3382,9 @@ impl Lowering<'_> {
                 promoted,
                 key,
                 ..
-            }) if promoted.iter().any(Option::is_some) => Some((homes, promoted, key, prefix)),
+            }) if promoted.iter().any(Option::is_some) => {
+                Some((homes, promoted, key, prefix.to_string()))
+            }
             _ => None,
         }
     }
@@ -3248,6 +3432,11 @@ impl Lowering<'_> {
     /// its `Resolved` in hand and calls [`Self::record_attr_demand`]
     /// directly.
     fn record_field_demand(&self, logical: &str) {
+        // Demand is recorded against the source signal, so a scoped name
+        // (another table's field) records none.
+        if self.scoped(logical).is_some() {
+            return;
+        }
         if let Some(resolved) = self.resolver.resolve("", logical) {
             self.record_attr_demand(&resolved);
         }
@@ -3262,12 +3451,6 @@ impl Lowering<'_> {
             lit(event_name.to_string()),
             lit(key.to_string()),
         ])
-    }
-
-    /// Split a container-qualified field into `(container column, bare key)`.
-    /// Returns `None` for an unqualified name, which coalesces instead.
-    fn qualified_attr<'f>(&self, field: &'f str) -> Option<(&'static str, &'f str)> {
-        strip_scope_qualifier(self.source.attr_prefixes, field)
     }
 
     fn lower_predicate(&self, pred: &Predicate) -> Result<Expr, QuerierError> {
@@ -3309,12 +3492,10 @@ impl Lowering<'_> {
                 .cloned()
                 .unwrap_or(ValueType::String);
             (false, ty, ident(alias.clone()), false, false, None)
-        } else if let Some(stripped) = leaf.field.strip_prefix("parent.") {
-            let (expr, ty, advisory) = self.parent_field(stripped)?;
-            let typed_attr = Self::promoted_typed_attribute(
-                self.resolver.resolve("", stripped),
-                PARENT_COLUMN_PREFIX,
-            );
+        } else if let Some((scope, field)) = self.scoped(&leaf.field) {
+            let (expr, ty, advisory) = self.scoped_field(scope, field)?;
+            let typed_attr =
+                Self::promoted_typed_attribute(scope.resolver.resolve("", field), &scope.prefix);
             (advisory, ty, expr, false, advisory, typed_attr)
         } else {
             let resolved = self.resolver.resolve("", &leaf.field).ok_or_else(|| {
@@ -3589,6 +3770,26 @@ impl Lowering<'_> {
         }
     }
 
+    /// `plan`'s default `rows` columns present as `<prefix><column>`. A typed
+    /// container has no scanned column under its own name (it's five typed
+    /// columns instead) — the same `attribute_bag_expr` an explicit
+    /// `{scope}.attributes` projection uses, aliased back to the container's
+    /// usual name.
+    fn row_default_exprs(&self, plan: &SourcePlan, prefix: &str) -> Vec<Expr> {
+        plan.row_defaults
+            .iter()
+            .map(|c| format!("{prefix}{c}"))
+            .filter(|c| self.schema_cols.contains(c) || self.is_typed_container(c))
+            .map(|c| {
+                if self.is_typed_container(&c) {
+                    attribute_bag_expr(&c).alias(c)
+                } else {
+                    self.column_projection_expr(&c)
+                }
+            })
+            .collect()
+    }
+
     fn apply_projection(&self, df: DataFrame, doc: &Document) -> Result<DataFrame, QuerierError> {
         // Series results are already shaped by the step aggregate. Flamegraph
         // is decoded from the full unprojected row set (samples_json/
@@ -3604,15 +3805,14 @@ impl Lowering<'_> {
             Some(fields) => fields
                 .iter()
                 .map(|f| {
-                    if self.aggregated || self.col_of.contains_key(f) {
+                    Ok(if self.col_of.contains_key(f) {
                         // Aggregate output or extract-derived column.
                         ident(self.df_col(f))
-                    } else if let Some(stripped) = f.strip_prefix("parent.") {
-                        let expr = self
-                            .parent_field(stripped)
-                            .map(|(expr, ..)| expr)
-                            .unwrap_or_else(|_| ident(safe_ident(f)));
+                    } else if let Some((scope, field)) = self.scoped(f) {
+                        let (expr, ..) = self.scoped_field(scope, field)?;
                         expr.alias(safe_ident(f))
+                    } else if self.aggregated {
+                        ident(self.df_col(f))
                     } else {
                         match self.resolver.resolve("", f) {
                             Some(Resolved::Column { name, .. }) => {
@@ -3650,43 +3850,50 @@ impl Lowering<'_> {
                                 .alias(safe_ident(f)),
                             None => ident(safe_ident(f)),
                         }
-                    }
+                    })
                 })
-                .collect(),
+                .collect::<Result<_, QuerierError>>()?,
+            // A `table` default is the (already-curated) aggregate output,
+            // plus a signal target's row defaults when a correlate joined
+            // it after the aggregate.
             None if self.aggregated => {
-                // A `table` default is the (already-curated) aggregate output.
-                return Ok(df);
+                let Some(scope) = self.scope.as_ref().filter(|scope| {
+                    scope.prefix != PARENT_COLUMN_PREFIX
+                        && df
+                            .schema()
+                            .fields()
+                            .iter()
+                            .any(|f| f.name().starts_with(&scope.prefix))
+                }) else {
+                    return Ok(df);
+                };
+                let mut projection: Vec<Expr> = df
+                    .schema()
+                    .fields()
+                    .iter()
+                    .filter(|f| !f.name().starts_with(&scope.prefix))
+                    .map(|f| ident(f.name()))
+                    .collect();
+                projection.extend(self.row_default_exprs(scope.plan, &scope.prefix));
+                projection
             }
             None => {
-                // A typed container in `row_defaults` has no scanned column
-                // under its own name (it's five typed columns instead) — the
-                // same `attribute_bag_expr` an explicit `{scope}.attributes`
-                // projection uses, aliased back to the container's usual name.
-                let mut projection: Vec<Expr> = self
-                    .source
-                    .row_defaults
-                    .iter()
-                    .filter(|c| {
-                        self.schema_cols.iter().any(|s| s == *c) || self.is_typed_container(c)
-                    })
-                    .map(|c| {
-                        if self.is_typed_container(c) {
-                            attribute_bag_expr(c).alias(*c)
-                        } else {
-                            self.column_projection_expr(c)
-                        }
-                    })
-                    .collect();
-                // A `correlate` join adds the parent side's columns to the
+                let mut projection = self.row_default_exprs(self.source, "");
+                // A `correlate` join adds the far side's columns to the
                 // default `rows` projection too — otherwise a client that
-                // never named `fields` would see only the child.
-                if self.correlated {
-                    projection.extend(
+                // never named `fields` would see only the source: every
+                // parent column, or a signal target's own row defaults.
+                match &self.scope {
+                    Some(scope) if scope.prefix == PARENT_COLUMN_PREFIX => projection.extend(
                         self.schema_cols
                             .iter()
                             .filter(|c| c.starts_with(PARENT_COLUMN_PREFIX))
                             .map(|c| ident(c.clone())),
-                    );
+                    ),
+                    Some(scope) => {
+                        projection.extend(self.row_default_exprs(scope.plan, &scope.prefix))
+                    }
+                    None => {}
                 }
                 projection
             }
@@ -10190,8 +10397,9 @@ mod tests {
                     col_of: HashMap::new(),
                     derived_types: HashMap::new(),
                     schema_cols,
-                    correlated: false,
+                    scope: None,
                     correlate_truncated: None,
+                    correlate_fanout: None,
                     correlate_window: None,
                 };
                 let child_df = no_parent_ctx.read_batches(child_batches).unwrap();
@@ -10208,6 +10416,7 @@ mod tests {
                     dataset_slug: "d",
                     window: &window,
                     correlate_max_rows: 100,
+                    correlate_max_source_rows: 100,
                 };
                 let out = lowering
                     .lower_correlate(&no_parent_ctx, child_df, &correlate, scan)
@@ -10360,8 +10569,13 @@ mod tests {
         format!("{n:032x}")
     }
 
+    /// Several partitions and tiny batches, so a plan that loses its row
+    /// order shows it.
     fn catalog_ctx(tables: Vec<(&str, RecordBatch)>) -> SessionContext {
-        register_catalog(SessionContext::new(), tables)
+        let config = datafusion::prelude::SessionConfig::new()
+            .with_target_partitions(4)
+            .with_batch_size(2);
+        register_catalog(SessionContext::new_with_config(config), tables)
     }
 
     fn register_catalog(ctx: SessionContext, tables: Vec<(&str, RecordBatch)>) -> SessionContext {
@@ -11070,6 +11284,544 @@ mod tests {
             matches!(err, QuerierError::InvalidInput(ref m) if m.contains("__correlate_key_0")),
             "{err:?}"
         );
+    }
+
+    // otel-native-schema layer 9 — inner/left correlate to a signal target.
+
+    type LogRow = (u8, i64, i64, &'static str, &'static str);
+
+    /// Logs of traces 1, 2 and 4 (five for trace 4, none for trace 3) plus
+    /// one for trace 9, which is not in the source. Unsorted on purpose.
+    const TRACE_LOGS: &[LogRow] = &[
+        (1, 120, 17, "ERROR", "t1 boom"),
+        (1, 110, 9, "INFO", "t1 start"),
+        (2, 210, 9, "INFO", "t2 ok"),
+        (4, 450, 9, "INFO", "t4 e"),
+        (4, 410, 17, "ERROR", "t4 a"),
+        (4, 430, 9, "INFO", "t4 c"),
+        (4, 420, 9, "INFO", "t4 b"),
+        (4, 440, 17, "ERROR", "t4 d"),
+        (9, 150, 17, "ERROR", "t9"),
+    ];
+
+    /// `rows` as a logs table; `body` is stored JSON-encoded, as ingest
+    /// writes it, and `binary` stores `trace_id` as raw bytes.
+    fn enriched_ctx(rows: &[LogRow], binary: bool) -> SessionContext {
+        catalog_ctx(vec![
+            ("traces", signal_traces(false)),
+            ("logs", enriched_logs(rows, binary)),
+        ])
+    }
+
+    fn enriched_logs(rows: &[LogRow], binary: bool) -> RecordBatch {
+        let trace_id: ArrayRef = if binary {
+            Arc::new(datafusion::arrow::array::BinaryArray::from_iter_values(
+                rows.iter().map(|r| {
+                    let mut b = vec![0u8; 16];
+                    b[15] = r.0;
+                    b
+                }),
+            ))
+        } else {
+            Arc::new(StringArray::from_iter_values(
+                rows.iter().map(|r| hex_id(r.0)),
+            ))
+        };
+        RecordBatch::try_from_iter(vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from_iter_values(
+                    rows.iter().map(|r| r.1),
+                )) as ArrayRef,
+            ),
+            ("trace_id", trace_id),
+            (
+                "severity_number",
+                Arc::new(Int64Array::from_iter_values(rows.iter().map(|r| r.2))),
+            ),
+            (
+                "severity_text",
+                Arc::new(StringArray::from_iter_values(rows.iter().map(|r| r.3))),
+            ),
+            (
+                "body",
+                Arc::new(StringArray::from_iter_values(
+                    rows.iter().map(|r| serde_json::json!(r.4).to_string()),
+                )),
+            ),
+            (
+                "resource_identity",
+                Arc::new(StringArray::from(vec!["r1"; rows.len()])),
+            ),
+        ])
+        .unwrap()
+    }
+
+    fn traces_params(result: &str, pipeline: serde_json::Value) -> IrQueryParams {
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 11, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": result, "pipeline": pipeline
+            }),
+            now_ns: 0,
+        }
+    }
+
+    /// Runs `params` and returns `columns` of every row as text, sorted.
+    async fn correlated_rows(
+        ctx: SessionContext,
+        params: &IrQueryParams,
+        columns: &[&str],
+    ) -> (Vec<Vec<Option<String>>>, CorrelateReport) {
+        let (mut rows, report) = ordered_rows(ctx, params, columns).await;
+        rows.sort();
+        (rows, report)
+    }
+
+    /// Like [`correlated_rows`], in result order.
+    async fn ordered_rows(
+        ctx: SessionContext,
+        params: &IrQueryParams,
+        columns: &[&str],
+    ) -> (Vec<Vec<Option<String>>>, CorrelateReport) {
+        let (batches, _, report) = IrService::new(ctx).query(params, "t", "d").await.unwrap();
+        let mut rows = Vec::new();
+        for batch in &batches {
+            let cols: Vec<StringArray> = columns
+                .iter()
+                .map(|name| {
+                    let col = batch
+                        .column_by_name(name)
+                        .unwrap_or_else(|| panic!("no column {name}: {:?}", batch.schema()));
+                    let col = datafusion::arrow::compute::cast(col, &DataType::Utf8).unwrap();
+                    col.as_string::<i32>().clone()
+                })
+                .collect();
+            for i in 0..batch.num_rows() {
+                rows.push(
+                    cols.iter()
+                        .map(|c| c.is_valid(i).then(|| c.value(i).to_string()))
+                        .collect(),
+                );
+            }
+        }
+        (rows, report)
+    }
+
+    fn log_row(trace: u8, body: Option<&str>) -> Vec<Option<String>> {
+        vec![Some(hex_id(trace)), body.map(str::to_string)]
+    }
+
+    fn inner_logs(extra: serde_json::Value) -> serde_json::Value {
+        let mut correlate = serde_json::json!({ "to": "logs", "on": "trace_id", "kind": "inner" });
+        correlate
+            .as_object_mut()
+            .unwrap()
+            .extend(extra.as_object().unwrap().clone());
+        serde_json::json!({ "correlate": correlate })
+    }
+
+    fn trace_is(n: u8) -> serde_json::Value {
+        serde_json::json!({ "where": { "field": "trace_id", "op": "eq", "value": hex_id(n) } })
+    }
+
+    #[tokio::test]
+    async fn inner_returns_the_logs_of_the_slowest_traces() {
+        let params = traces_params(
+            "table",
+            serde_json::json!([
+                { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration", "as": "slowest" }] } },
+                { "topk": { "n": 2, "of": "slowest" } },
+                inner_logs(serde_json::json!({}))
+            ]),
+        );
+        let (rows, report) = correlated_rows(
+            enriched_ctx(TRACE_LOGS, false),
+            &params,
+            &["trace_id", "logs.body"],
+        )
+        .await;
+        let expected: Vec<_> = [
+            (1, "t1 boom"),
+            (1, "t1 start"),
+            (4, "t4 a"),
+            (4, "t4 b"),
+            (4, "t4 c"),
+            (4, "t4 d"),
+            (4, "t4 e"),
+        ]
+        .map(|(t, b)| log_row(t, Some(b)))
+        .to_vec();
+        assert_eq!(rows, expected);
+        assert!(!report.fanout_limit);
+    }
+
+    /// Matches tied on time are cut by the remaining scalar columns; a full
+    /// tie (identical scalar columns) keeps `fanout` of the identical rows.
+    #[tokio::test]
+    async fn fanout_ties_are_cut_deterministically() {
+        let on_time: &[LogRow] = &[
+            (4, 410, 9, "INFO", "c"),
+            (4, 410, 9, "INFO", "a"),
+            (4, 410, 9, "INFO", "b"),
+        ];
+        let full: &[LogRow] = &[(4, 410, 9, "INFO", "x"); 3];
+        let params = traces_params(
+            "rows",
+            serde_json::json!([trace_is(4), inner_logs(serde_json::json!({ "fanout": 2 }))]),
+        );
+        for (logs, kept) in [(on_time, ["a", "b"]), (full, ["x", "x"])] {
+            for _ in 0..2 {
+                let (rows, report) = correlated_rows(
+                    enriched_ctx(logs, false),
+                    &params,
+                    &["trace_id", "logs.body"],
+                )
+                .await;
+                assert_eq!(rows, kept.map(|b| log_row(4, Some(b))).to_vec());
+                assert!(report.fanout_limit);
+            }
+        }
+    }
+
+    /// Output follows the source order, then each row's match order, across
+    /// partitions and a later `where`.
+    #[tokio::test]
+    async fn output_keeps_source_order_then_match_order() {
+        let params = traces_params(
+            "rows",
+            serde_json::json!([
+                { "order": [{ "of": "trace_id", "dir": "asc" }] },
+                inner_logs(serde_json::json!({ "kind": "left" })),
+                { "where": { "field": "service.name", "op": "eq", "value": "web" } }
+            ]),
+        );
+        let (rows, _) = ordered_rows(
+            enriched_ctx(TRACE_LOGS, false),
+            &params,
+            &["trace_id", "logs.body"],
+        )
+        .await;
+        let expected = [
+            (1, Some("t1 start")),
+            (1, Some("t1 boom")),
+            (2, Some("t2 ok")),
+            (3, None),
+            (4, Some("t4 a")),
+            (4, Some("t4 b")),
+            (4, Some("t4 c")),
+            (4, Some("t4 d")),
+            (4, Some("t4 e")),
+        ]
+        .map(|(t, b)| log_row(t, b))
+        .to_vec();
+        assert_eq!(rows, expected);
+    }
+
+    /// A `table` after aggregate → correlate shows the aggregate output plus
+    /// the target's row defaults, not every raw target column.
+    #[tokio::test]
+    async fn aggregated_source_default_projection_uses_target_row_defaults() {
+        let params = traces_params(
+            "table",
+            serde_json::json!([
+                { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration", "as": "slowest" }] } },
+                inner_logs(serde_json::json!({}))
+            ]),
+        );
+        let (batches, _, _) = IrService::new(enriched_ctx(TRACE_LOGS, false))
+            .query(&params, "t", "d")
+            .await
+            .unwrap();
+        let schema = batches[0].schema();
+        let names: Vec<_> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            [
+                "trace_id",
+                "slowest",
+                "logs.timestamp",
+                "logs.body",
+                "logs.severity_text",
+                "logs.severity_number",
+                "logs.trace_id"
+            ]
+        );
+    }
+
+    /// A missing target table yields the same target columns, all null: a
+    /// left join keeps the source rows, an inner join none.
+    #[tokio::test]
+    async fn a_missing_target_table_keeps_the_target_columns() {
+        let ctx = || catalog_ctx(vec![("traces", signal_traces(false))]);
+        let left = traces_params(
+            "rows",
+            serde_json::json!([
+                trace_is(3),
+                inner_logs(serde_json::json!({ "kind": "left" }))
+            ]),
+        );
+        let (rows, _) = correlated_rows(ctx(), &left, &["trace_id", "logs.body"]).await;
+        assert_eq!(rows, vec![log_row(3, None)]);
+        let inner = doc(traces_params(
+            "rows",
+            serde_json::json!([inner_logs(serde_json::json!({}))]),
+        )
+        .document);
+        let (df, _) = IrService::new(ctx())
+            .plan(&inner, "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(df.schema().has_column_with_unqualified_name("logs.body"));
+        assert_eq!(df.count().await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn an_unsupported_target_field_kind_is_invalid_input() {
+        let traces = signal_traces(false);
+        let events: ArrayRef = Arc::new(StringArray::from(vec![None::<&str>; 4]));
+        let mut columns = traces.columns().to_vec();
+        columns.push(events);
+        let mut fields = traces.schema().fields().to_vec();
+        fields.push(Arc::new(Field::new("events", DataType::Utf8, true)));
+        let traces = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
+        let logs = enriched_ctx(TRACE_LOGS, false)
+            .table("t.d.logs")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap()
+            .remove(0);
+        let ctx = catalog_ctx(vec![("traces", traces), ("logs", logs)]);
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 11, "from": "logs", "range": { "from": 0, "to": 1000 },
+                "result": "rows", "fields": ["traces.span_events"],
+                "pipeline": [{ "correlate": { "to": "traces", "on": "trace_id", "kind": "inner" } }]
+            }),
+            now_ns: 0,
+        };
+        let err = IrService::new(ctx)
+            .query(&params, "t", "d")
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(err, QuerierError::InvalidInput(ref m) if m.contains("traces.span_events")),
+            "{err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn left_fanout_never_drops_an_unmatched_source_row() {
+        let params = traces_params(
+            "rows",
+            serde_json::json!([inner_logs(
+                serde_json::json!({ "kind": "left", "fanout": 1 })
+            )]),
+        );
+        let (rows, report) = correlated_rows(
+            enriched_ctx(TRACE_LOGS, false),
+            &params,
+            &["trace_id", "logs.body"],
+        )
+        .await;
+        assert_eq!(
+            rows,
+            vec![
+                log_row(1, Some("t1 start")),
+                log_row(2, Some("t2 ok")),
+                log_row(3, None),
+                log_row(4, Some("t4 a")),
+            ]
+        );
+        assert!(report.fanout_limit);
+    }
+
+    #[tokio::test]
+    async fn where_on_a_target_field_after_the_join() {
+        let params = traces_params(
+            "rows",
+            serde_json::json!([
+                inner_logs(serde_json::json!({})),
+                { "where": { "field": "logs.severity_number", "op": "gte", "value": 17 } }
+            ]),
+        );
+        let (rows, _) = correlated_rows(
+            enriched_ctx(TRACE_LOGS, false),
+            &params,
+            &["trace_id", "logs.body"],
+        )
+        .await;
+        assert_eq!(
+            rows,
+            vec![
+                log_row(1, Some("t1 boom")),
+                log_row(4, Some("t4 a")),
+                log_row(4, Some("t4 d")),
+            ]
+        );
+    }
+
+    #[tokio::test]
+    async fn aggregate_by_a_target_field_after_the_join() {
+        let params = traces_params(
+            "table",
+            serde_json::json!([
+                inner_logs(serde_json::json!({})),
+                { "aggregate": { "by": ["logs.severity_text"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]),
+        );
+        let (rows, _) = correlated_rows(
+            enriched_ctx(TRACE_LOGS, false),
+            &params,
+            &["logs_severity_text", "n"],
+        )
+        .await;
+        let expected: Vec<Vec<Option<String>>> = [["ERROR", "3"], ["INFO", "5"]]
+            .map(|r| r.map(|v| Some(v.to_string())).to_vec())
+            .to_vec();
+        assert_eq!(rows, expected);
+    }
+
+    /// One source trace joined to its logs: `left` keeps a trace without
+    /// logs with null target fields, `fanout` keeps the earliest matches and
+    /// reports only a real overflow, and a Binary-encoded target key joins.
+    #[tokio::test]
+    async fn one_trace_joined_to_its_logs() {
+        let cases: [(u8, bool, serde_json::Value, &[&str], bool); 5] = [
+            (3, false, serde_json::json!({ "kind": "left" }), &[], false),
+            (
+                4,
+                false,
+                serde_json::json!({ "fanout": 2 }),
+                &["t4 a", "t4 b"],
+                true,
+            ),
+            (
+                1,
+                false,
+                serde_json::json!({ "fanout": 2 }),
+                &["t1 boom", "t1 start"],
+                false,
+            ),
+            (
+                1,
+                true,
+                serde_json::json!({}),
+                &["t1 boom", "t1 start"],
+                false,
+            ),
+            (4, true, serde_json::json!({ "fanout": 1 }), &["t4 a"], true),
+        ];
+        for (trace, binary, extra, bodies, fanout_limit) in cases {
+            let params = traces_params(
+                "rows",
+                serde_json::json!([trace_is(trace), inner_logs(extra)]),
+            );
+            let (rows, report) = correlated_rows(
+                enriched_ctx(TRACE_LOGS, binary),
+                &params,
+                &["trace_id", "logs.body"],
+            )
+            .await;
+            let expected: Vec<_> = if bodies.is_empty() {
+                vec![log_row(trace, None)]
+            } else {
+                bodies.iter().map(|b| log_row(trace, Some(b))).collect()
+            };
+            assert_eq!(rows, expected, "trace {trace} binary={binary}");
+            assert_eq!(report.fanout_limit, fanout_limit, "trace {trace}");
+        }
+    }
+
+    /// With the (trace_id, span_id) key, a target pair no source row holds
+    /// still passes the per-field key bound; it must not count toward the
+    /// fan-out overflow.
+    #[tokio::test]
+    async fn fanout_on_the_pair_key_counts_only_source_pairs() {
+        let logs = RecordBatch::try_from_iter(vec![
+            (
+                "timestamp",
+                Arc::new(TimestampNanosecondArray::from(vec![150_i64, 160, 170])) as ArrayRef,
+            ),
+            ("trace_id", Arc::new(StringArray::from(vec![hex_id(1); 3]))),
+            (
+                "span_id",
+                Arc::new(StringArray::from(vec!["s1", "s2", "s2"])),
+            ),
+            (
+                "body",
+                Arc::new(StringArray::from(vec!["\"a\"", "\"b\"", "\"c\""])),
+            ),
+        ])
+        .unwrap();
+        let ctx = catalog_ctx(vec![("traces", signal_traces(false)), ("logs", logs)]);
+        let params = traces_params(
+            "rows",
+            serde_json::json!([
+                { "where": { "field": "trace_id", "op": "in", "value": [hex_id(1), hex_id(2)] } },
+                inner_logs(serde_json::json!({ "on": "span_id", "fanout": 1 }))
+            ]),
+        );
+        let (rows, report) = correlated_rows(ctx, &params, &["trace_id", "logs.body"]).await;
+        assert_eq!(rows, vec![log_row(1, Some("a"))]);
+        assert!(!report.fanout_limit);
+    }
+
+    /// Source rows whose key is null or empty never match: left keeps them
+    /// with null target fields, inner drops them.
+    #[tokio::test]
+    async fn inner_and_left_with_only_null_or_empty_source_keys() {
+        let ctx = || {
+            catalog_ctx(vec![
+                (
+                    "traces",
+                    spans(&[(None, "s1", 100, 10), (Some(""), "s2", 200, 10)]),
+                ),
+                ("logs", enriched_logs(TRACE_LOGS, false)),
+            ])
+        };
+        let left = traces_params(
+            "rows",
+            serde_json::json!([inner_logs(serde_json::json!({ "kind": "left" }))]),
+        );
+        let (rows, _) = correlated_rows(ctx(), &left, &["trace_id", "logs.body"]).await;
+        assert_eq!(
+            rows,
+            vec![vec![None, None], vec![Some(String::new()), None]]
+        );
+        let inner = traces_params(
+            "rows",
+            serde_json::json!([inner_logs(serde_json::json!({}))]),
+        );
+        let (rows, _) = correlated_rows(ctx(), &inner, &["trace_id", "logs.body"]).await;
+        assert!(rows.is_empty(), "{rows:?}");
+    }
+
+    /// A missing target table on the `resource_identity` key: the key's
+    /// stored column comes from the canonical schema, so left keeps every
+    /// source row and anti keeps them all.
+    #[tokio::test]
+    async fn a_missing_target_table_on_resource_identity() {
+        let ctx = || catalog_ctx(vec![("logs", enriched_logs(TRACE_LOGS, false))]);
+        for kind in ["left", "anti"] {
+            let params = IrQueryParams {
+                document: serde_json::json!({
+                    "irVersion": 11, "from": "logs", "range": { "from": 0, "to": 1000 },
+                    "result": "rows",
+                    "pipeline": [{ "correlate": { "to": "traces", "on": "resource_identity", "kind": kind } }]
+                }),
+                now_ns: 0,
+            };
+            let (batches, _, _) = IrService::new(ctx())
+                .query(&params, "t", "d")
+                .await
+                .unwrap();
+            let rows: usize = batches.iter().map(RecordBatch::num_rows).sum();
+            assert_eq!(rows, TRACE_LOGS.len(), "{kind}");
+        }
     }
 
     /// Like [`traces_ctx`], plus the `events` column: three spans, one
