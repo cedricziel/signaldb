@@ -6029,6 +6029,38 @@ mod tests {
         }
     }
 
+    /// A group mixing explicit and exponential histograms cannot merge; the
+    /// `InvalidInput` raised inside execution stays a caller error (400).
+    #[tokio::test]
+    async fn mixing_explicit_and_exponential_histograms_is_invalid_input() {
+        let rows: &[(&str, i64, &[i64])] = &[("a", 10, &[1, 1, 0, 0])];
+        let explicit = histogram_points("histogram", rows);
+        let exp = histogram_points("exponential_histogram", &[("b", 10, &[1, 1])]);
+        let batch =
+            datafusion::arrow::compute::concat_batches(&explicit.schema(), [&explicit, &exp])
+                .unwrap();
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 10, "from": "metrics", "result": "series",
+                "range": { "from": 1000, "to": 1000 },
+                "pipeline": [{ "histogram_fraction": {
+                    "lower": 0, "upper": 3, "step": "1us", "mode": "instant",
+                    "lookback": "5m", "as": "f"
+                } }]
+            }),
+            now_ns: 0,
+        };
+        let err = IrService::new(points_ctx(batch))
+            .query(&params, "t", "d")
+            .await
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("cannot be merged")),
+            "{err:?}"
+        );
+    }
+
     /// `irVersion` 10 histogram shapes validate but are refused before any
     /// scan until their lowering lands.
     #[tokio::test]
