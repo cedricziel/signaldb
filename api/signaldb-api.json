@@ -7109,7 +7109,7 @@
               },
               {
                 "$ref": "#/components/schemas/AttributeLevel",
-                "description": "The OTel attribute level, when known. Statistics carry no level, so an\nobserved key reports `null` rather than a guess."
+                "description": "The OTel attribute level, when known. Statistics carry no level, so an\nobserved key the type authority has not typed reports `null` rather\nthan a guess."
               }
             ]
           },
@@ -7123,7 +7123,7 @@
           },
           "type": {
             "$ref": "#/components/schemas/LogicalType",
-            "description": "The canonical value type a literal is coerced to."
+            "description": "The canonical value type a literal is coerced to: the type\nauthority's for an attribute it has typed, else the registry's, else\nstring."
           }
         }
       },
@@ -7884,7 +7884,8 @@
         "enum": [
           "declared",
           "registry",
-          "observed"
+          "observed",
+          "authority"
         ]
       },
       "Filterability": {

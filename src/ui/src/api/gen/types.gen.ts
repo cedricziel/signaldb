@@ -663,7 +663,9 @@ export type DiscoveredField = {
      */
     origin: FieldOrigin;
     /**
-     * The canonical value type a literal is coerced to.
+     * The canonical value type a literal is coerced to: the type
+     * authority's for an attribute it has typed, else the registry's, else
+     * string.
      */
     type: LogicalType;
 };
@@ -994,7 +996,7 @@ export type EvaluatorSummary = {
 /**
  * Which metadata tier a discovered item came from.
  */
-export type FieldOrigin = 'declared' | 'registry' | 'observed';
+export type FieldOrigin = 'declared' | 'registry' | 'observed' | 'authority';
 
 /**
  * Whether predicates may address a field.
