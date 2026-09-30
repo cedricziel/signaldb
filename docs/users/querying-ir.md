@@ -1064,7 +1064,8 @@ The result is labelled by the group, except `topk`/`bottomk`, which keep the
 k largest (smallest) series of each group with all their labels (`NaN` ranks
 last; ties by label set). `min`/`max` ignore `NaN` unless every value is
 `NaN`; `stddev`/`stdvar` are the population deviation/variance; `quantile`
-interpolates linearly between the closest ranks. `count_values` counts the
+interpolates linearly between the closest ranks, `NaN` ranking lowest (as
+in Prometheus, so `quantile(1, …)` of `1`, `2`, `NaN` is `2`). `count_values` counts the
 series per distinct value, the value written to `label` as Prometheus prints
 it (`1`, `0.5`, `+Inf`, `NaN`).
 

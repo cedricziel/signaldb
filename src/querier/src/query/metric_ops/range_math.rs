@@ -215,10 +215,21 @@ pub(crate) fn quantile(q: f64, mut vals: Vec<f64>) -> f64 {
     if q > 1.0 {
         return f64::INFINITY;
     }
-    vals.sort_by(f64::total_cmp);
+    // Prometheus ranks NaN below every number: NaNs first, then the rest.
+    let mut nans = 0;
+    for i in 0..vals.len() {
+        if vals[i].is_nan() {
+            vals.swap(i, nans);
+            nans += 1;
+        }
+    }
+    vals[nans..].sort_unstable_by(f64::total_cmp);
+    // Prometheus's interpolation, so an infinite bound stays infinite.
     let rank = q * (vals.len() - 1) as f64;
-    let (lo, hi) = (rank.floor() as usize, rank.ceil() as usize);
-    vals[lo] + (vals[hi] - vals[lo]) * (rank - lo as f64)
+    let lo = rank.floor() as usize;
+    let hi = (lo + 1).min(vals.len() - 1);
+    let weight = rank - rank.floor();
+    vals[lo] * (1.0 - weight) + vals[hi] * weight
 }
 
 /// Least-squares slope in units per second.
@@ -241,6 +252,23 @@ fn deriv(pts: &[Pt]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn quantile_ranks_nan_lowest_as_prometheus_does() {
+        assert_eq!(quantile(1.0, vec![1.0, f64::NAN, 2.0]), 2.0);
+        assert_eq!(quantile(0.5, vec![3.0, f64::NAN, 1.0]), 1.0);
+        assert!(quantile(0.0, vec![1.0, -f64::NAN, 2.0]).is_nan());
+    }
+
+    #[test]
+    fn quantile_interpolates_as_prometheus_does() {
+        assert_eq!(
+            quantile(0.0, vec![f64::NEG_INFINITY, 1.0]),
+            f64::NEG_INFINITY
+        );
+        assert_eq!(quantile(1.0, vec![1.0, 2.0]), 2.0);
+        assert_eq!(quantile(0.25, vec![1.0, 2.0, 3.0]), 1.5);
+    }
 
     const S: i64 = 1_000_000_000;
 
