@@ -597,6 +597,7 @@ impl QuerierFlightService {
         let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
+            .with_correlate_max_source_rows(limits.correlate_max_source_rows)
             .with_graph_max_nodes(limits.graph_max_nodes);
 
         Self {
@@ -683,6 +684,7 @@ impl QuerierFlightService {
         let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
         let mut ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
+            .with_correlate_max_source_rows(limits.correlate_max_source_rows)
             .with_graph_max_nodes(limits.graph_max_nodes);
         // Only meaningful with a database tenant source attached — without
         // one, a typed-layout table's query fails loudly instead of
@@ -2363,6 +2365,9 @@ pub(crate) fn common_error_status(
     match err {
         crate::query::error::QuerierError::InvalidInput(msg) => Ok(Status::invalid_argument(msg)),
         crate::query::error::QuerierError::Unsupported(msg) => Ok(Status::unimplemented(msg)),
+        crate::query::error::QuerierError::ResourceExhausted(msg) => {
+            Ok(Status::resource_exhausted(msg))
+        }
         other => Err(other),
     }
 }
@@ -3754,5 +3759,10 @@ mod tests {
         let status =
             querier_error_to_status(SIGNAL_LOGS)(QuerierError::Unsupported("nope".to_string()));
         assert_eq!(status.code(), tonic::Code::Unimplemented);
+
+        let status = querier_error_to_status(SIGNAL_QUERY_IR)(QuerierError::ResourceExhausted(
+            "too big".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
     }
 }

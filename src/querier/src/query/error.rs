@@ -11,6 +11,8 @@ pub enum QuerierError {
     InvalidInput(String),
     #[error("Unsupported query feature: {0}")]
     Unsupported(String),
+    #[error("Query exceeds a resource bound: {0}")]
+    ResourceExhausted(String),
 }
 
 /// Finds a caller error an operator raised inside execution
