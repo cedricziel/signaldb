@@ -2,7 +2,7 @@
 //! instant — the `scalar`/`vector` stages and the `time`/`constant`
 //! pseudo-sources.
 
-use common::query_ir::{Document, InMemoryResolver, SourceRegistry, Stage, validate};
+use common::query_ir::{Document, InMemoryResolver, SourceRegistry, validate};
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::common::JoinType;
 use datafusion::functions_aggregate::expr_fn::{count, max};
@@ -91,16 +91,13 @@ pub(crate) fn plan_pseudo_source(
     };
     let mut df =
         instants(ctx, window, step_ns)?.select(vec![col("bucket"), value.alias("value")])?;
+    let env = super::FrameEnv {
+        ctx,
+        window,
+        step_ns: Some(step_ns),
+    };
     for stage in &doc.pipeline {
-        df = match stage {
-            Stage::Vector(_) => to_vector(df)?,
-            other => {
-                return Err(QuerierError::Unsupported(format!(
-                    "{} stage over a pseudo-source is not supported yet",
-                    other.name()
-                )));
-            }
-        };
+        df = super::lower_stage(df, stage, &env)?;
     }
     super::sort_frame(df)
 }

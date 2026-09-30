@@ -1056,7 +1056,6 @@ fn is_series_algebra(stage: &Stage) -> bool {
         stage,
         Stage::Reduce(_)
             | Stage::Map(_)
-            | Stage::Labels(_)
             | Stage::Filter(_)
             | Stage::Sort(_)
             | Stage::Absent(_)
@@ -1220,14 +1219,14 @@ pub(crate) async fn plan_document(
                 series_step = Some(step_ns);
                 df
             }
-            // Only `sample` records the step `scalar` evaluates on.
-            Stage::Scalar(_) => {
-                let step_ns = series_step.ok_or_else(|| {
-                    QuerierError::Unsupported("scalar over a non-sampled Series".into())
-                })?;
-                metric_series::scalar::to_scalar(ctx, df, window, step_ns)?
+            Stage::Scalar(_) | Stage::Vector(_) | Stage::Labels(_) => {
+                let env = metric_series::FrameEnv {
+                    ctx,
+                    window,
+                    step_ns: series_step,
+                };
+                metric_series::lower_stage(df, stage, &env)?
             }
-            Stage::Vector(_) => metric_series::scalar::to_vector(df)?,
             // Needs the resolved window for its evaluation instants.
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {

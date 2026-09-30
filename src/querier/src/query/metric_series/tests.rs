@@ -218,7 +218,7 @@ fn sample_doc(from: i64, to: i64, sample: JsonValue) -> JsonValue {
 }
 
 /// `(bucket seconds, labels, value)` rows of a Series frame.
-fn series_rows(batch: &RecordBatch) -> Vec<(i64, String, f64)> {
+pub(super) fn series_rows(batch: &RecordBatch) -> Vec<(i64, String, f64)> {
     let names: Vec<_> = batch
         .schema()
         .fields()
@@ -360,7 +360,7 @@ async fn offset_shifts_the_read_window_and_at_pins_it() {
 }
 
 /// `(bucket seconds, value)` rows of a Scalar frame.
-fn scalar_rows(batch: &RecordBatch) -> Vec<(i64, f64)> {
+pub(super) fn scalar_rows(batch: &RecordBatch) -> Vec<(i64, f64)> {
     let names: Vec<_> = batch
         .schema()
         .fields()
