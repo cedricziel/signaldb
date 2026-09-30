@@ -525,6 +525,80 @@ pub struct Correlate {
     pub fanout: Option<i64>,
 }
 
+/// How a `match` relation relates its two span-sets.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MatchOp {
+    /// `right`'s parent is `left`.
+    Child,
+    /// `right` is a descendant of `left` at any depth.
+    Descendant,
+    /// `right` is an ancestor of `left`.
+    Ancestor,
+    /// `right` and `left` share a non-empty parent and are different spans.
+    Sibling,
+}
+
+/// One structural relation of a `match` stage, between two declared span-sets.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct MatchRelation {
+    pub left: String,
+    pub op: MatchOp,
+    pub right: String,
+}
+
+/// A `match` stage's named span-set predicates, in declaration order.
+#[derive(Debug, Clone, PartialEq, Default)]
+pub struct SpanSets(pub Vec<(String, Predicate)>);
+
+impl Serialize for SpanSets {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_map(self.0.iter().map(|(name, pred)| (name, pred)))
+    }
+}
+
+impl<'de> Deserialize<'de> for SpanSets {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = SpanSets;
+            fn expecting(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
+                f.write_str("an object of named span-set predicates")
+            }
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut map: A,
+            ) -> Result<SpanSets, A::Error> {
+                let mut sets = Vec::new();
+                while let Some(entry) = map.next_entry()? {
+                    sets.push(entry);
+                }
+                Ok(SpanSets(sets))
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
+/// The `match` stage (`irVersion` 12): keep the traces in which every
+/// span-set has a matching span and every relation holds, returning the
+/// witnessing spans.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct Match {
+    pub spansets: SpanSets,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub relations: Vec<MatchRelation>,
+}
+
+impl Match {
+    /// The most span-sets one stage may declare.
+    pub const MAX_SPANSETS: usize = 8;
+    /// The output column naming the span-sets each row witnesses.
+    pub const SPANSETS: &'static str = "spansets";
+}
+
 /// A function a `sample` stage evaluates over each series' point stream
 /// (`irVersion` 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -922,6 +996,7 @@ pub enum Stage {
     OverTime(OverTime),
     Binop(Binop),
     HistogramFraction(HistogramFraction),
+    Match(Match),
 }
 
 impl Stage {
@@ -951,6 +1026,7 @@ impl Stage {
             Stage::OverTime(_) => "over_time",
             Stage::Binop(_) => "binop",
             Stage::HistogramFraction(_) => "histogram_fraction",
+            Stage::Match(_) => "match",
         }
     }
 
@@ -977,6 +1053,7 @@ impl Stage {
             Stage::OverTime(_) => Feature::OverTime,
             Stage::Binop(_) => Feature::Binop,
             Stage::HistogramFraction(_) => Feature::HistogramFraction,
+            Stage::Match(_) => Feature::Match,
             _ => return None,
         })
     }

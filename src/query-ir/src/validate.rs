@@ -37,8 +37,8 @@ use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
     DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramMode,
-    HistogramQuantile, JoinKind, Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce, ReduceFn,
-    Sample, SampleFn, Stage, SubDocument, is_expression_string,
+    HistogramQuantile, JoinKind, Labels, Map, Match, Order, OverTime, OverTimeFn, Rank, Reduce,
+    ReduceFn, Sample, SampleFn, Stage, SubDocument, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -127,6 +127,40 @@ pub fn validate(
     })
 }
 
+/// The rules that hold whatever tables exist, so a caller with no table to
+/// validate against (a dataset without the source) still rejects an illegal
+/// document. [`validate`] runs them too.
+pub fn check_structure(doc: &Document) -> Result<(), IrError> {
+    let registry = check_version(doc.ir_version)?;
+    check_match_placement(doc, &registry)
+}
+
+/// `match` is `traces`-only and the first stage, since a preceding filter
+/// would remove the intermediate spans a descendant relation walks through.
+fn check_match_placement(doc: &Document, registry: &OperatorRegistry) -> Result<(), IrError> {
+    let mut matches =
+        (doc.pipeline.iter().enumerate()).filter(|(_, s)| matches!(s, Stage::Match(_)));
+    let Some((first, _)) = matches.next() else {
+        return Ok(());
+    };
+    require_feature(registry, Feature::Match, "match stage")?;
+    if doc.from != "traces" {
+        return Err(illegal_match(&format!(
+            "source '{}' does not support match (traces only)",
+            doc.from
+        )));
+    }
+    if first != 0 {
+        return Err(illegal_match("match must be the first pipeline stage"));
+    }
+    if matches.next().is_some() {
+        return Err(illegal_match(
+            "a pipeline may contain at most one match stage",
+        ));
+    }
+    Ok(())
+}
+
 /// Steps 1–3 of [`validate`]: the relation `doc`'s pipeline produces. Also
 /// validates a `binop`'s right sub-document, which declares no envelope.
 fn infer<'a>(
@@ -134,8 +168,9 @@ fn infer<'a>(
     sources: &'a SourceRegistry,
     resolver: &'a dyn FieldResolver,
 ) -> Result<InferCtx<'a>, IrError> {
-    // 1. Version range.
+    // 1. Version range and the schema-free rules.
     let registry = check_version(doc.ir_version)?;
+    check_structure(doc)?;
     if !registry.supports_feature(Feature::Heatmap)
         && (doc.result == ResultEnvelope::Heatmap
             || doc
@@ -330,6 +365,7 @@ impl InferCtx<'_> {
             Stage::OverTime(over) => self.apply_over_time(over),
             Stage::Binop(binop) => self.apply_binop(binop),
             Stage::HistogramFraction(hf) => self.apply_histogram_fraction(hf),
+            Stage::Match(m) => self.apply_match(m),
             Stage::Scalar(_) => {
                 let step_ns = self.require_series("scalar")?.step_ns;
                 self.relation = RelationType::Scalar(Scalar { step_ns });
@@ -1388,6 +1424,48 @@ impl InferCtx<'_> {
         Ok(())
     }
 
+    /// The `match` stage (`irVersion` 12); its placement is checked by
+    /// [`check_structure`]. Adds the `spansets` column.
+    fn apply_match(&mut self, stage: &Match) -> Result<(), IrError> {
+        if self.relation.column(Match::SPANSETS).is_some() {
+            return Err(illegal_match(
+                "the relation already has a `spansets` column",
+            ));
+        }
+        let sets = &stage.spansets.0;
+        if !(1..=Match::MAX_SPANSETS).contains(&sets.len()) {
+            return Err(illegal_match(&format!(
+                "`spansets` must declare 1..={} span-sets, got {}",
+                Match::MAX_SPANSETS,
+                sets.len()
+            )));
+        }
+        for (i, (name, pred)) in sets.iter().enumerate() {
+            if !is_span_set_name(name) {
+                return Err(illegal_match(&format!(
+                    "span-set name '{name}' must match ^[a-z_][a-z0-9_]{{0,31}}$"
+                )));
+            }
+            if sets[..i].iter().any(|(earlier, _)| earlier == name) {
+                return Err(illegal_match(&format!("duplicate span-set name '{name}'")));
+            }
+            self.apply_where(pred)?;
+        }
+        for side in stage.relations.iter().flat_map(|r| [&r.left, &r.right]) {
+            if !sets.iter().any(|(name, _)| name == side) {
+                return Err(illegal_match(&format!(
+                    "relation names undeclared span-set '{side}'"
+                )));
+            }
+        }
+        self.names.push(Match::SPANSETS.to_string());
+        if let RelationType::RowSet(rs) = &mut self.relation {
+            rs.columns
+                .push(Column::new(Match::SPANSETS, ValueType::String));
+        }
+        Ok(())
+    }
+
     /// The `correlate` stage. Version gating happens in `apply_stage`; here
     /// we check placement (at most one per pipeline) and the target's own
     /// rules. Parent-side columns are not materialized as explicit relation
@@ -1838,6 +1916,22 @@ impl InferCtx<'_> {
     }
 }
 
+fn illegal_match(reason: &str) -> IrError {
+    IrError::IllegalStage {
+        stage: "match".to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+fn is_span_set_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && name.len() <= 32
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 fn illegal_correlate(reason: &str) -> IrError {
     IrError::IllegalStage {
         stage: "correlate".to_string(),
@@ -2270,6 +2364,7 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
 mod tests {
     use super::*;
     use crate::resolver::{InMemoryResolver, Resolved};
+    use crate::stage::MatchOp;
     use serde_json::json;
 
     fn logs_resolver() -> InMemoryResolver {
@@ -4512,5 +4607,211 @@ mod tests {
         ]));
         doc["result"] = json!("table");
         assert_correlate_rejected(doc, "`logs.body`");
+    }
+
+    // otel-native-schema layer 10 — structural `match` (irVersion 12).
+
+    fn match_doc(from: &str, version: i64, pipeline: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": from, "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": pipeline
+        })
+    }
+
+    fn match_stage() -> serde_json::Value {
+        json!({ "match": {
+            "spansets": {
+                "root": { "field": "service.name", "op": "eq", "value": "api" },
+                "write": { "field": "span.http.route", "op": "contains", "value": "/w" }
+            },
+            "relations": [{ "left": "root", "op": "descendant", "right": "write" }]
+        }})
+    }
+
+    fn assert_match_rejected(doc: serde_json::Value, needle: &str) {
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(&err, IrError::IllegalStage { stage, reason } if stage == "match" && reason.contains(needle)),
+            "expected an illegal match stage mentioning {needle:?}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn match_parses_keeping_span_set_order_and_adds_a_spansets_column() {
+        let d = doc(match_doc("traces", 12, json!([match_stage()])));
+        let Stage::Match(m) = &d.pipeline[0] else {
+            panic!("expected a match stage");
+        };
+        let names: Vec<_> = m.spansets.0.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["root", "write"]);
+        assert_eq!(m.relations[0].op, MatchOp::Descendant);
+        let round = serde_json::to_value(&d.pipeline[0]).unwrap();
+        assert_eq!(round, match_stage());
+
+        let v = validate(&d, &SourceRegistry::core(), &traces_resolver()).unwrap();
+        let RelationType::RowSet(rs) = v.terminal else {
+            panic!("expected rows");
+        };
+        assert!(!rs.aggregated);
+        assert_eq!(rs.columns, vec![Column::new("spansets", ValueType::String)]);
+    }
+
+    #[test]
+    fn match_rejects_unknown_keys_and_ops() {
+        for bad in [
+            json!({ "match": { "spansets": {}, "bogus": 1 } }),
+            json!({ "match": { "spansets": { "a": { "field": "name", "op": "exists" } },
+                "relations": [{ "left": "a", "op": "cousin", "right": "a" }] } }),
+            json!({ "match": { "spansets": { "a": { "field": "name", "op": "exists" } },
+                "relations": [{ "left": "a", "op": "child", "right": "a", "x": 1 }] } }),
+        ] {
+            assert!(
+                serde_json::from_value::<Stage>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_below_v12_is_rejected() {
+        let err = validate_json_with(
+            match_doc("traces", 11, json!([match_stage()])),
+            &traces_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, IrError::Invalid(m) if m.contains("requires irVersion 12")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn later_stages_compose_over_the_match_output() {
+        let pipeline = json!([
+            match_stage(),
+            { "where": { "field": "spansets", "op": "contains", "value": "root" } },
+            { "order": [{ "of": "duration_nano", "dir": "desc" }] },
+            { "limit": 10 }
+        ]);
+        validate_json_with(match_doc("traces", 12, pipeline), &traces_resolver()).unwrap();
+        let mut grouped = match_doc(
+            "traces",
+            12,
+            json!([match_stage(), { "aggregate": { "by": ["spansets"], "aggs": [{ "fn": "count", "as": "n" }] } }]),
+        );
+        grouped["result"] = json!("table");
+        validate_json_with(grouped, &traces_resolver()).unwrap();
+    }
+
+    #[test]
+    fn match_rejections_name_the_rule() {
+        let pred = json!({ "field": "service.name", "op": "exists" });
+        let sets = |sets: serde_json::Value| json!([{ "match": { "spansets": sets } }]);
+        let nine: serde_json::Map<_, _> = (0..9).map(|i| (format!("s{i}"), pred.clone())).collect();
+        let mut undeclared = match_stage();
+        undeclared["match"]["relations"][0]["right"] = json!("nope");
+        let filter = json!({ "where": { "field": "service.name", "op": "eq", "value": "api" } });
+        let cases = [
+            (
+                "logs",
+                json!([match_stage()]),
+                "source 'logs' does not support match (traces only)",
+            ),
+            (
+                "traces",
+                json!([filter, match_stage()]),
+                "first pipeline stage",
+            ),
+            (
+                "traces",
+                json!([match_stage(), match_stage()]),
+                "at most one",
+            ),
+            ("traces", json!([undeclared]), "'nope'"),
+            ("traces", sets(json!(nine)), "1..=8"),
+            ("traces", sets(json!({})), "1..=8"),
+            ("traces", sets(json!({ "Root": pred })), "span-set name"),
+            ("traces", sets(json!({ "1st": pred })), "span-set name"),
+            ("traces", sets(json!({ "a-b": pred })), "span-set name"),
+            ("traces", sets(json!({ "": pred })), "span-set name"),
+            (
+                "traces",
+                sets(json!({ "x".repeat(33): pred })),
+                "span-set name",
+            ),
+        ];
+        for (from, pipeline, needle) in cases {
+            assert_match_rejected(match_doc(from, 12, pipeline), needle);
+        }
+        let dup = r#"{"match":{"spansets":{"a":{"field":"service.name","op":"exists"},"a":{"field":"service.name","op":"exists"}}}}"#;
+        let mut d = doc(match_doc("traces", 12, json!([])));
+        d.pipeline = vec![serde_json::from_str(dup).unwrap()];
+        let err = validate(&d, &SourceRegistry::core(), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(&err, IrError::IllegalStage { reason, .. } if reason.contains("duplicate")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn match_predicates_are_validated_like_where() {
+        let stage = json!({ "match": { "spansets": {
+            "a": { "field": "duration_nano", "op": "gt", "value": "not a duration" }
+        } } });
+        let err = validate_json_with(match_doc("traces", 12, json!([stage])), &traces_resolver())
+            .unwrap_err();
+        assert!(matches!(err, IrError::Coercion { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn match_span_sets_take_event_and_link_fields() {
+        let doc_with = |op: &str| {
+            doc(match_doc(
+                "traces",
+                12,
+                json!([{ "match": {
+                "spansets": {
+                    "failed": { "field": "events.name", "op": op, "value": "exception" },
+                    "linked": { "field": "links.trace_id", "op": "eq", "value": "aaaa" }
+                },
+                "relations": [{ "left": "failed", "op": "descendant", "right": "linked" }]
+            } }]),
+            ))
+        };
+        let resolver = WithSpanLists(traces_resolver());
+        validate(&doc_with("eq"), &SourceRegistry::core(), &resolver).unwrap();
+        let err = validate(&doc_with("ne"), &SourceRegistry::core(), &resolver).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("events.name")),
+            "{err:?}"
+        );
+    }
+
+    /// The schema-free rules hold without a resolver, for a caller with no
+    /// table to validate against.
+    #[test]
+    fn match_placement_is_checked_without_a_schema() {
+        let pipeline = json!([match_stage()]);
+        check_structure(&doc(match_doc("traces", 12, pipeline.clone()))).unwrap();
+        for (from, version, pipeline, needle) in [
+            ("logs", 12, pipeline.clone(), "traces only"),
+            ("traces", 11, pipeline, "irVersion 12"),
+            (
+                "traces",
+                12,
+                json!([{ "limit": 1 }, match_stage()]),
+                "first pipeline stage",
+            ),
+            (
+                "traces",
+                12,
+                json!([match_stage(), match_stage()]),
+                "at most one",
+            ),
+        ] {
+            let err = check_structure(&doc(match_doc(from, version, pipeline))).unwrap_err();
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        }
     }
 }

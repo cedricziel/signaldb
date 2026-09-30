@@ -16,6 +16,7 @@ use datafusion::physical_planner::{DefaultPhysicalPlanner, PhysicalPlanner};
 
 use super::correlate_cap::CorrelateCapPlanner;
 use super::metric_series::vector_match::VectorMatchPlanner;
+use super::structural_match::StructuralMatchPlanner;
 
 #[derive(Debug)]
 struct QuerierQueryPlanner;
@@ -30,6 +31,7 @@ impl QueryPlanner for QuerierQueryPlanner {
         DefaultPhysicalPlanner::with_extension_planners(vec![
             Arc::new(CorrelateCapPlanner),
             Arc::new(VectorMatchPlanner),
+            Arc::new(StructuralMatchPlanner),
         ])
         .create_physical_plan(logical_plan, session)
         .await
