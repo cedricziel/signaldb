@@ -2427,6 +2427,14 @@ pub struct QuerierConfig {
     /// unbounded; narrow the source (`topk`/`limit`/`where`) to fit. Must be
     /// greater than zero.
     pub correlate_max_source_rows: usize,
+    /// Span cap on one trace a Query IR `match` stage evaluates
+    /// (`irVersion` 12). A larger trace fails the query naming the trace;
+    /// it is never truncated. Must be greater than zero.
+    pub match_max_trace_spans: usize,
+    /// Byte budget on one trace a `match` stage buffers (the value bytes of
+    /// its rows). A larger trace fails the query naming the trace. Must be
+    /// greater than zero.
+    pub match_max_trace_bytes: usize,
     /// Node cap on a Query IR `graph` result. Past it the graph keeps the
     /// `focus` node, then the highest-traffic nodes, and reports how many
     /// it dropped in a warning.
@@ -2476,6 +2484,8 @@ impl Default for QuerierConfig {
             datafusion: QuerierDataFusionConfig::default(),
             correlate_max_rows: 5_000_000,
             correlate_max_source_rows: 10_000,
+            match_max_trace_spans: 100_000,
+            match_max_trace_bytes: 64 * 1024 * 1024,
             graph_max_nodes: 200,
             warm_index: WarmIndexQuerierConfig::default(),
         }
@@ -2677,6 +2687,12 @@ impl Configuration {
             return Err(
                 "[querier].correlate_max_source_rows must be greater than zero".to_string(),
             );
+        }
+        if self.querier.match_max_trace_spans == 0 {
+            return Err("[querier].match_max_trace_spans must be greater than zero".to_string());
+        }
+        if self.querier.match_max_trace_bytes == 0 {
+            return Err("[querier].match_max_trace_bytes must be greater than zero".to_string());
         }
         Ok(())
     }
@@ -2951,6 +2967,8 @@ mod tests {
         assert_eq!(config.querier.max_search_limit, 1_000);
         assert_eq!(config.querier.correlate_max_rows, 5_000_000);
         assert_eq!(config.querier.correlate_max_source_rows, 10_000);
+        assert_eq!(config.querier.match_max_trace_spans, 100_000);
+        assert_eq!(config.querier.match_max_trace_bytes, 67_108_864);
         assert_eq!(config.querier.graph_max_nodes, 200);
 
         Jail::expect_with(|jail| {
@@ -2965,6 +2983,8 @@ mod tests {
                 max_search_limit = 50
                 correlate_max_rows = 2000
                 correlate_max_source_rows = 300
+                match_max_trace_spans = 70
+                match_max_trace_bytes = 4096
                 graph_max_nodes = 50
                 "#,
             )?;
@@ -2979,6 +2999,8 @@ mod tests {
             assert_eq!(config.querier.max_search_limit, 50);
             assert_eq!(config.querier.correlate_max_rows, 2000);
             assert_eq!(config.querier.correlate_max_source_rows, 300);
+            assert_eq!(config.querier.match_max_trace_spans, 70);
+            assert_eq!(config.querier.match_max_trace_bytes, 4096);
             assert_eq!(config.querier.graph_max_nodes, 50);
             Ok(())
         });
@@ -4186,6 +4208,18 @@ mod tests {
         config.querier.correlate_max_source_rows = 0;
         let error = config.validate().expect_err("must be rejected");
         assert!(error.contains("correlate_max_source_rows"), "{error}");
+    }
+
+    #[test]
+    fn zero_match_trace_bounds_are_rejected() {
+        let mut config = Configuration::default();
+        config.querier.match_max_trace_spans = 0;
+        let error = config.validate().expect_err("must be rejected");
+        assert!(error.contains("match_max_trace_spans"), "{error}");
+        let mut config = Configuration::default();
+        config.querier.match_max_trace_bytes = 0;
+        let error = config.validate().expect_err("must be rejected");
+        assert!(error.contains("match_max_trace_bytes"), "{error}");
     }
 
     #[test]

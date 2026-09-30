@@ -334,6 +334,8 @@ max_search_limit = 1000               # Upper bound for client `limit` on /api/s
 max_concurrent_queries_per_tenant = 8 # Unset = unlimited
 correlate_max_rows = 5000000          # Row cap on a Query IR `correlate` stage's joined output (irVersion 8)
 correlate_max_source_rows = 10000     # Row cap on a `correlate` stage's source side, every join kind incl. semi/anti (irVersion 11); over the cap, RESOURCE_EXHAUSTED
+match_max_trace_spans = 100000        # Span cap on one trace a `match` stage evaluates (irVersion 12); over it the query fails naming the trace (422 resource_limit)
+match_max_trace_bytes = 67108864      # Byte budget on one trace's buffered rows in a `match` stage; over it the query fails naming the trace (422 resource_limit)
 graph_max_nodes = 200                 # Node cap on a Query IR `graph` result; keeps focus, then highest-traffic nodes, and warns
 
 [querier.datafusion]
