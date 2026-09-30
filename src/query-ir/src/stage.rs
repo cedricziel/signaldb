@@ -328,8 +328,10 @@ pub struct HistogramQuantile {
     pub as_name: String,
 }
 
-/// The fraction of histogram observations within `[lower, upper]`: the
-/// `histogram_quantile` sibling (`irVersion` 10).
+/// The estimated fraction of histogram observations in `(lower, upper]`,
+/// cumulative(`upper`) − cumulative(`lower`): the `histogram_quantile`
+/// sibling (`irVersion` 10). A bound inside a bucket is interpolated, so the
+/// result is an estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct HistogramFraction {
