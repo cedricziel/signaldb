@@ -201,3 +201,22 @@ async fn an_operand_with_two_series_of_one_labelset_is_invalid_input() {
         "{err}"
     );
 }
+
+#[tokio::test]
+async fn an_operand_at_another_step_is_invalid_input() {
+    let doc = json!({
+        "irVersion": 10, "from": "metrics", "step": "60s",
+        "range": { "from": 60 * S, "to": 120 * S }, "result": "series",
+        "pipeline": [
+            { "sample": { "fn": "latest" } },
+            { "binop": { "op": "add", "right": { "from": "metrics", "pipeline": [
+                { "sample": { "fn": "latest", "step": "30s" } }
+            ] } } }
+        ]
+    });
+    let err = run(&jobs(), doc).await.unwrap_err();
+    assert!(
+        matches!(&err, QuerierError::InvalidInput(m) if m.contains("same step")),
+        "{err}"
+    );
+}

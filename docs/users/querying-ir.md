@@ -1036,10 +1036,10 @@ value at every instant.
 
 ### Series algebra
 
-These stages take a Series from `sample` (or `vector`) and return a Series,
-with PromQL's semantics: they are what a PromQL expression lowers to. Over a
-Series from anything else (an `aggregate` with `step`, a
-`histogram_quantile`) they are not supported yet (501).
+These stages take a Series from `sample`, `histogram_quantile` (labelled by
+its `by` labels, at its `step`) or `vector` and return a Series, with
+PromQL's semantics: they are what a PromQL expression lowers to. Over a
+Series from an `aggregate` with `step` they are not supported yet (501).
 
 #### `reduce`
 
@@ -1139,7 +1139,8 @@ and names where it holds, or with `"bool": true` yields `1`/`0` and drops
 
 `right` may also be a sub-document — `from` (the document's own source or a
 pseudo-source), `pipeline`, and `constant` — which inherits the document's
-`irVersion`, range and `step` and must yield a Series or a Scalar:
+`irVersion`, range and `step` and must yield a Series or a Scalar at the
+left operand's step (a different one is a 400):
 
 ```json
 {
