@@ -1559,7 +1559,7 @@ table yet reads as empty" rule the rest of the IR follows.
 envelope, not clipped to the query's `range`: `[min, max]` of the source
 time column (for traces, also widened by `start + duration` when duration is
 in the relation). `window.before`/`window.after` extend that envelope
-further, past its start and end. When the target is `traces`, a span matches
+further, past its start and end. A source whose rows are instants (a `metrics` point, a log record) has a narrow envelope, so correlating from it usually needs `window` widened to cover where the target's rows fall. When the target is `traces`, a span matches
 if it overlaps the window rather than starting inside it, so the span that
 contains a log or exemplar is found even though it started earlier; spans
 that started more than 1 hour before the window need `window.before`. Absence (`anti`) and enrichment
