@@ -18,10 +18,10 @@ pub enum QuerierError {
     ResourceExhausted(String),
 }
 
-/// Finds a caller error an operator raised inside execution
-/// (`DataFusionError::External(QuerierError::InvalidInput)`), looking through
-/// the wrappers DataFusion and Arrow add around it.
-fn invalid_input_in(err: &DataFusionError) -> Option<String> {
+/// Finds a [`QuerierError`] an operator raised inside execution
+/// (`DataFusionError::External`), looking through the wrappers DataFusion and
+/// Arrow add around it.
+fn raised_in(err: &DataFusionError) -> Option<QuerierError> {
     match err {
         DataFusionError::External(inner) => external(inner.as_ref()),
         DataFusionError::ArrowError(arrow, _) => match arrow.as_ref() {
@@ -29,28 +29,30 @@ fn invalid_input_in(err: &DataFusionError) -> Option<String> {
             _ => None,
         },
         DataFusionError::Context(_, inner) | DataFusionError::Diagnostic(_, inner) => {
-            invalid_input_in(inner)
+            raised_in(inner)
         }
-        DataFusionError::Shared(inner) => invalid_input_in(inner),
-        DataFusionError::Collection(errs) => errs.iter().find_map(invalid_input_in),
+        DataFusionError::Shared(inner) => raised_in(inner),
+        DataFusionError::Collection(errs) => errs.iter().find_map(raised_in),
         _ => None,
     }
 }
 
-fn external(err: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<String> {
-    if let Some(QuerierError::InvalidInput(msg)) = err.downcast_ref::<QuerierError>() {
-        return Some(msg.clone());
-    }
-    err.downcast_ref::<DataFusionError>()
-        .and_then(invalid_input_in)
+fn external(err: &(dyn std::error::Error + Send + Sync + 'static)) -> Option<QuerierError> {
+    let Some(raised) = err.downcast_ref::<QuerierError>() else {
+        return err.downcast_ref::<DataFusionError>().and_then(raised_in);
+    };
+    Some(match raised {
+        QuerierError::TraceNotFound => QuerierError::TraceNotFound,
+        QuerierError::InvalidInput(msg) => QuerierError::InvalidInput(msg.clone()),
+        QuerierError::Unsupported(msg) => QuerierError::Unsupported(msg.clone()),
+        QuerierError::ResourceExhausted(msg) => QuerierError::ResourceExhausted(msg.clone()),
+        QuerierError::QueryFailed(inner) => return raised_in(inner),
+    })
 }
 
 impl From<DataFusionError> for QuerierError {
     fn from(err: DataFusionError) -> Self {
-        match invalid_input_in(&err) {
-            Some(msg) => QuerierError::InvalidInput(msg),
-            None => QuerierError::QueryFailed(err),
-        }
+        raised_in(&err).unwrap_or(QuerierError::QueryFailed(err))
     }
 }
 
@@ -119,6 +121,34 @@ mod tests {
         assert!(matches!(
             QuerierError::from(collected),
             QuerierError::InvalidInput(m) if m == "bad"
+        ));
+    }
+
+    #[test]
+    fn any_raised_querier_error_survives_the_wrap() {
+        let raised = DataFusionError::External(Box::new(QuerierError::Unsupported("nope".into())));
+        let wrapped = DataFusionError::Context("ctx".into(), Box::new(raised));
+        assert!(matches!(
+            QuerierError::from(wrapped),
+            QuerierError::Unsupported(m) if m == "nope"
+        ));
+    }
+
+    #[test]
+    fn a_wrapped_query_failed_is_looked_through() {
+        let inner =
+            DataFusionError::External(Box::new(QuerierError::ResourceExhausted("bound".into())));
+        let raised = DataFusionError::External(Box::new(QuerierError::QueryFailed(inner)));
+        assert!(matches!(
+            QuerierError::from(raised),
+            QuerierError::ResourceExhausted(m) if m == "bound"
+        ));
+        let plain = DataFusionError::External(Box::new(QuerierError::QueryFailed(
+            DataFusionError::Plan("x".into()),
+        )));
+        assert!(matches!(
+            QuerierError::from(plain),
+            QuerierError::QueryFailed(_)
         ));
     }
 
