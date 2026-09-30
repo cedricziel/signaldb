@@ -1207,29 +1207,63 @@ async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
     assert_eq!(status, StatusCode::OK, "{body}");
     assert_eq!(values(&body["data"]["result"][0]), vec![2.0], "{body}");
 
-    let (status, body) = get(
-        &app,
-        &range("histogram_quantile(0.5, rate(commit_duration[2m]))"),
-    )
-    .await;
+    let per_op_query = "histogram_quantile(0.5, rate(commit_duration[2m]))";
+    let (status, body) = get(&app, &range(per_op_query)).await;
     assert_eq!(status, StatusCode::OK, "{body}");
-    let mut per_op: Vec<(String, Vec<f64>)> = body["data"]["result"]
+    let mut per_op: Vec<(String, serde_json::Value, Vec<f64>)> = body["data"]["result"]
         .as_array()
         .into_iter()
         .flatten()
         .map(|s| {
             (
                 s["metric"]["op"].as_str().unwrap_or("").to_string(),
+                s["metric"].clone(),
                 values(s),
             )
         })
         .collect();
     per_op.sort_by(|x, y| x.0.cmp(&y.0));
     assert_eq!(per_op.len(), 2, "{body}");
-    assert_eq!(per_op[0].0, "a", "{body}");
-    assert!((per_op[0].1[0] - 1.5).abs() < 1e-9, "{body}");
-    assert_eq!(per_op[1].0, "b", "{body}");
-    assert!((per_op[1].1[0] - 2.6).abs() < 1e-9, "{body}");
+    for ((op, metric, samples), (want_op, want)) in per_op.iter().zip([("a", 1.5), ("b", 2.6)]) {
+        assert_eq!(op, want_op, "{body}");
+        assert_eq!(samples.len(), 1, "series {op} needs one sample: {body}");
+        assert!((samples[0] - want).abs() < 1e-9, "series {op}: {body}");
+        // Prometheus drops the metric name from a histogram_quantile result.
+        assert!(metric.get("__name__").is_none(), "series {op}: {body}");
+    }
+
+    // The same instant through `/api/v1/query`, at the instant after the
+    // last point.
+    let query = encode_query(per_op_query);
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query?query={query}&time={start}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["resultType"], "vector", "{body}");
+    let mut instant: Vec<(String, f64, bool)> = body["data"]["result"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            (
+                s["metric"]["op"].as_str().unwrap_or("").to_string(),
+                s["value"][1]
+                    .as_str()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(f64::NAN),
+                s["metric"].get("__name__").is_none(),
+            )
+        })
+        .collect();
+    instant.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(instant.len(), 2, "{body}");
+    for ((op, value, nameless), (want_op, want)) in instant.iter().zip([("a", 1.5), ("b", 2.6)]) {
+        assert_eq!(op, want_op, "{body}");
+        assert!((value - want).abs() < 1e-9, "series {op}: {body}");
+        assert!(nameless, "series {op} kept __name__: {body}");
+    }
 }
 
 // The remaining tests exercise newer function families end-to-end through
