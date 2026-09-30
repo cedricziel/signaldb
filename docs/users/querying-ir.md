@@ -1527,14 +1527,14 @@ parse failure.
 **Join keys.** `on` names one of four logical keys, each resolved per source
 against `otel-native-logical-schema` rather than the physical column:
 
-| Key                 | Carried by                        | Field name(s)                                                |
-| ------------------- | --------------------------------- | ------------------------------------------------------------ |
-| `trace_id`          | traces, logs, profiles, exemplars | `trace_id` (`trace.id` on exemplars)                         |
-| `span_id`           | traces, logs, profiles, exemplars | `trace_id` + `span_id` (`trace.id` + `span.id` on exemplars) |
-| `resource_identity` | every signal source               | `resource.identity`                                          |
-| `series_id`         | metrics, exemplars                | the metric series identity                                   |
+| Key                 | Carried by                        | Field name(s)                                                             |
+| ------------------- | --------------------------------- | ------------------------------------------------------------------------- |
+| `trace_id`          | traces, logs, profiles, exemplars | `trace_id` (`trace.id` on profiles and exemplars)                         |
+| `span_id`           | traces, logs, profiles, exemplars | `trace_id` + `span_id` (`trace.id` + `span.id` on profiles and exemplars) |
+| `resource_identity` | every signal source               | `resource.identity`                                                       |
+| `series_id`         | metrics, exemplars                | `series.id`                                                               |
 
-A key absent from either side is a validation error. If the source relation
+A key absent from either side is a validation error, and so is a key whose field has no stored column in that source's table (it would otherwise silently match nothing). If the source relation
 is already aggregated (a closed schema), every field the key needs must be a
 group column of that aggregation, or the query is rejected: "correlate key
 '`<key>`' was dropped by a preceding aggregate." A signal-target correlate may
@@ -1550,7 +1550,8 @@ target's fields under a `<target>.` scope (`logs.body`, `logs.severity`, …),
 resolved the same way `parent.*` resolves against traces; source fields stay
 unprefixed, so same-named fields on both sides never collide. `inner` drops a
 source row with no target match; `left` keeps it with every `<target>.*`
-field `null`. If the target's table doesn't exist yet, `semi`/`inner` return
+field `null`. Every kind keeps the source's row order, so the order a `topk`
+or `order` stage produced survives the join. If the target's table doesn't exist yet, `semi`/`inner` return
 no rows and `anti`/`left` return the source rows unmatched — the same "no
 table yet reads as empty" rule the rest of the IR follows.
 
@@ -1558,7 +1559,10 @@ table yet reads as empty" rule the rest of the IR follows.
 envelope, not clipped to the query's `range`: `[min, max]` of the source
 time column (for traces, also widened by `start + duration` when duration is
 in the relation). `window.before`/`window.after` extend that envelope
-further, past its start and end. Absence (`anti`) and enrichment
+further, past its start and end. When the target is `traces`, a span matches
+if it overlaps the window rather than starting inside it, so the span that
+contains a log or exemplar is found even though it started earlier; spans
+that started more than 1 hour before the window need `window.before`. Absence (`anti`) and enrichment
 (`inner`/`left`) are judged strictly within this window — a target row
 outside it does not count as a match, even though it exists — so late-arriving
 target data needs `window` to be picked up.
@@ -1568,8 +1572,9 @@ target data needs `window` to be picked up.
 - **Source rows** — the source pipeline (everything before `correlate`) is
   capped at `[querier].correlate_max_source_rows` (default 10,000). Every
   join kind, including `semi`/`anti`, rejects a source over the cap with an
-  explicit resource-exhausted error rather than running unbounded — the
-  target scan starts only after the source is known to fit.
+  HTTP `422` error of type `resource_limit` rather than running unbounded — the
+  target scan starts only after the source is known to fit. Retrying does not
+  help; narrow the source with `where`, `topk`, or `limit`.
 - **Fan-out** — `inner`/`left` only: past `fanout` (default 100, max 10,000)
   target rows for one source row, the kept subset is the earliest by target
   time, ties broken by the remaining target columns, so a capped result is
