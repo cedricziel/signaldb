@@ -1288,13 +1288,16 @@ Filter by `metric.name` (or `metric.type`) to keep the stage on histograms.
 
 ### `histogram_fraction` (IR v10)
 
-`histogram_fraction` is `histogram_quantile`'s sibling: the fraction of the
-merged histogram's observations that lie in `[lower, upper]`, the IR form of
-PromQL's `histogram_fraction(lower, upper, …)`. It takes `lower` and `upper`
-(finite, `lower <= upper`) in place of `q`, and otherwise the same `by`,
-`step`, `mode`, `window`, `lookback` and `as` fields, reads the same rows and
-evaluates at the same instants, so the two stages over one document answer
-from the same merged histograms:
+`histogram_fraction` is `histogram_quantile`'s sibling: the estimated
+fraction of the merged histogram's observations in `(lower, upper]`, that is
+cumulative(`upper`) − cumulative(`lower`) over the total count, the IR form of
+PromQL's `histogram_fraction(lower, upper, …)`. A bound inside a bucket is
+interpolated (linearly for explicit buckets, on a log scale for exponential
+ones), so the result is an estimate. It takes `lower` and `upper` (finite,
+`lower <= upper`; equal bounds give 0) in place of `q`, and otherwise the same
+`by`, `step`, `mode`, `window`, `lookback` and `as` fields, reads the same rows
+and evaluates at the same instants, so the two stages over one document
+answer from the same merged histograms:
 
 ```json
 {
@@ -1308,6 +1311,22 @@ from the same merged histograms:
   }
 }
 ```
+
+The bounds must be finite, so PromQL's `±Inf` idioms need rewriting:
+
+- **At most X** (`histogram_fraction(-Inf, X, …)`): use a `lower` at or below
+  every observation, such as `0` for a histogram of positive values like
+  latencies. As in Prometheus, an explicit-bucket histogram whose first bound
+  is `<= 0` has a first bucket reaching down to `-Inf`, and no finite `lower`
+  includes it.
+- **More than X** (`histogram_fraction(X, +Inf, …)`): compute
+  `1 - fraction(lower, X)` with that same `lower`, for instance as the
+  [formula](#formulas-cross-query-arithmetic-d5) `1 - under_x`. This holds
+  only when no observation lies at or below that `lower`; a populated first
+  bucket reaching down to `-Inf` breaks it, so query such a histogram through
+  PromQL, which takes `+Inf` as `upper`. A large finite `upper` does not stand
+  in for `+Inf` on an explicit-bucket histogram: the open `+Inf` bucket's
+  observations lie above every finite bound, so `(X, 1e300]` leaves them out.
 
 ### Heatmap envelope (IR v2)
 

@@ -6042,8 +6042,17 @@ mod tests {
     /// `histogram_fraction(0, 3, …)` per service at the one instant 1000,
     /// reading the 5m before it, through the IR.
     async fn fraction_ir(ctx: SessionContext, mode: &str) -> Vec<f64> {
+        fraction_ir_between(ctx, mode, 0.0, 3.0).await
+    }
+
+    async fn fraction_ir_between(
+        ctx: SessionContext,
+        mode: &str,
+        lower: f64,
+        upper: f64,
+    ) -> Vec<f64> {
         let mut hf = serde_json::json!({
-            "lower": 0, "upper": 3, "by": ["service.name"], "step": "1us", "mode": mode, "as": "f"
+            "lower": lower, "upper": upper, "by": ["service.name"], "step": "1us", "mode": mode, "as": "f"
         });
         hf[if mode == "rate" { "window" } else { "lookback" }] = "5m".into();
         let d = doc(serde_json::json!({
@@ -6091,16 +6100,96 @@ mod tests {
         assert_eq!(rate, vec![0.75]);
     }
 
+    /// Exponential buckets interpolate on a log scale, as Prometheus'
+    /// `Bucket.FractionBelow` does. The fixture is scale 0, offset 0, so
+    /// bucket k is (2^k, 2^(k+1)]; `[0, 3]` takes all of (1, 2] and
+    /// log2(3/2) / log2(4/2) = log2(1.5) of (2, 4]:
+    /// - instant, a@30 + b@35 = [3, 6, 8, 0]: (3 + 6·log2 1.5) / 17 ≈ 0.382928
+    /// - rate, merged increase [2, 5, 7, 0]: (2 + 5·log2 1.5) / 14 ≈ 0.351772
+    #[tokio::test]
+    async fn histogram_fraction_interpolates_exponential_buckets_on_a_log_scale() {
+        let l = 1.5f64.log2();
+        for (mode, want) in [
+            ("instant", (3.0 + 6.0 * l) / 17.0),
+            ("rate", (2.0 + 5.0 * l) / 14.0),
+        ] {
+            let got = fraction_ir(
+                histogram_points_ctx("exponential_histogram", HIVE_SERIES),
+                mode,
+            )
+            .await;
+            assert!(
+                got.len() == 1 && (got[0] - want).abs() < 1e-12,
+                "{mode}: {got:?} != {want}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn histogram_fraction_of_an_empty_interval_is_zero() {
+        for kind in ["histogram", "exponential_histogram"] {
+            for bound in [0.0, 1.5, 3.0, 100.0] {
+                let got = fraction_ir_between(
+                    histogram_points_ctx(kind, HIVE_SERIES),
+                    "instant",
+                    bound,
+                    bound,
+                )
+                .await;
+                assert_eq!(got, vec![0.0], "{kind} at {bound}");
+            }
+        }
+    }
+
+    /// A group mixing explicit and exponential histograms cannot merge; the
+    /// `InvalidInput` raised inside execution stays a caller error (400).
+    #[tokio::test]
+    async fn mixing_explicit_and_exponential_histograms_is_invalid_input() {
+        let rows: &[(&str, i64, &[i64])] = &[("a", 10, &[1, 1, 0, 0])];
+        let explicit = histogram_points("histogram", rows);
+        let exp = histogram_points("exponential_histogram", &[("b", 10, &[1, 1])]);
+        let batch =
+            datafusion::arrow::compute::concat_batches(&explicit.schema(), [&explicit, &exp])
+                .unwrap();
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 10, "from": "metrics", "result": "series",
+                "range": { "from": 1000, "to": 1000 },
+                "pipeline": [{ "histogram_fraction": {
+                    "lower": 0, "upper": 3, "step": "1us", "mode": "instant",
+                    "lookback": "5m", "as": "f"
+                } }]
+            }),
+            now_ns: 0,
+        };
+        let err = IrService::new(points_ctx(batch))
+            .query(&params, "t", "d")
+            .await
+            .map(|_| ())
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("cannot be merged")),
+            "{err:?}"
+        );
+    }
+
     /// `irVersion` 10 histogram shapes validate but are refused before any
     /// scan until their lowering lands.
     #[tokio::test]
     async fn unexecutable_histogram_shapes_are_not_supported_yet() {
         let svc = IrService::new(histogram_ctx_with_leak("gauge"));
-        for (from, pipeline, expected) in [(
-            "metrics",
-            serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
-            "histogram_quantile per_series is not supported yet",
-        )] {
+        for (from, pipeline, expected) in [
+            (
+                "metrics",
+                serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
+                "histogram_quantile per_series is not supported yet",
+            ),
+            (
+                "metrics",
+                serde_json::json!([{ "histogram_fraction": { "lower": 0, "upper": 1, "step": "1m", "per_series": true, "as": "f" } }]),
+                "histogram_fraction per_series is not supported yet",
+            ),
+        ] {
             let d = doc(serde_json::json!({
                 "irVersion": 10, "from": from, "step": "1m", "range": { "from": 0, "to": 1000 },
                 "result": "series", "pipeline": pipeline
