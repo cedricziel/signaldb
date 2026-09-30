@@ -583,8 +583,9 @@ fn window() -> String {
     format!("start={start}&end={end}&step=1h")
 }
 
-/// A window whose first evaluation instant is the ingested point: histogram
-/// functions evaluate at `start + k·step`, reading `(t - step, t]`.
+/// A window whose one step bucket holds the ingested point: histogram
+/// functions evaluate each bucket at its end, reading back to its start,
+/// and see only the points up to `end`.
 fn instant_window() -> String {
     let start = (BASE_NS / 1_000_000_000) as i64;
     format!("start={start}&end={}&step=1h", start + 60)
@@ -1159,7 +1160,7 @@ async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
     let query = encode_query("histogram_quantile(0.5, rate(commit_duration[2m]))");
     let (status, body) = get(
         &app,
-        &format!("/prometheus/api/v1/query_range?query={query}&start={t}&end={t}&step=60"),
+        &format!("/prometheus/api/v1/query_range?query={query}&start={t}&end={t}&step=20"),
     )
     .await;
 
