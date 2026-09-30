@@ -557,6 +557,7 @@ pub struct TopKSpec {
 impl Eq for MetricPlan {}
 
 /// Parse and lower a PromQL query.
+#[cfg(test)]
 pub fn plan_promql(query: &str) -> Result<MetricPlan, QuerierError> {
     let expr = parse_promql(query)?;
     lower(&expr)

@@ -5546,23 +5546,13 @@ mod tests {
         );
     }
 
-    /// The `service.name` of row `i`: from the Series frame's `__labels` or,
-    /// on the legacy PromQL path, its `service_name` column.
+    /// The `service.name` of row `i`, from the Series frame's `__labels`.
     fn service_of(b: &RecordBatch, i: usize) -> String {
         use datafusion::arrow::array::AsArray;
-        match b.column_by_name("__labels") {
-            Some(labels) => {
-                let set: serde_json::Value =
-                    serde_json::from_str(labels.as_string::<i32>().value(i)).unwrap();
-                set["service.name"].as_str().unwrap_or_default().to_string()
-            }
-            None => b
-                .column_by_name("service_name")
-                .unwrap()
-                .as_string::<i32>()
-                .value(i)
-                .to_string(),
-        }
+        let labels = b.column_by_name("__labels").unwrap();
+        let set: serde_json::Value =
+            serde_json::from_str(labels.as_string::<i32>().value(i)).unwrap();
+        set["service.name"].as_str().unwrap_or_default().to_string()
     }
 
     /// The histogram values of `batches`, all of them or those of the
@@ -6090,36 +6080,41 @@ mod tests {
         histogram_value(&df.collect().await.unwrap(), "f", Some("svc"))
     }
 
-    /// The same through the PromQL path, which reads each series' latest point.
-    async fn fraction_promql(ctx: SessionContext) -> Vec<f64> {
-        let out = crate::query::metrics::MetricsService::new(ctx)
-            .query_range("histogram_fraction(0, 3, lat)", 0, 999, 1000, "t", "d")
-            .await
-            .unwrap();
-        histogram_value(&out, "value", Some("svc"))
+    /// `got` equals `want` element-wise, to floating-point noise.
+    fn assert_close(got: &[f64], want: &[f64], what: &str) {
+        assert!(
+            got.len() == want.len() && got.iter().zip(want).all(|(g, w)| (g - w).abs() < 1e-12),
+            "{what}: got {got:?}, want {want:?}"
+        );
     }
 
-    /// Instant mode answers as PromQL does; rate mode as PromQL does over one
-    /// point holding the merged increase of [`HIVE_SERIES`], [2, 5, 7, 0].
+    /// Fractions over [`HIVE_SERIES`] in `(0, 3]`. The latest points are
+    /// a = [3, 4, 2, 0] and b = [0, 2, 6, 0] (merged [3, 6, 8, 0], total 17);
+    /// the merged increase is [2, 5, 7, 0] (total 14).
+    ///
+    /// - Explicit bounds [1, 2, 4] interpolate linearly, so (0, 3] holds all of
+    ///   the first two buckets and half of (2, 4]: instant (3 + 6 + 8/2) / 17 =
+    ///   13/17, rate (2 + 5 + 7/2) / 14 = 3/4.
+    /// - Exponential buckets at scale 0 are (1, 2], (2, 4], (4, 8], (8, 16] and
+    ///   interpolate geometrically, so (0, 3] holds the first bucket and
+    ///   log2(3) - 1 of (2, 4]: instant (3 + 6 * (log2 3 - 1)) / 17, rate
+    ///   (2 + 5 * (log2 3 - 1)) / 14.
     #[tokio::test]
-    async fn histogram_fraction_matches_the_promql_path() {
-        let merged: &[(&str, i64, &[i64])] = &[("m", 10, &[2, 5, 7, 0])];
-        for kind in ["histogram", "exponential_histogram"] {
-            let hive = || histogram_points_ctx(kind, HIVE_SERIES);
-            let instant = fraction_ir(hive(), "instant").await;
-            assert!(
-                instant.len() == 1 && instant[0].is_finite(),
-                "{kind}: {instant:?}"
-            );
-            assert_eq!(instant, fraction_promql(hive()).await, "{kind}");
-            let rate = fraction_ir(hive(), "rate").await;
-            assert!(rate.len() == 1 && rate[0].is_finite(), "{kind}: {rate:?}");
-            let want = fraction_promql(histogram_points_ctx(kind, merged)).await;
-            assert_eq!(rate, want, "{kind}");
+    async fn histogram_fraction_over_the_hive_series() {
+        let share_of_2_4 = 3f64.log2() - 1.0;
+        let want = [
+            ("histogram", 13.0 / 17.0, 0.75),
+            (
+                "exponential_histogram",
+                (3.0 + 6.0 * share_of_2_4) / 17.0,
+                (2.0 + 5.0 * share_of_2_4) / 14.0,
+            ),
+        ];
+        for (kind, instant, rate) in want {
+            let ctx = || histogram_points_ctx(kind, HIVE_SERIES);
+            assert_close(&fraction_ir(ctx(), "instant").await, &[instant], kind);
+            assert_close(&fraction_ir(ctx(), "rate").await, &[rate], kind);
         }
-        // Over the explicit bounds [1, 2, 4], 2 + 5 + 7/2 of 14 lie in [0, 3].
-        let rate = fraction_ir(histogram_points_ctx("histogram", HIVE_SERIES), "rate").await;
-        assert_eq!(rate, vec![0.75]);
     }
 
     /// Exponential buckets interpolate on a log scale, as Prometheus'
@@ -6392,11 +6387,13 @@ mod tests {
         assert_eq!(rows, [(r#"{"service.name":"svc-b"}"#.to_string(), 2.6)]);
     }
 
-    /// Per series, instant mode answers as the PromQL path does for
-    /// `histogram_fraction(0, 3, lat)` over one series per service.
+    /// Per series, instant mode answers `histogram_fraction(0, 3, …)` from each
+    /// series' latest point over bounds [1, 2, 4]: a = [3, 4, 2, 0] holds
+    /// (3 + 4 + 2/2) / 9 = 8/9 in (0, 3], b = [0, 2, 6, 0] holds
+    /// (0 + 2 + 6/2) / 8 = 5/8.
     #[tokio::test]
-    async fn per_series_histogram_fraction_matches_the_promql_path() {
-        let ctx = || hive_per_series_ctx("service_name", ["svc-a", "svc-b"]);
+    async fn per_series_histogram_fraction_reads_each_latest_point() {
+        let ctx = hive_per_series_ctx("service_name", ["svc-a", "svc-b"]);
         let d = doc(serde_json::json!({
             "irVersion": 10, "from": "metrics", "result": "series",
             "range": { "from": 1000, "to": 1000 },
@@ -6404,7 +6401,7 @@ mod tests {
                 "lower": 0, "upper": 3, "step": "1us", "mode": "instant", "lookback": "5m",
                 "per_series": true, "as": "f" } }]
         }));
-        let (df, _) = IrService::new(ctx())
+        let (df, _) = IrService::new(ctx)
             .plan(&d, "t", "d", 0)
             .await
             .unwrap()
@@ -6422,16 +6419,7 @@ mod tests {
                     .to_vec()
             })
             .collect();
-        let out = crate::query::metrics::MetricsService::new(ctx())
-            .query_range("histogram_fraction(0, 3, lat)", 0, 999, 1000, "t", "d")
-            .await
-            .unwrap();
-        let promql: Vec<f64> = ["svc-a", "svc-b"]
-            .iter()
-            .flat_map(|svc| histogram_value(&out, "value", Some(svc)))
-            .collect();
-        assert!(ir.len() == 2 && ir.iter().all(|v| v.is_finite()), "{ir:?}");
-        assert_eq!(ir, promql);
+        assert_close(&ir, &[8.0 / 9.0, 5.0 / 8.0], "per series");
     }
 
     /// `irVersion` 10 per-series histogram shapes execute: each yields a
