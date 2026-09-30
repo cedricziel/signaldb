@@ -294,6 +294,14 @@ span with no events or links, or unparsable stored JSON, never matches a leaf
 (so `not` matches it). These fields are filter-only; they cannot be projected,
 grouped or ordered.
 
+These names are reserved on traces: a span attribute literally named
+`events.name` is addressed as `span.events.name`. Each leaf matches
+independently, so `events.name eq retry and events.attributes.attempt eq 3` can
+be satisfied by two different events. Link ids compare as lowercase hex (the
+value you send is lowercased, except for `regex`). The fields are not available
+through correlate scopes: `parent.` and `<target>.` prefixes are rejected. An
+event or link that cannot be parsed is skipped; the others still count.
+
 ```jsonc
 // Spans with a retry event but no exception event.
 { "and": [

@@ -3678,17 +3678,24 @@ impl<'a> Lowering<'a> {
         leaf: &Leaf,
         field: &SpanListField,
     ) -> Result<Expr, QuerierError> {
-        let text = |v: &serde_json::Value| {
+        // Link ids are stored as lowercase hex.
+        let lower = matches!(
+            field,
+            SpanListField::LinkTraceId | SpanListField::LinkSpanId
+        );
+        let raw_text = |v: &serde_json::Value| {
             coerce(v, &ValueType::String)
                 .map(|l| string_of(&l))
                 .map_err(|e| QuerierError::InvalidInput(format!("field '{}': {e}", leaf.field)))
         };
+        let text =
+            |v: &serde_json::Value| raw_text(v).map(|t| if lower { t.to_lowercase() } else { t });
         let op = match leaf.op {
             ComparisonOp::Exists => SpanListOp::Exists,
             ComparisonOp::Eq => SpanListOp::Eq(text(self.require_value(leaf)?)?),
             ComparisonOp::Contains => SpanListOp::Contains(text(self.require_value(leaf)?)?),
             ComparisonOp::Regex => {
-                let pattern = text(self.require_value(leaf)?)?;
+                let pattern = raw_text(self.require_value(leaf)?)?;
                 SpanListOp::Regex(CompiledRegex(compile_regex_guard(&pattern)?, pattern))
             }
             ComparisonOp::In => {
@@ -4470,7 +4477,12 @@ impl SpanListMatchUdf {
                 f.write_str("a JSON array")
             }
             fn visit_seq<A: serde::de::SeqAccess<'de>>(self, mut seq: A) -> Result<(), A::Error> {
-                while let Some(el) = seq.next_element::<SpanListElement<'de>>()? {
+                while let Some(raw) = seq.next_element::<&'de serde_json::value::RawValue>()? {
+                    // A malformed element is skipped, so it cannot hide its
+                    // siblings whatever their order.
+                    let Ok(el) = serde_json::from_str::<SpanListElement<'de>>(raw.get()) else {
+                        continue;
+                    };
                     if self.0.element_matches(&el) {
                         // Stop reading; the unread tail makes serde_json
                         // report an error we deliberately ignore.
@@ -12070,9 +12082,11 @@ mod tests {
         ctx
     }
 
-    /// Six spans (`s0`..`s5`) with `events`/`links` JSON: s0 has events
+    /// Nine spans (`s0`..`s8`) with `events`/`links` JSON: s0 has events
     /// `start` and `retry` (attempt 3), s1 an `exception` event, s2 a link to
-    /// `aaaa`, s3 NULL events/links, s4 malformed JSON, s5 empty lists.
+    /// `aaaa`, s3 NULL events/links, s4 malformed JSON, s5 empty lists, s6/s7
+    /// a `retry` event and an event with a null name (both orders), s8 an
+    /// event named `say "hi" é`.
     fn traces_lists_ctx() -> SessionContext {
         let schema = Arc::new(Schema::new(vec![
             Field::new("span_id", DataType::Utf8, false),
@@ -12087,8 +12101,10 @@ mod tests {
         let batch = RecordBatch::try_new(
             schema.clone(),
             vec![
-                Arc::new(StringArray::from(vec!["s0", "s1", "s2", "s3", "s4", "s5"])),
-                Arc::new(Int64Array::from(vec![1_i64; 6])),
+                Arc::new(StringArray::from(vec![
+                    "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8",
+                ])),
+                Arc::new(Int64Array::from(vec![1_i64; 9])),
                 Arc::new(StringArray::from(vec![
                     Some(events0),
                     Some(events1),
@@ -12096,6 +12112,9 @@ mod tests {
                     None,
                     Some("not json"),
                     Some("[]"),
+                    Some(r#"[{"name":"retry"},{"name":null}]"#),
+                    Some(r#"[{"name":null},{"name":"retry"}]"#),
+                    Some(r#"[{"name":"say \"hi\" é"}]"#),
                 ])),
                 Arc::new(StringArray::from(vec![
                     None,
@@ -12104,6 +12123,9 @@ mod tests {
                     None,
                     Some("{{"),
                     Some("[]"),
+                    None,
+                    None,
+                    None,
                 ])),
             ],
         )
@@ -12144,8 +12166,12 @@ mod tests {
         use serde_json::json;
         // (field, op, value — null for `exists`, expected span ids)
         let cases = [
-            ("events.name", "eq", json!("retry"), vec!["s0"]),
             ("events.name", "eq", json!("nope"), vec![]),
+            ("events.name", "eq", json!("retry"), vec!["s0", "s6", "s7"]),
+            ("events.name", "eq", json!("say \"hi\" é"), vec!["s8"]),
+            ("links.trace_id", "eq", json!("CCCC"), vec!["s2"]),
+            ("links.span_id", "in", json!(["BBBB"]), vec!["s2"]),
+            ("links.trace_id", "contains", json!("AAA"), vec!["s2"]),
             (
                 "events.attributes.reason",
                 "eq",
@@ -12171,7 +12197,12 @@ mod tests {
                 vec!["s0"],
             ),
             ("events.name", "regex", json!("^exc.*n$"), vec!["s1"]),
-            ("events.name", "exists", json!(null), vec!["s0", "s1"]),
+            (
+                "events.name",
+                "exists",
+                json!(null),
+                vec!["s0", "s1", "s6", "s7", "s8"],
+            ),
             (
                 "events.attributes.attempt",
                 "exists",
@@ -12189,7 +12220,7 @@ mod tests {
             assert_eq!(span_ids_where(leaf.clone()).await, expected, "{leaf}");
             // `not` keeps exactly the complement: NULL/malformed/empty rows
             // never match a leaf, so they survive the negation.
-            let complement: Vec<_> = ["s0", "s1", "s2", "s3", "s4", "s5"]
+            let complement: Vec<_> = ["s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8"]
                 .into_iter()
                 .filter(|s| !expected.contains(s))
                 .collect();
@@ -12198,14 +12229,31 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn span_list_rejects_ordered_ops_at_plan_time() {
-        let svc = IrService::new(traces_lists_ctx());
-        let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
-            "result": "rows",
-            "pipeline": [ { "where": {"field": "events.name", "op": "ne", "value": "x"} } ]
-        }));
-        assert!(svc.plan(&d, "t", "d", 0).await.is_err());
+    async fn span_list_leaves_in_one_and_match_independently() {
+        use serde_json::json;
+        let both = |a: &str, b: &str| {
+            json!({"and": [
+                {"field": "events.name", "op": "eq", "value": a},
+                {"field": "events.name", "op": "eq", "value": b},
+            ]})
+        };
+        // s0 has `start` and `retry`; s1 has only `exception`.
+        assert_eq!(span_ids_where(both("start", "retry")).await, vec!["s0"]);
+        assert!(span_ids_where(both("start", "exception")).await.is_empty());
+        assert!(span_ids_where(both("exception", "retry")).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn span_list_rejects_unsupported_ops_at_plan_time() {
+        for op in ["ne", "gt"] {
+            let svc = IrService::new(traces_lists_ctx());
+            let d = doc(serde_json::json!({
+                "irVersion": 1, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "pipeline": [ { "where": {"field": "events.name", "op": op, "value": "x"} } ]
+            }));
+            assert!(svc.plan(&d, "t", "d", 0).await.is_err(), "{op}");
+        }
     }
 
     // exception.type/message/stacktrace are not stored as their own columns —
