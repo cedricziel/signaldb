@@ -5,6 +5,8 @@ status: living
 sources:
   - src/router/src/endpoints/schema.rs
   - src/common/src/schema_registry/**
+  - src/common/src/schema/type_authority.rs
+  - src/common/src/schema/type_authority/**
   - src/schema-model/src/**
   - src/signaldb-cli/src/commands/**
   - src/mcp-server/src/server.rs
@@ -106,9 +108,23 @@ The response lists every visible definition:
       { "namespace": "otel", "entity": "k8s.pod", "role": "identifying" }
     ]
   },
-  "hits": ["…the primary, then alternatives…"]
+  "hits": ["…the primary, then alternatives…"],
+  "canonical_types": [
+    {
+      "dataset": "production",
+      "signal": "traces",
+      "level": "resource",
+      "canonical_type": "string",
+      "source": "observed",
+      "hint_schema_url": null,
+      "off_type_count": 0
+    }
+  ]
 }
 ```
+
+`canonical_types` appears only once data for the key has been stored; see
+[Canonical types](#canonical-types).
 
 Deprecated keys carry their replacement (`"deprecated": {"reason": "renamed",
 "renamed_to": "http.response.status_code"}`). Entity lookups list identifying
@@ -138,6 +154,60 @@ storing it, mirroring `signaldb-cli admin schema validate` — see
 [the MCP tool catalogue](mcp.md#what-it-exposes) for the full list. Like
 every MCP tool call, these are subject to the server's total per-call
 deadline — see [Running it](mcp.md#running-it).
+
+## Canonical types
+
+A registry entry's `type` says what the convention _declares_. It is a hint.
+The type SignalDB actually stores and filters a key by is the tenant's
+**canonical type**: one of `string`, `int64`, `float64` or `bool`, fixed per
+dataset, signal (`traces`, `logs`, `metrics`, `profiles`) and attribute level
+(`resource`, `scope`, `record`). The same key can therefore have different
+canonical types in different datasets or at different levels.
+
+The canonical type comes from, in order:
+
+1. a pin you configured (below);
+2. the registry's declared type, but only when the sender's resource or scope
+   `schema_url` names a registry visible to the tenant (an
+   `opentelemetry.io/schemas/*` URL selects `otel`; a custom registry matches
+   its exact `schema_url`), and the declared type is a scalar;
+3. the type of the first value SignalDB stored for the key.
+
+Once set it does not change because later data disagrees. A value of another
+type, and any array, key-value list or byte value, is kept exactly as sent but
+cannot be filtered as a typed value; the sender's OTLP response carries a
+`partial_success` warning naming the keys. Because a declared type wins over
+what you send, an `int` convention with a sender that emits strings makes every
+one of those values off-type, so pin the type you actually send if it differs.
+
+The lookup shows the committed types and how many values arrived off-type:
+
+```bash
+curl -H "Authorization: Bearer $KEY" -H "X-Tenant-ID: acme" \
+  "http://localhost:3000/api/v1/schema/attributes?keys=retry.count,http.route"
+```
+
+Each entry in `canonical_types` has `dataset`, `signal`, `level`,
+`canonical_type`, `source` (`config`, `semconv` or `observed`),
+`hint_schema_url` and `off_type_count`. A key restricted to some datasets only
+sees those datasets' entries.
+
+**Pin a type** in the server configuration (an operator setting, not an API):
+
+```toml
+[[schema.attribute_types]]
+signal = "logs"      # logs | traces | metrics | profiles
+level = "record"     # resource | scope | record
+key = "retry.count"
+type = "int64"       # string | int64 | float64 | bool
+dataset = "prod"     # optional; omitted applies to every dataset of the tenant
+```
+
+A dataset entry wins over a tenant-wide one. Pinning retypes a field that data
+had already typed, for values written from then on; stored values are not
+rewritten. A tenant with its own `[auth.tenants.schema]` block uses only that
+block's pins, so repeat any global pin it needs. `signaldb.dist.toml` documents
+the block.
 
 ## Add your own conventions
 

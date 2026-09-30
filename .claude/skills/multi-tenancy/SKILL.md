@@ -5,6 +5,10 @@ user-invocable: false
 sources:
   - src/common/src/auth/**
   - src/common/src/config/mod.rs
+  - src/common/src/schema/type_authority.rs
+  - src/common/src/schema/type_authority/**
+  - src/common/src/schema_registry/type_hints.rs
+  - src/router/src/endpoints/schema.rs
   - src/common/src/ratelimit.rs
   - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/management.rs
@@ -33,6 +37,7 @@ Tenant (e.g., "acme", slug: "acme")
   |   +-- "production" (slug: "prod", default)
   |   +-- "staging" (slug: "staging")
   +-- Schema Config (optional per-tenant overrides)
+  +-- Attribute types (one canonical type per dataset/signal/level/key, in the catalog)
 ```
 
 ## Authentication Flow
@@ -310,10 +315,59 @@ API shape.
 | **Object Store**      | `{base}/{tenant_slug}/{dataset_slug}/{table}/`      |
 | **DataFusion**        | Per-tenant catalog in SessionContext                |
 | **Storage Backend**   | Per-dataset storage override                        |
+| **Type registry**     | `attribute_types` catalog rows keyed `(tenant_id, dataset_id, signal, level, key)` |
 
 Per-tenant WAL instances are cached and reopened on demand, but the cache is soft-capped (`[wal].max_instances`, default 256); see `docs/operations/wal-persistence.md#instance-cap`.
 
 The Query IR `correlate` stage (span-to-parent join, `irVersion` 8) never crosses this boundary: both sides of the join scan the same tenant/dataset the query is already scoped to, so a parent span stored under another tenant or dataset is always treated as missing, the same as a genuinely absent one.
+
+## Attribute Type Authority
+
+Attribute values are stored typed. The canonical type of a field is one of
+`string`, `int64`, `float64`, `bool`, and it is scoped to **tenant + dataset +
+signal + attribute level (resource/scope/record) + key**, so a resource
+`service.name` and a record `service.name` are separate fields, and two tenants
+(or two datasets) sending the same key with different types never affect each
+other (`src/common/src/schema/type_authority/`).
+
+- **Precedence**: a `[[schema.attribute_types]]` pin, else a semconv type hint
+  (only when the resource/scope `schema_url` names a visible registry; any
+  `opentelemetry.io/schemas/*` URL selects the bundled `otel` registry, other
+  URLs match a registry's exact `schema_url`), else the first observed scalar
+  type. Precedence only picks the typed home; a sender's value is never
+  rewritten.
+- **First write wins**: the writer establishes the type with an atomic
+  first-seen insert into the `attribute_types` catalog table
+  (`Catalog::establish_attribute_type`); an existing row is never updated by
+  data. A value of another type, and any array, kvlist or bytes value, goes to
+  the `{container}_residue` column instead, and the field's `off_type_count`
+  grows. Only an operator pin changes an established type: building a scope
+  applies the pin, logs a warning and counts `reason=pin_conflict`, and stored
+  values are not retyped.
+- **Pins** are per tenant and optionally per dataset. A dataset-specific entry
+  wins over one without `dataset`. A tenant that carries its own schema block
+  (`[auth.tenants.schema]`) replaces the **whole** global `[schema]` block
+  (`Configuration::get_tenant_schema_config`), so its pins, materialized
+  labels, warm index and `default_schemas` all come from that block and
+  nothing is inherited from the global one. Keep every pin the tenant needs in
+  its own list.
+- **Caching**: the writer caches one `SignalScope` per (tenant, dataset, signal)
+  and resolves each distinct key once per batch. `TypeAuthority::invalidate()`
+  drops the cache but has no production caller today; a schema-version bump or
+  a changed pin takes effect on the next writer process start. The acceptor
+  only reads (`TypeSnapshots`, refreshed in the background after a 30s TTL) to
+  warn the sender about off-type values in OTLP `partial_success`; it never
+  establishes or places anything.
+- **Discovery**: `GET /api/v1/schema/attributes/{key}` and the batch form
+  `GET /api/v1/schema/attributes?keys=a,b` (`schema:read`; MCP
+  `resolve_attribute`) return `canonical_types`, one entry per dataset/signal/level
+  the key has been seen in, with `canonical_type`, `source`
+  (`config`/`semconv`/`observed`), `hint_schema_url` and `off_type_count`. The field is
+  omitted when nothing is established, and a dataset-restricted key only sees its
+  own datasets (`src/router/src/endpoints/schema.rs`).
+
+Tenant schema overrides therefore cover: materialized labels, attribute type
+pins, the warm index, and the default signal set.
 
 ## Slug-Based Naming
 
