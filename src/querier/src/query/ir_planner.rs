@@ -1042,24 +1042,6 @@ fn reject_pseudo_source(doc: &Document) -> Result<(), QuerierError> {
     Ok(())
 }
 
-/// The `irVersion` 10 histogram shapes that validate but have no lowering
-/// yet: refused after validation, so an invalid document still gets its 400,
-/// as `Unsupported` (501).
-fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
-    if let Some(h) = doc
-        .pipeline
-        .iter()
-        .filter_map(HistStage::of)
-        .find(|h| h.per_series)
-    {
-        return Err(QuerierError::Unsupported(format!(
-            "{} per_series is not supported yet",
-            h.name
-        )));
-    }
-    Ok(())
-}
-
 fn unsupported_stage(stage: &Stage) -> QuerierError {
     QuerierError::Unsupported(format!("{} stage is not supported yet", stage.name()))
 }
@@ -1155,7 +1137,6 @@ async fn plan_operand(
     };
     validate(doc, &SourceRegistry::core(), &resolver)
         .map_err(|e| QuerierError::InvalidInput(e.to_string()))?;
-    reject_unexecutable(doc)?;
 
     // Resolve the time window once against the injected clock.
     let window = resolve_window(doc, now_ns)?;
@@ -1260,7 +1241,10 @@ async fn plan_operand(
             _ if let Some(h) = HistStage::of(stage) => {
                 let df = lowering.lower_histogram(df, &h, &stage_window)?;
                 // Series stages after it read it as a Series.
-                if doc.pipeline[i + 1..]
+                if h.per_series {
+                    metric_frame = true;
+                    df
+                } else if doc.pipeline[i + 1..]
                     .iter()
                     .any(metric_series::is_frame_stage)
                 {
@@ -2345,6 +2329,8 @@ impl Lowering<'_> {
     /// its increase). The output is shaped like `lower_aggregate`'s `step`
     /// output (`bucket`, label columns, one value).
     /// Groups stay per metric, but the Series is labelled by `by` alone.
+    /// `per_series` groups by each series' label set instead and yields the
+    /// Series frame (`bucket`, `__labels`, `value`).
     fn lower_histogram(
         &mut self,
         df: DataFrame,
@@ -2369,10 +2355,16 @@ impl Lowering<'_> {
             window_ns,
             offset_ns: 0,
         };
-        let df = histogram_series(df, &groups, &eval, h.as_name)?;
-
         self.aggregated = true;
         self.series_shaped = true;
+        if h.per_series {
+            let labels = metric_series::labels::series_labels_of(&self.schema_cols);
+            let groups = [(labels, metric_series::labels::LABELS_COLUMN.to_string())];
+            self.col_of = HashMap::from([(h.as_name.to_string(), "value".to_string())]);
+            let df = histogram_series(df, &groups, &eval, "value")?;
+            return metric_series::histogram_per_series(df);
+        }
+        let df = histogram_series(df, &groups, &eval, h.as_name)?;
         let mut new_col_of = HashMap::new();
         for (by, alias) in h.by.iter().zip(&by_aliases) {
             new_col_of.insert(by.clone(), alias.clone());
@@ -6187,32 +6179,201 @@ mod tests {
         );
     }
 
-    /// `irVersion` 10 histogram shapes validate but are refused before any
-    /// scan until their lowering lands.
+    /// [`HIVE_SERIES`] with `column` set to `values[0]` on series `a` and
+    /// `values[1]` on series `b`.
+    fn hive_per_series_ctx(column: &str, values: [&str; 2]) -> SessionContext {
+        let batch = histogram_points("histogram", HIVE_SERIES);
+        let mut cols = batch.columns().to_vec();
+        cols[batch.schema().index_of(column).unwrap()] = Arc::new(StringArray::from_iter_values(
+            HIVE_SERIES.iter().map(|r| values[usize::from(r.0 == "b")]),
+        ));
+        points_ctx(RecordBatch::try_new(batch.schema(), cols).unwrap())
+    }
+
+    /// A per-series histogram stage at the one instant 40, reading every
+    /// point: the output columns and its `(bucket, __labels, value)` rows.
+    async fn per_series_rows(
+        ctx: SessionContext,
+        stage: &str,
+        mut body: serde_json::Value,
+    ) -> Result<(Vec<String>, Vec<(i64, String, f64)>), QuerierError> {
+        use datafusion::arrow::array::AsArray;
+        use datafusion::arrow::datatypes::{Float64Type, TimestampNanosecondType};
+
+        body["per_series"] = true.into();
+        body["as"] = "v".into();
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "result": "series",
+            "range": { "from": 40, "to": 40 },
+            "pipeline": [{ stage: body }]
+        }));
+        let (df, _) = IrService::new(ctx).plan(&d, "t", "d", 0).await?.unwrap();
+        let names = df
+            .schema()
+            .fields()
+            .iter()
+            .map(|f| f.name().clone())
+            .collect();
+        let mut rows = Vec::new();
+        for b in df.collect().await? {
+            let t = b.column(0).as_primitive::<TimestampNanosecondType>();
+            let labels = b.column(1).as_string::<i32>();
+            let v = b.column(2).as_primitive::<Float64Type>();
+            rows.extend(
+                (0..b.num_rows()).map(|i| (t.value(i), labels.value(i).to_string(), v.value(i))),
+            );
+        }
+        Ok((names, rows))
+    }
+
+    /// `per_series` evaluates each series on its own and labels it by its own
+    /// label set less `metric.name`, where the merged path would merge them.
     #[tokio::test]
-    async fn unexecutable_histogram_shapes_are_not_supported_yet() {
-        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
-        for (from, pipeline, expected) in [
+    async fn histogram_stages_per_series_keep_each_series_labels() {
+        let (a, b) = (r#"{"service.name":"svc-a"}"#, r#"{"service.name":"svc-b"}"#);
+        // a's increase is [2,3,2,0] and b's [0,2,5,0] (see [`HIVE_SERIES`]).
+        for (stage, body, want) in [
             (
-                "metrics",
-                serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
-                "histogram_quantile per_series is not supported yet",
+                "histogram_quantile",
+                serde_json::json!({ "q": 0.5, "step": "10ns", "window": "40ns" }),
+                [1.5, 2.6],
             ),
             (
-                "metrics",
-                serde_json::json!([{ "histogram_fraction": { "lower": 0, "upper": 1, "step": "1m", "per_series": true, "as": "f" } }]),
-                "histogram_fraction per_series is not supported yet",
+                "histogram_fraction",
+                serde_json::json!({ "lower": 0, "upper": 2, "step": "10ns", "window": "40ns" }),
+                [5.0 / 7.0, 2.0 / 7.0],
             ),
         ] {
+            let ctx = hive_per_series_ctx("service_name", ["svc-a", "svc-b"]);
+            let (names, rows) = per_series_rows(ctx, stage, body).await.unwrap();
+            assert_eq!(names, ["bucket", "__labels", "value"], "{stage}");
+            assert_eq!(rows.len(), 2, "{stage}: {rows:?}");
+            for ((t, labels, v), (want_labels, want)) in
+                rows.iter().zip([(a, want[0]), (b, want[1])])
+            {
+                assert_eq!((*t, labels.as_str()), (40, want_labels), "{stage}");
+                assert!((v - want).abs() < 1e-9, "{stage}: {v} != {want}");
+            }
+        }
+    }
+
+    /// Two metrics whose series share every label but the name collide once
+    /// the name is dropped: a 400, as in Prometheus.
+    #[tokio::test]
+    async fn per_series_histograms_with_one_label_set_are_invalid_input() {
+        let ctx = hive_per_series_ctx("metric_name", ["lat", "lat2"]);
+        let body = serde_json::json!({ "q": 0.5, "step": "10ns", "window": "40ns" });
+        let err = per_series_rows(ctx, "histogram_quantile", body)
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("same labelset")),
+            "{err}"
+        );
+    }
+
+    /// Series stages read a per-series histogram as the Series it is.
+    #[tokio::test]
+    async fn series_stages_read_a_per_series_histogram() {
+        use datafusion::arrow::array::AsArray;
+        use datafusion::arrow::datatypes::Float64Type;
+
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "result": "series",
+            "range": { "from": 40, "to": 40 },
+            "pipeline": [
+                { "histogram_quantile": { "q": 0.5, "step": "10ns", "window": "40ns", "per_series": true, "as": "v" } },
+                { "filter": { "op": "gt", "value": 2.0 } }
+            ]
+        }));
+        let ctx = hive_per_series_ctx("service_name", ["svc-a", "svc-b"]);
+        let (df, _) = IrService::new(ctx)
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let batches = df.collect().await.unwrap();
+        let rows: Vec<(String, f64)> = batches
+            .iter()
+            .flat_map(|b| {
+                let l = b.column_by_name("__labels").unwrap().as_string::<i32>();
+                let v = b
+                    .column_by_name("value")
+                    .unwrap()
+                    .as_primitive::<Float64Type>();
+                (0..b.num_rows())
+                    .map(|i| (l.value(i).to_string(), v.value(i)))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        assert_eq!(rows, [(r#"{"service.name":"svc-b"}"#.to_string(), 2.6)]);
+    }
+
+    /// Per series, instant mode answers as the PromQL path does for
+    /// `histogram_fraction(0, 3, lat)` over one series per service.
+    #[tokio::test]
+    async fn per_series_histogram_fraction_matches_the_promql_path() {
+        let ctx = || hive_per_series_ctx("service_name", ["svc-a", "svc-b"]);
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "result": "series",
+            "range": { "from": 1000, "to": 1000 },
+            "pipeline": [{ "histogram_fraction": {
+                "lower": 0, "upper": 3, "step": "1us", "mode": "instant", "lookback": "5m",
+                "per_series": true, "as": "f" } }]
+        }));
+        let (df, _) = IrService::new(ctx())
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let ir: Vec<f64> = df
+            .collect()
+            .await
+            .unwrap()
+            .iter()
+            .flat_map(|b| {
+                use datafusion::arrow::array::AsArray;
+                b.column(2)
+                    .as_primitive::<datafusion::arrow::datatypes::Float64Type>()
+                    .values()
+                    .to_vec()
+            })
+            .collect();
+        let out = crate::query::metrics::MetricsService::new(ctx())
+            .query_range("histogram_fraction(0, 3, lat)", 0, 999, 1000, "t", "d")
+            .await
+            .unwrap();
+        let promql: Vec<f64> = ["svc-a", "svc-b"]
+            .iter()
+            .flat_map(|svc| histogram_value(&out, "value", Some(svc)))
+            .collect();
+        assert!(ir.len() == 2 && ir.iter().all(|v| v.is_finite()), "{ir:?}");
+        assert_eq!(ir, promql);
+    }
+
+    /// `irVersion` 10 per-series histogram shapes execute: each yields a
+    /// Series frame.
+    #[tokio::test]
+    async fn per_series_histogram_shapes_execute() {
+        let svc = IrService::new(histogram_ctx_with_leak("gauge"));
+        for pipeline in [
+            serde_json::json!([{ "histogram_quantile": { "q": 0.5, "step": "1m", "per_series": true, "as": "p" } }]),
+            serde_json::json!([{ "histogram_fraction": {
+                "lower": 0.0, "upper": 1.0, "step": "1m", "per_series": true, "as": "f" } }]),
+        ] {
             let d = doc(serde_json::json!({
-                "irVersion": 10, "from": from, "step": "1m", "range": { "from": 0, "to": 1000 },
+                "irVersion": 10, "from": "metrics", "step": "1m", "range": { "from": 0, "to": 1000 },
                 "result": "series", "pipeline": pipeline
             }));
-            let err = svc.plan(&d, "t", "d", 0).await.unwrap_err();
-            assert!(
-                matches!(&err, QuerierError::Unsupported(m) if m == expected),
-                "{err}"
-            );
+            let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+            let names: Vec<String> = df
+                .schema()
+                .fields()
+                .iter()
+                .map(|f| f.name().clone())
+                .collect();
+            assert_eq!(names, ["bucket", "__labels", "value"]);
+            df.collect().await.unwrap();
         }
     }
 

@@ -1038,8 +1038,9 @@ value at every instant.
 
 ### Series algebra
 
-These stages take a Series from `sample`, `histogram_quantile` (labelled by
-its `by` labels, at its `step`) or `vector` and return a Series, with
+These stages take a Series from `sample`, `histogram_quantile` or
+`histogram_fraction` (labelled by its `by` labels, or with `per_series` by
+each series' labels, at its `step`) or `vector` and return a Series, with
 PromQL's semantics: they are what a PromQL expression lowers to. Over a
 Series from an `aggregate` with `step` they are not supported yet (501).
 
@@ -1270,6 +1271,13 @@ and labelled `t`:
 - **`lookback`** — instant mode's lookback, default `step`. Both are executed;
   neither is rejected as unsupported.
 - **`as`** — the output value column name.
+- **`per_series`** (IR v10) — evaluate each series on its own instead of
+  merging, the shape of PromQL's `histogram_quantile(q, rate(x[w]))` without
+  a `sum by (le)`. The result is a Series (`bucket`, `__labels`, `value`)
+  with one series per input series, labelled by its label set less
+  `metric.name`; Series stages can follow it. Two series left with one label
+  set once the name is dropped are a 400 ("same labelset"). It cannot be
+  combined with `by`.
 
 This is deliberately a distinct stage from the `aggregate` stage's
 `fn: "quantile"` (`{"fn": "quantile", "of": "some.numeric.field", "arg": 0.95,
