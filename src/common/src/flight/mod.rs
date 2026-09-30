@@ -46,6 +46,11 @@ pub mod schema;
 /// `router::endpoints::query`) and excludes it from batch decoding.
 pub const CORRELATE_REPORT_APP_METADATA_PREFIX: &[u8] = b"correlate_report:";
 
+/// The trailer an older querier sends for a truncated join, and the form a
+/// report carrying only `row_limit` still takes, so a router and querier of
+/// adjacent releases understand each other in either rollout order.
+const LEGACY_CORRELATE_TRUNCATED_APP_METADATA: &[u8] = br#"{"correlate_truncated":true}"#;
+
 /// What a `correlate` stage did while joining, reported by the querier to
 /// the router in a Flight trailer (see
 /// [`CORRELATE_REPORT_APP_METADATA_PREFIX`]) so the router can surface it
@@ -72,6 +77,13 @@ impl CorrelateReport {
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
     }
+
+    fn row_limit_only() -> Self {
+        Self {
+            row_limit: true,
+            ..Self::default()
+        }
+    }
 }
 
 /// The `[start, end]` bound (unix epoch nanoseconds) a signal `correlate`
@@ -85,17 +97,22 @@ pub struct CorrelateWindowReport {
 
 /// Build the trailing `FlightData` message reporting a `correlate` stage's
 /// outcome (see [`CORRELATE_REPORT_APP_METADATA_PREFIX`]), or `None` when
-/// `report` [`CorrelateReport::is_empty`] or (never expected in practice, since
-/// every field is a plain bool/int) it fails to serialize.
+/// `report` [`CorrelateReport::is_empty`] or (never expected in practice)
+/// it fails to serialize.
 pub fn correlate_report_trailer(report: &CorrelateReport) -> Option<FlightData> {
     if report.is_empty() {
         return None;
     }
-    let mut app_metadata = CORRELATE_REPORT_APP_METADATA_PREFIX.to_vec();
-    if let Err(e) = serde_json::to_writer(&mut app_metadata, report) {
-        tracing::error!(error = %e, "failed to serialize CorrelateReport for the Flight trailer");
-        return None;
-    }
+    let app_metadata = if *report == CorrelateReport::row_limit_only() {
+        LEGACY_CORRELATE_TRUNCATED_APP_METADATA.to_vec()
+    } else {
+        let mut app_metadata = CORRELATE_REPORT_APP_METADATA_PREFIX.to_vec();
+        if let Err(e) = serde_json::to_writer(&mut app_metadata, report) {
+            tracing::error!(error = %e, "failed to serialize CorrelateReport for the Flight trailer");
+            return None;
+        }
+        app_metadata
+    };
     Some(FlightData {
         data_header: vec![].into(),
         data_body: vec![].into(),
@@ -111,6 +128,9 @@ pub fn correlate_report_trailer(report: &CorrelateReport) -> Option<FlightData> 
 pub fn parse_correlate_report_trailer(
     app_metadata: &[u8],
 ) -> Option<Result<CorrelateReport, serde_json::Error>> {
+    if app_metadata == LEGACY_CORRELATE_TRUNCATED_APP_METADATA {
+        return Some(Ok(CorrelateReport::row_limit_only()));
+    }
     let payload = app_metadata.strip_prefix(CORRELATE_REPORT_APP_METADATA_PREFIX)?;
     Some(serde_json::from_slice(payload))
 }
@@ -261,6 +281,20 @@ mod correlate_report_tests {
         let decoded = parse_correlate_report_trailer(&trailer.app_metadata)
             .expect("trailer carries the report prefix")
             .expect("trailer JSON parses");
+        assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn row_limit_only_report_uses_the_legacy_trailer_both_ways() {
+        let report = CorrelateReport::row_limit_only();
+        let trailer = correlate_report_trailer(&report).expect("non-empty report has a trailer");
+        assert_eq!(
+            trailer.app_metadata.as_ref(),
+            LEGACY_CORRELATE_TRUNCATED_APP_METADATA
+        );
+        let decoded = parse_correlate_report_trailer(&trailer.app_metadata)
+            .expect("legacy trailer is recognized")
+            .expect("legacy trailer parses");
         assert_eq!(decoded, report);
     }
 
