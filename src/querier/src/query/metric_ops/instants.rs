@@ -14,8 +14,25 @@ use datafusion::logical_expr::{
 
 use crate::query::error::QuerierError;
 
-/// Most evaluation instants one query may have (Prometheus' 11k-point limit).
-const MAX_INSTANTS: i64 = 11_000;
+/// Most steps one query's range may span, as Prometheus limits
+/// `(end − start) / step`: 11 001 evaluation instants.
+pub(crate) const MAX_STEPS: i64 = 11_000;
+
+/// Most instants any one grid may hold, a subquery's inner grid included,
+/// which [`MAX_STEPS`] does not bound.
+pub(crate) const MAX_GRID_INSTANTS: i64 = 1_000_000;
+
+/// Reject a grid from `first` to `last` at `step` of more than
+/// [`MAX_GRID_INSTANTS`] instants.
+pub(crate) fn check_grid(first: i64, last: i64, step: i64) -> Result<(), QuerierError> {
+    if last.saturating_sub(first) / step.max(1) >= MAX_GRID_INSTANTS {
+        return Err(QuerierError::InvalidInput(format!(
+            "a grid evaluates more than {MAX_GRID_INSTANTS} instants; \
+             increase the subquery step or narrow its range"
+        )));
+    }
+    Ok(())
+}
 
 pub(crate) fn invalid(msg: impl Into<String>) -> DataFusionError {
     DataFusionError::External(Box::new(QuerierError::InvalidInput(msg.into())))
@@ -45,22 +62,28 @@ pub(super) fn covering_instants(first: i64, last: i64, step: i64, window: i64) -
     ])
 }
 
-/// Rejects a non-positive `step`/`window` and more than 11 000 evaluation
-/// instants `first + k·step <= last` (Prometheus' points-per-series limit).
+/// Rejects a non-positive `step` or `window`.
+pub(crate) fn check_positive(step: i64, window: i64) -> Result<(), QuerierError> {
+    if step <= 0 || window <= 0 {
+        return Err(QuerierError::InvalidInput(
+            "step and range window must be positive".into(),
+        ));
+    }
+    Ok(())
+}
+
+/// Rejects a non-positive `step`/`window` and a range `first..=last` of more
+/// than [`MAX_STEPS`] steps (Prometheus' `(end − start) / step > 11000`).
 pub(crate) fn check_instants(
     first: i64,
     last: i64,
     step: i64,
     window: i64,
 ) -> Result<(), QuerierError> {
-    if step <= 0 || window <= 0 {
-        return Err(QuerierError::InvalidInput(
-            "step and range window must be positive".into(),
-        ));
-    }
-    if last.saturating_sub(first) / step >= MAX_INSTANTS {
+    check_positive(step, window)?;
+    if last.saturating_sub(first) / step > MAX_STEPS {
         return Err(QuerierError::InvalidInput(format!(
-            "the query spans more than {MAX_INSTANTS} evaluation instants; increase the step or shrink the range"
+            "the range spans more than {MAX_STEPS} steps; increase the step or narrow the range"
         )));
     }
     Ok(())
@@ -68,8 +91,11 @@ pub(crate) fn check_instants(
 
 /// Scalar UDF `covering_instants(ts, first_instant, last_instant, step_ns, window_ns) -> List<Int64>`:
 /// every evaluation instant `t = first + k*step` (`t <= last`) whose window
-/// `(t - window, t]` contains `ts`. The bounds must be constants; they are
-/// checked by [`check_instants`].
+/// `(t - window, t]` contains `ts`. The bounds must be constants. A
+/// non-positive `step`/`window`, or a point covered by instants more than
+/// [`MAX_STEPS`] steps apart, is an `InvalidInput` error; the range itself
+/// is bounded at plan time by [`check_instants`], for the document's own
+/// range only (a subquery's widened inner range is not).
 pub fn covering_instants_udf() -> ScalarUDF {
     ScalarUDF::new_from_impl(CoveringInstants {
         signature: Signature::any(5, Volatility::Immutable),
@@ -131,8 +157,13 @@ impl ScalarUDFImpl for CoveringInstants {
             (0..args.number_rows).for_each(|_| out.append_null());
             return Ok(ColumnarValue::Array(Arc::new(out.finish())));
         };
-        check_instants(first, last, step, window)
-            .map_err(|e| DataFusionError::External(Box::new(e)))?;
+        check_positive(step, window).map_err(|e| DataFusionError::External(Box::new(e)))?;
+        let steps = last.saturating_sub(first).max(-1) / step;
+        if ((window - 1) / step).min(steps) > MAX_STEPS {
+            return Err(invalid(format!(
+                "range window spans more than {MAX_STEPS} evaluation steps; increase the step or shrink the window"
+            )));
+        }
         for row in 0..args.number_rows {
             if ts.is_null(row) {
                 out.append_null();
@@ -230,13 +261,15 @@ mod tests {
             [1, 0, 9, 0, 5],
             [1, 0, 9, 1, 0],
             [1, 0, 9, -1, 5],
-            [1, 0, 11_000, 1, 5],
-            [1, i64::MIN, i64::MAX, 1, 5],
+            [1, 0, 20_000, 1, 11_002],
         ] {
             let err = QuerierError::from(invoke(bad.map(Some)).unwrap_err());
             assert!(matches!(err, QuerierError::InvalidInput(_)), "{bad:?}");
         }
-        assert!(invoke([1, 0, 10_999, 1, 11_000].map(Some)).is_ok());
+        // 11 001 instants, 11 000 steps apart.
+        assert!(invoke([1, 0, 20_000, 1, 11_001].map(Some)).is_ok());
+        // A subquery's widened range is bounded per point, not in total.
+        assert!(invoke([1, i64::MIN, i64::MAX, 1, 5].map(Some)).is_ok());
         // A wide window over a short query range covers few instants.
         assert!(invoke([1, 0, 9, 1, 11_001].map(Some)).is_ok());
         // A window of many steps is bounded by `last`.
@@ -246,8 +279,12 @@ mod tests {
 
     #[test]
     fn check_instants_caps_the_evaluation_instants() {
-        assert!(check_instants(0, 10_999, 1, 1).is_ok());
-        assert!(check_instants(0, 11_000, 1, 1).is_err());
+        // Exactly 11 000 steps at any offset is fine, one more is not.
+        assert!(check_instants(5, 5 + MAX_STEPS * 10, 10, 10).is_ok());
+        assert!(check_instants(5, 5 + (MAX_STEPS + 1) * 10, 10, 10).is_err());
+        assert!(check_instants(0, 11_000, 1, 1).is_ok());
+        assert!(check_instants(0, 11_001, 1, 1).is_err());
+        assert!(check_instants(i64::MIN, i64::MAX, 1, 1).is_err());
         assert!(check_instants(5, 0, 1, 1).is_ok());
         assert!(check_instants(0, 1, 1, 0).is_err());
     }

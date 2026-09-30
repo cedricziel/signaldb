@@ -4012,7 +4012,7 @@ mod tests {
     async fn histogram_quantile_over_too_many_instants_is_invalid_input() {
         let service = histogram_service_with_leak("gauge");
         let err = service
-            .query_range("histogram_quantile(0.5, latency)", 0, 11_000, 1, "t", "d")
+            .query_range("histogram_quantile(0.5, latency)", 0, 11_001, 1, "t", "d")
             .await
             .unwrap_err();
         assert!(

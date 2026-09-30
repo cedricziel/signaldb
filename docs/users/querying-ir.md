@@ -936,8 +936,10 @@ cross-series arithmetic is the [`binop`](#binop) stage of a metric Series.
 
 `irVersion` 10 evaluates metrics the way Prometheus does: at the instants
 `t = from + k·step` of the range (`step` on the stage, else the document's
-`step`), per series, into a **Series**. At most 11,000 instants per query;
-more is a 400.
+`step`), per series, into a **Series**. A range may span at most 11,000
+steps (11,001 instants) of its output step, as in Prometheus; more is a
+400. The instants an `over_time` reads its input at do not count toward
+that limit, but no grid may hold more than 1,000,000 instants.
 
 A dataset with no `metrics` table yet reads as an empty one, so it still
 answers what PromQL answers from nothing: `sum(x) or vector(0)` is `{}` = 0,
@@ -1056,7 +1058,7 @@ instant.
 | `fn`      | `sum`, `avg`, `min`, `max`, `count`, `group`, `stddev`, `stdvar`, `quantile`, `topk`, `bottomk`, `count_values` |
 | `by`      | group by exactly these labels (`metric.name` only when listed)                            |
 | `without` | group by every label but these and `metric.name`                                          |
-| `arg`     | `topk`/`bottomk`: the integer k; `quantile`: the quantile in `[0, 1]`                     |
+| `arg`     | `topk`/`bottomk`: k, truncated (below 1 selects nothing); `quantile`: the quantile in `[0, 1]` |
 | `label`   | `count_values`: the label each distinct value is written to                               |
 
 With neither `by` nor `without` every series is one group with no labels.
@@ -1064,7 +1066,8 @@ The result is labelled by the group, except `topk`/`bottomk`, which keep the
 k largest (smallest) series of each group with all their labels (`NaN` ranks
 last; ties by label set). `min`/`max` ignore `NaN` unless every value is
 `NaN`; `stddev`/`stdvar` are the population deviation/variance; `quantile`
-interpolates linearly between the closest ranks. `count_values` counts the
+interpolates linearly between the closest ranks, `NaN` ranking lowest (as
+in Prometheus, so `quantile(1, …)` of `1`, `2`, `NaN` is `2`). `count_values` counts the
 series per distinct value, the value written to `label` as Prometheus prints
 it (`1`, `0.5`, `+Inf`, `NaN`).
 
@@ -1175,9 +1178,10 @@ names and values.
 #### `absent`
 
 `{ "absent": { "labels": { "job": "api" } } }`: at every instant where the
-input has no series, one series labelled `labels` (default none) with value
-`1`; nothing where it has any. PromQL's `absent(sel)` passes the selector's
-equality matchers as `labels`.
+input has no series, one series labelled `labels` (default none; an empty
+value is no label) with value `1`; nothing where it has any. PromQL's
+`absent(sel)` passes the selector's equality matchers as `labels` by
+Prometheus's rule: a label matched more than once is left out.
 
 #### `over_time`
 

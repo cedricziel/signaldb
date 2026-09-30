@@ -331,7 +331,7 @@ async fn absent_is_one_labelled_series_where_the_input_has_none() {
         "range": { "from": 60 * S, "to": 180 * S }, "result": "series",
         "pipeline": [
             { "sample": { "fn": "latest", "lookback": "30s" } },
-            { "absent": { "labels": { "job": "x" } } }
+            { "absent": { "labels": { "job": "x", "pod": "" } } }
         ]
     });
     let got = series_rows(&run(&points, doc).await.unwrap());
@@ -541,4 +541,58 @@ async fn relabelling_two_series_to_one_labelset_is_invalid_input() {
     let join =
         json!([{ "labels": { "join": { "dst": "code", "separator": "", "src": ["nope"] } } }]);
     same_labelset_error(&points, join).await;
+}
+
+#[tokio::test]
+async fn topk_truncates_k_and_selects_nothing_below_one() {
+    let top = |k: f64| json!([{ "reduce": { "fn": "topk", "arg": k } }]);
+    assert_eq!(
+        over_two_series(top(1.9)).await,
+        rows(&[(60, B, 10.0), (120, B, 20.0)])
+    );
+    assert!(over_two_series(top(0.5)).await.is_empty());
+    assert!(over_two_series(top(-3.0)).await.is_empty());
+}
+
+#[tokio::test]
+async fn a_subquerys_inner_instants_are_not_held_to_the_step_limit() {
+    // 1d at 5s is 17280 inner steps; the query itself is one instant.
+    let points = [gauge(60 * S, "a", 1.0, json!({}))];
+    let params = ql_ir::PromqlParams::instant(120 * S);
+    let doc = ql_ir::promql_to_ir("max_over_time(temperature[1d:5s])", &params).unwrap();
+    let got = series_rows(
+        &run(&points, serde_json::to_value(doc).unwrap())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(got, rows(&[(120, r#"{"service.name":"svc"}"#, 1.0)]));
+}
+
+#[tokio::test]
+async fn a_subquerys_inner_instants_are_still_bounded() {
+    // 30d at 1s is about 2.6M inner instants over a one-instant query.
+    let params = ql_ir::PromqlParams::instant(120 * S);
+    let doc = ql_ir::promql_to_ir("max_over_time(vector(1)[30d:1s])", &params).unwrap();
+    let err = run(&[], serde_json::to_value(doc).unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, crate::query::error::QuerierError::InvalidInput(m) if m.contains("instants")),
+        "{err}"
+    );
+}
+
+#[tokio::test]
+async fn a_subquerys_inner_grid_over_a_selector_is_bounded() {
+    // 30d at 1s is about 2.6M inner instants a real selector is sampled at.
+    let points = [gauge(60 * S, "a", 1.0, json!({}))];
+    let params = ql_ir::PromqlParams::instant(120 * S);
+    let doc = ql_ir::promql_to_ir("max_over_time(temperature[30d:1s])", &params).unwrap();
+    let err = run(&points, serde_json::to_value(doc).unwrap())
+        .await
+        .unwrap_err();
+    assert!(
+        matches!(&err, crate::query::error::QuerierError::InvalidInput(m) if m.contains("instants")),
+        "{err}"
+    );
 }

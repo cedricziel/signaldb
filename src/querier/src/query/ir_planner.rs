@@ -69,7 +69,7 @@ use super::error::QuerierError;
 use super::metric_ops::hist::HistStat;
 use super::metric_ops::hist_math::Mode;
 use super::metric_ops::hist_plan::{HistEval, histogram_series};
-use super::metric_ops::instants::check_instants;
+use super::metric_ops::instants::{check_instants, check_positive};
 use super::metric_ops::range_math::RangeFn;
 use super::metric_ops::range_plan::{RangeEval, range_series};
 use super::metric_series;
@@ -1082,6 +1082,19 @@ pub(crate) async fn plan_document(
     doc: &Document,
     request: PlanRequest<'_>,
 ) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
+    if let Ok(window) = resolve_window(doc, request.now_ns) {
+        metric_series::check_document_steps(doc, window)?;
+    }
+    plan_operand(ctx, doc, request).await
+}
+
+/// [`plan_document`] without the document-level step limit, for a `binop`
+/// operand, whose range a subquery may have widened.
+async fn plan_operand(
+    ctx: &SessionContext,
+    doc: &Document,
+    request: PlanRequest<'_>,
+) -> Result<Option<(DataFrame, ResolvedWindow, Option<Arc<AtomicBool>>)>, QuerierError> {
     let operand_request = request.clone();
     let PlanRequest {
         tenant_slug,
@@ -1184,7 +1197,7 @@ pub(crate) async fn plan_document(
     for stage in &doc.pipeline {
         match stage {
             _ if let Some(h) = HistStage::of(stage) => {
-                lookback = lookback.max(histogram_step_window(&h, &window)?.1);
+                lookback = lookback.max(histogram_step_window(&h)?.1);
             }
             Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
                 lookback = lookback.max(range_step_window(agg, a, &window)?.1);
@@ -1365,7 +1378,7 @@ async fn lower_frame_stage(
         step: doc.step.clone(),
         constant: sub.constant,
     };
-    let right = match Box::pin(plan_document(env.ctx, &child, request.clone())).await? {
+    let right = match Box::pin(plan_operand(env.ctx, &child, request.clone())).await? {
         Some((right, _, _)) => metric_series::operand(right),
         None => metric_series::empty_series(env.ctx)?,
     };
@@ -1536,12 +1549,10 @@ impl<'a> HistStage<'a> {
 }
 
 /// A histogram stage's step and the window each instant reads: `window`
-/// in rate mode, `lookback` in instant mode, the step when unset. Checked
-/// against the query's evaluation instants.
-fn histogram_step_window(
-    h: &HistStage<'_>,
-    range: &ResolvedWindow,
-) -> Result<(i64, i64), QuerierError> {
+/// in rate mode, `lookback` in instant mode, the step when unset. Its
+/// instants are bounded with the document's range
+/// ([`metric_series::check_document_steps`]).
+fn histogram_step_window(h: &HistStage<'_>) -> Result<(i64, i64), QuerierError> {
     let parse = |d: &str| {
         common::query_ir::parse_duration_ns(d)
             .ok_or_else(|| QuerierError::InvalidInput(format!("invalid {} duration '{d}'", h.name)))
@@ -1552,7 +1563,7 @@ fn histogram_step_window(
         HistogramMode::Instant => h.lookback,
     };
     let window_ns = window.map_or(Ok(step_ns), parse)?;
-    check_instants(range.start_ns, range.end_ns, step_ns, window_ns)?;
+    check_positive(step_ns, window_ns)?;
     Ok((step_ns, window_ns))
 }
 
@@ -2340,7 +2351,7 @@ impl Lowering<'_> {
         h: &HistStage<'_>,
         window: &ResolvedWindow,
     ) -> Result<DataFrame, QuerierError> {
-        let (step_ns, window_ns) = histogram_step_window(h, window)?;
+        let (step_ns, window_ns) = histogram_step_window(h)?;
         let by_aliases: Vec<String> = h.by.iter().map(|by| safe_ident(by)).collect();
         let mut groups = vec![(col("metric_name"), "metric_name".to_string())];
         for (by, alias) in h.by.iter().zip(&by_aliases) {

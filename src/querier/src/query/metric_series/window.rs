@@ -22,7 +22,7 @@ const INSTANT: &str = "__instant";
 
 /// The step of the frame `stage` outputs, given its input's: `sample` and
 /// `over_time` evaluate at their own `step`, else the document's, and
-/// `histogram_quantile` at its `step`.
+/// `histogram_quantile` and `histogram_fraction` at their `step`.
 pub(crate) fn output_step(
     stage: &Stage,
     input: Option<i64>,
@@ -38,6 +38,7 @@ pub(crate) fn output_step(
         Stage::Sample(sample) => own(&sample.step),
         Stage::OverTime(over) => own(&over.step),
         Stage::HistogramQuantile(hq) => parse_duration_ns(&hq.step).filter(|ns| *ns > 0),
+        Stage::HistogramFraction(hf) => parse_duration_ns(&hf.step).filter(|ns| *ns > 0),
         _ => input,
     }
 }
@@ -84,7 +85,10 @@ pub(super) fn lower_absent(
     let present = df
         .select(vec![col("bucket").alias("__present")])?
         .distinct()?;
-    let labels = encode(&absent.labels)?;
+    // An empty value is no label.
+    let mut labels = absent.labels.clone();
+    labels.retain(|_, value| !value.is_empty());
+    let labels = encode(&labels)?;
     Ok(instants(env.ctx, env.window, step_ns)?
         .join(
             present,

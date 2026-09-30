@@ -12,6 +12,7 @@ use datafusion::prelude::{DataFrame, SessionContext, ident};
 
 use crate::query::error::QuerierError;
 use crate::query::ir_planner::ResolvedWindow;
+use crate::query::metric_ops::instants::check_instants;
 
 pub mod label_ops;
 pub mod labels;
@@ -95,6 +96,20 @@ pub(crate) fn pipeline_step(from: &str, pipeline: &[Stage], doc_step: Option<&st
     pipeline
         .iter()
         .fold(start, |step, stage| output_step(stage, step, doc_step))
+}
+
+/// Reject a document whose range spans more than
+/// [`MAX_STEPS`](crate::query::metric_ops::instants::MAX_STEPS) of its
+/// output step. As in Prometheus only the document's own instants count,
+/// not a subquery's inner ones.
+pub(crate) fn check_document_steps(
+    doc: &Document,
+    window: ResolvedWindow,
+) -> Result<(), QuerierError> {
+    match pipeline_step(&doc.from, &doc.pipeline, doc.step.as_deref()) {
+        Some(step) => check_instants(window.start_ns, window.end_ns, step, step),
+        None => Ok(()),
+    }
 }
 
 /// Whether a `binop` sub-document yields a Scalar rather than a Series.
