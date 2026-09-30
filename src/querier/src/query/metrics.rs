@@ -3871,25 +3871,6 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn histogram_quantile_over_a_summary_is_a_typed_error() {
-        let service = histogram_service_with_leak("summary");
-        for query in [
-            "histogram_quantile(0.5, latency)",
-            "histogram_quantile(0.5, rate(latency[5m]))",
-        ] {
-            let err = service
-                .query_range(query, 0, 1000, 1000, "t", "d")
-                .await
-                .unwrap_err();
-            assert!(
-                matches!(&err, QuerierError::InvalidInput(m)
-                    if m == "histogram_quantile is not supported on summary metrics"),
-                "{query}: {err}"
-            );
-        }
-    }
-
-    #[tokio::test]
     async fn histogram_quantile_over_an_exponential_histogram_uses_its_buckets() {
         // 1 observation in (1, 2] and 3 in (2, 4]: the median lies in (2, 4].
         let rows: &[(&str, i64, &[i64])] = &[("x", 10, &[1, 3])];
@@ -3921,14 +3902,16 @@ mod tests {
 
     #[tokio::test]
     async fn histogram_quantile_rate_mode_excludes_other_metric_types() {
-        let service = histogram_service_with_leak("gauge");
-        let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
-        assert_eq!(out.len(), 1);
-        assert!(
-            (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
-            "got {}",
-            out[0].2
-        );
+        for leak in ["gauge", "summary"] {
+            let service = histogram_service_with_leak(leak);
+            let out = matrix(&service, "histogram_quantile(0.5, rate(latency[5m]))", 1000).await;
+            assert_eq!(out.len(), 1, "{leak}");
+            assert!(
+                (out[0].2 - (2.0 + 2.0 * 2.0 / 3.0)).abs() < 1e-9,
+                "{leak}: got {}",
+                out[0].2
+            );
+        }
     }
 
     #[tokio::test]
