@@ -21,7 +21,7 @@ sources:
 Schemas are defined in `schemas.toml` (compiled into binary via `include_str!`) and support:
 
 - **Versioning**: Each signal type tracks a current physical version (traces=physical-v5, logs=physical-v4, metrics=physical-v4, profiles=physical-v3) — the typed attribute layout (see below), landed as a one-shot cutover: a table still in the legacy single-map layout is dropped and recreated, never evolved, the next time `IcebergTableManager::ensure_table` loads it. Metrics' `physical-v4` is additionally a table-shape cutover (`otel-native-schema` layer 7): the five legacy per-type tables are replaced by `metrics`/`metric_exemplars`. A separate `logical_schema_version` (`otel-2026-09`) tracks the client-visible OTel logical schema, independent of the physical Iceberg realization.
-- **Three version axes, not one**: (1) the Flight **wire** format vs Iceberg storage — the `*_v1_to_*` transforms in `src/writer/src/schema_transform.rs`; "v1"/"v2" in those names is historical and means wire→storage, nothing else; (2) the **physical** chain `physical-v1..vN` in `schemas.toml`, one per signal; (3) the **logical** schema version (`logical_schema_version`), which describes `common::schema::logical`. A storage migration moves (2) only; a logical field change moves (3) only.
+- **Three version axes, not one** (canonical text: `docs/architecture/storage-layout.md`): (1) the Flight **wire** format vs Iceberg storage — the `*_v1_to_*` transforms in `src/writer/src/schema_transform.rs`; "v1"/"v2" in those names is historical and means wire→storage, nothing else; (2) the **physical** chain `physical-v1..vN` in `schemas.toml`, one per signal; (3) the **logical** schema version (`logical_schema_version`), which describes `common::schema::logical`. A storage migration moves (2) only; a logical field change moves (3) only.
 - **Inheritance**: `inherits = "physical-v1"` pulls all parent fields
 - **Field renames**: `{ from = "name", to = "span_name" }`
 - **Field removals**: `{ name = "deprecated_field" }` drops a field inherited from a parent version
@@ -52,9 +52,10 @@ attribute container, or `physical_only`.
 - **Identity.** A field is `(source, level, name)`: source is `logs`, `traces`,
   `metrics`, `exemplars` or `profiles`; level is an `AttributeLevel` (`resource`,
   `scope`, `record`) for attributes and absent for record metadata. A resource
-  and a record attribute with the same dotted name are distinct fields.
-  Unqualified names shadow record, then scope, then resource; `resource.`,
-  `scope.` and `record.` qualify explicitly.
+  and a record attribute with the same dotted name are distinct fields. An
+  exact level-less SignalDB name (such as `resource.identity`) matches first;
+  then `resource.`, `scope.` and `record.` qualify explicitly; an unqualified
+  name shadows record, then scope, then resource.
 - **Types.** `LogicalType` is `String`, `Bool`, `Int64`, `Float64`,
   `TimestampNs`, `DurationNs`, `Bytes` or `AnyValue`. Log `body` is an
   `AnyValue`.
@@ -62,9 +63,11 @@ attribute container, or `physical_only`.
   `severity_number`/`severity_text`/`trace_flags`/`event_name`/
   `observed_timestamp`, `dropped_*_count` on logs and traces, span kind and
   status numbers.
-- **Join keys.** `trace_id` and `span_id` mean the same thing on `traces` and
-  `logs` (on `profiles` and `exemplars` they are `trace.id` and `span.id`);
-  `series.id` links `metrics` to `exemplars`.
+- **Join keys.** `core()` declares `trace_id` and `span_id` as join keys on
+  `traces` and `logs`, and `trace.id` and `span.id` on `exemplars`. The other
+  correlate keys (`CorrelateKey` in `query-ir`: profiles' `trace.id`/`span.id`,
+  `series.id` on `metrics` and `exemplars`, `resource.identity`) resolve through
+  the planner's aliases, not `core()` fields.
 - **Resource identity.** `resource.identity` is a SignalDB-defined digest of the
   resource attribute set, flagged non-native.
 - **Retrieval-only fields** can be read but not used in predicates: span
@@ -82,11 +85,13 @@ attribute container, or `physical_only`.
   field set changes without a bump.
 
 Attribute values are typed by the type authority
-(`src/common/src/schema/type_authority/`): one canonical type (string, int64,
-float64, bool) per tenant, dataset, signal, level and key, chosen by config pin,
-then semconv hint, then first-observed. Values of the canonical type live in
-the matching `{container}_str/_int/_double/_bool` map; everything else stays in
-`{container}_residue` (`typed_attributes.rs` names the columns).
+(`src/common/src/schema/type_authority.rs`, `type_authority/`); precedence and
+scoping are described in
+[Canonical types](../../../docs/users/schema-registry.md#canonical-types).
+Values of the canonical type live in the matching
+`{container}_str/_int/_double/_bool` map; everything else (off-type scalars,
+arrays, kvlists, bytes, empty or null values) stays in `{container}_residue`
+(`typed_attributes.rs` names the columns).
 
 ## Flight Schema (v1) vs Iceberg Schema (physical-v4 intermediate shape)
 
@@ -119,7 +124,7 @@ plan-based; `transform_logs_v1_to_iceberg`/`transform_profiles_v1_to_iceberg`/
 per-field code (none of them have a v1→v2 split the way traces does — they
 go wire-to-physical directly).
 
-Applied in Writer's Flight `do_put` handler before WAL write -- all WAL data is in the current physical format. On the wire, a `WriteMetrics` batch still carries `data_json` unchanged; the writer turns it into both the `metrics` and `metric_exemplars` rows, and one WAL entry commits to both tables (replay-safe via per-table idempotency markers).
+Traces, logs and profiles are transformed in the Writer's Flight `do_put` handler before the WAL write, to their last pre-typed shape. Metrics are not: a `WriteMetrics` batch keeps its wire shape (`data_json`) in the WAL, and at commit `storage/iceberg.rs` turns it into both the `metrics` (`transform_metrics_to_wide`) and `metric_exemplars` (`transform_metric_exemplars`) rows. One WAL entry commits to both tables (replay-safe via per-table idempotency markers).
 
 Non-finite metric doubles (NaN, ±Inf) are carried in `data_json` as the strings `"NaN"`/`"+Inf"`/`"-Inf"` (`common::flight::conversion::{f64_to_json, json_to_f64}`), never `null`, so a NaN reading stays distinct from a JSON `null` (which the writer leaves as a null `metrics.value`, nullable in `physical-v4`) (#1061). The querier's histogram bounds parser accepts the same sentinels.
 

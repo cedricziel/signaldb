@@ -3,9 +3,21 @@ name: adding-new-signal
 description: Step-by-step guide for adding a new signal type or table to SignalDB - logical schema declaration, schemas.toml physical realization, attribute type authority, typed attribute containers, OTLP conversion, WAL operation, writer/acceptor/querier/router updates, IR source registration, and testing. Use when adding new signal types, metric types, or tables.
 sources:
   - schemas.toml
-  - src/common/src/schema/**
-  - src/writer/src/schema_transform.rs
+  - src/common/src/schema/logical.rs
+  - src/common/src/schema/schema_parser.rs
+  - src/common/src/schema/typed_attributes.rs
+  - src/common/src/schema/type_authority.rs
+  - src/common/src/schema/type_authority/**
+  - src/common/src/schema/mod.rs
   - src/common/src/iceberg/schemas.rs
+  - src/common/src/iceberg/table_manager.rs
+  - src/common/src/discovery.rs
+  - src/writer/src/schema_transform.rs
+  - src/writer/src/routing.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/acceptor/src/type_warning.rs
+  - src/query-ir/src/source.rs
+  - src/querier/src/query/ir_planner.rs
 ---
 
 # Guide: Adding a New Signal Type or Table
@@ -22,7 +34,7 @@ logical and physical halves agree. The three version axes (Flight wire,
 Edit `LogicalSchema::core()` in `src/common/src/schema/logical.rs`:
 
 - Record metadata: `LogicalField::record_metadata(source, name, LogicalType)`
-  with dotted OTel names. Add `.retrieval_only()` for values that can be read
+  with OTel field names (dotted where OTel dots them). Add `.retrieval_only()` for values that can be read
   but not filtered (arrays, kvlists, bags).
 - Join keys: `LogicalField::join_key(source, name)` for ids other signals join
   on (`trace_id`/`span_id`; `trace.id`/`span.id` on exemplars). One key has one
@@ -34,8 +46,9 @@ Edit `LogicalSchema::core()` in `src/common/src/schema/logical.rs`:
 
 Every physical column must be a logical field (by its own name or an alias), an
 attribute container, or `physical_only`. `src/common/tests/schema_realization.rs`
-enforces this against each signal's current `physical-vN`; add the signal's
-alias table there.
+enforces this against each signal's current `physical-vN`; add entries to
+`alias_table()` and `containers()` there, and to `known_gap()` only for a
+documented pre-existing gap.
 
 Bump `LogicalSchema::VERSION` and `logical_schema_version` in `schemas.toml`
 together. `logical_schema_fingerprint_is_pinned` fails until you do, and
@@ -55,10 +68,17 @@ from `schemas.toml`. There are no hand-written schema functions.
   typed maps plus a binary `{container}_residue`. A new table starts in this
   layout, so there is nothing to evolve from.
 - Computed and partition columns become `physical_only` automatically.
+- In `schema_parser.rs` add the table's map to `SchemaDefinitions` (and a
+  `current_{signal}_version` to `SchemaMetadata` if it follows the normal
+  scheme). The two metrics tables are the exception: they are pinned by
+  `TYPED_METRIC_VERSION` in `iceberg/schemas.rs`, not `current_metric_version`.
 - In `src/common/src/iceberg/schemas.rs` add a `TableSchema` variant and wire
-  it into `resolved_schema()`, `schema()`, `from_table_name()`, `table_name()`,
-  `all()`, `all_from_config()`, `materialized_labels_of()` and
-  `attribute_type_signal()`. Add `create_{table}_schema_with()` (it calls
+  it into `resolved_schema()`, `schema()`, `partition_spec()`,
+  `from_table_name()`, `table_name()`, `all()`, `all_from_config()`,
+  `materialized_labels_of()` and `attribute_type_signal()`.
+- Add the table to `schema_target_for()` in `iceberg/table_manager.rs` so an
+  existing table is evolved to the current version, and to the admin schema
+  listing in `src/router/src/endpoints/schema.rs`. Add `create_{table}_schema_with()` (it calls
   `to_iceberg_schema_with_labels` on the resolved schema) and
   `create_{table}_partition_spec()` (hour on `timestamp`).
 - `sort_key_columns()` is the sort order every producer (writer, compactor)
@@ -70,14 +90,18 @@ from `schemas.toml`. There are no hand-written schema functions.
 
 ## Step 3: Give attributes a type authority
 
-The attribute type authority (`src/common/src/schema/type_authority/`) holds one
-canonical type per tenant, dataset, signal, level and key.
+The attribute type authority (`src/common/src/schema/type_authority.rs` and
+`type_authority/`) holds one canonical type per tenant, dataset, signal, level
+and key. Precedence and scoping are described once, in
+[Canonical types](../../../docs/users/schema-registry.md#canonical-types).
 
-- Add the signal to `AttributeTypeSignal` in `src/common/src/config/mod.rs`
-  (logs, traces, metrics, profiles today; `metrics` and `metric_exemplars`
-  share `Metrics`) and to `TableSchema::attribute_type_signal()`. This is what
-  makes `[[schema.attribute_types]]` pins and the `attribute_types` catalog
-  table cover the new signal.
+- The writer's scope signal comes from `common::discovery::signal_for_source`
+  (`src/common/src/discovery.rs`); add the new table's source name there (the
+  two metrics tables both map to `metrics`).
+- Add the signal to `AttributeTypeSignal` in `src/common/src/config/mod.rs` so
+  `[[schema.attribute_types]]` pins and `[schema.warm_index]` parse for it.
+  `TableSchema::attribute_type_signal()` only decides whether a table gets the
+  warm index.
 - Decide each container's level. `typed_attributes::container_level()` treats
   `resource_attributes` and `scope_attributes` as resource and scope level and
   every other container as record level.
@@ -114,9 +138,9 @@ dataset, table)` destination. Both `do_put` and the WAL processor call it, so
   into the typed layout. It resolves each distinct key once per batch with
   `SignalScope::canonical` and places each value with `place()`. A value of the
   canonical type goes to its typed home; an off-type scalar, array, kvlist or
-  bytes value goes to the residue. Nothing is coerced, and the first observed
-  scalar type becomes canonical unless a config pin or semconv hint says
-  otherwise.
+  bytes value goes to the residue, as does an empty or null value (including a
+  non-finite double). Only a scalar of the wrong type counts as off-type.
+  Nothing is coerced.
 - `src/writer/src/flight_iceberg.rs` (`do_put`) and `processor.rs` handle the
   new operation.
 - Tables are provisioned by the writer's table reconciler
