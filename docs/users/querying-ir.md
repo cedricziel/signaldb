@@ -1315,7 +1315,9 @@ The bounds must be finite, so PromQL's `±Inf` idioms need rewriting:
 
 - **At most X** (`histogram_fraction(-Inf, X, …)`): use a `lower` at or below
   every observation, such as `0` for a histogram of positive values like
-  latencies.
+  latencies. As in Prometheus, an explicit-bucket histogram whose first bound
+  is `<= 0` has a first bucket reaching down to `-Inf`, and no finite `lower`
+  includes it.
 - **More than X** (`histogram_fraction(X, +Inf, …)`): compute
   `1 - fraction(lower, X)` with that same `lower`, for instance as the
   [formula](#formulas-cross-query-arithmetic-d5) `1 - under_x`. A large finite
