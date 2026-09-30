@@ -8054,6 +8054,44 @@ mod tests {
         columns.extend(typed_arrays);
     }
 
+    /// `common::schema::attribute_qualifier` is what discovery lists names
+    /// with; the planner's `attr_prefixes` is what resolves them. They must
+    /// say the same thing for every source and level.
+    #[test]
+    fn discovery_qualifiers_agree_with_the_planners_prefixes() {
+        for source in ["logs", "traces", "profiles", "metrics", "exemplars"] {
+            let plan = SourcePlan::for_source(source).expect("source");
+            for level in [
+                AttributeLevel::Record,
+                AttributeLevel::Scope,
+                AttributeLevel::Resource,
+            ] {
+                let prefixed: Vec<&str> = plan
+                    .attr_prefixes
+                    .iter()
+                    .filter(|(_, container)| typed_attributes::container_level(container) == level)
+                    .map(|(prefix, _)| *prefix)
+                    .collect();
+                let expected = common::schema::logical::attribute_qualifier(source, level)
+                    .map(|q| format!("{q}."));
+                assert_eq!(
+                    prefixed,
+                    expected.iter().map(String::as_str).collect::<Vec<_>>(),
+                    "{source} {level:?}"
+                );
+                let has_container = plan
+                    .containers
+                    .iter()
+                    .any(|c| typed_attributes::container_level(c) == level);
+                assert_eq!(
+                    common::schema::logical::level_is_addressable(source, level),
+                    has_container,
+                    "{source} {level:?} addressable iff it has a container"
+                );
+            }
+        }
+    }
+
     /// A `SchemaResolver` for `logs` over an all-typed, empty (no rows)
     /// schema: task 4.4's homes/promotion/exclusion rules are schema and
     /// type-map facts, so asserting `resolve()` directly is cheaper and more
