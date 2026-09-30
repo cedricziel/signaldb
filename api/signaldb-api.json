@@ -1466,6 +1466,16 @@
               }
             }
           },
+          "422": {
+            "description": "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
           },

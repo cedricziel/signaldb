@@ -2366,7 +2366,7 @@ pub(crate) fn common_error_status(
         crate::query::error::QuerierError::InvalidInput(msg) => Ok(Status::invalid_argument(msg)),
         crate::query::error::QuerierError::Unsupported(msg) => Ok(Status::unimplemented(msg)),
         crate::query::error::QuerierError::ResourceExhausted(msg) => {
-            Ok(Status::resource_exhausted(msg))
+            Ok(Status::failed_precondition(msg))
         }
         other => Err(other),
     }
@@ -3763,6 +3763,6 @@ mod tests {
         let status = querier_error_to_status(SIGNAL_QUERY_IR)(QuerierError::ResourceExhausted(
             "too big".to_string(),
         ));
-        assert_eq!(status.code(), tonic::Code::ResourceExhausted);
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     }
 }

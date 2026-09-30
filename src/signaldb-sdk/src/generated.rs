@@ -22024,6 +22024,9 @@ pub mod builder {
                 403u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),
+                422u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
                 429u16 => Err(Error::ErrorResponse(
                     ResponseValue::from_response(response).await?,
                 )),

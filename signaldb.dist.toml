@@ -353,8 +353,8 @@ correlate_max_rows = 5000000
 #
 # Row cap on the source relation a cross-signal `correlate` stage
 # (irVersion 11) materializes before scanning its target signal. A larger
-# source fails the query with RESOURCE_EXHAUSTED; narrow the source with
-# topk/limit/where instead.
+# source fails the query with HTTP 422 (`resource_limit`); narrow the source
+# with topk/limit/where instead. Must be greater than zero.
 correlate_max_source_rows = 10000
 #
 # Node cap on a Query IR `graph` result (the service map). Past it the

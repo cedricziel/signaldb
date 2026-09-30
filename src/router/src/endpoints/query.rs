@@ -357,6 +357,7 @@ pub struct QueryIrResponse {
         (status = 400, description = "Invalid IR document", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 401, description = "Missing or invalid credentials", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 403, description = "Missing read scope for a queried source", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 422, description = "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
     )
