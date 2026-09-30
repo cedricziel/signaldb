@@ -71,10 +71,10 @@ SignalDB stores metric names in their OTel dotted form (`signaldb.wal.entries_pe
 
 | Function                                    | Status                                                                                                                                                                                              |
 | ------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `histogram_quantile(phi, metric)`           | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series; a summary metric returns a typed error, exponential_histogram is not yet supported) |
-| `histogram_quantile(phi, rate(metric[5m]))` | ✅ (interpolates over the per-bucket count delta; same summary/exponential_histogram handling)                                                                                                      |
+| `histogram_quantile(phi, metric)`           | ✅ (interpolated from OTLP buckets; the argument is the histogram metric name, not `le`-keyed `_bucket` series; exponential histograms included; summary rows are ignored; a plain selector reads each series' latest point within max(5m, step); `@` pins the instant) |
+| `histogram_quantile(phi, rate(metric[5m]))` | ✅ (interpolates over the per-bucket count delta; each series differenced against itself before merging, exponential histograms included; `@` honoured)                                                                                                      |
 | `histogram_count`, `histogram_sum`          | ✅ (sum the stored `count`/`sum` columns, including summary and exponential_histogram rows)                                                                                                         |
-| `histogram_fraction(lower, upper, metric)`  | ✅ (fraction of observations in `(lower, upper]`; same summary/exponential_histogram handling as `histogram_quantile`)                                                                              |
+| `histogram_fraction(lower, upper, metric)`  | ✅ (fraction of observations in `(lower, upper]`; each series differenced against itself before merging as `histogram_quantile`)                                                                              |
 
 ## Binary operators
 

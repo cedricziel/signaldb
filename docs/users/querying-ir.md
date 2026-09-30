@@ -389,17 +389,22 @@ only on the `metrics` source:
 }
 ```
 
-Both are computed per **individual series** — `metric.name` plus its natural
-label set (`service.name` and every promoted attribute), the same identity
-PromQL's `rate()`/`increase()` partition by — not per `by` group: two series
-sharing a `by` value never take a delta across each other, even though the
-`by` grouping still folds their (independently computed) deltas together in
-the output. Ordered by timestamp, a drop between two consecutive samples of
-one series is treated as a counter reset, contributing the later sample's own
-value (counted from zero) rather than a negative delta — the same rule
-PromQL applies, without extrapolation. `increase` is the summed delta over
-the step window; `rate` divides that by the window width in seconds. Both
-always produce a `Float64` series.
+Both are computed per **individual series** (one series per distinct
+metric, resource, scope and point-attribute identity) — not per `by` group:
+two series sharing a `by` value never take a delta across each other, even
+though the `by` grouping still folds their (independently computed) values
+together in the output. Each series is evaluated at instants
+`t = from + k·step` over the left-open window `(t - window, t]`, and the
+output timestamp is the evaluation instant `t`, not an epoch-aligned bucket
+start. The point's OTLP temporality is honoured: cumulative points are
+differenced against the series' previous point (a drop, or a new
+`start_timestamp`, is a counter reset contributing the later value counted
+from zero), delta points are summed — PromQL's rule, without extrapolation.
+`increase` is the summed delta over the window; `rate` divides that by the
+window width in seconds. A window holding a single point yields no sample.
+`rate`, `increase` and `irate` over a gauge or a non-monotonic sum are
+rejected with a 400, as is a range needing more than 11,000 evaluation
+instants. Both always produce a `Float64` series.
 
 A `step` aggregate still allows exactly one aggregate output, so `rate`/
 `increase` cannot share a stage with another aggregate function.
@@ -427,13 +432,10 @@ Two more fields on the aggregate, both `irVersion` 7:
   behaviour), `avg`, `min`, `max`, or `count`. This is what `avg by
 (service.name) (rate(...))` needs: `by: ["service.name"], aggs: [{ "fn":
 "rate", ..., "across": "avg" }]`.
-- **`window`** — the lookback window each step's value is computed over,
-  independent of `step`: each step's value uses samples in the window ending
-  at that sample, evaluated at the sample closest to the step's own point in
-  time. Defaults to `step` (today's behaviour — `rate`/`increase` without a
-  `window` are unchanged). A `window` narrower than `step` is legal — PromQL
-  allows the same, and it simply means samples in the gap between windows are
-  never counted.
+- **`window`** — the lookback window each evaluation instant `t` is computed
+  over, independent of `step`: the left-open `(t - window, t]`. Defaults to
+  `step`. A `window` narrower than `step` is legal — PromQL allows the same,
+  and it simply means samples in the gap between windows are never counted.
 
 ```jsonc
 {
@@ -1209,8 +1211,9 @@ A `histogram_quantile` stage (IR v3+) runs on the `metrics` source, reads only
 its histogram rows, and interpolates a percentile from their buckets, following the same linear-interpolation-within-bucket algorithm as
 Prometheus's `histogram_quantile()` — and, since it shares its implementation
 with SignalDB's PromQL `histogram_quantile()`, the two return identical
-values for the same query. It always produces a `series` result, grouped by
-`metric.name` plus any extra `by` labels, bucketed by `step`:
+values for the same query. It always produces a `series` result with one
+series per metric plus `by` group, evaluated at instants `t = from + k·step`
+and labelled `t`:
 
 ```json
 {
@@ -1239,17 +1242,20 @@ values for the same query. It always produces a `series` result, grouped by
 ```
 
 - **`q`** — the quantile, in `[0, 1]`.
-- **`by`** — extra grouping labels beyond the implicit `metric.name` (merging
-  bucket data across different metrics is meaningless, since each metric
-  carries its own bucket bounds — so `metric.name` can't be added explicitly
-  to `by`, it's already there).
-- **`step`** — the time-bucket width.
-- **`mode`** — `"rate"` (default) or `"instant"`. `rate` takes each series'
-  last-minus-first bucket-count delta within a step bucket, clamped to ≥ 0 (a
-  decrease means a counter reset) — the right mode for OTel's cumulative
-  temporality, which is what most histogram instrumentation emits. `instant`
-  sums bucket counts across points sharing a step bucket instead — the right
-  mode for delta temporality, or a series with at most one point per bucket.
+- **`by`** — the output labels. Buckets are merged per metric (each metric
+  carries its own bounds, so different metrics never merge) and per `by`
+  group; the output carries the `by` fields only, not `metric.name`, so a
+  later stage cannot read it.
+- **`step`** — the evaluation step.
+- **`mode`** — `"rate"` (default) or `"instant"`. `rate` differences each
+  series against itself over `(t - window, t]` (cumulative points against the
+  series' previous point, with drops and `start_timestamp` changes as resets;
+  delta points summed) and merges the per-series increases — the shape of
+  `histogram_quantile(q, rate(x[w]))`. `instant` reads each series' latest
+  point in `(t - lookback, t]` and merges those.
+- **`window`** — rate mode's window, default `step`.
+- **`lookback`** — instant mode's lookback, default `step`. Both are executed;
+  neither is rejected as unsupported.
 - **`as`** — the output value column name.
 
 This is deliberately a distinct stage from the `aggregate` stage's
@@ -1260,13 +1266,15 @@ completely different source shape. Neither is a substitute for the other:
 `histogram_quantile` needs pre-bucketed histogram data; `aggregate`'s
 `quantile` needs raw numeric samples.
 
-Rows the stage cannot interpolate are refused, never skipped. If the rows
-matched by the stage's source and filters include a **summary** metric, the
-query fails with `histogram_quantile is not supported on summary metrics`
-(HTTP 400): a summary carries precomputed quantiles, not buckets, so read them
-from `metric.quantiles`/`metric.quantile_values` instead. Rows of an
-**exponential histogram** fail with `histogram_quantile is not yet supported
-on exponential_histogram metrics` (HTTP 501). Gauge and sum rows are ignored.
+The stage reads explicit-bucket and **exponential** histogram rows; every
+other row is ignored, as Prometheus ignores non-histogram series. A
+**summary** carries precomputed quantiles, not buckets, so it contributes
+nothing here: read it from `metric.quantiles`/`metric.quantile_values`
+instead. Histogram rows that cannot be interpolated (unsorted bounds, a
+count list that doesn't match the bounds, negative counts) are skipped.
+Explicit histograms with different bounds merge over the union of their
+bounds; exponential histograms merge by the OTel rule. More than 11,000
+evaluation instants is a 400.
 Filter by `metric.name` (or `metric.type`) to keep the stage on histograms.
 
 `histogram_fraction()` (the

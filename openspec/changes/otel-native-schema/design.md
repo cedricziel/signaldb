@@ -371,7 +371,8 @@ layer. The IR grows whatever PromQL needs.
   magnitude first) → zero → positive; exponential interpolation inside a
   bucket, linear across the zero bucket, clamped to OTel `min`/`max` when
   present. Rate mode differences each series' buckets per the rate rules
-  above before merging. Summary stays rejected (400).
+  above before merging. Summary rows are ignored, as Prometheus ignores
+  non-histogram series; malformed histogram rows are skipped.
 - **Vector matching** is a `binop` stage whose right operand is a sub-document
   (or a number). It plans as one custom logical node + `ExecutionPlan`
   (the `correlate_cap` pattern) that joins on the fingerprint of the matched
