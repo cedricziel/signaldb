@@ -604,7 +604,12 @@ type is picked, in order: a config pin, else a semantic-convention type hint
 (from the resource/scope `schema_url`'s semconv registry), else the type of
 the first value ever observed for it — and never changes once established.
 An attribute never observed yet resolves as a string, and a field with no
-resolvable type at all is a defined rejection.
+resolvable type at all is a defined rejection. A correlate target's fields
+(`<target>.x`) resolve the same way, including when the target signal has no
+table yet: they keep their canonical type and read null. Every typed-attribute
+reference in `where`, `aggregate`, ordering and `fields`, a correlate target's
+included, counts as demand toward promotion for its own signal (`parent.x`
+counts toward traces), once per document however often it is referenced.
 
 Every table is in the typed attribute layout — each attribute container
 (`log_attributes`, `span_attributes`, `resource_attributes`, ...) is stored as
