@@ -939,6 +939,10 @@ cross-series arithmetic is the [`binop`](#binop) stage of a metric Series.
 `step`), per series, into a **Series**. At most 11,000 instants per query;
 more is a 400.
 
+A dataset with no `metrics` table yet reads as an empty one, so it still
+answers what PromQL answers from nothing: `sum(x) or vector(0)` is `{}` = 0,
+`absent(x)` is 1 and `scalar(x)` NaN at every instant.
+
 ### `sample`
 
 `sample` reads the `metrics` point stream (after any `where`) and evaluates
