@@ -1,16 +1,4 @@
 {
-  "extraKnownMarketplaces": {
-    "cedricziel": {
-      "source": {
-        "source": "github",
-        "repo": "cedricziel/claude-plugins",
-        "sha": "b2da5646bbffa9230e6c80bdf7cc00f2204ce85e"
-      }
-    }
-  },
-  "enabledPlugins": {
-    "oss@cedricziel": true
-  },
   "hooks": {
     "PostToolUse": [
       {
@@ -67,5 +55,17 @@
         ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "oss@cedricziel": true,
+    "common@cedricziel": true
+  },
+  "extraKnownMarketplaces": {
+    "cedricziel": {
+      "source": {
+        "source": "github",
+        "repo": "cedricziel/claude-plugins"
+      }
+    }
   }
 }
