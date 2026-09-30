@@ -39,8 +39,8 @@ these:
 | `get_service_map`               | The service dependency graph — nodes per service/external dependency, edges for the calls between them — optionally scoped to one service's neighbourhood (`service`/`depth`). Wraps the Query IR `graph` envelope; returns the graph plus a summary naming the busiest and highest-error edges, and a web UI link (renders as an interactive map — see below).                                                                                                                                                                                                                                |
 | `get_profile`                   | Fetch a single profile's flamegraph by ID (renders as an interactive flamegraph — see below).                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                  |
 | `get_source_context`            | Fetch a source-code snippet around a stack-frame location (`path`/`line`) through the tenant's linked GitHub App installation(s). `repository` may be omitted to probe by path alone; `ref` may be omitted for the default branch. `status: "unavailable"` with a `reason` is a normal answer, not an error.                                                                                                                                                                                                                                                                                   |
-| `discover_attributes`           | List queryable attribute/label names, or the values for one. Signal-aware: `traces` (default, Tempo tags), `logs` (Loki labels), `metrics` (Prometheus labels), `profiles` (Pyroscope labels).                                                                                                                                                                                                                                                                                                                                                                                                 |
-| `discover_metrics`              | List the distinct metric names visible to your tenant.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
+| `discover_attributes`           | Signal-selected shorthand for `discover_fields` / `discover_field_values` (Query IR `describe`): the queryable field names of `traces` (default), `logs`, `metrics` or `profiles`, or the values for one field with `tag`. Values come from a declared set or maintained statistics; an uncovered field returns no values plus a `hint` unless `sample: true` reads data. `scope` (traces) narrows to `resource`, `span` or `intrinsic` fields. |
+| `discover_metrics`              | List the distinct metric names visible to your tenant: the sampled values of `metric.name` on the `metrics` source. It reads stored metric data in `from`/`to` (default the last hour), bounded by `limit`. |
 | `discover_fields`               | The queryable fields of a signal source, as logical dotted OTel names with their canonical type, `origin` (`declared`, `authority`, `registry`, `observed`), coverage and approximate cardinality. Answered from the logical schema, the attribute type authority, the schema registry and maintained statistics — reads no signal data.                                                                                                                                                                                                                                                                                                                                                                           |
 | `discover_field_values`         | Value suggestions for one field. Exact and free for a declared value set; otherwise it names the query that would answer it, and only `sample: true` runs that query.                                                                                                                                                                                                                                                                                                                                                                                                                          |
 | `discover_sources`              | The signal sources available to your tenant, with whether each is queryable.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
@@ -602,15 +602,23 @@ ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars — then mint an ingest key with
 `tenant_create_api_key` and substitute it for the placeholder.
 
 1. `server_info` — confirm you are connected as the expected tenant.
-2. `discover_attributes` — list tag names, then values for `service.name`.
+2. `discover_attributes` — list field names, then values for `service.name`
+   (values need a statistics sketch or `sample: true`).
 3. `search_traces` with `{ .service.name = "checkout" && status = error }` and a
    time range to find failing requests.
 4. `get_trace` with an ID from the search results to inspect the full trace.
 
 To explore logs or metrics instead: `discover_attributes` with `signal:
-"logs"` lists Loki labels (add `tag` for a label's values); `signal:
-"metrics"` does the same for Prometheus labels. `discover_metrics` lists
-metric names directly, for building a `query_metrics` PromQL expression.
+"logs"` lists the log fields (add `tag` for one field's values); `signal:
+"metrics"` does the same for metrics. `tag` names a logical field, not a
+Prometheus label: for metrics use a field such as `service.name`, not `job`
+(`job` now describes a field of that name). `discover_metrics` lists metric
+names directly, for building a `query_metrics` PromQL expression.
+
+`scope` (traces) narrows to typed keys at one attribute level. Untyped keys
+(no level) and scope-level attributes are never listed under a scope, `limit`
+applies before the filter so fewer rows can come back, a qualified tag can land
+on an intrinsic (`span.kind`), and `scope: "intrinsic"` cannot take a `tag`.
 
 Before filtering or grouping by a name you are unsure of, ask the schema
 registry what it means: `resolve_attribute` with `key: "k8s.pod.uid"` (or

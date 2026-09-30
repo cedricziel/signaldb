@@ -57,7 +57,7 @@ format, mounted at `/pyroscope` and `/api/profiles`: `GET render`,
 and reachable through `signaldb-sdk`, `signaldb-cli profiles
 {types,labels,label-values,render,diff,by-trace}`, and the MCP server's
 `discover_profile_types`/`search_profiles`/`compare_profiles`/
-`profiles_for_trace` tools plus `discover_attributes(signal="profiles")` —
+`profiles_for_trace` tools plus `discover_attributes(signal="profiles")` (the latter via the Query IR) —
 not only raw HTTP. See `docs/users/profiles.md`.
 
 Spanset spans carry optional extras beyond Tempo's shape — `name`,

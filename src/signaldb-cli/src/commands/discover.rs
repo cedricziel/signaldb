@@ -168,8 +168,8 @@ pub struct AttributesArgs {
     /// that level, or with `--tag` looks up the level-qualified field
     /// (`resource.<tag>` / `span.<tag>`; not valid for `intrinsic`). Only valid
     /// with `--signal traces`. Limits: untyped keys (no attribute level) and
-    /// scope-level attributes are never listed under a scope; `--limit` applies
-    /// before the scope filter, so fewer rows can come back; a qualified tag can
+    /// scope-level attributes are never listed under a scope; `--limit` counts
+    /// the scoped fields; a qualified tag can
     /// land on an intrinsic (`span.kind`).
     #[arg(long, value_enum)]
     scope: Option<TagScope>,
@@ -260,10 +260,17 @@ fn describe_stage(field: Option<&str>, limit: Option<u64>, sample: bool) -> serd
     stage
 }
 
-/// Drops the fields of a `describe: fields` response outside `scope`.
-fn retain_scope(response: &mut QueryIrResponse, scope: TagScope) {
+/// Drops the fields of a `describe: fields` response outside `scope`, then
+/// applies `limit`, so the limit counts scoped fields only.
+fn retain_scope(response: &mut QueryIrResponse, scope: TagScope, limit: Option<u64>) {
     if let Some(metadata) = response.metadata.as_mut() {
         metadata.fields.retain(|f| scope.keeps(f));
+        if let Some(limit) = limit.and_then(|l| usize::try_from(l).ok())
+            && metadata.fields.len() > limit
+        {
+            metadata.fields.truncate(limit);
+            metadata.truncated = true;
+        }
     }
 }
 
@@ -274,15 +281,15 @@ async fn describe_and_print(
     source: &str,
     (from, to): (&str, &str),
     stage: serde_json::Value,
-    scope: Option<TagScope>,
+    scope: Option<(TagScope, Option<u64>)>,
     what: &str,
 ) -> anyhow::Result<()> {
     let body = describe_document(source, from, to, stage)?;
     let client = connect.build_client()?;
     let result = client.query_ir().body(body).send().await.map(|r| {
         let mut response = r.into_inner();
-        if let Some(scope) = scope {
-            retain_scope(&mut response, scope);
+        if let Some((scope, limit)) = scope {
+            retain_scope(&mut response, scope, limit);
         }
         response
     });
@@ -345,8 +352,16 @@ impl AttributesArgs {
             (Some(tag), None) => Some(tag.to_string()),
             (None, _) => None,
         };
-        let stage = describe_stage(field.as_deref(), self.window.limit, self.sample);
-        let list_scope = self.scope.filter(|_| self.tag.is_none());
+        let list_scope = self
+            .scope
+            .filter(|_| self.tag.is_none())
+            .map(|scope| (scope, self.window.limit));
+        let stage_limit = if list_scope.is_some() {
+            None
+        } else {
+            self.window.limit
+        };
+        let stage = describe_stage(field.as_deref(), stage_limit, self.sample);
         let range = (self.window.from.as_str(), self.window.to.as_str());
         let source = self.signal.source();
         describe_and_print(
@@ -531,7 +546,7 @@ mod tests {
 
     fn kept(scope: TagScope) -> Vec<String> {
         let mut response = trace_fields();
-        retain_scope(&mut response, scope);
+        retain_scope(&mut response, scope, None);
         response
             .metadata
             .expect("metadata")
@@ -546,6 +561,16 @@ mod tests {
         assert_eq!(kept(TagScope::Resource), ["service.name", "resource.env"]);
         assert_eq!(kept(TagScope::Span), ["http.route", "span.env"]);
         assert_eq!(kept(TagScope::Intrinsic), ["trace_id", "duration"]);
+    }
+
+    #[test]
+    fn scope_limit_counts_scoped_fields_and_marks_truncation() {
+        let mut response = trace_fields();
+        retain_scope(&mut response, TagScope::Resource, Some(1));
+        let metadata = response.metadata.expect("metadata");
+        let names: Vec<_> = metadata.fields.into_iter().map(|f| f.name).collect();
+        assert_eq!(names, ["service.name"]);
+        assert!(metadata.truncated);
     }
 
     #[test]
