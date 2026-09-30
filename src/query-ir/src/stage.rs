@@ -277,13 +277,13 @@ pub struct Heatmap {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum HistogramMode {
-    /// Per-series (last − first) bucket-count delta, clamped ≥ 0 — the
-    /// `histogram_quantile(q, rate(x[step]))` shape for cumulative
-    /// temporality.
+    /// Each series' increase over `(t - window, t]` (cumulative points
+    /// differenced against the series' own previous point, delta points
+    /// summed), merged across series — `histogram_quantile(q, rate(x[w]))`.
     #[default]
     Rate,
-    /// Element-wise sum of bucket counts — correct for delta temporality
-    /// or when a series has at most one point per step bucket.
+    /// Each series' latest point in `(t - lookback, t]`, merged across
+    /// series; `lookback` defaults to `step`.
     Instant,
 }
 
@@ -309,16 +309,18 @@ pub struct HistogramQuantile {
     /// `metric.name`.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub per_series: bool,
-    /// Time-bucket width. The result is always a `series`.
+    /// Evaluation step: the stage is evaluated at `t = from + k·step` and
+    /// each value labelled `t`. The result is always a `series`.
     pub step: String,
     #[serde(default)]
     pub mode: HistogramMode,
-    /// Rate mode's lookback (default: `step`), `irVersion` 10.
+    /// Rate mode's window: each instant reads `(t - window, t]` (default:
+    /// `step`), `irVersion` 10.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<String>,
     /// Instant mode only: at each evaluation instant `t`, read each series'
     /// latest point within `(t - lookback, t]`, as a PromQL instant vector
-    /// does (`irVersion` 10).
+    /// does (`irVersion` 10). Without it the lookback is `step`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lookback: Option<String>,
     /// The output value column name.
