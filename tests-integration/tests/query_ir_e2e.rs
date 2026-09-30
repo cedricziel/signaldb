@@ -25,9 +25,14 @@ use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
+    collector::metrics::v1::ExportMetricsServiceRequest,
     collector::trace::v1::ExportTraceServiceRequest,
     common::v1::{AnyValue, KeyValue, KeyValueList, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
+    metrics::v1::{
+        Exemplar, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
+        ScopeMetrics, exemplar, metric::Data, number_data_point,
+    },
     resource::v1::Resource,
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
@@ -2201,5 +2206,782 @@ async fn service_graph_end_to_end_isolated_by_tenant() {
             .iter()
             .all(|id| id != "external:database:orders"),
         "tenant A's colliding db span must not leak: {body}"
+    );
+}
+
+// otel-native-schema layer 9 task 9.1 — cross-signal `correlate` (`irVersion`
+// 11): `to` a signal source other than `from`, the `semi`/`anti` join kinds,
+// a target-side `where` sub-pipeline, a `window` widening the target scan,
+// and a per-source-row `fanout` cap on `inner`/`left`. Written test-first
+// against `openspec/changes/otel-native-schema/specs/cross-signal-correlate/
+// spec.md` while the feature lands on another branch: every test below is
+// expected to fail today, since this server does not accept `irVersion: 11`
+// yet. All go through `POST /api/v1/query`, never a compat API.
+
+const CORRELATE_IR_VERSION: i64 = 11;
+
+/// Like [`log_record`], with explicit trace/span identity so a log can be
+/// cross-signal-correlated to a span from [`span_with_ids`].
+fn log_record_for_trace(
+    offset_ns: i64,
+    severity: &str,
+    body: &str,
+    trace_id: u8,
+    span_id: u8,
+) -> LogRecord {
+    LogRecord {
+        trace_id: vec![trace_id; 16],
+        span_id: vec![span_id; 8],
+        ..log_record(offset_ns, severity, body)
+    }
+}
+
+/// The single-attribute resource shape [`traces_request`]/[`logs_request`]
+/// build inline, factored out here so a `resource.identity` correlate can
+/// compare a metric against a log or trace from the same nominal resource.
+fn resource_with_service(service: &str) -> Resource {
+    Resource {
+        attributes: vec![KeyValue {
+            key: "service.name".to_string(),
+            value: Some(string_value(service)),
+            ..Default::default()
+        }],
+        dropped_attributes_count: 0,
+        ..Default::default()
+    }
+}
+
+/// One gauge metric data point for `service`.
+fn gauge_metric_request(
+    service: &str,
+    metric_name: &str,
+    value: f64,
+) -> ExportMetricsServiceRequest {
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(resource_with_service(service)),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: metric_name.to_string(),
+                    description: String::new(),
+                    unit: "1".to_string(),
+                    data: Some(Data::Gauge(Gauge {
+                        data_points: vec![NumberDataPoint {
+                            attributes: vec![],
+                            start_time_unix_nano: BASE_NS as u64,
+                            time_unix_nano: BASE_NS as u64,
+                            value: Some(number_data_point::Value::AsDouble(value)),
+                            exemplars: vec![],
+                            flags: 0,
+                        }],
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
+/// A one-point histogram metric for `service`, carrying one exemplar with
+/// the given trace/span identity and value — the `exemplars` source's only
+/// path to a real trace/span id.
+fn histogram_with_exemplar(
+    service: &str,
+    trace_id: u8,
+    span_id: u8,
+    exemplar_value: f64,
+) -> ExportMetricsServiceRequest {
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(resource_with_service(service)),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: "latency".to_string(),
+                    description: String::new(),
+                    unit: "s".to_string(),
+                    data: Some(Data::Histogram(Histogram {
+                        aggregation_temporality: 1, // delta
+                        data_points: vec![HistogramDataPoint {
+                            attributes: vec![],
+                            start_time_unix_nano: BASE_NS as u64,
+                            time_unix_nano: BASE_NS as u64,
+                            count: 1,
+                            sum: Some(exemplar_value),
+                            bucket_counts: vec![0, 1],
+                            explicit_bounds: vec![1.0],
+                            exemplars: vec![Exemplar {
+                                filtered_attributes: vec![],
+                                time_unix_nano: BASE_NS as u64,
+                                span_id: vec![span_id; 8],
+                                trace_id: vec![trace_id; 16],
+                                value: Some(exemplar::Value::AsDouble(exemplar_value)),
+                            }],
+                            flags: 0,
+                            min: Some(exemplar_value),
+                            max: Some(exemplar_value),
+                        }],
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
+/// Read one column of a `"rows"` envelope, addressed positionally by the
+/// document's own `fields` list — the same convention the existing
+/// single-signal correlate tests above use for `rows[i][j]`.
+fn rows_column(body: &serde_json::Value, idx: usize) -> Vec<Option<String>> {
+    body["rows"]
+        .as_array()
+        .expect("rows array")
+        .iter()
+        .map(|row| row[idx].as_str().map(str::to_string))
+        .collect()
+}
+
+fn warning_codes(body: &serde_json::Value) -> Vec<String> {
+    body["warnings"]
+        .as_array()
+        .map(|warnings| {
+            warnings
+                .iter()
+                .map(|w| w["code"].as_str().unwrap_or_default().to_string())
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Scenario 1 — an aggregate/topk pipeline over traces (the "slowest traces"
+/// pattern) followed by a signal-target `correlate` to `logs`: the surviving
+/// rows carry `logs.body` for exactly the two slowest traces, joined across
+/// the traces/logs writers' different trace_id encodings.
+#[tokio::test]
+async fn correlate_signal_target_joins_slowest_traces_to_their_logs() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    for (trace_id, dur_ns) in [(1u8, 50_000_000i64), (2, 200_000_000), (3, 100_000_000)] {
+        services
+            .trace_handler
+            .handle_grpc_otlp_traces(
+                &ctx,
+                traces_request(
+                    "svc",
+                    vec![span_with_ids("op", trace_id, trace_id, None, dur_ns)],
+                ),
+            )
+            .await
+            .expect("ingest trace");
+    }
+    for (trace_id, body) in [
+        (1u8, "log-for-trace-1"),
+        (2, "log-for-trace-2"),
+        (3, "log-for-trace-3"),
+    ] {
+        services
+            .log_handler
+            .handle_grpc_otlp_logs(
+                &ctx,
+                logs_request(
+                    "svc",
+                    vec![log_record_for_trace(
+                        1_000_000, "INFO", body, trace_id, trace_id,
+                    )],
+                ),
+            )
+            .await
+            .expect("ingest log");
+    }
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "table",
+        "fields": ["trace_id", "d", "logs.body"],
+        "pipeline": [
+            { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration", "as": "d" }] } },
+            { "topk": { "n": 2, "of": "d" } },
+            { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } }
+        ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "slowest-traces correlate query: {body}"
+    );
+    let bodies: std::collections::BTreeSet<String> =
+        rows_column(&body, 2).into_iter().flatten().collect();
+    assert_eq!(
+        bodies,
+        ["log-for-trace-2", "log-for-trace-3"]
+            .into_iter()
+            .map(String::from)
+            .collect(),
+        "only the two slowest traces' logs come back: {body}"
+    );
+}
+
+/// Scenario 2 — `semi` keeps only the source (trace) rows that have a
+/// matching target (log) row after the target-side `where` sub-pipeline.
+#[tokio::test]
+async fn correlate_semi_keeps_only_traces_with_an_error_log() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "has-error",
+                vec![span_with_ids("op", 1, 1, None, 10_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest trace with an error log");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("clean", vec![span_with_ids("op", 2, 2, None, 10_000_000)]),
+        )
+        .await
+        .expect("ingest trace with only an info log");
+
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "has-error",
+                vec![log_record_for_trace(1_000_000, "ERROR", "boom", 1, 1)],
+            ),
+        )
+        .await
+        .expect("ingest error log");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "clean",
+                vec![log_record_for_trace(1_000_000, "INFO", "ok", 2, 2)],
+            ),
+        )
+        .await
+        .expect("ingest info log");
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["service.name"],
+        "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi",
+            "pipeline": [ { "where": { "field": "severity_number", "op": "gte", "value": 17 } } ] } } ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "semi correlate query: {body}");
+    assert_eq!(
+        rows_column(&body, 0),
+        vec![Some("has-error".to_string())],
+        "{body}"
+    );
+    assert!(
+        !warning_codes(&body).contains(&"correlate_fanout_limit".to_string()),
+        "semi never reports a fanout limit: {body}"
+    );
+}
+
+/// Scenario 3 — `anti` is the complement of `semi`: it keeps the trace with
+/// only an info log, and the trace with no log at all (both "no match"),
+/// and drops the trace with an error log.
+#[tokio::test]
+async fn correlate_anti_keeps_only_traces_without_an_error_log() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "has-error",
+                vec![span_with_ids("op", 1, 1, None, 10_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest trace with an error log");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "clean-with-log",
+                vec![span_with_ids("op", 2, 2, None, 10_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest trace with only an info log");
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "no-logs-at-all",
+                vec![span_with_ids("op", 3, 3, None, 10_000_000)],
+            ),
+        )
+        .await
+        .expect("ingest trace with no logs");
+
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "has-error",
+                vec![log_record_for_trace(1_000_000, "ERROR", "boom", 1, 1)],
+            ),
+        )
+        .await
+        .expect("ingest error log");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "clean-with-log",
+                vec![log_record_for_trace(1_000_000, "INFO", "ok", 2, 2)],
+            ),
+        )
+        .await
+        .expect("ingest info log");
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["service.name"],
+        "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": "anti",
+            "pipeline": [ { "where": { "field": "severity_number", "op": "gte", "value": 17 } } ] } } ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "anti correlate query: {body}");
+    let mut services_seen: Vec<String> = rows_column(&body, 0).into_iter().flatten().collect();
+    services_seen.sort();
+    assert_eq!(
+        services_seen,
+        vec!["clean-with-log".to_string(), "no-logs-at-all".to_string()],
+        "{body}"
+    );
+    assert!(
+        !warning_codes(&body).contains(&"correlate_fanout_limit".to_string()),
+        "anti never reports a fanout limit: {body}"
+    );
+}
+
+/// Scenario 4 — the default (zero-width) target window treats a log that
+/// lands after the trace as "no match"; widening the window with `after`
+/// brings it into scope and the response warns with the resulting window.
+#[tokio::test]
+async fn correlate_anti_window_widens_the_target_scan() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let late_offset_ns: i64 = 10 * 60 * 1_000_000_000; // +10m, after the trace's spans
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("svc", vec![span_with_ids("op", 1, 1, None, 10_000_000)]),
+        )
+        .await
+        .expect("ingest trace");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "svc",
+                vec![log_record_for_trace(
+                    late_offset_ns,
+                    "ERROR",
+                    "late-error",
+                    1,
+                    1,
+                )],
+            ),
+        )
+        .await
+        .expect("ingest late error log");
+
+    let app = build_router(&services).await;
+    let anti_document = |window: Option<serde_json::Value>| {
+        let mut correlate = serde_json::json!({ "to": "logs", "on": "trace_id", "kind": "anti",
+            "pipeline": [ { "where": { "field": "severity_number", "op": "gte", "value": 17 } } ] });
+        if let Some(window) = window {
+            correlate["window"] = window;
+        }
+        serde_json::json!({
+            "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+            "fields": ["service.name"],
+            "pipeline": [ { "correlate": correlate } ]
+        })
+    };
+
+    let (status, body) = post_ir_until_rows(&app, anti_document(None)).await;
+    assert_eq!(status, StatusCode::OK, "default-window anti query: {body}");
+    assert_eq!(
+        rows_column(&body, 0),
+        vec![Some("svc".to_string())],
+        "the error log lands 10m after the trace, outside the default window, so anti still matches: {body}"
+    );
+
+    let (status, body) = post_ir(
+        &app,
+        anti_document(Some(serde_json::json!({ "after": "15m" }))),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "widened-window anti query: {body}");
+    let row_count = body["rows"].as_array().map(Vec::len).unwrap_or(0);
+    assert_eq!(
+        row_count, 0,
+        "widening the window to 15m brings the late error log into scope, so anti now excludes the trace: {body}"
+    );
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    let window_warning = warnings
+        .iter()
+        .find(|w| w["code"] == "correlate_window")
+        .unwrap_or_else(|| panic!("expected a correlate_window warning: {body}"));
+    // The message states the resulting absolute window, not the raw `after`
+    // operand: a traces source's envelope extends to start+duration (here
+    // +10ms), so `after: 15m` from that end lands at 22:28:20.010, 15m10ms
+    // past the trace's start (22:13:20).
+    assert!(
+        window_warning["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("22:28:20.010"),
+        "the warning states the widened target window: {body}"
+    );
+}
+
+/// Scenario 5 — `from: exemplars`, `semi`-correlated to `traces` on
+/// `trace_id`: only the exemplar whose trace_id resolves to a real trace
+/// survives.
+#[tokio::test]
+async fn correlate_semi_keeps_exemplars_with_a_real_trace() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("svc", vec![span_with_ids("op", 1, 1, None, 10_000_000)]),
+        )
+        .await
+        .expect("ingest trace");
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, histogram_with_exemplar("svc", 1, 1, 3.0))
+        .await
+        .expect("ingest exemplar with a real trace");
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, histogram_with_exemplar("svc", 9, 9, 9.0))
+        .await
+        .expect("ingest exemplar with no matching trace");
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "exemplars", "range": range(), "result": "rows",
+        "fields": ["exemplar.value"],
+        "pipeline": [ { "correlate": { "to": "traces", "on": "trace_id", "kind": "semi" } } ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "exemplar semi-correlate query: {body}"
+    );
+    let rows = body["rows"].as_array().expect("rows array");
+    assert_eq!(
+        rows.len(),
+        1,
+        "only the exemplar whose trace_id resolves to a real trace survives: {body}"
+    );
+    assert_eq!(rows[0][0].as_f64(), Some(3.0), "{body}");
+}
+
+/// Scenario 6 — `resource_identity` matches across signals when the
+/// resource's attribute set is the same, regardless of trace/span identity.
+#[tokio::test]
+async fn correlate_semi_on_resource_identity_matches_same_resource_across_signals() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, gauge_metric_request("has-logs", "requests", 1.0))
+        .await
+        .expect("ingest metric with a resource that also logs");
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, gauge_metric_request("no-logs", "requests", 1.0))
+        .await
+        .expect("ingest metric with a resource that never logs");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request("has-logs", vec![log_record(1_000_000, "INFO", "hi")]),
+        )
+        .await
+        .expect("ingest log");
+
+    let app = build_router(&services).await;
+    // A metrics source's window envelope is the single instant of its data
+    // point, not a range (unlike a traces source, which extends to
+    // start+duration): the log lands 1ms after that instant, so the
+    // correlate stage needs an explicit `after` to bring it into scope.
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "metrics", "range": range(), "result": "rows",
+        "fields": ["service.name"],
+        "pipeline": [ { "correlate": { "to": "logs", "on": "resource_identity", "kind": "semi",
+            "window": { "after": "1s" } } } ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "resource_identity semi correlate query: {body}"
+    );
+    assert_eq!(
+        rows_column(&body, 0),
+        vec![Some("has-logs".to_string())],
+        "{body}"
+    );
+}
+
+/// Scenario 7 — an `inner` join's per-source-row `fanout` cap keeps only the
+/// earliest `fanout` target rows and reports it as a warning (`semi`/`anti`
+/// never do, proven above).
+#[tokio::test]
+async fn correlate_inner_fanout_caps_rows_per_source_and_warns() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("svc", vec![span_with_ids("op", 1, 1, None, 10_000_000)]),
+        )
+        .await
+        .expect("ingest trace");
+    for i in 0..5u8 {
+        services
+            .log_handler
+            .handle_grpc_otlp_logs(
+                &ctx,
+                logs_request(
+                    "svc",
+                    vec![log_record_for_trace(
+                        i as i64 * 1_000_000,
+                        "INFO",
+                        &format!("log-{i}"),
+                        1,
+                        1,
+                    )],
+                ),
+            )
+            .await
+            .expect("ingest log");
+    }
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["logs.body"],
+        "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner", "fanout": 2 } } ]
+    });
+    let (status, body) = post_ir_until_rows(&app, document).await;
+    assert_eq!(
+        status,
+        StatusCode::OK,
+        "fanout-capped correlate query: {body}"
+    );
+    let bodies: std::collections::BTreeSet<String> =
+        rows_column(&body, 0).into_iter().flatten().collect();
+    assert_eq!(
+        bodies.len(),
+        2,
+        "the fanout cap keeps only 2 log rows for the one trace: {body}"
+    );
+    assert_eq!(
+        bodies,
+        ["log-0", "log-1"].into_iter().map(String::from).collect(),
+        "the fanout cap keeps the earliest 2 logs by target time: {body}"
+    );
+    assert!(
+        warning_codes(&body).contains(&"correlate_fanout_limit".to_string()),
+        "expected a correlate_fanout_limit warning: {body}"
+    );
+}
+
+/// Scenario 8 — three ways a signal-target `correlate` stage is invalid:
+/// the join key doesn't exist on one side, a preceding aggregate drops it,
+/// and `fanout` is set on a `semi` join. All 400s; the message names the
+/// specific reason, not just "unsupported version" (so this test fails for
+/// the right reason today, not by accident).
+///
+/// A `traces`-sourced document is only validated once the `traces` table
+/// exists (a dataset with none of a source's tables skips schema-dependent
+/// validation along with the scan, per `ir_planner::plan_document`), so this
+/// ingests a trace and polls until it is queryable before asserting on the
+/// two `traces`-sourced cases below.
+#[tokio::test]
+async fn correlate_signal_target_validation_errors() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request("svc", vec![span_with_ids("op", 1, 1, None, 10_000_000)]),
+        )
+        .await
+        .expect("ingest trace");
+
+    let app = build_router(&services).await;
+    let warmup = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["service.name"],
+    });
+    let (status, body) = post_ir_until_rows(&app, warmup).await;
+    assert_eq!(status, StatusCode::OK, "warm-up traces query: {body}");
+
+    let key_missing_on_metrics = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "metrics", "range": range(), "result": "rows",
+        "fields": ["metric.name"],
+        "pipeline": [ { "correlate": { "to": "traces", "on": "trace_id", "kind": "semi" } } ]
+    });
+    let key_dropped_by_aggregate = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "table",
+        "pipeline": [
+            { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+            { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } }
+        ]
+    });
+    let fanout_with_semi = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["service.name"],
+        "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi", "fanout": 2 } } ]
+    });
+
+    for (label, doc, expected_phrase) in [
+        (
+            "key missing on the metrics side",
+            key_missing_on_metrics,
+            "trace_id",
+        ),
+        (
+            "key dropped by a preceding aggregate",
+            key_dropped_by_aggregate,
+            "dropped",
+        ),
+        ("fanout on a semi join", fanout_with_semi, "fanout"),
+    ] {
+        let (status, body) = post_ir(&app, doc).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{label}: {body}");
+        let message = body["error"].as_str().unwrap_or_default();
+        assert!(
+            message.contains(expected_phrase),
+            "{label}: expected the error to mention '{expected_phrase}', got: {body}"
+        );
+    }
+}
+
+/// Scenario 9 — a low `[querier].correlate_max_source_rows` rejects a
+/// correlate whose source relation exceeds it with a `422` whose
+/// `errorType` is `resource_limit`, not a retryable `429` (the same query
+/// fails again unchanged), for both `semi` and `anti`.
+#[tokio::test]
+async fn correlate_source_row_bound_rejects_oversized_source_with_422() {
+    let services = setup_with(|config| config.querier.correlate_max_source_rows = 1).await;
+    let ctx = test_tenant_context();
+
+    for trace_id in 1u8..=3 {
+        services
+            .trace_handler
+            .handle_grpc_otlp_traces(
+                &ctx,
+                traces_request(
+                    "svc",
+                    vec![span_with_ids("op", trace_id, trace_id, None, 10_000_000)],
+                ),
+            )
+            .await
+            .expect("ingest trace");
+    }
+
+    let app = build_router(&services).await;
+    for kind in ["semi", "anti"] {
+        let document = serde_json::json!({
+            "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+            "fields": ["service.name"],
+            "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": kind } } ]
+        });
+        let (status, body) = post_ir_until_rows(&app, document).await;
+        assert_eq!(
+            status,
+            StatusCode::UNPROCESSABLE_ENTITY,
+            "{kind} correlate over the source row bound: {body}"
+        );
+        assert_eq!(
+            body["errorType"], "resource_limit",
+            "{kind} correlate over the source row bound: {body}"
+        );
+    }
+}
+
+/// A key holding only the source signal's read scope cannot correlate to a
+/// target signal it has no read scope for — the router must check every
+/// correlate target's scope, not just `from`'s (see
+/// `document_read_scopes` in `router::endpoints::query`).
+#[tokio::test]
+async fn correlate_to_an_unscoped_target_is_forbidden() {
+    let services = setup().await;
+    services
+        .catalog
+        .upsert_scoped_api_key(
+            "test-tenant",
+            &common::auth::Authenticator::hash_api_key("traces-only-key"),
+            Some("traces-only"),
+            None,
+            None,
+            Some(&["traces:read".to_string()]),
+            None,
+        )
+        .await
+        .expect("create traces-only scoped key");
+
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
+        "fields": ["service.name"],
+        "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } } ]
+    });
+    let (status, body) = post_ir_as(&app, document, "traces-only-key", "test-tenant", None).await;
+    assert_eq!(
+        status,
+        StatusCode::FORBIDDEN,
+        "a traces:read-only key correlating to logs: {body}"
     );
 }
