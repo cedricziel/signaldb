@@ -922,13 +922,18 @@ describe("Sessions tab", () => {
       }),
     );
     renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+    // The timeline remounts once the app list resolves.
+    await screen.findByRole("button", { name: /storefront-web/ });
 
     const user = userEvent.setup();
-    const eventRow = await screen.findByRole("button", {
-      name: /Navigated to \/sess-1/,
-    });
-    await user.click(eventRow);
-    expect(eventRow).toHaveAttribute("aria-current", "true");
+    await user.click(
+      await screen.findByRole("button", { name: /Navigated to \/sess-1/ }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByRole("button", { name: /Navigated to \/sess-1/ }),
+      ).toHaveAttribute("aria-current", "true"),
+    );
 
     await user.click(await screen.findByRole("button", { name: /sess-2/ }));
     await waitFor(() =>
