@@ -552,7 +552,7 @@ The declared `result` selects one canonical response shape:
 // table  (a grouped aggregate)
 { "result": "table", "window": {...}, "columns": [{name, type}], "rows": [[...]] }
 // series (an aggregate with `step`, or a metric Series from `sample`)
-{ "result": "series", "window": {...},
+{ "result": "series", "window": {...}, "step_ns": 60000000000,
   "series": [ { "labels": {...}, "points": [[t_ns, value], ...] } ] }
 ```
 
@@ -982,7 +982,8 @@ PromQL's semantics.
 400 naming `delta`/`deriv` instead. A cumulative histogram's `metric.count` and `metric.sum` sample as counters. A series with
 no point in an instant's window has no value there. A point flagged
 `NO_RECORDED_VALUE` (OTLP's staleness marker) is skipped by range functions,
-and `latest` has no value at an instant whose newest point is one.
+and `latest` has no value at an instant whose newest point is one (a marker
+and a recorded point at the same timestamp: the marker counts as newest).
 
 ### Labels
 
@@ -999,10 +1000,13 @@ with string values:
   attribute `metric.name`).
 
 Structured values (arrays, maps) are compact JSON; an empty value is absent.
-Two series whose label sets end up equal at an instant (two metrics after
-`rate` drops `metric.name`, say) cannot be told apart, and the query is a
-400 "several series share the label set …"; narrow the stream to one metric
-with a `where` first.
+Stored series whose label sets are equal (a gauge and a sum of one name, an
+attribute stored as the integer `200` and as the string `"200"`, an empty
+vs a missing scope version) are one series, as in Prometheus: `sample`
+evaluates their points together. Two series whose label sets only become
+equal once a function drops `metric.name` (two metrics' `rate`, say) cannot
+be told apart, and the query is a 400 "several series share the label set
+…"; narrow the stream to one metric with a `where` first.
 
 ### Scalars: `scalar`, `vector`, `time`, `constant`
 

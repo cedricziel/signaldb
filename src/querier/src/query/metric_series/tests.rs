@@ -36,6 +36,7 @@ pub(super) struct Pt {
     pub monotonic: Option<bool>,
     pub flags: i32,
     pub scope: Option<&'static str>,
+    pub scope_version: Option<&'static str>,
     pub resource: JsonValue,
     pub attrs: JsonValue,
 }
@@ -66,6 +67,7 @@ pub(super) fn gauge(ts: i64, series: &'static str, value: f64, attrs: JsonValue)
         monotonic: None,
         flags: 0,
         scope: None,
+        scope_version: None,
         resource: json!({"service.name": "svc"}),
         attrs,
     }
@@ -99,6 +101,10 @@ pub(super) fn batch(points: &[Pt]) -> RecordBatch {
         (
             "scope_name".into(),
             col::<_, StringArray>(points, |p| p.scope),
+        ),
+        (
+            "scope_version".into(),
+            col::<_, StringArray>(points, |p| p.scope_version),
         ),
         ("value".into(), col::<_, Float64Array>(points, |p| p.value)),
         ("count".into(), col::<_, Int64Array>(points, |p| p.count)),
@@ -253,6 +259,71 @@ async fn rate_over_two_series_of_one_service_stays_per_series() {
         .map(|(t, l, v)| (*t, l.to_string(), *v))
         .collect();
     assert_eq!(rows, want);
+}
+
+/// The instant fan-out copies each row once per covering instant (up to
+/// `window / step` times), so only the rendered label string and the range
+/// function's inputs may ride through it, never the attribute bags. Checked
+/// on the plan as built, before the optimizer prunes anything.
+#[tokio::test]
+async fn the_instant_unnest_carries_the_label_string_not_the_attribute_bags() {
+    use datafusion::common::tree_node::{TreeNode, TreeNodeRecursion};
+    use datafusion::logical_expr::LogicalPlan;
+
+    let points = [counter(30 * S, "a", 1.0, json!({"code": 200}))];
+    let doc = sample_doc(60, 120, json!({ "fn": "rate", "window": "1h" }));
+    let doc = serde_json::from_value(doc).unwrap();
+    let (df, _) = IrService::new(ctx(batch(&points)))
+        .plan(&doc, "t", "d", 0)
+        .await
+        .unwrap()
+        .expect("the metrics table is registered");
+    let mut carried = Vec::new();
+    df.logical_plan()
+        .apply(|node| {
+            if let LogicalPlan::Unnest(unnest) = node {
+                let names = unnest.input.schema().fields().iter();
+                carried.push(names.map(|f| f.name().clone()).collect::<Vec<_>>());
+            }
+            Ok(TreeNodeRecursion::Continue)
+        })
+        .unwrap();
+    let [carried] = carried.as_slice() else {
+        panic!("want one unnest, got {carried:?}");
+    };
+    let allowed = [
+        "__labels",
+        "timestamp",
+        "__value",
+        "__start",
+        "__temporality",
+        "__monotonic",
+        "__kind",
+        "__instant",
+    ];
+    assert!(
+        carried.iter().all(|c| allowed.contains(&c.as_str())),
+        "the unnest carries {carried:?}"
+    );
+    assert!(carried.iter().any(|c| c == "__labels"), "{carried:?}");
+}
+
+#[tokio::test]
+async fn a_limit_after_sample_keeps_the_first_rows_of_the_sorted_frame() {
+    let points: Vec<_> = (0..40)
+        .rev()
+        .map(|i| gauge(60 * S, "a", i as f64, json!({ "k": format!("{i:02}") })))
+        .collect();
+    let mut doc = sample_doc(60, 60, json!({ "fn": "latest" }));
+    doc["pipeline"]
+        .as_array_mut()
+        .unwrap()
+        .push(json!({ "limit": 3 }));
+    let values: Vec<_> = series_rows(&run(&points, doc).await.unwrap())
+        .into_iter()
+        .map(|(_, _, v)| v)
+        .collect();
+    assert_eq!(values, [0.0, 1.0, 2.0]);
 }
 
 #[tokio::test]
@@ -598,13 +669,9 @@ async fn a_metrics_table_without_the_sampled_column_is_a_clear_error() {
         matches!(&err, QuerierError::InvalidInput(m) if m.contains("`count`")),
         "{err}"
     );
-    let err = run_batch(without("series_id"), doc("metric.value"))
-        .await
-        .unwrap_err();
-    assert!(
-        matches!(&err, QuerierError::Unsupported(m) if m.contains("series_id")),
-        "{err}"
-    );
+    // Series are keyed on their label sets, so `series_id` is not needed.
+    let rows = run_batch(without("series_id"), doc("metric.value")).await;
+    assert_eq!(series_rows(&rows.unwrap()).len(), 1);
 }
 
 #[tokio::test]
@@ -619,4 +686,162 @@ async fn rate_over_a_gauge_is_invalid_input() {
         matches!(&err, QuerierError::InvalidInput(m) if m.contains("delta")),
         "{err}"
     );
+}
+
+/// Series whose label sets render identically, as Prometheus sees one series.
+#[tokio::test]
+async fn series_indistinguishable_by_their_labels_are_one_series() {
+    let as_requests = |p: Pt| Pt {
+        metric: "requests",
+        ..p
+    };
+    let cases: [(&str, Vec<Pt>); 3] = [
+        (
+            "int vs string attribute",
+            vec![
+                counter(30 * S, "int", 1.0, json!({"code": 200})),
+                counter(60 * S, "str", 4.0, json!({"code": "200"})),
+                counter(90 * S, "int", 7.0, json!({"code": 200})),
+            ],
+        ),
+        (
+            "gauge vs sum",
+            vec![
+                as_requests(gauge(30 * S, "g", 1.0, json!({"code": 200}))),
+                counter(60 * S, "c", 4.0, json!({"code": 200})),
+                counter(90 * S, "c", 7.0, json!({"code": 200})),
+            ],
+        ),
+        (
+            "empty vs absent scope version",
+            vec![
+                Pt {
+                    scope_version: Some(""),
+                    ..counter(30 * S, "empty", 1.0, json!({"code": 200}))
+                },
+                counter(60 * S, "none", 4.0, json!({"code": 200})),
+                Pt {
+                    scope_version: Some(""),
+                    ..counter(90 * S, "empty", 7.0, json!({"code": 200}))
+                },
+            ],
+        ),
+    ];
+    let labels = r#"{"code":"200","metric.name":"requests","service.name":"svc"}"#;
+    for (case, points) in cases {
+        let latest = run(&points, sample_doc(120, 120, json!({ "fn": "latest" })));
+        let latest = series_rows(&latest.await.unwrap());
+        assert_eq!(latest, [(120, labels.to_string(), 7.0)], "{case}");
+        let rate = json!({ "fn": "rate", "window": "100s" });
+        let rate = series_rows(&run(&points, sample_doc(120, 120, rate)).await.unwrap());
+        let unnamed = r#"{"code":"200","service.name":"svc"}"#;
+        // The merged, time-ordered points 1, 4, 7: an increase of 6.
+        assert_eq!(rate, [(120, unnamed.to_string(), 0.06)], "{case}");
+    }
+}
+
+/// Dropping `metric.name` can make two metrics' results collide; the Series
+/// frame keeps both rows so the router rejects them, as Prometheus does.
+#[tokio::test]
+async fn a_collision_after_dropping_the_name_keeps_both_rows() {
+    let other = |p: Pt| Pt {
+        metric: "other",
+        ..p
+    };
+    let points = [
+        counter(30 * S, "a", 1.0, json!({})),
+        counter(90 * S, "a", 7.0, json!({})),
+        other(counter(30 * S, "b", 1.0, json!({}))),
+        other(counter(90 * S, "b", 4.0, json!({}))),
+    ];
+    let doc = sample_doc(120, 120, json!({ "fn": "rate", "window": "100s" }));
+    let rows = series_rows(&run(&points, doc).await.unwrap());
+    let unnamed = r#"{"service.name":"svc"}"#;
+    assert_eq!(rows.len(), 2, "{rows:?}");
+    assert!(
+        rows.iter().all(|(t, l, _)| *t == 120 && l == unnamed),
+        "{rows:?}"
+    );
+}
+
+/// A window far longer than the range reads back over many steps, but the
+/// range itself evaluates only a handful of instants.
+#[tokio::test]
+async fn a_long_window_over_a_short_range_is_fine() {
+    let points = [
+        counter(1_000 * S, "a", 1.0, json!({})),
+        counter(100_000 * S, "a", 3.0, json!({})),
+    ];
+    let mut doc = sample_doc(
+        100_000,
+        100_300,
+        json!({ "fn": "increase", "window": "3d" }),
+    );
+    doc["step"] = json!("15s");
+    let rows = series_rows(&run(&points, doc).await.unwrap());
+    assert_eq!(rows.len(), 21, "{rows:?}");
+    assert!(rows.iter().all(|(_, _, v)| *v == 2.0), "{rows:?}");
+}
+
+#[tokio::test]
+async fn a_staleness_marker_without_a_value_ends_latest() {
+    let points = [
+        gauge(30 * S, "a", 1.0, json!({})),
+        stale(Pt {
+            value: None,
+            ..gauge(90 * S, "a", 0.0, json!({}))
+        }),
+    ];
+    let latest = sample_values(&points, 60, 120, json!({ "fn": "latest" })).await;
+    assert_eq!(latest, [(60, 1.0)]);
+}
+
+/// A recorded point and a staleness marker at the same timestamp: the
+/// marker wins, whatever the input order, so the series has ended.
+#[tokio::test]
+async fn a_marker_tied_with_a_point_ends_latest() {
+    let point = gauge(90 * S, "a", 2.0, json!({}));
+    let marker = stale(gauge(90 * S, "a", 3.0, json!({})));
+    let early = gauge(30 * S, "a", 1.0, json!({}));
+    for points in [
+        [early.clone(), point.clone(), marker.clone()],
+        [marker.clone(), point.clone(), early.clone()],
+    ] {
+        let latest = sample_values(&points, 60, 120, json!({ "fn": "latest" })).await;
+        assert_eq!(latest, [(60, 1.0)]);
+    }
+}
+
+#[tokio::test]
+async fn rate_and_increase_read_across_a_staleness_marker() {
+    let points = [
+        counter(30 * S, "a", 1.0, json!({})),
+        stale(counter(60 * S, "a", f64::NAN, json!({}))),
+        counter(90 * S, "a", 7.0, json!({})),
+    ];
+    let window = |func| json!({ "fn": func, "window": "100s" });
+    let increase = sample_values(&points, 120, 120, window("increase")).await;
+    assert_eq!(increase, [(120, 6.0)]);
+    let rate = sample_values(&points, 120, 120, window("rate")).await;
+    assert_eq!(rate, [(120, 0.06)]);
+}
+
+/// The scan reads exactly what `sample` reads, not the hull of the range and
+/// a far-away `at`.
+#[test]
+fn the_scan_window_is_the_sample_read_window() {
+    use crate::query::ir_planner::ResolvedWindow;
+    let window = ResolvedWindow {
+        start_ns: 10_000 * S,
+        end_ns: 10_600 * S,
+    };
+    let scan = |sample: JsonValue| {
+        let doc = serde_json::from_value(sample_doc(0, 0, sample)).unwrap();
+        let w = super::sample::scan_window(&doc, window, 20_000 * S).unwrap();
+        (w.start_ns / S, w.end_ns / S)
+    };
+    let at = json!({ "fn": "rate", "window": "1m", "at": 100 * S, "offset": "30s" });
+    assert_eq!(scan(at), (10, 70));
+    let offset = json!({ "fn": "latest", "lookback": "1m", "offset": "1h" });
+    assert_eq!(scan(offset), (6_340, 7_000));
 }

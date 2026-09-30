@@ -25,8 +25,9 @@ pub(crate) type LabelSet = BTreeMap<String, String>;
 
 pub(crate) const METRIC_NAME: &str = "metric.name";
 pub(crate) const SERVICE_NAME: &str = "service.name";
-/// The instrumentation scope's name and version, spelled as Prometheus' OTLP
-/// translation does (`otel_scope_name`), so two scopes' series stay apart.
+/// The instrumentation scope's name and version, as labels so two scopes'
+/// series stay apart (Prometheus' OTLP translation's `otel_scope_name`, in
+/// the IR's dotted spelling).
 pub(crate) const SCOPE_NAME: &str = "otel.scope.name";
 pub(crate) const SCOPE_VERSION: &str = "otel.scope.version";
 const METRIC_PREFIX: &str = "metric.";
@@ -54,7 +55,7 @@ pub(super) fn utf8_array(arg: &ColumnarValue, rows: usize) -> Result<ArrayRef> {
 /// The label a point attribute is emitted under: its own key, unless that key
 /// would collide with the `metric.*`/`resource.*`/`service.name`/scope
 /// namespace (or starts with the qualifier itself), in which case it is
-/// scope-qualified.
+/// `point.`-qualified.
 fn point_label(key: &str) -> String {
     let collides = [SERVICE_NAME, SCOPE_NAME, SCOPE_VERSION].contains(&key)
         || [METRIC_PREFIX, RESOURCE_PREFIX, POINT_PREFIX]

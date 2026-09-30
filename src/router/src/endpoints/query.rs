@@ -1425,13 +1425,17 @@ pub(super) fn ir_table(
     (columns, rows)
 }
 
-/// The step a Series or Scalar result is evaluated at: the `sample` or
-/// `aggregate` stage's own `step`, else the document's.
+/// The step a Series or Scalar result is evaluated at: the last `sample`,
+/// `aggregate`, `histogram_quantile` or `histogram_fraction` stage's own
+/// `step`, else the document's.
 fn evaluation_step_ns(document: &serde_json::Value) -> Option<i64> {
+    use common::query_ir::Stage;
     let doc = common::query_ir::Document::deserialize(document).ok()?;
-    let stage_step = doc.pipeline.iter().find_map(|stage| match stage {
-        common::query_ir::Stage::Sample(s) => s.step.as_deref(),
-        common::query_ir::Stage::Aggregate(a) => a.step.as_deref(),
+    let stage_step = doc.pipeline.iter().rev().find_map(|stage| match stage {
+        Stage::Sample(s) => s.step.as_deref(),
+        Stage::Aggregate(a) => a.step.as_deref(),
+        Stage::HistogramQuantile(h) => Some(h.step.as_str()),
+        Stage::HistogramFraction(h) => Some(h.step.as_str()),
         _ => None,
     });
     common::query_ir::parse_duration_ns(stage_step.or(doc.step.as_deref())?)
@@ -2712,6 +2716,15 @@ mod tests {
         assert_eq!(step("series", doc(serde_json::json!([]))), minute);
         let sample = serde_json::json!([{ "sample": { "fn": "latest", "step": "30s" } }]);
         assert_eq!(step("series", doc(sample)), Some(30_000_000_000));
+        let quantile = serde_json::json!([
+            { "histogram_quantile": { "q": 0.9, "step": "5m", "as": "p90" } }
+        ]);
+        assert_eq!(step("series", doc(quantile)), Some(300_000_000_000));
+        let fraction = serde_json::json!([
+            { "sample": { "fn": "latest", "step": "30s" } },
+            { "histogram_fraction": { "lower": 0.0, "upper": 1.0, "step": "2m", "as": "f" } }
+        ]);
+        assert_eq!(step("series", doc(fraction)), Some(120_000_000_000));
         let scalar = frame(vec![
             ("bucket", buckets(vec![60])),
             ("value", Arc::new(Float64Array::from(vec![1.0]))),
