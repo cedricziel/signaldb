@@ -8,6 +8,10 @@ sources:
   - src/acceptor/src/middleware/grpc_auth.rs
   - src/router/src/endpoints/session.rs
   - src/common/src/config/mod.rs
+  - src/common/src/flight/conversion/conversion_common.rs
+  - src/common/src/attrs/typed.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/acceptor/src/type_warning.rs
 ---
 
 # Send OTLP data to SignalDB
@@ -123,13 +127,14 @@ cache is soft-capped (`[wal].max_instances`) and warns at startup when
 
 ## Attribute types
 
-Each attribute key has one canonical type per tenant, dataset and signal.
-It comes from a `[[schema.attribute_types]]` pin, a semantic-convention
-hint, or the first value SignalDB stored for that key. It never changes on
-its own. A value sent with a different type (say `http.status_code` as the
-string `"404"` once the key is an integer) is still stored exactly as sent.
-It can be retrieved through the raw attribute bag, but it can't be filtered
-as a typed value (see [Querying with the IR](querying-ir.md)).
+Each attribute key has one canonical type per tenant, dataset, signal and
+attribute level (resource, scope or record). How it is chosen (a pin, a
+semantic-convention hint, or the first value SignalDB stored) is described in
+[Canonical types](schema-registry.md#canonical-types). It never changes on its
+own. A value sent with a different type (say `http.status_code` as the string
+`"404"` once the key is an integer) is still stored exactly as sent, except that a non-finite double is stored as null. It can be
+retrieved through the raw attribute bag, but it can't be filtered as a typed
+value (see [Querying with the IR](querying-ir.md)).
 
 The export still succeeds, but the response carries an OTLP
 `partial_success` with nothing rejected and an `error_message` naming the
@@ -139,6 +144,34 @@ canonical types within about 30 seconds, so the first exports of a new key
 aren't flagged. Operators see the same condition as the
 `signaldb.writer.attribute_type_mismatches` counter, and the per-key total
 as `off_type_count` on `GET /api/v1/schema/attributes/{key}`.
+
+## What is preserved
+
+- **Attribute values keep their OTLP type.** Strings, integers (full 64-bit),
+  doubles and booleans are stored typed. Bytes stay bytes, not text. Arrays and
+  key-value lists are stored as sent and can be read back, but cannot be used in
+  a filter. A non-finite double attribute (`NaN`, `+Inf`, `-Inf`) is stored as
+  null.
+- **Log `body` is an `AnyValue`.** A string body is returned as the string; a
+  structured body is kept and returned as JSON.
+- **Duplicate keys and key order are not preserved.** If one attribute list
+  repeats a key, the last value wins, and attributes come back grouped by
+  their stored type (string, integer, double, boolean, then anything else),
+  not in the order you sent them. Keeping both is deferred to a typed wire
+  format.
+- **Exemplars keep their trace context.** Each exemplar is stored as its own
+  row with `trace_id` and `span_id` as hex strings, the same encoding traces
+  use, so an exemplar can be joined to its trace and to logs (the IR's
+  `exemplars` source, key `trace.id`/`span.id`).
+- **Summary metrics are stored as sent.** Count, sum and the precomputed
+  quantiles are kept and readable (`metric.quantiles`,
+  `metric.quantile_values`). SignalDB does not treat a Summary as a histogram:
+  `histogram_quantile` reads only histogram and exponential-histogram points
+  and returns nothing for a Summary.
+- **`schema_url` is a hint.** The resource and scope `schema_url` select which
+  semantic-convention registry may suggest an attribute's type (see
+  [Attribute types](#attribute-types)); it is also stored. It never rewrites
+  your values.
 
 ## Per-signal support
 
