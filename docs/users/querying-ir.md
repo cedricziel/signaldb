@@ -1056,7 +1056,7 @@ instant.
 | `fn`      | `sum`, `avg`, `min`, `max`, `count`, `group`, `stddev`, `stdvar`, `quantile`, `topk`, `bottomk`, `count_values` |
 | `by`      | group by exactly these labels (`metric.name` only when listed)                            |
 | `without` | group by every label but these and `metric.name`                                          |
-| `arg`     | `topk`/`bottomk`: the integer k; `quantile`: the quantile in `[0, 1]`                     |
+| `arg`     | `topk`/`bottomk`: k, truncated (below 1 selects nothing); `quantile`: the quantile in `[0, 1]` |
 | `label`   | `count_values`: the label each distinct value is written to                               |
 
 With neither `by` nor `without` every series is one group with no labels.

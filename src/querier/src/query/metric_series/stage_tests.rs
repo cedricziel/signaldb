@@ -542,3 +542,14 @@ async fn relabelling_two_series_to_one_labelset_is_invalid_input() {
         json!([{ "labels": { "join": { "dst": "code", "separator": "", "src": ["nope"] } } }]);
     same_labelset_error(&points, join).await;
 }
+
+#[tokio::test]
+async fn topk_truncates_k_and_selects_nothing_below_one() {
+    let top = |k: f64| json!([{ "reduce": { "fn": "topk", "arg": k } }]);
+    assert_eq!(
+        over_two_series(top(1.9)).await,
+        rows(&[(60, B, 10.0), (120, B, 20.0)])
+    );
+    assert!(over_two_series(top(0.5)).await.is_empty());
+    assert!(over_two_series(top(-3.0)).await.is_empty());
+}

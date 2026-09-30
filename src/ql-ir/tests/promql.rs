@@ -141,6 +141,9 @@ fn bad_parameters_and_text_are_invalid_promql() {
         ("up", PromqlParams::range(START, END, 0)),
         ("up", PromqlParams::range(END, START, STEP)),
         ("sum(", PromqlParams::range(START, END, STEP)),
+        ("topk(NaN, x)", PromqlParams::range(START, END, STEP)),
+        ("bottomk(Inf, x)", PromqlParams::range(START, END, STEP)),
+        ("topk(-Inf, x)", PromqlParams::range(START, END, STEP)),
     ] {
         let result = ql_ir::promql_to_ir(q, &params);
         assert!(matches!(result, Err(LowerError::InvalidPromql(_))), "{q}");
@@ -336,6 +339,11 @@ fn aggregations_reduce() {
             "topk(2.7, rate(x[5m]))",
             rate(json!({ "fn": "topk", "arg": 2.0 })),
         ),
+        // Below 1 selects nothing, as in Prometheus.
+        (
+            "topk(-5, rate(x[5m]))",
+            rate(json!({ "fn": "topk", "arg": 0.0 })),
+        ),
     ]);
     // A computed value drops the name; `without` drops it too, `by` keeps
     // exactly its labels.
@@ -355,7 +363,6 @@ fn constructs_the_ir_cannot_express_are_named() {
         ("limit_ratio(0.5, x)", "limit_ratio"),
         ("x[5m]", "range vector"),
         (r#""text""#, "string literal"),
-        ("topk(0.5, x)", "below 1"),
         ("quantile(1.5, x)", "outside [0, 1]"),
         ("quantile_over_time(-1, x[5m])", "outside [0, 1]"),
         ("quantile_over_time(NaN, x[5m])", "non-finite"),

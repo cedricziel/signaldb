@@ -488,11 +488,12 @@ impl InferCtx<'_> {
             check_label_name("reduce", name)?;
         }
         match reduce.func {
+            // As in Prometheus, k is truncated and below 1 selects nothing.
             ReduceFn::Topk | ReduceFn::Bottomk => match reduce.arg {
-                Some(k) if k >= 1.0 && k.fract() == 0.0 => {}
+                Some(k) if k.is_finite() => {}
                 _ => {
                     return Err(IrError::Invalid(
-                        "reduce topk/bottomk requires an integer `arg` > 0".to_string(),
+                        "reduce topk/bottomk requires a numeric `arg` (k)".to_string(),
                     ));
                 }
             },

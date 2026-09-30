@@ -661,11 +661,16 @@ impl Lowerer<'_> {
                     Operand::Number(q) if func == ReduceFn::Quantile => {
                         (Some(quantile(&op, q)?), None)
                     }
-                    // Prometheus truncates k; below 1 it selects nothing.
-                    Operand::Number(k) if k.trunc() >= 1.0 => (Some(k.trunc()), None),
-                    Operand::Number(k) => {
-                        return Err(inexpressible(&format!("{op} with k = {k}, below 1")));
+                    // Prometheus truncates k and selects nothing below 1,
+                    // but rejects a NaN k or one outside an int64.
+                    Operand::Number(k)
+                        if k.is_nan() || k >= i64::MAX as f64 || k < i64::MIN as f64 =>
+                    {
+                        return Err(LowerError::InvalidPromql(format!(
+                            "{op}: parameter k = {k} is not an int64"
+                        )));
                     }
+                    Operand::Number(k) => (Some(k.trunc().max(0.0)), None),
                     Operand::Pipe(_) => {
                         return Err(inexpressible(&format!("{op} with a non-literal parameter")));
                     }

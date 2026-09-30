@@ -73,6 +73,13 @@ fn reduce_label_sets() {
 }
 
 #[test]
+fn topk_takes_any_k_as_prometheus_does() {
+    for k in [1.5, 0.0, -2.0] {
+        series(known(json!([{ "reduce": { "fn": "bottomk", "arg": k } }])));
+    }
+}
+
+#[test]
 fn reduce_operand_rules() {
     for (op, needle) in [
         (
@@ -80,8 +87,6 @@ fn reduce_operand_rules() {
             "without",
         ),
         (json!({ "fn": "topk" }), "arg"),
-        (json!({ "fn": "topk", "arg": 1.5 }), "arg"),
-        (json!({ "fn": "bottomk", "arg": 0 }), "arg"),
         (json!({ "fn": "quantile", "arg": 2 }), "arg"),
         (json!({ "fn": "sum", "arg": 1 }), "arg"),
         (json!({ "fn": "count_values" }), "label"),
