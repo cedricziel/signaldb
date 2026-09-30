@@ -8,6 +8,7 @@ sources:
   - src/acceptor/src/middleware/grpc_auth.rs
   - src/router/src/endpoints/session.rs
   - src/common/src/config/mod.rs
+  - src/common/src/flight/conversion/conversion_common.rs
 ---
 
 # Send OTLP data to SignalDB
@@ -139,6 +140,33 @@ canonical types within about 30 seconds, so the first exports of a new key
 aren't flagged. Operators see the same condition as the
 `signaldb.writer.attribute_type_mismatches` counter, and the per-key total
 as `off_type_count` on `GET /api/v1/schema/attributes/{key}`.
+
+## What is preserved
+
+- **Attribute values keep their OTLP type.** Strings, integers (full 64-bit),
+  doubles and booleans are stored typed. Bytes stay bytes, not text. Arrays and
+  key-value lists are stored as sent and can be read back, but cannot be used in
+  a filter. A non-finite double attribute (`NaN`, `+Inf`, `-Inf`) is stored as
+  null.
+- **Log `body` is an `AnyValue`.** A string body is returned as the string; a
+  structured body is kept and returned as JSON.
+- **Duplicate keys and key order are not preserved.** If one attribute list
+  repeats a key, the last value wins, and attributes come back sorted by key,
+  not in the order you sent them. Keeping both is deferred to a typed wire
+  format.
+- **Exemplars keep their trace context.** Each exemplar is stored as its own
+  row with `trace_id` and `span_id` as hex strings, the same encoding traces
+  use, so an exemplar can be joined to its trace and to logs (the IR's
+  `exemplars` source, key `trace.id`/`span.id`).
+- **Summary metrics are stored as sent.** Count, sum and the precomputed
+  quantiles are kept and readable (`metric.quantiles`,
+  `metric.quantile_values`). SignalDB does not treat a Summary as a histogram:
+  `histogram_quantile` reads only histogram and exponential-histogram points
+  and returns nothing for a Summary.
+- **`schema_url` is a hint.** The resource and scope `schema_url` select which
+  semantic-convention registry may suggest an attribute's type (see
+  [Attribute types](#attribute-types)); it is also stored. It never rewrites
+  your values.
 
 ## Per-signal support
 
