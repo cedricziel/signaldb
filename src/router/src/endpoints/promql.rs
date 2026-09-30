@@ -337,7 +337,7 @@ async fn run_promql(
     let document =
         ql_ir::promql_to_ir(promql, params).map_err(|e| ApiError::bad_request(e.to_string()))?;
     let ticket = super::query::query_ir_ticket(&tenant_ctx.0, &document, super::now_ns())?;
-    let (batches, _correlate_truncated) = super::query::execute_ticket(state, ticket).await?;
+    let (batches, _correlate_report) = super::query::execute_ticket(state, ticket).await?;
     let series = super::query::decode_series(&batches, |array, row| {
         array
             .as_any()
@@ -354,7 +354,7 @@ async fn execute_metadata_ticket(
     state: &RouterAppState,
     ticket: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
-    let (batches, _correlate_truncated) = super::query::execute_ticket(state, ticket).await?;
+    let (batches, _correlate_report) = super::query::execute_ticket(state, ticket).await?;
     Ok(batches)
 }
 

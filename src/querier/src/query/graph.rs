@@ -880,9 +880,9 @@ mod tests {
             document: serde_json::to_value(graph_doc(serde_json::json!({}))).unwrap(),
             now_ns: 0,
         };
-        let (batches, window, truncated) = svc.query(&params, "t", "d").await.unwrap();
+        let (batches, window, report) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(window.end_ns, WINDOW_END);
-        assert!(!truncated);
+        assert!(!report.row_limit);
         let cell = batches[0]
             .column_by_name(GRAPH_JSON_COLUMN)
             .unwrap()

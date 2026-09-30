@@ -1487,10 +1487,10 @@ impl QuerierFlightService {
     /// tenant-scoped callers are pinned to their authenticated tenant, and
     /// only internal or unauthenticated callers may scope via headers.
     ///
-    /// Returns the result batches alongside whether a `correlate` stage's
-    /// join was truncated by `correlate_max_rows` — only the `QueryIr` arm
-    /// ever sets this; every other ticket type leaves it `false`. `do_get`
-    /// carries it into a Flight `app_metadata` trailer (see
+    /// Returns the result batches alongside a [`common::flight::CorrelateReport`]
+    /// of what a `correlate` stage's join did — only the `QueryIr` arm ever
+    /// sets it; every other ticket type leaves it at its default (empty).
+    /// `do_get` carries it into a Flight `app_metadata` trailer (see
     /// [`Self::do_get`]) since it's only known once the query has actually
     /// streamed to completion, too late for the schema message.
     async fn execute_ticket(
@@ -1498,8 +1498,8 @@ impl QuerierFlightService {
         ticket_request: TicketRequest,
         caller_tenant: Option<&common::auth::TenantContext>,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<(Vec<RecordBatch>, bool), Status> {
-        let mut correlate_truncated = false;
+    ) -> Result<(Vec<RecordBatch>, common::flight::CorrelateReport), Status> {
+        let mut correlate_report = common::flight::CorrelateReport::default();
         let batches = match ticket_request {
             TicketRequest::FindTrace {
                 tenant_slug,
@@ -1739,12 +1739,12 @@ impl QuerierFlightService {
                     dataset_slug = %dataset_slug,
                     "Executing query_ir"
                 );
-                let (batches, _window, truncated) = self
+                let (batches, _window, report) = self
                     .ir_service
                     .query(&params, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_QUERY_IR))?;
-                correlate_truncated = truncated;
+                correlate_report = report;
                 batches
             }
             TicketRequest::QueryLogsLabels {
@@ -1948,7 +1948,7 @@ impl QuerierFlightService {
                     .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
             }
         };
-        Ok((batches, correlate_truncated))
+        Ok((batches, correlate_report))
     }
 }
 
@@ -2185,16 +2185,18 @@ impl FlightService for QuerierFlightService {
                             self.execute_ticket(ticket_request, caller_tenant.as_ref(), &metadata);
                         // Bound every query's wall-clock time so a heavy scan cannot
                         // occupy the querier indefinitely.
-                        let batches_result: Result<(Vec<_>, bool), Status> =
-                            match tokio::time::timeout(self.limits.query_timeout, query_future)
-                                .await
-                            {
-                                Ok(result) => result,
-                                Err(_) => Err(Status::deadline_exceeded(format!(
-                                    "query exceeded the configured timeout of {:?}",
-                                    self.limits.query_timeout
-                                ))),
-                            };
+                        let batches_result: Result<
+                            (Vec<_>, common::flight::CorrelateReport),
+                            Status,
+                        > = match tokio::time::timeout(self.limits.query_timeout, query_future)
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => Err(Status::deadline_exceeded(format!(
+                                "query exceeded the configured timeout of {:?}",
+                                self.limits.query_timeout
+                            ))),
+                        };
 
                         let app_metrics = common::self_monitoring::app_metrics();
                         let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
@@ -2205,7 +2207,7 @@ impl FlightService for QuerierFlightService {
                             query_start.elapsed().as_secs_f64(),
                             &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
                         );
-                        let (batches, correlate_truncated) = match batches_result {
+                        let (batches, correlate_report) = match batches_result {
                             Ok(result) => result,
                             Err(status) => {
                                 app_metrics.query_errors.add(1, &query_attrs);
@@ -2228,12 +2230,14 @@ impl FlightService for QuerierFlightService {
                             .map_err(|e| {
                             Status::internal(format!("Failed to convert results: {e}"))
                         })?;
-                        // Trailing, data-free message: the join-truncation flag is
+                        // Trailing, data-free message: the correlate report is
                         // only known once the query above has fully streamed, too
                         // late for the schema message already sent above (see
-                        // `common::flight::correlate_truncated_trailer`).
-                        if correlate_truncated {
-                            flight_data.push(common::flight::correlate_truncated_trailer());
+                        // `common::flight::correlate_report_trailer`).
+                        if let Some(trailer) =
+                            common::flight::correlate_report_trailer(&correlate_report)
+                        {
+                            flight_data.push(trailer);
                         }
 
                         let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
@@ -2875,7 +2879,7 @@ mod tests {
             }),
             now_ns: 0,
         };
-        let (batches, _, truncated) = service
+        let (batches, _, report) = service
             .ir_service
             .query(&params, "acme", "prod")
             .await
@@ -2887,7 +2891,7 @@ mod tests {
                 )
             });
         assert!(
-            !truncated,
+            !report.row_limit,
             "correlate_max_rows default is far above 100,000"
         );
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
