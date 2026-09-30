@@ -2219,8 +2219,9 @@ impl FlightService for QuerierFlightService {
                             .query_rows_returned
                             .record(rows_returned, &query_attrs);
 
+                        let trailer = common::flight::correlate_report_trailer(&correlate_report);
                         if batches.is_empty() {
-                            let out = stream::empty().boxed();
+                            let out = stream::iter(trailer.into_iter().map(Ok)).boxed();
                             return Ok(Response::new(out));
                         }
 
@@ -2234,11 +2235,7 @@ impl FlightService for QuerierFlightService {
                         // only known once the query above has fully streamed, too
                         // late for the schema message already sent above (see
                         // `common::flight::correlate_report_trailer`).
-                        if let Some(trailer) =
-                            common::flight::correlate_report_trailer(&correlate_report)
-                        {
-                            flight_data.push(trailer);
-                        }
+                        flight_data.extend(trailer);
 
                         let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
                         Ok(Response::new(out))
