@@ -241,8 +241,9 @@ several tenants across its calls (see "A session spans multiple tenants").
 
 The MCP server SHALL expose the Pyroscope-compatible profile surface as tools,
 tenant-scoped like every other tool: `discover_profile_types` (the profile
-types with data), `discover_attributes` with `signal: "profiles"` (label names
-and, with `tag`, label values), `search_profiles` (a Pyroscope selector plus a
+types with data), `discover_attributes` with `signal: "profiles"` (the `profiles` source's
+field names through the Query IR `describe` stage and, with `tag`, a field's
+values), `search_profiles` (a Pyroscope selector plus a
 time range → the aggregated flame graph, subject to the same payload cap and
 truncation flag as other query tools), `compare_profiles` (two ranges → the
 diff flame graph), and `profiles_for_trace` (the profiles correlated with a
@@ -260,8 +261,9 @@ Results SHALL be the SDK's native shapes.
 
 - **WHEN** a session calls `discover_attributes` with `signal: "profiles"` and
   no `tag`
-- **THEN** the tool returns the profile label names for the caller's tenant;
-  with a `tag` it returns that label's values
+- **THEN** the tool returns the `describe: fields` result for the `profiles`
+  source for the caller's tenant; with a `tag` it returns that field's
+  `describe: values` result
 
 #### Scenario: A selector renders a flame graph
 

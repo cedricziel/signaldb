@@ -230,7 +230,8 @@ profiles_enabled = true
 # Opt-in warm derived containment index: a bloom-filtered List<Binary>
 # `attr_index` column over the typed attribute layout's home columns, for
 # "does this file contain key=value" checks without one bloom filter per
-# key (see openspec/changes/otel-native-schema task 4.3). Off by default
+# key (see openspec/changes/archive/2026-09-30-otel-native-schema
+# task 4.3). Off by default
 # (empty `signals`); only takes effect on a table whose resolved schema
 # version is the typed attribute layout. Per-tenant override replaces this
 # wholesale, same as [schema.materialized_labels] above.
