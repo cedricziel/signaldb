@@ -1110,6 +1110,22 @@ replace every value by `1`/`0` and drop `metric.name`.
 
 `NaN` compares false to everything but `ne`, as in Prometheus.
 
+#### `binop`
+
+Combine the pipeline (the left operand, a Series or a Scalar) with `right`:
+
+```json
+{ "binop": { "op": "mul", "right": 100 } }
+```
+
+`op` is an arithmetic operator (`add`, `sub`, `mul`, `div`, `mod`, `pow`,
+`atan2`), a comparison (`eq`, `ne`, `gt`, `ge`, `lt`, `le`) or a set operator
+(`and`, `or`, `unless`); `"reverse": true` evaluates `right op left`
+(`10 - v`). Arithmetic follows IEEE (`x / 0` is `±Inf`) and drops
+`metric.name`. A comparison filters a Series, keeping the Series' own values
+and names where it holds, or with `"bool": true` yields `1`/`0` and drops
+`metric.name`; between two scalars it needs `bool`.
+
 #### `absent`
 
 `{ "absent": { "labels": { "job": "api" } } }`: at every instant where the

@@ -13,6 +13,7 @@ use datafusion::common::{DataFusionError, Result as DFResult};
 
 use super::LABELS;
 use crate::query::error::QuerierError;
+use crate::query::metric_series::value_fn::{arithmetic, compare};
 
 pub(super) const NAME_LABEL: &str = "metric.name";
 /// Distinct series one operand may hold, the PromQL evaluator's row-wise
@@ -85,24 +86,11 @@ impl MatchSpec {
 
     /// `value` for one pair, or `None` when a filtering comparison drops it.
     fn combine(&self, l: f64, r: f64) -> Option<f64> {
-        let holds = match self.op {
-            BinopOp::Add => return Some(l + r),
-            BinopOp::Sub => return Some(l - r),
-            BinopOp::Mul => return Some(l * r),
-            BinopOp::Div => return Some(l / r),
-            BinopOp::Mod => return Some(l % r),
-            BinopOp::Pow => return Some(l.powf(r)),
-            BinopOp::Atan2 => return Some(l.atan2(r)),
-            BinopOp::Eq => l == r,
-            BinopOp::Ne => l != r,
-            BinopOp::Gt => l > r,
-            BinopOp::Ge => l >= r,
-            BinopOp::Lt => l < r,
-            BinopOp::Le => l <= r,
-            BinopOp::And | BinopOp::Or | BinopOp::Unless => return None,
-        };
-        match (self.bool, holds) {
-            (true, _) => Some(if holds { 1.0 } else { 0.0 }),
+        if let Some(value) = arithmetic(self.op, l, r) {
+            return Some(value);
+        }
+        match (self.bool, compare(self.op, l, r)?) {
+            (true, holds) => Some(if holds { 1.0 } else { 0.0 }),
             (false, true) => Some(l),
             (false, false) => None,
         }

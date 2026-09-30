@@ -36,10 +36,10 @@ use common::attrs::expr::typed_home_expr;
 use common::attrs::expr::typed_home_filter_expr;
 use common::profile::aggregate_profiles_to_flamegraph;
 use common::query_ir::{
-    Aggregate, ComparisonOp, Correlate, CorrelateTarget, Document, Extract, FieldResolver, Heatmap,
-    HistogramMode, HistogramQuantile, JoinKind, Leaf, Literal, Parser, Predicate, Resolved,
-    ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType, coerce, safe_ident,
-    validate,
+    Aggregate, Binop, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
+    FieldResolver, Heatmap, HistogramMode, HistogramQuantile, JoinKind, Leaf, Literal, Parser,
+    Predicate, Resolved, ResultEnvelope, SourceRegistry, Stage, TimestampLiteral, ValueType,
+    coerce, safe_ident, validate,
 };
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use common::schema::type_authority::CanonicalType;
@@ -1043,7 +1043,13 @@ fn reject_unexecutable(doc: &Document) -> Result<(), QuerierError> {
 }
 
 fn is_series_algebra(stage: &Stage) -> bool {
-    matches!(stage, Stage::Binop(_) | Stage::HistogramFraction(_))
+    matches!(
+        stage,
+        Stage::Binop(Binop {
+            right: BinopOperand::Document(_),
+            ..
+        }) | Stage::HistogramFraction(_)
+    )
 }
 
 fn unsupported_stage(stage: &Stage) -> QuerierError {
@@ -1213,7 +1219,8 @@ pub(crate) async fn plan_document(
             | Stage::Filter(_)
             | Stage::Sort(_)
             | Stage::Absent(_)
-            | Stage::OverTime(_) => {
+            | Stage::OverTime(_)
+            | Stage::Binop(_) => {
                 let env = metric_series::FrameEnv {
                     ctx,
                     window: stage_window,
@@ -5773,7 +5780,8 @@ mod tests {
         for (from, pipeline, expected) in [
             (
                 "metrics",
-                serde_json::json!([{ "sample": { "fn": "latest" } }, { "binop": { "op": "add", "right": 1 } }]),
+                serde_json::json!([{ "sample": { "fn": "latest" } }, { "binop": {
+                    "op": "add", "right": { "from": "constant", "constant": 1 } } }]),
                 "binop stage is not supported yet",
             ),
             (

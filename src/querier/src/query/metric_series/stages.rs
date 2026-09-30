@@ -1,6 +1,6 @@
 //! The Series stages that rewrite a frame row by row (D11).
 
-use common::query_ir::{BinopOp, CompareOp, Filter, Labels, Map};
+use common::query_ir::{Binop, BinopOp, CompareOp, Filter, Labels, Map};
 use datafusion::logical_expr::{col, lit};
 use datafusion::prelude::DataFrame;
 
@@ -68,4 +68,21 @@ pub(super) fn lower_labels(df: DataFrame, op: &Labels) -> Result<DataFrame, Quer
         }
     };
     Ok(df.with_column(LABELS_COLUMN, rewritten)?)
+}
+
+/// `binop` with a number: arithmetic drops a Series' metric name, and so
+/// does a `bool` comparison; a filtering comparison keeps the frame's value.
+pub(super) fn lower_number_binop(
+    df: DataFrame,
+    binop: &Binop,
+    number: f64,
+) -> Result<DataFrame, QuerierError> {
+    if binop.op.is_set() {
+        return Err(QuerierError::InvalidInput(
+            "binop `and`/`or`/`unless` need a series on both sides".to_string(),
+        ));
+    }
+    let drop_name = !binop.op.is_comparison() || binop.bool;
+    let op = ValueOp::number(binop.op, number, binop.reverse, binop.bool);
+    with_values(df, op, drop_name)
 }

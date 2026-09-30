@@ -366,3 +366,46 @@ async fn over_time_re_windows_the_inner_series_at_the_outer_instants() {
     let got = subquery("last_over_time").await;
     assert_eq!(got, rows(&[(120, named, 2.0), (240, named, 3.0)]));
 }
+
+#[tokio::test]
+async fn binop_with_a_number_is_per_value_and_drops_the_name_unless_filtering() {
+    let binop = |op: &str, reverse: bool, bool: bool| json!([{ "binop": { "op": op, "right": 10.0, "reverse": reverse, "bool": bool } }]);
+    // `10 - v`
+    let got = over_two_series(binop("sub", true, false)).await;
+    let want = [
+        (60, UNNAMED_A, 9.0),
+        (120, UNNAMED_A, 8.0),
+        (60, UNNAMED_B, 0.0),
+        (120, UNNAMED_B, -10.0),
+    ];
+    assert_eq!(got, rows(&want));
+    // `10 < v` keeps v's value and name.
+    let got = over_two_series(binop("lt", true, false)).await;
+    assert_eq!(got, rows(&[(120, B, 20.0)]));
+    let got = over_two_series(binop("ge", false, true)).await;
+    let want = [
+        (60, UNNAMED_A, 0.0),
+        (120, UNNAMED_A, 0.0),
+        (60, UNNAMED_B, 1.0),
+        (120, UNNAMED_B, 1.0),
+    ];
+    assert_eq!(got, rows(&want));
+}
+
+#[tokio::test]
+async fn binop_between_a_scalar_and_a_number_is_a_scalar() {
+    let doc = |pipeline: JsonValue| {
+        json!({
+            "irVersion": 10, "from": "time", "step": "60s",
+            "range": { "from": 60 * S, "to": 120 * S }, "result": "scalar", "pipeline": pipeline
+        })
+    };
+    let div = json!([{ "binop": { "op": "div", "right": 0.0 } }]);
+    let got = super::tests::scalar_rows(&run(&[], doc(div)).await.unwrap());
+    assert_eq!(got, [(60, f64::INFINITY), (120, f64::INFINITY)]);
+    let pow = json!([{ "binop": { "op": "pow", "right": 2.0, "reverse": true } }, {
+        "binop": { "op": "eq", "right": 1.152921504606847e18, "bool": true }
+    }]);
+    let got = super::tests::scalar_rows(&run(&[], doc(pow)).await.unwrap());
+    assert_eq!(got, [(60, 1.0), (120, 0.0)]);
+}
