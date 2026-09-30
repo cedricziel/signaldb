@@ -1191,10 +1191,9 @@ input's instants in `(t − window, t]`:
 `present`, `quantile` (with `arg`), `delta`, `deriv`, `changes` or `resets`,
 with the `*_over_time` semantics of `sample`, reading the values as a gauge;
 `metric.name` survives `last` only. The stages before an `over_time` are
-evaluated from `window` before the range start on, at instants
-`from + k·step` of their own step (aligned to the query start, where
-Prometheus aligns a subquery to the epoch). Its `step` may not be finer than
-its input's.
+evaluated from `window` before the range start on, at the multiples of
+their own step since the epoch (as Prometheus aligns a subquery's instants,
+whatever the query start). Its `step` may not be finer than its input's.
 
 #### `sort`
 

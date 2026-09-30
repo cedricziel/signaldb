@@ -368,6 +368,25 @@ async fn over_time_re_windows_the_inner_series_at_the_outer_instants() {
 }
 
 #[tokio::test]
+async fn subquery_instants_are_epoch_aligned_whatever_the_query_start() {
+    // At 150s, `[2m:1m]` reads the inner instants 60s and 120s (latest 1
+    // and 2), not 90s and 150s (which would see the 9 at 70s).
+    let points = [
+        gauge(0, "a", 1.0, json!({})),
+        gauge(70 * S, "a", 9.0, json!({})),
+        gauge(120 * S, "a", 2.0, json!({})),
+    ];
+    let params = ql_ir::PromqlParams::instant(150 * S);
+    let doc = ql_ir::promql_to_ir("max_over_time(temperature[2m:1m])", &params).unwrap();
+    let got = series_rows(
+        &run(&points, serde_json::to_value(doc).unwrap())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(got, rows(&[(150, r#"{"service.name":"svc"}"#, 2.0)]));
+}
+
+#[tokio::test]
 async fn binop_with_a_number_is_per_value_and_drops_the_name_unless_filtering() {
     let binop = |op: &str, reverse: bool, bool: bool| json!([{ "binop": { "op": op, "right": 10.0, "reverse": reverse, "bool": bool } }]);
     // `10 - v`
