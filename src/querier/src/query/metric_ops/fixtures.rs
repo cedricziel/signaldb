@@ -124,3 +124,23 @@ pub(crate) fn counter_points(kind: &str, rows: &[(&str, i64, f64)]) -> RecordBat
     ];
     batch(columns)
 }
+
+/// `batch` without a usable `series_id`: its values move to `service_name`,
+/// and the column is dropped (`drop`) or nulled.
+pub(crate) fn without_series_id(batch: RecordBatch, drop: bool) -> RecordBatch {
+    let schema = batch.schema();
+    let ids = batch.column(schema.index_of("series_id").unwrap()).clone();
+    let mut columns: Vec<(&str, ArrayRef)> = Vec::new();
+    for (f, c) in schema.fields().iter().zip(batch.columns()) {
+        match f.name().as_str() {
+            "service_name" => columns.push(("service_name", ids.clone())),
+            "series_id" if drop => {}
+            "series_id" => columns.push((
+                "series_id",
+                Arc::new(StringArray::new_null(batch.num_rows())),
+            )),
+            name => columns.push((name, c.clone())),
+        }
+    }
+    self::batch(columns)
+}
