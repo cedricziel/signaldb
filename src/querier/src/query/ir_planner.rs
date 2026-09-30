@@ -1244,9 +1244,10 @@ async fn plan_operand(
                 if h.per_series {
                     metric_frame = true;
                     df
-                } else if doc.pipeline[i + 1..]
-                    .iter()
-                    .any(metric_series::is_frame_stage)
+                } else if doc.result == ResultEnvelope::Series
+                    || doc.pipeline[i + 1..]
+                        .iter()
+                        .any(metric_series::is_frame_stage)
                 {
                     metric_frame = true;
                     metric_series::histogram_as_series(df, h.by, h.as_name)?
@@ -5545,11 +5546,32 @@ mod tests {
         );
     }
 
-    fn histogram_value(batches: &[RecordBatch], as_name: &str, label: Option<&str>) -> Vec<f64> {
+    /// The `service.name` of row `i`: from the Series frame's `__labels` or,
+    /// on the legacy PromQL path, its `service_name` column.
+    fn service_of(b: &RecordBatch, i: usize) -> String {
+        use datafusion::arrow::array::AsArray;
+        match b.column_by_name("__labels") {
+            Some(labels) => {
+                let set: serde_json::Value =
+                    serde_json::from_str(labels.as_string::<i32>().value(i)).unwrap();
+                set["service.name"].as_str().unwrap_or_default().to_string()
+            }
+            None => b
+                .column_by_name("service_name")
+                .unwrap()
+                .as_string::<i32>()
+                .value(i)
+                .to_string(),
+        }
+    }
+
+    /// The histogram values of `batches`, all of them or those of the
+    /// `service.name` series `label` names.
+    fn histogram_value(batches: &[RecordBatch], _as_name: &str, label: Option<&str>) -> Vec<f64> {
         let mut out = Vec::new();
         for b in batches {
             let values = b
-                .column_by_name(as_name)
+                .column_by_name("value")
                 .unwrap()
                 .as_any()
                 .downcast_ref::<datafusion::arrow::array::Float64Array>()
@@ -5557,14 +5579,8 @@ mod tests {
             match label {
                 None => out.extend(values.iter().map(|v| v.unwrap_or(f64::NAN))),
                 Some(want) => {
-                    let labels = b
-                        .column_by_name("service_name")
-                        .unwrap()
-                        .as_any()
-                        .downcast_ref::<StringArray>()
-                        .unwrap();
                     for i in 0..b.num_rows() {
-                        if labels.value(i) == want {
+                        if service_of(b, i) == want {
                             out.push(values.value(i));
                         }
                     }
@@ -5974,7 +5990,7 @@ mod tests {
             .iter()
             .map(|f| f.name().as_str())
             .collect();
-        assert_eq!(got, ["bucket", "service_name", "p50"]);
+        assert_eq!(got, ["bucket", "__labels", "value"]);
     }
 
     /// Instant mode reads each series' latest point in `(t - lookback, t]`;
@@ -6255,6 +6271,73 @@ mod tests {
                 assert!((v - want).abs() < 1e-9, "{stage}: {v} != {want}");
             }
         }
+    }
+
+    /// A merged `histogram_quantile` over `ctx` at the instant 40: the label
+    /// sets of the Series it yields.
+    async fn merged_series_labels(
+        ctx: SessionContext,
+        by: serde_json::Value,
+    ) -> Result<Vec<String>, QuerierError> {
+        use datafusion::arrow::array::AsArray;
+
+        let d = doc(serde_json::json!({
+            "irVersion": 10, "from": "metrics", "result": "series",
+            "range": { "from": 40, "to": 40 },
+            "pipeline": [{ "histogram_quantile": {
+                "q": 0.5, "by": by, "step": "10ns", "window": "40ns", "mode": "rate", "as": "v"
+            } }]
+        }));
+        let (df, _) = IrService::new(ctx).plan(&d, "t", "d", 0).await?.unwrap();
+        let mut out = Vec::new();
+        for b in df.collect().await? {
+            let labels = b.column_by_name("__labels").unwrap().as_string::<i32>();
+            out.extend(labels.iter().flatten().map(str::to_string));
+        }
+        Ok(out)
+    }
+
+    /// A series whose `by` column is null has no such label, as in Prometheus:
+    /// never the string "null".
+    #[tokio::test]
+    async fn merged_histogram_series_omit_a_null_label() {
+        let batch = histogram_points("histogram", HIVE_SERIES);
+        let mut cols = batch.columns().to_vec();
+        cols[batch.schema().index_of("service_name").unwrap()] = Arc::new(StringArray::from_iter(
+            HIVE_SERIES.iter().map(|r| (r.0 == "a").then_some("svc-a")),
+        ));
+        let ctx = points_ctx(RecordBatch::try_new(batch.schema(), cols).unwrap());
+        let labels = merged_series_labels(ctx, serde_json::json!(["service.name"]))
+            .await
+            .unwrap();
+        assert_eq!(labels, [r#"{"service.name":"svc-a"}"#, "{}"]);
+    }
+
+    /// The labels carry the SignalDB name of a `by` field, not the column
+    /// alias it is grouped under.
+    #[tokio::test]
+    async fn merged_histogram_series_keep_the_signaldb_label_name() {
+        let ctx = hive_per_series_ctx("service_name", ["svc-a", "svc-b"]);
+        let labels = merged_series_labels(ctx, serde_json::json!(["service.name"]))
+            .await
+            .unwrap();
+        assert_eq!(
+            labels,
+            [r#"{"service.name":"svc-a"}"#, r#"{"service.name":"svc-b"}"#]
+        );
+    }
+
+    /// Two metrics grouped to one label set are two series with it: a 400.
+    #[tokio::test]
+    async fn merged_histogram_series_with_one_label_set_are_invalid_input() {
+        let ctx = hive_per_series_ctx("metric_name", ["lat", "lat2"]);
+        let err = merged_series_labels(ctx, serde_json::json!([]))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("same labelset")),
+            "{err}"
+        );
     }
 
     /// Two metrics whose series share every label but the name collide once
