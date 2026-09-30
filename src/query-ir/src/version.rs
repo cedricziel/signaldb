@@ -20,7 +20,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 11;
+pub const MAX_IR_VERSION: i64 = 12;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -85,6 +85,8 @@ pub enum Feature {
     HistogramPerSeries,
     /// A `correlate` stage whose target is another signal source.
     SignalCorrelate,
+    /// The `trace` result envelope over `traces`.
+    TraceEnvelope,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -157,6 +159,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::HistogramWindow, 10),
     (Feature::HistogramPerSeries, 10),
     (Feature::SignalCorrelate, 11),
+    (Feature::TraceEnvelope, 12),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -230,7 +233,8 @@ mod tests {
         assert!(is_supported(9));
         assert!(is_supported(10));
         assert!(is_supported(11));
-        assert!(!is_supported(12));
+        assert!(is_supported(12));
+        assert!(!is_supported(13));
     }
 
     #[test]
@@ -385,6 +389,7 @@ mod tests {
             Feature::HistogramWindow,
             Feature::HistogramPerSeries,
             Feature::SignalCorrelate,
+            Feature::TraceEnvelope,
         ];
         for feature in all {
             assert!(

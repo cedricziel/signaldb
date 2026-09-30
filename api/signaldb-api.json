@@ -9591,7 +9591,7 @@
           },
           "result": {
             "type": "string",
-            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`,\n(for the `profiles` source only) `flamegraph`, (for the `traces`\nsource, irVersion 8+) `graph`, or (irVersion 10+) `scalar`.",
+            "description": "Declared result envelope: `rows`, `series`, `table`, `heatmap`,\n(for the `profiles` source only) `flamegraph`, (for the `traces`\nsource, irVersion 8+) `graph`, (irVersion 10+) `scalar`, or (for the\n`traces` source, irVersion 12+) `trace`.",
             "example": "rows"
           },
           "step": {
@@ -9624,7 +9624,7 @@
       },
       "QueryIrResponse": {
         "type": "object",
-        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`; `scalar` fills `points` + `step_ns`.",
+        "description": "The single canonical response contract. `result` discriminates which fields\nare populated: `rows`/`table` fill `columns` + `rows`; `series` fills\n`series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills\n`flamegraph`; `graph` fills `graph`; `trace` fills `traces`; `scalar` fills `points` + `step_ns`.",
         "required": [
           "result",
           "window"
@@ -9685,7 +9685,7 @@
           },
           "result": {
             "type": "string",
-            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,\n`graph`, `metadata`, or `scalar`."
+            "description": "The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,\n`graph`, `metadata`, `scalar`, or `trace`."
           },
           "rows": {
             "type": "array",
@@ -9706,6 +9706,16 @@
               "null"
             ],
             "format": "int64"
+          },
+          "traces": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "$ref": "#/components/schemas/TraceGroup"
+            },
+            "description": "Present iff `result == \"trace\"` — the result rows grouped per trace, in\norder of first appearance. `Some` even when no row matched."
           },
           "warnings": {
             "type": "array",
@@ -10681,6 +10691,27 @@
           },
           "traceID": {
             "type": "string"
+          }
+        }
+      },
+      "TraceGroup": {
+        "type": "object",
+        "description": "One trace in a `trace` result: its spans, each an object keyed by result\ncolumn name.",
+        "required": [
+          "trace_id",
+          "spans"
+        ],
+        "properties": {
+          "spans": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            },
+            "description": "The trace's result rows, in result order."
+          },
+          "trace_id": {
+            "type": "string",
+            "description": "The trace's `trace_id`."
           }
         }
       },
