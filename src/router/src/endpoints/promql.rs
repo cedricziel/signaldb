@@ -104,15 +104,10 @@ pub async fn query_range(
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
-    let Some(promql) = non_empty(&params.query) else {
-        return Ok(axum::Json(QueryResponse::error(
-            "bad_data",
-            "missing or empty 'query'",
-        )));
-    };
-    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
-    let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
-    let step = parse_step_ns(params.step.as_deref()).unwrap_or_else(|| default_step_ns(start, end));
+    let promql = required_query(&params.query)?;
+    let end = timestamp_param("end", params.end.as_deref())?.unwrap_or_else(super::now_ns);
+    let start = timestamp_param("start", params.start.as_deref())?.unwrap_or(end - HOUR_NS);
+    let step = step_param(params.step.as_deref())?.unwrap_or_else(|| default_step_ns(start, end));
 
     let params = ql_ir::PromqlParams::range(start, end, step);
     // A range query answers a matrix even for a scalar expression: one
@@ -151,15 +146,10 @@ pub async fn query(
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
-    let Some(promql) = non_empty(&params.query) else {
-        return Ok(axum::Json(QueryResponse::error(
-            "bad_data",
-            "missing or empty 'query'",
-        )));
-    };
+    let promql = required_query(&params.query)?;
     // Evaluated once, at `time`: each series' value at that instant (its
     // latest point in the lookback), or a scalar for a scalar expression.
-    let at = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(super::now_ns);
+    let at = timestamp_param("time", params.time.as_deref())?.unwrap_or_else(super::now_ns);
     let params = ql_ir::PromqlParams::instant(at);
     let (envelope, series) = run_promql(&state, &tenant_ctx, &promql, &params).await?;
     let result = match envelope {
@@ -493,12 +483,44 @@ fn metadata_window(params: &MetadataParams) -> (i64, i64) {
     (start, end)
 }
 
-fn non_empty(value: &Option<String>) -> Option<String> {
+/// The `query` parameter, trimmed; a missing or blank one is a 400.
+fn required_query(value: &Option<String>) -> Result<String, ApiError> {
     value
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("missing or empty 'query'"))
+}
+
+/// An optional timestamp parameter: absent or blank is `None`, one that does
+/// not parse is a 400.
+fn timestamp_param(name: &str, value: Option<&str>) -> Result<Option<i64>, ApiError> {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) => parse_timestamp_ns(Some(raw)).map(Some).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "invalid parameter '{name}': cannot parse \"{raw}\" to a valid timestamp"
+            ))
+        }),
+    }
+}
+
+/// The optional `step` parameter: absent or blank is `None`; one that does
+/// not parse, or is not positive, is a 400.
+fn step_param(value: Option<&str>) -> Result<Option<i64>, ApiError> {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) => match parse_step_ns(Some(raw)) {
+            Some(step) if step > 0 => Ok(Some(step)),
+            Some(_) => Err(ApiError::bad_request(
+                "invalid parameter 'step': zero or negative resolution step",
+            )),
+            None => Err(ApiError::bad_request(format!(
+                "invalid parameter 'step': cannot parse \"{raw}\" to a valid duration"
+            ))),
+        },
+    }
 }
 
 /// Parse a Prometheus timestamp (unix seconds float, or RFC3339) → ns.
@@ -649,9 +671,105 @@ mod tests {
         assert_eq!(format_value(f64::NEG_INFINITY), "-Inf");
     }
 
-    async fn get_status(uri: &str) -> (StatusCode, serde_json::Value) {
+    type Stream<T> = futures::stream::BoxStream<'static, Result<T, tonic::Status>>;
+
+    /// What the stand-in querier answers every `do_get` with.
+    #[derive(Clone)]
+    enum Reply {
+        Batches(Vec<RecordBatch>),
+        Error(tonic::Code),
+    }
+
+    /// A querier stand-in that answers every ticket with its [`Reply`].
+    #[derive(Clone)]
+    struct FakeQuerier(Reply);
+
+    #[tonic::async_trait]
+    impl arrow_flight::flight_service_server::FlightService for FakeQuerier {
+        type HandshakeStream = Stream<arrow_flight::HandshakeResponse>;
+        type ListFlightsStream = Stream<arrow_flight::FlightInfo>;
+        type DoGetStream = Stream<arrow_flight::FlightData>;
+        type DoPutStream = Stream<arrow_flight::PutResult>;
+        type DoExchangeStream = Stream<arrow_flight::FlightData>;
+        type DoActionStream = Stream<arrow_flight::Result>;
+        type ListActionsStream = Stream<arrow_flight::ActionType>;
+
+        async fn do_get(
+            &self,
+            _: tonic::Request<Ticket>,
+        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+            match &self.0 {
+                Reply::Error(code) => Err(tonic::Status::new(*code, "querier says no")),
+                Reply::Batches(batches) => {
+                    let frames = arrow_flight::encode::FlightDataEncoderBuilder::new()
+                        .build(futures::stream::iter(batches.clone().into_iter().map(Ok)))
+                        .map(|f| f.map_err(|e| tonic::Status::internal(e.to_string())));
+                    Ok(tonic::Response::new(frames.boxed()))
+                }
+            }
+        }
+        async fn handshake(
+            &self,
+            _: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("handshake"))
+        }
+        async fn list_flights(
+            &self,
+            _: tonic::Request<arrow_flight::Criteria>,
+        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_flights"))
+        }
+        async fn get_flight_info(
+            &self,
+            _: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_flight_info"))
+        }
+        async fn poll_flight_info(
+            &self,
+            _: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("poll_flight_info"))
+        }
+        async fn get_schema(
+            &self,
+            _: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_schema"))
+        }
+        async fn do_put(
+            &self,
+            _: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_put"))
+        }
+        async fn do_exchange(
+            &self,
+            _: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_exchange"))
+        }
+        async fn do_action(
+            &self,
+            _: tonic::Request<arrow_flight::Action>,
+        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_action"))
+        }
+        async fn list_actions(
+            &self,
+            _: tonic::Request<arrow_flight::Empty>,
+        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_actions"))
+        }
+    }
+
+    /// GET `uri` as tenant `acme`. With a `querier`, one serving that reply is
+    /// registered; without, none is.
+    async fn send(uri: &str, querier: Option<Reply>) -> (StatusCode, serde_json::Value) {
+        use common::service_bootstrap::{ServiceBootstrap, ServiceType};
         use tower::ServiceExt;
-        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let catalog = Catalog::new_in_memory().await.unwrap();
         let mut config = common::config::Configuration::default();
         config.auth.tenants = vec![common::config::TenantConfig {
             id: "acme".into(),
@@ -666,19 +784,52 @@ mod tests {
             schema_config: None,
             limits: None,
         }];
-        let app = crate::create_router(RouterAppState::new(catalog, config));
+        let state = match querier {
+            None => RouterAppState::new(catalog, config),
+            Some(reply) => {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                tokio::spawn(
+                    tonic::transport::Server::builder()
+                        .add_service(common::flight::flight_service_server(FakeQuerier(reply)))
+                        .serve_with_incoming(tonic::transport::server::TcpIncoming::from(listener)),
+                );
+                ServiceBootstrap::new_for_test_with_catalog(
+                    catalog.clone(),
+                    ServiceType::Querier,
+                    &address.to_string(),
+                )
+                .await
+                .unwrap();
+                let router = ServiceBootstrap::new_for_test_with_catalog(
+                    catalog.clone(),
+                    ServiceType::Router,
+                    "127.0.0.1:0",
+                )
+                .await
+                .unwrap();
+                let transport = common::flight::transport::InMemoryFlightTransport::new(router);
+                RouterAppState::new_with_flight_transport(catalog, config, transport)
+            }
+        };
         let request = axum::http::Request::builder()
             .uri(uri)
             .header("authorization", "Bearer sk-test-key")
             .header("x-tenant-id", "acme")
             .body(axum::body::Body::empty())
             .unwrap();
-        let response = app.oneshot(request).await.unwrap();
+        let response = crate::create_router(state).oneshot(request).await.unwrap();
         let status = response.status();
         let body = axum::body::to_bytes(response.into_body(), usize::MAX)
             .await
             .unwrap();
-        (status, serde_json::from_slice(&body).unwrap())
+        let json = serde_json::from_slice(&body)
+            .unwrap_or_else(|e| panic!("{uri}: {status} {body:?}: {e}"));
+        (status, json)
+    }
+
+    async fn get_status(uri: &str) -> (StatusCode, serde_json::Value) {
+        send(uri, None).await
     }
 
     #[tokio::test]
@@ -696,6 +847,66 @@ mod tests {
                 assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
                 assert_eq!(body["status"], "error", "{uri}: {body}");
                 assert_eq!(body["errorType"], "bad_data", "{uri}: {body}");
+            }
+        }
+    }
+
+    /// Prometheus answers 400 `bad_data` for a parameter it cannot parse and
+    /// for a missing query, never a default or a 200.
+    #[tokio::test]
+    async fn invalid_parameters_and_missing_queries_are_bad_data() {
+        let range = "/prometheus/api/v1/query_range";
+        for uri in [
+            "/prometheus/api/v1/query".to_string(),
+            "/prometheus/api/v1/query?query=".to_string(),
+            "/prometheus/api/v1/query?query=%20%20".to_string(),
+            "/prometheus/api/v1/query?query=up&time=yesterday".to_string(),
+            range.to_string(),
+            format!("{range}?query=&start=1&end=2&step=1"),
+            format!("{range}?query=up&start=1&end=2&step=often"),
+            format!("{range}?query=up&start=1&end=2&step=0"),
+            format!("{range}?query=up&start=1&end=2&step=-15"),
+            format!("{range}?query=up&start=later&end=2&step=1"),
+            format!("{range}?query=up&start=1&end=soon&step=1"),
+        ] {
+            let (status, body) = get_status(&uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+            assert_eq!(body["status"], "error", "{uri}: {body}");
+            assert_eq!(body["errorType"], "bad_data", "{uri}: {body}");
+        }
+    }
+
+    /// A scalar expression answers `resultType: "scalar"` at the instant.
+    #[tokio::test]
+    async fn an_instant_scalar_expression_is_a_scalar_result() {
+        let frame = series_batch(vec![(1_700_000_000_000_000_000, "{}", 3.0)]);
+        let (status, body) = send(
+            "/prometheus/api/v1/query?query=1%2B2&time=1700000000",
+            Some(Reply::Batches(vec![frame])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["resultType"], "scalar", "{body}");
+        let result = &body["data"]["result"];
+        assert_eq!(result[0].as_f64(), Some(1_700_000_000.0), "{body}");
+        assert_eq!(result[1], "3", "{body}");
+    }
+
+    /// The querier's Flight status decides the HTTP status.
+    #[tokio::test]
+    async fn querier_errors_map_to_http_statuses() {
+        for (code, want) in [
+            (tonic::Code::InvalidArgument, StatusCode::BAD_REQUEST),
+            (tonic::Code::Unimplemented, StatusCode::NOT_IMPLEMENTED),
+            (tonic::Code::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            for uri in [
+                "/prometheus/api/v1/query?query=up&time=1700000000",
+                "/prometheus/api/v1/query_range?query=up&start=1700000000&end=1700000060&step=15",
+            ] {
+                let (status, body) = send(uri, Some(Reply::Error(code))).await;
+                assert_eq!(status, want, "{code:?} {uri}: {body}");
+                assert_eq!(body["status"], "error", "{code:?} {uri}: {body}");
             }
         }
     }
