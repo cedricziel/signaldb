@@ -59,7 +59,7 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // versioned; use 2 for heatmap
+  "irVersion": 1, // 1 to 12; declare the lowest version that carries every feature you use (see Pipeline stages)
   "from": "logs", // a registered source: "logs", "traces", "profiles", "metrics", or "exemplars"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
@@ -103,7 +103,19 @@ single-key object naming the stage:
 | `order`            | `[{ of, dir }]`                  | sort                                              |
 | `limit`            | integer                          | bound the row count                               |
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate     |
+| `histogram_quantile` (v3) | `{ q, by?, step, mode?, … }` | quantile from histogram buckets (`metrics` only)  |
+| `histogram_fraction` (v10) | `{ lower, upper, … }`    | fraction of observations in `(lower, upper]`      |
+| `describe` (v4)    | `{ target, field?, limit? }`      | terminal; field and source discovery (`metadata`) |
+| `correlate` (v8, v11) | `{ to, on?, kind, window?, … }` | join to the parent span, or to another signal     |
 | `sample` (v10)     | `{ fn, window?, lookback?, … }`  | a metric point stream → a Series (`metrics` only) |
+| `reduce` (v10)     | `{ fn, by? / without?, arg? }`   | Series → Series: fold series into groups          |
+| `map` (v10)        | `{ fn, args? }`                  | apply a function to every Series value            |
+| `labels` (v10)     | `{ replace }` / `{ join }`       | rewrite a label of every series                   |
+| `filter` (v10)     | `{ op, value, bool? }`           | keep (or 1/0-flag) values that compare true       |
+| `binop` (v10)      | `{ op, right, … }`               | arithmetic, comparison or set operator with `right` |
+| `absent` (v10)     | `{ labels? }`                    | a series of 1 where the input has no series       |
+| `over_time` (v10)  | `{ fn, window, step? }`          | subquery: re-window a Series at its own step      |
+| `sort` (v10)       | `"asc"` / `"desc"`               | order an instant Series by value                  |
 | `scalar` (v10)     | `{}`                             | a Series → a Scalar                               |
 | `vector` (v10)     | `{}`                             | a Scalar → a Series                               |
 | `match` (v12)      | `{ spansets, relations? }`       | structural trace match (`traces` only, first stage) |
@@ -116,11 +128,27 @@ joins on matching timestamps. Samples after the last instant are not
 counted. On every other source, `step` buckets are epoch-aligned
 `[t, t + step)` and labelled by their start `t`.
 
-`irVersion` 5 adds four aggregate functions and an aggregate `divisor`;
-`irVersion` 9 adds `count_distinct` — see
-[Aggregate functions](#aggregate-functions). Every earlier document keeps its
-exact meaning; a document using a v5 or v9 feature while declaring a lower
-version is rejected naming the version it needs, never silently upgraded.
+What each `irVersion` unlocks (the server supports 1 to 12; the source of
+truth is `src/query-ir/src/version.rs`):
+
+| Version | Adds |
+| ------- | ---- |
+| 1 | `where`, `extract`, `aggregate`, `topk`/`bottomk`, `order`, `limit`; the `rows`, `series` and `table` results |
+| 2 | `heatmap` |
+| 3 | `histogram_quantile` |
+| 4 | `describe` and the `metadata` envelope |
+| 5 | aggregate `divisor`; `stddev`, `stdvar`, `first`, `last` |
+| 6 | `rate`, `increase` |
+| 7 | `irate`, the `*_over_time` aggregates, aggregate `across` and `window` |
+| 8 | `correlate` to the parent span; the `graph` envelope |
+| 9 | `count_distinct` |
+| 10 | the metric Series algebra: `sample`, `reduce`, `map`, `labels`, `filter`, `binop`, `absent`, `over_time`, `sort`, `scalar`, `vector`, `histogram_fraction`, histogram `window` and `per_series`, the `scalar` envelope, document `step`/`constant`, the `time`/`constant` sources |
+| 11 | `correlate` to another signal source |
+| 12 | `match` and the `trace` envelope |
+
+Every earlier document keeps its exact meaning; a document using a feature
+while declaring a lower version is rejected naming the version it needs, never
+silently upgraded.
 
 An unknown stage, or a stage illegal for the source (e.g. `extract` on
 `traces`), is rejected by name during validation — never silently dropped.
@@ -2119,9 +2147,11 @@ GET /api/v1/query/sources
 ```jsonc
 { "result": "metadata", "window": {...},
   "metadata": { "kind": "sources",
-                "sources": [ { "name": "logs", "available": true },
-                             { "name": "traces", "available": true },
-                             { "name": "profiles", "available": false } ],
+                "sources": [ { "name": "exemplars", "available": true },
+                             { "name": "logs", "available": true },
+                             { "name": "metrics", "available": true },
+                             { "name": "profiles", "available": false },
+                             { "name": "traces", "available": true } ],
                 "truncated": false,
                 "cost": { "mode": "metadata", "window_scoped": false,
                           "sampled": false } } }
@@ -2190,12 +2220,18 @@ generated clients (the TypeScript client and Rust SDK), never hand-written HTTP.
 ## Roadmap
 
 The IR is the base of a dependent stack; each sibling is a separate capability
-so it is designed and reviewed on its own risk profile:
+so it is designed and reviewed on its own risk profile. Still deferred:
 
 - **live tail** — streaming new matching records over the same document
   (part of the streaming epic), and **pagination** for walking a large result.
   Field discovery itself has landed: see
   [Discovery](#discovery-what-can-i-query).
+- **typed wire and WAL fidelity** — duplicate attribute keys and key order are
+  not preserved today (the wire carries attributes as JSON); keeping them needs a
+  typed wire format, a breaking change of its own.
+- **a materialized-ancestry fast path for `match`** — structural matching
+  evaluates each trace in memory within explicit bounds; precomputed ancestry
+  would be an optimization, not a change to the semantics.
 
 `rate`/`increase`/`irate`/`*_over_time` (counter delta and windowed
 reductions over a window — see
@@ -2209,6 +2245,10 @@ and structural trace matching — the `match` stage with the `trace` envelope (s
 [Structural matching](#structural-matching-the-match-stage-ir-v12)), already
 work today.
 
-Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
-and full attribute promotion. None of these change the document shape defined
-here — that is the point of versioning it from day one.
+The compatibility dialects already lower _into_ the IR (TraceQL, LogQL and
+PromQL through `ql-ir` where the IR can express the query, run by the same
+planner), and attribute promotion is
+live: a frequently queried attribute key gets a typed `attr_<level>_<key>`
+column that changes how much is read, never the result. None of the deferred
+items change the document shape defined here — that is the point of
+versioning it from day one.
