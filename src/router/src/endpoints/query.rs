@@ -920,17 +920,18 @@ pub(super) async fn execute_ticket(
                 // (see `common::flight::correlate_report_trailer`) is a
                 // data-free message: recognized and dropped here rather than
                 // handed to `decode_flight_batches`, which expects only schema
-                // and record-batch messages. A malformed payload is a bug in
-                // the querier or the wire, not something to silently ignore.
+                // and record-batch messages. A malformed payload only loses
+                // the warnings, never the rows already received.
                 if let Some(parsed) =
                     common::flight::parse_correlate_report_trailer(&fd.app_metadata)
                 {
-                    correlate_report = parsed.map_err(|e| {
-                        ApiError::new(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            format!("malformed correlate report trailer: {e}"),
-                        )
-                    })?;
+                    match parsed {
+                        Ok(report) => correlate_report = report,
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "malformed correlate report trailer; ignoring it"
+                        ),
+                    }
                     continue;
                 }
                 bytes = bytes.saturating_add(fd.data_body.len());
