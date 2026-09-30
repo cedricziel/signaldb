@@ -502,6 +502,25 @@ true *within the target window*. The querier reports every bound in the
 router surfaces them as `correlate_row_limit`, `correlate_fanout_limit` and
 `correlate_window` warnings; `window` lets a caller widen the scan for late data.
 
+### D13 — Structural match: a per-trace evaluator with explicit bounds
+
+`match` is evaluated per trace, not with a recursive CTE: each trace is bounded
+by its own spans, so the evaluator buffers one trace at a time and answers every
+relation in O(spans) with a top-down and a bottom-up pass over the parent links.
+The plan scans the document range for candidate traces, semi-joins their spans,
+sorts by `(trace_id, start)` and feeds a custom `StructuralMatchExec`. `match`
+must be the first stage, since a preceding filter would drop the intermediate
+spans a descendant walk needs; spans outside the range are not seen, so a chain
+through one does not match. Parent cycles are cut at the smallest span_id, so
+`child` always implies `descendant`, and rows sharing a `span_id` are one span
+for the relations (the span cap still counts rows).
+
+Each trace is checked against a byte budget (`[querier].match_max_trace_bytes`)
+and a span cap (`[querier].match_max_trace_spans`) before it is buffered, and
+the buffer is reserved from the query memory pool. A breach fails the query
+with HTTP 422 `resource_limit` naming the trace (and, for the two bounds, the
+config key) instead of truncating the answer.
+
 ## Risks / Trade-offs
 
 - **Warm tier is unpruned without the derived index** → the typed map is cast-free
