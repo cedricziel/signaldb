@@ -181,13 +181,12 @@ fn ts_lit(ns: i64) -> Expr {
     lit(ScalarValue::TimestampNanosecond(Some(ns), None))
 }
 
-/// Lower `sample` over a metric point stream into the Series frame; also
-/// returns the Series' step.
+/// Lower `sample` over a metric point stream into the Series frame.
 pub(crate) fn lower_sample(
     df: DataFrame,
     sample: &Sample,
     env: &SampleEnv<'_>,
-) -> Result<(DataFrame, i64), QuerierError> {
+) -> Result<DataFrame, QuerierError> {
     let r = read(sample, env.window, env.doc_step, env.now_ns)?;
     let has = |c: &str| env.schema_cols.iter().any(|s| s == c);
     let or_null = |c: &str| {
@@ -315,10 +314,9 @@ pub(crate) fn lower_sample(
         col(INSTANT),
         DataType::Timestamp(TimeUnit::Nanosecond, None),
     );
-    let frame = evaluated.select(vec![
+    Ok(evaluated.select(vec![
         bucket.alias("bucket"),
         ident(LABELS_COLUMN),
         col("value"),
-    ])?;
-    Ok((frame, r.step_ns))
+    ])?)
 }

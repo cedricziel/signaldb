@@ -1110,6 +1110,35 @@ replace every value by `1`/`0` and drop `metric.name`.
 
 `NaN` compares false to everything but `ne`, as in Prometheus.
 
+#### `absent`
+
+`{ "absent": { "labels": { "job": "api" } } }`: at every instant where the
+input has no series, one series labelled `labels` (default none) with value
+`1`; nothing where it has any. PromQL's `absent(sel)` passes the selector's
+equality matchers as `labels`.
+
+#### `over_time`
+
+A subquery: re-window a Series evaluated at its own step. At each instant `t`
+of its `step` (default the document's), `fn` reads each series' values at the
+input's instants in `(t − window, t]`:
+
+```json
+[
+  { "sample": { "fn": "rate", "window": "5m", "step": "1m" } },
+  { "over_time": { "fn": "max", "window": "1h" } }
+]
+```
+
+`fn` is `avg`, `min`, `max`, `sum`, `count`, `last`, `stddev`, `stdvar`,
+`present`, `quantile` (with `arg`), `delta`, `deriv`, `changes` or `resets`,
+with the `*_over_time` semantics of `sample`, reading the values as a gauge;
+`metric.name` survives `last` only. The stages before an `over_time` are
+evaluated from `window` before the range start on, at instants
+`from + k·step` of their own step (aligned to the query start, where
+Prometheus aligns a subquery to the epoch). Its `step` may not be finer than
+its input's.
+
 #### `sort`
 
 `{ "sort": "asc" }` or `"desc"`. As the last stage of a document whose range
