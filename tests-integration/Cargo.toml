@@ -18,6 +18,7 @@ acceptor = { path = "../src/acceptor" }
 common = { path = "../src/common", features = ["testing", "testing-containers"] }
 compactor = { path = "../src/compactor" }
 querier = { path = "../src/querier" }
+ql-ir = { path = "../src/ql-ir" }
 router = { path = "../src/router" }
 writer = { path = "../src/writer" }
 tempo-api = { path = "../src/tempo-api" }
@@ -97,7 +98,7 @@ required-features = ["benchmarks"]
 [package.metadata.cargo-machete]
 # These dependencies are used in integration tests under tests/ directory
 # workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
-ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "workspace-hack", "writer"]
+ignored = ["acceptor", "anyhow", "arrow-flight", "compactor", "datafusion", "futures", "iceberg-rust", "log", "mcp-server", "opentelemetry-proto", "ql-ir", "querier", "router", "signaldb-cli", "tokio", "tokio-stream", "tonic", "workspace-hack", "writer"]
 
 [[test]]
 name = "integration"
