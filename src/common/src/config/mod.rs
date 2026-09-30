@@ -2424,7 +2424,8 @@ pub struct QuerierConfig {
     /// Row cap on the source relation a signal-target `correlate` stage
     /// materializes before scanning its target (`irVersion` 11). A larger
     /// source fails the query with a resource error instead of running
-    /// unbounded; narrow the source (`topk`/`limit`/`where`) to fit.
+    /// unbounded; narrow the source (`topk`/`limit`/`where`) to fit. Must be
+    /// greater than zero.
     pub correlate_max_source_rows: usize,
     /// Node cap on a Query IR `graph` result. Past it the graph keeps the
     /// `focus` node, then the highest-traffic nodes, and reports how many
@@ -2662,7 +2663,8 @@ impl Configuration {
     /// beyond what serde's field-level deserialization already checks.
     /// `[auth.oidc]` (change: oidc-login, see [`OidcConfig::validate`]) and
     /// `[github]` (change: github-app-source-context, see
-    /// [`GitHubAppConfig::validate`]).
+    /// [`GitHubAppConfig::validate`]), and the `[querier]` bounds a zero
+    /// value would turn into "reject every query".
     pub fn validate(&self) -> Result<(), String> {
         if let Some(oidc) = &self.auth.oidc {
             oidc.validate()?;
@@ -2671,6 +2673,11 @@ impl Configuration {
             github.validate()?;
         }
         self.demo.validate()?;
+        if self.querier.correlate_max_source_rows == 0 {
+            return Err(
+                "[querier].correlate_max_source_rows must be greater than zero".to_string(),
+            );
+        }
         Ok(())
     }
 
@@ -4171,6 +4178,14 @@ mod tests {
         let config = Configuration::default();
         assert!(config.auth.oidc.is_none());
         assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn a_zero_correlate_source_row_cap_is_rejected() {
+        let mut config = Configuration::default();
+        config.querier.correlate_max_source_rows = 0;
+        let error = config.validate().expect_err("must be rejected");
+        assert!(error.contains("correlate_max_source_rows"), "{error}");
     }
 
     #[test]
