@@ -2329,7 +2329,8 @@ impl<'a> Lowering<'a> {
             | Stage::Sort(_)
             | Stage::Absent(_)
             | Stage::OverTime(_)
-            | Stage::Binop(_) => Err(unsupported_stage(stage)),
+            | Stage::Binop(_)
+            | Stage::Match(_) => Err(unsupported_stage(stage)),
         }
     }
 

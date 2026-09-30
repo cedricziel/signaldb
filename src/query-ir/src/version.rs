@@ -87,6 +87,8 @@ pub enum Feature {
     SignalCorrelate,
     /// The `trace` result envelope over `traces`.
     TraceEnvelope,
+    /// The structural `match` stage over `traces`.
+    Match,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -160,6 +162,7 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::HistogramPerSeries, 10),
     (Feature::SignalCorrelate, 11),
     (Feature::TraceEnvelope, 12),
+    (Feature::Match, 12),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -390,6 +393,7 @@ mod tests {
             Feature::HistogramPerSeries,
             Feature::SignalCorrelate,
             Feature::TraceEnvelope,
+            Feature::Match,
         ];
         for feature in all {
             assert!(

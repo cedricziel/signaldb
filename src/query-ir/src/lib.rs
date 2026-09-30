@@ -51,10 +51,10 @@ pub use stage::{
     CorrelateKey, CorrelateTarget, CorrelateWindow, DerivedField, Describe, DescribeTarget,
     Direction, Extract, Filter, GroupSide, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue,
     HistogramFraction, HistogramMode, HistogramQuantile, JoinKind, LabelJoin, LabelReplace, Labels,
-    Map, MapFn, NoOperands, Order, OverTime, OverTimeFn, Parser, Rank, Reduce, ReduceFn, Sample,
-    SampleFn, SampleOf, Stage, SubDocument,
+    Map, MapFn, Match, MatchOp, MatchRelation, NoOperands, Order, OverTime, OverTimeFn, Parser,
+    Rank, Reduce, ReduceFn, Sample, SampleFn, SampleOf, SpanSets, Stage, SubDocument,
 };
-pub use validate::{IrError, Validated, validate, validate_describe};
+pub use validate::{IrError, Validated, check_structure, validate, validate_describe};
 pub use value::{
     CoercionError, Literal, RelativeTime, TimestampLiteral, Truth, ValueType, coerce,
     parse_duration_ns, parse_relative_time, parse_timestamp_literal,
