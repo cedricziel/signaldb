@@ -2358,6 +2358,24 @@ fn warning_codes(body: &serde_json::Value) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// Poll a plain `from` query until it returns at least `min_rows` rows, so a
+/// correlate query runs only once both sides' writes are readable: an anti
+/// join against a not-yet-visible target keeps every source row.
+async fn wait_for_rows(app: &Router, from: &str, range: serde_json::Value, min_rows: usize) {
+    let doc = serde_json::json!({
+        "irVersion": CORRELATE_IR_VERSION, "from": from, "range": range, "result": "rows"
+    });
+    for _ in 0..40 {
+        let (status, body) = post_ir(app, doc.clone()).await;
+        let rows = body["rows"].as_array().map(Vec::len).unwrap_or(0);
+        if status == StatusCode::OK && rows >= min_rows {
+            return;
+        }
+        sleep(Duration::from_millis(500)).await;
+    }
+    panic!("{from} never reached {min_rows} readable rows");
+}
+
 /// Scenario 1 — an aggregate/topk pipeline over traces (the "slowest traces"
 /// pattern) followed by a signal-target `correlate` to `logs`: the surviving
 /// rows carry `logs.body` for exactly the two slowest traces, joined across
@@ -2570,7 +2588,9 @@ async fn correlate_anti_keeps_only_traces_without_an_error_log() {
         "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": "anti",
             "pipeline": [ { "where": { "field": "severity_number", "op": "gte", "value": 17 } } ] } } ]
     });
-    let (status, body) = post_ir_until_rows(&app, document).await;
+    wait_for_rows(&app, "traces", range(), 3).await;
+    wait_for_rows(&app, "logs", range(), 2).await;
+    let (status, body) = post_ir(&app, document).await;
     assert_eq!(status, StatusCode::OK, "anti correlate query: {body}");
     let mut services_seen: Vec<String> = rows_column(&body, 0).into_iter().flatten().collect();
     services_seen.sort();
@@ -2634,7 +2654,14 @@ async fn correlate_anti_window_widens_the_target_scan() {
         })
     };
 
-    let (status, body) = post_ir_until_rows(&app, anti_document(None)).await;
+    // The late log lies past `range()`, so wait for it over a wider range.
+    let through_late_log = serde_json::json!({
+        "from": (BASE_NS - 1_000_000_000).to_string(),
+        "to": (BASE_NS + 2 * late_offset_ns).to_string(),
+    });
+    wait_for_rows(&app, "traces", range(), 1).await;
+    wait_for_rows(&app, "logs", through_late_log, 1).await;
+    let (status, body) = post_ir(&app, anti_document(None)).await;
     assert_eq!(status, StatusCode::OK, "default-window anti query: {body}");
     assert_eq!(
         rows_column(&body, 0),
@@ -2932,13 +2959,14 @@ async fn correlate_source_row_bound_rejects_oversized_source_with_422() {
     }
 
     let app = build_router(&services).await;
+    wait_for_rows(&app, "traces", range(), 3).await;
     for kind in ["semi", "anti"] {
         let document = serde_json::json!({
             "irVersion": CORRELATE_IR_VERSION, "from": "traces", "range": range(), "result": "rows",
             "fields": ["service.name"],
             "pipeline": [ { "correlate": { "to": "logs", "on": "trace_id", "kind": kind } } ]
         });
-        let (status, body) = post_ir_until_rows(&app, document).await;
+        let (status, body) = post_ir(&app, document).await;
         assert_eq!(
             status,
             StatusCode::UNPROCESSABLE_ENTITY,
