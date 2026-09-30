@@ -455,21 +455,34 @@ signal correlate may follow aggregate/topk ("slowest traces → their logs").
 
 **Two-phase lowering, never a free join over both tables.** Phase 1
 materializes the source relation, capped at `[querier].correlate_max_source_rows`
-(default 10 000; over it → RESOURCE_EXHAUSTED for every kind), and derives the
+(default 10 000, must be > 0; over it → FAILED_PRECONDITION, HTTP 422
+`resource_limit`, for every kind: retrying cannot help), and derives the
 canonical key set (Utf8 → lowercase, binary → lowercase hex, empty/null
 dropped) and the time envelope (min/max of the source time column, traces
 extended by duration; the document window when the column was aggregated
 away). Phase 2 scans the target within `[env.start − before, env.end + after]`
 — not clipped to the document range — then bounds it by key, applies the target
 `where` stages, and joins against the materialized source: semi → LeftSemi,
-anti → LeftAnti against the target's distinct keys (no fan-out cap).
+anti → LeftAnti against the target's distinct keys (no fan-out cap). For
+semi/anti the literal key set is the spec's target bound: the target side can
+never grow past the rows carrying one of at most `correlate_max_source_rows`
+keys. A `traces` target matches spans *overlapping* the window
+(`start ≤ end ∧ start + max(duration, 0) ≥ start_of_window`), with the start
+bounded below by `TRACE_TARGET_LOOKBACK` (1h) so the scan stays prunable; a
+span longer than that needs `window.before`. The join result keeps the source
+row order (a row ordinal rides through the join), so `aggregate → topk →
+correlate → limit` keeps the topk order. A key field that does not read a
+stored column on either side (e.g. an older table without it) is a 400, not a
+silent no-match.
 inner/left namespace target columns under `<target>.` and cap per-source-row
 fan-out by target time order (next layer). A missing target table matches
 nothing: semi/inner empty, anti/left all source rows.
 
 **Pushdown rule.** Only when the stored encoding equals the canonical form (a
-Utf8 key column, which the writer stores lowercase) does the key bound become a
-literal IN-list on the raw column (prunable). Otherwise the canonical form of
+Utf8 key column the writer is known to store canonically: trace/span ids of
+traces/logs/exemplars/profiles as lowercase hex, `resource_identity` and
+`series_id` digests) does the key bound become a literal IN-list on the raw
+column (prunable). Otherwise the canonical form of
 the column is compared: correct, without claiming pruning.
 
 **Window semantics and reporting.** Absence (anti) and enrichment (left) are
