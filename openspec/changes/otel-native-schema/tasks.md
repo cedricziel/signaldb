@@ -87,10 +87,10 @@ Most of this landed alongside layer 1: `common::schema::logical` declares the lo
 
 ## 9. Cross-signal correlation
 
-- [ ] 9.1 Failing tests: logs-for-selected-traces across differing `trace_id` encodings; correlate on exemplar/resource-identity keys; enrichment fan-out cap deterministic+reported (inner/left only, NOT semi/anti); anti-join truth window-scoped + window widenable for late data; missing/dropped key rejected at validation (spec `cross-signal-correlate`)
-- [ ] 9.2 Add the `correlate` stage (DAG/sub-pipeline typing, key validation + survival-through-aggregation, post-join namespacing)
-- [ ] 9.3 Bespoke two-phase lowering: materialize the source time envelope, inject it as a literal scan bound on the target (not a free equi-join); wide-side pushdown only when canonical key == stored encoding, else correct-without-pushdown
-- [ ] 9.4 Inner/semi/anti/left join kinds; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+- [x] 9.1 Failing tests: logs-for-selected-traces across differing `trace_id` encodings; correlate on exemplar/resource-identity keys; enrichment fan-out cap deterministic+reported (inner/left only, NOT semi/anti); anti-join truth window-scoped + window widenable for late data; missing/dropped key rejected at validation (spec `cross-signal-correlate`)
+- [x] 9.2 Add the `correlate` stage (DAG/sub-pipeline typing, key validation + survival-through-aggregation, post-join namespacing)
+- [x] 9.3 Bespoke two-phase lowering: materialize the source time envelope, inject it as a literal scan bound on the target (not a free equi-join); wide-side pushdown only when canonical key == stored encoding, else correct-without-pushdown
+- [x] 9.4 Inner/semi/anti/left join kinds; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
 
 ## 10. Structural-trace matching
 

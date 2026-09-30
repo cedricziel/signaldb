@@ -34,7 +34,7 @@ executable form of the rules below and both test suites replay it.
 | ------------------------------------------------ | -------------------------------------------------------------- |
 | `429 Too Many Requests`                          | Yes, on **any** method — a throttled request was not processed |
 | `502`, `503`, `504`, connection failure, timeout | Only for idempotent methods (`GET`, `HEAD`, `PUT`, `DELETE`)   |
-| Any other `4xx`, `500`, malformed response       | No — reported immediately                                      |
+| Any other `4xx`, `500`, malformed response       | No — reported immediately (e.g. `422 resource_limit`)          |
 
 `POST` (Query IR, API-key creation, registry uploads) is retried on `429`
 because SignalDB's limiter rejects before any handler runs; it is not retried

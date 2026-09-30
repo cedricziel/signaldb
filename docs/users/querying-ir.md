@@ -32,11 +32,12 @@ per-series range functions cover counter rates and windowed reductions (see
 [More range functions](#more-range-functions-across-and-window-v7)).
 Arithmetic across several queries' results — formulas — is a separate
 multi-query document shape (see
-[Formulas](#formulas-cross-query-arithmetic-d5)). A `correlate` stage (v8)
-joins each span to its parent within `traces` (see
-[Joining spans to their parents](#joining-spans-to-their-parents-v8));
-joining across signals and structural trace matching are separate, later
-capabilities (see [Roadmap](#roadmap)).
+[Formulas](#formulas-cross-query-arithmetic-d5)). A `correlate` stage joins
+each span to its parent within `traces` (v8), or one source to another signal
+(v11) (see
+[Correlate: joining across relations](#correlate-joining-across-relations-v8-v11));
+structural trace matching is a separate, later capability (see
+[Roadmap](#roadmap)).
 
 ## The endpoint
 
@@ -936,8 +937,7 @@ cross-series arithmetic is the [`binop`](#binop) stage of a metric Series.
 `irVersion` 10 evaluates metrics the way Prometheus does: at the instants
 `t = from + k·step` of the range (`step` on the stage, else the document's
 `step`), per series, into a **Series**. A range may span at most 11,000
-steps (11,001 instants) of its output step, as in Prometheus; more is a
-400. The instants an `over_time` reads its input at do not count toward
+steps (11,001 instants) of its output step, as in Prometheus; more is a 400. The instants an `over_time` reads its input at do not count toward
 that limit, but no grid may hold more than 1,000,000 instants.
 
 A dataset with no `metrics` table yet reads as an empty one, so it still
@@ -1053,13 +1053,13 @@ instant.
 { "reduce": { "fn": "topk", "arg": 3, "without": ["instance"] } }
 ```
 
-| Operand   | Meaning                                                                                   |
-| --------- | ----------------------------------------------------------------------------------------- |
+| Operand   | Meaning                                                                                                         |
+| --------- | --------------------------------------------------------------------------------------------------------------- |
 | `fn`      | `sum`, `avg`, `min`, `max`, `count`, `group`, `stddev`, `stdvar`, `quantile`, `topk`, `bottomk`, `count_values` |
-| `by`      | group by exactly these labels (`metric.name` only when listed)                            |
-| `without` | group by every label but these and `metric.name`                                          |
-| `arg`     | `topk`/`bottomk`: k, truncated (below 1 selects nothing); `quantile`: the quantile in `[0, 1]` |
-| `label`   | `count_values`: the label each distinct value is written to                               |
+| `by`      | group by exactly these labels (`metric.name` only when listed)                                                  |
+| `without` | group by every label but these and `metric.name`                                                                |
+| `arg`     | `topk`/`bottomk`: k, truncated (below 1 selects nothing); `quantile`: the quantile in `[0, 1]`                  |
+| `label`   | `count_values`: the label each distinct value is written to                                                     |
 
 With neither `by` nor `without` every series is one group with no labels.
 The result is labelled by the group, except `topk`/`bottomk`, which keep the
@@ -1169,8 +1169,7 @@ ones, with `on` on exactly the listed ones. Without `group` each match must be
 one-to-one; `group: {"side": "left"}` (`"right"`) lets several series of that
 side match one series of the other, the result keeping the many side's labels
 plus the `include` labels copied from the one side. Several series on both
-sides of one match (many-to-many), or two results with one label set, is a
-400. `and` keeps the left series with a match on the right, `unless` those
+sides of one match (many-to-many), or two results with one label set, is a 400. `and` keeps the left series with a match on the right, `unless` those
 without one, and `or` all left series plus the right series without a left
 match; set operators allow any number of series per match and keep labels,
 names and values.
@@ -1424,12 +1423,21 @@ Find the exemplars recorded in one trace:
 
 Reading exemplars needs the `metrics:read` scope.
 
-## Joining spans to their parents (v8)
+## Correlate: joining across relations (v8, v11)
 
-A `correlate` stage (IR v8) joins the current `traces` relation to the span in
-the same trace whose `span_id` equals the row's `parent_span_id` — the
-building block for "which service called which". It only ever appears once in
-a pipeline, only on the `traces` source, and only before an `aggregate` stage:
+A `correlate` stage joins the current relation to another one by a shared
+key. `to: "parent"` (IR v8) joins `traces` to a span's own parent within the
+same source. `to: "<signal>"` (IR v11) joins any source to a different
+signal — logs, traces, metrics, exemplars, profiles. At most one `correlate`
+stage appears per pipeline.
+
+### Joining spans to their parents (v8)
+
+A `correlate` stage with `to: "parent"` joins the current `traces` relation to
+the span in the same trace whose `span_id` equals the row's
+`parent_span_id` — the building block for "which service called which". It
+only ever appears on the `traces` source, and only before an `aggregate`
+stage:
 
 ```json
 {
@@ -1456,8 +1464,8 @@ a pipeline, only on the `traces` source, and only before an `aggregate` stage:
 }
 ```
 
-- **`to`** — closed to `"parent"` today; a later change may add other join
-  targets.
+- **`to`** — `"parent"` joins a span to its own parent within `traces`; this
+  meaning, and everything below it, is unchanged by cross-signal correlate.
 - **`kind`** — `"inner"` drops a row whose parent isn't in the window (a root
   span, or a parent that started before the window); `"left"` keeps it with
   every `parent.*` field `null`.
@@ -1476,6 +1484,200 @@ a pipeline, only on the `traces` source, and only before an `aggregate` stage:
   Reaching it truncates the result to the cap and adds a
   `correlate_row_limit` warning; the query still succeeds rather than
   failing.
+
+### Correlating across signals (v11)
+
+`to` also accepts the name of a registered signal source other than the
+pipeline's own `from` — for example a `traces` query correlating `to:
+"logs"`. An unregistered name is a validation error, naming the source, not a
+parse failure.
+
+```json
+{
+  "irVersion": 11,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    {
+      "correlate": {
+        "to": "logs",
+        "on": "trace_id",
+        "kind": "inner",
+        "pipeline": [
+          { "where": { "field": "severity", "op": "eq", "value": "ERROR" } }
+        ],
+        "window": { "before": "5m", "after": "10m" },
+        "fanout": 50
+      }
+    }
+  ]
+}
+```
+
+| Operand    | Type                                  | Default  | Meaning                                                               |
+| ---------- | ------------------------------------- | -------- | --------------------------------------------------------------------- |
+| `to`       | `"parent"` or a signal source name    | required | join target; a signal name other than `from`                          |
+| `on`       | join key name                         | required | the logical key both sides join on; forbidden when `to` is `"parent"` |
+| `kind`     | `inner` \| `left` \| `semi` \| `anti` | required | join kind (`semi`/`anti` are signal-target only)                      |
+| `pipeline` | array of `where` stages               | `[]`     | filters applied to the target side before the join                    |
+| `window`   | `{ before?, after? }` durations       | `0`, `0` | widens the target scan window past the source rows' own time envelope |
+| `fanout`   | integer, `1..=10000`                  | `100`    | inner/left only: max target rows kept per source row                  |
+
+**Join keys.** `on` names one of four logical keys, each resolved per source
+against `otel-native-logical-schema` rather than the physical column:
+
+| Key                 | Carried by                        | Field name(s)                                                             |
+| ------------------- | --------------------------------- | ------------------------------------------------------------------------- |
+| `trace_id`          | traces, logs, profiles, exemplars | `trace_id` (`trace.id` on profiles and exemplars)                         |
+| `span_id`           | traces, logs, profiles, exemplars | `trace_id` + `span_id` (`trace.id` + `span.id` on profiles and exemplars) |
+| `resource_identity` | every signal source               | `resource.identity`                                                       |
+| `series_id`         | metrics, exemplars                | `series.id`                                                               |
+
+A key absent from either side is a validation error, and so is a key whose field has no stored column in that source's table (it would otherwise silently match nothing). If the source relation
+is already aggregated (a closed schema), every field the key needs must be a
+group column of that aggregation, or the query is rejected: "correlate key
+'`<key>`' was dropped by a preceding aggregate." A signal-target correlate may
+therefore follow `aggregate`/`topk`/`order`/`limit` — unlike `to: "parent"`,
+which must still precede any `aggregate` — enabling patterns like "aggregate
+by `trace_id` to the slowest traces, then fetch their logs" (see the worked
+example below).
+
+**Join kinds and output.** `semi` and `anti` return the source relation
+filtered, unchanged in shape: `semi` keeps only source rows with a target
+match, `anti` only those without one. `inner` and `left` add the matched
+target's fields under a `<target>.` scope (`logs.body`, `logs.severity`, …),
+resolved the same way `parent.*` resolves against traces; source fields stay
+unprefixed, so same-named fields on both sides never collide. `inner` drops a
+source row with no target match; `left` keeps it with every `<target>.*`
+field `null`. Every kind keeps the source's row order, so the order a `topk`
+or `order` stage produced survives the join. If the target's table doesn't exist yet, `semi`/`inner` return
+no rows and `anti`/`left` return the source rows unmatched — the same "no
+table yet reads as empty" rule the rest of the IR follows.
+
+**Window.** The target scan window is derived from the source rows' own time
+envelope, not clipped to the query's `range`: `[min, max]` of the source
+time column (for traces, also widened by `start + duration` when duration is
+in the relation). `window.before`/`window.after` extend that envelope
+further, past its start and end. A source whose rows are instants (a `metrics` point, a log record) has a narrow envelope, so correlating from it usually needs `window` widened to cover where the target's rows fall. When the target is `traces`, a span matches
+if it overlaps the window rather than starting inside it, so the span that
+contains a log or exemplar is found even though it started earlier; spans
+that started more than 1 hour before the window need `window.before`. Absence (`anti`) and enrichment
+(`inner`/`left`) are judged strictly within this window — a target row
+outside it does not count as a match, even though it exists — so late-arriving
+target data needs `window` to be picked up.
+
+**Bounds**, each reported rather than silently applied:
+
+- **Source rows** — the source pipeline (everything before `correlate`) is
+  capped at `[querier].correlate_max_source_rows` (default 10,000). Every
+  join kind, including `semi`/`anti`, rejects a source over the cap with an
+  HTTP `422` error of type `resource_limit` rather than running unbounded — the
+  target scan starts only after the source is known to fit. Retrying does not
+  help; narrow the source with `where`, `topk`, or `limit`.
+- **Fan-out** — `inner`/`left` only: past `fanout` (default 100, max 10,000)
+  target rows for one source row, the kept subset is the earliest by target
+  time, ties broken by the remaining target columns, so a capped result is
+  reproducible rather than an arbitrary subset. The response carries a
+  `correlate_fanout_limit` warning. `semi`/`anti` have no fan-out cap: they
+  produce at most one row per source row, and a cap would change whether a
+  row counts as a match at all.
+- **Joined row count** — the existing `[querier].correlate_max_rows` cap
+  (default 5,000,000) still bounds the streamed output of every join kind;
+  reaching it adds `correlate_row_limit`, same as the `to: "parent"` join.
+- **Window** — every signal-target correlate carries a `correlate_window`
+  warning stating the resolved target scan window, so a reader can tell
+  absence and enrichment were judged within that window and can widen it with
+  `window` if it's too narrow.
+
+**Pushdown.** The join key is pruned as a literal bound on the target scan
+only when the target's stored encoding already equals the canonical form
+(lowercase for strings, lowercase hex for binary) — for example a `trace_id`
+column the writer already stores as lowercase hex. When the stored encoding
+differs, the join is still correct, computed by encoding the stored column
+before comparing, just without that scan pruning.
+
+**Worked examples.**
+
+Logs for the ten slowest traces in the window:
+
+```json
+{
+  "irVersion": 11,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    {
+      "aggregate": {
+        "by": ["trace_id"],
+        "aggs": [{ "fn": "max", "of": "duration", "as": "duration" }]
+      }
+    },
+    { "topk": { "n": 10, "of": "duration" } },
+    { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } }
+  ]
+}
+```
+
+Traces with no error log (`anti`):
+
+```json
+{
+  "irVersion": 11,
+  "from": "traces",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    {
+      "correlate": {
+        "to": "logs",
+        "on": "trace_id",
+        "kind": "anti",
+        "pipeline": [
+          { "where": { "field": "severity", "op": "eq", "value": "ERROR" } }
+        ]
+      }
+    }
+  ]
+}
+```
+
+Traces behind a metric's exemplars, joined on the exemplar's own
+`trace.id`/`span.id`:
+
+```json
+{
+  "irVersion": 11,
+  "from": "exemplars",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    { "correlate": { "to": "traces", "on": "span_id", "kind": "inner" } }
+  ]
+}
+```
+
+Metrics enriched with logs from the same resource, where neither side carries
+a `trace_id`:
+
+```json
+{
+  "irVersion": 11,
+  "from": "metrics",
+  "range": { "from": "now-1h", "to": "now" },
+  "result": "table",
+  "pipeline": [
+    {
+      "correlate": {
+        "to": "logs",
+        "on": "resource_identity",
+        "kind": "left"
+      }
+    }
+  ]
+}
+```
 
 ## Formulas: cross-query arithmetic (D5)
 
@@ -1778,9 +1980,6 @@ so it is designed and reviewed on its own risk profile:
   (part of the streaming epic), and **pagination** for walking a large result.
   Field discovery itself has landed: see
   [Discovery](#discovery-what-can-i-query).
-- **cross-signal correlate** — widening the `correlate` stage (see
-  [Joining spans to their parents](#joining-spans-to-their-parents-v8)) to
-  join across signals, not just a span to its own parent.
 - **structural traces** — a `match` stage + a `trace` result envelope.
 
 `rate`/`increase`/`irate`/`*_over_time` (counter delta and windowed
@@ -1788,10 +1987,10 @@ reductions over a window — see
 [Counter rate](#counter-rate-rateincrease-v6) and
 [More range functions](#more-range-functions-across-and-window-v7)),
 cross-query formulas (see
-[Formulas](#formulas-cross-query-arithmetic-d5)), and the span-to-parent
-`correlate` stage (see
-[Joining spans to their parents](#joining-spans-to-their-parents-v8)) already
-work today.
+[Formulas](#formulas-cross-query-arithmetic-d5)), and the `correlate` stage,
+both span-to-parent and cross-signal (see
+[Correlate: joining across relations](#correlate-joining-across-relations-v8-v11)),
+already work today.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined
