@@ -11,9 +11,10 @@ use common::query_ir::{
 };
 use common::schema::typed_attributes::has_typed_container;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
-use datafusion::functions_aggregate::expr_fn::first_value;
+use datafusion::functions::core::expr_fn::coalesce;
+use datafusion::functions_aggregate::expr_fn::{first_value, last_value};
 use datafusion::functions_nested::expr_fn::gen_series;
-use datafusion::logical_expr::{Expr, cast, col, lit};
+use datafusion::logical_expr::{Expr, Operator, binary_expr, cast, col, lit};
 use datafusion::prelude::{DataFrame, ident};
 use datafusion::scalar::ScalarValue;
 
@@ -30,6 +31,7 @@ const DEFAULT_LOOKBACK_NS: i64 = 5 * 60 * 1_000_000_000;
 /// Most evaluation instants one query may evaluate (Prometheus' 11k-point limit).
 pub(crate) const MAX_INSTANTS: i64 = 11_000;
 const INSTANT: &str = "__instant";
+const STALE: &str = "__stale";
 /// The raw columns a series' labels derive from, carried through the
 /// aggregate so `series_labels` runs once per output row, not per point.
 const LABEL_INPUTS: [&str; 6] = [
@@ -248,14 +250,31 @@ pub(crate) fn lower_sample(
     columns.extend(LABEL_INPUTS[..4].iter().map(|c| or_null(c).alias(*c)));
     columns.push(bag("resource_attributes").alias("__resource"));
     columns.push(bag("attributes").alias("__attrs"));
-    let points = df
-        .filter(
-            ts.clone()
-                .gt(ts_lit(r.first.saturating_sub(r.window_ns)))
-                .and(ts.clone().lt_eq(ts_lit(r.last))),
-        )?
-        .select(columns)?
-        .unnest_columns(&[INSTANT])?;
+    // OTLP's NO_RECORDED_VALUE flag (bit 0) marks a point stale, where the
+    // Prometheus receiver puts a staleness marker.
+    let stale = has("flags").then(|| {
+        let flags = coalesce(vec![cast(ident("flags"), DataType::Int64), lit(0_i64)]);
+        binary_expr(flags, Operator::BitwiseAnd, lit(1_i64)).eq(lit(1_i64))
+    });
+    let mut points = df.filter(
+        ts.clone()
+            .gt(ts_lit(r.first.saturating_sub(r.window_ns)))
+            .and(ts.clone().lt_eq(ts_lit(r.last))),
+    )?;
+    // A range function reads recorded values only; `latest` keeps the
+    // markers, since a marker as its newest point ends the series.
+    let latest_stale = match stale {
+        Some(stale) if sample.func == SampleFn::Latest => {
+            columns.push(stale.alias(STALE));
+            true
+        }
+        Some(stale) => {
+            points = points.filter(!stale)?;
+            false
+        }
+        None => false,
+    };
+    let points = points.select(columns)?.unnest_columns(&[INSTANT])?;
     let range = range_udaf(r.f, r.window_ns).call(vec![
         ts,
         col("__value"),
@@ -271,9 +290,15 @@ pub(crate) fn lower_sample(
             .iter()
             .map(|c| first_value(ident(*c), vec![]).alias(*c)),
     );
+    let mut kept = col("value").is_not_null();
+    if latest_stale {
+        let newest = col("timestamp").sort(true, true);
+        aggs.push(last_value(col(STALE), vec![newest]).alias(STALE));
+        kept = kept.and(!col(STALE));
+    }
     let evaluated = points
         .aggregate(vec![ident("series_id"), col(INSTANT)], aggs)?
-        .filter(col("value").is_not_null())?;
+        .filter(kept)?;
     let mut labels = series_labels_udf().call(LABEL_INPUTS.iter().map(|c| ident(*c)).collect());
     if drops_name(sample.func) {
         labels = labels_drop_name_udf().call(vec![labels]);
