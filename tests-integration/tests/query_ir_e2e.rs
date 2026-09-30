@@ -2362,11 +2362,22 @@ fn warning_codes(body: &serde_json::Value) -> Vec<String> {
 /// correlate query runs only once both sides' writes are readable: an anti
 /// join against a not-yet-visible target keeps every source row.
 async fn wait_for_rows(app: &Router, from: &str, range: serde_json::Value, min_rows: usize) {
+    wait_for_rows_as(app, "test-key-123", "test-tenant", from, range, min_rows).await;
+}
+
+async fn wait_for_rows_as(
+    app: &Router,
+    key: &str,
+    tenant: &str,
+    from: &str,
+    range: serde_json::Value,
+    min_rows: usize,
+) {
     let doc = serde_json::json!({
         "irVersion": CORRELATE_IR_VERSION, "from": from, "range": range, "result": "rows"
     });
     for _ in 0..40 {
-        let (status, body) = post_ir(app, doc.clone()).await;
+        let (status, body) = post_ir_as(app, doc.clone(), key, tenant, None).await;
         let rows = body["rows"].as_array().map(Vec::len).unwrap_or(0);
         if status == StatusCode::OK && rows >= min_rows {
             return;
@@ -3011,5 +3022,273 @@ async fn correlate_to_an_unscoped_target_is_forbidden() {
         status,
         StatusCode::FORBIDDEN,
         "a traces:read-only key correlating to logs: {body}"
+    );
+}
+
+const MATCH_IR_VERSION: i64 = 12;
+
+/// Like [`span_with_ids`], plus OTLP events (by name) and links (to a trace id).
+fn span_with_events_and_links(
+    name: &str,
+    trace_id: u8,
+    span_id: u8,
+    parent_span_id: Option<u8>,
+    event_names: &[&str],
+    link_trace_ids: &[[u8; 16]],
+) -> Span {
+    use opentelemetry_proto::tonic::trace::v1::span::{Event, Link};
+    Span {
+        events: event_names
+            .iter()
+            .map(|event| Event {
+                time_unix_nano: BASE_NS as u64,
+                name: (*event).to_string(),
+                ..Default::default()
+            })
+            .collect(),
+        links: link_trace_ids
+            .iter()
+            .map(|linked| Link {
+                trace_id: linked.to_vec(),
+                span_id: vec![7; 8],
+                ..Default::default()
+            })
+            .collect(),
+        ..span_with_ids(name, trace_id, span_id, parent_span_id, 10_000_000)
+    }
+}
+
+fn trace_hex(trace_id: u8) -> String {
+    hex::encode([trace_id; 16])
+}
+
+/// A `match` document over traces returning the `trace` envelope.
+fn match_document(match_stage: serde_json::Value) -> serde_json::Value {
+    serde_json::json!({
+        "irVersion": MATCH_IR_VERSION, "from": "traces", "range": range(), "result": "trace",
+        "pipeline": [ { "match": match_stage } ]
+    })
+}
+
+fn do_put_write_match(op: &str) -> serde_json::Value {
+    serde_json::json!({
+        "spansets": {
+            "put": { "field": "span.name", "op": "eq", "value": "DoPut" },
+            "write": { "field": "span.name", "op": "eq", "value": "write_parquet_files" }
+        },
+        "relations": [ { "left": "put", "op": op, "right": "write" } ]
+    })
+}
+
+fn trace_ids_in(body: &serde_json::Value) -> Vec<String> {
+    body["traces"]
+        .as_array()
+        .expect("traces array")
+        .iter()
+        .map(|t| t["trace_id"].as_str().expect("string trace_id").to_string())
+        .collect()
+}
+
+/// Ingest a `DoPut` root with a chain of `depth` child spans; the last child is
+/// `write_parquet_files` when `with_write`, else another `step`. Span ids run
+/// 1..=depth+1 (root is 1). Returns the number of spans ingested.
+async fn ingest_do_put_chain(
+    services: &TestServices,
+    ctx: &TenantContext,
+    trace_id: u8,
+    depth: u8,
+    with_write: bool,
+) -> usize {
+    let mut spans = vec![span_with_ids("DoPut", trace_id, 1, None, 10_000_000)];
+    for i in 1..=depth {
+        let name = if with_write && i == depth {
+            "write_parquet_files"
+        } else {
+            "step"
+        };
+        spans.push(span_with_ids(name, trace_id, i + 1, Some(i), 10_000_000));
+    }
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(ctx, traces_request("ingester", spans))
+        .await
+        .expect("ingest DoPut chain");
+    usize::from(depth) + 1
+}
+
+/// A `DoPut` at depth 0 with a `write_parquet_files` 50 levels below it is
+/// returned in the `trace` envelope; a trace with `DoPut` but no write is not,
+/// `child` does not reach 50 levels down, and another tenant's identical shape
+/// never leaks in.
+#[tokio::test]
+async fn match_descendant_at_depth_returns_the_trace() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let other = tenant_context("other-tenant", "test-dataset", "other-key-123");
+    // Rows visible to the default tenant; the other tenant's are not counted.
+    let mut rows = ingest_do_put_chain(&services, &ctx, 1, 50, true).await;
+    rows += ingest_do_put_chain(&services, &ctx, 2, 5, false).await;
+    let other_rows = ingest_do_put_chain(&services, &other, 9, 3, true).await;
+
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "traces", range(), rows).await;
+    wait_for_rows_as(
+        &app,
+        "other-key-123",
+        "other-tenant",
+        "traces",
+        range(),
+        other_rows,
+    )
+    .await;
+
+    let (status, body) = post_ir(&app, match_document(do_put_write_match("descendant"))).await;
+    assert_eq!(status, StatusCode::OK, "descendant match: {body}");
+    assert_eq!(body["result"], "trace", "trace envelope: {body}");
+    assert_eq!(
+        trace_ids_in(&body),
+        vec![trace_hex(1)],
+        "only the trace with the deep write matches: {body}"
+    );
+
+    let mut witnesses: Vec<(&str, &str)> = body["traces"][0]["spans"]
+        .as_array()
+        .expect("spans array")
+        .iter()
+        .map(|s| {
+            (
+                s["span_name"].as_str().expect("span_name"),
+                s["spansets"].as_str().expect("spansets"),
+            )
+        })
+        .collect();
+    witnesses.sort_unstable();
+    assert_eq!(
+        witnesses,
+        [("DoPut", "put"), ("write_parquet_files", "write")],
+        "only the two endpoint spans are witnesses"
+    );
+
+    // `child` requires a direct parent link; the same data must not match.
+    let (status, body) = post_ir(&app, match_document(do_put_write_match("child"))).await;
+    assert_eq!(status, StatusCode::OK, "child match: {body}");
+    assert!(
+        trace_ids_in(&body).is_empty(),
+        "a write 50 levels down is not a child: {body}"
+    );
+
+    // Tenant isolation: the other tenant sees only its own trace.
+    let (status, body) = post_ir_as(
+        &app,
+        match_document(do_put_write_match("descendant")),
+        "other-key-123",
+        "other-tenant",
+        None,
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "tenant B match: {body}");
+    assert_eq!(trace_ids_in(&body), vec![trace_hex(9)], "isolation: {body}");
+}
+
+/// Span-set predicates on `events.name` and `links.trace_id`; a trace with
+/// only one of the two, and a plain control trace, are not returned.
+#[tokio::test]
+async fn match_on_span_events_and_links() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let linked = [0xab_u8; 16];
+
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(
+            &ctx,
+            traces_request(
+                "svc",
+                vec![
+                    // Trace 1: an exception event on the root, a link on a child.
+                    span_with_events_and_links("op", 1, 1, None, &["exception"], &[]),
+                    span_with_events_and_links("call", 1, 2, Some(1), &[], &[linked]),
+                    // Trace 2: the event only.
+                    span_with_events_and_links("op", 2, 1, None, &["exception"], &[]),
+                    // Trace 3: control, neither.
+                    span_with_events_and_links("op", 3, 1, None, &["log"], &[]),
+                    span_with_events_and_links("call", 3, 2, Some(1), &[], &[]),
+                    // Trace 4: both, but on siblings — passes the candidate
+                    // filter and fails the relation.
+                    span_with_events_and_links("op", 4, 1, None, &[], &[]),
+                    span_with_events_and_links("boom", 4, 2, Some(1), &["exception"], &[]),
+                    span_with_events_and_links("call", 4, 3, Some(1), &[], &[linked]),
+                ],
+            ),
+        )
+        .await
+        .expect("ingest event/link spans");
+
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "traces", range(), 8).await;
+
+    let document = match_document(serde_json::json!({
+        "spansets": {
+            "boom": { "field": "events.name", "op": "eq", "value": "exception" },
+            "linked": { "field": "links.trace_id", "op": "eq", "value": hex::encode(linked) }
+        },
+        "relations": [ { "left": "linked", "op": "ancestor", "right": "boom" } ]
+    }));
+    let (status, body) = post_ir(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "events/links match: {body}");
+    assert_eq!(
+        trace_ids_in(&body),
+        vec![trace_hex(1)],
+        "only the trace with both the exception event and the link matches: {body}"
+    );
+}
+
+/// `match` is traces-only: on logs it is a 400 at validation.
+#[tokio::test]
+async fn match_on_logs_is_rejected() {
+    let services = setup().await;
+    let app = build_router(&services).await;
+    let document = serde_json::json!({
+        "irVersion": MATCH_IR_VERSION, "from": "logs", "range": range(), "result": "rows",
+        "pipeline": [ { "match": {
+            "spansets": { "a": { "field": "body", "op": "contains", "value": "x" } },
+            "relations": []
+        } } ]
+    });
+    let (status, body) = post_ir(&app, document).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "match on logs: {body}");
+    let message = body["error"].as_str().expect("error message");
+    assert!(
+        message.contains("source 'logs' does not support match (traces only)"),
+        "the documented traces-only message, got: {body}"
+    );
+}
+
+/// A trace larger than `[querier].match_max_trace_spans` fails the query with
+/// a 422 `resource_limit` that names the trace, instead of truncating it.
+#[tokio::test]
+async fn match_trace_span_bound_is_422() {
+    let services = setup_with(|config| config.querier.match_max_trace_spans = 3).await;
+    let ctx = test_tenant_context();
+    let rows = ingest_do_put_chain(&services, &ctx, 1, 3, true).await;
+
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "traces", range(), rows).await;
+
+    let (status, body) = post_ir(&app, match_document(do_put_write_match("descendant"))).await;
+    assert_eq!(
+        status,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        "trace over the span bound: {body}"
+    );
+    assert_eq!(body["errorType"], "resource_limit", "{body}");
+    let message = body["error"].as_str().expect("error message");
+    assert!(
+        message.contains(&trace_hex(1)),
+        "the error names the offending trace, got: {body}"
+    );
+    assert!(
+        message.contains("match_max_trace_spans"),
+        "the error names the config key, got: {body}"
     );
 }
