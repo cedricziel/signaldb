@@ -1164,8 +1164,9 @@ async fn promql_histogram_quantile_interpolates_median() {
 
 /// Regression (hive NaN): `histogram_quantile(q, rate(m[r]))` over one
 /// service's several cumulative series of a metric differences each series
-/// against itself, then merges: exactly 2.0 (see
-/// [`two_series_cumulative_histogram`]).
+/// against itself (see [`two_series_cumulative_histogram`]): merged under
+/// `sum` exactly 2.0, and without it one quantile per series, 1.5 for `a`
+/// and 2.6 for `b`.
 #[tokio::test]
 async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
     let (services, app) = setup_with_ingested_metrics().await;
@@ -1181,25 +1182,54 @@ async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
         .await
         .expect("flush writer");
 
-    // One 100s bucket starting at BASE (a multiple of 100s) holds every
-    // point of both series up to the query's end.
-    let start = BASE_NS / 1_000_000_000;
-    let end = start + 80;
-    let query = encode_query("histogram_quantile(0.5, rate(commit_duration[2m]))");
+    // One instant after the last point, whose 2m window holds every point
+    // of both series.
+    let start = BASE_NS / 1_000_000_000 + 80;
+    let end = start + 60;
+    let range = |promql: &str| {
+        let query = encode_query(promql);
+        format!("/prometheus/api/v1/query_range?query={query}&start={start}&end={end}&step=100")
+    };
+    let values = |series: &serde_json::Value| -> Vec<f64> {
+        series["values"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v[1].as_str()?.parse().ok())
+            .collect()
+    };
+
     let (status, body) = get(
         &app,
-        &format!("/prometheus/api/v1/query_range?query={query}&start={start}&end={end}&step=100"),
+        &range("histogram_quantile(0.5, sum(rate(commit_duration[2m])))"),
     )
     .await;
-
     assert_eq!(status, StatusCode::OK, "{body}");
-    let values: Vec<f64> = body["data"]["result"][0]["values"]
+    assert_eq!(values(&body["data"]["result"][0]), vec![2.0], "{body}");
+
+    let (status, body) = get(
+        &app,
+        &range("histogram_quantile(0.5, rate(commit_duration[2m]))"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut per_op: Vec<(String, Vec<f64>)> = body["data"]["result"]
         .as_array()
         .into_iter()
         .flatten()
-        .filter_map(|v| v[1].as_str()?.parse().ok())
+        .map(|s| {
+            (
+                s["metric"]["op"].as_str().unwrap_or("").to_string(),
+                values(s),
+            )
+        })
         .collect();
-    assert_eq!(values, vec![2.0], "{body}");
+    per_op.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(per_op.len(), 2, "{body}");
+    assert_eq!(per_op[0].0, "a", "{body}");
+    assert!((per_op[0].1[0] - 1.5).abs() < 1e-9, "{body}");
+    assert_eq!(per_op[1].0, "b", "{body}");
+    assert!((per_op[1].1[0] - 2.6).abs() < 1e-9, "{body}");
 }
 
 // The remaining tests exercise newer function families end-to-end through
