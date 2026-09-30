@@ -5,6 +5,8 @@ user-invocable: false
 sources:
   - src/common/src/auth/**
   - src/common/src/config/mod.rs
+  - src/common/src/catalog.rs
+  - src/acceptor/src/lib.rs
   - src/common/src/schema/type_authority.rs
   - src/common/src/schema/type_authority/**
   - src/common/src/schema_registry/type_hints.rs
@@ -323,48 +325,42 @@ The Query IR `correlate` stage (span-to-parent join, `irVersion` 8) never crosse
 
 ## Attribute Type Authority
 
-Attribute values are stored typed. The canonical type of a field is one of
-`string`, `int64`, `float64`, `bool`, and it is scoped to **tenant + dataset +
-signal + attribute level (resource/scope/record) + key**, so a resource
-`service.name` and a record `service.name` are separate fields, and two tenants
-(or two datasets) sending the same key with different types never affect each
-other (`src/common/src/schema/type_authority/`).
+Attribute values are stored typed. The canonical type of a field is scoped to
+**tenant + dataset + signal + attribute level + key**, so two tenants (or two
+datasets) sending the same key with different types never affect each other
+(`src/common/src/schema/type_authority/`). Precedence, the semconv hint rules
+and off-type handling are described once, in
+[Canonical types](../../../docs/users/schema-registry.md#canonical-types).
 
-- **Precedence**: a `[[schema.attribute_types]]` pin, else a semconv type hint
-  (only when the resource/scope `schema_url` names a visible registry; any
-  `opentelemetry.io/schemas/*` URL selects the bundled `otel` registry, other
-  URLs match a registry's exact `schema_url`), else the first observed scalar
-  type. Precedence only picks the typed home; a sender's value is never
-  rewritten.
 - **First write wins**: the writer establishes the type with an atomic
   first-seen insert into the `attribute_types` catalog table
   (`Catalog::establish_attribute_type`); an existing row is never updated by
-  data. A value of another type, and any array, kvlist or bytes value, goes to
-  the `{container}_residue` column instead, and the field's `off_type_count`
-  grows. Only an operator pin changes an established type: building a scope
-  applies the pin, logs a warning and counts `reason=pin_conflict`, and stored
-  values are not retyped.
-- **Pins** are per tenant and optionally per dataset. A dataset-specific entry
-  wins over one without `dataset`. A tenant that carries its own schema block
-  (`[auth.tenants.schema]`) replaces the **whole** global `[schema]` block
+  data, which is what keeps one tenant's or dataset's values from retyping
+  another's. A scalar of another type goes to the `{container}_residue` column
+  and grows the field's `off_type_count`; an array, kvlist or bytes value goes
+  to the residue silently, with no count and no warning. Only an operator pin
+  changes an established type: building a scope applies the pin, logs a
+  warning and counts `reason=pin_conflict`, and stored values are not retyped.
+- **Pins** are per tenant and optionally per dataset; a dataset entry wins over
+  one without `dataset`. A tenant that carries its own schema block
+  (`[tenants.tenants.<id>.schema]`, which needs `catalog_type` and
+  `catalog_uri`) replaces the **whole** global `[schema]` block
   (`Configuration::get_tenant_schema_config`), so its pins, materialized
-  labels, warm index and `default_schemas` all come from that block and
-  nothing is inherited from the global one. Keep every pin the tenant needs in
-  its own list.
+  labels, warm index and `default_schemas` all come from that block and nothing
+  is inherited. Keep every pin the tenant needs in its own list.
 - **Caching**: the writer caches one `SignalScope` per (tenant, dataset, signal)
   and resolves each distinct key once per batch. `TypeAuthority::invalidate()`
   drops the cache but has no production caller today; a schema-version bump or
   a changed pin takes effect on the next writer process start. The acceptor
   only reads (`TypeSnapshots`, refreshed in the background after a 30s TTL) to
-  warn the sender about off-type values in OTLP `partial_success`; it never
+  warn the sender about off-type scalars in OTLP `partial_success`; it never
   establishes or places anything.
 - **Discovery**: `GET /api/v1/schema/attributes/{key}` and the batch form
   `GET /api/v1/schema/attributes?keys=a,b` (`schema:read`; MCP
-  `resolve_attribute`) return `canonical_types`, one entry per dataset/signal/level
-  the key has been seen in, with `canonical_type`, `source`
-  (`config`/`semconv`/`observed`), `hint_schema_url` and `off_type_count`. The field is
-  omitted when nothing is established, and a dataset-restricted key only sees its
-  own datasets (`src/router/src/endpoints/schema.rs`).
+  `resolve_attribute`) return `canonical_types`, one entry per
+  dataset/signal/level the key has been seen in, with `off_type_count`. The
+  field is omitted when nothing is established, and a dataset-restricted key
+  only sees its own datasets (`src/router/src/endpoints/schema.rs`).
 
 Tenant schema overrides therefore cover: materialized labels, attribute type
 pins, the warm index, and the default signal set.

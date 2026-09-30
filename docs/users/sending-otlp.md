@@ -9,6 +9,9 @@ sources:
   - src/router/src/endpoints/session.rs
   - src/common/src/config/mod.rs
   - src/common/src/flight/conversion/conversion_common.rs
+  - src/common/src/attrs/typed.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/acceptor/src/type_warning.rs
 ---
 
 # Send OTLP data to SignalDB
@@ -124,13 +127,14 @@ cache is soft-capped (`[wal].max_instances`) and warns at startup when
 
 ## Attribute types
 
-Each attribute key has one canonical type per tenant, dataset and signal.
-It comes from a `[[schema.attribute_types]]` pin, a semantic-convention
-hint, or the first value SignalDB stored for that key. It never changes on
-its own. A value sent with a different type (say `http.status_code` as the
-string `"404"` once the key is an integer) is still stored exactly as sent.
-It can be retrieved through the raw attribute bag, but it can't be filtered
-as a typed value (see [Querying with the IR](querying-ir.md)).
+Each attribute key has one canonical type per tenant, dataset, signal and
+attribute level (resource, scope or record). How it is chosen (a pin, a
+semantic-convention hint, or the first value SignalDB stored) is described in
+[Canonical types](schema-registry.md#canonical-types). It never changes on its
+own. A value sent with a different type (say `http.status_code` as the string
+`"404"` once the key is an integer) is still stored exactly as sent. It can be
+retrieved through the raw attribute bag, but it can't be filtered as a typed
+value (see [Querying with the IR](querying-ir.md)).
 
 The export still succeeds, but the response carries an OTLP
 `partial_success` with nothing rejected and an `error_message` naming the
@@ -151,7 +155,8 @@ as `off_type_count` on `GET /api/v1/schema/attributes/{key}`.
 - **Log `body` is an `AnyValue`.** A string body is returned as the string; a
   structured body is kept and returned as JSON.
 - **Duplicate keys and key order are not preserved.** If one attribute list
-  repeats a key, the last value wins, and attributes come back sorted by key,
+  repeats a key, the last value wins, and attributes come back grouped by
+  their stored type (string, integer, double, boolean, then anything else),
   not in the order you sent them. Keeping both is deferred to a typed wire
   format.
 - **Exemplars keep their trace context.** Each exemplar is stored as its own

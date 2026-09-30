@@ -105,7 +105,7 @@ single-key object naming the stage:
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate     |
 | `histogram_quantile` (v3) | `{ q, by?, step, mode?, … }` | quantile from histogram buckets (`metrics` only)  |
 | `histogram_fraction` (v10) | `{ lower, upper, … }`    | fraction of observations in `(lower, upper]`      |
-| `describe` (v4)    | `{ target, field?, limit? }`      | terminal; field and source discovery (`metadata`) |
+| `describe` (v4)    | `{ target, field?, limit?, … }`  | terminal; field and source discovery (`metadata`) |
 | `correlate` (v8, v11) | `{ to, on?, kind, window?, … }` | join to the parent span, or to another signal     |
 | `sample` (v10)     | `{ fn, window?, lookback?, … }`  | a metric point stream → a Series (`metrics` only) |
 | `reduce` (v10)     | `{ fn, by? / without?, arg? }`   | Series → Series: fold series into groups          |
@@ -142,7 +142,7 @@ truth is `src/query-ir/src/version.rs`):
 | 7 | `irate`, the `*_over_time` aggregates, aggregate `across` and `window` |
 | 8 | `correlate` to the parent span; the `graph` envelope |
 | 9 | `count_distinct` |
-| 10 | the metric Series algebra: `sample`, `reduce`, `map`, `labels`, `filter`, `binop`, `absent`, `over_time`, `sort`, `scalar`, `vector`, `histogram_fraction`, histogram `window` and `per_series`, the `scalar` envelope, document `step`/`constant`, the `time`/`constant` sources |
+| 10 | the metric Series algebra: `sample`, `reduce`, `map`, `labels`, `filter`, `binop`, `absent`, `over_time`, `sort`, `scalar`, `vector`, `histogram_fraction`, histogram `window`, `lookback` and `per_series`, the `scalar` envelope, document `step`/`constant`, the `time`/`constant` sources |
 | 11 | `correlate` to another signal source |
 | 12 | `match` and the `trace` envelope |
 

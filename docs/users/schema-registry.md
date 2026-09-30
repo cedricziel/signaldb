@@ -158,27 +158,40 @@ deadline — see [Running it](mcp.md#running-it).
 ## Canonical types
 
 A registry entry's `type` says what the convention _declares_. It is a hint.
-The type SignalDB actually stores and filters a key by is the tenant's
-**canonical type**: one of `string`, `int64`, `float64` or `bool`, fixed per
-dataset, signal (`traces`, `logs`, `metrics`, `profiles`) and attribute level
-(`resource`, `scope`, `record`). The same key can therefore have different
-canonical types in different datasets or at different levels.
+The type SignalDB actually stores and filters a key by is the **canonical
+type**: one of `string`, `int64`, `float64` or `bool`, scoped per tenant,
+dataset, signal (`traces`, `logs`, `metrics`, `profiles`), attribute level
+(`resource`, `scope`, `record`) and key. The same key can therefore have
+different canonical types in different datasets or at different levels, and one
+tenant's data never affects another's.
 
-The canonical type comes from, in order:
+The canonical type comes from, in order: a config pin, then the registry's
+semconv hint, then the type of the first value SignalDB stored for the key.
 
-1. a pin you configured (below);
-2. the registry's declared type, but only when the sender's resource or scope
-   `schema_url` names a registry visible to the tenant (an
-   `opentelemetry.io/schemas/*` URL selects `otel`; a custom registry matches
-   its exact `schema_url`), and the declared type is a scalar;
-3. the type of the first value SignalDB stored for the key.
+- **Pin**: the `[[schema.attribute_types]]` entry below.
+- **Semconv hint**: applies only when the sender's `schema_url` names a registry
+  visible to the tenant. A resource-level key uses the resource's `schema_url`; a
+  scope- or record-level key prefers the scope's `schema_url` and falls back to
+  the resource's. A URL starting `https://opentelemetry.io/schemas/` selects the
+  bundled `otel` registry; any other URL matches a registry's exact
+  `schema_url`. Only scalar declared types count: `string`, `int`, `double`,
+  `boolean`, and an enum whose members are all strings or all integers.
+- **First observed**: the first scalar value stored. Arrays, key-value lists and
+  bytes never set a type.
 
-Once set it does not change because later data disagrees. A value of another
-type, and any array, key-value list or byte value, is kept exactly as sent but
-cannot be filtered as a typed value; the sender's OTLP response carries a
-`partial_success` warning naming the keys. Because a declared type wins over
-what you send, an `int` convention with a sender that emits strings makes every
-one of those values off-type, so pin the type you actually send if it differs.
+Once set, the type does not change because later data disagrees. What happens
+to a value that does not fit depends on its shape:
+
+- A **scalar of another type** is kept exactly as sent but cannot be filtered as
+  a typed value. It increments the key's `off_type_count`, and the sender's OTLP
+  response carries a `partial_success` warning naming the keys.
+- An **array, key-value list or bytes value** is kept as sent and can be read
+  back, but cannot be filtered. It is not counted and does not trigger the
+  warning.
+
+Because a declared type wins over what you send, an `int` convention with a
+sender that emits strings makes every one of those values off-type, so pin the
+type you actually send if it differs.
 
 The lookup shows the committed types and how many values arrived off-type:
 
@@ -205,9 +218,9 @@ dataset = "prod"     # optional; omitted applies to every dataset of the tenant
 
 A dataset entry wins over a tenant-wide one. Pinning retypes a field that data
 had already typed, for values written from then on; stored values are not
-rewritten. A tenant with its own `[auth.tenants.schema]` block uses only that
-block's pins, so repeat any global pin it needs. `signaldb.dist.toml` documents
-the block.
+rewritten. A changed pin applies after the writer restarts. A tenant with its
+own schema block (`[tenants.tenants.<id>.schema]`) uses only that block's pins,
+so repeat any global pin it needs. `signaldb.dist.toml` documents the block.
 
 ## Add your own conventions
 
