@@ -4,6 +4,7 @@ type: how-to
 status: living
 sources:
   - src/router/src/endpoints/promql.rs
+  - src/ql-ir/src/promql_lower.rs
   - src/prometheus-api/src/lib.rs
 ---
 
@@ -14,9 +15,12 @@ Prometheus-compatible HTTP API, so a Grafana Prometheus data source (or `curl`)
 can read them back.
 
 The endpoints are nested under `/prometheus` on the router and speak the
-Prometheus `api/v1` response format. They translate a PromQL expression into a
-querier plan over the `metrics` Iceberg table (filtered to `metric_type` gauge
-or sum) — the same query path used for traces and logs.
+Prometheus `api/v1` response format. `query` and `query_range` lower the PromQL
+expression to a [Query IR](querying-ir.md) document over the `metrics` source
+and execute it exactly as `POST /api/v1/query` would, so a PromQL expression and
+its IR equivalent return the same series, labels and values. The metadata
+endpoints (`labels`, `label/{name}/values`, `series`, `label_stats`) read the
+metrics tables directly.
 
 ## Prerequisites
 
@@ -55,30 +59,32 @@ what is and isn't supported, see the
 
 ## Quantiles from histograms
 
-`histogram_quantile(phi, metric)` estimates the `phi`-quantile of a histogram
-metric — e.g. p95 latency:
+`histogram_quantile(phi, …)` estimates the `phi`-quantile of a histogram
+metric — e.g. p95 request latency per service:
 
 ```bash
 curl -sG http://localhost:3000/prometheus/api/v1/query_range \
   -H "Authorization: Bearer $SIGNALDB_API_KEY" \
   -H "X-Tenant-ID: $SIGNALDB_TENANT" \
-  --data-urlencode 'query=histogram_quantile(0.95, http_request_duration_seconds)' \
+  --data-urlencode 'query=histogram_quantile(0.95, sum by (job) (rate(http_request_duration_seconds[5m])))' \
   --data-urlencode "start=$(date -d '-1 hour' +%s)" \
   --data-urlencode "end=$(date +%s)" \
   --data-urlencode 'step=60'
 ```
 
 Unlike Prometheus text-format histograms (a fan of `_bucket` series keyed by
-`le`), SignalDB stores each OTLP histogram whole. So the argument is the
-**histogram metric name itself**, not a `sum by (le) (rate(..._bucket[5m]))`
-expression. The quantile is interpolated per series from the metric's stored
-buckets, assuming a uniform spread within the containing bucket — the same
-estimate Prometheus's `histogram_quantile` produces. Values are labelled on
-the epoch-aligned step buckets like every other range query (the bucket
-starting at `b` is evaluated at `b + step` and labelled `b`); a plain
-selector reads each series' latest point within max(5m, step), and
-`rate(metric[range])` differences each series against itself over the range.
-`@` pins the evaluation instant.
+`le`), SignalDB stores each OTLP histogram whole, so you name the **histogram
+metric itself**, not its `_bucket` series, and `le` is implicit (`sum by (le,
+job)` and `sum by (job)` mean the same). The quantile is interpolated from the
+stored buckets, assuming a uniform spread within the containing bucket — the
+same estimate Prometheus's `histogram_quantile` produces.
+
+Over a bare selector or an un-summed `rate(metric[w])`, the quantile is
+computed per stored series and labelled by the series' labels less
+`__name__`, as in Prometheus. A selector reads each series' latest point in
+the 5-minute lookback; `rate(metric[w])` differences each series against
+itself over the window. Under `sum [by (…)]` the series are merged per group
+after that. `offset` and `@` on the histogram operand are a `400`.
 
 `histogram_quantile` and `histogram_fraction` read explicit-bucket and
 exponential histograms (exponential buckets merge by the OTel rule). Rows of
@@ -93,8 +99,11 @@ of all three types.
 
 ## Instant query (vector)
 
-`query` evaluates a single point in time (default: now), returning a vector —
-the latest sample of each series:
+`query` evaluates once, at `time` (default: now), returning a vector — each
+series' value at that instant, read from its latest point in the 5-minute
+lookback. An expression that is a scalar (`time()`, `scalar(x)`, `1 + 2`)
+returns `resultType` `scalar`; over `query_range` the same expression is a
+matrix of one label-less series.
 
 ```bash
 curl -sG http://localhost:3000/prometheus/api/v1/query \
@@ -121,10 +130,12 @@ discover attributes --signal metrics [--tag NAME]` / `discover metrics`, and
 the MCP `discover_attributes`(`signal: "metrics"`) / `discover_metrics` tools
 for AI agents — see [the MCP server doc](mcp.md).
 
-Prometheus labels map onto SignalDB columns: `__name__` is the metric name,
-`job` is the service name, and [materialized labels](../architecture/storage-layout.md#materialized-labels)
-match (and group) on their dedicated columns. Any other label is matched
-against the metric's JSON attributes.
+Prometheus labels map onto SignalDB fields: `__name__` is the metric name, and
+`job`, `service` and `service_name` all address the service name. Any other
+label, dotted names included, is a resource or point attribute. In query
+results the metric name comes back as `__name__` (where Prometheus keeps it)
+and the service name as `service_name`; every other label keeps its SignalDB
+name, e.g. `otel.scope.name` or `resource.host.name`.
 
 ### Label cardinality
 
@@ -174,8 +185,10 @@ headers computed from the tenant's actual budget state.
 - **404**: confirm the path is nested under `/prometheus` (e.g.
   `/prometheus/api/v1/query_range`).
 - **400 `bad_data`**: read the `error` field in the response body — it carries
-  the querier's reason (an invalid expression, an unknown label, or a dataset
-  with no metrics tables yet).
+  the reason. An expression that does not parse, or that parses but has no IR
+  equivalent, is rejected before it runs; the message names the construct
+  (e.g. `a negative offset has no query-IR equivalent`). See
+  [constructs that return 400](promql-functions.md#constructs-that-return-400).
 
 ## Configure Grafana
 
