@@ -635,19 +635,27 @@ signaldb-cli discover fields --source logs
 signaldb-cli discover values --source traces --field span.kind
 signaldb-cli discover values --source traces --field http.route --sample
 
-# Compatibility-dialect view (Tempo tags, Loki/Prometheus labels)
+# Signal-selected shorthand for fields/values, and metric names
 signaldb-cli discover attributes --signal traces --tag service.name
 signaldb-cli discover attributes --signal logs
-signaldb-cli discover attributes --signal metrics --tag job
-signaldb-cli discover metrics
+signaldb-cli discover attributes --signal traces --scope resource
+signaldb-cli discover attributes --signal traces --tag service.name --sample
+signaldb-cli discover metrics --from now-6h --limit 100
 ```
 
 `discover fields`/`values`/`sources` are the native surface: they speak the same
 logical names as a Query IR document and are answered from metadata rather than
 by scanning. `discover values` reads data only when you pass `--sample`, and the
 response says so — without it you are told what would answer the question
-instead. `discover attributes` remains the dialect-shaped view, for parity with
-what Grafana sees. See [the Query IR reference](querying-ir.md#discovery-what-can-i-query).
+instead. `discover attributes` and `discover metrics` are shorthands over the
+same `describe` stage, not the Tempo/Loki/Prometheus metadata endpoints.
+`--scope` (traces) lists only typed keys at that level (untyped keys and
+scope-level attributes are never listed, `--limit` applies before the filter, a
+qualified tag can land on an intrinsic such as `span.kind`, and `intrinsic`
+cannot take `--tag`). `discover attributes --tag` needs a declared set or a statistics sketch, or
+`--sample`; `discover metrics` always samples stored metric data in
+`--from`/`--to` (default the last hour), bounded by `--limit`. See
+[the Query IR reference](querying-ir.md#discovery-what-can-i-query).
 
 Schema-registry lookup and custom-registry management mirror the schema tools
 (reads need a key with `schema:read`, mutations `schema:write`):
