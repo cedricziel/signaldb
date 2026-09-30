@@ -8,7 +8,7 @@ use std::collections::BTreeMap;
 use std::sync::Arc;
 
 use common::attrs::typed::decode_typed_arrays;
-use common::schema::typed_attributes::typed_columns;
+use common::schema::typed_attributes::{has_typed_container, typed_columns};
 use datafusion::arrow::array::{Array, ArrayRef, AsArray, MapArray, StringBuilder, StructArray};
 use datafusion::arrow::compute::cast;
 use datafusion::arrow::datatypes::DataType;
@@ -208,6 +208,30 @@ impl ScalarUDFImpl for LabelsOf {
         }
         Ok(ColumnarValue::Array(Arc::new(out.finish())))
     }
+}
+
+/// The plain columns a series' labels derive from, before its attribute bags.
+const LABEL_COLUMNS: [&str; 4] = ["metric_name", "service_name", "scope_name", "scope_version"];
+
+/// Each row's full label set, over a scan with the physical columns
+/// `schema_cols`; a column the scan lacks reads as null.
+pub(crate) fn series_labels_of(schema_cols: &[String]) -> Expr {
+    let has = |c: &str| schema_cols.iter().any(|s| s == c);
+    let mut inputs: Vec<Expr> = LABEL_COLUMNS
+        .iter()
+        .map(|c| {
+            if has(c) {
+                ident(*c)
+            } else {
+                lit(ScalarValue::Null)
+            }
+        })
+        .collect();
+    for bag in ["resource_attributes", "attributes"] {
+        let typed = has_typed_container(schema_cols.iter().map(String::as_str), bag);
+        inputs.push(bag_arg(bag, typed));
+    }
+    series_labels_udf().call(inputs)
 }
 
 #[cfg(test)]

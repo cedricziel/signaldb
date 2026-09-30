@@ -14,7 +14,6 @@
 use common::query_ir::{
     Document, Literal, Sample, SampleFn, SampleOf, Stage, ValueType, coerce, parse_duration_ns,
 };
-use common::schema::typed_attributes::has_typed_container;
 use datafusion::arrow::datatypes::{DataType, TimeUnit};
 use datafusion::functions::core::expr_fn::coalesce;
 use datafusion::functions_aggregate::expr_fn::last_value;
@@ -23,7 +22,7 @@ use datafusion::logical_expr::{Expr, Operator, binary_expr, cast, col, lit};
 use datafusion::prelude::{DataFrame, ident};
 use datafusion::scalar::ScalarValue;
 
-use super::labels::{LABELS_COLUMN, bag_arg, series_labels_udf};
+use super::labels::{LABELS_COLUMN, series_labels_of};
 use super::stages::drop_name;
 use crate::query::error::QuerierError;
 use crate::query::ir_planner::ResolvedWindow;
@@ -35,8 +34,6 @@ use crate::query::metric_ops::range_math::RangeFn;
 const DEFAULT_LOOKBACK_NS: i64 = 5 * 60 * 1_000_000_000;
 const INSTANT: &str = "__instant";
 const STALE: &str = "__stale";
-/// The plain columns a series' labels derive from, before its attribute bags.
-const LABEL_COLUMNS: [&str; 4] = ["metric_name", "service_name", "scope_name", "scope_version"];
 
 /// What a `sample` stage needs from the document beyond the stage itself.
 pub(crate) struct SampleEnv<'a> {
@@ -179,12 +176,6 @@ pub(crate) fn lower_sample(
             lit(ScalarValue::Null)
         }
     };
-    let bag = |c: &str| {
-        bag_arg(
-            c,
-            has_typed_container(env.schema_cols.iter().map(String::as_str), c),
-        )
-    };
     let (of, value) = match sample.of {
         SampleOf::Value => ("value", ident("value")),
         SampleOf::Count => ("count", cast(ident("count"), DataType::Float64)),
@@ -208,11 +199,8 @@ pub(crate) fn lower_sample(
     ]);
     // The full label set, rendered once per point (before the instants
     // fan it out) and dropped of `metric.name` after evaluation.
-    let mut inputs: Vec<Expr> = LABEL_COLUMNS.iter().map(|c| or_null(c)).collect();
-    inputs.push(bag("resource_attributes"));
-    inputs.push(bag("attributes"));
     let mut columns = vec![
-        series_labels_udf().call(inputs).alias(LABELS_COLUMN),
+        series_labels_of(env.schema_cols).alias(LABELS_COLUMN),
         ts.clone(),
         value.alias("__value"),
         or_null("start_timestamp").alias("__start"),
