@@ -331,7 +331,7 @@ async fn absent_is_one_labelled_series_where_the_input_has_none() {
         "range": { "from": 60 * S, "to": 180 * S }, "result": "series",
         "pipeline": [
             { "sample": { "fn": "latest", "lookback": "30s" } },
-            { "absent": { "labels": { "job": "x" } } }
+            { "absent": { "labels": { "job": "x", "pod": "" } } }
         ]
     });
     let got = series_rows(&run(&points, doc).await.unwrap());

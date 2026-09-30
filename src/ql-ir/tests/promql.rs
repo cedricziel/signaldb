@@ -613,13 +613,16 @@ fn functions() {
             ),
         ),
     ]);
-    // absent() labels only the labels with exactly one equality matcher, as
-    // Prometheus does; an empty value is no label.
+    // absent() labels as Prometheus does: in matcher order, a label's first
+    // equality matcher sets it (the stage drops an empty value), any later
+    // matcher on it removes it; `job` and `service` are one label.
     let absent = lower(r#"absent(x{a="1", a="2", b!="3", b="4", c="", d="5"})"#);
     assert_eq!(
         absent["pipeline"][2],
-        json!({ "absent": { "labels": { "d": "5" } } })
+        json!({ "absent": { "labels": { "b": "4", "c": "", "d": "5" } } })
     );
+    let absent = lower(r#"absent(x{job="api", service="api", e="", e="6"})"#);
+    assert_eq!(absent["pipeline"][2], json!({ "absent": { "labels": {} } }));
     assert_eq!(labels(r#"absent(x{d="5"})"#), (vec!["d".into()], false));
     // topk keeps its input series whole; count_values labels by the value.
     cases(&[

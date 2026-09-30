@@ -14,7 +14,7 @@
 //! dotted metric name (`signaldb.wal.entries_pending`) is accepted and read as
 //! its quoted form.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use promql_parser::label::{MatchOp, Matcher};
@@ -819,30 +819,27 @@ fn time() -> Pipe {
     }
 }
 
-/// The labels `absent()` gives its series, by Prometheus's rule: each
-/// label's first equality matcher, less the metric name, any label another
-/// matcher also constrains, and empty values (which are no label).
+/// The labels `absent()` gives its series, by Prometheus's
+/// `createLabelsForAbsentFunction`: in matcher order, a label's first
+/// equality matcher sets it and any later matcher on it removes it. An
+/// empty value is kept; the `absent` stage reads it as no label. Labels are keyed by their logical field, so
+/// `job` and `service` count as one label.
 fn absent_labels(vs: &VectorSelector) -> BTreeMap<String, String> {
     if !vs.matchers.or_matchers.is_empty() {
         return BTreeMap::new();
     }
     let mut labels = BTreeMap::new();
-    let mut unknown = Vec::new();
+    let mut seen = BTreeSet::new();
     for m in &vs.matchers.matchers {
         let field = promql_label_field(&m.name);
         if field == "metric.name" {
             continue;
         }
-        if m.op == MatchOp::Equal && !labels.contains_key(&field) {
-            if !m.value.is_empty() {
-                labels.insert(field, m.value.clone());
-            }
+        if m.op == MatchOp::Equal && seen.insert(field.clone()) {
+            labels.insert(field, m.value.clone());
         } else {
-            unknown.push(field);
+            labels.remove(&field);
         }
-    }
-    for field in unknown {
-        labels.remove(&field);
     }
     labels
 }

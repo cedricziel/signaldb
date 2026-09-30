@@ -1176,9 +1176,10 @@ names and values.
 #### `absent`
 
 `{ "absent": { "labels": { "job": "api" } } }`: at every instant where the
-input has no series, one series labelled `labels` (default none) with value
-`1`; nothing where it has any. PromQL's `absent(sel)` passes the selector's
-equality matchers as `labels`.
+input has no series, one series labelled `labels` (default none; an empty
+value is no label) with value `1`; nothing where it has any. PromQL's
+`absent(sel)` passes the selector's equality matchers as `labels` by
+Prometheus's rule: a label matched more than once is left out.
 
 #### `over_time`
 

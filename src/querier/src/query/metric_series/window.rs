@@ -84,7 +84,10 @@ pub(super) fn lower_absent(
     let present = df
         .select(vec![col("bucket").alias("__present")])?
         .distinct()?;
-    let labels = encode(&absent.labels)?;
+    // An empty value is no label.
+    let mut labels = absent.labels.clone();
+    labels.retain(|_, value| !value.is_empty());
+    let labels = encode(&labels)?;
     Ok(instants(env.ctx, env.window, step_ns)?
         .join(
             present,
