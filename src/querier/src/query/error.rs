@@ -11,6 +11,11 @@ pub enum QuerierError {
     InvalidInput(String),
     #[error("Unsupported query feature: {0}")]
     Unsupported(String),
+    /// The query exceeds a configured bound and would fail again unchanged;
+    /// sent as `FAILED_PRECONDITION` (HTTP 422), never the retryable
+    /// `RESOURCE_EXHAUSTED` the per-tenant concurrency limit uses.
+    #[error("Query exceeds a resource bound: {0}")]
+    ResourceExhausted(String),
 }
 
 /// Finds a caller error an operator raised inside execution

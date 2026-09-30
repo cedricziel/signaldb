@@ -32,6 +32,10 @@ pub struct ApiError {
     rate_limit: Option<RateLimitExceeded>,
     /// Rendered as `details`; set with [`Self::with_details`].
     details: Option<Vec<ApiErrorDetail>>,
+    /// Set by [`Self::from_flight`] for a querier resource bound: a `422`
+    /// whose `errorType` is `resource_limit` rather than `invalid`. A flag,
+    /// not a free-form override, to keep `ApiError` small.
+    resource_limit: bool,
 }
 
 impl ApiError {
@@ -41,6 +45,7 @@ impl ApiError {
             message: message.into(),
             rate_limit: None,
             details: None,
+            resource_limit: false,
         }
     }
 
@@ -65,6 +70,7 @@ impl ApiError {
             message: err.to_string(),
             rate_limit: Some(err.clone()),
             details: None,
+            resource_limit: false,
         }
     }
 
@@ -86,6 +92,14 @@ impl ApiError {
             tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
             tonic::Code::PermissionDenied => StatusCode::FORBIDDEN,
             tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
+            // The querier's resource bounds (e.g. a correlate source over
+            // `[querier].correlate_max_source_rows`): the same query fails
+            // again on retry, so it must not read as a retryable 429.
+            tonic::Code::FailedPrecondition => {
+                let mut err = Self::new(StatusCode::UNPROCESSABLE_ENTITY, status.message());
+                err.resource_limit = true;
+                return err;
+            }
             _ => {
                 tracing::error!(error = %status, query_kind = what, "Flight query failed");
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -95,6 +109,9 @@ impl ApiError {
     }
 
     fn error_type(&self) -> &'static str {
+        if self.resource_limit {
+            return "resource_limit";
+        }
         match self.status {
             StatusCode::BAD_REQUEST => "bad_data",
             StatusCode::UNAUTHORIZED => "unauthorized",
@@ -125,6 +142,7 @@ impl From<StatusCode> for ApiError {
             message,
             rate_limit: None,
             details: None,
+            resource_limit: false,
         }
     }
 }
@@ -311,6 +329,17 @@ mod tests {
         let err = ApiError::from_flight(&status, "logs");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert_eq!(err.message, "unknown label foo");
+    }
+
+    /// A query over a server-side resource bound fails the same way on
+    /// retry, so it must not look like a retryable `429`.
+    #[test]
+    fn from_flight_maps_a_query_resource_bound_to_422_resource_limit() {
+        let status = tonic::Status::failed_precondition("source has more than 10 rows");
+        let err = ApiError::from_flight(&status, "query_ir");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(err.error_type(), "resource_limit");
+        assert_eq!(err.message, "source has more than 10 rows");
     }
 
     #[test]

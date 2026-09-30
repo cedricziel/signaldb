@@ -357,6 +357,7 @@ pub struct QueryIrResponse {
         (status = 400, description = "Invalid IR document", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 401, description = "Missing or invalid credentials", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 403, description = "Missing read scope for a queried source", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 422, description = "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
     )
@@ -387,7 +388,7 @@ async fn query_ir_single(
 
     // Query IR covers several signal tables, so its authorization must be
     // selected from the source before the ticket can reach a querier.
-    source_read_scope(ctx, &req.from)?;
+    document_read_scopes(ctx, &req.from, &req.pipeline)?;
 
     // Stamp the server clock once, at the ticket boundary, so relative anchors
     // resolve to a single absolute window every stage of the plan sees.
@@ -514,7 +515,38 @@ fn check_multi_source_scopes(
     queries: &BTreeMap<String, QueryIrRequest>,
 ) -> Result<(), ApiError> {
     for inner in queries.values() {
-        source_read_scope(ctx, &inner.from)?;
+        document_read_scopes(ctx, &inner.from, &inner.pipeline)?;
+    }
+    Ok(())
+}
+
+/// Require the read scope of every source a document reads: its `from`, each
+/// `correlate` stage's signal target, and a `binop` sub-document's sources.
+/// The querier scans those tables unconditionally, so a target left unchecked
+/// here would let a caller probe a signal it cannot read (e.g. which traces
+/// have a log matching a `where`).
+fn document_read_scopes(
+    ctx: &TenantContext,
+    from: &str,
+    pipeline: &[serde_json::Value],
+) -> Result<(), ApiError> {
+    source_read_scope(ctx, from)?;
+    for stage in pipeline {
+        if let Some(to) = stage.pointer("/correlate/to").and_then(|v| v.as_str())
+            && to != "parent"
+        {
+            source_read_scope(ctx, to)?;
+        }
+        if let Some(right) = stage.pointer("/binop/right")
+            && let Some(sub_from) = right.get("from").and_then(|v| v.as_str())
+        {
+            let sub_pipeline = right
+                .get("pipeline")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            document_read_scopes(ctx, sub_from, sub_pipeline)?;
+        }
     }
     Ok(())
 }
@@ -1959,8 +1991,8 @@ mod correlate_warnings_tests {
 mod tests {
     use super::{
         GRAPH_NODE_LIMIT, MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange,
-        ResolvedWindow, build_envelope, check_multi_source_scopes, parse_envelope,
-        source_read_scope, to_multi_document,
+        ResolvedWindow, build_envelope, check_multi_source_scopes, document_read_scopes,
+        parse_envelope, source_read_scope, to_multi_document,
     };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
@@ -2070,6 +2102,27 @@ mod tests {
         assert!(source_read_scope(&profiles, "profiles").is_ok());
         assert!(source_read_scope(&profiles, "logs").is_err());
         assert!(source_read_scope(&profiles, "traces").is_err());
+    }
+
+    #[test]
+    fn a_correlate_target_needs_its_own_read_scope() {
+        let traces = scoped_context(vec!["traces:read"]);
+        let to_logs = [
+            serde_json::json!({ "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }),
+        ];
+        let err = document_read_scopes(&traces, "traces", &to_logs).unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        let to_parent = [serde_json::json!({ "correlate": { "to": "parent", "kind": "inner" } })];
+        assert!(document_read_scopes(&traces, "traces", &to_parent).is_ok());
+
+        let nested = [serde_json::json!({ "binop": { "op": "add", "right": {
+            "from": "traces",
+            "pipeline": [{ "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }]
+        } } })];
+        assert!(document_read_scopes(&traces, "traces", &nested).is_err());
+
+        let both = scoped_context(vec!["traces:read", "logs:read"]);
+        assert!(document_read_scopes(&both, "traces", &to_logs).is_ok());
     }
 
     // The `metrics` Query IR source (PR #1138) 400'd end-to-end through the

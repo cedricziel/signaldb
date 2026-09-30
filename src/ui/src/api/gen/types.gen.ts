@@ -3799,6 +3799,10 @@ export type QueryIrErrors = {
      */
     403: ApiErrorBody;
     /**
+     * The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry
+     */
+    422: ApiErrorBody;
+    /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit

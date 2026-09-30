@@ -37,8 +37,8 @@ use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
     Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
     DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramMode,
-    HistogramQuantile, Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce, ReduceFn, Sample,
-    SampleFn, Stage, SubDocument, is_expression_string,
+    HistogramQuantile, JoinKind, Labels, Map, Order, OverTime, OverTimeFn, Rank, Reduce, ReduceFn,
+    Sample, SampleFn, Stage, SubDocument, is_expression_string,
 };
 use super::value::{ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
@@ -227,6 +227,7 @@ fn infer<'a>(
         doc_step_ns,
         doc,
         sources,
+        correlate_seen: false,
     };
     match describe {
         // Introspection: no records flow through the pipeline, so there is
@@ -267,6 +268,8 @@ struct InferCtx<'a> {
     /// The document itself and the registry, for a `binop` sub-document.
     doc: &'a Document,
     sources: &'a SourceRegistry,
+    /// Whether a `correlate` stage has already been applied.
+    correlate_seen: bool,
 }
 
 impl InferCtx<'_> {
@@ -1341,40 +1344,141 @@ impl InferCtx<'_> {
         Ok(())
     }
 
-    /// The span-to-parent `correlate` stage (`irVersion` 8): join the current
-    /// `traces` relation to the span in the same trace whose `span_id`
-    /// equals this row's `parent_span_id`. Version gating happens once,
-    /// up front in [`validate`]; here we check placement (source, terminality
-    /// against `aggregate`, at most one per pipeline). Parent-side columns
-    /// are not materialized as explicit relation columns — they resolve
-    /// dynamically through the `parent.` scope in
+    /// The `correlate` stage. Version gating happens in `apply_stage`; here
+    /// we check placement (at most one per pipeline) and the target's own
+    /// rules. Parent-side columns are not materialized as explicit relation
+    /// columns — they resolve dynamically through the `parent.` scope in
     /// [`Self::ref_type_and_advisory`], the same way ordinary fields do on an
     /// open relation.
     fn apply_correlate(&mut self, correlate: &Correlate) -> Result<(), IrError> {
-        let CorrelateTarget::Parent = correlate.to;
-        if self.source != "traces" {
-            return Err(IrError::IllegalStage {
-                stage: "correlate".to_string(),
-                reason: "span correlation requires the traces source".to_string(),
-            });
+        let aggregated = self.require_rowset("correlate")?.aggregated;
+        if self.correlate_seen {
+            return Err(illegal_correlate(
+                "a pipeline may contain at most one correlate stage",
+            ));
         }
-        let rs = self.require_rowset("correlate")?;
-        if rs.aggregated {
-            return Err(IrError::IllegalStage {
-                stage: "correlate".to_string(),
-                reason: "correlate must precede aggregate".to_string(),
-            });
+        self.correlate_seen = true;
+        match &correlate.to {
+            CorrelateTarget::Parent => {
+                if self.source != "traces" {
+                    return Err(illegal_correlate(
+                        "span correlation requires the traces source",
+                    ));
+                }
+                if aggregated {
+                    return Err(illegal_correlate("correlate must precede aggregate"));
+                }
+                if correlate.on.is_some()
+                    || !correlate.pipeline.is_empty()
+                    || correlate.window.is_some()
+                    || correlate.fanout.is_some()
+                {
+                    return Err(illegal_correlate(
+                        "`on`, `pipeline`, `window` and `fanout` apply only to a signal target",
+                    ));
+                }
+                if matches!(correlate.kind, JoinKind::Semi | JoinKind::Anti) {
+                    return Err(illegal_correlate(&format!(
+                        "kind `{}` requires a signal target, not `parent`",
+                        correlate.kind.as_str()
+                    )));
+                }
+                if let RelationType::RowSet(rs) = &mut self.relation {
+                    rs.correlated = true;
+                }
+                Ok(())
+            }
+            CorrelateTarget::Signal(target) => self.check_signal_correlate(target, correlate),
         }
-        if rs.correlated {
-            return Err(IrError::IllegalStage {
-                stage: "correlate".to_string(),
-                reason: "a pipeline may contain at most one correlate stage".to_string(),
-            });
+    }
+
+    /// A signal-target `correlate`: the output is the source relation
+    /// (semi/anti filter it), so only the operands are checked here.
+    fn check_signal_correlate(&self, target: &str, correlate: &Correlate) -> Result<(), IrError> {
+        let def = self
+            .sources
+            .resolve(target)
+            .ok_or_else(|| IrError::UnknownSource {
+                name: target.to_string(),
+                available: self.sources.names().join(", "),
+            })?;
+        if def.name == self.source {
+            return Err(illegal_correlate("the target must differ from `from`"));
         }
-        if let RelationType::RowSet(rs) = &mut self.relation {
-            rs.correlated = true;
+        let key = correlate.on.ok_or_else(|| {
+            illegal_correlate("a signal target requires `on` (the logical join key)")
+        })?;
+        for side in [self.source, target] {
+            if key.fields(side).is_none() {
+                return Err(illegal_correlate(&format!(
+                    "source '{side}' has no correlate key '{}'",
+                    key.as_str()
+                )));
+            }
         }
-        Ok(())
+        if let RelationType::RowSet(rs) = &self.relation
+            && rs.aggregated
+        {
+            let fields = key.fields(self.source).unwrap_or_default();
+            if !fields
+                .iter()
+                .all(|f| rs.columns.iter().any(|c| c.name == *f))
+            {
+                return Err(illegal_correlate(&format!(
+                    "correlate key '{}' was dropped by a preceding aggregate",
+                    key.as_str()
+                )));
+            }
+        }
+        if let Some(window) = &correlate.window {
+            for (name, value) in [("before", &window.before), ("after", &window.after)] {
+                if let Some(value) = value {
+                    non_negative_duration(&format!("correlate.window.{name}"), value)?;
+                }
+            }
+        }
+        if let Some(fanout) = correlate.fanout {
+            if !(1..=10_000).contains(&fanout) {
+                return Err(illegal_correlate(&format!(
+                    "`fanout` must be within 1..=10000, got {fanout}"
+                )));
+            }
+            if matches!(correlate.kind, JoinKind::Semi | JoinKind::Anti) {
+                return Err(illegal_correlate(
+                    "`fanout` only applies to inner/left joins",
+                ));
+            }
+        }
+        if matches!(correlate.kind, JoinKind::Inner | JoinKind::Left) {
+            return Err(illegal_correlate(&format!(
+                "correlate kind `{}` to a signal target is not supported yet; use `semi`/`anti`",
+                correlate.kind.as_str()
+            )));
+        }
+        if let Some(stage) = correlate
+            .pipeline
+            .iter()
+            .find(|stage| !matches!(stage, Stage::Where(_)))
+        {
+            return Err(illegal_correlate(&format!(
+                "the target pipeline takes only `where` stages, not `{}`",
+                stage.name()
+            )));
+        }
+        let child = Document {
+            ir_version: self.doc.ir_version,
+            from: target.to_string(),
+            range: self.doc.range.clone(),
+            result: ResultEnvelope::Rows,
+            fields: None,
+            pipeline: correlate.pipeline.clone(),
+            focus: None,
+            depth: None,
+            trace_id: None,
+            step: None,
+            constant: None,
+        };
+        infer(&child, self.sources, self.resolver).map(|_| ())
     }
 
     /// Whether the current relation has been joined to its parent span by a
@@ -1663,6 +1767,13 @@ impl InferCtx<'_> {
             });
         }
         Ok(())
+    }
+}
+
+fn illegal_correlate(reason: &str) -> IrError {
+    IrError::IllegalStage {
+        stage: "correlate".to_string(),
+        reason: reason.to_string(),
     }
 }
 
@@ -3181,13 +3292,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(11, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(12, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 11,
-                    max: 10,
+                    found: 12,
+                    max: 11,
                     ..
                 }
             ),
@@ -3874,5 +3985,183 @@ mod tests {
             matches!(err, IrError::UnknownFieldType { ref field } if field == "parent.no_such_field"),
             "got {err:?}"
         );
+    }
+
+    // otel-native-schema layer 9 — cross-signal `correlate` (irVersion 11).
+
+    fn signal_resolver() -> InMemoryResolver {
+        traces_resolver()
+            .with_column("logs", "trace_id", "trace_id", ValueType::String)
+            .with_column(
+                "logs",
+                "severity_number",
+                "severity_number",
+                ValueType::Int64,
+            )
+            .with_column("logs", "service.name", "service_name", ValueType::String)
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+    }
+
+    fn signal_doc(from: &str, correlate: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": 11, "from": from, "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "correlate": correlate }]
+        })
+    }
+
+    fn assert_correlate_rejected(doc: serde_json::Value, needle: &str) {
+        let err = validate_json_with(doc, &signal_resolver()).unwrap_err();
+        assert!(err.to_string().contains(needle), "got {err}");
+    }
+
+    #[test]
+    fn signal_correlate_semi_and_anti_validate_to_the_source_relation() {
+        for kind in ["semi", "anti"] {
+            let d = signal_doc(
+                "traces",
+                json!({
+                    "to": "logs", "on": "trace_id", "kind": kind,
+                    "pipeline": [{ "where": { "field": "severity_number", "op": "gte", "value": 17 } }],
+                    "window": { "before": "5m", "after": "10m" }
+                }),
+            );
+            let v = validate_json_with(d.clone(), &signal_resolver()).unwrap();
+            match v.terminal {
+                RelationType::RowSet(rs) => {
+                    assert_eq!(rs.source, "traces");
+                    assert!(!rs.correlated, "no `parent.` scope for a signal target");
+                }
+                other => panic!("expected rows, got {other:?}"),
+            }
+            assert_eq!(doc(d).minimum_ir_version(), 11);
+        }
+    }
+
+    #[test]
+    fn signal_correlate_below_v11_is_rejected() {
+        let mut doc = signal_doc(
+            "traces",
+            json!({ "to": "logs", "on": "trace_id", "kind": "semi" }),
+        );
+        doc["irVersion"] = json!(10);
+        assert_correlate_rejected(doc, "irVersion 11");
+    }
+
+    #[test]
+    fn parent_correlate_still_needs_only_v8() {
+        let d = doc(correlate_doc(8, "inner", vec![]));
+        assert_eq!(d.minimum_ir_version(), 8);
+    }
+
+    #[test]
+    fn a_key_absent_on_either_side_is_rejected() {
+        assert_correlate_rejected(
+            signal_doc(
+                "metrics",
+                json!({ "to": "traces", "on": "trace_id", "kind": "semi" }),
+            ),
+            "trace_id",
+        );
+        assert_correlate_rejected(
+            signal_doc(
+                "logs",
+                json!({ "to": "metrics", "on": "span_id", "kind": "anti" }),
+            ),
+            "span_id",
+        );
+    }
+
+    #[test]
+    fn a_key_dropped_by_a_preceding_aggregate_is_rejected() {
+        let doc = json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }
+            ]
+        });
+        assert_correlate_rejected(
+            doc,
+            "correlate key 'trace_id' was dropped by a preceding aggregate",
+        );
+    }
+
+    #[test]
+    fn a_key_kept_by_the_aggregate_survives_topk() {
+        let doc = json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration_nano", "as": "slowest" }] } },
+                { "topk": { "n": 10, "of": "slowest" } },
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }
+            ]
+        });
+        validate_json_with(doc, &signal_resolver()).unwrap();
+    }
+
+    #[test]
+    fn signal_correlate_operand_rules() {
+        let cases = [
+            (
+                json!({ "to": "grandparent", "on": "trace_id", "kind": "semi" }),
+                "unknown source 'grandparent'",
+            ),
+            (
+                json!({ "to": "traces", "on": "trace_id", "kind": "semi" }),
+                "must differ from `from`",
+            ),
+            (json!({ "to": "logs", "kind": "semi" }), "requires `on`"),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "semi", "pipeline": [{ "limit": 1 }] }),
+                "only `where`",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "semi", "fanout": 5 }),
+                "`fanout` only applies to inner/left",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "inner", "fanout": 0 }),
+                "1..=10000",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "left", "fanout": 10001 }),
+                "1..=10000",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "inner" }),
+                "correlate kind `inner` to a signal target is not supported yet; use `semi`/`anti`",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "left" }),
+                "correlate kind `left` to a signal target is not supported yet; use `semi`/`anti`",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "semi", "pipeline": [{ "where": { "field": "no.such", "op": "exists" } }] }),
+                "no.such",
+            ),
+        ];
+        for (correlate, needle) in cases {
+            assert_correlate_rejected(signal_doc("traces", correlate), needle);
+        }
+    }
+
+    #[test]
+    fn parent_correlate_rejects_signal_only_operands() {
+        let cases = [
+            (
+                json!({ "to": "parent", "on": "trace_id", "kind": "inner" }),
+                "`on`",
+            ),
+            (json!({ "to": "parent", "kind": "semi" }), "semi"),
+            (json!({ "to": "parent", "kind": "anti" }), "anti"),
+        ];
+        for (correlate, needle) in cases {
+            let mut doc = signal_doc("traces", correlate);
+            doc["irVersion"] = json!(8);
+            assert_correlate_rejected(doc, needle);
+        }
     }
 }

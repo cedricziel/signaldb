@@ -81,7 +81,7 @@ pub(crate) async fn build_graph(
     let plan = async |internal: Document| {
         plan_document(ctx, &internal, request())
             .await?
-            .map(|(df, _, truncated)| (df, truncated))
+            .map(|(df, _, outcome)| (df, outcome.truncated))
             .ok_or_else(|| QuerierError::InvalidInput("traces table disappeared".into()))
     };
 
