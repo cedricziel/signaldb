@@ -23,3 +23,6 @@ ignored = ["workspace-hack"]
 
 [dev-dependencies]
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+
+[lints]
+workspace = true

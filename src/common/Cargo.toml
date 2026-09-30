@@ -218,3 +218,6 @@ ignored = ["async-trait", "humantime-serde", "opentelemetry-semantic-conventions
 [build-dependencies]
 schema-model = { path = "../schema-model" }
 serde_json.workspace = true
+
+[lints]
+workspace = true

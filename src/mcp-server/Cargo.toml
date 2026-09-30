@@ -49,3 +49,5 @@ tracing-opentelemetry.workspace = true
 # MCP Apps surface is asserted over the real protocol rather than in isolation.
 rmcp = { workspace = true, features = ["client"] }
 
+[lints]
+workspace = true

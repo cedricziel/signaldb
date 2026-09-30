@@ -44,3 +44,6 @@ ignored = ["workspace-hack"]
 tokio = { workspace = true, features = ["test-util"] }
 tracing-subscriber.workspace = true
 opentelemetry_sdk.workspace = true
+
+[lints]
+workspace = true

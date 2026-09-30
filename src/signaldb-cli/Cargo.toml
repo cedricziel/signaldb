@@ -47,3 +47,6 @@ tokio = { workspace = true, features = ["test-util"] }
 [package.metadata.cargo-machete]
 # workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
 ignored = ["ratatui", "crossterm", "tui-tree-widget", "insta", "mockito", "workspace-hack"]
+
+[lints]
+workspace = true
