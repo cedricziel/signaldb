@@ -35,6 +35,11 @@ describe("environment scope", () => {
 
   it("scopes the record-count and endpoint queries", () => {
     const counts = buildRecordCountDoc("logs", RANGE, "prod", 120);
+    // The start snaps down to the step grid.
+    expect(counts.range).toEqual({
+      from: String(960_000 * MS),
+      to: String(RANGE.toMs * MS),
+    });
     expect(counts.pipeline?.[0]).toEqual(envWhere("prod")[0]);
     expect(counts.pipeline?.[1]).toEqual({
       aggregate: { by: [], aggs: [{ fn: "count", as: "n" }], step: "120s" },
@@ -116,18 +121,21 @@ describe("decoders", () => {
 });
 
 describe("fetchIngestVolume", () => {
+  const STEP_MS = 60_000;
   it("counts each signal's own source and treats a failing source as empty", async () => {
     vi.spyOn(queryIr, "runIrQuery").mockImplementation(async (doc) => {
       const from = (doc as { from: string }).from;
       if (from === "profiles") throw new Error("profiles disabled");
       const v = { logs: 10, traces: 5, metrics: 2 }[from]!;
-      return { series: [{ labels: {}, points: [[60 * 1e6, v]] }] } as never;
+      // Metrics label a step by its end, the rest by its start.
+      const tMs = STEP_MS * (from === "metrics" ? 2 : 1);
+      return { series: [{ labels: {}, points: [[tMs * 1e6, v]] }] } as never;
     });
-    const series = await fetchIngestVolume(RANGE, "", 60);
+    const series = await fetchIngestVolume(RANGE, "", STEP_MS / 1000);
     expect(series).toEqual([
-      { key: "logs", points: [[60, 10]] },
-      { key: "traces", points: [[60, 5]] },
-      { key: "metrics", points: [[60, 2]] },
+      { key: "logs", points: [[60_000, 10]] },
+      { key: "traces", points: [[60_000, 5]] },
+      { key: "metrics", points: [[60_000, 2]] },
       { key: "profiles", points: [] },
     ]);
   });

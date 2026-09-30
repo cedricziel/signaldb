@@ -237,10 +237,14 @@ export function buildRecordCountDoc(
   env: string,
   stepSeconds: number,
 ): QueryIrRequest {
+  // Every signal's buckets land on the same step grid only from a
+  // step-aligned start.
+  const stepMs = stepSeconds * 1000;
+  const fromMs = Math.floor(range.fromMs / stepMs) * stepMs;
   return {
     irVersion: 1,
     from: source,
-    range: rangeDoc(range),
+    range: rangeDoc({ ...range, fromMs }),
     result: "series",
     pipeline: [
       ...envWhere(env),
@@ -267,6 +271,9 @@ export async function fetchIngestVolume(
   env: string,
   stepSeconds: number,
 ): Promise<VolumeSeries[]> {
+  // A metrics point is labelled with the end of the step it counts
+  // (evaluation instants); the other signals label the start.
+  const stepMs = stepSeconds * 1000;
   return Promise.all(
     INGEST_SIGNALS.map(async (signal): Promise<VolumeSeries> => {
       const points = await runIrQuery(
@@ -274,9 +281,10 @@ export async function fetchIngestVolume(
       )
         .then((res) => decodePoints(res.series?.[0]?.points ?? []))
         .catch(() => [] as SeriesPoint[]);
+      const shiftMs = signal === "metrics" ? stepMs : 0;
       return {
         key: signal,
-        points: points.map((p): [number, number] => [p.tMs, p.value]),
+        points: points.map((p): [number, number] => [p.tMs - shiftMs, p.value]),
       };
     }),
   );

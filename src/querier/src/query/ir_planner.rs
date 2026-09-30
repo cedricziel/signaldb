@@ -56,7 +56,6 @@ use datafusion::functions_aggregate::expr_fn::{
     approx_distinct, approx_percentile_cont, avg, count, first_value, last_value, max, min,
     stddev_pop, sum, var_pop,
 };
-use datafusion::functions_window::expr_fn::lag;
 use datafusion::logical_expr::SortExpr;
 use datafusion::logical_expr::{
     ColumnarValue, Expr, ExprFunctionExt, JoinType, Operator, ScalarFunctionArgs, ScalarUDF,
@@ -70,6 +69,8 @@ use super::error::QuerierError;
 use super::metric_ops::hist::HistStat;
 use super::metric_ops::hist_math::Mode;
 use super::metric_ops::hist_plan::{HistEval, histogram_series};
+use super::metric_ops::range_math::RangeFn;
+use super::metric_ops::range_plan::{RangeEval, range_series};
 use super::metric_series;
 use super::profile::batch_to_models;
 use super::table_lookup::{optional_table_provider, scan_provider};
@@ -1175,11 +1176,20 @@ pub(crate) async fn plan_document(
         correlate_truncated: None,
     };
 
-    // A histogram_quantile at the first instant reads the window before it.
+    // An operator at the first instant reads the window before it.
     let mut lookback = 0;
     for stage in &doc.pipeline {
-        if let Stage::HistogramQuantile(hq) = stage {
-            lookback = lookback.max(histogram_step_window(hq)?.1);
+        match stage {
+            Stage::HistogramQuantile(hq) => {
+                lookback = lookback.max(histogram_step_window(hq)?.1);
+            }
+            Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
+                lookback = lookback.max(range_step_window(agg, a)?.1);
+            }
+            Stage::Aggregate(agg) if let Some(step) = instant_grid_step(agg, &source) => {
+                lookback = lookback.max(parse_step(step)?);
+            }
+            _ => {}
         }
     }
     let scan = metric_series::sample::scan_window(doc, window, now_ns)?;
@@ -1215,6 +1225,12 @@ pub(crate) async fn plan_document(
             Stage::Vector(_) => metric_series::scalar::to_vector(df)?,
             // Needs the resolved window for its evaluation instants.
             Stage::HistogramQuantile(hq) => lowering.lower_histogram_quantile(df, hq, &window)?,
+            Stage::Aggregate(agg) if let Some(a) = range_agg(agg) => {
+                lowering.lower_rate_aggregate(df, agg, a, &window)?
+            }
+            Stage::Aggregate(agg) if instant_grid_step(agg, &source).is_some() => {
+                lowering.lower_aggregate(df, agg, Some(&window))?
+            }
             // Needs its own scan of the traces table (the parent side) and
             // the resolved window, both only available here.
             Stage::Correlate(correlate) => {
@@ -1320,6 +1336,42 @@ fn heatmap_bucket_count(start_ns: i64, end_ns: i64, step_ns: i64) -> Result<i64,
     let last = end_ns.div_euclid(step_ns) as i128;
     i64::try_from(last - first + 1)
         .map_err(|_| QuerierError::InvalidInput("heatmap time bucket count overflows i64".into()))
+}
+
+/// The one range function of a stepped `aggregate` (`validate` makes it the only output).
+fn range_agg(agg: &Aggregate) -> Option<&common::query_ir::Agg> {
+    match (&agg.step, agg.aggs.as_slice()) {
+        (Some(_), [a]) if a.func.is_range_fn() => Some(a),
+        _ => None,
+    }
+}
+
+/// A stepped aggregate over metrics buckets on the evaluation-instant grid
+/// (D11); other sources keep epoch-aligned `date_bin` buckets.
+fn instant_grid_step<'a>(agg: &'a Aggregate, source: &SourcePlan) -> Option<&'a str> {
+    agg.step.as_deref().filter(|_| source.name == "metrics")
+}
+
+fn parse_step(step: &str) -> Result<i64, QuerierError> {
+    common::query_ir::parse_duration_ns(step)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("invalid step duration '{step}'")))
+}
+
+/// A range aggregate's step and window (the window defaults to the step).
+fn range_step_window(
+    agg: &Aggregate,
+    a: &common::query_ir::Agg,
+) -> Result<(i64, i64), QuerierError> {
+    let parse = |d: &str, what: &str| {
+        common::query_ir::parse_duration_ns(d)
+            .ok_or_else(|| QuerierError::InvalidInput(format!("invalid {what} duration '{d}'")))
+    };
+    let step_ns = parse(agg.step.as_deref().unwrap_or_default(), "step")?;
+    let window_ns = a
+        .window
+        .as_deref()
+        .map_or(Ok(step_ns), |w| parse(w, "window"))?;
+    Ok((step_ns, window_ns))
 }
 
 /// A histogram_quantile's step and window (the window defaults to the step).
@@ -1566,7 +1618,7 @@ impl Lowering<'_> {
                 let expr = self.lower_predicate(pred)?;
                 df.filter(expr).map_err(QuerierError::QueryFailed)
             }
-            Stage::Aggregate(agg) => self.lower_aggregate(df, agg),
+            Stage::Aggregate(agg) => self.lower_aggregate(df, agg, None),
             Stage::Topk(rank) => self.lower_rank(df, &rank.of, rank.n, false),
             Stage::Bottomk(rank) => self.lower_rank(df, &rank.of, rank.n, true),
             Stage::Order(keys) => {
@@ -1876,38 +1928,46 @@ impl Lowering<'_> {
             .map_err(QuerierError::QueryFailed)
     }
 
+    /// A stepped aggregate buckets on `instants`' evaluation grid when given
+    /// (metric series, D11), else epoch-aligned `date_bin` buckets.
     fn lower_aggregate(
         &mut self,
-        df: DataFrame,
+        mut df: DataFrame,
         agg: &Aggregate,
+        instants: Option<&ResolvedWindow>,
     ) -> Result<DataFrame, QuerierError> {
-        // `rate`/`increase` are computed per series from the raw ordered
-        // samples (a window function), not from a plain aggregate
-        // expression — `validate` guarantees this is the aggregate's only
-        // output when either is present, so no other agg can share this
-        // stage with it.
-        if let (Some(step), [a]) = (&agg.step, agg.aggs.as_slice())
-            && a.func.is_range_fn()
-        {
-            return self.lower_rate_aggregate(df, agg, a, step);
-        }
-
         // Group expressions: each `by` field, aliased to a safe identifier.
         let mut group_exprs = Vec::new();
         let mut new_col_of = HashMap::new();
         if let Some(step) = &agg.step {
-            let step_ns = common::query_ir::parse_duration_ns(step).ok_or_else(|| {
-                QuerierError::InvalidInput(format!("invalid step duration '{step}'"))
-            })?;
-            let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
-                IntervalMonthDayNano::new(0, 0, step_ns),
-            )));
-            let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-            let ts_ns = cast(
-                col(self.source.time_col),
-                DataType::Timestamp(TimeUnit::Nanosecond, None),
-            );
-            group_exprs.push(date_bin(stride, ts_ns, origin).alias("bucket"));
+            let step_ns = parse_step(step)?;
+            let ts_type = DataType::Timestamp(TimeUnit::Nanosecond, None);
+            let bucket = if let Some(w) = instants {
+                // The one instant `t = from + k·step` whose `(t - step, t]`
+                // holds the point: `k` is the ceiling of `(ts - from) / step`,
+                // which integer division gives for every `ts > from - step`.
+                const INSTANT: &str = "__instant";
+                let ts = cast(
+                    cast(col(self.source.time_col), ts_type.clone()),
+                    DataType::Int64,
+                );
+                let at = lit(w.start_ns)
+                    + (ts.clone() - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns)
+                        * lit(step_ns);
+                df = df
+                    .filter(ts.gt(lit(w.start_ns.saturating_sub(step_ns))))
+                    .and_then(|df| df.with_column(INSTANT, at))
+                    .and_then(|df| df.filter(ident(INSTANT).lt_eq(lit(w.end_ns))))
+                    .map_err(QuerierError::QueryFailed)?;
+                cast(ident(INSTANT), ts_type)
+            } else {
+                let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
+                    IntervalMonthDayNano::new(0, 0, step_ns),
+                )));
+                let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
+                date_bin(stride, cast(col(self.source.time_col), ts_type), origin)
+            };
+            group_exprs.push(bucket.alias("bucket"));
         }
         for by in &agg.by {
             self.record_field_demand(by);
@@ -1942,288 +2002,74 @@ impl Lowering<'_> {
         Ok(df)
     }
 
-    /// `rate`/`increase`/`irate`/`*_over_time`: walk the samples ordered by
-    /// time within each *individual series* — not the `by` grouping, which
-    /// may fold several series into one output row (e.g. `by:
-    /// ["metric.name"]` alone) — and, for `rate`/`increase`, accumulate the
-    /// counter-reset-aware delta between consecutive samples
-    /// (`super::metrics::reset_corrected_delta` — the same Prometheus rule
-    /// the PromQL compat path uses). A series' identity is `metric_name`
-    /// plus its natural label set (`super::metrics::natural_series_columns`
-    /// — `service_name` plus every promoted `label_*` column present in the
-    /// scanned schema), the same identity the PromQL `rate`/`increase` path
-    /// partitions by; two series sharing a `by` value are never allowed to
-    /// interleave and combine across each other.
-    ///
-    /// The lookback window (`irVersion` 7's `window`, defaulting to `step`)
-    /// is evaluated per raw sample as a `RANGE` window frame in nanoseconds
-    /// ending at that sample: each sample's per-series value already
-    /// reflects only the samples in `(sample_ts - window, sample_ts]`. Each
-    /// `step` bucket then reports the value from the *latest* sample it
-    /// contains — the closest available point to the bucket's right edge,
-    /// rather than an exact-edge instant no raw sample necessarily lands on.
-    /// Finally, per-bucket per-series values sharing a `by` group are folded
-    /// together by the `across` reducer (default `sum` — the historical
-    /// `rate`/`increase` behaviour).
+    /// `rate`/`increase`/`irate`/`*_over_time` at each evaluation instant
+    /// `t = from + k·step`: every series (`series_id`) is reduced over
+    /// `(t - window, t]` (`window` defaults to `step`) by the range UDAF, then
+    /// the per-series values sharing a `by` group are folded by the `across`
+    /// reducer (default `sum`).
     fn lower_rate_aggregate(
         &mut self,
         df: DataFrame,
         agg: &Aggregate,
         a: &common::query_ir::Agg,
-        step: &str,
+        window: &ResolvedWindow,
     ) -> Result<DataFrame, QuerierError> {
         use common::query_ir::AggFn;
-        use datafusion::functions_aggregate::average::avg_udaf;
-        use datafusion::functions_aggregate::count::count_udaf;
-        // The dedicated window-function `first_value` (a `PartitionEvaluator`,
-        // not an accumulator) — unlike the plain aggregate UDAF, it supports a
-        // sliding (non-ever-expanding) `RANGE` frame; the aggregate one
-        // rejects it with "can not be used as a sliding accumulator" since it
-        // has no `retract_batch`.
-        use datafusion::functions_aggregate::min_max::{max_udaf, min_udaf};
-        use datafusion::functions_aggregate::sum::sum_udaf;
-        use datafusion::functions_window::expr_fn::first_value as first_value_window;
-        use datafusion::logical_expr::expr::WindowFunction;
-        use datafusion::logical_expr::{WindowFrame, WindowFrameBound, WindowFrameUnits};
-
-        // `sum`/`avg`/`min`/`max`/`count` from `functions_aggregate::expr_fn`
-        // build a plain `Expr::AggregateFunction` — `ExprFunctionExt`'s
-        // `partition_by`/`window_frame` only accept `Expr::WindowFunction`, so
-        // a RANGE-framed windowed reduction needs the same UDAF wrapped as one
-        // directly.
-        fn windowed_agg(
-            udaf: std::sync::Arc<datafusion::logical_expr::AggregateUDF>,
-            arg: Expr,
-        ) -> Expr {
-            Expr::WindowFunction(Box::new(WindowFunction::new(udaf, vec![arg])))
-        }
-
-        let step_ns = common::query_ir::parse_duration_ns(step)
-            .ok_or_else(|| QuerierError::InvalidInput(format!("invalid step duration '{step}'")))?;
-        let window_ns = match &a.window {
-            Some(w) => common::query_ir::parse_duration_ns(w).ok_or_else(|| {
-                QuerierError::InvalidInput(format!("invalid window duration '{w}'"))
-            })?,
-            None => step_ns,
-        };
+        let (step_ns, window_ns) = range_step_window(agg, a)?;
         let of = a.of.as_deref().ok_or_else(|| {
             QuerierError::InvalidInput(format!(
                 "aggregate '{}' requires an `of` field",
                 a.func.as_str()
             ))
         })?;
-        let value_f64 = cast(self.value_expr(of)?, DataType::Float64);
-
-        let materialized = super::logs::materialized_columns_of(&df);
-        let mut partition: Vec<Expr> = vec![col("metric_name")];
-        partition.extend(
-            super::metrics::natural_series_columns(&materialized)
-                .iter()
-                .map(|c| col(c.as_str())),
-        );
-        let time_col = || col(self.source.time_col);
-        let order = || vec![SortExpr::new(time_col(), true, true)];
-
-        let df = df
-            .with_column("__val", value_f64)
-            .map_err(QuerierError::QueryFailed)?;
-
-        // `prev_val`/`prev_ts`: the immediately preceding raw sample in the
-        // same series, used by `irate` and by the reset-aware per-row delta
-        // that `rate`/`increase` sum over their window.
-        let prev_val = lag(ident("__val"), Some(1), None)
-            .partition_by(partition.clone())
-            .order_by(order())
-            .build()
-            .map_err(QuerierError::QueryFailed)?
-            .alias("__prev_val");
-        let prev_ts = lag(time_col(), Some(1), None)
-            .partition_by(partition.clone())
-            .order_by(order())
-            .build()
-            .map_err(QuerierError::QueryFailed)?
-            .alias("__prev_ts");
-        let df = df
-            .window(vec![prev_val, prev_ts])
-            .map_err(QuerierError::QueryFailed)?;
-
-        let window_bound = WindowFrameBound::Preceding(ScalarValue::IntervalMonthDayNano(Some(
-            IntervalMonthDayNano::new(0, 0, window_ns),
-        )));
-        let range_frame = WindowFrame::new_bounds(
-            WindowFrameUnits::Range,
-            window_bound,
-            WindowFrameBound::CurrentRow,
-        );
-
-        // The point value each raw sample carries for its function — folded
-        // into the RANGE window below for every function except `irate`,
-        // which only ever looks at the single preceding sample.
-        let df = if a.func == AggFn::Irate {
-            let dt_ns =
-                cast(time_col(), DataType::Int64) - cast(ident("__prev_ts"), DataType::Int64);
-            let point = datafusion::logical_expr::when(
-                ident("__prev_val")
-                    .is_null()
-                    .or(dt_ns.clone().gt(lit(window_ns))),
-                lit(ScalarValue::Float64(None)),
-            )
-            .otherwise(
-                super::metrics::reset_corrected_delta(ident("__val"), ident("__prev_val"))?
-                    / (cast(dt_ns, DataType::Float64) / lit(1_000_000_000.0)),
-            )
-            .map_err(QuerierError::QueryFailed)?;
-            df.with_column("__point", point)
-                .map_err(QuerierError::QueryFailed)?
-        } else {
-            let point = match a.func {
-                AggFn::Rate | AggFn::Increase => {
-                    datafusion::logical_expr::when(ident("__prev_val").is_null(), lit(0.0f64))
-                        .otherwise(super::metrics::reset_corrected_delta(
-                            ident("__val"),
-                            ident("__prev_val"),
-                        )?)
-                        .map_err(QuerierError::QueryFailed)?
-                }
-                _ => ident("__val"),
-            };
-            let df = df
-                .with_column("__point", point)
-                .map_err(QuerierError::QueryFailed)?;
-
-            let windowed_expr = match a.func {
-                AggFn::Rate | AggFn::Increase | AggFn::SumOverTime => {
-                    windowed_agg(sum_udaf(), ident("__point"))
-                }
-                AggFn::AvgOverTime => windowed_agg(avg_udaf(), ident("__point")),
-                AggFn::MinOverTime => windowed_agg(min_udaf(), ident("__point")),
-                AggFn::MaxOverTime => windowed_agg(max_udaf(), ident("__point")),
-                AggFn::CountOverTime => windowed_agg(count_udaf(), ident("__point")),
-                _ => unreachable!("irate handled above"),
-            };
-            let windowed = windowed_expr
-                .partition_by(partition.clone())
-                .order_by(order())
-                .window_frame(range_frame.clone())
-                .build()
-                .map_err(QuerierError::QueryFailed)?
-                .alias("__windowed");
-
-            // `rate`/`increase`'s `__point` is a delta against the
-            // *immediately preceding* sample, which for the first sample in
-            // the RANGE frame may be a sample outside the window — so its
-            // delta double-counts the interval that straddles the window's
-            // left edge. Subtract that one point back out: the corrected
-            // window total is `sum(__point) - first(__point)` over the same
-            // frame (the first in-frame sample's own delta never belongs to
-            // this window; every later sample's delta is between two points
-            // both inside it, e.g. rate_ctx's 10,20,5,15 → 25, unaffected
-            // since its first sample already has no predecessor).
-            let df = if matches!(a.func, AggFn::Rate | AggFn::Increase) {
-                let first_in_frame = first_value_window(ident("__point"))
-                    .partition_by(partition.clone())
-                    .order_by(order())
-                    .window_frame(range_frame.clone())
-                    .build()
-                    .map_err(QuerierError::QueryFailed)?
-                    .alias("__first_in_frame");
-                df.window(vec![windowed, first_in_frame])
-                    .map_err(QuerierError::QueryFailed)?
-            } else {
-                df.window(vec![windowed])
-                    .map_err(QuerierError::QueryFailed)?
-            };
-            if matches!(a.func, AggFn::Rate | AggFn::Increase) {
-                df.with_column(
-                    "__windowed",
-                    ident("__windowed") - ident("__first_in_frame"),
-                )
-                .map_err(QuerierError::QueryFailed)?
-            } else {
-                df
-            }
+        let f = match a.func {
+            AggFn::Rate => RangeFn::Rate,
+            AggFn::Increase => RangeFn::Increase,
+            AggFn::Irate => RangeFn::Irate,
+            AggFn::AvgOverTime => RangeFn::AvgOverTime,
+            AggFn::MinOverTime => RangeFn::MinOverTime,
+            AggFn::MaxOverTime => RangeFn::MaxOverTime,
+            AggFn::SumOverTime => RangeFn::SumOverTime,
+            _ => RangeFn::CountOverTime,
         };
-
-        // `rate` reports the summed delta per second of the *window*, not
-        // the step — the two coincide only when `window` defaults to `step`.
-        let per_sample_value = match a.func {
-            AggFn::Rate => ident("__windowed") / lit(window_ns as f64 / 1_000_000_000.0),
-            AggFn::Increase
-            | AggFn::AvgOverTime
-            | AggFn::MinOverTime
-            | AggFn::MaxOverTime
-            | AggFn::SumOverTime
-            | AggFn::CountOverTime => ident("__windowed"),
-            AggFn::Irate => ident("__point"),
-            _ => unreachable!("only range functions reach lower_rate_aggregate"),
-        };
-        let df = df
-            .with_column("__per_sample", per_sample_value)
-            .map_err(QuerierError::QueryFailed)?;
-
-        // Bucket each sample to its step, then keep only the latest sample
-        // per (series, bucket) — the per-series value reported for that
-        // step, closest available point to the bucket's right edge.
-        let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
-            IntervalMonthDayNano::new(0, 0, step_ns),
-        )));
-        let origin = lit(ScalarValue::TimestampNanosecond(Some(0), None));
-        let ts_ns = cast(time_col(), DataType::Timestamp(TimeUnit::Nanosecond, None));
-        let df = df
-            .with_column("bucket", date_bin(stride, ts_ns, origin))
-            .map_err(QuerierError::QueryFailed)?;
-
-        let mut per_series_partition = partition;
-        per_series_partition.push(ident("bucket"));
-        let rn = datafusion::functions_window::expr_fn::row_number()
-            .partition_by(per_series_partition)
-            .order_by(vec![SortExpr::new(time_col(), false, false)])
-            .build()
-            .map_err(QuerierError::QueryFailed)?
-            .alias("__rn");
-        let df = df.window(vec![rn]).map_err(QuerierError::QueryFailed)?;
-        let df = df
-            .filter(ident("__rn").eq(lit(1i64)))
-            .map_err(QuerierError::QueryFailed)?;
-
-        // Fold per-series values sharing a `by` group into one value per
-        // bucket with the `across` reducer (default `sum`).
-        let mut group_exprs = vec![ident("bucket").alias("bucket")];
+        let mut groups = Vec::new();
         let mut new_col_of = HashMap::new();
         for by in &agg.by {
             self.record_field_demand(by);
             let alias = safe_ident(by);
-            group_exprs.push(self.value_expr(by)?.alias(alias.clone()));
+            groups.push((self.value_expr(by)?, alias.clone()));
             new_col_of.insert(by.clone(), alias);
         }
-        let across = a.across.unwrap_or(AggFn::Sum);
-        const TOTAL: &str = "__rate_total";
-        let across_expr = match across {
-            AggFn::Avg => avg(ident("__per_sample")),
-            AggFn::Min => min(ident("__per_sample")),
-            AggFn::Max => max(ident("__per_sample")),
-            AggFn::Count => count(ident("__per_sample")),
-            _ => sum(ident("__per_sample")),
+        let eval = RangeEval {
+            f,
+            first_ns: window.start_ns,
+            last_ns: window.end_ns,
+            step_ns,
+            window_ns,
         };
-        let df = df
-            .aggregate(group_exprs, vec![across_expr.alias(TOTAL)])
-            .map_err(QuerierError::QueryFailed)?;
+        const PER_SERIES: &str = "__per_series";
+        let df = range_series(df, self.value_expr(of)?, &groups, &eval, PER_SERIES)?;
 
-        let mut select = vec![col("bucket")];
-        for by in &agg.by {
-            select.push(ident(safe_ident(by)));
-        }
-        select.push(ident(TOTAL).alias(a.as_name.clone()));
-        let df = df.select(select).map_err(QuerierError::QueryFailed)?;
+        let v = || ident(PER_SERIES);
+        let across_expr = match a.across.unwrap_or(AggFn::Sum) {
+            AggFn::Avg => avg(v()),
+            AggFn::Min => min(v()),
+            AggFn::Max => max(v()),
+            AggFn::Count => count(v()),
+            _ => sum(v()),
+        };
+        let labels = || groups.iter().map(|(_, alias)| ident(alias));
+        let keys: Vec<Expr> = std::iter::once(col("bucket")).chain(labels()).collect();
+        let df = df
+            .aggregate(keys, vec![across_expr.alias(a.as_name.clone())])
+            .map_err(QuerierError::QueryFailed)?;
 
         new_col_of.insert(a.as_name.clone(), a.as_name.clone());
         self.aggregated = true;
         self.col_of = new_col_of;
         self.series_shaped = true;
         let mut sort = vec![col("bucket").sort(true, false)];
-        for by in &agg.by {
-            sort.push(ident(safe_ident(by)).sort(true, false));
-        }
+        sort.extend(labels().map(|l| l.sort(true, false)));
         df.sort(sort).map_err(QuerierError::QueryFailed)
     }
 
@@ -3643,7 +3489,7 @@ fn compile_regex_guard(pattern: &str) -> Result<(), QuerierError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::query::metric_ops::fixtures::{histogram_points, with_series_id};
+    use crate::query::metric_ops::fixtures::{counter_points, histogram_points, with_series_id};
     use common::schema::type_authority::{ObservedKind, Placement};
     use datafusion::arrow::array::{
         ArrayRef, Float64Array, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
@@ -3652,6 +3498,7 @@ mod tests {
     use datafusion::arrow::datatypes::{Field, Fields, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     /// `FLAMEGRAPH_PROFILE_CAP`'s doc comment claims it matches
@@ -4114,7 +3961,7 @@ mod tests {
         )
         .unwrap();
 
-        let batch = common::testing::to_wide(&batch, "gauge");
+        let batch = with_series_id(common::testing::to_wide(&batch, "sum"));
         let ctx = SessionContext::new();
         let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
@@ -4176,7 +4023,7 @@ mod tests {
         )
         .unwrap();
 
-        let batch = common::testing::to_wide(&batch, "gauge");
+        let batch = with_series_id(common::testing::to_wide(&batch, "sum"));
         let ctx = SessionContext::new();
         let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
@@ -4200,7 +4047,7 @@ mod tests {
         let svc = IrService::new(rate_two_series_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 6, "from": "metrics",
-            "range": { "from": 0, "to": 2_000_000_000_000i64 },
+            "range": { "from": 1_020_000_000_000i64, "to": 2_000_000_000_000i64 },
             "result": "series",
             "pipeline": [{ "aggregate": {
                 "by": ["metric.name"],
@@ -4236,7 +4083,7 @@ mod tests {
             let svc = IrService::new(rate_ctx());
             let d = doc(serde_json::json!({
                 "irVersion": 6, "from": "metrics",
-                "range": { "from": 0, "to": 30_000_000_000i64 },
+                "range": { "from": 29_000_000_000i64, "to": 30_000_000_000i64 },
                 "result": "series",
                 "pipeline": [{ "aggregate": {
                     "by": ["metric.name"],
@@ -4264,6 +4111,90 @@ mod tests {
                 "{func}: expected {expected}, got {value}"
             );
         }
+    }
+
+    async fn bucket_points(svc: &IrService, d: &Document, value: &str) -> BTreeMap<i64, f64> {
+        let (df, _) = svc
+            .plan(d, "t", "d", 0)
+            .await
+            .unwrap()
+            .expect("source table is registered");
+        let mut out = BTreeMap::new();
+        for b in df.collect().await.unwrap() {
+            let t = b
+                .column_by_name("bucket")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap();
+            let v = b
+                .column_by_name(value)
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            for i in 0..b.num_rows() {
+                out.insert(t.value(i), v.value(i));
+            }
+        }
+        out
+    }
+
+    // D11: a plain stepped metric aggregate and a range function share the
+    // evaluation-instant grid `from + k·step`, each instant reading
+    // `(t - step, t]`, so a formula over both joins on their timestamps.
+    #[tokio::test]
+    async fn plain_and_range_metric_aggregates_share_the_instant_grid() {
+        const S: i64 = 1_000_000_000;
+        let svc = IrService::new(rate_ctx());
+        let stepped = |agg: serde_json::Value| {
+            doc(serde_json::json!({
+                "irVersion": 6, "from": "metrics",
+                "range": { "from": 5 * S, "to": 65 * S },
+                "result": "series",
+                "pipeline": [{ "aggregate": {
+                    "by": ["metric.name"], "aggs": [agg], "step": "30s"
+                } }]
+            }))
+        };
+        let plain = bucket_points(
+            &svc,
+            &stepped(serde_json::json!({ "fn": "sum", "of": "metric.value", "as": "r" })),
+            "r",
+        )
+        .await;
+        let range = bucket_points(
+            &svc,
+            &stepped(serde_json::json!({ "fn": "increase", "of": "metric.value", "as": "r" })),
+            "r",
+        )
+        .await;
+        // Points 0,10,20,29s valued 10,20,5,15: t=5s reads (-25s, 5s], t=35s
+        // reads (5s, 35s]; t=65s is empty.
+        assert_eq!(
+            plain,
+            BTreeMap::from([(5 * S, 10.0), (35 * S, 40.0)]),
+            "plain"
+        );
+        assert_eq!(range.keys().copied().collect::<Vec<_>>(), vec![35 * S]);
+
+        let series = |points: BTreeMap<i64, f64>| {
+            vec![common::query_ir::EvalSeries {
+                labels: BTreeMap::new(),
+                points,
+            }]
+        };
+        let inputs = HashMap::from([
+            ("A".to_string(), series(range.clone())),
+            ("B".to_string(), series(plain)),
+        ]);
+        let expr = common::query_ir::parse_formula_expr("A / B").unwrap();
+        let out = common::query_ir::evaluate_formula(&expr, &inputs);
+        assert_eq!(out.len(), 1, "A / B joins on the shared instant");
+        assert_eq!(
+            out[0].points,
+            BTreeMap::from([(35 * S, range[&(35 * S)] / 40.0)])
+        );
     }
 
     #[tokio::test]
@@ -4342,7 +4273,7 @@ mod tests {
         let svc = IrService::new(rate_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
-            "range": { "from": 0, "to": 30_000_000_000i64 },
+            "range": { "from": 29_000_000_000i64, "to": 30_000_000_000i64 },
             "result": "series",
             "pipeline": [{ "aggregate": {
                 "by": ["metric.name"],
@@ -4363,7 +4294,7 @@ mod tests {
         let svc = IrService::new(rate_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
-            "range": { "from": 0, "to": 30_000_000_000i64 },
+            "range": { "from": 29_000_000_000i64, "to": 30_000_000_000i64 },
             "result": "series",
             "pipeline": [{ "aggregate": {
                 "by": ["metric.name"],
@@ -4384,7 +4315,7 @@ mod tests {
         let svc = IrService::new(rate_two_series_ctx());
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
-            "range": { "from": 0, "to": 2_000_000_000_000i64 },
+            "range": { "from": 1_020_000_000_000i64, "to": 2_000_000_000_000i64 },
             "result": "series",
             "pipeline": [{ "aggregate": {
                 "by": ["metric.name"],
@@ -4403,9 +4334,8 @@ mod tests {
     /// `window: "25s"` — each bucket's `sum_over_time` must include every
     /// sample within 25s of its own timestamp, not just its own bucket's,
     /// which is the whole point of a lookback window wider than the step.
-    /// Hand-computed (RANGE frame bounds are inclusive on both ends):
-    /// bucket 0 → {0} = 1; bucket 10 → {0,10} = 3; bucket 20 → {0,10,20} = 6;
-    /// bucket 30 → {10,20,30} = 9; bucket 40 → {20,30,40} = 12.
+    /// Each instant `t` reads `(t - 25s, t]`: 0 → {0} = 1; 10 → {0,10} = 3;
+    /// 20 → {0,10,20} = 6; 30 → {10,20,30} = 9; 40 → {20,30,40} = 12.
     #[tokio::test]
     async fn window_wider_than_step_overlaps_buckets() {
         let schema = Arc::new(Schema::new(vec![
@@ -4434,7 +4364,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let batch = common::testing::to_wide(&batch, "gauge");
+        let batch = with_series_id(common::testing::to_wide(&batch, "gauge"));
         let ctx = SessionContext::new();
         let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
@@ -4447,7 +4377,7 @@ mod tests {
         let svc = IrService::new(ctx);
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
-            "range": { "from": 0, "to": 50_000_000_000i64 },
+            "range": { "from": 0, "to": 40_000_000_000i64 },
             "result": "series",
             "pipeline": [{ "aggregate": {
                 "by": ["metric.name"],
@@ -4519,7 +4449,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let batch = common::testing::to_wide(&batch, "gauge");
+        let batch = with_series_id(common::testing::to_wide(&batch, "sum"));
         let ctx = SessionContext::new();
         let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
@@ -4567,19 +4497,10 @@ mod tests {
                 values.push(col.value(i));
             }
         }
-        // step=30s buckets t=0..60s into 3 buckets (0, 30, 60), each
-        // reporting its latest sample's corrected windowed value:
-        // - bucket 0's latest sample is t=20, window [-10,20]: deltas at
-        //   t=10 (0→10) and t=20 (10→20) both fall fully inside it → 20
-        //   (unaffected by the fix — nothing precedes t=0).
-        // - bucket 30's latest sample is t=50, window [20,50]: deltas at
-        //   t=30,40,50 are inside; the fix drops the t=20 delta (0→10→20
-        //   sample's own delta straddles the window's left edge) → 30, not
-        //   40.
-        // - bucket 60's sample is t=60, window [30,60]: deltas at
-        //   t=40,50,60 are inside; the fix drops the t=30 delta → 30, not
-        //   40 (the case this test exists for).
-        assert_eq!(values, vec![20.0, 30.0, 30.0], "got {values:?}");
+        // Instants 0, 30s, 60s read (t - 30s, t]. t=0 holds one point (a
+        // baseline only, no sample); t=30 holds 10,20,30 and t=60 holds
+        // 40,50,60: 20 each, never the 30→40 delta from before the window.
+        assert_eq!(values, vec![20.0, 20.0], "got {values:?}");
     }
 
     /// Same shape, but with a counter reset inside the window (30 → 5 at
@@ -4616,7 +4537,7 @@ mod tests {
             ],
         )
         .unwrap();
-        let batch = common::testing::to_wide(&batch, "gauge");
+        let batch = with_series_id(common::testing::to_wide(&batch, "sum"));
         let ctx = SessionContext::new();
         let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
@@ -4627,23 +4548,69 @@ mod tests {
         ctx.register_catalog("t", cat);
 
         let svc = IrService::new(ctx);
-        // `step: "40s"` keeps every sample in one bucket, whose latest
-        // sample is t=30; `window: "10s"` bounds that sample's frame to
-        // [20,30] — only the 20→30s interval (the reset, contributing 5).
+        // The instant t=30s with `window: "11s"` reads (19s, 30s] — only the
+        // 20→30s interval (the reset, contributing 5).
         let d = doc(serde_json::json!({
             "irVersion": 7, "from": "metrics",
-            "range": { "from": 0, "to": 30_000_000_000i64 },
+            "range": { "from": 30_000_000_000i64, "to": 30_000_000_000i64 },
             "result": "series",
             "pipeline": [{ "aggregate": {
                 "by": ["metric.name"],
                 "aggs": [{
-                    "fn": "increase", "of": "metric.value", "as": "r", "window": "10s"
+                    "fn": "increase", "of": "metric.value", "as": "r", "window": "11s"
                 }],
                 "step": "40s"
             } }]
         }));
         let value = one_row_f64(&svc, &d).await;
         assert!((value - 5.0).abs() < 1e-9, "got {value}");
+    }
+
+    fn increase_doc(func: &str) -> Document {
+        doc(serde_json::json!({
+            "irVersion": 7, "from": "metrics",
+            "range": { "from": 35_000_000_000i64, "to": 35_000_000_000i64 },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": ["metric.name"],
+                "aggs": [{ "fn": func, "of": "metric.value", "as": "r" }],
+                "step": "30s"
+            } }]
+        }))
+    }
+
+    /// One service emitting two series of one counter (distinct `series_id`):
+    /// each is differenced against itself, 20 + 20 — never 10 → 100 → 20 ….
+    #[tokio::test]
+    async fn increase_differences_each_series_of_one_service() {
+        const S: i64 = 1_000_000_000;
+        let rows: &[(&str, i64, f64)] = &[
+            ("s1", 10 * S, 10.0),
+            ("s2", 15 * S, 100.0),
+            ("s1", 20 * S, 20.0),
+            ("s2", 25 * S, 110.0),
+            ("s1", 30 * S, 30.0),
+            ("s2", 35 * S, 120.0),
+        ];
+        let svc = IrService::new(points_ctx(counter_points("sum", rows)));
+        let value = one_row_f64(&svc, &increase_doc("increase")).await;
+        assert!((value - 40.0).abs() < 1e-9, "got {value}");
+    }
+
+    #[tokio::test]
+    async fn rate_over_a_gauge_is_invalid_input() {
+        let rows: &[(&str, i64, f64)] = &[("g", 10_000_000_000, 1.0), ("g", 20_000_000_000, 2.0)];
+        let svc = IrService::new(points_ctx(counter_points("gauge", rows)));
+        let (df, _) = svc
+            .plan(&increase_doc("rate"), "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let err = QuerierError::from(df.collect().await.unwrap_err());
+        assert!(
+            matches!(&err, QuerierError::InvalidInput(m) if m.contains("use delta or deriv")),
+            "{err}"
+        );
     }
 
     // Task 4.1 — from(logs)+where+aggregate(step) lowers to the expected plan.
@@ -4756,7 +4723,7 @@ mod tests {
     async fn metrics_filtered_to_gauge_and_sum_filters_by_name_and_aggregates() {
         let svc = IrService::new(metrics_ctx_with_summary_leak());
         let d = doc(serde_json::json!({
-            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1000 },
+            "irVersion": 1, "from": "metrics", "range": { "from": 0, "to": 1_000_000 },
             "result": "series",
             "pipeline": [
                 { "where": { "and": [
@@ -4775,13 +4742,13 @@ mod tests {
             window,
             ResolvedWindow {
                 start_ns: 0,
-                end_ns: 1000
+                end_ns: 1_000_000
             }
         );
         let plan = format!("{}", df.logical_plan().display_indent());
         assert!(plan.contains("Aggregate"), "plan:\n{plan}");
         assert!(plan.contains("Filter"), "plan:\n{plan}");
-        assert!(plan.contains("date_bin"), "plan:\n{plan}");
+        assert!(!plan.contains("date_bin"), "plan:\n{plan}");
         // 5 + 7 (gauge) + 3 (sum) = 15. The `summary` row's 999.0 would
         // corrupt this total if the `metric.type` filter failed.
         let batches = df.collect().await.unwrap();
@@ -5634,7 +5601,10 @@ mod tests {
     }
 
     fn histogram_points_ctx(kind: &str, rows: &[(&str, i64, &[i64])]) -> SessionContext {
-        let batch = histogram_points(kind, rows);
+        points_ctx(histogram_points(kind, rows))
+    }
+
+    fn points_ctx(batch: RecordBatch) -> SessionContext {
         let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
         let sp = Arc::new(MemorySchemaProvider::new());
         sp.register_table("metrics".to_string(), Arc::new(table))

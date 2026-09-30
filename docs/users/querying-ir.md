@@ -100,6 +100,14 @@ single-key object naming the stage:
 | `limit`            | integer                          | bound the row count                              |
 | `heatmap` (v2)     | `{x, y, value}`                  | terminal time-by-distribution count aggregate    |
 
+With `step`, an `aggregate` on the `metrics` source is evaluated at instants
+`t = from + k·step` (`t ≤ to`), each reading the left-open window
+`(t - step, t]`, and each point is labelled `t`. Range functions and
+`histogram_quantile` use the same instants, so a formula over any of them
+joins on matching timestamps. Samples after the last instant are not
+counted. On every other source, `step` buckets are epoch-aligned
+`[t, t + step)` and labelled by their start `t`.
+
 `irVersion` 5 adds four aggregate functions and an aggregate `divisor`;
 `irVersion` 9 adds `count_distinct` — see
 [Aggregate functions](#aggregate-functions). Every earlier document keeps its
