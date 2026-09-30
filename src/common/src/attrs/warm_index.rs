@@ -1,5 +1,5 @@
 //! Warm-tier containment tokens for typed attribute homes (see
-//! `openspec/changes/otel-native-schema`, spec `typed-attribute-storage`,
+//! `openspec/changes/archive/2026-09-30-otel-native-schema`, spec `typed-attribute-storage`,
 //! "Warm tier"): one `List<Binary>` column per table, `attr_index`, holding a
 //! deterministic token per `(key, value)` pair actually written to a typed
 //! home (never residue), so a Parquet bloom filter on the list leaf can

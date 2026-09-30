@@ -1,4 +1,4 @@
-# Spike crate for the otel-native-schema change (openspec/changes/otel-native-schema).
+# Spike crate for the otel-native-schema change (openspec/changes/archive/2026-09-30-otel-native-schema).
 # Layer 0 (blocking): warm typed containment index, dual-layout coexistence scan,
 # and benchmarks on real data — BEFORE any layout commit.
 #
