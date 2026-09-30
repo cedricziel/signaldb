@@ -3,9 +3,6 @@
 //! Quantile and fraction interpolation over explicit bucket bounds, used by
 //! the histogram operators in [`metric_ops`](super::metric_ops).
 
-pub(crate) const NON_SCALAR_METRIC_TYPES: &[&str] =
-    &["histogram", "exponential_histogram", "summary"];
-
 /// Interpolate the `phi`-quantile of a classic histogram, following
 /// Prometheus's `bucketQuantile`: locate the bucket the rank falls in and
 /// linearly interpolate within it, assuming a uniform spread.

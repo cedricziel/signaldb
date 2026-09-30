@@ -16,8 +16,7 @@ use crate::query::error::QuerierError;
 use crate::query::metric_series::value_fn::{arithmetic, compare};
 
 pub(super) const NAME_LABEL: &str = "metric.name";
-/// Distinct series one operand may hold, the PromQL evaluator's row-wise
-/// group bound.
+/// Distinct series one operand may hold.
 pub(super) const MAX_MATCH_SERIES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy)]

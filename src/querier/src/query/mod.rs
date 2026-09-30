@@ -9,10 +9,8 @@ pub mod logs;
 pub mod metric_metadata;
 pub mod metric_ops;
 pub(crate) mod metric_series;
-pub mod metrics;
 mod planner;
 pub mod profile;
-pub mod promql;
 pub mod search_filter;
 pub mod table_lookup;
 pub mod table_ref;
@@ -59,19 +57,6 @@ pub struct IrQueryParams {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MetricQueryParams {
     /// The LogQL metric query string.
-    pub query: String,
-    /// Inclusive range start, unix epoch nanoseconds.
-    pub start: i64,
-    /// Inclusive range end, unix epoch nanoseconds.
-    pub end: i64,
-    /// Bucket width (query resolution) in nanoseconds.
-    pub step: i64,
-}
-
-/// Parameters carried in the `query_promql` Flight ticket (JSON-encoded).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PromQlQueryParams {
-    /// The PromQL query string.
     pub query: String,
     /// Inclusive range start, unix epoch nanoseconds.
     pub start: i64,
