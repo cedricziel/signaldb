@@ -159,15 +159,17 @@ fn infer<'a>(
             OperatorRegistry::feature_min_version(Feature::HistogramQuantile)
         )));
     }
-    if !registry.supports_feature(Feature::SpanCorrelate)
-        && doc
-            .pipeline
-            .iter()
-            .any(|stage| matches!(stage, Stage::Correlate(_)))
+    if let Some(needed) = doc
+        .pipeline
+        .iter()
+        .filter(|stage| matches!(stage, Stage::Correlate(_)))
+        .filter_map(Stage::feature)
+        .filter(|feature| !registry.supports_feature(*feature))
+        .map(OperatorRegistry::feature_min_version)
+        .max()
     {
         return Err(IrError::Invalid(format!(
-            "correlate stage requires irVersion {}",
-            OperatorRegistry::feature_min_version(Feature::SpanCorrelate)
+            "correlate stage requires irVersion {needed}"
         )));
     }
     if doc.result == ResultEnvelope::Graph && !registry.supports_feature(Feature::ServiceGraph) {
@@ -4088,6 +4090,16 @@ mod tests {
             json!({ "to": "logs", "on": "trace_id", "kind": "semi" }),
         );
         doc["irVersion"] = json!(10);
+        assert_correlate_rejected(doc, "irVersion 11");
+    }
+
+    #[test]
+    fn signal_correlate_below_v8_names_v11() {
+        let mut doc = signal_doc(
+            "traces",
+            json!({ "to": "logs", "on": "trace_id", "kind": "semi" }),
+        );
+        doc["irVersion"] = json!(7);
         assert_correlate_rejected(doc, "irVersion 11");
     }
 
