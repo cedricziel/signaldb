@@ -923,10 +923,9 @@ any other field.
 
 This is what makes an OTel-native dotted metric name — like
 `signaldb.wal.entries_processed`, SignalDB's own self-monitoring naming —
-queryable at all: PromQL's grammar can't lex a dot in a bare metric-name
-identifier, so the same query over `/prometheus/api/v1/query_range` 400s
-before it reaches the querier. The IR's field resolution has no such
-restriction. `rate`/`increase`/`irate`/`*_over_time` over `metrics` are
+queryable without a rewrite: PromQL's grammar can't lex a dot in a bare
+metric-name identifier, so the Prometheus endpoints quote it (`{"a.b"}`)
+before lowering. The IR's field resolution has no such restriction. `rate`/`increase`/`irate`/`*_over_time` over `metrics` are
 aggregate functions (see
 [Counter rate](#counter-rate-rateincrease-v6) and
 [More range functions](#more-range-functions-across-and-window-v7));

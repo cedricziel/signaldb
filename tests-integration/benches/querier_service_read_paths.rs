@@ -4,7 +4,7 @@
 //! which isolates scan + pruning cost but bypasses everything the querier
 //! adds on top: its session config (`[querier.datafusion]` pushdown options),
 //! per-tenant catalog resolution, the trace/logs/metrics services, and the
-//! LogQL / PromQL engines. This bench drives `QuerierFlightService::do_get`
+//! LogQL engine and the Query IR. This bench drives `QuerierFlightService::do_get`
 //! in-process with the exact ticket formats the router sends, so a regression
 //! anywhere on the query path — planner, engine lowering, session setup, or
 //! scan — shows up here.
@@ -21,8 +21,8 @@
 //!   ±1h start/end hint (unix seconds), i.e. hint-driven partition pruning.
 //! - **search_traces_recent** — the Explore UI's trace list: `search_traces`
 //!   with a limit over the seeded window.
-//! - **promql_range_avg_by_service** — a PromQL range query through the
-//!   real engine (`query_promql`).
+//! - **promql_range_avg_by_service** — a PromQL range query lowered to the
+//!   Query IR and run through the real engine (`query_ir`).
 //! - **logql_line_filter** — a LogQL stream selector + `|=` line filter
 //!   through the real engine (`query_logs`).
 //!
@@ -200,13 +200,16 @@ fn bench_querier_service(c: &mut Criterion) {
         "search_traces:{TENANT}:{DATASET}:{}",
         serde_json::json!({ "limit": 20, "start": base_s, "end": end_s })
     );
+    let promql_ir = ql_ir::promql_to_ir(
+        "avg by (service_name) (cpu_usage)",
+        &ql_ir::PromqlParams::range(base_ns, end_ns, 3_600_000_000_000),
+    )
+    .expect("lower PromQL to IR");
     let promql = format!(
-        "query_promql:{TENANT}:{DATASET}:{}",
+        "query_ir:{TENANT}:{DATASET}:{}",
         serde_json::json!({
-            "query": "avg by (service_name) (cpu_usage)",
-            "start": base_ns,
-            "end": end_ns,
-            "step": 3_600_000_000_000_i64,
+            "document": promql_ir,
+            "now_ns": end_ns,
         })
     );
     let logql = format!(
@@ -237,7 +240,7 @@ fn bench_querier_service(c: &mut Criterion) {
         "hinted find_trace must return exactly the target span"
     );
     assert!(s > 0, "search_traces returned no rows");
-    assert!(p > 0, "query_promql returned no rows");
+    assert!(p > 0, "query_ir (PromQL) returned no rows");
     assert!(l > 0, "query_logs returned no rows");
     eprintln!("seeded: find_trace={t} hinted={th} search={s} promql={p} logql={l}");
 

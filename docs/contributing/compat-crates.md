@@ -49,11 +49,9 @@ none of which can run a query engine.
 
 PromQL has no parser crate of ours; the third-party `promql-parser` supplies
 the grammar. `ql-ir` lowers the parsed expression onto a `query-ir` document
-(`ql_ir::promql_to_ir`), the same way it lowers LogQL and TraceQL. That
-lowering is not wired in yet: the Prometheus endpoints still evaluate through
-`src/querier/src/query/promql.rs` until the planner executes every stage the
-lowering emits, and the router switches over (the `histogram_quantile`
-stage's `window` and `lookback` now execute rather than returning 501). Constructs the IR can't
+(`ql_ir::promql_to_ir`), the same way it lowers LogQL and TraceQL. The
+Prometheus `query` and `query_range` endpoints run on that lowering through the
+Query IR; there is no second metric evaluator. Constructs the IR can't
 express come back as `LowerError::Inexpressible`, naming the construct; a query
 that doesn't parse, or bad range parameters, as `LowerError::InvalidPromql`.
 

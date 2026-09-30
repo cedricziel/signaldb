@@ -30,7 +30,6 @@ use tracing::Instrument;
 use crate::query::ir_planner::IrService;
 use crate::query::logs::LogsService;
 use crate::query::metric_metadata::MetricMetadataService;
-use crate::query::metrics::MetricsService;
 use crate::query::profile::{
     FindProfileByIdParams, ProfileDiffParams, ProfileDiscoveryParams, ProfileSearchParams,
     ProfileService,
@@ -38,8 +37,8 @@ use crate::query::profile::{
 use crate::query::trace::TraceService;
 use crate::query::{
     DetectedFieldsParams, FindTraceByIdParams, IrQueryParams, LogQueryParams, LogSeriesParams,
-    MetricQueryParams, MetricSeriesParams, PromQlQueryParams, SearchQueryParams,
-    TraceTagValuesParams, TraceTagsParams,
+    MetricQueryParams, MetricSeriesParams, SearchQueryParams, TraceTagValuesParams,
+    TraceTagsParams,
 };
 
 /// Translates `[querier.warm_index]` into the gate
@@ -293,11 +292,6 @@ enum TicketRequest {
         dataset_slug: String,
         params: MetricQueryParams,
     },
-    QueryPromql {
-        tenant_slug: String,
-        dataset_slug: String,
-        params: PromQlQueryParams,
-    },
     QueryMetricLabels {
         tenant_slug: String,
         dataset_slug: String,
@@ -358,7 +352,6 @@ impl TicketRequest {
             | TicketRequest::QueryLogsSeries { tenant_slug, .. }
             | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
             | TicketRequest::QueryMetric { tenant_slug, .. }
-            | TicketRequest::QueryPromql { tenant_slug, .. }
             | TicketRequest::QueryMetricLabels { tenant_slug, .. }
             | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
             | TicketRequest::QueryMetricSeries { tenant_slug, .. }
@@ -390,7 +383,6 @@ impl TicketRequest {
             TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
             TicketRequest::QueryLogsDetectedFields { .. } => "query_logs_detected_fields",
             TicketRequest::QueryMetric { .. } => "query_metric",
-            TicketRequest::QueryPromql { .. } => "query_promql",
             TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
             TicketRequest::QueryMetricLabelValues { .. } => "query_metric_label_values",
             TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
@@ -408,7 +400,6 @@ pub struct QuerierFlightService {
     trace_service: TraceService,
     profile_service: ProfileService,
     logs_service: LogsService,
-    metrics_service: MetricsService,
     metric_metadata: MetricMetadataService,
     ir_service: IrService,
     #[allow(dead_code)]
@@ -603,7 +594,6 @@ impl QuerierFlightService {
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
-        let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
         let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
         let ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
@@ -615,7 +605,6 @@ impl QuerierFlightService {
             trace_service,
             profile_service,
             logs_service,
-            metrics_service,
             metric_metadata,
             ir_service,
             iceberg_catalog: None,
@@ -691,7 +680,6 @@ impl QuerierFlightService {
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
-        let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
         let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
         let mut ir_service = IrService::new(session_ctx.as_ref().clone())
             .with_correlate_max_rows(limits.correlate_max_rows)
@@ -714,7 +702,6 @@ impl QuerierFlightService {
             trace_service,
             profile_service,
             logs_service,
-            metrics_service,
             metric_metadata,
             ir_service,
             iceberg_catalog: Some(iceberg_catalog),
@@ -1179,24 +1166,6 @@ impl QuerierFlightService {
             }
             return Err(Status::invalid_argument(
                 "Invalid query_metric ticket format. Expected: query_metric:tenant:dataset:{json}",
-            ));
-        }
-
-        // PromQL query: query_promql:{tenant}:{dataset}:{json PromQlQueryParams}
-        if let Some(remainder) = ticket_content.strip_prefix("query_promql:") {
-            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
-            if parts.len() == 3 {
-                let params: PromQlQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
-                    Status::invalid_argument(format!("Invalid query_promql parameters: {e}"))
-                })?;
-                return Ok(TicketRequest::QueryPromql {
-                    tenant_slug: parts[0].to_string(),
-                    dataset_slug: parts[1].to_string(),
-                    params,
-                });
-            }
-            return Err(Status::invalid_argument(
-                "Invalid query_promql ticket format. Expected: query_promql:tenant:dataset:{json}",
             ));
         }
 
@@ -1851,29 +1820,6 @@ impl QuerierFlightService {
                     .await
                     .map_err(querier_error_to_status(SIGNAL_LOGS))?
             }
-            TicketRequest::QueryPromql {
-                tenant_slug,
-                dataset_slug,
-                params,
-            } => {
-                tracing::info!(
-                    tenant_slug = %tenant_slug,
-                    dataset_slug = %dataset_slug,
-                    query = %params.query,
-                    "Executing query_promql"
-                );
-                self.metrics_service
-                    .query_range(
-                        &params.query,
-                        params.start,
-                        params.end,
-                        params.step,
-                        &tenant_slug,
-                        &dataset_slug,
-                    )
-                    .await
-                    .map_err(querier_error_to_status(SIGNAL_METRICS))?
-            }
             TicketRequest::QueryMetricLabels {
                 tenant_slug,
                 dataset_slug,
@@ -2427,12 +2373,8 @@ fn querier_error_to_status(
     signal: &'static str,
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
     move |e| {
-        common_error_status(e).unwrap_or_else(|e| match e {
-            too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
-                Status::invalid_argument(too_many.to_string())
-            }
-            other => Status::internal(format!("{signal} query failed: {other}")),
-        })
+        common_error_status(e)
+            .unwrap_or_else(|other| Status::internal(format!("{signal} query failed: {other}")))
     }
 }
 
@@ -3310,31 +3252,6 @@ mod tests {
             }
             other => panic!("expected QueryLogsDetectedFields, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn parse_query_promql_ticket() {
-        let service = make_service().await;
-        let ticket =
-            r#"query_promql:acme:prod:{"query":"sum(rate(up[5m]))","start":10,"end":20,"step":15}"#;
-        match service.parse_ticket(ticket).unwrap() {
-            TicketRequest::QueryPromql {
-                tenant_slug,
-                dataset_slug,
-                params,
-            } => {
-                assert_eq!(tenant_slug, "acme");
-                assert_eq!(dataset_slug, "prod");
-                assert_eq!(params.query, "sum(rate(up[5m]))");
-                assert_eq!((params.start, params.end, params.step), (10, 20, 15));
-            }
-            other => panic!("expected QueryPromql, got {other:?}"),
-        }
-        assert!(
-            service
-                .parse_ticket("query_promql:acme:prod:not-json")
-                .is_err()
-        );
     }
 
     #[tokio::test]
