@@ -7,6 +7,12 @@ sources:
   - src/common/src/wal/**
   - src/common/src/catalog_manager.rs
   - src/common/src/iceberg/**
+  - schemas.toml
+  - src/common/src/attrs/warm_index.rs
+  - src/common/src/config/mod.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/writer/src/schema_transform.rs
+  - src/querier/src/query/warm_index/probe.rs
 ---
 
 # Storage Layout Design
@@ -200,9 +206,9 @@ Left unset — on a table no compaction has touched yet — the writer falls bac
 Iceberg stores each column's value counts and min/max bounds inline in the **manifest entry of every data file**, so a bound is a per-file cost paid on every query plan, forever. Two controls keep that cost proportionate:
 
 - **`truncate(16)` by default.** Bounds are shortened to 16 characters rather than stored at full length. A lower bound truncates to a prefix; an upper bound truncates and is then incremented so it still covers every value it bounds — and is dropped outright if it cannot be incremented, since an understated upper bound would prune files that hold matching rows. This is the Iceberg default and needs no property; iceberg-rust previously stored untruncated bounds for every column.
-- **`counts` for free-text columns.** `body`, `status_message` and `exemplars` get `write.metadata.metrics.column.<col> = "counts"` at table creation (`common::schema::metrics_properties_for_free_text_columns`): counts are kept for the planner's cardinality estimates, bounds are dropped. No query compares these columns by range — `body` and `status_message` are matched by substring or regex, `exemplars` is a JSON blob read whole — so their bounds could never prune anything.
+- **`counts` for free-text columns.** `body` and `status_message` get `write.metadata.metrics.column.<col> = "counts"` at table creation (`common::schema::metrics_properties_for_free_text_columns`): counts are kept for the planner's cardinality estimates, bounds are dropped. No query compares these columns by range — they are matched by substring or regex — so their bounds could never prune anything. The constant behind this (`UNBOUNDED_FREE_TEXT_COLUMNS`) still names `exemplars`, the retired JSON blob column; no current table has a column by that name, so the entry does nothing.
 
-Attribute columns (`resource_attributes`, `scope_attributes`, `attributes`) are `map<string,string>`, so they carry no bounds regardless. `trace_id`/`span_id` keep the truncated default; their bounds effectively never prune (a file's random-id range spans nearly the whole space) but the Parquet bloom filters described below do that work.
+Attribute columns are typed maps (`{container}_str`, `_int`, `_double`, `_bool`) plus a binary `{container}_residue`. Parquet keeps statistics per leaf, not per map key, so a map carries no per-key bounds or bloom filters: a predicate on an unpromoted attribute key cannot prune files by itself. That is why the warm index and attribute promotion exist (see [Attribute storage tiers](#attribute-storage-tiers)). `trace_id`/`span_id` keep the truncated default; their bounds effectively never prune (a file's random-id range spans nearly the whole space) but the Parquet bloom filters described below do that work.
 
 Honored by [JanKaul/iceberg-rust#385](https://github.com/JanKaul/iceberg-rust/pull/385).
 
@@ -291,11 +297,11 @@ Because both paths call the same constructor, a provisioned table is indistingui
 
 | Signal Type      | Table Name         | WalOperation    | Schema Source                    |
 | ---------------- | ------------------ | --------------- | -------------------------------- |
-| Traces           | `traces`           | `WriteTraces`   | `schemas.toml` (v2, inherits v1) |
-| Logs             | `logs`             | `WriteLogs`     | `schemas.toml` (v1)              |
+| Traces           | `traces`           | `WriteTraces`   | `schemas.toml` (physical-v5)     |
+| Logs             | `logs`             | `WriteLogs`     | `schemas.toml` (physical-v4)     |
 | Metrics          | `metrics`          | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
 | Metric exemplars | `metric_exemplars` | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
-| Profiles         | `profiles`         | `WriteProfiles` | `schemas.toml` (v1)              |
+| Profiles         | `profiles`         | `WriteProfiles` | `schemas.toml` (physical-v3)     |
 
 `metrics` holds one row per data point across every metric type (`metric_type`: gauge, sum, histogram, exponential_histogram, summary), with typed columns for histogram buckets, exponential-histogram buckets, and summary quantiles rather than JSON strings. `metric_exemplars` holds one row per exemplar, linked to its owning point via `series_id` plus `point_timestamp` (a `series_id` alone identifies the series, not one point). A `WriteMetrics` batch's target table is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics`; the five legacy per-type tables (`metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary`) are dropped by the writer's table reconciler on upgrade and no longer created.
 
@@ -326,7 +332,8 @@ most recent _n_":
 | ---------------------- | -------------------------------------------- |
 | `traces`               | `timestamp`, `trace_id`                      |
 | `logs`                 | `timestamp`, `service_name`, `severity_text` |
-| `metrics_*` (all five) | `timestamp`, `metric_name`, `service_name`   |
+| `metrics`              | `timestamp`, `metric_name`, `service_name`   |
+| `metric_exemplars`     | `timestamp`, `trace_id`                      |
 | `profiles`             | `timestamp`, `service_name`                  |
 
 All columns are ascending with nulls first. `TableSchema::sort_key_columns()`
@@ -457,10 +464,10 @@ per canonical type (`{container}_str`, `_int`, `_double`, `_bool`) plus a
 `{container}_residue` `Binary` column holding one CBOR document per row for
 values that have no typed home -- a value whose sent type doesn't match the
 key's canonical type, an array or key-value list, or bytes. A key lives in
-exactly one typed home; `attribute-type-authority` (see
-`docs/users/querying-ir.md`) picks that home from the first value ever
-observed for the key (or a config override), and later conflicting values go
-to the residue rather than retyping the column.
+exactly one typed home, chosen by the attribute type authority (precedence
+and scoping: [Canonical types](../users/schema-registry.md#canonical-types));
+a later value of another type goes to the residue rather than retyping the
+column.
 
 This landed as a **one-shot cutover**, not an evolution: a table still in the
 legacy single-map layout is dropped and recreated in the typed layout the
@@ -499,21 +506,60 @@ Defined in `schemas.toml`.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
+### Attribute storage tiers
+
+An attribute key is stored once, in its canonical typed home. Three tiers sit
+on top of that, from cheapest to fastest:
+
+- **Cold: typed home maps plus residue.** Every attribute container is five
+  columns (see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover)).
+  A predicate on a canonical-typed key compares the typed value directly: exact,
+  cast-free, and range-capable for numbers. The map has no per-key statistics,
+  so this tier reads every file in the time range.
+- **Warm: containment index (opt-in).** Enabled per signal and optionally per
+  dataset by `[schema.warm_index]` (`WarmIndexConfig`, `src/common/src/config/mod.rs`);
+  it only applies to tables on the typed layout. The table gains an `attr_index`
+  `List<Binary>` column holding one token per `(key, value)` pair written to a
+  typed home (never residue), with a Parquet bloom filter on the list leaf sized
+  from `rows_per_row_group * attrs_per_row`, capped at `max_bloom_ndv`. The
+  querier checks the bloom filters of candidate files for an equality predicate
+  on a typed home and skips files that cannot match; range and other predicates
+  fall back to the cold scan. `[querier.warm_index]` (`WarmIndexQuerierConfig`,
+  documented in `signaldb.dist.toml`) gates the probe so non-selective
+  predicates skip it. The index costs storage and write time, which is why it
+  is off by default.
+- **Hot: promoted columns.** The compactor copies a demanded `(level, key)` into
+  an `attr_<level>_<key>` column typed as the key's canonical type; the typed map
+  keeps the value. See [Typed promoted attribute columns](#typed-promoted-attribute-columns).
+
+None of this changes query results: promotion and the warm index only decide
+how much is read. Queries name the logical attribute, never the physical column.
+
 ### Materialized labels
 
-By default every attribute other than the promoted columns above lives in
-the `*_attributes` JSON and is queried by a substring match — inexact and
-limited to `=` / `!=`. Configuring `[schema.materialized_labels]` promotes
-chosen attribute keys into dedicated columns so they can be matched exactly,
-by regex, and with ordered comparisons.
+`label_<key>` columns predate the typed layout. They are a string copy of a
+chosen attribute key. The dialects that lower to the IR (LogQL's primary path,
+PromQL, Tempo search) follow the IR's rule: a `label_<key>` column stands in
+for a key only when its canonical type is String and it is recorded at exactly
+one level; otherwise the query reads the typed home (or the
+`attr_<level>_<key>` column). Only the non-IR paths read a label column
+directly: LogQL's fallback for queries the IR cannot express, and the metric
+metadata matchers. Configuring `[schema.materialized_labels]` adds these
+columns to tables created afterwards.
 
 ```toml
 [schema.materialized_labels]
 logs = ["namespace", "pod"]
 # traces = [...]   # metrics / profiles likewise
 
-# Per-tenant override: replaces the global set wholesale for that tenant
-[auth.tenants.schema.materialized_labels]
+# Per-tenant override: a tenant's schema block replaces the whole global
+# [schema] block. The block needs catalog_type and catalog_uri (no defaults).
+[tenants.tenants.acme]
+enabled = true
+[tenants.tenants.acme.schema]
+catalog_type = "sql"
+catalog_uri = "sqlite://.data/acme_catalog.db"
+[tenants.tenants.acme.schema.materialized_labels]
 logs = ["team", "region"]
 ```
 
@@ -574,9 +620,9 @@ logs = ["team", "region"]
   the other mid-rename. A key with no promoted column yet whose fresh name
   collides with a column that already belongs to a _different_ key has its
   batch column dropped instead of written into that key's column — the
-  row's raw JSON attributes still carry the value, so the querier's
-  JSON-substring fallback still finds it, the same degrade as a table that
-  simply predates the label. Promoting that new key to a real column of its
+  row's typed attribute columns still carry the value, so queries still find
+  it through the key's typed home, the same degrade as a table that simply
+  predates the label. Promoting that new key to a real column of its
   own still requires schema evolution (`add_label_columns`), which nothing
   triggers automatically for `[schema.materialized_labels]` (see below) —
   reconciliation makes a config-set change _safe_, not a substitute for
@@ -592,7 +638,7 @@ logs = ["team", "region"]
 
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value
-  is also left in the attribute JSON, so label discovery is unaffected.
+  is also left in its typed home, so label discovery is unaffected.
 - **Per-tenant resolution**: allowlists resolve per tenant — a tenant
   schema override replaces the global set wholesale (no merging) — both
   where tables are created (`CatalogManager::ensure_table`) and in the
@@ -602,7 +648,7 @@ logs = ["team", "region"]
   `label_<key>` columns post-creation through
   [schema evolution](#label-columns-can-be-added-to-existing-tables). A table
   that predates a label (and has not been evolved) keeps matching it through
-  the JSON substring path;
+  the key's typed home;
   the writer's schema coercion drops columns a table lacks and null-fills
   nullable columns it has but the current config no longer produces.
   **Known limitation**: nothing automatically promotes a _newly_ configured
@@ -611,13 +657,13 @@ logs = ["team", "region"]
   `schemas.toml` versions, and the compactor no longer adds `label_<key>`
   columns.
   `reconcile_label_columns` (above) keeps this safe rather than
-  corrupting: a new key's values stay on the JSON substring path,
+  corrupting: a new key's values stay on the typed-home path,
   exactly as if the table simply predated the label, until the table is
   recreated. Actually promoting it still needs a
   dedicated reconciliation path; tracked as a follow-up to #1448.
-- **Querying**: the querier routes a label to its `label_<key>` column when
-  the table has one, else to the JSON match (see the
-  [LogQL reference](../users/logql-reference.md#materialized-labels)).
+- **Querying**: the IR-lowered dialects follow the stand-in rule above; the
+  non-IR paths route a label to its `label_<key>` column when the table has one
+  (see the [LogQL reference](../users/logql-reference.md#materialized-labels)).
   **Known limitation**: every querier resolution point
   (`SchemaResolver::column_for`/`is_known` in `ir_planner.rs`, plus the
   `logql`/`logs`/`metrics` lowerings) recomputes `materialized_column_name`
@@ -634,22 +680,10 @@ logs = ["team", "region"]
   resolve both mechanisms uniformly by origin key; tracked as a follow-up
   to #1448, out of scope for the writer/schema-creation fix here.
 
-The same mechanism applies across all four signals:
-
-- **logs** — LogQL matches materialized labels exactly, with regex and
-  ordered comparisons;
-- **traces** — the Tempo search API (`tags` / TraceQL attribute selectors)
-  matches them exactly;
-- **metrics** — PromQL label matchers (`metric{key="v"}`) match exactly and
-  by regex on the column; `by (key)` / `without (key)` group on it, and the
-  label is part of each series' natural identity (bare selectors and
-  `rate()` emit one series per label combination);
-- **profiles** — the columns are populated for consistency; the Pyroscope
-  query surface filters only by `service_name` / sample type today.
-
-Each signal's writer transform extracts the label from that signal's
-attribute JSON (metrics per exploded data point); the querier routes to the
-column when the queried table has it, else the JSON substring match.
+The writer fills the columns for all four signals (metrics per exploded data
+point); how a query reads them is the rule above. Profiles populate them for
+consistency only; the Pyroscope query surface filters by `service_name` and
+sample type.
 
 ### Parquet bloom filters
 
@@ -1052,8 +1086,8 @@ Schemas are defined in `schemas.toml` at the repository root and compiled into t
 
 | Feature             | Description                                                                                        |
 | ------------------- | -------------------------------------------------------------------------------------------------- |
-| **Versioning**      | Each signal type tracks a current version (e.g., `current_trace_version = "v2"`)                   |
-| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "v1"`                                  |
+| **Versioning**      | Each signal type tracks a current `physical-vN` (e.g., `current_trace_version = "physical-v5"`)    |
+| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "physical-v1"`                         |
 | **Field renames**   | Rename fields across versions: `{ from = "name", to = "span_name" }`                               |
 | **Field additions** | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }` |
 | **Computed fields** | Fields derived from other fields at write time                                                     |
@@ -1067,31 +1101,54 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 3. Applying `field_renames` to inherited fields
 4. Appending `field_additions`
 
-### Flight Schema vs Iceberg Schema
+### Three version axes
 
-The Flight wire format (v1) and Iceberg storage format (v2) are intentionally different:
+"Version" means three independent things; do not read one as another. The
+`flight-schemas` skill summarises this page.
 
-| Aspect           | Flight Schema (v1)            | Iceberg Schema (v2)             |
+1. **Flight wire format** vs Iceberg storage: the `*_v1_to_*` transforms in
+   `src/writer/src/schema_transform.rs`. "v1"/"v2" in those names is historical
+   and only means wire to storage.
+2. **`physical-vN`**: the per-signal chain in `schemas.toml`, which moves when a
+   table's storage shape changes.
+3. **Logical schema version** (`logical_schema_version`, `LogicalSchema::VERSION`):
+   the client-visible OTel schema in `common::schema::logical`. A field change
+   there moves this axis only.
+
+### Flight wire vs Iceberg storage
+
+The two shapes differ intentionally. Traces, as the transform targets them
+(`physical-v4`, before the typed split):
+
+| Aspect           | Flight wire                   | Iceberg (`physical-v4`)         |
 | ---------------- | ----------------------------- | ------------------------------- |
 | Span name field  | `name`                        | `span_name`                     |
 | Duration field   | `duration_nano` (UInt64)      | `duration_nanos` (Long/Int64)   |
-| Attributes field | `attributes_json`             | `span_attributes`               |
+| Attributes field | `attributes_json`             | `span_attributes` (JSON string) |
 | Resource field   | `resource_json`               | `resource_attributes`           |
 | Time fields      | UInt64 (nanoseconds)          | Long/Int64 (nanoseconds)        |
 | Events/Links     | `List<Struct>` (nested Arrow) | `String` (JSON serialized)      |
 | Partition fields | None                          | `timestamp`, `date_day`, `hour` |
 
-### Write-Time Transformation
+### Write-time transformation
 
-The Writer applies `transform_trace_v1_to_v2()` (`src/writer/src/schema_transform.rs`) at ingestion time:
+Traces, logs and profiles are transformed in the writer's Flight `do_put`
+handler before the batch is written to the WAL, to their last pre-typed shape.
+For traces, `transform_trace_v1_to_v2()` targets a fixed `physical-v4` through
+a compiled plan: field renames, `UInt64` to `Int64` casts, `List<Struct>`
+events/links to JSON strings, and the computed `timestamp`/`date_day`/`hour`
+columns. Logs target `physical-v3` and profiles `physical-v2`.
 
-1. **Detection**: Checks if batch has `name` field (v1) or `span_name` field (v2)
-2. **Field renames**: Maps v1 field names to v2 names
-3. **Type conversions**: `UInt64` -> `Int64` for Iceberg compatibility
-4. **Complex type serialization**: `List<Struct>` events/links -> JSON strings
-5. **Computed fields**: Generates `timestamp`, `date_day`, `hour` from `start_time_unix_nano`
+Metrics are different: a metrics batch stays in wire format (`data_json`) in the
+WAL, and is shaped at commit by `transform_metrics_to_wide` and
+`transform_metric_exemplars` (`storage/iceberg.rs`) into the typed `metrics` and
+`metric_exemplars` tables.
 
-The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in the current physical format (despite the function's name) -- physical-v4 for traces.
+The typed split also happens at commit, generically, in the table writer
+(`IcebergTableWriter`): it resolves each key's canonical type through the
+attribute type authority and splits every attribute container into the five
+typed columns. That is how a traces `physical-v4` batch reaches the table's
+`physical-v5` schema, and logs and profiles likewise.
 
 ### Label columns can be added to existing tables
 
@@ -1113,13 +1170,13 @@ Attribute promotion adds a redundant typed copy of one (attribute level, key) ho
 - **Naming**: a key made of lowercase alphanumeric segments joined by single `.` or `_` gets a readable name, with `.` → `_` and `_` → `__` (`http.request.method` → `attr_record_http_request_method`, `http.response.status_code` → `attr_record_http_response_status__code`). Any other key gets `attr_<level>_<sanitized stem>___<8-hex FNV-1a hash>`.
 - **Origin in `doc`**: each column's field `doc` records its (level, key). A name already held by a column of another origin is never retyped; the promotion is skipped with a warning.
 - **Field ids** go past both the schema tree's maximum and `last_column_id`, and a dropped id is never reused.
-- **Querying**: the IR reads `coalesce(promoted, home)` per level and uses a promoted column only when it has the canonical Arrow type. The compat dialects (LogQL, PromQL, TraceQL) do not read `attr_*` columns; they keep using `label_<key>`.
+- **Querying**: the IR reads `coalesce(promoted, home)` per level and uses a promoted column only when it has the canonical Arrow type. The dialects that lower to the IR resolve attributes the same way; the non-IR fallback paths read `label_<key>` directly and never `attr_*`.
 
 The decision and demotion rules are operator-facing: see [Attribute Promotion](../operations/compactor/operations.md#attribute-promotion).
 
 ### An existing table's schema tracks and catches up to schemas.toml's version
 
-Beyond ad hoc label columns, `common::iceberg::evolution` also brings a table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through. Covers every `schemas.toml`-sourced signal: traces, logs, all five metrics representations, and profiles.
+Beyond ad hoc label columns, `common::iceberg::evolution` also brings a table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through. Covers every `schemas.toml`-sourced signal: traces, logs, `metrics`, `metric_exemplars`, and profiles.
 
 - **Version tracked as a table property**, not a separate migrations store: `signaldb.schema.version` (e.g. `"physical-v3"`) is stamped in the same commit as any schema change (`SetProperties` alongside `AddSchema`/`SetCurrentSchema`). A table's version and its actual columns can never diverge independently of the table's own commit history the way an external tracking table could.
 - **Diffed by field name against the table's live schema**, never by regenerating `ResolvedSchema::to_iceberg_schema()` fresh — that function assigns field ids positionally on every call, safe only for a table created new; diffing a live table by position would shift every field after a removal and corrupt the id mapping already burned into its Parquet files. `diff_schema` instead reuses existing ids untouched and mints new ones (past both the schema tree's true maximum and the metadata's `last_column_id`) only for genuine additions.
@@ -1207,6 +1264,6 @@ metrics_enabled = true
 | `src/common/src/config/mod.rs`             | Configuration structs including tenant/dataset/storage                                                                                           |
 | `src/writer/src/storage/iceberg.rs`        | `IcebergTableWriter` -- table creation and data writes                                                                                           |
 | `src/writer/src/processor.rs`              | `WalProcessor` -- background WAL-to-Iceberg processing                                                                                           |
-| `src/writer/src/schema_transform.rs`       | Flight v1 -> Iceberg v2 schema transformation                                                                                                    |
+| `src/writer/src/schema_transform.rs`       | Flight wire -> physical schema transformation                                                                                                    |
 | `src/querier/src/flight.rs`                | `TenantCatalog` -- DataFusion/Iceberg namespace bridge                                                                                           |
 | `src/querier/src/query/table_ref.rs`       | Safe table reference construction with slug validation                                                                                           |
