@@ -37,11 +37,12 @@ impl SideBuilder {
             if buckets.is_null(row) || values.is_null(row) {
                 continue;
             }
-            let raw = if labels.is_null(row) {
-                "{}"
-            } else {
-                labels.value(row)
-            };
+            if labels.is_null(row) {
+                return Err(DataFusionError::Internal(format!(
+                    "binop {side} input holds a series with null `{LABELS}`"
+                )));
+            }
+            let raw = labels.value(row);
             let idx = match self.ids.get(raw) {
                 Some(idx) => *idx,
                 None => {
@@ -90,13 +91,15 @@ impl SideBuilder {
         Ok(grown)
     }
 
-    /// The folded side; two rows for one series at one bucket is an input bug.
+    /// The folded side; two rows for one label set at one bucket are two
+    /// series Prometheus would not let a vector hold.
     pub(super) fn finish(mut self, side: &str) -> DFResult<Side> {
         for (bucket, samples) in &mut self.side.samples {
             samples.sort_unstable_by_key(|s| s.0);
             if let Some(dup) = samples.windows(2).find(|w| w[0].0 == w[1].0) {
-                return Err(DataFusionError::Internal(format!(
-                    "binop {side} input holds two rows for {} at bucket {bucket}",
+                return Err(invalid(format!(
+                    "binop {side} operand: vector cannot contain metrics with the same \
+                     labelset {} (at bucket {bucket})",
                     self.side.series[dup[0].0].raw
                 )));
             }
