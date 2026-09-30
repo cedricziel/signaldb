@@ -1393,6 +1393,154 @@ async fn logs_group_by_resource_identity_end_to_end() {
     );
 }
 
+/// `describe fields`, polled until every name in `names` is listed (the writer
+/// commits canonical types as it processes the batch), returning the fields.
+async fn describe_fields_until_listed(app: &Router, names: &[&str]) -> Vec<serde_json::Value> {
+    let mut last = serde_json::Value::Null;
+    for _ in 0..40 {
+        let (status, body) = post_ir(
+            app,
+            serde_json::json!({
+                "irVersion": 4,
+                "from": "logs",
+                "range": range(),
+                "result": "metadata",
+                "pipeline": [ { "describe": { "target": "fields" } } ]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "describe fields: {body}");
+        let fields = body["metadata"]["fields"]
+            .as_array()
+            .cloned()
+            .unwrap_or_default();
+        if names
+            .iter()
+            .all(|name| fields.iter().any(|f| f["name"] == *name))
+        {
+            return fields;
+        }
+        last = body;
+        sleep(Duration::from_millis(500)).await;
+    }
+    panic!("{names:?} never listed: {last}");
+}
+
+fn described<'a>(fields: &'a [serde_json::Value], name: &str) -> &'a serde_json::Value {
+    fields
+        .iter()
+        .find(|f| f["name"] == name)
+        .unwrap_or_else(|| panic!("{name} is listed"))
+}
+
+fn int_attribute(key: &str, value: i64) -> KeyValue {
+    KeyValue {
+        key: key.to_string(),
+        value: Some(AnyValue {
+            value: Some(Value::IntValue(value)),
+        }),
+        ..Default::default()
+    }
+}
+
+/// Discovery lists an ingested attribute with the canonical type the type
+/// authority committed — the type the planner enforces — not the `string`
+/// default an unregistered observed key used to get, and the listed name is
+/// valid to query with that type.
+#[tokio::test]
+async fn describe_lists_an_ingested_int_attribute_as_int64() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let mut record = log_record(0, "INFO", "with an int attribute");
+    record.attributes.push(int_attribute("retry.count", 3));
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(&ctx, logs_request("describe-typed-svc", vec![record]))
+        .await
+        .expect("ingest log with an int attribute");
+
+    let app = build_router(&services).await;
+    let fields = describe_fields_until_listed(&app, &["retry.count"]).await;
+    let field = described(&fields, "retry.count");
+    assert_eq!(field["type"], "int64", "the authority's type: {field}");
+    assert_eq!(field["origin"], "authority", "{field}");
+
+    let (status, body) = post_ir_until_rows(
+        &app,
+        serde_json::json!({
+            "irVersion": 1,
+            "from": "logs",
+            "range": range(),
+            "result": "rows",
+            "fields": ["body"],
+            "pipeline": [
+                { "where": { "field": "retry.count", "op": "eq", "value": 3 } }
+            ]
+        }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "query by the listed name: {body}");
+    assert_eq!(body["rows"].as_array().map(Vec::len), Some(1), "{body}");
+}
+
+/// A key sent at resource level (string) and record level (int) is listed
+/// once per level under the qualified names the planner resolves, each with
+/// its own type.
+#[tokio::test]
+async fn describe_lists_a_multi_level_key_under_names_that_query_each_level() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let mut record = log_record(0, "INFO", "multi-level key");
+    record.attributes.push(int_attribute("region", 7));
+    let mut request = logs_request("describe-multi-level-svc", vec![record]);
+    if let Some(resource) = request.resource_logs[0].resource.as_mut() {
+        resource.attributes.push(KeyValue {
+            key: "region".to_string(),
+            value: Some(string_value("eu")),
+            ..Default::default()
+        });
+    }
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(&ctx, request)
+        .await
+        .expect("ingest log with a multi-level key");
+
+    let app = build_router(&services).await;
+    let fields = describe_fields_until_listed(&app, &["resource.region", "log.region"]).await;
+    assert!(fields.iter().all(|f| f["name"] != "region"), "{fields:?}");
+    assert_eq!(described(&fields, "resource.region")["type"], "string");
+    assert_eq!(described(&fields, "log.region")["type"], "int64");
+
+    for (name, value) in [
+        ("log.region", serde_json::json!(7)),
+        ("resource.region", serde_json::json!("eu")),
+    ] {
+        let (status, body) = post_ir_until_rows(
+            &app,
+            serde_json::json!({
+                "irVersion": 1,
+                "from": "logs",
+                "range": range(),
+                "result": "rows",
+                "fields": ["body"],
+                "pipeline": [
+                    { "where": { "field": name, "op": "eq", "value": value } }
+                ]
+            }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "query by {name}: {body}");
+        assert_eq!(
+            body["rows"].as_array().map(Vec::len),
+            Some(1),
+            "{name}: {body}"
+        );
+    }
+}
+
 // Task 3.3 — a processor created through the router HTTP API redacts PII in
 // an OTLP/HTTP export before it reaches storage; the Query IR surface never
 // sees the original value.

@@ -2975,7 +2975,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the queryable fields of a signal source, as logical dotted OTel names with their canonical type. Answered from the schema registry and maintained statistics — it reads no signal data — so call it freely before building a `query_ir` document. Each field carries `origin` (declared/registry/observed), and where statistics exist, `coverage` (the fraction of records carrying it) and an approximate `cardinality`. The response's `cost.as_of` says how recent those statistics are; `cost.window_scoped: false` means the range did not narrow the answer.",
+        description = "List the queryable fields of a signal source, as logical dotted OTel names with their canonical type. Answered from the declared schema, the type authority's committed attribute types and maintained statistics — it reads no signal data — so call it freely before building a `query_ir` document. An attribute's type is the type authority's canonical type, the one a predicate on it is coerced to. Each field carries `origin` (declared/authority/registry/observed), and where statistics exist, `coverage` (the fraction of records carrying it) and an approximate `cardinality`. The response's `cost.as_of` says how recent those statistics are; `cost.window_scoped: false` means the range did not narrow the answer.",
         annotations(read_only_hint = true)
     )]
     async fn discover_fields(

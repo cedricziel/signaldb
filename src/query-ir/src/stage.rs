@@ -378,10 +378,10 @@ impl DescribeTarget {
 /// The `describe` stage: introspect the source instead of reading its records.
 ///
 /// Terminal, and legal only with the `metadata` result envelope. It is answered
-/// from declared schema, the tenant's schema registries and maintained
-/// statistics — not by lowering to a query plan — so it carries no predicate:
-/// see `openspec/changes/query-field-discovery` (design D6) for why a
-/// predicate-scoped answer is refused rather than approximated.
+/// from declared schema, the type authority, the tenant's schema registries
+/// and maintained statistics — not by lowering to a query plan — so it carries
+/// no predicate: see `openspec/changes/archive/2026-09-22-query-field-discovery`
+/// (design D6) for why a predicate-scoped answer is refused rather than approximated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Describe {
