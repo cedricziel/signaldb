@@ -36,8 +36,9 @@ multi-query document shape (see
 each span to its parent within `traces` (v8), or one source to another signal
 (v11) (see
 [Correlate: joining across relations](#correlate-joining-across-relations-v8-v11));
-structural trace matching is a separate, later capability (see
-[Roadmap](#roadmap)).
+a `match` stage finds traces by span structure — parent/child,
+descendant, ancestor and sibling relations (v12) (see
+[Structural matching](#structural-matching-the-match-stage-ir-v12)).
 
 ## The endpoint
 
@@ -105,6 +106,7 @@ single-key object naming the stage:
 | `sample` (v10)     | `{ fn, window?, lookback?, … }`  | a metric point stream → a Series (`metrics` only) |
 | `scalar` (v10)     | `{}`                             | a Series → a Scalar                               |
 | `vector` (v10)     | `{}`                             | a Scalar → a Series                               |
+| `match` (v12)      | `{ spansets, relations? }`       | structural trace match (`traces` only, first stage) |
 
 With `step`, an `aggregate` on the `metrics` source is evaluated at instants
 `t = from + k·step` (`t ≤ to`), each reading the left-open window
@@ -1747,6 +1749,152 @@ a `trace_id`:
 }
 ```
 
+## Structural matching: the `match` stage (IR v12)
+
+`match` finds traces by their shape: traces in which named groups of spans
+("span-sets") exist and stand in given parent/child relationships. It returns
+the spans that witness the match.
+
+```jsonc
+{ "match": {
+    "spansets":  { "<name>": <predicate>, … },          // 1..=8 named span-sets
+    "relations": [ { "left": "<name>", "op": "child|descendant|ancestor|sibling", "right": "<name>" }, … ]
+} }
+```
+
+- **`spansets`** — an object of name to predicate. A predicate is any
+  [`where` predicate](#predicates) over span fields, including
+  [attribute scopes](#addressing-an-attribute-scope) and the span-event and
+  span-link fields (`events.name`, `events.attributes.<key>`, `links.trace_id`,
+  `links.span_id`, `links.attributes.<key>`). A span belongs to a span-set when
+  it satisfies the predicate; one span can belong to several. Names match
+  `^[a-z_][a-z0-9_]{0,31}$` and are unique; 1 to 8 span-sets per stage.
+  Declaration order is significant (see `spansets` below).
+- **`relations`** — optional. Each names two declared span-sets; an undeclared
+  name is rejected.
+
+| `op`         | Holds for `left`, `right` when                                     |
+| ------------ | ------------------------------------------------------------------ |
+| `child`      | a `right` span's parent is a `left` span                           |
+| `descendant` | a `right` span is a `left` span's descendant at any depth (not itself) |
+| `ancestor`   | a `right` span is an ancestor of a `left` span (`descendant` with the sides swapped) |
+| `sibling`    | a `left` span and a *different* `right` span share a non-empty `parent_span_id` |
+
+### Semantics
+
+- A trace matches when every span-set has at least one span **and** every
+  relation holds. Each relation is **existential** (some pair of spans
+  satisfies it) and relations are **independent**: two relations naming the
+  same span-set do not have to be satisfied by the same span.
+  `descendant(a, b)` and `descendant(a, c)` match a trace where one `b` sits
+  under one `a` and a `c` sits under a different `a`.
+- Span-sets that appear in no relation only need to exist in the trace.
+- **Only spans inside the document's `range` are seen.** A relation that
+  would pass through a span outside the range does not match: a `child` whose
+  parent is out of range has no parent, and a `descendant` chain broken by an
+  out-of-range span is broken. Widen the `range` to see the whole trace.
+  `sibling` compares `parent_span_id` values, so two spans whose shared parent
+  is out of range are still siblings. A parent cycle (corrupt data) is cut
+  at the span with the smallest `span_id` in the cycle, which then counts as
+  a root, so every `child` pair is also a `descendant` pair.
+- Rows that share a `span_id` within a trace (a span delivered twice) are
+  treated as **one span**: it matches a span-set if any of its rows does, it
+  is never its own sibling, and all of its rows come back when it is a
+  witness.
+- The result is the **witness rows**: for each matching trace, the spans that
+  take part in a relation (as either side), plus every span of a span-set that
+  is in no relation. Other spans of the trace are not returned. Use
+  `result: "trace"` (below) for one entry per trace.
+
+### The `spansets` column
+
+Each witness row carries a string column `spansets`: the comma-joined names of
+the span-sets that row witnesses, in declaration order (`"root,any"`). Later
+stages can `where` on it, `order` by it, group by it, or `fields`-project it.
+A `match` stage fails validation if the relation already has a `spansets`
+column.
+
+### Placement and ordering
+
+- `traces` only (other sources: `source 'logs' does not support match`).
+- Must be the **first** pipeline stage, and at most one per pipeline.
+- Rows come back ordered by `trace_id`, then span start time. Any following
+  stage may reorder, filter, project, `limit` or aggregate them.
+- With `"result": "trace"`, each matching trace is one entry in `traces`,
+  holding its witness spans (see [Trace envelope](#trace-envelope-traces-only-ir-v12)).
+  A `limit` bounds spans, not traces. `match` with the default `rows`
+  envelope returns the flat witness rows.
+
+### Example: a `DoPut` with a `write_parquet_files` below it
+
+```json
+{
+  "irVersion": 12,
+  "from": "traces",
+  "range": { "from": "2026-09-30T08:00:00Z", "to": "2026-09-30T09:00:00Z" },
+  "result": "trace",
+  "pipeline": [
+    { "match": {
+        "spansets": {
+          "put":   { "field": "span.name", "op": "eq", "value": "DoPut" },
+          "write": { "field": "span.name", "op": "eq", "value": "write_parquet_files" }
+        },
+        "relations": [ { "left": "put", "op": "descendant", "right": "write" } ]
+    } },
+    { "limit": 500 }
+  ]
+}
+```
+
+Each returned trace lists its `DoPut` spans that have a `write_parquet_files`
+descendant (`spansets: "put"`) and those `write_parquet_files` spans
+(`spansets: "write"`). To keep only the `DoPut` side, add
+`{ "where": { "field": "spansets", "op": "contains", "value": "put" } }`
+(`contains`, not `eq`: a span in both sets reads `"put,write"`; `contains`
+also matches names that merely contain `put`, so pick distinct names).
+
+Span-set predicates can use event fields, e.g. a `DoPut` with a direct child
+that recorded an `exception` event:
+
+```json
+{
+  "irVersion": 12,
+  "from": "traces",
+  "range": { "from": "2026-09-30T08:00:00Z", "to": "2026-09-30T09:00:00Z" },
+  "result": "trace",
+  "pipeline": [
+    { "match": {
+        "spansets": {
+          "put":    { "field": "span.name", "op": "eq", "value": "DoPut" },
+          "failed": { "field": "events.name", "op": "eq", "value": "exception" }
+        },
+        "relations": [ { "left": "put", "op": "child", "right": "failed" } ]
+    } }
+  ]
+}
+```
+
+### Per-trace bounds
+
+`match` buffers one whole trace at a time, and that buffer counts toward the
+query's memory pool (`[querier].memory_limit_mb`); a trace that does not fit
+fails the same way as one over a bound. Two bounds on a single trace:
+
+| Key                                | Default            | Bounds                                  |
+| ---------------------------------- | ------------------ | --------------------------------------- |
+| `[querier].match_max_trace_spans`  | 100,000            | spans of one trace inside the range     |
+| `[querier].match_max_trace_bytes`  | 67,108,864 (64 MiB)| value bytes of one trace's buffered rows|
+
+A trace over either bound fails the **whole query** with HTTP 422 and
+`errorType: "resource_limit"`; the message names the trace and the bound, for
+example `match: trace <trace_id> exceeds the span bound of 100000
+([querier].match_max_trace_spans): it has at least 100001 spans; a trace is
+never evaluated partially, so narrow the range or raise the bound`. The
+answer is never truncated and oversized traces are never skipped, so a
+successful response is always complete. React by narrowing the `range` (fewer
+of that trace's spans fall inside it) or asking the operator to raise the key (set in `[querier]`, see the
+`configuration` reference and `signaldb.dist.toml`).
+
 ## Formulas: cross-query arithmetic (D5)
 
 A formula computes arithmetic across the `series` results of several named
@@ -2048,7 +2196,6 @@ so it is designed and reviewed on its own risk profile:
   (part of the streaming epic), and **pagination** for walking a large result.
   Field discovery itself has landed: see
   [Discovery](#discovery-what-can-i-query).
-- **structural traces** — a `match` stage + a `trace` result envelope.
 
 `rate`/`increase`/`irate`/`*_over_time` (counter delta and windowed
 reductions over a window — see
@@ -2058,7 +2205,9 @@ cross-query formulas (see
 [Formulas](#formulas-cross-query-arithmetic-d5)), and the `correlate` stage,
 both span-to-parent and cross-signal (see
 [Correlate: joining across relations](#correlate-joining-across-relations-v8-v11)),
-already work today.
+and structural trace matching — the `match` stage with the `trace` envelope (see
+[Structural matching](#structural-matching-the-match-stage-ir-v12)), already
+work today.
 
 Also deferred: the compatibility dialects lowering _into_ the IR (one engine),
 and full attribute promotion. None of these change the document shape defined
