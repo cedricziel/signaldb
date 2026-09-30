@@ -807,13 +807,20 @@ function sessionRow(overrides: Partial<RumSessionRow> = {}): RumSessionRow {
 }
 
 describe("Sessions tab", () => {
+  /** The Sessions tab renders before the app list resolves and then
+   * remounts, so tests touch it only once the app switcher is up. */
+  async function renderSessions(path: string) {
+    renderRum(path);
+    await screen.findByRole("button", { name: /storefront-web/ });
+  }
+
   it("lists sessions and writes ?session= when one is picked", async () => {
     stubFetchRoutes([
       { match: "/api/v1/connection", body: connectionInfoBody() },
     ]);
     vi.mocked(rumApi.fetchRumApps).mockResolvedValue([rumApp()]);
     vi.mocked(rumSessionsApi.fetchSessions).mockResolvedValue([sessionRow()]);
-    renderRum("/rum/sessions?app=storefront-web");
+    await renderSessions("/rum/sessions?app=storefront-web");
 
     const row = await screen.findByRole("button", { name: /sess-1/ });
     const user = userEvent.setup();
@@ -833,7 +840,7 @@ describe("Sessions tab", () => {
       sessionRow({ sessionId: "clean", errors: 0 }),
       sessionRow({ sessionId: "errored", errors: 3 }),
     ]);
-    renderRum("/rum/sessions?app=storefront-web");
+    await renderSessions("/rum/sessions?app=storefront-web");
 
     expect(
       await screen.findByRole("button", { name: /clean/ }),
@@ -877,7 +884,7 @@ describe("Sessions tab", () => {
       events,
       hasMore: false,
     });
-    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
+    await renderSessions("/rum/sessions?app=storefront-web&session=sess-1");
 
     // Same budget as the likely-cause test below: the session detail's
     // chained renders can exceed the default 1 s under coverage.
@@ -921,9 +928,7 @@ describe("Sessions tab", () => {
         hasMore: false,
       }),
     );
-    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
-    // The timeline remounts once the app list resolves.
-    await screen.findByRole("button", { name: /storefront-web/ });
+    await renderSessions("/rum/sessions?app=storefront-web&session=sess-1");
 
     const user = userEvent.setup();
     await user.click(
@@ -1011,10 +1016,7 @@ describe("Sessions tab", () => {
       ],
     };
     vi.mocked(traceDetailApi.fetchTraceDetail).mockResolvedValue(trace);
-    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
-    // The detail refetches (and its timeline remounts) once the app list
-    // resolves, so wait for it before touching the timeline's marks.
-    await screen.findByRole("button", { name: /storefront-web/ });
+    await renderSessions("/rum/sessions?app=storefront-web&session=sess-1");
 
     const timeline = await screen.findByTestId("rum-session-timeline");
     const mark = within(timeline).getByRole("button", { name: /POST/ });
@@ -1075,10 +1077,7 @@ describe("Sessions tab", () => {
       events: [failedRequest, exception],
       hasMore: false,
     });
-    renderRum("/rum/sessions?app=storefront-web&session=sess-1");
-    // The detail refetches (and its timeline remounts) once the app list
-    // resolves, so wait for it before touching the timeline's marks.
-    await screen.findByRole("button", { name: /storefront-web/ });
+    await renderSessions("/rum/sessions?app=storefront-web&session=sess-1");
 
     // Generous waits: under coverage instrumentation the detail's chained
     // renders can take over the default 1 s.
