@@ -90,6 +90,29 @@ export function App() {
     update,
   ]);
 
+  // Until the probe answers there is no tenant to query for, and a visitor
+  // without a session would only collect a 401 per widget before the redirect
+  // below. So the routes stay unmounted while it is pending, and a 401 goes
+  // straight to the login page.
+  const holdRoutes = needsTenantResolution && sessionQuery.isPending;
+  const sessionRejected =
+    needsTenantResolution && isAuthError(sessionQuery.error);
+  useEffect(() => {
+    if (!sessionRejected) return;
+    navigate(
+      loginRedirectPath(
+        `${location.pathname}${location.search}${location.hash}`,
+      ),
+      { replace: true },
+    );
+  }, [
+    sessionRejected,
+    location.pathname,
+    location.search,
+    location.hash,
+    navigate,
+  ]);
+
   // A pending PWA update (see lib/pwaUpdate.ts) applies itself the next time
   // the visitor navigates, as long as no form is dirty — never on the
   // landing render, only on an actual route change thereafter.
@@ -140,7 +163,9 @@ export function App() {
       state={effective}
       update={update}
     >
-      <Outlet context={{ state: effective, update }} />
+      {holdRoutes || sessionRejected ? null : (
+        <Outlet context={{ state: effective, update }} />
+      )}
     </AppShell>
   );
 }

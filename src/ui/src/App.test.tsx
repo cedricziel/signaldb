@@ -592,6 +592,30 @@ describe("App", () => {
       );
     });
 
+    it("sends no data query before the session probe answers, then goes to /login on its 401", async () => {
+      const fetchMock = stubFetchRoutes([
+        {
+          match: SESSION,
+          method: "GET",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+        {
+          match: "/api/v1/query",
+          body: { error: "unauthenticated" },
+          status: 401,
+        },
+      ]);
+      renderApp("/overview");
+      await waitFor(() => expect(window.location.pathname).toBe("/login"));
+      const queryCalls = fetchMock.mock.calls.filter(([input]) =>
+        String(input instanceof Request ? input.url : input).includes(
+          "/api/v1/query",
+        ),
+      );
+      expect(queryCalls).toHaveLength(0);
+    });
+
     it("stays put when only the cookie-session probe is a 401 (API-key auth)", async () => {
       stubFetchRoutes([
         { match: "query_range", body: emptyStreams },
