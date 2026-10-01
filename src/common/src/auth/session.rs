@@ -11,6 +11,8 @@ use super::{SESSION_TOKEN_PREFIX, SESSION_TTL};
 /// Name of the session cookie set by `POST /ui/session`.
 pub const SESSION_COOKIE: &str = "signaldb_session";
 
+const SESSION_COOKIE_ATTRIBUTES: &str = "HttpOnly; Secure; SameSite=Lax; Path=/";
+
 /// Build the `Set-Cookie` header value for a freshly issued or renewed
 /// session token. The single construction site for the cookie every login
 /// path (password, OIDC SSO — change: oidc-login) and every renewal (change:
@@ -24,7 +26,15 @@ pub const SESSION_COOKIE: &str = "signaldb_session";
 /// is not reliably sent on the browser's very next same-origin request.
 pub fn session_cookie_header(token: &str) -> String {
     let max_age = SESSION_TTL.num_seconds();
-    format!("{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age={max_age}")
+    format!("{SESSION_COOKIE}={token}; {SESSION_COOKIE_ATTRIBUTES}; Max-Age={max_age}")
+}
+
+/// The `Set-Cookie` header value logout sends: an emptied, already-expired
+/// session cookie with the same attributes as [`session_cookie_header`], so
+/// the browser replaces the login cookie rather than keeping it beside a
+/// differently-scoped one.
+pub fn cleared_session_cookie_header() -> String {
+    format!("{SESSION_COOKIE}=; {SESSION_COOKIE_ATTRIBUTES}; Max-Age=0")
 }
 
 /// The `Set-Cookie` header to reissue when `Authenticator::authenticate_session`
@@ -84,6 +94,14 @@ mod tests {
         assert!(header.contains("SameSite=Lax"));
         assert!(header.contains("Path=/"));
         assert!(header.contains("Max-Age=43200"));
+    }
+
+    #[test]
+    fn cleared_session_cookie_header_matches_the_login_cookie_attributes() {
+        assert_eq!(
+            cleared_session_cookie_header(),
+            "signaldb_session=; HttpOnly; Secure; SameSite=Lax; Path=/; Max-Age=0"
+        );
     }
 
     #[test]

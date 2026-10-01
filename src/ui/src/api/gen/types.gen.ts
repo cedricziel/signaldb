@@ -2757,7 +2757,10 @@ export type SessionMembership = {
  * The signed-in user, as reported by `GET /ui/session`.
  */
 export type SessionUser = {
-    display_name?: string | null;
+    /**
+     * Always serialized, `null` when the user has no display name.
+     */
+    display_name: string | null;
     email: string;
     id: string;
     /**
@@ -3291,7 +3294,10 @@ export type WhoamiTenant = {
 };
 
 export type WhoamiUser = {
-    display_name?: string | null;
+    /**
+     * Always serialized, `null` when the user has no display name.
+     */
+    display_name: string | null;
     email: string;
     id: string;
     is_instance_admin: boolean;
@@ -7003,6 +7009,10 @@ export type WhoamiErrors = {
      */
     401: unknown;
     /**
+     * The authenticated tenant no longer exists
+     */
+    404: SessionErrorBody;
+    /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
@@ -7029,6 +7039,10 @@ export type WhoamiErrors = {
          */
         status: string;
     };
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
 };
 
 export type WhoamiError = WhoamiErrors[keyof WhoamiErrors];
@@ -8365,7 +8379,7 @@ export type CreateSessionData = {
 
 export type CreateSessionErrors = {
     /**
-     * Malformed tenant or dataset ID
+     * Malformed request body, or malformed tenant or dataset ID
      */
     400: SessionErrorBody;
     /**

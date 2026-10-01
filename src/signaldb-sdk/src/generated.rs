@@ -5325,7 +5325,8 @@ pub mod types {
     ///The signed-in user, as reported by `GET /ui/session`.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct SessionUser {
-        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        ///Always serialized, `null` when the user has no display name.
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
         pub display_name: ::std::option::Option<::std::string::String>,
         pub email: ::std::string::String,
         pub id: ::std::string::String,
@@ -6248,7 +6249,8 @@ pub mod types {
     ///`WhoamiUser`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiUser {
-        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        ///Always serialized, `null` when the user has no display name.
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
         pub display_name: ::std::option::Option<::std::string::String>,
         pub email: ::std::string::String,
         pub id: ::std::string::String,
@@ -21022,7 +21024,7 @@ pub mod types {
         impl ::std::default::Default for SessionUser {
             fn default() -> Self {
                 Self {
-                    display_name: Ok(Default::default()),
+                    display_name: Err("no value supplied for display_name".to_string()),
                     email: Err("no value supplied for email".to_string()),
                     id: Err("no value supplied for id".to_string()),
                     is_demo: Err("no value supplied for is_demo".to_string()),
@@ -23791,7 +23793,7 @@ pub mod types {
         impl ::std::default::Default for WhoamiUser {
             fn default() -> Self {
                 Self {
-                    display_name: Ok(Default::default()),
+                    display_name: Err("no value supplied for display_name".to_string()),
                     email: Err("no value supplied for email".to_string()),
                     id: Err("no value supplied for id".to_string()),
                     is_instance_admin: Err("no value supplied for is_instance_admin".to_string()),
@@ -25423,8 +25425,8 @@ impl Client {
     /**POST /ui/session
 
     Validates the credentials and sets the session cookie. 200 on success,
-    401/403 with a JSON error body on invalid credentials, 400 on malformed
-    tenant/dataset IDs. The response always carries the user's memberships;
+    401/403 with a JSON error body on invalid credentials, 400 on a body that
+    isn't the expected JSON or on malformed tenant/dataset IDs. The response always carries the user's memberships;
     `tenant`/`dataset` are null when the user must still pick one (the
     session itself is tenant-agnostic — every request re-validates the
     `X-Tenant-ID` header against the memberships).
@@ -30622,7 +30624,9 @@ pub mod builder {
             match response.status().as_u16() {
                 200u16 => ResponseValue::from_response(response).await,
                 401u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                404u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 429u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
+                500u16 => Err(Error::ErrorResponse(ResponseValue::empty(response))),
                 _ => Err(Error::UnexpectedResponse(response)),
             }
         }

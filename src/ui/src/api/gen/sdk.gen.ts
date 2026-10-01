@@ -1239,8 +1239,8 @@ export const currentSession = <ThrowOnError extends boolean = false>(options?: O
  * POST /ui/session
  *
  * Validates the credentials and sets the session cookie. 200 on success,
- * 401/403 with a JSON error body on invalid credentials, 400 on malformed
- * tenant/dataset IDs. The response always carries the user's memberships;
+ * 401/403 with a JSON error body on invalid credentials, 400 on a body that
+ * isn't the expected JSON or on malformed tenant/dataset IDs. The response always carries the user's memberships;
  * `tenant`/`dataset` are null when the user must still pick one (the
  * session itself is tenant-agnostic — every request re-validates the
  * `X-Tenant-ID` header against the memberships).

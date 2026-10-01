@@ -4364,8 +4364,28 @@
           "401": {
             "description": "Invalid or expired credential"
           },
+          "404": {
+            "description": "The authenticated tenant no longer exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5872,7 +5892,7 @@
           "session"
         ],
         "summary": "POST /ui/session",
-        "description": "Validates the credentials and sets the session cookie. 200 on success,\n401/403 with a JSON error body on invalid credentials, 400 on malformed\ntenant/dataset IDs. The response always carries the user's memberships;\n`tenant`/`dataset` are null when the user must still pick one (the\nsession itself is tenant-agnostic — every request re-validates the\n`X-Tenant-ID` header against the memberships).",
+        "description": "Validates the credentials and sets the session cookie. 200 on success,\n401/403 with a JSON error body on invalid credentials, 400 on a body that\nisn't the expected JSON or on malformed tenant/dataset IDs. The response always carries the user's memberships;\n`tenant`/`dataset` are null when the user must still pick one (the\nsession itself is tenant-agnostic — every request re-validates the\n`X-Tenant-ID` header against the memberships).",
         "operationId": "create_session",
         "requestBody": {
           "content": {
@@ -5896,7 +5916,7 @@
             }
           },
           "400": {
-            "description": "Malformed tenant or dataset ID",
+            "description": "Malformed request body, or malformed tenant or dataset ID",
             "content": {
               "application/json": {
                 "schema": {
@@ -11881,6 +11901,7 @@
         "required": [
           "id",
           "email",
+          "display_name",
           "is_instance_admin",
           "is_demo"
         ],
@@ -11889,7 +11910,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Always serialized, `null` when the user has no display name."
           },
           "email": {
             "type": "string"
@@ -12843,6 +12865,7 @@
         "required": [
           "id",
           "email",
+          "display_name",
           "is_instance_admin"
         ],
         "properties": {
@@ -12850,7 +12873,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Always serialized, `null` when the user has no display name."
           },
           "email": {
             "type": "string"

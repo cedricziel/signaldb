@@ -650,6 +650,11 @@ mod tests {
             ("LoginConfigResponse", "oidc"),
             ("CurrentSessionResponse", "tenant"),
             ("CurrentSessionResponse", "dataset"),
+            ("SessionUser", "display_name"),
+            ("CreateSessionResponse", "tenant"),
+            ("CreateSessionResponse", "dataset"),
+            ("WhoamiUser", "display_name"),
+            ("WhoamiIdentityResponse", "default_dataset"),
         ] {
             let field_schema = spec
                 .pointer(&format!(
@@ -729,6 +734,19 @@ mod tests {
             serde_json::json!([{}, { "sessionCookie": [] }])
         );
         assert!(logout.pointer("/responses/204").is_some());
+
+        let whoami = spec
+            .pointer("/paths/~1api~1v1~1whoami/get")
+            .expect("get /api/v1/whoami: missing from OpenAPI document");
+        for status in ["404", "500"] {
+            assert_eq!(
+                whoami.pointer(&format!(
+                    "/responses/{status}/content/application~1json/schema/$ref"
+                )),
+                Some(&serde_json::json!("#/components/schemas/SessionErrorBody")),
+                "get /api/v1/whoami {status}: expected a SessionErrorBody body"
+            );
+        }
     }
 
     /// Route-vs-OpenAPI drift guard (design D4). axum 0.8 does not expose a

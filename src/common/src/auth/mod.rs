@@ -17,7 +17,8 @@ pub use password::{
     verify_password,
 };
 pub use session::{
-    SESSION_COOKIE, renewed_cookie_header, session_cookie_header, session_token_from_headers,
+    SESSION_COOKIE, cleared_session_cookie_header, renewed_cookie_header, session_cookie_header,
+    session_token_from_headers,
 };
 pub use validation::{
     ValidationError, parse_bearer_token, validate_dataset_id, validate_id, validate_scopes,
