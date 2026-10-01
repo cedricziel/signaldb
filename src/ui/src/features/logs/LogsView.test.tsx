@@ -69,6 +69,53 @@ function renderView(state: Partial<ExploreState> = {}) {
 }
 
 describe("LogsView", () => {
+  it("tails new log lines in live mode instead of re-running the window", async () => {
+    const bodies: unknown[] = [];
+    stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        bodyMatch: (b) => {
+          bodies.push(b);
+          return isRowsQuery(b);
+        },
+        body: {
+          ...irLogRowsResponse([
+            {
+              tsNs: "1000000000",
+              body: "tailed line",
+              serviceName: "checkout",
+              severityText: "info",
+            },
+          ]),
+          tail: {
+            cursor: "c1",
+            settled_through_ns: 0,
+            settle_ns: 10_000_000_000,
+            caught_up: true,
+          },
+        },
+      },
+      { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
+      {
+        match: "/api/v1/query",
+        bodyMatch: isFieldsQuery,
+        body: describeFieldsResponse([]),
+      },
+    ]);
+    renderView({ live: true });
+    expect(await screen.findByText("tailed line")).toBeInTheDocument();
+    const tailDoc = bodies.find(isRowsQuery) as {
+      irVersion: number;
+      tail?: object;
+      range: { to: string };
+      pipeline: object[];
+    };
+    expect(tailDoc.irVersion).toBe(15);
+    expect(tailDoc.tail).toEqual({});
+    expect(tailDoc.range.to).toBe("now");
+    expect(JSON.stringify(tailDoc.pipeline)).not.toContain("order");
+  });
+
   it("renders fetched log rows and the row count", async () => {
     routes();
     renderView();
