@@ -2955,6 +2955,56 @@ async fn correlate_semi_on_resource_identity_matches_same_resource_across_signal
     );
 }
 
+/// Issue #2122 — a stepped `series` aggregate over `metrics` buckets the
+/// persisted points instead of failing with "No field named timestamp".
+#[tokio::test]
+async fn metrics_series_aggregate_end_to_end() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    for (service, metric) in [("api", "requests"), ("api", "errors"), ("web", "requests")] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(&ctx, gauge_metric_request(service, metric, 1.0))
+            .await
+            .expect("ingest gauge point");
+    }
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "metrics", range(), 3).await;
+
+    let document = serde_json::json!({
+        "irVersion": 1, "from": "metrics", "result": "series",
+        "range": {
+            "from": (BASE_NS - 60_000_000_000).to_string(),
+            "to": (BASE_NS + 60_000_000_000).to_string(),
+        },
+        "pipeline": [ { "aggregate": { "by": ["service.name"], "step": "1m",
+            "aggs": [ { "fn": "count", "as": "n" } ] } } ]
+    });
+    let (status, body) = post_ir(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "metrics series query: {body}");
+    let mut counts: Vec<(String, f64)> = body["series"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a series result: {body}"))
+        .iter()
+        .map(|s| {
+            let service = s["labels"]["service_name"].as_str().unwrap_or_default();
+            let total = s["points"]
+                .as_array()
+                .expect("points")
+                .iter()
+                .filter_map(|p| p[1].as_f64())
+                .sum();
+            (service.to_string(), total)
+        })
+        .collect();
+    counts.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        counts,
+        vec![("api".to_string(), 2.0), ("web".to_string(), 1.0)],
+        "{body}"
+    );
+}
+
 /// Scenario 7 — an `inner` join's per-source-row `fanout` cap keeps only the
 /// earliest `fanout` target rows and reports it as a warning (`semi`/`anti`
 /// never do, proven above).

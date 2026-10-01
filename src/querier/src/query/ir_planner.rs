@@ -2435,6 +2435,23 @@ impl<'a> Lowering<'a> {
         Ok(df)
     }
 
+    /// `time_col <op> ns` over the bare column, for an inclusive `op`. The
+    /// Iceberg provider pushes down any filter that reads only the partition
+    /// source column, but rewrites it onto the `Hour(timestamp)` partition
+    /// only when the column itself is an operand: a filter over an
+    /// expression of the column (including one pushed through a projection)
+    /// fails the scan with "No field named timestamp" (#2122). A strict
+    /// bound would become a strict bound on the hour and prune the hour it
+    /// falls in.
+    fn time_bound(&self, ns: i64, op: Operator) -> Expr {
+        let bound = if self.source.time_is_timestamp {
+            lit(ScalarValue::TimestampNanosecond(Some(ns), None))
+        } else {
+            lit(ns)
+        };
+        datafusion::logical_expr::binary_expr(col(self.source.time_col), op, bound)
+    }
+
     fn lower_stage(&mut self, df: DataFrame, stage: &Stage) -> Result<DataFrame, QuerierError> {
         match stage {
             Stage::Where(pred) => {
@@ -3057,21 +3074,23 @@ impl<'a> Lowering<'a> {
                 // The one instant `t = from + k·step` whose `(t - step, t]`
                 // holds the point: `k` is the ceiling of `(ts - from) / step`,
                 // which integer division gives for every `ts > from - step`.
-                const INSTANT: &str = "__instant";
+                // The last instant at or before `to` bounds `ts` from above.
                 check_instants(w.start_ns, w.end_ns, step_ns, step_ns)?;
+                let last = w.start_ns + (w.end_ns - w.start_ns).div_euclid(step_ns) * step_ns;
                 let ts = cast(
                     cast(col(self.source.time_col), ts_type.clone()),
                     DataType::Int64,
                 );
                 let at = lit(w.start_ns)
-                    + (ts.clone() - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns)
-                        * lit(step_ns);
+                    + (ts - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns) * lit(step_ns);
                 df = df
-                    .filter(ts.gt(lit(w.start_ns.saturating_sub(step_ns))))
-                    .and_then(|df| df.with_column(INSTANT, at))
-                    .and_then(|df| df.filter(ident(INSTANT).lt_eq(lit(w.end_ns))))
+                    .filter(self.time_bound(
+                        w.start_ns.saturating_sub(step_ns).saturating_add(1),
+                        Operator::GtEq,
+                    ))
+                    .and_then(|df| df.filter(self.time_bound(last, Operator::LtEq)))
                     .map_err(QuerierError::QueryFailed)?;
-                cast(ident(INSTANT), ts_type)
+                cast(at, ts_type)
             } else {
                 let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
                     IntervalMonthDayNano::new(0, 0, step_ns),
