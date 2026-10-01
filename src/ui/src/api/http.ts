@@ -309,8 +309,10 @@ export async function retryingFetch(
   const send = () => {
     const timeout = withRequestTimeout(signal, requestTimeoutMs);
     const result = request
-      ? fetch(new Request(request.clone(), { signal: timeout.signal }))
-      : fetch(input as string | URL, { ...init, signal: timeout.signal });
+      ? // eslint-disable-next-line no-restricted-syntax -- the generated client's transport
+        fetch(new Request(request.clone(), { signal: timeout.signal }))
+      : // eslint-disable-next-line no-restricted-syntax -- the generated client's transport
+        fetch(input as string | URL, { ...init, signal: timeout.signal });
     return result.finally(timeout.clear);
   };
   let attempt = 1;

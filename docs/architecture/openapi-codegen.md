@@ -10,6 +10,8 @@ sources:
   - src/signaldb-api/src/**
   - src/common/src/tenant_api.rs
   - xtask/src/main.rs
+  - src/ui/eslint.config.js
+  - src/ui/src/api/session.ts
   - xtask/src/tempopb.rs
   - src/ui/openapi-ts.config.ts
   - api/signaldb-api.json
@@ -235,7 +237,12 @@ router root as their base URL.
    fast with a message naming the missing `node_modules` directory and the
    fix, rather than pnpm's opaque `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`).
 4. Consume the endpoint through the generated clients — the UI must not issue
-   raw HTTP against the API (see the DoD in `openspec/config.yaml`).
+   raw HTTP against the API (see the DoD in `openspec/config.yaml`). The UI's
+   ESLint config enforces this: a bare `fetch()`, `window.fetch()`, or
+   `globalThis.fetch()` outside `src/api/gen/**` fails
+   `pnpm --filter ./src/ui lint`. The few real transports (the generated
+   client's `retryingFetch`, the service worker) disable the rule inline with
+   a reason.
 5. Commit the code, the spec, and the regenerated clients together.
 
 CI enforces all of this: the golden test gates spec-vs-code in the Test Suite
@@ -243,6 +250,15 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 
 ## Known gaps
 
+- **The UI's login, logout, and whoami calls still bypass the generated
+  client.** `src/ui/src/api/session.ts`'s `createSession`/`deleteSession`
+  (`POST`/`DELETE /ui/session`) have no `#[utoipa::path]`, so there is no
+  generated operation to call; its `whoami` reads `datasets`,
+  `default_dataset`, `user`, and `memberships`, which the documented
+  `WhoamiIdentityResponse` leaves out. They go through
+  `withProxyLoginRecovery(retryingFetch)` directly until both are in the
+  spec. The lint rule above doesn't catch them because they never call
+  `fetch` by name.
 - **A nullable `$ref` (struct or enum) used to break the Rust SDK
   generator.** `Option<T>` where `T` derives `ToSchema` makes utoipa emit
   `"oneOf": [{"type": "null"}, {"$ref": "..."}]`, which progenitor's

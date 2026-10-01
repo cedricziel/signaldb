@@ -21,6 +21,7 @@ self.addEventListener("message", (event: ExtendableMessageEvent) => {
 
 async function appShell(): Promise<Response> {
   const cached = await matchPrecache("index.html");
+  // eslint-disable-next-line no-restricted-syntax -- the service worker's own app shell, not an API call
   return cached ?? fetch("index.html");
 }
 

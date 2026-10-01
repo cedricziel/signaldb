@@ -26,6 +26,7 @@ interface RecoveryDeps {
 }
 
 const defaultDeps: RecoveryDeps = {
+  // eslint-disable-next-line no-restricted-syntax -- the default transport this wrapper decorates
   fetch: (...args) => globalThis.fetch(...args),
   reload: () => window.location.reload(),
   isOnline: () => navigator.onLine,
