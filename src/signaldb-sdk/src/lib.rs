@@ -17,11 +17,14 @@
 //!   policy as the client's inner value).
 //! - [`builder`] is hand-written: [`ClientBuilder`], the one way consumers
 //!   construct a [`Client`] (headers, timeouts, retry policy).
+//! - [`ir`] is hand-written: the Query IR types the generator cannot express
+//!   faithfully, substituted for the generated ones by `cargo xtask generate`.
 
 #[allow(clippy::all)]
 mod generated;
 
 pub mod builder;
+pub mod ir;
 pub mod query;
 pub mod retry;
 

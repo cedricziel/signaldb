@@ -288,7 +288,11 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
         // specialization (the generated code only implements the hooks for
         // `&Client`). No post-processing of progenitor's output is needed;
         // `signaldb-sdk/tests/retry.rs` guards both halves.
-        .with_inner_type(quote::quote!(crate::retry::RetryPolicy));
+        .with_inner_type(quote::quote!(crate::retry::RetryPolicy))
+        // `IrMatch.spansets` key order is significant (it orders each row's
+        // `spansets` column); the generated `HashMap` would lose it, so the
+        // hand-written `src/signaldb-sdk/src/ir.rs` keeps declaration order.
+        .with_replacement("IrMatch", "crate::ir::IrMatch", std::iter::empty());
 
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator

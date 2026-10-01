@@ -83,6 +83,37 @@ fn client_exposes_ir_query_and_round_trips_the_request() {
     assert_eq!(round.result, "rows");
 }
 
+/// A `match` stage's span-set order is significant (it orders each row's
+/// `spansets` column), so a document passed through the SDK's typed stages
+/// must reach the server with its span-sets in declaration order.
+#[test]
+fn match_stage_keeps_span_set_declaration_order() {
+    use signaldb_sdk::types::IrStage;
+
+    let names = ["zeta", "alpha", "mid", "beta", "omega", "gamma"];
+    let spansets: serde_json::Map<String, serde_json::Value> = names
+        .iter()
+        .map(|n| {
+            let leaf = serde_json::json!({ "field": "span.name", "op": "eq", "value": n });
+            (n.to_string(), leaf)
+        })
+        .collect();
+    let stage = serde_json::json!({
+        "match": {
+            "spansets": spansets,
+            "relations": [{ "left": "zeta", "op": "child", "right": "alpha" }]
+        }
+    });
+
+    let typed: IrStage = serde_json::from_value(stage).unwrap();
+    let text = serde_json::to_string(&typed).unwrap();
+    let positions: Vec<usize> = names
+        .iter()
+        .map(|n| text.find(&format!("\"{n}\":")).unwrap())
+        .collect();
+    assert!(positions.is_sorted(), "span-sets reordered: {text}");
+}
+
 #[tokio::test]
 async fn client_forwards_credentials_via_default_headers() {
     use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};
