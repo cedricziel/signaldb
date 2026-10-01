@@ -86,6 +86,10 @@ optional follow-up and outside this change's definition of done.
       snapshot test). 3.5 passes. Add the `[querier]` page keys from design
       D9 to `QuerierConfig`, `signaldb.dist.toml`, and the configuration docs
       (A paged plan drops a trailing `limit`; the router caps it via `ceiling`.)
+      (A `rows` page fetches `size + 1` rows and re-reads the boundary tie
+      group, bounded by the tie limit, only when it reaches the fetch's end. A
+      `trace` page takes the next `size + 1` trace ids by a TopK and their
+      spans by a semi-join, each trace capped at `match_max_trace_spans`.)
 
 ## 4. Router: pagination goes live (router, query-ir version, API contract)
 
