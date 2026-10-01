@@ -7,6 +7,7 @@
 import { Link, useLocation } from "react-router";
 import type { ExploreState } from "../../lib/urlState";
 import { useBreadcrumbLeafValue } from "./breadcrumbLeaf";
+import { CONNECT_TITLE } from "./ConnectPanel";
 import { NavIcon } from "./NavIcon";
 import { currentPageFor, pageById, pageHref } from "./navModel";
 
@@ -80,12 +81,13 @@ export function PageHeader({
       </button>
       <button
         type="button"
-        className="app-connect-trigger"
+        className="btn btn-ghost app-connect-trigger"
         onClick={onOpenConnect}
+        aria-label="Connect"
+        title={CONNECT_TITLE}
         aria-haspopup="dialog"
       >
-        <NavIcon name="connect" size={15} />
-        Connect
+        <NavIcon name="connect" size={16} />
       </button>
     </header>
   );

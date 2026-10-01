@@ -582,24 +582,17 @@
   white-space: nowrap;
 }
 
+/* Square icon variant of `.btn btn-ghost`, sized to the search field. */
 .app-connect-trigger {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  flex: none;
+  display: grid;
+  place-items: center;
+  width: 32px;
   height: 32px;
-  box-sizing: border-box;
-  padding: 0 10px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--bg-inset);
+  padding: 0;
   color: var(--dim);
-  font: 12px var(--ui);
-  cursor: pointer;
 }
 
 .app-connect-trigger:hover {
-  border-color: var(--dim);
   color: var(--text);
 }
 

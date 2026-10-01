@@ -11,6 +11,7 @@ import { useEscapeKey } from "../../hooks/useEscapeKey";
 import { useMediaQuery } from "../../hooks/useMediaQuery";
 import { crossSignalSearch, type ExploreState } from "../../lib/urlState";
 import { useBreadcrumbLeafValue } from "./breadcrumbLeaf";
+import { CONNECT_TITLE } from "./ConnectPanel";
 import { BrandPulse, NavIcon } from "./NavIcon";
 import {
   currentPageFor,
@@ -411,6 +412,7 @@ function MobileNav({ state, update, who, canManage, isDemo, nav }: NavProps) {
           type="button"
           className="app-mobilebar-btn"
           aria-label="Connect"
+          title={CONNECT_TITLE}
           aria-haspopup="dialog"
           onClick={nav.openConnect}
         >

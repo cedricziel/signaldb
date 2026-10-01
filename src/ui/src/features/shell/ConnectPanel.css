@@ -1,5 +1,5 @@
 .connect-panel {
-  width: min(640px, 86vw);
+  width: min(760px, 90vw);
   box-sizing: border-box;
   padding: 20px 24px;
   display: flex;
@@ -40,18 +40,106 @@
   margin: 0;
 }
 
-.connect-section {
-  display: flex;
-  flex-direction: column;
-  gap: 10px;
-  padding-top: 14px;
-  border-top: 1px solid var(--border);
+.connect-layout {
+  display: grid;
+  grid-template-columns: 148px minmax(0, 1fr);
+  gap: 20px;
+  min-height: 340px;
 }
 
-.connect-section-title {
-  margin: 0;
-  font-size: 13px;
+.connect-tabs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  padding-right: 12px;
+  border-right: 1px solid var(--border);
+}
+
+.connect-tab {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--dim);
+  font: 13px var(--ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.connect-tab:hover,
+.connect-tab[aria-selected="true"] {
+  background: var(--surface2);
+  color: var(--text);
+}
+
+.connect-tab[aria-selected="true"] {
   font-weight: 600;
+}
+
+.connect-tab[aria-selected="true"] .nav-icon {
+  color: var(--accent);
+}
+
+.connect-tabpanel {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  min-width: 0;
+}
+
+.connect-tiles {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.connect-tile {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text);
+  font: 13px var(--ui);
+  text-align: left;
+  cursor: pointer;
+}
+
+.connect-tile:hover {
+  border-color: var(--dim);
+  background: var(--surface2);
+}
+
+.connect-tile-title {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-weight: 600;
+}
+
+.connect-tile-title .nav-icon {
+  color: var(--accent);
+}
+
+.connect-tile-blurb {
+  flex: 1;
+  color: var(--dim);
+  font-size: 12px;
+  line-height: 1.45;
+}
+
+.connect-tile-value {
+  overflow: hidden;
+  color: var(--dim);
+  font: 11px var(--mono);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .connect-value {
@@ -99,6 +187,35 @@
   .connect-panel {
     width: auto;
     padding: 16px;
+  }
+
+  .connect-layout {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+    min-height: 0;
+  }
+
+  /* On a phone the vertical rail would eat half the width, so the tabs
+     become a scrolling row above the panel. */
+  .connect-tabs {
+    flex-direction: row;
+    overflow-x: auto;
+    /* Room for the focus ring, which the scroll container would clip. */
+    padding: 3px 3px 8px;
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .connect-tab {
+    flex: none;
+  }
+
+  .connect-tab .nav-icon {
+    display: none;
+  }
+
+  .connect-tiles {
+    grid-template-columns: minmax(0, 1fr);
   }
 
   .connect-value {

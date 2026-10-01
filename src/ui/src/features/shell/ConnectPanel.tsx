@@ -16,7 +16,9 @@ import { ApiError, toErrorMessage } from "../../api/http";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
 import type { ExploreState } from "../../lib/urlState";
+import { useRovingFocus } from "../../hooks/useRovingFocus";
 import { SkeletonLines } from "../explore/Skeleton";
+import { NavIcon, type NavIconName } from "./NavIcon";
 import "./ConnectPanel.css";
 
 const SAMPLE_IR =
@@ -53,6 +55,40 @@ function curlSnippet(headers: ConnectionHeaders, queryUrl: string) {
   ].join(" \\\n");
 }
 
+/** Tooltip on the shell's Connect triggers (header and phone top bar). */
+export const CONNECT_TITLE = "Connect: MCP, CLI and API";
+
+type WayId = "mcp" | "cli" | "api";
+type TabId = "overview" | WayId;
+
+const WAYS: { id: WayId; label: string; icon: NavIconName; blurb: string }[] = [
+  {
+    id: "mcp",
+    label: "MCP",
+    icon: "integrations",
+    blurb: "Let an agent query this dataset over the Model Context Protocol.",
+  },
+  {
+    id: "cli",
+    label: "CLI",
+    icon: "query",
+    blurb: "Run queries and manage the tenant from a terminal.",
+  },
+  {
+    id: "api",
+    label: "HTTP API",
+    icon: "schema",
+    blurb: "Send Query IR documents from your own code.",
+  },
+];
+
+const TABS: { id: TabId; label: string; icon: NavIconName }[] = [
+  { id: "overview", label: "Overview", icon: "overview" },
+  ...WAYS,
+];
+
+const stepTab = (i: number, d: -1 | 1) => i + d;
+
 export function ConnectPanel({
   state,
   canManage,
@@ -63,6 +99,14 @@ export function ConnectPanel({
   onClose: () => void;
 }) {
   const connection = useQuery(connectionQuery(state));
+  const roving = useRovingFocus(TABS.length, { vertical: stepTab });
+  const tab = TABS[roving.activeIndex]!.id;
+  const select = (id: TabId) =>
+    roving.setActiveIndex(TABS.findIndex((t) => t.id === id));
+  const baseId = useId();
+  const tabId = (id: TabId) => `${baseId}-tab-${id}`;
+  const panelId = (id: TabId) => `${tabId(id)}-panel`;
+
   return (
     <Dialog label="Connect" onClose={onClose} className="connect-panel">
       <div className="connect-head">
@@ -72,27 +116,67 @@ export function ConnectPanel({
           <strong>
             {state.tenant} / {state.dataset}
           </strong>{" "}
-          from an agent, the CLI or your own code. Replace{" "}
-          <code>&lt;api-key&gt;</code> with a key that has the read scopes.
-          {canManage && (
-            <>
-              {" "}
-              <Link to="/api-keys" onClick={onClose}>
-                Create an API key
-              </Link>
-            </>
-          )}
+          from an agent, the CLI or your own code.
         </p>
       </div>
-      <ConnectBody connection={connection} />
+      <div className="connect-layout">
+        <div
+          className="connect-tabs"
+          role="tablist"
+          aria-label="Ways to connect"
+          aria-orientation="vertical"
+        >
+          {TABS.map((t, i) => (
+            <button
+              key={t.id}
+              {...roving.itemProps(i)}
+              id={tabId(t.id)}
+              type="button"
+              role="tab"
+              className="connect-tab"
+              aria-selected={tab === t.id}
+              aria-controls={panelId(t.id)}
+              onClick={() => select(t.id)}
+            >
+              <NavIcon name={t.icon} size={15} />
+              {t.label}
+            </button>
+          ))}
+        </div>
+        <div
+          className="connect-tabpanel"
+          role="tabpanel"
+          id={panelId(tab)}
+          aria-labelledby={tabId(tab)}
+        >
+          <TabBody
+            tab={tab}
+            connection={connection}
+            onPick={select}
+            apiKeyLink={
+              canManage && (
+                <Link to="/api-keys" onClick={onClose}>
+                  Create an API key
+                </Link>
+              )
+            }
+          />
+        </div>
+      </div>
     </Dialog>
   );
 }
 
-function ConnectBody({
+function TabBody({
+  tab,
   connection,
+  onPick,
+  apiKeyLink,
 }: {
+  tab: TabId;
   connection: UseQueryResult<ConnectionInfoResponse>;
+  onPick: (id: TabId) => void;
+  apiKeyLink: ReactNode;
 }) {
   if (connection.isError) {
     return (
@@ -119,62 +203,81 @@ function ConnectBody({
     );
   }
   const info = connection.data;
-  if (!info) return <SkeletonLines lines={10} />;
+  if (!info) return <SkeletonLines lines={8} />;
 
   const { headers, mcp, query } = info;
   const queryUrl = `${query.api_url}${query.query_ir}`;
-  return (
-    <>
-      {info.notes.length > 0 && (
-        <div className="warn-callout connect-notes" role="note">
-          {info.notes.map((n) => (
-            <p key={n}>{n}</p>
-          ))}
-        </div>
-      )}
-      <Section title="MCP">
-        {mcp ? (
-          <>
-            <Value label="Endpoint" value={mcp.url} />
-            <Snippet
-              title="Claude Code"
-              value={claudeCodeCommand(headers, mcp.url)}
-            />
-            <p className="connect-hint">
-              Claude.ai and ChatGPT: open Settings → Connectors → Add custom
-              connector and paste the endpoint. You sign in and pick tenants on
-              the consent screen; no API key needed.
-            </p>
-          </>
-        ) : (
+  switch (tab) {
+    case "overview": {
+      const status: Record<WayId, string> = {
+        mcp: mcp?.url ?? "Not configured",
+        cli: "signaldb-cli",
+        api: query.api_url,
+      };
+      return (
+        <>
+          {info.notes.length > 0 && (
+            <div className="warn-callout connect-notes" role="note">
+              {info.notes.map((n) => (
+                <p key={n}>{n}</p>
+              ))}
+            </div>
+          )}
+          <div className="connect-tiles">
+            {WAYS.map((t) => (
+              <button
+                key={t.id}
+                type="button"
+                className="connect-tile"
+                onClick={() => onPick(t.id)}
+              >
+                <span className="connect-tile-title">
+                  <NavIcon name={t.icon} size={15} />
+                  {t.label}
+                </span>
+                <span className="connect-tile-blurb">{t.blurb}</span>
+                <code className="connect-tile-value">{status[t.id]}</code>
+              </button>
+            ))}
+          </div>
           <p className="connect-hint">
-            No MCP endpoint is configured for this deployment.
+            Snippets use an <code>&lt;api-key&gt;</code> placeholder: swap in a
+            key with the read scopes. {apiKeyLink}
           </p>
-        )}
-      </Section>
-      <Section title="CLI">
-        <Snippet title="signaldb-cli" value={cliSnippet(info)} />
-      </Section>
-      <Section title="HTTP API">
-        <Value label="Base URL" value={query.api_url} />
-        <Value label="Query IR" value={queryUrl} />
-        <Value label="OpenAPI" value={`${query.api_url}${query.openapi}`} />
-        <Snippet title="curl" value={curlSnippet(headers, queryUrl)} />
-      </Section>
-    </>
-  );
-}
-
-function Section({ title, children }: { title: string; children: ReactNode }) {
-  const id = useId();
-  return (
-    <section className="connect-section" aria-labelledby={id}>
-      <h3 id={id} className="connect-section-title">
-        {title}
-      </h3>
-      {children}
-    </section>
-  );
+        </>
+      );
+    }
+    case "mcp":
+      return mcp ? (
+        <>
+          <Value label="Endpoint" value={mcp.url} />
+          <Snippet
+            title="Claude Code"
+            value={claudeCodeCommand(headers, mcp.url)}
+          />
+          <p className="connect-hint">
+            Claude.ai and ChatGPT: open Settings → Connectors → Add custom
+            connector and paste the endpoint. You sign in and pick tenants on
+            the consent screen; no API key needed.
+          </p>
+        </>
+      ) : (
+        <p className="connect-hint">
+          No MCP endpoint is configured for this deployment.
+        </p>
+      );
+    case "cli":
+      return <Snippet title="signaldb-cli" value={cliSnippet(info)} />;
+    case "api":
+      return (
+        <>
+          <Value label="Base URL" value={query.api_url} />
+          <Value label="Query IR" value={queryUrl} />
+          <Value label="OpenAPI" value={`${query.api_url}${query.openapi}`} />
+          <Snippet title="curl" value={curlSnippet(headers, queryUrl)} />
+        </>
+      );
+  }
 }
 
 function Value({ label, value }: { label: string; value: string }) {
