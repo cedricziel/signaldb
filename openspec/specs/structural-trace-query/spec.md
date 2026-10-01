@@ -33,8 +33,14 @@ The warning SHALL state how many matched traces may be missing witness spans and
 how many evaluated, unmatched traces may have matched over a wider range. It
 SHALL name up to three example trace ids. It SHALL name both possible causes:
 a relative outside the range, or a span that was never ingested. A trace that
-was not evaluated because a span-set had no in-range span SHALL NOT be counted,
-and the absence of the warning SHALL NOT be presented as proof of completeness.
+has no in-range span for some span-set cannot match and is not evaluated. It
+SHALL be counted as unmatched when at least one of its in-range spans
+satisfies some span-set predicate and either none of its in-range spans has an
+empty or all-zero `parent_span_id`, or one of its in-range spans ends after
+the range end. Counting it SHALL NOT buffer the trace, so the per-trace bounds
+never fail a query on its account. Such a trace with an in-range root and
+another missing parent is not counted, and the absence of the warning SHALL
+NOT be presented as proof of completeness.
 
 #### Scenario: Descendant relationship matches at any depth
 
@@ -56,6 +62,15 @@ and the absence of the warning SHALL NOT be presented as proof of completeness.
 - **THEN** the response carries a `match_incomplete_trace` warning that counts
   the trace (as matched or unmatched, by its outcome) and names it as an
   example, and the result rows are the same as without the warning
+
+#### Scenario: A trace whose span-set is cut off counts as unmatched
+
+- **WHEN** a `match` with a `child` relation from a root span-set evaluates a
+  range that starts after a trace's root, so the root span-set has no in-range
+  span while the trace's in-range child references the root as its parent
+- **THEN** the response carries a `match_incomplete_trace` warning that counts
+  the trace as unmatched and names it as an example, and the result does not
+  contain the trace
 
 #### Scenario: A span open past the range end is reported
 
