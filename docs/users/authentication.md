@@ -94,6 +94,11 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.
 
+All of these are in the OpenAPI document (operations `create_session`,
+`current_session`, `delete_session`, `login_config`, and `whoami`), so the
+generated clients reach them like any other endpoint. Session failures
+answer with a `{"error": "..."}` body.
+
 ### Demo account
 
 When an instance runs with `[demo] enabled = true`, a shared read-only login

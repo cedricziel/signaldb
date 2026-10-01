@@ -96,6 +96,9 @@ async fn whoami() -> Response {
         "user_id": "",
         "tenant": {"id": "acme", "slug": "acme", "name": "Acme"},
         "dataset": "production",
+        "memberships": [],
+        "datasets": [],
+        "default_dataset": null,
         "granted_tenants": [{"tenant_id": "acme"}],
     }))
     .into_response()

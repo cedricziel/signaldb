@@ -4364,8 +4364,28 @@
           "401": {
             "description": "Invalid or expired credential"
           },
+          "404": {
+            "description": "The authenticated tenant no longer exists",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          },
           "429": {
             "$ref": "#/components/responses/RateLimited"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
           }
         },
         "security": [
@@ -5866,6 +5886,108 @@
             "sessionCookie": []
           }
         ]
+      },
+      "post": {
+        "tags": [
+          "session"
+        ],
+        "summary": "POST /ui/session",
+        "description": "Validates the credentials and sets the session cookie. 200 on success,\n401/403 with a JSON error body on invalid credentials, 400 on a body that\nisn't the expected JSON or on malformed tenant/dataset IDs. The response always carries the user's memberships;\n`tenant`/`dataset` are null when the user must still pick one (the\nsession itself is tenant-agnostic — every request re-validates the\n`X-Tenant-ID` header against the memberships).",
+        "operationId": "create_session",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateSessionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "Session created; sets the `signaldb_session` HttpOnly cookie",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CreateSessionResponse"
+                }
+              }
+            }
+          },
+          "400": {
+            "description": "Malformed request body, or malformed tenant or dataset ID",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          },
+          "401": {
+            "description": "Invalid email or password",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          },
+          "403": {
+            "description": "Password login disabled, no tenant memberships, or not a member of the requested tenant",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {}
+        ]
+      },
+      "delete": {
+        "tags": [
+          "session"
+        ],
+        "summary": "DELETE /ui/session",
+        "description": "Revokes the session named by the `signaldb_session` cookie, if any, and clears the cookie. Without a valid session cookie this is a no-op that still answers 204.",
+        "operationId": "delete_session",
+        "responses": {
+          "204": {
+            "description": "Session revoked and cookie cleared"
+          },
+          "500": {
+            "description": "Internal error",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/SessionErrorBody"
+                }
+              }
+            }
+          }
+        },
+        "security": [
+          {},
+          {
+            "sessionCookie": []
+          }
+        ]
       }
     },
     "/ui/session/config": {
@@ -6884,6 +7006,66 @@
           "sampled_scan",
           "none"
         ]
+      },
+      "CreateSessionRequest": {
+        "type": "object",
+        "description": "`POST /ui/session`'s request body.",
+        "required": [
+          "email",
+          "password"
+        ],
+        "properties": {
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "email": {
+            "type": "string"
+          },
+          "password": {
+            "type": "string"
+          },
+          "tenant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Optional: when omitted, the response lists the user's tenant\nmemberships so the UI can offer a picker (auto-selected when the\nuser belongs to exactly one tenant)."
+          }
+        }
+      },
+      "CreateSessionResponse": {
+        "type": "object",
+        "description": "`POST /ui/session`'s response: the tenant/dataset the login landed in and\nevery membership the session may enter.",
+        "required": [
+          "tenant",
+          "dataset",
+          "memberships"
+        ],
+        "properties": {
+          "dataset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Always serialized, `null` alongside `tenant`."
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/SessionMembership"
+            }
+          },
+          "tenant": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Always serialized, `null` when the user must still pick a tenant\nfrom `memberships`."
+          }
+        }
       },
       "CreateTenantRequest": {
         "type": "object",
@@ -11681,6 +11863,18 @@
           }
         }
       },
+      "SessionErrorBody": {
+        "type": "object",
+        "description": "The `{\"error\": \"...\"}` body the session and whoami endpoints answer\nfailures with.",
+        "required": [
+          "error"
+        ],
+        "properties": {
+          "error": {
+            "type": "string"
+          }
+        }
+      },
       "SessionMembership": {
         "type": "object",
         "description": "A tenant the signed-in user may select, returned by `POST /ui/session`\nand `GET /ui/session` so the UI can present a picker instead of\nfree-text tenant entry.",
@@ -11707,6 +11901,7 @@
         "required": [
           "id",
           "email",
+          "display_name",
           "is_instance_admin",
           "is_demo"
         ],
@@ -11715,7 +11910,8 @@
             "type": [
               "string",
               "null"
-            ]
+            ],
+            "description": "Always serialized, `null` when the user has no display name."
           },
           "email": {
             "type": "string"
@@ -12536,18 +12732,41 @@
           "sampled"
         ]
       },
+      "WhoamiDataset": {
+        "type": "object",
+        "required": [
+          "id",
+          "slug",
+          "is_default"
+        ],
+        "properties": {
+          "id": {
+            "type": "string"
+          },
+          "is_default": {
+            "type": "boolean"
+          },
+          "slug": {
+            "type": "string"
+          }
+        }
+      },
       "WhoamiIdentityResponse": {
         "type": "object",
-        "description": "The non-null identity contract shared by generated clients.",
+        "description": "`GET /api/v1/whoami`'s response.",
         "required": [
+          "memberships",
           "tenant",
-          "dataset",
           "user_id",
+          "dataset",
+          "datasets",
+          "default_dataset",
           "granted_tenants"
         ],
         "properties": {
           "dataset": {
-            "type": "string"
+            "type": "string",
+            "description": "Dataset resolved by the authentication middleware from the requested\nheader or the tenant default."
           },
           "dataset_ids": {
             "type": [
@@ -12557,21 +12776,68 @@
             "items": {
               "type": "string"
             },
-            "description": "The credential's own dataset-set restriction, if any; `null`/absent\nmeans unrestricted. See [`WhoamiResponse::dataset_ids`]."
+            "description": "The credential's own dataset-set restriction (`TenantContext::\napi_key_dataset_ids`), if any; `null`/absent means unrestricted.\nCallers that need to know which of `datasets` they may actually\nquery (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)\nread this rather than assuming every listed dataset is reachable."
+          },
+          "datasets": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WhoamiDataset"
+            },
+            "description": "The tenant's datasets, narrowed to the credential's own restriction."
+          },
+          "default_dataset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Always serialized, `null` when the tenant (or the credential's\nrestriction) has no default dataset."
           },
           "granted_tenants": {
             "type": "array",
             "items": {
               "$ref": "#/components/schemas/GrantedTenant"
             },
-            "description": "See [`WhoamiResponse::granted_tenants`]."
+            "description": "Every tenant this specific credential's grant reaches (change:\nmcp-multi-tenant-oauth-grants D5) — a one-element array equal to\n`tenant`/`dataset_ids` for a single-tenant credential (API key or\nsingle-tenant OAuth grant), or every tenant in the grant for a\nmulti-tenant OAuth credential. Distinct from `memberships`, which\nlists every tenant the *human user* belongs to regardless of what\nthis credential was scoped to."
+          },
+          "memberships": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/WhoamiMembership"
+            },
+            "description": "Every tenant the human user belongs to (every tenant, as admin, for\nan instance admin); empty for API key credentials."
           },
           "tenant": {
             "$ref": "#/components/schemas/WhoamiTenant"
           },
+          "user": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/WhoamiUser",
+                "description": "The signed-in human user; absent for API key credentials."
+              }
+            ]
+          },
           "user_id": {
             "type": "string",
-            "description": "Stable authenticated user ID. Empty for API key credentials."
+            "description": "Authenticated human user ID. Empty for API key credentials."
+          }
+        }
+      },
+      "WhoamiMembership": {
+        "type": "object",
+        "required": [
+          "tenant_id",
+          "role"
+        ],
+        "properties": {
+          "role": {
+            "$ref": "#/components/schemas/MembershipRole"
+          },
+          "tenant_id": {
+            "type": "string"
           }
         }
       },
@@ -12591,6 +12857,33 @@
           },
           "slug": {
             "type": "string"
+          }
+        }
+      },
+      "WhoamiUser": {
+        "type": "object",
+        "required": [
+          "id",
+          "email",
+          "display_name",
+          "is_instance_admin"
+        ],
+        "properties": {
+          "display_name": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Always serialized, `null` when the user has no display name."
+          },
+          "email": {
+            "type": "string"
+          },
+          "id": {
+            "type": "string"
+          },
+          "is_instance_admin": {
+            "type": "boolean"
           }
         }
       },

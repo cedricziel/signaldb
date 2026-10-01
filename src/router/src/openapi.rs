@@ -138,6 +138,8 @@ impl Modify for ClosedIrVariants {
         crate::endpoints::oidc::callback,
         crate::endpoints::session::connection_info,
         crate::endpoints::session::login_config,
+        crate::endpoints::session::create_session,
+        crate::endpoints::session::delete_session,
         crate::endpoints::session::current_session,
         // Tempo-compatible trace query endpoints
         crate::endpoints::tempo::search,
@@ -250,6 +252,9 @@ impl Modify for ClosedIrVariants {
         // authenticated identity
         crate::endpoints::session::WhoamiIdentityResponse,
         crate::endpoints::session::WhoamiTenant,
+        crate::endpoints::session::WhoamiUser,
+        crate::endpoints::session::WhoamiMembership,
+        crate::endpoints::session::WhoamiDataset,
         // connection details
         crate::endpoints::session::ConnectionInfoResponse,
         crate::endpoints::session::ConnectionHeaders,
@@ -268,6 +273,9 @@ impl Modify for ClosedIrVariants {
         crate::endpoints::session::CurrentSessionResponse,
         crate::endpoints::session::SessionUser,
         crate::endpoints::session::SessionMembership,
+        crate::endpoints::session::CreateSessionRequest,
+        crate::endpoints::session::CreateSessionResponse,
+        crate::endpoints::session::SessionErrorBody,
         // shared enums
         common::catalog::MembershipRole,
         // Tempo-compatible trace query DTOs
@@ -642,6 +650,11 @@ mod tests {
             ("LoginConfigResponse", "oidc"),
             ("CurrentSessionResponse", "tenant"),
             ("CurrentSessionResponse", "dataset"),
+            ("SessionUser", "display_name"),
+            ("CreateSessionResponse", "tenant"),
+            ("CreateSessionResponse", "dataset"),
+            ("WhoamiUser", "display_name"),
+            ("WhoamiIdentityResponse", "default_dataset"),
         ] {
             let field_schema = spec
                 .pointer(&format!(
@@ -674,6 +687,66 @@ mod tests {
                 .any(|v| v.as_str() == Some("password_enabled")),
             "LoginConfigResponse.password_enabled must be required: {required:?}"
         );
+    }
+
+    /// The UI's login and logout reach the router through the generated
+    /// client, so `POST`/`DELETE /ui/session` need operations with stable
+    /// ids and their real bodies. Login takes no credential; logout works
+    /// with or without a session cookie (it's a no-op without one).
+    #[test]
+    fn session_login_and_logout_are_published() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let login = spec
+            .pointer("/paths/~1ui~1session/post")
+            .expect("post /ui/session: missing from OpenAPI document");
+        assert_eq!(login["operationId"], "create_session");
+        assert_eq!(login["security"], serde_json::json!([{}]));
+        assert_eq!(
+            login.pointer("/requestBody/content/application~1json/schema/$ref"),
+            Some(&serde_json::json!(
+                "#/components/schemas/CreateSessionRequest"
+            ))
+        );
+        assert_eq!(
+            login.pointer("/responses/200/content/application~1json/schema/$ref"),
+            Some(&serde_json::json!(
+                "#/components/schemas/CreateSessionResponse"
+            ))
+        );
+        for status in ["400", "401", "403"] {
+            assert_eq!(
+                login.pointer(&format!(
+                    "/responses/{status}/content/application~1json/schema/$ref"
+                )),
+                Some(&serde_json::json!("#/components/schemas/SessionErrorBody")),
+                "post /ui/session {status}: expected a SessionErrorBody body"
+            );
+        }
+
+        let logout = spec
+            .pointer("/paths/~1ui~1session/delete")
+            .expect("delete /ui/session: missing from OpenAPI document");
+        assert_eq!(logout["operationId"], "delete_session");
+        assert_eq!(
+            logout["security"],
+            serde_json::json!([{}, { "sessionCookie": [] }])
+        );
+        assert!(logout.pointer("/responses/204").is_some());
+
+        let whoami = spec
+            .pointer("/paths/~1api~1v1~1whoami/get")
+            .expect("get /api/v1/whoami: missing from OpenAPI document");
+        for status in ["404", "500"] {
+            assert_eq!(
+                whoami.pointer(&format!(
+                    "/responses/{status}/content/application~1json/schema/$ref"
+                )),
+                Some(&serde_json::json!("#/components/schemas/SessionErrorBody")),
+                "get /api/v1/whoami {status}: expected a SessionErrorBody body"
+            );
+        }
     }
 
     /// Route-vs-OpenAPI drift guard (design D4). axum 0.8 does not expose a
@@ -922,12 +995,14 @@ mod tests {
         );
     }
 
-    /// Session login/logout, OAuth 2.1 connector endpoints, `/health`, and
-    /// `/api/v1/openapi.json` itself are deliberately outside the OpenAPI
-    /// document: they are public infrastructure endpoints the SDK has no
-    /// business calling (session cookies, OAuth redirects, the spec document
-    /// itself). Routes in `ALLOWLISTED_ROUTES` are pre-existing gaps out of
-    /// this change's scope, not required to have an operation. The
+    /// OAuth 2.1 connector endpoints, `/health`, and `/api/v1/openapi.json`
+    /// itself are deliberately outside the OpenAPI document: they are public
+    /// infrastructure endpoints the SDK has no business calling (OAuth
+    /// redirects, the spec document itself). The `/ui/session` routes are in
+    /// the document but outside this list (see
+    /// `session_login_and_logout_are_published`). Routes in
+    /// `ALLOWLISTED_ROUTES` are pre-existing gaps out of this change's scope,
+    /// not required to have an operation. The
     /// Pyroscope-compatible routes (`/pyroscope/**`, `/api/profiles/**`) are
     /// part of the tenant HTTP contract and are in `KNOWN_ROUTES`, so this
     /// test does hold them to having an operation.

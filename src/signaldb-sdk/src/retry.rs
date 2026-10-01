@@ -314,6 +314,7 @@ pub fn throttle_of(err: &(dyn std::error::Error + 'static)) -> Option<Throttled>
         crate::types::ManageError,
         crate::types::ProcessorError,
         crate::types::SchemaError,
+        crate::types::SessionErrorBody,
     );
     None
 }
@@ -328,6 +329,7 @@ pub const KNOWN_ERROR_TYPES: &[&str] = &[
     "ManageError",
     "ProcessorError",
     "SchemaError",
+    "SessionErrorBody",
 ];
 
 fn failure_of(result: &reqwest::Result<reqwest::Response>) -> Option<Failure> {

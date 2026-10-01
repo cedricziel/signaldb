@@ -526,6 +526,38 @@ export type ConsentTenantGrant = {
  */
 export type CostMode = 'metadata' | 'sampled_scan' | 'none';
 
+/**
+ * `POST /ui/session`'s request body.
+ */
+export type CreateSessionRequest = {
+    dataset?: string | null;
+    email: string;
+    password: string;
+    /**
+     * Optional: when omitted, the response lists the user's tenant
+     * memberships so the UI can offer a picker (auto-selected when the
+     * user belongs to exactly one tenant).
+     */
+    tenant?: string | null;
+};
+
+/**
+ * `POST /ui/session`'s response: the tenant/dataset the login landed in and
+ * every membership the session may enter.
+ */
+export type CreateSessionResponse = {
+    /**
+     * Always serialized, `null` alongside `tenant`.
+     */
+    dataset: string | null;
+    memberships: Array<SessionMembership>;
+    /**
+     * Always serialized, `null` when the user must still pick a tenant
+     * from `memberships`.
+     */
+    tenant: string | null;
+};
+
 export type CreateTenantRequest = {
     default_dataset?: string | null;
     id: string;
@@ -2703,6 +2735,14 @@ export type ServiceGraph = {
 };
 
 /**
+ * The `{"error": "..."}` body the session and whoami endpoints answer
+ * failures with.
+ */
+export type SessionErrorBody = {
+    error: string;
+};
+
+/**
  * A tenant the signed-in user may select, returned by `POST /ui/session`
  * and `GET /ui/session` so the UI can present a picker instead of
  * free-text tenant entry.
@@ -2717,7 +2757,10 @@ export type SessionMembership = {
  * The signed-in user, as reported by `GET /ui/session`.
  */
 export type SessionUser = {
-    display_name?: string | null;
+    /**
+     * Always serialized, `null` when the user has no display name.
+     */
+    display_name: string | null;
     email: string;
     id: string;
     /**
@@ -3184,31 +3227,80 @@ export type ValidationReport = {
  */
 export type ValueOrigin = 'registry' | 'statistics' | 'sampled';
 
+export type WhoamiDataset = {
+    id: string;
+    is_default: boolean;
+    slug: string;
+};
+
 /**
- * The non-null identity contract shared by generated clients.
+ * `GET /api/v1/whoami`'s response.
  */
 export type WhoamiIdentityResponse = {
+    /**
+     * Dataset resolved by the authentication middleware from the requested
+     * header or the tenant default.
+     */
     dataset: string;
     /**
-     * The credential's own dataset-set restriction, if any; `null`/absent
-     * means unrestricted. See [`WhoamiResponse::dataset_ids`].
+     * The credential's own dataset-set restriction (`TenantContext::
+     * api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+     * Callers that need to know which of `datasets` they may actually
+     * query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+     * read this rather than assuming every listed dataset is reachable.
      */
     dataset_ids?: Array<string> | null;
     /**
-     * See [`WhoamiResponse::granted_tenants`].
+     * The tenant's datasets, narrowed to the credential's own restriction.
+     */
+    datasets: Array<WhoamiDataset>;
+    /**
+     * Always serialized, `null` when the tenant (or the credential's
+     * restriction) has no default dataset.
+     */
+    default_dataset: string | null;
+    /**
+     * Every tenant this specific credential's grant reaches (change:
+     * mcp-multi-tenant-oauth-grants D5) — a one-element array equal to
+     * `tenant`/`dataset_ids` for a single-tenant credential (API key or
+     * single-tenant OAuth grant), or every tenant in the grant for a
+     * multi-tenant OAuth credential. Distinct from `memberships`, which
+     * lists every tenant the *human user* belongs to regardless of what
+     * this credential was scoped to.
      */
     granted_tenants: Array<GrantedTenant>;
-    tenant: WhoamiTenant;
     /**
-     * Stable authenticated user ID. Empty for API key credentials.
+     * Every tenant the human user belongs to (every tenant, as admin, for
+     * an instance admin); empty for API key credentials.
+     */
+    memberships: Array<WhoamiMembership>;
+    tenant: WhoamiTenant;
+    user?: null | WhoamiUser;
+    /**
+     * Authenticated human user ID. Empty for API key credentials.
      */
     user_id: string;
+};
+
+export type WhoamiMembership = {
+    role: MembershipRole;
+    tenant_id: string;
 };
 
 export type WhoamiTenant = {
     id: string;
     name: string;
     slug: string;
+};
+
+export type WhoamiUser = {
+    /**
+     * Always serialized, `null` when the user has no display name.
+     */
+    display_name: string | null;
+    email: string;
+    id: string;
+    is_instance_admin: boolean;
 };
 
 export type TempoApiV2TagSearchResponse = {
@@ -6917,6 +7009,10 @@ export type WhoamiErrors = {
      */
     401: unknown;
     /**
+     * The authenticated tenant no longer exists
+     */
+    404: SessionErrorBody;
+    /**
      * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
@@ -6943,6 +7039,10 @@ export type WhoamiErrors = {
          */
         status: string;
     };
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
 };
 
 export type WhoamiError = WhoamiErrors[keyof WhoamiErrors];
@@ -8222,6 +8322,31 @@ export type GithubCallbackErrors = {
     404: unknown;
 };
 
+export type DeleteSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session';
+};
+
+export type DeleteSessionErrors = {
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
+};
+
+export type DeleteSessionError = DeleteSessionErrors[keyof DeleteSessionErrors];
+
+export type DeleteSessionResponses = {
+    /**
+     * Session revoked and cookie cleared
+     */
+    204: void;
+};
+
+export type DeleteSessionResponse = DeleteSessionResponses[keyof DeleteSessionResponses];
+
 export type CurrentSessionData = {
     body?: never;
     path?: never;
@@ -8244,6 +8369,43 @@ export type CurrentSessionResponses = {
 };
 
 export type CurrentSessionResponse2 = CurrentSessionResponses[keyof CurrentSessionResponses];
+
+export type CreateSessionData = {
+    body: CreateSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/ui/session';
+};
+
+export type CreateSessionErrors = {
+    /**
+     * Malformed request body, or malformed tenant or dataset ID
+     */
+    400: SessionErrorBody;
+    /**
+     * Invalid email or password
+     */
+    401: SessionErrorBody;
+    /**
+     * Password login disabled, no tenant memberships, or not a member of the requested tenant
+     */
+    403: SessionErrorBody;
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
+};
+
+export type CreateSessionError = CreateSessionErrors[keyof CreateSessionErrors];
+
+export type CreateSessionResponses = {
+    /**
+     * Session created; sets the `signaldb_session` HttpOnly cookie
+     */
+    200: CreateSessionResponse;
+};
+
+export type CreateSessionResponse2 = CreateSessionResponses[keyof CreateSessionResponses];
 
 export type LoginConfigData = {
     body?: never;

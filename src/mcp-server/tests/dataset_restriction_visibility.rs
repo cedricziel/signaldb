@@ -26,6 +26,9 @@ async fn whoami(headers: HeaderMap) -> Response {
         "user_id": "",
         "tenant": {"id": "acme", "slug": "acme", "name": "Acme"},
         "dataset": "production",
+        "memberships": [],
+        "datasets": [],
+        "default_dataset": null,
         "granted_tenants": [{"tenant_id": "acme"}],
     });
     if bearer == format!("Bearer {RESTRICTED_KEY}") {
