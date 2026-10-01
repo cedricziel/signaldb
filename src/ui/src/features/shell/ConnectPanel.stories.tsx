@@ -9,9 +9,16 @@ import {
   connectionInfoBody,
   MCP_ENDPOINT as MCP,
 } from "../../test/connectionInfo";
-import { ConnectPanel } from "./ConnectPanel";
+import { pageFrame } from "../../stories/PageFrame";
+import { ConnectPanel, type ConnectTab } from "./ConnectPanel";
 
-function Panel({ routes }: { routes: JsonRoute[] }) {
+function Panel({
+  routes,
+  initialTab,
+}: {
+  routes: JsonRoute[];
+  initialTab?: ConnectTab;
+}) {
   return (
     <StoryFetchStub routes={routes}>
       <QueryClientProvider client={testQueryClient()}>
@@ -19,6 +26,7 @@ function Panel({ routes }: { routes: JsonRoute[] }) {
           <ConnectPanel
             state={{ tenant: "acme", dataset: "production" }}
             canManage
+            initialTab={initialTab}
             onClose={() => {}}
           />
         </MemoryRouter>
@@ -35,15 +43,31 @@ const meta = {
   title: "Shell/Connect Panel",
   component: Panel,
   parameters: { layout: "fullscreen" },
+  decorators: [pageFrame],
+  args: { routes: withMcp },
 } satisfies Meta<typeof Panel>;
 
 export default meta;
 type Story = StoryObj<typeof meta>;
 
-export const Default: Story = { args: { routes: withMcp } };
+export const Default: Story = {};
+
+export const Mcp: Story = {
+  name: "MCP",
+  args: { initialTab: "mcp" },
+};
+
+export const Cli: Story = {
+  name: "CLI",
+  args: { initialTab: "cli" },
+};
+
+export const HttpApi: Story = {
+  name: "HTTP API",
+  args: { initialTab: "api" },
+};
 
 export const Dark: Story = {
-  args: { routes: withMcp },
   render: (args) => (
     <DarkScope>
       <Panel {...args} />

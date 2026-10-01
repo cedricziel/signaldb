@@ -15,6 +15,7 @@ import {
   type JsonRoute,
 } from "../../stories/fetchStub";
 import { StoryFetchStub } from "../../stories/StoryFetchStub";
+import { connectionInfoBody, MCP_ENDPOINT } from "../../test/connectionInfo";
 import { DarkScope } from "../../stories/DarkScope";
 import { pageFrame } from "../../stories/PageFrame";
 import { ExploreView } from "../explore/ExploreView";
@@ -82,6 +83,11 @@ const routes: JsonRoute[] = [
     match: "/api/v1/query",
     bodyMatch: isFieldsQuery,
     body: describeFieldsResponse(["severity_text", "service.name"]),
+  },
+  // What the header's Connect button opens.
+  {
+    match: "/api/v1/connection",
+    body: connectionInfoBody({ mcp: MCP_ENDPOINT }),
   },
 ];
 
