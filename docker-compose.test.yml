@@ -63,6 +63,7 @@ services:
       - SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
       - SIGNALDB__SCHEMA__CATALOG_TYPE=sql
       - SIGNALDB__SCHEMA__CATALOG_URI=postgres://postgres:postgres@postgres-15:5432/signaldb_test
+      - ACCEPTOR_ADVERTISE_ADDR=acceptor-test:4317
     ports:
       - "4317:4317"
       - "4318:4318"
@@ -70,7 +71,7 @@ services:
       - .:/app
       - /app/target
     working_dir: /app
-    command: ["cargo", "run", "--bin", "signaldb", "--", "acceptor"]
+    command: ["cargo", "run", "--bin", "signaldb", "--", "acceptor", "--grpc-port", "4317", "--http-port", "4318"]
 
   router-test:
     build:
@@ -105,10 +106,11 @@ services:
       - SIGNALDB_DISCOVERY_DSN=postgres://postgres:postgres@postgres-15:5432/signaldb_test
       - SIGNALDB__SCHEMA__CATALOG_TYPE=sql
       - SIGNALDB__SCHEMA__CATALOG_URI=postgres://postgres:postgres@postgres-15:5432/signaldb_test
+      - WRITER_ADVERTISE_ADDR=writer-test:50051
     ports:
       - "50051:50051"
     volumes:
       - .:/app
       - /app/target
     working_dir: /app
-    command: ["cargo", "run", "--bin", "signaldb", "--", "writer"]
+    command: ["cargo", "run", "--bin", "signaldb", "--", "writer", "--flight-port", "50051"]
