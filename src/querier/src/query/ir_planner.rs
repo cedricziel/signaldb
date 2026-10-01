@@ -2442,14 +2442,29 @@ impl<'a> Lowering<'a> {
     /// expression of the column (including one pushed through a projection)
     /// fails the scan with "No field named timestamp" (#2122). A strict
     /// bound would become a strict bound on the hour and prune the hour it
-    /// falls in.
-    fn time_bound(&self, ns: i64, op: Operator) -> Expr {
+    /// falls in. The literal is in the column's own unit, rounded inward
+    /// (up for `>=`, down for `<=`), so a coarser column keeps the bound
+    /// exact instead of letting the planner truncate it.
+    fn time_bound(&self, df: &DataFrame, ns: i64, op: Operator) -> Result<Expr, QuerierError> {
         let bound = if self.source.time_is_timestamp {
-            lit(ScalarValue::TimestampNanosecond(Some(ns), None))
+            let field = df
+                .schema()
+                .field_with_unqualified_name(self.source.time_col)
+                .map_err(QuerierError::QueryFailed)?;
+            let round_up = op == Operator::GtEq;
+            lit(super::trace::timestamp_bound_scalar(
+                ns,
+                field.data_type(),
+                round_up,
+            )?)
         } else {
             lit(ns)
         };
-        datafusion::logical_expr::binary_expr(col(self.source.time_col), op, bound)
+        Ok(datafusion::logical_expr::binary_expr(
+            col(self.source.time_col),
+            op,
+            bound,
+        ))
     }
 
     fn lower_stage(&mut self, df: DataFrame, stage: &Stage) -> Result<DataFrame, QuerierError> {
@@ -3076,19 +3091,21 @@ impl<'a> Lowering<'a> {
                 // which integer division gives for every `ts > from - step`.
                 // The last instant at or before `to` bounds `ts` from above.
                 check_instants(w.start_ns, w.end_ns, step_ns, step_ns)?;
-                let last = w.start_ns + (w.end_ns - w.start_ns).div_euclid(step_ns) * step_ns;
+                let span = w.end_ns.saturating_sub(w.start_ns);
+                let last = w
+                    .start_ns
+                    .saturating_add(span.div_euclid(step_ns) * step_ns);
                 let ts = cast(
                     cast(col(self.source.time_col), ts_type.clone()),
                     DataType::Int64,
                 );
                 let at = lit(w.start_ns)
                     + (ts - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns) * lit(step_ns);
+                let lower = w.start_ns.saturating_sub(step_ns).saturating_add(1);
+                let lower = self.time_bound(&df, lower, Operator::GtEq)?;
+                let upper = self.time_bound(&df, last, Operator::LtEq)?;
                 df = df
-                    .filter(self.time_bound(
-                        w.start_ns.saturating_sub(step_ns).saturating_add(1),
-                        Operator::GtEq,
-                    ))
-                    .and_then(|df| df.filter(self.time_bound(last, Operator::LtEq)))
+                    .filter(lower.and(upper))
                     .map_err(QuerierError::QueryFailed)?;
                 cast(at, ts_type)
             } else {
@@ -4901,7 +4918,7 @@ mod tests {
     use common::schema::type_authority::{ObservedKind, Placement};
     use datafusion::arrow::array::{
         ArrayRef, Float64Array, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
-        TimestampNanosecondArray,
+        TimestampMicrosecondArray, TimestampNanosecondArray,
     };
     use datafusion::arrow::datatypes::{Field, Fields, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
@@ -6704,6 +6721,94 @@ mod tests {
             .downcast_ref::<TimestampNanosecondArray>()
             .expect("max(timestamp) keeps the timestamp type");
         col.value(0)
+    }
+
+    /// A `metrics` table whose `timestamp` scans as `Timestamp(µs)`, as the
+    /// Iceberg `timestamp` type does, holding one point per `micros`.
+    fn metrics_us_ctx(micros: &[i64]) -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let n = micros.len();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampMicrosecondArray::from(micros.to_vec())),
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["m"; n])),
+                Arc::new(Float64Array::from(vec![1.0; n])),
+                build_map(&vec![&[][..]; n]),
+                build_map(&vec![&[][..]; n]),
+            ],
+        )
+        .unwrap();
+        let batch = common::testing::to_wide(&batch, "gauge");
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    /// Issue #2122: a stepped `metrics` aggregate bounds its input on the
+    /// bare `timestamp` column (the Iceberg scan cannot prune on a cast of
+    /// it), and the bounds stay exact over a microsecond column: a point at
+    /// `from - step` belongs to no instant, one 1µs later to `from`.
+    #[tokio::test]
+    async fn stepped_metrics_aggregate_bounds_the_bare_timestamp_exactly() {
+        const S: i64 = 1_000_000;
+        let (from, step) = (120 * S, 60 * S);
+        let points = [from - step, from - step + 1, from, from + 2 * step];
+        let svc = IrService::new(metrics_us_ctx(&points));
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "result": "series",
+            "range": { "from": from * 1_000, "to": (from + 2 * step) * 1_000 + 999 },
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "60s" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let plan = df.clone().into_optimized_plan().unwrap();
+        let text = plan.display_indent().to_string();
+        let filters: Vec<&str> = text.lines().filter(|l| l.contains("Filter:")).collect();
+        assert!(
+            !filters.is_empty() && filters.iter().all(|f| !f.contains("CAST(")),
+            "time bounds must compare the bare column: {filters:#?}"
+        );
+        let batches = df.collect().await.unwrap();
+        let got: Vec<(i64, i64)> = batches
+            .iter()
+            .flat_map(|b| {
+                let at = datafusion::arrow::compute::cast(
+                    b.column_by_name("bucket").unwrap(),
+                    &DataType::Int64,
+                )
+                .unwrap();
+                let at = at.as_any().downcast_ref::<Int64Array>().unwrap().clone();
+                let n = b
+                    .column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .clone();
+                (0..b.num_rows()).map(move |i| (at.value(i), n.value(i)))
+            })
+            .collect();
+        assert_eq!(got, [(from * 1_000, 2), ((from + 2 * step) * 1_000, 1)]);
     }
 
     #[tokio::test]
