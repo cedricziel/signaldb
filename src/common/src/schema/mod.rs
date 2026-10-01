@@ -381,12 +381,12 @@ pub fn bloom_filter_properties_for_labels(schema: &IcebergSchema) -> Vec<(String
 /// Iceberg stores a column's bounds inline in the manifest entry of every data
 /// file, so a bound is a permanent per-file cost paid on every query plan. For
 /// these columns nothing ever pays it back: no query compares them by range.
-/// `body` and `status_message` are matched by substring or regex, and
-/// `exemplars` is a JSON blob read whole or not at all.
+/// `body` (logs) and `status_message` (traces) are matched by substring or
+/// regex.
 ///
 /// The columns are listed per signal because the schemas do not share names;
 /// a column absent from a table simply has no effect there.
-pub const UNBOUNDED_FREE_TEXT_COLUMNS: [&str; 3] = ["body", "status_message", "exemplars"];
+pub const UNBOUNDED_FREE_TEXT_COLUMNS: [&str; 2] = ["body", "status_message"];
 
 /// Metrics-mode table properties for the free-text columns of a signal.
 ///
@@ -891,6 +891,25 @@ mod tests {
             "label_http_method".to_string(),
         ];
         assert!(metrics_properties_for_free_text_columns(&columns).is_empty());
+    }
+
+    /// An entry no built-in table has is dead config that reads as if it did
+    /// something.
+    #[test]
+    fn every_free_text_column_exists_in_some_signal_table() {
+        use crate::iceberg::schemas::TableSchema;
+
+        let mut columns = Vec::new();
+        for table in TableSchema::all() {
+            let schema = table.schema().unwrap_or_else(|e| panic!("{table:?}: {e}"));
+            columns.extend(schema.fields().iter().map(|field| field.name.clone()));
+        }
+        for free_text in UNBOUNDED_FREE_TEXT_COLUMNS {
+            assert!(
+                columns.iter().any(|column| column == free_text),
+                "{free_text} is in no built-in table"
+            );
+        }
     }
 
     #[test]
