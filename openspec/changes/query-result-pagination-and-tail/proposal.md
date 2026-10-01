@@ -32,12 +32,12 @@ in how the window is bounded, so they share one design and one implementation.
 
 ## What Changes
 
-- **IR result change — pagination (IR v13, additive):** an optional
+- **IR result change — pagination (IR v14, additive):** an optional
   document-level `page: { size, cursor? }`. On a paginatable document, a
   `rows` or `trace` response gains `page: { next_cursor? }`. `next_cursor` is
   present exactly when more of the result exists. The client resends the same
   document with `page.cursor` set to continue.
-- **IR result change — live tail (IR v14, additive):** an optional
+- **IR result change — live tail (IR v15, additive):** an optional
   document-level `tail: { cursor?, settle? }` on a relative `range` ending at
   `now`. The response carries `tail: { cursor, settled_through_ns, caught_up }`.
   The first call returns the newest `page.size` rows in the window. Each later
@@ -97,7 +97,7 @@ change. The new 410 status is only returned to requests that send a cursor.
 ## Impact
 
 - **query-ir** (`src/query-ir`): `page`/`tail` document fields gated at IR
-  v13/v14; paginatability/tailability validation; the default pagination
+  v14/v15; paginatability/tailability validation; the default pagination
   order per source; the cursor key model.
 - **common**: the cursor codec (versioned, SHA-256-checksummed base64url; uses the
   workspace's existing `base64`/`sha2`); the trailer report gains

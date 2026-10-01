@@ -539,6 +539,8 @@ impl TraceService {
             baseline: None,
             step: None,
             constant: None,
+            page: None,
+            tail: None,
         };
 
         let Some((df, _window, _correlate_truncated)) = super::ir_planner::plan_document(

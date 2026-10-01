@@ -92,6 +92,10 @@ pub enum Feature {
     /// The `flamegraph` envelope's `baseline` window (a differential
     /// flamegraph).
     FlamegraphBaseline,
+    /// The document-level `page`.
+    Page,
+    /// The document-level `tail`.
+    Tail,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -167,6 +171,8 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::TraceEnvelope, 12),
     (Feature::Match, 12),
     (Feature::FlamegraphBaseline, 13),
+    (Feature::Page, 14),
+    (Feature::Tail, 15),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -400,6 +406,8 @@ mod tests {
             Feature::TraceEnvelope,
             Feature::Match,
             Feature::FlamegraphBaseline,
+            Feature::Page,
+            Feature::Tail,
         ];
         for feature in all {
             assert!(

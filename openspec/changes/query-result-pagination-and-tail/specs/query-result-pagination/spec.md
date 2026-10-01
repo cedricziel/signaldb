@@ -12,7 +12,7 @@ data changes between pages.
 
 SignalDB SHALL let a client walk a `rows` or `trace` Query IR result in
 bounded pages. A document requests pagination with an optional
-document-level `page` (`size`, optional `cursor`), available from `irVersion` 13. The response SHALL carry a `page` member whose `next_cursor` is present
+document-level `page` (`size`, optional `cursor`), available from `irVersion` 14. The response SHALL carry a `page` member whose `next_cursor` is present
 exactly when more of the result exists. A client continues by resubmitting
 the same document with `page.cursor` set to the previous `next_cursor`. A
 cursor SHALL be opaque to clients, and clients SHALL NOT construct or modify
@@ -40,7 +40,7 @@ this capability.
 
 #### Scenario: A page is under the version gate
 
-- **WHEN** a document carries `page` with `irVersion` below 13
+- **WHEN** a document carries `page` with `irVersion` below 14
 - **THEN** it is rejected as unsupported for that version
 
 ### Requirement: Pagination requires a total order and never splits ties
