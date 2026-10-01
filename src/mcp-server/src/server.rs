@@ -2812,11 +2812,11 @@ impl McpServer {
         let response = self
             .run_ir_document(&parts, &p.tenant, &p.dataset, document, "search_profiles")
             .await?;
-        json_result(&flamebearer(response.flamegraph, p.query))
+        json_result(&flamebearer(response.flamegraph, p.query, false))
     }
 
     #[tool(
-        description = "Compare profiles between two time ranges with a shared Pyroscope selector. Returns the differential flame graph (baseline vs comparison) for your tenant.",
+        description = "Compare profiles between two time ranges with a shared Pyroscope-style selector (see `search_profiles`). `left_from`/`left_until` is the baseline (default two hours ago to one hour ago), `right_from`/`right_until` the comparison (default the last hour); a missing `*_from` defaults to one hour before its `*_until`. The two sides are not normalized for window length. Returns the differential flame graph (baseline vs comparison) for your tenant, read through the Query IR `flamegraph` envelope's `baseline`.",
         annotations(read_only_hint = true)
     )]
     async fn compare_profiles(
@@ -2825,25 +2825,28 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
-        let mut req = client.pyroscope_render_diff().query(p.query);
-        if let Some(v) = p.left_from {
-            req = req.left_from(v);
-        }
-        if let Some(v) = p.left_until {
-            req = req.left_until(v);
-        }
-        if let Some(v) = p.right_from {
-            req = req.right_from(v);
-        }
-        if let Some(v) = p.right_until {
-            req = req.right_until(v);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| map_sdk_err(e, "compare_profiles"))?;
-        json_result(&resp.into_inner())
+        let document = serde_json::json!({
+            "irVersion": 13,
+            "from": "profiles",
+            "range": pyroscope_range(
+                p.right_from.as_deref(),
+                p.right_until.as_deref(),
+                HOUR_SECS,
+                PyroscopeTime::Relative(0),
+            )?,
+            "baseline": pyroscope_range(
+                p.left_from.as_deref(),
+                p.left_until.as_deref(),
+                HOUR_SECS,
+                PyroscopeTime::Relative(HOUR_SECS),
+            )?,
+            "result": "flamegraph",
+            "pipeline": profile_selector_where(&p.query)?
+        });
+        let response = self
+            .run_ir_document(&parts, &p.tenant, &p.dataset, document, "compare_profiles")
+            .await?;
+        json_result(&flamebearer(response.flamegraph, p.query, true))
     }
 
     #[tool(
@@ -5453,11 +5456,13 @@ fn quoted(text: &str) -> Option<(String, &str)> {
     None
 }
 
-/// A flamegraph envelope in the Pyroscope render shape `search_profiles`
-/// has always returned, plus the IR's `truncated` flag.
+/// A flamegraph envelope in the Pyroscope render shape these tools have
+/// always returned, `double` (with `leftTicks`/`rightTicks`, zero when empty)
+/// for a diff, plus the IR's `truncated` flag.
 fn flamebearer(
     flamegraph: Option<signaldb_sdk::types::FlamegraphResult>,
     query: String,
+    diff: bool,
 ) -> serde_json::Value {
     let f = flamegraph.unwrap_or_else(|| signaldb_sdk::types::FlamegraphResult {
         names: Vec::new(),
@@ -5469,7 +5474,7 @@ fn flamebearer(
         truncated: false,
         locations: Vec::new(),
     });
-    serde_json::json!({
+    let mut render = serde_json::json!({
         "flamebearer": {
             "names": f.names,
             "levels": f.levels,
@@ -5477,13 +5482,18 @@ fn flamebearer(
             "maxSelf": f.max_self,
         },
         "metadata": {
-            "format": "single",
+            "format": if diff { "double" } else { "single" },
             "sampleRate": 100,
             "units": "samples",
             "name": query,
         },
         "truncated": f.truncated,
-    })
+    });
+    if diff {
+        render["leftTicks"] = serde_json::json!(f.baseline_total.unwrap_or(0));
+        render["rightTicks"] = serde_json::json!(f.comparison_total.unwrap_or(0));
+    }
+    render
 }
 
 /// The cell of `row` under column `name` in a `rows`/`table` response. The
@@ -6741,10 +6751,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn compare_profiles_returns_the_diff() {
-        let (base_url, router) = mock_json_router(
-            "GET /pyroscope/render-diff?",
-            r#"{"flamebearer":{"names":[],"levels":[],"numTicks":0,"maxSelf":0},"metadata":{"format":"double","sampleRate":0,"units":"","name":""},"leftTicks":5,"rightTicks":10}"#,
+    async fn compare_profiles_sends_the_left_range_as_the_baseline() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/query",
+            200,
+            r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":1},"flamegraph":{"names":["total"],"levels":[[0,5,5,0,10,10,0]],"total":15,"max_self":10,"baseline_total":5,"comparison_total":10,"truncated":false,"locations":[null]}}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -6765,10 +6776,21 @@ mod tests {
             .await
             .expect("compare_profiles succeeds");
 
+        let document = captured_json_body(&router.await.expect("mock router task panicked"));
+        assert_eq!(document["irVersion"], 13);
+        assert_eq!(
+            document["range"],
+            serde_json::json!({"from": "now-3600s", "to": "now"})
+        );
+        assert_eq!(
+            document["baseline"],
+            serde_json::json!({"from": "now-7200s", "to": "now-3600s"})
+        );
         let diff = text_json(&result);
         assert_eq!(diff["leftTicks"], 5);
         assert_eq!(diff["rightTicks"], 10);
-        router.await.expect("mock router task panicked");
+        assert_eq!(diff["metadata"]["format"], "double");
+        assert_eq!(diff["flamebearer"]["numTicks"], 15);
     }
 
     #[tokio::test]
@@ -6886,6 +6908,48 @@ mod tests {
             );
             assert!(err.message.contains(named), "{selector}: {}", err.message);
         }
+    }
+
+    #[tokio::test]
+    async fn compare_profiles_renders_an_empty_diff_as_double() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/query",
+            200,
+            r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":1},"flamegraph":{"names":[],"levels":[],"total":0,"max_self":0,"truncated":true,"locations":[]}}"#,
+        )
+        .await;
+        let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
+
+        let result = server
+            .compare_profiles(
+                Parameters(CompareProfilesParams {
+                    query: "cpu".to_string(),
+                    left_from: None,
+                    left_until: None,
+                    right_from: None,
+                    right_until: None,
+                    tenant: "acme".to_string(),
+                    dataset: "production".to_string(),
+                }),
+                Extension(valid_parts()),
+            )
+            .await
+            .expect("compare_profiles succeeds");
+
+        let document = captured_json_body(&router.await.expect("mock router task panicked"));
+        assert_eq!(
+            document["range"],
+            serde_json::json!({"from": "now-3600s", "to": "now"})
+        );
+        assert_eq!(
+            document["baseline"],
+            serde_json::json!({"from": "now-7200s", "to": "now-3600s"})
+        );
+        let diff = text_json(&result);
+        assert_eq!(diff["metadata"]["format"], "double");
+        assert_eq!(diff["leftTicks"], 0);
+        assert_eq!(diff["rightTicks"], 0);
+        assert_eq!(diff["truncated"], true);
     }
 
     const DESCRIBE_FIELDS_RESPONSE: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false}}}"#;
