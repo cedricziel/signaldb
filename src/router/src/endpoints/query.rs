@@ -197,6 +197,20 @@ pub struct QueryPage {
     pub next_cursor: Option<String>,
 }
 
+/// The `tail` member of a live-tail response.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct QueryTail {
+    /// Send back as `tail.cursor` with the same document for the next call.
+    /// Opaque: never build or edit one.
+    pub cursor: String,
+    /// This call read rows whose tail-time is at or before this instant.
+    pub settled_through_ns: i64,
+    /// The settle delay this call used: the requested one, clamped.
+    pub settle_ns: i64,
+    /// `false` when `page.size` cut the call short: call again right away.
+    pub caught_up: bool,
+}
+
 /// The resolved absolute time window, echoed for reproducibility/replay.
 #[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct ResolvedWindow {
