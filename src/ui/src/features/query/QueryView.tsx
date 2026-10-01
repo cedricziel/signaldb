@@ -6,7 +6,7 @@
 // is chosen from the declared envelope (`rows`→list, `series`→chart,
 // `table`→topN) before results arrive.
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { useInfiniteQuery, useQueryClient } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
 import { irSeriesToPromSeries } from "../../api/ir/metrics";
@@ -38,6 +38,7 @@ import {
   type IrSource,
 } from "./buildIr";
 import { viewForResult } from "./envelope";
+import { mergePages, pagedDocument } from "./paging";
 
 /** Map a LogQL-style filter op (from FilterChips) to an IR predicate op. */
 function mapOp(op: string): { op: string; negate?: boolean } {
@@ -121,18 +122,28 @@ export function QueryView({ state, update }: Props) {
     [source, result, filters, state.range, step],
   );
 
-  const query = useQuery({
-    queryKey: ["ir-query", JSON.stringify(document), run],
-    queryFn: () => runIrQuery(document),
+  // A `rows` result arrives a page at a time; "Load more" follows the
+  // cursor. Other envelopes are one response.
+  const paged = result === "rows";
+  const queryKey = ["ir-query", JSON.stringify(document), run];
+  const query = useInfiniteQuery({
+    queryKey,
+    queryFn: ({ pageParam }) =>
+      runIrQuery(paged ? pagedDocument(document, pageParam) : document),
+    initialPageParam: undefined as string | undefined,
+    getNextPageParam: (last) => last.page?.next_cursor ?? undefined,
     enabled: run,
   });
+  const data = useMemo(() => mergePages(query.data?.pages ?? []), [query.data]);
+  const queryClient = useQueryClient();
 
   // A relative range must slide forward on a second Run even though the
   // document (and therefore the query key) is unchanged — the anchors
   // resolve server-side, so only a fresh request picks up a later "now".
+  // Resetting drops the loaded pages, whose cursors hold the old window.
   const runQuery = () => {
     if (run) {
-      void query.refetch();
+      void queryClient.resetQueries({ queryKey, exact: true });
     } else {
       update({ queryRun: true });
     }
@@ -177,8 +188,18 @@ export function QueryView({ state, update }: Props) {
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
         {query.isError && <QueryError what="results" error={query.error} />}
         {query.isLoading && run && <div className="view-note">Loading…</div>}
-        {query.data && <QueryWarnings data={query.data} />}
-        {query.data && <EnvelopeResult view={view} data={query.data} />}
+        {data && <QueryWarnings data={data} />}
+        {data && <EnvelopeResult view={view} data={data} />}
+        {query.hasNextPage && (
+          <button
+            type="button"
+            className="btn"
+            disabled={query.isFetchingNextPage}
+            onClick={() => void query.fetchNextPage()}
+          >
+            Load more
+          </button>
+        )}
       </div>
     </div>
   );
@@ -270,8 +291,7 @@ function RowsCell({
   cell: unknown;
 }) {
   const value = formatCell(cell);
-  const isTimestamp =
-    columnType === "timestamp_ns" || isTimeColumnName(column);
+  const isTimestamp = columnType === "timestamp_ns" || isTimeColumnName(column);
   if (isTimestamp && NUMERIC_RE.test(value)) {
     return <span>{formatTimestamp(nanosToMs(value), 0)}</span>;
   }
