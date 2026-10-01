@@ -112,13 +112,13 @@ A cursor needs a total order. Rules:
 3. The server **always appends the source's tie-breaker columns** (below) after
    the leading keys, unless they are already present.
 
-| Source    | Time column            | Tie-breakers (ascending)              |
-| --------- | ---------------------- | ------------------------------------- |
-| traces    | `start_time_unix_nano` | `trace_id`, `span_id`                 |
-| logs      | `timestamp`            | `trace_id`, `span_id`, `service_name` |
-| metrics   | `timestamp`            | `series.id`                           |
-| exemplars | `timestamp`            | `series.id`, `trace.id`, `span.id`    |
-| profiles  | `timestamp`            | `profile_id`                          |
+| Source    | Time column            | Tie-breakers (ascending)                                               |
+| --------- | ---------------------- | ---------------------------------------------------------------------- |
+| traces    | `start_time_unix_nano` | `trace_id`, `span_id`                                                  |
+| logs      | `timestamp`            | `trace_id`, `span_id`, `service_name`, `observed_timestamp`, body hash |
+| metrics   | `timestamp`            | `series.id`                                                            |
+| exemplars | `timestamp`            | `series.id`, `trace.id`, `span.id`                                     |
+| profiles  | `timestamp`            | `profile_id`                                                           |
 
 Even after the tie-breakers, keys need not be unique: there are logs without
 trace context, and spans delivered twice. So **a page never splits a tie
