@@ -879,6 +879,7 @@ mod tests {
         let params = super::super::IrQueryParams {
             document: serde_json::to_value(graph_doc(serde_json::json!({}))).unwrap(),
             now_ns: 0,
+            page: None,
         };
         let (batches, window, report) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(window.end_ns, WINDOW_END);

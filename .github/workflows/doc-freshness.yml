@@ -3,6 +3,10 @@ name: Doc Freshness
 on:
   pull_request:
     types: [opened, synchronize, reopened, ready_for_review, edited, labeled, unlabeled]
+    # Not a required check, so path filtering is safe; no living doc
+    # declares an openspec/ source.
+    paths-ignore:
+      - "openspec/**"
 
 jobs:
   check:
@@ -36,8 +40,9 @@ jobs:
             echo "Lines marked INVALID are frontmatter problems - fix the doc's" >&2
             echo "audience/type/status frontmatter (see .claude/skills/docs/SKILL.md)." >&2
             echo "Other lines are living docs whose declared sources changed in this PR" >&2
-            echo "without a doc update. Either update the doc, add a 'docs-ok: <path>'" >&2
-            echo "line to the PR description to dismiss a false positive, or add the" >&2
-            echo "'docs-not-needed' label if the PR owes no docs at all." >&2
+            echo "without a doc update. Read each against the diff and fix only what is" >&2
+            echo "now wrong (deleting stale text counts). If a doc is still accurate, add" >&2
+            echo "a 'docs-ok: <path>' line to the PR description instead of padding it, or" >&2
+            echo "the 'docs-not-needed' label if the PR owes no docs at all." >&2
             exit 1
           fi

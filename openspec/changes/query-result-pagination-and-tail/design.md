@@ -112,13 +112,13 @@ A cursor needs a total order. Rules:
 3. The server **always appends the source's tie-breaker columns** (below) after
    the leading keys, unless they are already present.
 
-| Source    | Time column            | Tie-breakers (ascending)              |
-| --------- | ---------------------- | ------------------------------------- |
-| traces    | `start_time_unix_nano` | `trace_id`, `span_id`                 |
-| logs      | `timestamp`            | `trace_id`, `span_id`, `service_name` |
-| metrics   | `timestamp`            | `series.id`                           |
-| exemplars | `timestamp`            | `series.id`, `trace.id`, `span.id`    |
-| profiles  | `timestamp`            | `profile_id`                          |
+| Source    | Time column            | Tie-breakers (ascending)                                               |
+| --------- | ---------------------- | ---------------------------------------------------------------------- |
+| traces    | `start_time_unix_nano` | `trace_id`, `span_id`                                                  |
+| logs      | `timestamp`            | `trace_id`, `span_id`, `service_name`, `observed_timestamp`, body hash |
+| metrics   | `timestamp`            | `series.id`                                                            |
+| exemplars | `timestamp`            | `series.id`, `trace.id`, `span.id`                                     |
+| profiles  | `timestamp`            | `profile_id`                                                           |
 
 Even after the tie-breakers, keys need not be unique: there are logs without
 trace context, and spans delivered twice. So **a page never splits a tie
@@ -156,9 +156,9 @@ snapshot, plus hot data once `unflushed-data-visibility` lands) with
 - **No row present for the whole walk is skipped.**
 - A row **arriving during the walk** is returned only if its key sorts after
   the cursor at the time its page is read. With the default newest-first
-  order, a late row inside the window lands before the cursor and is not
-  returned. That is documented, not a warning, because it cannot be detected
-  cheaply.
+  order, a late row older than the cursor is returned on a later page, and
+  one newer than the cursor is not. That is documented, not a warning,
+  because it cannot be detected cheaply.
 - A row **removed** during the walk by retention or tenant deletion stops
   appearing. It is not an error: the walk returns what still exists.
 
@@ -187,16 +187,20 @@ The payload is compact JSON:
 | `iat` | issued-at, ns (TTL)                                                                                   |
 | `st`  | tail only: `settled_through_ns` of the previous call                                                  |
 
-**Checksummed, not signed.** The checksum catches corruption and casual
-editing (→ 400). The cursor is not a security boundary: every value in it is
-something the caller could put in its own document (a `where` on the key, a
-`range`). The query always runs under the caller's authenticated tenant and
-dataset, and the fingerprint makes a cursor from another tenant, dataset or
-document fail with 400 rather than run. Signing would need a secret shared by
-every router replica, and no such secret exists today (`[auth.oidc]`'s client
-secret is optional and belongs to the login flow). The one thing a forged
-cursor could bypass is the walk-row budget, and a fresh walk resets that
-anyway. Rate limiting is the actual guard.
+**Signed when the server has a secret.** The checksum catches corruption and
+casual editing (→ 400). Every value in a cursor is something the caller could
+put in its own document (a `where` on the key, a `range`), the query always
+runs under the caller's authenticated tenant and dataset, and the fingerprint
+makes a cursor from another tenant, dataset or document fail with 400 rather
+than run. What an edited cursor could bypass is the walk-row budget and the
+lifetime. So there are two modes. Signed, when `[auth].internal_service_key`
+is set (a secret every router replica shares): the checksum is an HMAC-SHA256
+under a key derived from it, compared in constant time, and a cursor that
+fails it answers 410, not 400, so a client restarts cleanly after a key
+rotation or against a replica with another key. Unsigned, without the key:
+plain SHA-256, which only catches corruption, so the walk budget and lifetime
+are advisory, and the router logs a startup warning saying so. In both, a
+cursor over 8 KiB, or issued more than 60s in the future, is corrupt.
 
 Values in a cursor are the caller's own data (timestamps, ids, service
 names). Cursors appear only in POST bodies and responses. They are never put
@@ -238,7 +242,7 @@ A violation is a **400** whose `details` carry `reason: "not_paginatable"` or
 }
 ```
 
-`page`/`tail` under too low an `irVersion` (<13 / <14) is the ordinary
+`page`/`tail` under too low an `irVersion` (<14 / <15) is the ordinary
 version-gate rejection. `tail` together with `page.cursor` is a 400: a tail
 call carries its position in `tail.cursor`, and `page.size` only bounds the
 call.
@@ -438,22 +442,18 @@ A stack of PRs (tasks.md), each one leaving `main` working:
 2. Cursor codec in `common`.
 3. Querier page execution behind the ticket's optional `page` object (no
    router sends it yet).
-4. Router + IR v13 + OpenAPI/clients: pagination goes live.
+4. Router + IR v14 + OpenAPI/clients: pagination goes live.
 5. CLI/MCP/UI pagination surfaces.
 6. Tail in the querier (tail-time, settle, lag).
-7. Router + IR v14 + clients: tail goes live.
+7. Router + IR v15 + clients: tail goes live.
 8. UI live mode + CLI `--follow` move to tail.
 
 Rollback: revert the router PR (4 or 7). Older servers reject `irVersion`
-13/14 with the existing unsupported-version error, and clients that never
+14/15 with the existing unsupported-version error, and clients that never
 send `page`/`tail` are unaffected. No persisted state.
 
 ## Open Questions
 
-- Should a later release add an optional HMAC signing key
-  (`[querier].cursor_signing_key`) for deployments that want cursors
-  tamper-proof against the walk budget? It is deferrable because the cursor
-  format is versioned (`sdbc1` → `sdbc2`).
 - Default newest-first vs oldest-first for pagination without `order`: this
   design picks newest-first to match the logs/traces views. It is a default
   only, and an `order` stage overrides it.

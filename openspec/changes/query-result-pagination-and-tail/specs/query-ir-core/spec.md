@@ -19,9 +19,9 @@ relation, or a `fields` list on a `series`, `heatmap`, `flamegraph`, or
 `metadata` result, SHALL be rejected.
 
 The `rows` and `trace` envelopes SHALL additionally carry an optional `page`
-member when the document requested pagination (IR v13, see
+member when the document requested pagination (IR v14, see
 `query-result-pagination`), and an optional `tail` member when the document
-requested a live tail (IR v14, see `query-live-tail`). Each member SHALL be
+requested a live tail (IR v15, see `query-live-tail`). Each member SHALL be
 present only when requested, so a response to a document without `page` or
 `tail` is unchanged. A document-level `page` or `tail` on any other envelope
 SHALL be rejected at validation.

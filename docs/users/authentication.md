@@ -8,6 +8,8 @@ sources:
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
   - src/router/src/endpoints/management.rs
+  - src/router/src/endpoints/tenants.rs
+  - src/common/src/ratelimit.rs
   - src/router/src/endpoints/oidc.rs
   - src/router/src/oidc.rs
   - src/router/src/endpoints/github.rs
@@ -157,13 +159,29 @@ Operators: see [Setting up SSO / OIDC login](../operations/oidc-sso.md) for
 provider configuration, the reverse-proxy redirect-URL caveat, email-domain
 allowlists, and group-to-role mapping.
 
+## OAuth access tokens (MCP connectors)
+
+A third credential type, alongside API keys and session cookies, for
+Claude.ai / ChatGPT MCP connectors (see [MCP server](mcp.md#claudeai-and-chatgpt-oauth-connector)).
+An `Authorization: Bearer` value starting with `sdb_at_` is an opaque OAuth
+access token, audience-bound to `[mcp.oauth].resource_url`. Its tenants come
+from the grant chosen at consent, not from the token holder's other
+memberships:
+
+- A **single-tenant** grant ignores `X-Tenant-ID`; the token's one tenant
+  always resolves.
+- A **multi-tenant** grant requires `X-Tenant-ID` on every request,
+  `whoami` included. A request without it, or naming a tenant outside the
+  grant, is rejected. The matched grant entry's own dataset restriction
+  applies.
+
 ## Error codes
 
-| HTTP | gRPC                | Meaning                                                                                       |
-| ---- | ------------------- | --------------------------------------------------------------------------------------------- |
-| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                    |
-| 401  | `UNAUTHENTICATED`   | Credentials missing/invalid, or the API key/session is unknown, revoked, expired, or disabled |
-| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset                                   |
+| HTTP | gRPC                | Meaning                                                                                              |
+| ---- | ------------------- | ---------------------------------------------------------------------------------------------------- |
+| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                           |
+| 401  | `UNAUTHENTICATED`   | Credentials missing/invalid, or the API key/session is unknown, revoked, expired, or disabled        |
+| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset, or lacks the scope the surface requires |
 
 ## Tenants and datasets
 
@@ -192,6 +210,23 @@ operator via one of:
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
 | Admin API     | `/api/v1/*` (instance-admin tenant/user management) and `/api/v1/tenants/{id}/api-keys\|datasets` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID`                                                                         |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
+
+### Admin API endpoints
+
+Instance-admin operations, authenticated with the break-glass
+`Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID` (or an
+instance-admin session):
+
+| Endpoint               | Methods            | Description                                                                               |
+| ---------------------- | ------------------ | ----------------------------------------------------------------------------------------- |
+| `/api/v1/tenants`      | GET, POST          | List/create tenants                                                                       |
+| `/api/v1/tenants/{id}` | GET, PATCH, DELETE | Manage a tenant                                                                           |
+| `/api/v1/users`        | GET, POST          | List users / create a human user + initial tenant membership (`signaldb-cli user create`) |
+
+The admin key also reaches a tenant's `api-keys`, `datasets`, and
+`memberships` under `/api/v1/tenants/{id}/...`; those rows are listed in the
+[tenant management API](#tenant-management-api). It does not reach the
+`github-installations` rows, which need a tenant credential.
 
 Example (operator-side):
 
@@ -222,6 +257,10 @@ The vocabulary is shared:
 Keys may additionally be restricted to a **set** of datasets within their
 tenant (`--dataset`, repeatable / `dataset_ids`). Omitting it leaves the key
 unrestricted — reachable against every dataset in its tenant, same as today.
+A restricted key that sends no `X-Dataset-ID` resolves to its one dataset when
+the restriction names exactly one, and is rejected (never falls through to the
+tenant default) when it names several. `whoami`, dataset discovery, and the
+table listing show only the datasets the restriction names.
 An explicit empty set (`dataset_ids: []`) is rejected as invalid everywhere:
 it never means "unrestricted" or "deny everything" — a caller that wants
 unrestricted omits the field, and one that wants to remove an existing
@@ -367,6 +406,38 @@ mirroring `clear_dataset_restriction` — sending both `allowed_origins` and
 
 See [Sending OTLP data](sending-otlp.md#browser-cors-ingestion) for how this
 restriction is enforced on the wire.
+
+## Rate limits and quotas
+
+Configured under `[auth.default_limits]` (overridable per tenant via
+`[[auth.tenants]].limits`); see `signaldb.dist.toml` for the TOML
+keys. Unset fields mean unlimited, and tenants provisioned through the Admin
+API get the defaults.
+
+| Limit                                                      | Enforced at                                                           | On exceed                                   |
+| ---------------------------------------------------------- | --------------------------------------------------------------------- | ------------------------------------------- |
+| `max_ingest_requests_per_sec` / `max_ingest_bytes_per_sec` | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED`                  |
+| `max_query_requests_per_sec`                               | Router HTTP query API (`/tempo`, `/api/v1`)                           | 429                                         |
+| `max_api_keys` (active keys only)                          | Admin API key creation                                                | 429 `quota_exceeded`                        |
+| `max_datasets`                                             | Admin API dataset creation                                            | 429 `quota_exceeded`                        |
+| `max_storage_bytes`                                        | Acceptor (OTLP gRPC incl. profiles, OTLP/HTTP profiles, remote_write) | 429 / `RESOURCE_EXHAUSTED` `quota_exceeded` |
+| `[querier].max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                              |
+
+Ingest and query rate limits are independent token buckets per tenant.
+`burst_seconds` (default 10, minimum 1) sets how many seconds of budget a
+tenant may spend at once, so an interactive fan-out such as an Explore page
+load or an MCP investigation does not trip a freshly configured deployment.
+Storage quotas compare cached per-tenant usage — refreshed from Iceberg
+manifests every `[auth].storage_usage_refresh_interval` (default 60s) —
+against `max_storage_bytes`, so enforcement is eventually consistent by
+design; usage is exported as the `signaldb.tenant.storage_usage` gauge.
+
+Every token-bucket rejection increments
+`signaldb_rate_limit_rejections_total{surface,kind}` (`surface` ∈
+`query | admin | otlp_http | otlp_grpc | prometheus`; `kind` ∈
+`query_requests | requests | bytes | quota`) and logs one `warn` with
+`retry_after_ms`. Storage-quota rejections on the Prometheus remote-write
+surface return `429` without incrementing the counter.
 
 ## Tenant self-service API
 

@@ -7,7 +7,7 @@
 
 import { useState, type ReactNode } from "react";
 import { MemoryRouter, useInRouterContext } from "react-router";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 import { ThrottleBanner } from "../../components/ThrottleBanner";
 import { canManage as canManageFor } from "../../lib/useWhoami";
 import {
@@ -40,7 +40,7 @@ export interface AppShellProps {
    */
   detail?: string;
   /** The signed-in identity: account row, tenant list, admin access. */
-  who?: WhoamiResponse;
+  who?: WhoamiIdentityResponse;
   /** Defaults to what `who` allows (instance admin or tenant admin). */
   canManage?: boolean;
   /** Shows the read-only demo banner and hides the editing pages. */

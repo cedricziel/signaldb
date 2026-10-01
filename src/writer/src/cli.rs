@@ -94,11 +94,8 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     let flight_addr = std::net::SocketAddr::new(bind_ip, args.flight_port);
 
     // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr =
-        common::service_bootstrap::advertise_addr("WRITER_ADVERTISE_ADDR", flight_addr);
-
     let service_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, advertise_addr.clone())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Writer, flight_addr)
             .await
             .context("Failed to initialize service bootstrap")?;
 

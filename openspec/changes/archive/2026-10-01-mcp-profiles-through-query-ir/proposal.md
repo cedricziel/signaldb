@@ -8,7 +8,9 @@ still read the Pyroscope-compatible endpoints that exist for Grafana.
 - `discover_profile_types` groups the `profiles` source by `sample.type` and
   `sample.unit`; `search_profiles` reads the IR `flamegraph` envelope;
   `compare_profiles` reads it with a `baseline` (`irVersion` 13, see
-  `query-ir-flamegraph-baseline`). Each keeps its output shape.
+  `query-ir-flamegraph-baseline`); `profiles_for_trace` reads `profiles` rows
+  filtered on `trace.id` instead of `/api/profiles/trace/{id}`, now bounded to
+  the last 30 days. Each keeps its output shape.
 - The Pyroscope selector filters its sample type and `service_name` (`=`,
   `!=`, `=~`, `!~`); any other label or a malformed selector is rejected
   instead of silently ignored.

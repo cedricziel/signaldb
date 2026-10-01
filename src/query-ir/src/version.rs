@@ -20,7 +20,7 @@ use super::stage::{AggFn, Parser};
 /// The lowest IR document version this server understands.
 pub const MIN_IR_VERSION: i64 = 1;
 /// The highest IR document version this server understands.
-pub const MAX_IR_VERSION: i64 = 13;
+pub const MAX_IR_VERSION: i64 = 14;
 
 /// Whether `version` is within the supported range.
 pub fn is_supported(version: i64) -> bool {
@@ -92,6 +92,10 @@ pub enum Feature {
     /// The `flamegraph` envelope's `baseline` window (a differential
     /// flamegraph).
     FlamegraphBaseline,
+    /// The document-level `page`.
+    Page,
+    /// The document-level `tail`.
+    Tail,
 }
 
 /// Comparison operators, keyed by the `irVersion` that introduced them.
@@ -167,6 +171,8 @@ const FEATURES: &[(Feature, i64)] = &[
     (Feature::TraceEnvelope, 12),
     (Feature::Match, 12),
     (Feature::FlamegraphBaseline, 13),
+    (Feature::Page, 14),
+    (Feature::Tail, 15),
 ];
 
 fn min_version<T: PartialEq + Copy>(table: &[(T, i64)], member: T) -> Option<i64> {
@@ -242,7 +248,8 @@ mod tests {
         assert!(is_supported(11));
         assert!(is_supported(12));
         assert!(is_supported(13));
-        assert!(!is_supported(14));
+        assert!(is_supported(14));
+        assert!(!is_supported(15));
     }
 
     #[test]
@@ -400,6 +407,8 @@ mod tests {
             Feature::TraceEnvelope,
             Feature::Match,
             Feature::FlamegraphBaseline,
+            Feature::Page,
+            Feature::Tail,
         ];
         for feature in all {
             assert!(
