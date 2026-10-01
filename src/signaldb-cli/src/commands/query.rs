@@ -65,6 +65,14 @@ pub struct QueryArgs {
     /// row (or, for the `trace` envelope, each trace) as one NDJSON line.
     #[arg(long, requires = "ir")]
     all_pages: bool,
+    /// With `--ir`: live-tail the document (irVersion 15+, `range.to` of
+    /// `now`), printing new rows as NDJSON until interrupted.
+    #[arg(long, requires = "ir", conflicts_with = "all_pages")]
+    follow: bool,
+    /// With `--follow`: how far behind the clock the tail reads (e.g. `10s`);
+    /// the server clamps it to its bounds.
+    #[arg(long, requires = "follow", value_name = "DURATION")]
+    settle: Option<String>,
     /// Range start (unix seconds/ns or RFC3339). With `--promql`/`--logql`,
     /// presence of `--start` or `--end` switches to a range query.
     #[arg(long)]
@@ -207,7 +215,7 @@ impl QueryArgs {
                 page.size = Some(i32::try_from(size).context("--page-size is too large")?);
             }
         }
-        if self.all_pages {
+        if self.all_pages || self.follow {
             let client = build_http_client(
                 &self.url,
                 self.api_key.as_deref(),
@@ -226,6 +234,14 @@ impl QueryArgs {
                         .map_err(|e| anyhow::Error::new(e).context("IR query failed"))
                 }
             };
+            if self.follow {
+                request.tail = Some(signaldb_sdk::types::IrTail {
+                    cursor: None,
+                    settle: self.settle.clone(),
+                });
+                let pause = || tokio::time::sleep(FOLLOW_POLL_INTERVAL);
+                return follow(request, fetch, pause, &mut std::io::stdout(), None).await;
+            }
             return walk_pages(request, fetch, &mut std::io::stdout().lock()).await;
         }
         let response = submit_ir(
@@ -345,23 +361,72 @@ where
 {
     loop {
         let response = fetch(request.clone()).await?;
-        for trace in response.traces.iter().flatten() {
-            writeln!(out, "{}", serde_json::to_string(trace)?)?;
-        }
-        for row in &response.rows {
-            let object: serde_json::Map<String, serde_json::Value> = response
-                .columns
-                .iter()
-                .map(|c| c.name.clone())
-                .zip(row.iter().cloned())
-                .collect();
-            writeln!(out, "{}", serde_json::Value::Object(object))?;
-        }
+        write_ndjson(&response, out)?;
         let Some(cursor) = response.page.and_then(|p| p.next_cursor) else {
             return Ok(());
         };
         request.page.get_or_insert_with(Default::default).cursor = Some(cursor);
     }
+}
+
+/// How long `--follow` waits between calls once the tail has caught up.
+const FOLLOW_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// Live-tail an IR document: call again with each response's
+/// `tail.cursor`, at once while it reports a backlog (`caught_up: false`),
+/// else after `pause`. Stops after `max_calls` when given (tests), else
+/// runs until interrupted.
+async fn follow<F, Fut, P, PFut>(
+    mut request: QueryIrRequest,
+    mut fetch: F,
+    pause: P,
+    out: &mut impl std::io::Write,
+    max_calls: Option<usize>,
+) -> anyhow::Result<()>
+where
+    F: FnMut(QueryIrRequest) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<QueryIrResponse>>,
+    P: Fn() -> PFut,
+    PFut: std::future::Future<Output = ()>,
+{
+    let mut calls = 0;
+    loop {
+        let response = fetch(request.clone()).await?;
+        calls += 1;
+        write_ndjson(&response, out)?;
+        out.flush()?;
+        for warning in &response.warnings {
+            eprintln!("warning: {}", warning.message);
+        }
+        let tail = response
+            .tail
+            .context("the server did not return a tail cursor; it needs irVersion 15")?;
+        if max_calls.is_some_and(|max| calls >= max) {
+            return Ok(());
+        }
+        if tail.caught_up {
+            pause().await;
+        }
+        request.tail.get_or_insert_with(Default::default).cursor = Some(tail.cursor);
+    }
+}
+
+/// Each row (as an object keyed by column name), or each trace group, of
+/// an IR response as one NDJSON line.
+fn write_ndjson(response: &QueryIrResponse, out: &mut impl std::io::Write) -> anyhow::Result<()> {
+    for trace in response.traces.iter().flatten() {
+        writeln!(out, "{}", serde_json::to_string(trace)?)?;
+    }
+    for row in &response.rows {
+        let object: serde_json::Map<String, serde_json::Value> = response
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .zip(row.iter().cloned())
+            .collect();
+        writeln!(out, "{}", serde_json::Value::Object(object))?;
+    }
+    Ok(())
 }
 
 /// Submit a Query IR request via the generated SDK and return the envelope.
@@ -635,6 +700,42 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn follow_polls_with_the_tail_cursor_and_drains_a_backlog_at_once() {
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 15, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [], "tail": { "settle": "10s" }
+        }))
+        .unwrap();
+        let mut sent = Vec::new();
+        let fetch = |request: QueryIrRequest| {
+            let tail = request.tail.clone().expect("tail");
+            sent.push(tail.cursor.clone());
+            let n = sent.len();
+            async move {
+                assert_eq!(tail.settle.as_deref(), Some("10s"));
+                let mut response = page(vec![serde_json::json!([format!("r{n}"), n])], None);
+                response.tail = Some(serde_json::from_value(serde_json::json!({
+                    "cursor": format!("t{n}"), "settled_through_ns": 0, "settle_ns": 0,
+                    "caught_up": n != 1,
+                }))?);
+                Ok(response)
+            }
+        };
+        let pauses = std::cell::Cell::new(0);
+        let pause = || {
+            pauses.set(pauses.get() + 1);
+            std::future::ready(())
+        };
+        let mut out = Vec::new();
+        follow(request, fetch, pause, &mut out, Some(3))
+            .await
+            .unwrap();
+        assert_eq!(sent, [None, Some("t1".to_string()), Some("t2".to_string())]);
+        assert_eq!(pauses.get(), 1, "a backlog is drained without waiting");
+        assert_eq!(String::from_utf8(out).unwrap().lines().count(), 3);
+    }
+
     fn sql_args(flight_url: &str, query: Option<&str>) -> QueryArgs {
         QueryArgs {
             query: query.map(str::to_string),
@@ -647,6 +748,8 @@ mod tests {
             file: None,
             page_size: None,
             all_pages: false,
+            follow: false,
+            settle: None,
             start: None,
             end: None,
             step: None,
