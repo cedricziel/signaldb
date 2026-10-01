@@ -146,6 +146,19 @@ pub struct PageRequest {
     /// inside a tie group, and reaching them ends the walk.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ceiling: Option<u32>,
+    /// A live-tail call: bound the tail-time and pick the newest rows.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<TailBound>,
+}
+
+/// The bound of one live-tail call (`query-live-tail`): only rows whose
+/// tail-time, the order's leading key, is at or before `through_ns`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TailBound {
+    pub through_ns: i64,
+    /// The first call: the newest `size` rows, still returned oldest first.
+    #[serde(default)]
+    pub newest: bool,
 }
 
 /// What the querier emitted for a [`PageRequest`], reported in the Flight
