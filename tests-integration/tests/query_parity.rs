@@ -88,6 +88,10 @@ const EXCLUDED: &[(&str, &str)] = &[
         "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
     ),
     (
+        "pyroscope_render",
+        "compat profile endpoint for external clients; the CLI `profiles render` still calls it, while the MCP `search_profiles` reads the query_ir flamegraph envelope",
+    ),
+    (
         "pyroscope_profile_types",
         "compat profile endpoint for external clients; the CLI `profiles types` still calls it, while the MCP `discover_profile_types` groups the query_ir profiles source",
     ),
@@ -457,11 +461,6 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "connection_info",
     ),
     // ---- Pyroscope-compatible profile query (change: pyroscope-openapi-parity) ----
-    (
-        "pyroscope_render",
-        CliSurface::Path(&["profiles", "render"]),
-        "search_profiles",
-    ),
     (
         "pyroscope_render_diff",
         CliSurface::Path(&["profiles", "diff"]),
