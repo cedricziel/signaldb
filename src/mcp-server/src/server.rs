@@ -2788,7 +2788,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Search profiles with a Pyroscope selector (e.g. `process_cpu:cpu:nanoseconds{service_name=\"checkout\"}`) and a time range. Returns the aggregated flame graph (flamebearer encoding) for your tenant.",
+        description = "Search profiles with a Pyroscope-style selector (e.g. `process_cpu:cpu:nanoseconds{service_name=\"checkout\"}`) and a time range (`from`/`until`: unix seconds/milliseconds or `now[-<N><s|m|h|d>]`; `until` defaults to now and `from` to one hour before `until`). The selector's second `:` segment (or a bare name) filters `sample.type`; the only supported label is `service_name`, with `=`, `!=`, `=~` or `!~` (regexes are fully anchored); any other label is rejected. Returns the aggregated flame graph (flamebearer encoding, plus `truncated` when more than 1,000 profiles matched and only the newest were aggregated) for your tenant, read through the Query IR `flamegraph` envelope.",
         annotations(read_only_hint = true)
     )]
     async fn search_profiles(
@@ -2797,19 +2797,22 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
-        let mut req = client.pyroscope_render().query(p.query);
-        if let Some(v) = p.from {
-            req = req.from(v);
-        }
-        if let Some(v) = p.until {
-            req = req.until(v);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| map_sdk_err(e, "search_profiles"))?;
-        json_result(&resp.into_inner())
+        let document = serde_json::json!({
+            "irVersion": 1,
+            "from": "profiles",
+            "range": pyroscope_range(
+                p.from.as_deref(),
+                p.until.as_deref(),
+                HOUR_SECS,
+                PyroscopeTime::Relative(0),
+            )?,
+            "result": "flamegraph",
+            "pipeline": profile_selector_where(&p.query)?
+        });
+        let response = self
+            .run_ir_document(&parts, &p.tenant, &p.dataset, document, "search_profiles")
+            .await?;
+        json_result(&flamebearer(response.flamegraph, p.query))
     }
 
     #[tool(
@@ -5369,6 +5372,120 @@ fn pyroscope_range(
     Ok(serde_json::json!({ "from": from.literal(), "to": until.literal() }))
 }
 
+/// The `where` stages for a Pyroscope selector `type{matchers}`. The
+/// profile type's second `:` segment (or the whole id when it has none) is
+/// the `sample.type`; `service_name` is the only label, with `=`, `!=`, `=~`
+/// or `!~` (regexes anchored, as in Prometheus). Anything else is rejected.
+fn profile_selector_where(selector: &str) -> Result<Vec<serde_json::Value>, ErrorData> {
+    let invalid = |reason: String| {
+        ErrorData::invalid_params(format!("invalid selector `{selector}`: {reason}"), None)
+    };
+    let selector = selector.trim();
+    let (id, matchers) = match selector.split_once('{') {
+        Some((id, rest)) => (
+            id.trim(),
+            rest.trim_end()
+                .strip_suffix('}')
+                .ok_or_else(|| invalid("missing closing `}`".to_string()))?,
+        ),
+        None => (selector, ""),
+    };
+    let sample_type = id
+        .split(':')
+        .nth(1)
+        .filter(|segment| !segment.is_empty())
+        .unwrap_or(id);
+    let mut stages = Vec::new();
+    if !sample_type.is_empty() {
+        stages.push(where_stage("sample.type", "eq", sample_type));
+    }
+    let mut rest = matchers.trim();
+    while !rest.is_empty() {
+        let name_end = rest
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .unwrap_or(rest.len());
+        let (label, after) = rest.split_at(name_end);
+        let after = after.trim_start();
+        let (op, after) = ["!~", "=~", "!=", "="]
+            .into_iter()
+            .find_map(|op| after.strip_prefix(op).map(|after| (op, after.trim_start())))
+            .ok_or_else(|| invalid(format!("expected an operator after `{label}`")))?;
+        if label != "service_name" {
+            return Err(invalid(format!(
+                "unsupported label `{label}` (only `service_name` is supported)"
+            )));
+        }
+        let (value, after) = quoted(after)
+            .ok_or_else(|| invalid(format!("unterminated or unquoted value for `{label}`")))?;
+        stages.push(match op {
+            "=" => where_stage("service.name", "eq", &value),
+            "!=" => where_stage("service.name", "ne", &value),
+            "=~" => where_stage("service.name", "regex", &format!("^(?:{value})$")),
+            _ => serde_json::json!({ "where": { "not": {
+                "field": "service.name", "op": "regex", "value": format!("^(?:{value})$")
+            } } }),
+        });
+        rest = after.trim_start();
+        if let Some(next) = rest.strip_prefix(',') {
+            rest = next.trim_start();
+        } else if !rest.is_empty() {
+            return Err(invalid(format!("unexpected `{rest}`")));
+        }
+    }
+    Ok(stages)
+}
+
+fn where_stage(field: &str, op: &str, value: &str) -> serde_json::Value {
+    serde_json::json!({ "where": { "field": field, "op": op, "value": value } })
+}
+
+/// A leading double-quoted string (with `\` escapes) and the text after it.
+fn quoted(text: &str) -> Option<(String, &str)> {
+    let mut chars = text.strip_prefix('"')?.char_indices();
+    let mut value = String::new();
+    while let Some((i, c)) = chars.next() {
+        match c {
+            '"' => return Some((value, &text[i + 2..])),
+            '\\' => value.push(chars.next()?.1),
+            c => value.push(c),
+        }
+    }
+    None
+}
+
+/// A flamegraph envelope in the Pyroscope render shape `search_profiles`
+/// has always returned, plus the IR's `truncated` flag.
+fn flamebearer(
+    flamegraph: Option<signaldb_sdk::types::FlamegraphResult>,
+    query: String,
+) -> serde_json::Value {
+    let f = flamegraph.unwrap_or_else(|| signaldb_sdk::types::FlamegraphResult {
+        names: Vec::new(),
+        levels: Vec::new(),
+        total: 0,
+        max_self: 0,
+        baseline_total: None,
+        comparison_total: None,
+        truncated: false,
+        locations: Vec::new(),
+    });
+    serde_json::json!({
+        "flamebearer": {
+            "names": f.names,
+            "levels": f.levels,
+            "numTicks": f.total,
+            "maxSelf": f.max_self,
+        },
+        "metadata": {
+            "format": "single",
+            "sampleRate": 100,
+            "units": "samples",
+            "name": query,
+        },
+        "truncated": f.truncated,
+    })
+}
+
 /// The cell of `row` under column `name` in a `rows`/`table` response. The
 /// server names columns physically (`sample.type` comes back as
 /// `sample_type`), so `name` is the physical name.
@@ -6576,10 +6693,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn search_profiles_returns_the_flamegraph() {
-        let (base_url, router) = mock_json_router(
-            "GET /pyroscope/render?",
-            r#"{"flamebearer":{"names":["total"],"levels":[[0,10,0,0]],"numTicks":10,"maxSelf":10},"metadata":{"format":"single","sampleRate":100,"units":"samples","name":"cpu"}}"#,
+    async fn search_profiles_renders_the_ir_flamegraph_as_a_flamebearer() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/query",
+            200,
+            r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":1},"flamegraph":{"names":["total"],"levels":[[0,10,0,0]],"total":10,"max_self":10,"truncated":false,"locations":[null]}}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -6587,7 +6705,7 @@ mod tests {
         let result = server
             .search_profiles(
                 Parameters(SearchProfilesParams {
-                    query: "cpu".to_string(),
+                    query: r#"process_cpu:cpu:nanoseconds{service_name="checkout"}"#.to_string(),
                     from: Some("now-1h".to_string()),
                     until: None,
                     tenant: "acme".to_string(),
@@ -6598,9 +6716,28 @@ mod tests {
             .await
             .expect("search_profiles succeeds");
 
+        let document = captured_json_body(&router.await.expect("mock router task panicked"));
+        assert_eq!(document["result"], "flamegraph");
+        assert_eq!(
+            document["range"],
+            serde_json::json!({"from": "now-3600s", "to": "now"})
+        );
+        assert_eq!(
+            document["pipeline"],
+            serde_json::json!([
+                { "where": { "field": "sample.type", "op": "eq", "value": "cpu" } },
+                { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+            ])
+        );
         let flamegraph = text_json(&result);
         assert_eq!(flamegraph["flamebearer"]["numTicks"], 10);
-        router.await.expect("mock router task panicked");
+        assert_eq!(
+            flamegraph["flamebearer"]["levels"],
+            serde_json::json!([[0, 10, 0, 0]])
+        );
+        assert_eq!(flamegraph["metadata"]["format"], "single");
+        assert_eq!(flamegraph["truncated"], false);
+        assert!(flamegraph.get("leftTicks").is_none());
     }
 
     #[tokio::test]
@@ -6704,6 +6841,50 @@ mod tests {
                 rmcp::model::ErrorCode::INVALID_PARAMS,
                 "{from:?} {until:?}"
             );
+        }
+    }
+
+    #[test]
+    fn selectors_translate_the_profile_type_and_service_name_matchers() {
+        assert_eq!(
+            profile_selector_where("cpu").unwrap(),
+            vec![where_stage("sample.type", "eq", "cpu")]
+        );
+        assert!(profile_selector_where("  ").unwrap().is_empty());
+        assert_eq!(
+            profile_selector_where(r#"process_cpu:cpu:nanoseconds{service_name!="api"}"#).unwrap(),
+            vec![
+                where_stage("sample.type", "eq", "cpu"),
+                where_stage("service.name", "ne", "api")
+            ]
+        );
+        assert_eq!(
+            profile_selector_where(r#"{service_name=~"api.*"}"#).unwrap(),
+            vec![where_stage("service.name", "regex", "^(?:api.*)$")]
+        );
+        assert_eq!(
+            profile_selector_where(r#"{service_name!~"a,b"}"#).unwrap(),
+            vec![serde_json::json!({ "where": { "not": {
+                "field": "service.name", "op": "regex", "value": "^(?:a,b)$"
+            } } })]
+        );
+    }
+
+    #[test]
+    fn unsupported_or_malformed_selectors_are_invalid_params() {
+        for (selector, named) in [
+            (r#"cpu{env="prod"}"#, "env"),
+            (r#"cpu{service_name="api""#, "}"),
+            (r#"cpu{service_name>"api"}"#, "service_name"),
+            (r#"cpu{service_name="api}"#, "unterminated"),
+        ] {
+            let err = profile_selector_where(selector).unwrap_err();
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{selector}"
+            );
+            assert!(err.message.contains(named), "{selector}: {}", err.message);
         }
     }
 
