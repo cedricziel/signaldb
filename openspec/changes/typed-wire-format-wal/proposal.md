@@ -66,8 +66,12 @@ This change is that phase.
   from decoded `AnyValue`s through the type authority. NaN/±Inf go to the
   double home. Duplicate keys put their **last** occurrence in the canonical
   home (OTel's last-wins), and the residue keeps every occurrence in order.
-  A deeply nested value is stored as long as `prost` decoded it at the
-  acceptor (OTLP's own recursion limit), never rejected mid-pipeline.
+  Nesting depth is bounded explicitly (`[acceptor].max_value_depth`,
+  default 64): an over-deep value is rejected at the acceptor before
+  acknowledgement, and the writer re-checks the bound on the wire bytes
+  before decoding. `prost` runs with `no-recursion-limit` in this workspace,
+  so no implicit limit exists today; a value is never rejected after it was
+  acknowledged.
 - **IR result change (additive):** a new retrieval-only field per container,
   `{scope}.attribute_list`, returns `[{"key", "value"}]` with duplicates in
   sent order. The JSON result encoding gains carrier objects for values JSON

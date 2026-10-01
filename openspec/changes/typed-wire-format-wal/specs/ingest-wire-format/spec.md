@@ -39,12 +39,25 @@ container SHALL remain distinguishable.
   `$otlp_type` = `"bytes"` and `base64`
 - **THEN** the writer receives a key-value list, not bytes
 
-#### Scenario: Deep nesting does not dead-letter a batch
+#### Scenario: Nesting within the depth bound round-trips
 
-- **WHEN** an accepted OTLP export carries a key-value list nested deeper
-  than 128 levels
-- **THEN** the batch is stored, and no WAL entry is dead-lettered because of
-  the value's depth
+- **WHEN** an OTLP export carries a key-value list nested exactly
+  `[acceptor].max_value_depth` levels deep
+- **THEN** the batch is stored and the value reads back unchanged
+
+#### Scenario: Over-deep values are rejected before acknowledgement
+
+- **WHEN** an OTLP export carries a value nested deeper than
+  `[acceptor].max_value_depth`
+- **THEN** the acceptor rejects it with `InvalidArgument` before writing the
+  WAL, and no WAL entry is ever dead-lettered because of a value's depth
+
+#### Scenario: The writer bounds decode depth independently
+
+- **WHEN** a Flight client sends a v3 batch directly to a writer with a
+  `*_pb` cell nested deeper than the bound
+- **THEN** the writer rejects the batch as `invalid_argument` without
+  recursing into the value
 
 ### Requirement: Encoding is negotiated so no writer receives an encoding it cannot process
 

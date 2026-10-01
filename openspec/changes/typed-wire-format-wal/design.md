@@ -121,11 +121,32 @@ no key quoting or base64. Slicing the original request bytes would avoid
 re-encoding, but OTTL processors mutate the decoded request first, so
 re-encoding is the only correct source.
 
-**Depth.** The acceptor's own OTLP decode already applies `prost`'s
-recursion limit (100). Anything that reached the acceptor therefore
-re-encodes and decodes again within the same limit. The carrier introduces
-no new limit, so a legal request can no longer be dead-lettered by its own
-nesting.
+**Depth.** `prost`'s recursion limit does **not** protect us: the
+workspace builds `prost` with `no-recursion-limit` (`workspace-hack/Cargo.toml`),
+so neither the acceptor's OTLP decode today nor the writer's `*_pb` decode
+under this design has any depth cap. Recursion on attacker-controlled depth
+is a stack-overflow vector, so the change adds an explicit bound:
+
+- `[acceptor].max_value_depth` (default 64 `AnyValue` levels, counting each
+  `ArrayValue`/`KeyValueList` hop) is enforced **at the acceptor**, after OTLP
+  decode and OTTL processing and before the request is acknowledged. An
+  over-deep request is rejected (`InvalidArgument`, OTLP partial-success
+  counts for HTTP) and never written to the WAL, so depth can no longer turn
+  into a post-acknowledgement dead letter.
+- The writer does not trust that check (a Flight client can bypass the
+  acceptor). Before decoding a `*_pb` cell it runs an iterative,
+  allocation-free scan of the protobuf wire bytes that counts nested
+  length-delimited `AnyValue` fields with an explicit counter, and rejects the
+  batch as `invalid_argument` past the same bound. Only then does it call
+  `prost`, whose recursion is now bounded by construction.
+- The acceptor's own OTLP decode is equally uncapped today. That is a
+  pre-existing exposure independent of this change; the same wire-byte scan
+  guards it (task 2.3), and it is listed as a non-breaking fix that can ship
+  ahead of v3.
+
+With a 64-level bound, values that today's JSON path dead-letters (deeper
+than `serde_json`'s 128) are rejected up front instead; values within the
+bound round-trip losslessly.
 
 ### D2: Wire schema version `v3`, self-describing by column type
 

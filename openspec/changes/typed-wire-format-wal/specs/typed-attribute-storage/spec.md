@@ -14,7 +14,7 @@ carrier (see `ingest-wire-format`), storage SHALL additionally preserve:
 - a key-value list whose keys resemble a SignalDB carrier object as a
   key-value list;
 - every occurrence of a duplicated key, in sent order;
-- values nested as deeply as the OTLP decoder accepted.
+- values nested up to the configured depth bound (`[acceptor].max_value_depth`).
 
 A container without duplicate keys SHALL be stored exactly as before this
 requirement changed. The relative order of distinct keys across typed homes

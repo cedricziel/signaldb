@@ -20,11 +20,16 @@
 
 - [ ] 2.1 Write failing round-trip tests per signal: OTLP request → v3 batch →
       decode `*_pb` with `prost` → equals the original containers
-      (duplicates, NaN, bytes-shaped kvlist, 200-level nesting, absent vs
-      empty); v3 → v1 down-conversion equals today's v1 conversion of the
+      (duplicates, NaN, bytes-shaped kvlist, nesting at exactly the depth
+      bound, absent vs empty) and an over-bound value rejected by the
+      wire-byte depth scan without recursion; v3 → v1 down-conversion equals today's v1 conversion of the
       same request. Verify with `cargo test -p common flight::conversion`
 - [ ] 2.2 Add the v3 Flight schemas (`flight/schema.rs`), the protobuf
       container extraction, and `downconvert_v3_to_v1`. 2.1 passes
+- [ ] 2.3 Add the iterative protobuf wire-byte depth scan and
+      `[acceptor].max_value_depth`; apply it to the acceptor's OTLP decode
+      (pre-existing exposure: `prost` is built with `no-recursion-limit`)
+      and to the writer's `*_pb` decode. Can ship ahead of v3
 
 ## 3. Writer accepts v3 and advertises `TypedWire` (writer, common): acceptors still send v1
 
