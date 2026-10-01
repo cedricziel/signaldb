@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
-use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+use common::service_bootstrap::{ServiceBootstrap, ServiceType, advertise_addr};
 use common::wal::WalConfig;
 use common::wal::manager::WalManager;
 use compactor::service::CompactorService;
@@ -299,7 +299,7 @@ async fn main() -> Result<()> {
     let writer_bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Writer,
-        writer_flight_addr.to_string(),
+        advertise_addr("WRITER_ADVERTISE_ADDR", writer_flight_addr),
     )
     .await
     .context("Failed to initialize writer service bootstrap")?;
@@ -313,7 +313,7 @@ async fn main() -> Result<()> {
     let querier_bootstrap = ServiceBootstrap::new(
         config.clone(),
         ServiceType::Querier,
-        querier_flight_addr.to_string(),
+        advertise_addr("QUERIER_ADVERTISE_ADDR", querier_flight_addr),
     )
     .await
     .context("Failed to initialize querier service bootstrap")?;
@@ -388,7 +388,7 @@ async fn main() -> Result<()> {
         let compactor_bootstrap = ServiceBootstrap::new(
             config.clone(),
             ServiceType::Compactor,
-            compactor_flight_addr.to_string(),
+            advertise_addr("COMPACTOR_ADVERTISE_ADDR", compactor_flight_addr),
         )
         .await
         .context("Failed to initialize compactor service bootstrap")?;
@@ -484,12 +484,13 @@ async fn main() -> Result<()> {
     );
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_GRPC_PORT));
     let http_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_HTTP_PORT));
-    let advertise_addr =
-        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
-
-    let acceptor_resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
-        .await
-        .context("Failed to initialize acceptor resources")?;
+    let acceptor_resources = init_acceptor_resources(
+        config.clone(),
+        advertise_addr("ACCEPTOR_ADVERTISE_ADDR", grpc_addr),
+        wal_dir,
+    )
+    .await
+    .context("Failed to initialize acceptor resources")?;
 
     // Clone resources for both servers (all fields are Arcs, cheap to clone)
     let grpc_resources = acceptor_resources.clone();

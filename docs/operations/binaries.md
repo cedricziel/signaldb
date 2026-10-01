@@ -49,6 +49,25 @@ once per binary over the whole DataFusion/Arrow/Iceberg graph (~7 minutes each
 on the release runners). Eight binaries meant eight such links for the same
 code; two (`signaldb`, `signaldb-cli`) is what the images and archives need.
 
+## Advertised addresses
+
+Every service registers an address in service discovery that peers dial. By
+default that is the address it binds, which for the monolith and the image
+defaults is `0.0.0.0:<port>`. That only reaches the service from inside its
+own container. When other containers discover it, set the advertised address
+to something they can route to, such as the compose service name:
+
+| Variable | Service | Default |
+|---|---|---|
+| `WRITER_ADVERTISE_ADDR` | writer | bind address (`0.0.0.0:50051` in the monolith) |
+| `QUERIER_ADVERTISE_ADDR` | querier | bind address (`0.0.0.0:50054` in the monolith) |
+| `COMPACTOR_ADVERTISE_ADDR` | compactor | bind address (`0.0.0.0:50055`) |
+| `ACCEPTOR_ADVERTISE_ADDR` | acceptor | bind address of the OTLP gRPC server |
+
+The monolith and the standalone services read the same variables, so a
+monolith next to extra `querier-N` or `writer-N` containers sets, for example,
+`WRITER_ADVERTISE_ADDR=signaldb:50051`. An empty variable counts as unset.
+
 ## CPU baseline
 
 Every build of `common` runs a build script that embeds the bundled schema
