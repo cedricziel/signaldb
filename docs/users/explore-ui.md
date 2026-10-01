@@ -1135,6 +1135,27 @@ ran, kept in this browser's `localStorage` (`sdb.recentQueries`); they
 aren't stored on the server or shared between browsers, and **Sign out**
 clears them.
 
+### Connect
+
+The header's **Connect** button (an icon button in the phone top bar) opens
+a dialog that shows how to reach the current tenant and dataset outside the
+browser. Every URL comes from `GET /api/v1/connection`, so it shows the
+deployment's `[public]` addresses rather than the browser's hostname. It lists
+any operator notes (for example, that `[public]` is unset and the URLs are
+localhost fallbacks), followed by:
+
+- **MCP:** the endpoint, a ready-to-paste `claude mcp add` command for Claude
+  Code, and the steps for adding it as a custom connector in Claude.ai or
+  ChatGPT (see [MCP](mcp.md#connecting-an-agent)). If the deployment has no
+  MCP endpoint, the dialog says so.
+- **CLI:** the `SIGNALDB_*` environment variables `signaldb-cli` reads, plus a
+  `whoami` and a `query --ir` example.
+- **HTTP API:** the base URL, the Query IR path, the OpenAPI document and a
+  `curl` example.
+
+Snippets use an `<api-key>` placeholder. Admins also get a **Create an API
+key** link to `/api-keys`.
+
 ## User menu
 
 Once signed in, your account at the bottom of the sidebar (the avatar in the
