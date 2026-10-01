@@ -88,6 +88,10 @@ const EXCLUDED: &[(&str, &str)] = &[
         "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
     ),
     (
+        "pyroscope_profile_types",
+        "compat profile endpoint for external clients; the CLI `profiles types` still calls it, while the MCP `discover_profile_types` groups the query_ir profiles source",
+    ),
+    (
         "pyroscope_label_values",
         "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
     ),
@@ -464,11 +468,6 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "compare_profiles",
     ),
     (
-        "pyroscope_profile_types",
-        CliSurface::Path(&["profiles", "types"]),
-        "discover_profile_types",
-    ),
-    (
         "profiles_by_trace",
         CliSurface::Path(&["profiles", "by-trace"]),
         "profiles_for_trace",
@@ -625,5 +624,19 @@ fn http_languages_have_mcp_tools() {
             McpServer::has_tool(tool),
             "MCP tool `{tool}` is missing for an HTTP query language"
         );
+    }
+}
+
+/// The profile operations sit in `EXCLUDED` because the MCP tools read the
+/// Query IR rather than calling them; the tools themselves must stay.
+#[test]
+fn profile_tools_still_exist() {
+    for tool in [
+        "discover_profile_types",
+        "search_profiles",
+        "compare_profiles",
+        "profiles_for_trace",
+    ] {
+        assert!(McpServer::has_tool(tool), "MCP tool `{tool}` is missing");
     }
 }

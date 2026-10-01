@@ -512,7 +512,7 @@ struct DiscoverProfileTypesParams {
 #[derive(Debug, Deserialize, JsonSchema)]
 #[schemars(crate = "rmcp::schemars")]
 struct SearchProfilesParams {
-    /// Pyroscope selector, e.g.
+    /// Pyroscope-style selector, e.g.
     /// `process_cpu:cpu:nanoseconds{service_name="checkout"}`.
     query: String,
     /// Range start: unix seconds, unix milliseconds, or `now[-<N><s|m|h|d>]`.
@@ -2426,10 +2426,23 @@ impl McpServer {
         stage: serde_json::Value,
         tool: &str,
     ) -> Result<signaldb_sdk::types::QueryIrResponse, ErrorData> {
-        let request: signaldb_sdk::types::QueryIrRequest =
-            serde_json::from_value(describe_document(source, from, to, stage)).map_err(|e| {
-                ErrorData::internal_error(format!("failed to build query: {e}"), None)
-            })?;
+        let document = describe_document(source, from, to, stage);
+        self.run_ir_document(parts, tenant, dataset, document, tool)
+            .await
+    }
+
+    /// Submit one Query IR document for `tenant`/`dataset`, naming `tool` in
+    /// any error.
+    async fn run_ir_document(
+        &self,
+        parts: &Parts,
+        tenant: &str,
+        dataset: &str,
+        document: serde_json::Value,
+        tool: &str,
+    ) -> Result<signaldb_sdk::types::QueryIrResponse, ErrorData> {
+        let request: signaldb_sdk::types::QueryIrRequest = serde_json::from_value(document)
+            .map_err(|e| ErrorData::internal_error(format!("failed to build query: {e}"), None))?;
         let client = self.scoped_router_client(parts, tenant, Some(dataset))?;
         let resp = client
             .query_ir()
@@ -2733,7 +2746,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Discover the profile types with data for your tenant (e.g. CPU, heap). Optional `from`/`until` narrow the window (unix seconds/milliseconds, or `now[-<N><s|m|h|d>]`). Use this to construct a `search_profiles` selector.",
+        description = "Discover the profile types with data for your tenant (e.g. CPU, heap): the distinct `sample.type`/`sample.unit` pairs on the `profiles` source, read through the Query IR. Optional `from`/`until` narrow the window (unix seconds/milliseconds, or `now[-<N><s|m|h|d>]`; default the 30 days up to `until`, and `until` defaults to now). Use this to construct a `search_profiles` selector.",
         annotations(read_only_hint = true)
     )]
     async fn discover_profile_types(
@@ -2742,19 +2755,31 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
-        let mut req = client.pyroscope_profile_types();
-        if let Some(v) = p.from {
-            req = req.from(v);
-        }
-        if let Some(v) = p.until {
-            req = req.until(v);
-        }
-        let resp = req
-            .send()
-            .await
-            .map_err(|e| map_sdk_err(e, "discover_profile_types"))?;
-        json_result(&resp.into_inner())
+        let document = serde_json::json!({
+            "irVersion": 1,
+            "from": "profiles",
+            "range": pyroscope_range(
+                p.from.as_deref(),
+                p.until.as_deref(),
+                30 * DAY_SECS,
+                PyroscopeTime::Relative(0),
+            )?,
+            "result": "table",
+            "pipeline": [{ "aggregate": {
+                "by": ["sample.type", "sample.unit"],
+                "aggs": [{ "fn": "count", "as": "profiles" }]
+            } }]
+        });
+        let response = self
+            .run_ir_document(
+                &parts,
+                &p.tenant,
+                &p.dataset,
+                document,
+                "discover_profile_types",
+            )
+            .await?;
+        json_result(&profile_types(&response))
     }
 
     #[tool(
@@ -5221,6 +5246,159 @@ fn json_result_ext<T: serde::Serialize>(
     Ok(result)
 }
 
+const HOUR_SECS: i64 = 3_600;
+const DAY_SECS: i64 = 24 * HOUR_SECS;
+
+/// A Pyroscope time parameter: an absolute instant in nanoseconds, or a
+/// number of seconds before the server's `now`.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum PyroscopeTime {
+    Absolute(i64),
+    Relative(i64),
+}
+
+impl PyroscopeTime {
+    /// Parse unix seconds, unix milliseconds (above 1e11, the router's
+    /// Pyroscope cut-over) or `now[-<N><s|m|h|d>]`; blank is unset.
+    fn parse(value: Option<&str>) -> Result<Option<Self>, ErrorData> {
+        let Some(value) = value.map(str::trim).filter(|v| !v.is_empty()) else {
+            return Ok(None);
+        };
+        let invalid = || {
+            ErrorData::invalid_params(
+                format!(
+                    "invalid time `{value}`: expected unix seconds or milliseconds, or now[-<N><s|m|h|d>]"
+                ),
+                None,
+            )
+        };
+        if let Ok(number) = value.parse::<i64>() {
+            let per_unit = if number > 100_000_000_000 {
+                1_000_000
+            } else {
+                1_000_000_000
+            };
+            return number
+                .checked_mul(per_unit)
+                .map(|ns| Some(Self::Absolute(ns)))
+                .ok_or_else(invalid);
+        }
+        let rest = value.strip_prefix("now").ok_or_else(invalid)?;
+        if rest.is_empty() {
+            return Ok(Some(Self::Relative(0)));
+        }
+        let rest = rest
+            .strip_prefix('-')
+            .filter(|r| r.is_ascii())
+            .ok_or_else(invalid)?;
+        let (amount, unit) = rest.split_at(rest.len().saturating_sub(1));
+        let unit_secs = match unit {
+            "s" => 1,
+            "m" => 60,
+            "h" => HOUR_SECS,
+            "d" => DAY_SECS,
+            _ => return Err(invalid()),
+        };
+        amount
+            .parse::<i64>()
+            .ok()
+            .and_then(|amount| amount.checked_mul(unit_secs))
+            .filter(|secs| *secs >= 0 && secs.checked_mul(1_000_000_000).is_some())
+            .map(|secs| Some(Self::Relative(secs)))
+            .ok_or_else(invalid)
+    }
+
+    /// `secs` earlier.
+    fn before(self, secs: i64) -> Option<Self> {
+        match self {
+            Self::Absolute(ns) => secs
+                .checked_mul(1_000_000_000)
+                .and_then(|delta| ns.checked_sub(delta))
+                .map(Self::Absolute),
+            Self::Relative(ago) => ago.checked_add(secs).map(Self::Relative),
+        }
+    }
+
+    fn literal(self) -> String {
+        match self {
+            Self::Absolute(ns) => ns.to_string(),
+            Self::Relative(0) => "now".to_string(),
+            Self::Relative(ago) => format!("now-{ago}s"),
+        }
+    }
+}
+
+/// The IR `range` for optional Pyroscope `from`/`until` parameters: `until`
+/// falls back to `default_until` (or `now` when only `from` is given), and
+/// `from` to `span_secs` before `until`. A window whose `from` is not before
+/// its `to` is rejected when the two are comparable here.
+fn pyroscope_range(
+    from: Option<&str>,
+    until: Option<&str>,
+    span_secs: i64,
+    default_until: PyroscopeTime,
+) -> Result<serde_json::Value, ErrorData> {
+    let from = PyroscopeTime::parse(from)?;
+    let until = match (PyroscopeTime::parse(until)?, from) {
+        (Some(until), _) => until,
+        (None, Some(_)) => PyroscopeTime::Relative(0),
+        (None, None) => default_until,
+    };
+    let from = match from {
+        Some(from) => from,
+        None => until.before(span_secs).ok_or_else(|| {
+            ErrorData::invalid_params("time range out of bounds".to_string(), None)
+        })?,
+    };
+    let inverted = match (from, until) {
+        (PyroscopeTime::Absolute(from), PyroscopeTime::Absolute(until)) => from >= until,
+        (PyroscopeTime::Relative(from), PyroscopeTime::Relative(until)) => from <= until,
+        _ => false,
+    };
+    if inverted {
+        return Err(ErrorData::invalid_params(
+            "`from` must be before `until`".to_string(),
+            None,
+        ));
+    }
+    Ok(serde_json::json!({ "from": from.literal(), "to": until.literal() }))
+}
+
+/// The cell of `row` under column `name` in a `rows`/`table` response.
+fn cell<'a>(
+    response: &signaldb_sdk::types::QueryIrResponse,
+    row: &'a [serde_json::Value],
+    name: &str,
+) -> Option<&'a serde_json::Value> {
+    let index = response.columns.iter().position(|c| c.name == name)?;
+    row.get(index)
+}
+
+/// Profile types in the `/pyroscope/profile-types` shape, from the
+/// `sample.type`/`sample.unit` grouping, sorted by id.
+fn profile_types(response: &signaldb_sdk::types::QueryIrResponse) -> Vec<serde_json::Value> {
+    let mut types: Vec<_> = response
+        .rows
+        .iter()
+        .filter_map(|row| {
+            let sample_type = cell(response, row, "sample.type")?
+                .as_str()
+                .filter(|t| !t.is_empty())?;
+            let sample_unit = cell(response, row, "sample.unit")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            Some(serde_json::json!({
+                "ID": format!("{sample_type}:{sample_type}:{sample_unit}"),
+                "name": sample_type,
+                "sampleType": sample_type,
+                "sampleUnit": sample_unit,
+            }))
+        })
+        .collect();
+    types.sort_by(|a, b| a["ID"].as_str().cmp(&b["ID"].as_str()));
+    types
+}
+
 /// Build the Query IR document `get_profile` submits: a `flamegraph`-enveloped
 /// `profiles` query filtered to one `profile.id`, defaulting to the last 30
 /// days when no `start`/`end` hint is given. Pure and synchronous, so it's
@@ -6318,10 +6496,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn discover_profile_types_lists_types_via_router() {
-        let (base_url, router) = mock_json_router(
-            "GET /pyroscope/profile-types",
-            r#"[{"ID":"cpu:cpu:nanoseconds","name":"cpu","sampleType":"cpu","sampleUnit":"nanoseconds"}]"#,
+    async fn discover_profile_types_groups_profiles_by_sample_type_and_unit() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/query",
+            200,
+            r#"{"result":"table","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"sample.type","type":"string"},{"name":"sample.unit","type":"string"},{"name":"profiles","type":"int64"}],"rows":[["samples","count",2],["cpu","nanoseconds",5],["","count",1]]}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -6329,7 +6508,7 @@ mod tests {
         let result = server
             .discover_profile_types(
                 Parameters(DiscoverProfileTypesParams {
-                    from: None,
+                    from: Some("1700000000".to_string()),
                     until: None,
                     tenant: "acme".to_string(),
                     dataset: "production".to_string(),
@@ -6339,9 +6518,24 @@ mod tests {
             .await
             .expect("discover_profile_types succeeds");
 
-        let types = text_json(&result);
-        assert_eq!(types[0]["name"], "cpu");
-        router.await.expect("mock router task panicked");
+        let document = captured_json_body(&router.await.expect("mock router task panicked"));
+        assert_eq!(document["from"], "profiles");
+        assert_eq!(document["result"], "table");
+        assert_eq!(
+            document["range"],
+            serde_json::json!({"from": "1700000000000000000", "to": "now"})
+        );
+        assert_eq!(
+            document["pipeline"][0]["aggregate"]["by"],
+            serde_json::json!(["sample.type", "sample.unit"])
+        );
+        assert_eq!(
+            text_json(&result),
+            serde_json::json!([
+                {"ID": "cpu:cpu:nanoseconds", "name": "cpu", "sampleType": "cpu", "sampleUnit": "nanoseconds"},
+                {"ID": "samples:samples:count", "name": "samples", "sampleType": "samples", "sampleUnit": "count"}
+            ])
+        );
     }
 
     #[tokio::test]
@@ -6427,6 +6621,53 @@ mod tests {
         let profiles = text_json(&result);
         assert_eq!(profiles[0]["profileID"], "p1");
         router.await.expect("mock router task panicked");
+    }
+
+    #[test]
+    fn pyroscope_windows_default_and_convert_their_bounds() {
+        let hour = 3_600;
+        let now = PyroscopeTime::Relative(0);
+        let window = |from, until| pyroscope_range(from, until, hour, now);
+        assert_eq!(
+            window(None, Some(" ")).unwrap(),
+            serde_json::json!({"from": "now-3600s", "to": "now"})
+        );
+        assert_eq!(
+            window(Some("1700000000"), None).unwrap(),
+            serde_json::json!({"from": "1700000000000000000", "to": "now"})
+        );
+        assert_eq!(
+            window(None, Some("1700000000123")).unwrap(),
+            serde_json::json!({"from": "1699996400123000000", "to": "1700000000123000000"})
+        );
+        assert_eq!(
+            window(None, Some("now-2h")).unwrap(),
+            serde_json::json!({"from": "now-10800s", "to": "now-7200s"})
+        );
+        assert_eq!(
+            pyroscope_range(None, None, hour, PyroscopeTime::Relative(hour)).unwrap(),
+            serde_json::json!({"from": "now-7200s", "to": "now-3600s"})
+        );
+    }
+
+    #[test]
+    fn inverted_or_unparseable_pyroscope_windows_are_invalid_params() {
+        let now = PyroscopeTime::Relative(0);
+        for (from, until) in [
+            (Some("now-1h"), Some("now-2h")),
+            (Some("1700000100"), Some("1700000000")),
+            (Some("now"), Some("now")),
+            (Some("yesterday"), None),
+            (Some("99999999999999999"), None),
+            (Some("now-99999999999999999d"), None),
+        ] {
+            let err = pyroscope_range(from, until, 3_600, now).unwrap_err();
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{from:?} {until:?}"
+            );
+        }
     }
 
     const DESCRIBE_FIELDS_RESPONSE: &str = r#"{"result":"metadata","window":{"start_ns":0,"end_ns":1},"metadata":{"kind":"fields","fields":[],"truncated":false,"cost":{"mode":"metadata","window_scoped":false,"sampled":false,"approximate":false}}}"#;
