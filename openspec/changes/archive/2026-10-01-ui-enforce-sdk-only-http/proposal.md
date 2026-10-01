@@ -13,7 +13,7 @@ self-enforcing instead of relying on review vigilance.
 
 - Add an ESLint rule (`no-restricted-syntax` matching `CallExpression[callee.name="fetch"]`, or equivalent) to `src/ui/eslint.config.js` that fails on any direct `fetch()` call in application code.
 - Scope the rule to everything except `src/api/gen/**`, which is already excluded from linting entirely (it's `@hey-api/openapi-ts` output).
-- No other exemption is expected: after `ui-migrate-to-generated-sdk`, no file outside `src/api/gen/**` calls `fetch()` directly, so the rule should pass with zero pre-existing violations.
+- No file-level exemption beyond that. The few `fetch()` calls that are the network transport itself (the generated client's `retryingFetch`, the service worker) disable the rule inline with a reason.
 
 Not breaking: this is a new lint rule with an expected-clean baseline, not a
 behavior change.

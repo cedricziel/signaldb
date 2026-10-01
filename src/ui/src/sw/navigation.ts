@@ -30,6 +30,7 @@ export async function networkFirstNavigation(
     );
   });
   try {
+    // eslint-disable-next-line no-restricted-syntax -- injected navigation transport, not an API call
     return await Promise.race([fetch(request), timeout]);
   } catch {
     return shell();

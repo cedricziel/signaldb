@@ -18,3 +18,11 @@ through the generated client cannot regress silently.
 
 - **WHEN** the lint check runs against `src/api/gen/**`
 - **THEN** it does not flag the generated client's own `fetch()` usage
+
+#### Scenario: A transport opts out inline
+
+- **WHEN** a `fetch()` call is the network transport itself rather than a
+  SignalDB call site (the generated client's fetch, the service worker's
+  app shell)
+- **THEN** it disables the check on that line with a stated reason
+- **AND** no file or directory outside `src/api/gen/**` is exempted wholesale

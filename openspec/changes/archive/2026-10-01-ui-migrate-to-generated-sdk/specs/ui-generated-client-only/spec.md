@@ -10,20 +10,20 @@ cannot drift from the published OpenAPI contract — the UI-side counterpart to
 ### Requirement: UI reaches SignalDB exclusively through the generated client
 
 Every SignalDB HTTP capability the web UI consumes — tenant/dataset/API-key
-management, Tempo/Loki/Prometheus/Pyroscope query-compat, and UI session/
-whoami — SHALL be reached through a function generated into
-`src/ui/src/api/gen` from the published OpenAPI document. No module under
+management, Query IR reads, and UI session/whoami — SHALL be reached
+through a function generated into `src/ui/src/api/gen` from the published OpenAPI document. No module under
 `src/ui/src` SHALL construct its own `fetch()` (or other raw HTTP transport)
 request against a SignalDB endpoint.
 
-#### Scenario: A query-compat call goes through the generated client
+#### Scenario: A query goes through the generated client
 
-- **WHEN** the UI issues a Tempo, Loki, Prometheus, or Pyroscope query or
-  metadata request
-- **THEN** the request is dispatched through a function generated in
-  `src/ui/src/api/gen`
-- **AND** no module in `src/ui/src/api` (or elsewhere) constructs the request
-  via a hand-written `fetch()` call
+- **WHEN** the UI reads traces, logs, metrics, or profiles
+- **THEN** the request is a Query IR request (`POST /api/v1/query`)
+  dispatched through a function generated in `src/ui/src/api/gen`
+- **AND** the UI issues no request to the Tempo, Loki, Prometheus, or
+  Pyroscope compatibility APIs
+- **AND** no module under `src/ui/src` builds the request with a
+  hand-written `fetch()` call
 
 #### Scenario: Session and whoami calls go through the generated client
 
