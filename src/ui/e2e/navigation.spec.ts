@@ -27,62 +27,146 @@ async function json(route: import("@playwright/test").Route, body: unknown) {
   });
 }
 
-test("/ redirects to /logs with the Logs tab selected", async ({ page }) => {
+/** A page link in the sidebar's page list. */
+function navLink(page: import("@playwright/test").Page, name: string) {
+  return page
+    .getByRole("navigation", { name: "Pages" })
+    .getByRole("link", { name, exact: true });
+}
+
+test("/ lands on the Overview, current in the sidebar", async ({ page }) => {
   await page.goto("/");
-  await expect(page).toHaveURL(/\/logs$/);
-  await expect(page.getByRole("tab", { name: "Logs" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(navLink(page, "Overview")).toHaveAttribute(
+    "aria-current",
+    "page",
   );
+  await expect(
+    page.getByRole("button", { name: /Setup checklist/ }),
+  ).toBeVisible();
 });
 
-test("switching signal tabs updates the path", async ({ page }) => {
+test("the palette's setup action opens the checklist on the Overview", async ({
+  page,
+}) => {
   await page.goto("/logs");
-  await page.getByRole("tab", { name: "Traces" }).click();
+  await expect(navLink(page, "Logs")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  await page.keyboard.type("setup checklist");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/overview$/);
+  await expect(
+    page.getByRole("dialog", { name: "Setup checklist" }),
+  ).toBeVisible();
+});
+
+test("switching pages in the sidebar updates the path", async ({ page }) => {
+  await page.goto("/logs");
+  await navLink(page, "Traces").click();
   await expect(page).toHaveURL(/\/traces$/);
-  await expect(page.getByRole("tab", { name: "Traces" })).toHaveAttribute(
-    "aria-selected",
-    "true",
+  await expect(navLink(page, "Traces")).toHaveAttribute("aria-current", "page");
+});
+
+test("/evals/runs marks Runs as the current page", async ({ page }) => {
+  // A tenant-less request 401s and the shell bounces to /login (see
+  // App.tsx's redirect effect), so this needs the sticky tenant context in
+  // the URL, same as the /manage test below.
+  await page.goto("/evals/runs?tenant=acme&dataset=production");
+  await expect(page).toHaveURL(/\/evals\/runs\?/);
+  await expect(navLink(page, "Runs")).toHaveAttribute("aria-current", "page");
+});
+
+test("an eval set's page marks Eval sets as the current page", async ({
+  page,
+}) => {
+  await page.goto(
+    "/evals/sets/triage-golden-200?tenant=acme&dataset=production",
+  );
+  await expect(page).toHaveURL(/\/evals\/sets\/triage-golden-200\?/);
+  await expect(navLink(page, "Eval sets")).toHaveAttribute(
+    "aria-current",
+    "page",
   );
 });
 
-test("an unknown path redirects to /logs, preserving the query string", async ({
+test("⌘K opens the command palette and Enter navigates", async ({ page }) => {
+  await page.goto("/logs");
+  await expect(navLink(page, "Logs")).toBeVisible();
+  await page.keyboard.press("ControlOrMeta+k");
+  const palette = page.getByRole("dialog", { name: "Command palette" });
+  await expect(
+    palette.getByRole("searchbox", { name: "Search" }),
+  ).toBeFocused();
+  await page.keyboard.type("metr");
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/\/metrics$/);
+  await expect(palette).toHaveCount(0);
+});
+
+test("the sidebar gives way to a top bar and drawer on a phone", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 800 });
+  await page.goto("/logs");
+  await expect(
+    page.getByRole("complementary", { name: "Main navigation" }),
+  ).toHaveCount(0);
+  await page.getByRole("button", { name: "Open navigation" }).click();
+  await page
+    .getByRole("navigation", { name: "Main navigation" })
+    .getByRole("link", { name: "Traces", exact: true })
+    .click();
+  await expect(page).toHaveURL(/\/traces$/);
+  await expect(
+    page.getByRole("navigation", { name: "Main navigation" }),
+  ).toHaveCount(0);
+});
+
+test("an unknown path redirects home to /overview, preserving the query string", async ({
   page,
 }) => {
   await page.goto("/bogus?range=15m");
-  await expect(page).toHaveURL(/\/logs\?range=15m$/);
+  await expect(page).toHaveURL(/\/overview\?range=15m$/);
 });
 
-test("/manage redirects unauthenticated visitors to /logs", async ({
+test("/ redirects to /overview, preserving the query string", async ({
+  page,
+}) => {
+  await page.goto("/?tenant=homelab&dataset=default");
+  await expect(page).toHaveURL(/\/overview\?tenant=homelab&dataset=default$/);
+});
+
+test("/manage redirects unauthenticated visitors home to /overview", async ({
   page,
 }) => {
   // No mocks: whoami naturally fails without a backend, so this exercises
   // the same "not an admin" redirect path as an authenticated non-admin.
   await page.goto("/manage");
-  await expect(page).toHaveURL(/\/logs$/);
+  await expect(page).toHaveURL(/\/overview$/);
 });
 
 test("an admin can open /manage and the back button returns them", async ({
   page,
 }) => {
   await page.route("**/api/v1/whoami", (route) => json(route, ADMIN_WHOAMI));
-  await page.route("**/api/v1/manage/tenants/*/api-keys*", (route) =>
-    json(route, []),
-  );
-  await page.route("**/api/v1/manage/tenants/*/memberships*", (route) =>
+  await page.route("**/api/v1/tenants/*/api-keys*", (route) => json(route, []));
+  await page.route("**/api/v1/tenants/*/memberships*", (route) =>
     json(route, []),
   );
 
-  await page.goto("/logs");
+  // The shell only asks whoami once a tenant is known (a tenant-less
+  // request is a 401 by design), so the admin gate needs the context in
+  // the URL; the sticky context then rides along on the bare /manage link.
+  await page.goto("/logs?tenant=acme&dataset=production");
   await page.getByRole("link", { name: "Manage" }).click();
 
-  await expect(page).toHaveURL(/\/manage$/);
+  await expect(page).toHaveURL(/\/manage(\?.*)?$/);
   await expect(
     page.getByRole("dialog", { name: "Manage tenant" }),
   ).toBeVisible();
 
   await page.goBack();
-  await expect(page).toHaveURL(/\/logs$/);
+  await expect(page).toHaveURL(/\/logs(\?.*)?$/);
   await expect(
     page.getByRole("dialog", { name: "Manage tenant" }),
   ).not.toBeVisible();
@@ -93,9 +177,124 @@ test("/oauth/consent renders standalone, without the explore shell", async ({
 }) => {
   await page.goto("/oauth/consent");
   await expect(page).toHaveURL(/\/oauth\/consent$/);
-  // No signal tabs, no top bar — this route bypasses the shell entirely.
-  await expect(page.getByRole("tablist", { name: "Signal" })).toHaveCount(0);
+  // No app navigation — this route bypasses the shell entirely.
+  await expect(
+    page.getByRole("complementary", { name: "Main navigation" }),
+  ).toHaveCount(0);
   await expect(
     page.getByRole("heading", { name: "Invalid authorization request" }),
   ).toBeVisible();
+});
+
+test("/login renders standalone, without the explore shell", async ({
+  page,
+}) => {
+  // No mocks: currentSession() naturally fails without a backend, so the
+  // sign-in form renders.
+  await page.goto("/login");
+  await expect(page).toHaveURL(/\/login$/);
+  // No app navigation — this route bypasses the shell entirely.
+  await expect(
+    page.getByRole("complementary", { name: "Main navigation" }),
+  ).toHaveCount(0);
+  // The page is a standalone destination, not a modal dialog (design
+  // decision 1): a level-one "Sign in" heading, no role="dialog".
+  await expect(
+    page.getByRole("heading", { level: 1, name: "Sign in" }),
+  ).toBeVisible();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+});
+
+test("/login offers SSO when the login-configuration probe reports a provider", async ({
+  page,
+}) => {
+  await page.route("**/ui/session/config", (route) =>
+    json(route, { password_enabled: true, oidc: { name: "Acme" } }),
+  );
+  await page.route("**/ui/session", (route) =>
+    route.request().method() === "GET"
+      ? route.fulfill({ status: 401, body: "{}" })
+      : route.continue(),
+  );
+
+  await page.goto("/login");
+
+  const ssoLink = page.getByRole("link", { name: "Continue with Acme" });
+  await expect(ssoLink).toBeVisible();
+  await expect(ssoLink).toHaveAttribute("href", /^\/ui\/session\/oidc\/start/);
+});
+
+test("/login stays usable at a narrow (360x740) viewport", async ({ page }) => {
+  await page.setViewportSize({ width: 360, height: 740 });
+  await page.goto("/login");
+
+  const submit = page.getByRole("button", { name: "Sign in" });
+  await expect(submit).toBeVisible();
+
+  const scrollWidth = await page.evaluate(
+    () => document.documentElement.scrollWidth,
+  );
+  expect(scrollWidth).toBeLessThanOrEqual(360);
+
+  const box = await submit.boundingBox();
+  expect(box).not.toBeNull();
+  expect(box!.x).toBeGreaterThanOrEqual(0);
+  expect(box!.x + box!.width).toBeLessThanOrEqual(360);
+});
+
+test("sidebar → Real users → Overview renders", async ({ page }) => {
+  // No RUM data behind this build — the query IR endpoint answers with an
+  // empty envelope for every read the Overview tab issues (apps, KPIs,
+  // vitals, ...), same shape `emptyIrLogs` covers in the component tests.
+  await page.route("**/api/v1/query", (route) =>
+    json(route, {
+      result: "rows",
+      window: { start_ns: 0, end_ns: 0 },
+      columns: [],
+      rows: [],
+      series: [],
+    }),
+  );
+  await page.goto("/logs");
+  await navLink(page, "Real users").click();
+  await expect(page).toHaveURL(/\/rum\/overview$/);
+  await expect(navLink(page, "Real users")).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await expect(
+    page.getByText(/No frontend app has sent real-user data yet/),
+  ).toBeVisible();
+  await page.getByRole("button", { name: "Open Setup" }).click();
+  await expect(page).toHaveURL(/\/rum\/setup$/);
+  await expect(page.getByText("Install the SDK")).toBeVisible();
+  await page.getByRole("button", { name: "Network" }).click();
+  await expect(page).toHaveURL(/\/rum\/network$/);
+  await expect(page.getByRole("button", { name: "Network" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.getByRole("button", { name: "Pages" }).click();
+  await expect(page).toHaveURL(/\/rum\/pages$/);
+  await expect(page.getByRole("button", { name: "Pages" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.getByRole("button", { name: "Interactions" }).click();
+  await expect(page).toHaveURL(/\/rum\/interactions$/);
+  await expect(
+    page.getByRole("button", { name: "Interactions" }),
+  ).toHaveAttribute("aria-current", "page");
+  await page.getByRole("button", { name: "Sessions" }).click();
+  await expect(page).toHaveURL(/\/rum\/sessions$/);
+  await expect(page.getByRole("button", { name: "Sessions" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
+  await page.getByRole("button", { name: "Errors" }).click();
+  await expect(page).toHaveURL(/\/rum\/errors$/);
+  await expect(page.getByRole("button", { name: "Errors" })).toHaveAttribute(
+    "aria-current",
+    "page",
+  );
 });

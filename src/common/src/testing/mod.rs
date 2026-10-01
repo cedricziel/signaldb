@@ -24,15 +24,37 @@
 //! ```
 
 mod config_builder;
+#[cfg(any(test, feature = "testing-containers"))]
+mod containers;
 mod flush;
+mod github_config;
+mod github_pem;
+mod legacy_tables;
+mod metrics_layout;
 mod otel_capture;
 mod otlp_fixtures;
 mod temp_catalog;
+mod tracing_fallback;
+mod typed_attrs;
+mod warn_capture;
 
 pub use config_builder::TestConfigBuilder;
+#[cfg(any(test, feature = "testing-containers"))]
+pub use containers::{connect_catalog_with_retry, start_container_with_retry};
 pub use flush::flush_storage_writers;
+pub use github_config::github_test_config;
+pub use github_pem::GITHUB_TEST_PEM;
+pub use legacy_tables::create_legacy_metric_table;
+pub use metrics_layout::to_wide;
 pub use otel_capture::OtelExportProbe;
 pub use otlp_fixtures::{
-    sample_logs_request, sample_metrics_request, sample_trace_request, string_attr,
+    gauge_metrics_request_with_values, sample_logs_request, sample_metrics_request,
+    sample_trace_request, string_attr,
 };
 pub use temp_catalog::TempCatalog;
+pub use tracing_fallback::install_global_tracing_fallback;
+pub use typed_attrs::{
+    to_typed_layout, typed_attribute_columns, typed_attribute_columns_from,
+    typed_attribute_columns_from_with_placement,
+};
+pub use warn_capture::WarnCapture;

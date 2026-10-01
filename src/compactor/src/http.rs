@@ -422,7 +422,7 @@ fn escape_label_value(value: &str) -> String {
 /// Serve the observability endpoints until the process shuts down.
 pub async fn serve(addr: std::net::SocketAddr, state: ObservabilityState) -> anyhow::Result<()> {
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    tracing::info!(%addr, "Compactor observability HTTP endpoint listening");
+    tracing::info!(signaldb.service.address = %addr, "Compactor observability HTTP endpoint listening");
     axum::serve(listener, router(state)).await?;
     Ok(())
 }

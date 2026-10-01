@@ -1,0 +1,112 @@
+# Tasks
+
+Implemented as a dependent PR stack (see `design.md` — Migration Plan). Each `##`
+group is a stack layer; later layers depend on earlier ones. Layer 0 is blocking.
+The typed layout replaces the legacy layout in a **one-shot breaking cutover** —
+no coexistence read-path, no legacy safe-cast, no compactor rewrite of old files.
+
+## 0. Spike (blocking — feasibility + benchmark before any layout commit)
+
+- [x] 0.1 Prototype the warm typed containment index (typed generalization of `attr_tokens`) and prove row-group/file pruning for an unpromoted `key = value` predicate
+- [x] 0.2 Prove the datafusion-iceberg provider handles the typed layout (per-type maps + top-level binary CBOR residue) under one scan, and **field-id promotion evolution** across file generations (pre-promotion files null-fill, no error). The workspace-pinned provider validates the selected residue representation; `Map<String,Binary>` remains unsupported (see `spike/coexistence.md`)
+- [x] 0.3 Benchmark on real hive traces/logs: string-map vs typed map vs promoted column vs warm-index, across query classes incl. a **conflicted/off-type key**; measure **files-pruned %** (predict ~0 for the bare typed map), footer/metadata % on realistic **small flush files**, residue parse cost, and **per-attribute registry-lookup cost** (not just builder count)
+- [x] 0.4 Record results; confirm no write-path regression before committing layout. (Variant is out of scope — opaque `Binary`/`unimplemented!` in the fork; no DataFusion type.)
+
+## 1. `extract_value` fidelity fix (prereq for any losslessness claim)
+
+- [x] 1.1 Write failing tests: `BytesValue` round-trips as bytes (distinct from string); Profiles `StringValueStrindex` resolves through its request dictionary (spec `typed-attribute-storage` — AnyValue-fidelity requirement). Duplicate/ordered-key preservation is NOT tested here — it is deferred (see 12.2), because the phase-1 `serde_json::Map` wire collapses it
+- [x] 1.2 Fix `conversion_common.rs` `extract_value` so bytes survive through the phase-1 carrier and the Profiles converter resolves interned values through `ProfilesDictionary` (duplicate/ordered-key fidelity requires acceptor-side binary residue or the typed wire — layer 12.2, out of this layer's scope)
+- [x] 1.3 `cargo test -p common` green; lint/format/machete
+
+## 2. Logical schema + reconciliation of the two schema systems
+
+Most of this landed alongside layer 1: `common::schema::logical` declares the logical schema (record metadata, `body` as `AnyValue`, join keys, resource identity, level shadowing); `schemas.toml` already names storage versions `physical-vN`, carries a separate `logical_schema_version`, and marks computed/partition columns `physical_only`; the IR planner rejects physical names using the scanned table's columns. The remaining work pins these with tests. The one-metric-model requirement moves to layer 7 (7.5), where the per-type metric tables are replaced anyway.
+
+- [x] 2.1 Write tests for the spec scenarios: physical column names rejected via the IR, TraceQL and LogQL; `trace_id`/`span_id` one join key across traces and logs; `dropped_*` counts + log severity/flags present; arrays/kvlists retrievable-not-filterable; namespace shadowing rule (spec `otel-native-logical-schema`)
+- [x] 2.2 Define the canonical logical schema (resource→scope→signal, dotted OTel names, typed scalar `AnyValue`, `body` as `AnyValue`, record metadata, join keys; SignalDB-defined resource identity flagged non-native) in `common` — metric model excepted, see 7.5
+- [x] 2.3 Test that each signal's current physical schema realizes the logical schema: every column is a logical field (directly or by alias), an attribute container, or `physical_only`
+- [x] 2.4 Give `LogicalSchema` its own version constant, matched to `schemas.toml`'s `logical_schema_version`, with a fingerprint test that fails when the field set changes without a bump
+- [x] 2.5 Document the three version axes (Flight wire vs storage, `physical-vN`, logical) in the `flight-schemas` skill
+- [x] 2.6 `cargo test -p common -p querier` green; lint/format/machete
+
+## 3. Type authority (one canonical type per tenant+dataset+field)
+
+- [x] 3.1 Write failing tests: precedence config→semconv-hint→observed-`AnyValue`; canonical type per (tenant,dataset), monotonic (later conflict does not retype); `schema_url` resource/scope-only hint, missing → observed without error; off-type value retained in residue not dropped/multi-homed (spec `attribute-type-authority`). The residue case is tested as the resolver's placement verdict (`Residue { off_type }`, never a second typed home); storing the value in the residue needs layer 4's layout and is tested in 4.1/5.1
+- [x] 3.2 Implement the resolver: config override, pinned-semconv-snapshot hint keyed off resource/scope `schema_url`, observed-`AnyValue` default; record resolved type + source; per-(tenant,dataset) scope with cache invalidation on version bump (D9). Lives in `common::schema::type_authority` (resolver, `attribute_types` catalog store with an atomic first-seen upsert, `TypeAuthority`/`SignalScope` cache); semconv hints reuse `SchemaResolver` (any `opentelemetry.io/schemas/*` URL selects the pinned otel snapshot, other URLs match a registry's exact `schema_url`)
+- [x] 3.3 Expose off-type/conflict occurrences as discoverable metadata; wire the config override. `[[schema.attribute_types]]` config pins; `canonical_types` (with `off_type_count`) on attribute resolution (`GET /api/v1/schema/attributes/{key}` and `?keys=`, MCP `resolve_attribute`). Recording off-type counts at ingest and the user-guide section land with layer 5, when ingest routes through the authority
+- [x] 3.4 `cargo test -p common` green; lint/format/machete
+
+## 4. Tiered substrate: cold one-home + binary residue + warm index (one-shot cutover)
+
+- [x] 4.0 Gate: compaction keeps per-table file counts low on the tables being cut over (spike 0.3 — small flush files make the typed layout slower and larger than legacy); the cutover (4.5) does not ship before this holds (hive compaction confirmed healthy by the maintainer, 2026-09-27)
+- [x] 4.1 Write failing tests: canonical-typed value stored+retrieved typed (no cast); off-type/array/kvlist/bytes round-trip via binary residue; warm-index prunes unpromoted equality; unpromoted range = correct unpruned scan (spec `typed-attribute-storage`, `query-ir-core` MODIFIED)
+- [x] 4.2 Add the cold substrate (one canonical typed home per field: per-type maps `attributes_str/_int/_double/_bool`) + binary residue (top-level `Binary` column, one CBOR document per row — spike 0.2) in `common/iceberg/schemas.rs`, behind the logical→physical realization. Every attribute container (resource, scope, record) of every signal becomes `{container}_str/_int/_double/_bool` + `{container}_residue`, declared as a new `physical-vN` that stays non-current until 4.5
+- [x] 4.2a Write the typed layout through the type authority (the writer half of 5.2, pulled forward because the cutover cannot place a value without a canonical type): the writer resolves each distinct key once per batch via `SignalScope::canonical` and splits values with `place()`; the acceptor, off-type metrics/logs (5.4) and the WAL assertion (5.3) stay in layer 5
+- [x] 4.3 Build the warm derived containment index (per-type tokens + list-leaf bloom) as an opt-in, budgeted per-table tier (not default-on); wire pruning via a custom footer+bloom pre-filter `TableProvider` hook, set bloom NDV explicitly to rows-per-row-group × attrs-per-row, and skip the pre-filter for non-selective predicates
+- [x] 4.4 Implement registry typed resolution (promoted col | one typed home | residue) returning canonical-typed values by retrieval — no coalesce across homes, de-conflate cast-free from pruned. The raw accessor for residue values is the retrieval-only `{scope}.attributes` field, which returns the original `AnyValue`s; string-typed `label_<key>` columns serve a field only when its canonical type is String (typed promotion is layer 6). Compatibility dialects (LogQL, TraceQL, Tempo, PromQL) read a key's single home rendered as a string
+- [x] 4.5 One-shot layout cutover: tables created/recreated in the typed layout; no coexistence read-path or legacy safe-cast (breaking-changes policy); pre-cutover data not migrated. All signals flip together; a table still in the legacy layout is dropped and recreated. The legacy `attr_tokens` column is dropped (spike 0.1: DataFusion never prunes on it) and replaced by the opt-in warm index (4.3)
+- [x] 4.6 `cargo test -p common -p querier` green; lint/format/machete
+
+## 5. Ingest enforcement (types stored at write, sender value never rewritten)
+
+- [x] 5.1 Write failing tests: canonical-typed value stored typed; off-type value retained losslessly in residue (never coerced-away or dropped); existing OTLP clients unchanged; conflict/off-type surfaced not silent (spec `ingest-type-enforcement`)
+- [x] 5.2 Route the acceptor through the registry (the writer side lands in 4.2a) to pick the canonical home or residue; cache the per-attribute lookup (decision: design.md D6)
+- [x] 5.3 Keep Flight/WAL as JSON-in-Utf8; assert WAL byte-unchanged this phase
+- [x] 5.4 Surface off-type/conflict as metrics+logs (no silent drop)
+- [x] 5.5 `cargo test -p acceptor -p writer -p common -p tests-integration` (ingest→storage round-trip) green; lint/format/machete
+
+## 6. Promotion as pure perf (budgeted, demotable) + the invariant test
+
+- [x] 6.1 Write the demote-and-still-correct invariant test: identical result set AND types with promotion off vs on, over canonical-typed fields (specs `typed-attribute-storage`, `query-ir-core` MODIFIED)
+- [x] 6.2 Promotion produces typed columns via **Iceberg field-id evolution** (not create-time `max(id)+1`); driven by `attr_demand`; per-table **budget + LRU demotion** (cold column folds back into the typed map on compaction)
+- [x] 6.3 `cargo test -p querier -p compactor -p tests-integration` green; lint/format/machete
+
+## 7. Typed metric substrate (replaces the data_json blob)
+
+- [x] 7.1 Failing tests: metric points/temporality/monotonicity/start_time typed (no blob parse); explicit + exponential histogram buckets typed; exemplar `trace_id`/`span_id` retrievable+joinable; Summary stored+returned as precomputed, `histogram_quantile` over Summary rejected (spec `typed-metric-storage`)
+- [x] 7.2 Add typed metric schemas (one metric model surface; bucket-native histogram/exp-histogram columns; exemplar keys) replacing the stored JSON-string columns (design.md D10): one wide `metrics` table plus a `metric_exemplars` table linked by `series_id`; `data_json` stays on the wire (D6)
+- [x] 7.3 Ingest cutover for metrics, parallel to attributes (one-shot replacement of the stored JSON strings; no blob read path). The writer's table reconciler drops the five legacy per-type tables
+- [x] 7.5 One metric model in the logical schema (moved from layer 2): metric type, temporality and monotonicity as fields of one `metrics` source over the typed substrate; no per-type surface visible to queries (the `metrics_histogram` IR source is removed); exemplars are the sibling `exemplars` source
+- [x] 7.4 `cargo test -p common -p writer -p tests-integration` green; lint/format/machete (end-to-end cutover test `promql_queries::cutover_ingests_every_metric_type_into_the_wide_tables`; the legacy per-type code paths are deleted)
+
+## 8. Metric-native query operators
+
+- [x] 8.1 Failing tests: instant/range/scalar distinct relation types (mismatch = type error); temporality-aware rate/increase with start_time resets; histogram_quantile over typed explicit + exponential buckets; vector-matching output labels + many-to-many rejection; scalar envelope (spec `metric-native-query`)
+- [x] 8.2 Implement as **custom query-engine operators** (UDWF accumulators for rate/increase, array operators for quantiles, a label-set join + cardinality-validation node for vector matching) over the typed metric substrate — not SQL lowering (design.md D11)
+  - [x] 8.2.1 windowed range accumulator: rate/increase/irate and the other range functions per (series, evaluation instant) (temporality, start_time resets, gauge rejection)
+  - [x] 8.2.2 histogram bucket merge UDAF + quantile UDF, explicit buckets
+  - [x] 8.2.3 exponential-histogram merge + quantile (OTel merge rule, exponential interpolation, min/max clamp)
+  - [x] 8.2.4 point-stream / Series / Scalar relation typing, `irVersion` 10
+  - [x] 8.2.5 evaluation-instant planning of metric Series on the new operators (legacy `aggregate` range fns and `histogram_quantile` included)
+  - [x] 8.2.6 scalar result envelope
+  - [x] 8.2.7 `binop` stage + vector-matching node
+  - [x] 8.2.8 series-algebra stages PromQL needs (`sample`, `reduce`, `map`, `labels`, `filter`, `sort`, `absent`, `over_time`, `scalar`/`vector`, `histogram_fraction`, time/constant sources)
+- [x] 8.3 Re-express the PromQL dialect as a projection onto this model; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+  - [x] 8.3.1 `ql-ir` PromQL lowering; the Prometheus endpoints execute IR documents
+  - [x] 8.3.2 delete the PromQL evaluator (`querier::query::{promql,metrics}` plan/eval paths)
+
+## 9. Cross-signal correlation
+
+- [x] 9.1 Failing tests: logs-for-selected-traces across differing `trace_id` encodings; correlate on exemplar/resource-identity keys; enrichment fan-out cap deterministic+reported (inner/left only, NOT semi/anti); anti-join truth window-scoped + window widenable for late data; missing/dropped key rejected at validation (spec `cross-signal-correlate`)
+- [x] 9.2 Add the `correlate` stage (DAG/sub-pipeline typing, key validation + survival-through-aggregation, post-join namespacing)
+- [x] 9.3 Bespoke two-phase lowering: materialize the source time envelope, inject it as a literal scan bound on the target (not a free equi-join); wide-side pushdown only when canonical key == stored encoding, else correct-without-pushdown
+- [x] 9.4 Inner/semi/anti/left join kinds; `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+- [x] 9.5 Correlate follow-ups deferred from 9.1–9.4 (#2052/#2053): record attribute demand (layer 6) for fields referenced under a correlate target (`<target>.x` in `where`/`aggregate`/`fields`, and the target `pipeline`); report the right `irVersion` for a signal-target correlate below v8 (today it says 8, then 11); resolve typed attributes under the target prefix when the target table is missing (they read null because the resolver falls back to compat mode)
+
+## 10. Structural-trace matching
+
+- [x] 10.1 Failing tests: descendant matches at any depth OR explicit error (never silent cap); predicate references `events`/`links`; non-trace source rejected; `trace` envelope (spec `structural-trace-query`)
+- [x] 10.2 Implement the **per-trace evaluator** baseline (partition by `trace_id`, in-memory adjacency + linear descendant passes) — recursive-CTE is not a viable strategy; materialized ancestry (writer+schema+Iceberg migration) is an optional fast-path sub-stack
+- [x] 10.3 `cargo test -p querier -p common -p tests-integration` green; lint/format/machete
+
+## 11. Surface parity + subsumption + docs
+
+- [x] 11.1 Discovery/introspection over the logical schema + registry (sources, fields as dotted names + canonical type, value suggestions) — subsumes `query-field-discovery` build-side
+- [x] 11.2 Expose the query surfaces via HTTP API + regenerate `signaldb-sdk` (CLI) and the UI TypeScript client; UI/CLI consume only generated clients; update the OpenAPI spec
+- [x] 11.3 Archive superseded changes: `query-metrics-model`, `query-field-discovery`, `query-cross-signal-correlate`, `query-structural-traces`; reframe #811 to point here
+- [x] 11.4 Update docs/skills: `flight-schemas`, `storage-layout`, `adding-new-signal`, `tempo-api`, OTLP-ingestion, multi-tenancy/registry — to the logical/physical model (route via the docs skill)
+
+## 12. Later stack layers (own changes — out of this charter's specs)
+
+- [ ] 12.1 Delivery-side live tail + pagination over the IR — new change
+- [ ] 12.2 Typed wire + WAL for full structured/duplicate-key fidelity — new change, **BREAKING**

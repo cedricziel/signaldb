@@ -5,6 +5,38 @@ use opentelemetry_proto::tonic::{
 };
 use serde_json::{Map, Value as JsonValue};
 
+/// The `$otlp_type` discriminator marking the wire carrier for
+/// [`Value::BytesValue`] (base64 text, since JSON has no byte-string type).
+const OTLP_BYTES_TYPE: &str = "bytes";
+
+/// True when `obj` is the JSON carrier object for an OTLP bytes value
+/// (`{"$otlp_type": "bytes", "base64": ...}`), as produced by
+/// [`extract_value`]'s `Value::BytesValue` arm.
+pub fn is_bytes_carrier(obj: &Map<String, JsonValue>) -> bool {
+    obj.get("$otlp_type") == Some(&JsonValue::String(OTLP_BYTES_TYPE.to_string()))
+}
+
+/// Encode raw bytes as the JSON wire carrier (`{"$otlp_type": "bytes",
+/// "base64": ...}`), the inverse of [`carrier_to_bytes`].
+pub fn bytes_to_carrier(bytes: &[u8]) -> JsonValue {
+    serde_json::json!({
+        "$otlp_type": OTLP_BYTES_TYPE,
+        "base64": base64::engine::general_purpose::STANDARD.encode(bytes),
+    })
+}
+
+/// Decode a bytes carrier object back to its bytes. `None` when the
+/// `base64` field is missing or not valid base64.
+pub fn carrier_to_bytes(obj: &Map<String, JsonValue>) -> Option<Vec<u8>> {
+    obj.get("base64")
+        .and_then(JsonValue::as_str)
+        .and_then(|encoded| {
+            base64::engine::general_purpose::STANDARD
+                .decode(encoded)
+                .ok()
+        })
+}
+
 /// Extract AnyValue to its JSON wire carrier.
 pub fn extract_value(
     attr_val: &Option<opentelemetry_proto::tonic::common::v1::AnyValue>,
@@ -53,10 +85,7 @@ pub fn extract_value_with_string_table(
                     }
                     JsonValue::Object(vals)
                 }
-                Value::BytesValue(bytes) => serde_json::json!({
-                    "$otlp_type": "bytes",
-                    "base64": base64::engine::general_purpose::STANDARD.encode(bytes),
-                }),
+                Value::BytesValue(bytes) => bytes_to_carrier(bytes),
                 Value::StringValueStrindex(index) => string_table
                     .and_then(|table| usize::try_from(*index).ok().and_then(|i| table.get(i)))
                     .cloned()
@@ -171,21 +200,11 @@ pub fn json_value_to_any_value(json_val: &JsonValue) -> AnyValue {
                 value: Some(Value::ArrayValue(ArrayValue { values })),
             }
         }
-        JsonValue::Object(obj)
-            if obj.get("$otlp_type") == Some(&JsonValue::String("bytes".to_string())) =>
-        {
-            obj.get("base64")
-                .and_then(JsonValue::as_str)
-                .and_then(|encoded| {
-                    base64::engine::general_purpose::STANDARD
-                        .decode(encoded)
-                        .ok()
-                })
-                .map(|bytes| AnyValue {
-                    value: Some(Value::BytesValue(bytes)),
-                })
-                .unwrap_or(AnyValue { value: None })
-        }
+        JsonValue::Object(obj) if is_bytes_carrier(obj) => carrier_to_bytes(obj)
+            .map(|bytes| AnyValue {
+                value: Some(Value::BytesValue(bytes)),
+            })
+            .unwrap_or(AnyValue { value: None }),
         JsonValue::Object(obj) => {
             let values = obj
                 .iter()

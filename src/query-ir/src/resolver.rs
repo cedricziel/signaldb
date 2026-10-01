@@ -17,7 +17,57 @@
 
 use std::collections::{HashMap, HashSet};
 
+use super::predicate::ComparisonOp;
 use super::value::ValueType;
+
+/// A filterable element field of a span's `events`/`links` list.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum SpanListField {
+    EventName,
+    EventAttribute(String),
+    LinkTraceId,
+    LinkSpanId,
+    LinkAttribute(String),
+}
+
+impl SpanListField {
+    /// `events.name`, `events.attributes.<key>`, `links.trace_id`,
+    /// `links.span_id` or `links.attributes.<key>` (non-empty key).
+    pub fn parse(field: &str) -> Option<Self> {
+        let key = |k: &str| (!k.is_empty()).then(|| k.to_string());
+        Some(match field {
+            "events.name" => Self::EventName,
+            "links.trace_id" => Self::LinkTraceId,
+            "links.span_id" => Self::LinkSpanId,
+            _ => match field.split_once(".attributes.")? {
+                ("events", k) => Self::EventAttribute(key(k)?),
+                ("links", k) => Self::LinkAttribute(key(k)?),
+                _ => return None,
+            },
+        })
+    }
+
+    /// The physical JSON-array column the field reads.
+    pub fn column(&self) -> &'static str {
+        match self {
+            Self::EventName | Self::EventAttribute(_) => "events",
+            Self::LinkTraceId | Self::LinkSpanId | Self::LinkAttribute(_) => "links",
+        }
+    }
+
+    /// Operators with a well-defined existential meaning. `ne`, ordering and
+    /// `between` are rejected: use `not` + `eq` for "no element equals".
+    pub fn supports(op: ComparisonOp) -> bool {
+        matches!(
+            op,
+            ComparisonOp::Eq
+                | ComparisonOp::In
+                | ComparisonOp::Contains
+                | ComparisonOp::Regex
+                | ComparisonOp::Exists
+        )
+    }
+}
 
 /// Where a logical field physically lives, with its canonical type.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -46,6 +96,10 @@ pub enum Resolved {
     /// The whole span-events list, read from an events JSON-array column and
     /// normalized to `[{name, timestamp_unix_nano, attributes}]` (String).
     SpanEvents { events_column: String },
+    /// An element field of a span's `events`/`links` JSON-array column.
+    /// Filter-only, with existential semantics: a leaf holds when any list
+    /// element satisfies it.
+    SpanList(SpanListField),
     /// A promoted attribute column (`label_<key>`) that may still be NULL in
     /// files the compactor hasn't rewritten since promotion — Iceberg schema
     /// evolution null-fills new columns in pre-existing files, and the
@@ -62,18 +116,62 @@ pub enum Resolved {
         value_type: ValueType,
         key: String,
     },
+    /// A whole attribute container on the typed storage layout
+    /// (`common::schema::typed_attributes`), addressed by its container name
+    /// — the `{scope}.attributes` raw accessor. Retrieval-only, like the
+    /// legacy layout's `Column` resolution of the same field: a container
+    /// has no scalar value, so it never appears in a predicate, ordering, or
+    /// aggregate-operand position.
+    AttributeBag { container: String },
+    /// An unpromoted attribute on the typed storage layout
+    /// (`common::schema::typed_attributes`), read from one or more typed
+    /// "home" columns (each `map<key, T>` for the field's canonical type `T`,
+    /// e.g. `span_attributes_int`) rather than a single JSON/string map —
+    /// `otel-native-schema` task 4.4. `homes` lists every home column to
+    /// coalesce, in resolution order (more than one when the same key is
+    /// recorded with the same canonical type at more than one attribute
+    /// level); `promoted` carries each home's own promoted column, in the
+    /// same order as `homes` (`homes[i]`'s promoted column, if any, is
+    /// `promoted[i]`) — a per-level `attr_<level>_<key>` column when present
+    /// with a matching Arrow type, or (only for a `String` canonical type
+    /// recorded at exactly one level) the legacy `label_<key>` column.
+    /// Unlike `JsonPath`, this carries the registry's *committed* canonical
+    /// type — authoritative, not advisory (see [`Self::is_advisory_type`]):
+    /// the writer's type authority already settled `key`'s type before this
+    /// row was written, so there is no untyped fallback left to hedge
+    /// against.
+    TypedAttribute {
+        homes: Vec<String>,
+        promoted: Vec<Option<String>>,
+        key: String,
+        value_type: ValueType,
+    },
 }
 
 impl Resolved {
-    /// The canonical [`ValueType`] of the resolved field.
+    /// The canonical [`ValueType`] of the resolved field. `AttributeBag`
+    /// has no scalar `ValueType` of its own (it's a JSON object, like
+    /// `SpanEvents`); `String` is a placeholder never actually consulted,
+    /// since both are retrieval-only.
     pub fn value_type(&self) -> &ValueType {
         match self {
             Resolved::Column { value_type, .. } => value_type,
             Resolved::JsonPath { value_type, .. } => value_type,
             Resolved::EventAttribute { value_type, .. } => value_type,
-            Resolved::SpanEvents { .. } => &ValueType::String,
+            Resolved::SpanEvents { .. } | Resolved::SpanList(_) => &ValueType::String,
             Resolved::PromotedColumn { value_type, .. } => value_type,
+            Resolved::AttributeBag { .. } => &ValueType::String,
+            Resolved::TypedAttribute { value_type, .. } => value_type,
         }
+    }
+
+    pub fn is_filter_only(&self) -> bool {
+        matches!(self, Resolved::SpanList(_))
+    }
+
+    /// The error text for using a filter-only field outside a `where` leaf.
+    pub fn filter_only_message(field: &str) -> String {
+        format!("'{field}' is a span list field and can only be used in a `where` predicate")
     }
 
     /// Whether this resolution's [`ValueType`] is *advisory* rather than
@@ -99,6 +197,9 @@ impl Resolved {
     /// `evolution.rs`'s `add_label_columns`), and until the row's file is
     /// backfilled its value can still come from the untyped JSON fallback —
     /// no more of a canonical-type guarantee than `JsonPath` has.
+    /// [`Resolved::TypedAttribute`] is deliberately *not* in this set: its
+    /// type comes from the writer's type authority, committed before the row
+    /// was written, not inferred at query time.
     pub fn is_advisory_type(&self) -> bool {
         matches!(
             self,

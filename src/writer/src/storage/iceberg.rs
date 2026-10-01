@@ -1,18 +1,26 @@
 use crate::schema_transform::{
-    transform_logs_v1_to_iceberg, transform_metrics_exponential_histogram_v1_to_iceberg,
-    transform_metrics_gauge_v1_to_iceberg, transform_metrics_histogram_v1_to_iceberg,
-    transform_metrics_sum_v1_to_iceberg, transform_metrics_summary_v1_to_iceberg,
-    transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2, warm_trace_v1_to_v2_plan,
+    LABEL_ORIGIN_KEY_METADATA, transform_logs_v1_to_iceberg, transform_metric_exemplars,
+    transform_metrics_to_wide, transform_profiles_v1_to_iceberg, transform_trace_v1_to_v2,
+    warm_trace_v1_to_v2_plan,
 };
 use anyhow::{Context, Result};
 use common::CatalogManager;
 
+use common::attrs::typed::{TypedAttrBuilder, observed_kind, parse_json_object_rows};
+use common::attrs::warm_index::{WARM_INDEX_COLUMN, WarmIndexBuilder, encode_token};
 use common::iceberg::sort::{
     DeclaredSortColumn, UndeclaredFallback, is_sorted_by, sort_batch_by, write_sort_key,
 };
-use datafusion::arrow::array::{RecordBatch, new_null_array};
+use common::schema::logical::AttributeLevel;
+use common::schema::type_authority::{
+    CanonicalType, ObservedKind, Placement, SchemaUrls, TypeAuthority, place,
+};
+use common::schema::typed_attributes;
+use datafusion::arrow::array::{
+    Array, ArrayRef, ListArray, RecordBatch, StringArray, new_null_array,
+};
 use datafusion::arrow::compute::concat_batches;
-use datafusion::arrow::datatypes::SchemaRef as ArrowSchemaRef;
+use datafusion::arrow::datatypes::{DataType, Field, SchemaRef as ArrowSchemaRef};
 use iceberg_rust::arrow::write::{write_parquet_partitioned, write_sorted_parquet_partitioned};
 use iceberg_rust::catalog::Catalog as IcebergRustCatalog;
 use iceberg_rust::catalog::commit::{CommitTable, TableRequirement, TableUpdate};
@@ -20,7 +28,6 @@ use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::spec::table_metadata::MAIN_BRANCH;
 use iceberg_rust::table::Table;
-use object_store::ObjectStore;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
@@ -74,6 +81,158 @@ pub struct CommitOutcome {
     pub rejected: Vec<(uuid::Uuid, anyhow::Error)>,
 }
 
+/// A `label_<key>` column rename/drop plan resolved once against the
+/// table's committed schema, then applied to every entry in one
+/// [`IcebergTableWriter::append_batches_with_marker`] call.
+///
+/// A batch's label columns were named at Flight ingest time (or, for a raw
+/// v1 batch reaching WAL directly, by
+/// [`IcebergTableWriter::apply_schema_transformation_if_needed`]) using
+/// `resolve_label_columns_fresh` -- order-independent, but blind to the
+/// table's real `doc`-tagged column assignment, because that ingest path
+/// has no live table schema to consult (see `resolve_label_columns_fresh`'s
+/// doc). When the configured key *set* has changed since the table was
+/// created, the fresh assignment and the table's authoritative one can
+/// diverge (#1448):
+///
+/// - A key with a real, already-promoted column (found via
+///   [`common::iceberg::evolution::column_for_key`]) gets its batch column
+///   renamed to that column.
+/// - A key with no promoted column yet whose fresh candidate name happens
+///   to already be a real column in the table -- which, since this key has
+///   none, must belong to a *different* key -- has its batch column
+///   dropped instead of silently landing in that other key's column. The
+///   row's raw JSON attributes still carry the value, so the querier's
+///   JSON-substring fallback still finds it: the same degrade as a table
+///   that simply predates the label, not new data loss.
+///
+/// Resolved once per call, not once per entry: `self.materialized` and the
+/// table's committed schema cannot change within one
+/// `append_batches_with_marker` call (no `.await` between building this and
+/// consuming it in the entry loop).
+struct LabelColumnReconciliation {
+    /// Every column name the current config's fresh resolution produces.
+    /// One entry's transform emits exactly this set unconditionally (even
+    /// all-null), so a batch missing one of them was named by a *different*
+    /// config generation -- see [`Self::apply`]'s name-based fallback.
+    fresh_columns: HashSet<String>,
+    renames: HashMap<String, String>,
+    drops: HashSet<String>,
+    /// Same plan as `renames`/`drops`, keyed by origin key rather than by
+    /// the fresh column name a batch built under a different config
+    /// generation might not share. Used to resolve a batch whose columns
+    /// carry [`LABEL_ORIGIN_KEY_METADATA`] (#1534); name collisions across
+    /// generations cannot fool it, unlike the name-based fallback.
+    renames_by_key: HashMap<String, String>,
+    drops_by_key: HashSet<String>,
+}
+
+impl LabelColumnReconciliation {
+    fn compute(labels: &[String], current_schema: &iceberg_rust::spec::schema::Schema) -> Self {
+        let fresh = common::iceberg::evolution::resolve_label_columns_fresh(labels);
+        let fresh_columns = fresh.iter().map(|(_, column)| column.clone()).collect();
+
+        let mut renames = HashMap::new();
+        let mut drops = HashSet::new();
+        let mut renames_by_key = HashMap::new();
+        let mut drops_by_key = HashSet::new();
+        for (key, fresh_column) in fresh {
+            match common::iceberg::evolution::column_for_key(current_schema, &key) {
+                Some(authoritative) if authoritative != fresh_column => {
+                    renames.insert(fresh_column, authoritative.to_string());
+                    renames_by_key.insert(key, authoritative.to_string());
+                }
+                Some(_) => {}
+                None => {
+                    if current_schema
+                        .fields()
+                        .iter()
+                        .any(|f| f.name == fresh_column)
+                    {
+                        drops.insert(fresh_column);
+                        drops_by_key.insert(key);
+                    }
+                }
+            }
+        }
+
+        Self {
+            fresh_columns,
+            renames,
+            drops,
+            renames_by_key,
+            drops_by_key,
+        }
+    }
+
+    /// Applies this plan to one batch. All renames are computed from the
+    /// batch's original, untouched schema and applied in one pass, so two
+    /// keys that need to swap names resolve correctly instead of one
+    /// clobbering the other mid-rename.
+    ///
+    /// A column carrying [`LABEL_ORIGIN_KEY_METADATA`] is matched by that
+    /// stamped origin key, immune to a name collision between config
+    /// generations (#1534). A batch with no such metadata predates the
+    /// stamping and falls back to the old name-based guard: it first checks
+    /// that `batch` was actually named by the config generation this plan
+    /// was resolved against -- every column [`Self::compute`]'s fresh
+    /// resolution produces must be present. A WAL backlog carried across a
+    /// restart that also changed `[schema.materialized_labels]` can contain
+    /// entries a *previous* fresh resolution named -- missing one or more
+    /// of the current generation's columns -- whose columns this plan's
+    /// names would misroute rather than fix. A name-based check cannot
+    /// distinguish "named by an old generation" from "needs no
+    /// reconciling", so it errs toward leaving such a batch untouched.
+    fn apply(&self, batch: RecordBatch) -> Result<RecordBatch> {
+        if self.renames.is_empty() && self.drops.is_empty() {
+            return Ok(batch);
+        }
+        let batch_schema = batch.schema();
+        let has_origin_metadata = batch_schema
+            .fields()
+            .iter()
+            .any(|f| f.metadata().contains_key(LABEL_ORIGIN_KEY_METADATA));
+
+        if !has_origin_metadata
+            && !self
+                .fresh_columns
+                .iter()
+                .all(|column| batch_schema.index_of(column).is_ok())
+        {
+            return Ok(batch);
+        }
+
+        let mut fields = Vec::with_capacity(batch.num_columns());
+        let mut columns = Vec::with_capacity(batch.num_columns());
+        for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+            let origin_key = field.metadata().get(LABEL_ORIGIN_KEY_METADATA);
+            let (drop, rename) = match origin_key {
+                Some(key) => (
+                    self.drops_by_key.contains(key),
+                    self.renames_by_key.get(key),
+                ),
+                None => (
+                    self.drops.contains(field.name()),
+                    self.renames.get(field.name()),
+                ),
+            };
+            if drop {
+                continue;
+            }
+            match rename {
+                Some(new_name) => {
+                    fields.push(Arc::new(field.as_ref().clone().with_name(new_name.clone())))
+                }
+                None => fields.push(field.clone()),
+            }
+            columns.push(column.clone());
+        }
+        let schema = Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
+        RecordBatch::try_new(schema, columns)
+            .map_err(|e| anyhow::anyhow!("Failed to reconcile label columns: {e}"))
+    }
+}
+
 /// Writes signal batches to an Iceberg table.
 ///
 /// The only write entry point is [`Self::append_batches_with_marker`],
@@ -84,22 +243,25 @@ pub struct CommitOutcome {
 pub struct IcebergTableWriter {
     catalog: Arc<dyn IcebergRustCatalog>,
     table: Table,
-    #[allow(dead_code)] // Will be used for data writing
-    object_store: Arc<dyn ObjectStore>,
     tenant_id: String,
     dataset_id: String,
-    /// Tenant-resolved materialized-label allowlists (a tenant schema
-    /// override replaces the global set), used by the transforms.
+    /// Tenant-resolved materialized-label allowlists (the tenant's schema
+    /// block merged over the global one), used by the transforms.
     materialized: common::config::MaterializedLabels,
     /// Retry configuration for failed operations
     retry_config: RetryConfig,
+    /// Canonical-type resolver for the typed attribute layout
+    /// ([`detect_typed_containers`]). Writing to a table that declares a
+    /// typed container without one is an error rather than a silent
+    /// fallback to observed-type placement — see
+    /// [`Self::append_batches_with_marker`].
+    type_authority: Option<Arc<TypeAuthority>>,
 }
 
 impl IcebergTableWriter {
     /// Create a new IcebergTableWriter for a specific table
     pub async fn new(
         catalog_manager: &CatalogManager,
-        object_store: Arc<dyn ObjectStore>,
         tenant_id: String,
         dataset_id: String,
         table_name: String,
@@ -137,12 +299,20 @@ impl IcebergTableWriter {
         Ok(Self {
             catalog,
             table,
-            object_store,
             tenant_id,
             dataset_id,
             materialized,
             retry_config: RetryConfig::default(),
+            type_authority: None,
         })
+    }
+
+    /// Attaches the canonical-type resolver used to place values into the
+    /// typed attribute layout. Builder-style so existing `new` call sites
+    /// are unaffected; committing to a table without one is an error.
+    pub fn with_type_authority(mut self, type_authority: Arc<TypeAuthority>) -> Self {
+        self.type_authority = Some(type_authority);
+        self
     }
 
     /// Apply schema transformation if the batch has v1 (wire) schema but the
@@ -159,13 +329,14 @@ impl IcebergTableWriter {
         let schema = batch.schema();
         let has_field = |name: &str| schema.index_of(name).is_ok();
 
+        let labels = self.materialized_labels_for_this_table();
         match self.table.identifier().name() {
             "traces" => {
                 // v1 schema uses "name" (renamed to "span_name" in v2) and lacks
                 // computed fields; v2 uses "span_name" plus "timestamp"/"date_day"/"hour".
                 if has_field("name") && !has_field("span_name") {
                     tracing::debug!("Detected v1 traces batch, applying v1->v2 transformation");
-                    transform_trace_v1_to_v2(batch, &self.materialized.traces)
+                    transform_trace_v1_to_v2(batch, labels)
                 } else if has_field("span_name") {
                     tracing::debug!("Detected v2 traces batch, no transformation needed");
                     Ok(batch)
@@ -182,36 +353,31 @@ impl IcebergTableWriter {
             // schema uses computed "timestamp"/"date_day"/"hour" columns.
             "logs" if has_field("time_unix_nano") => {
                 tracing::debug!("Detected v1 logs batch, applying logs->iceberg transformation");
-                transform_logs_v1_to_iceberg(batch, &self.materialized.logs)
+                transform_logs_v1_to_iceberg(batch, labels)
             }
             // Wire-format metrics carry the raw "data_json" payload column.
-            "metrics_gauge" if has_field("data_json") => {
-                transform_metrics_gauge_v1_to_iceberg(batch, &self.materialized.metrics)
-            }
-            "metrics_sum" if has_field("data_json") => {
-                transform_metrics_sum_v1_to_iceberg(batch, &self.materialized.metrics)
-            }
-            "metrics_histogram" if has_field("data_json") => {
-                transform_metrics_histogram_v1_to_iceberg(batch, &self.materialized.metrics)
-            }
-            "metrics_exponential_histogram" if has_field("data_json") => {
-                transform_metrics_exponential_histogram_v1_to_iceberg(
-                    batch,
-                    &self.materialized.metrics,
-                )
-            }
-            "metrics_summary" if has_field("data_json") => {
-                transform_metrics_summary_v1_to_iceberg(batch, &self.materialized.metrics)
-            }
+            "metrics" if has_field("data_json") => transform_metrics_to_wide(batch, labels),
+            "metric_exemplars" if has_field("data_json") => transform_metric_exemplars(batch),
             // Wire-format profiles carry raw OTLP "time_unix_nano"; the
             // storage schema uses computed "timestamp"/"date_day"/"hour".
             "profiles" if has_field("time_unix_nano") => {
                 tracing::debug!(
                     "Detected v1 profiles batch, applying profiles->iceberg transformation"
                 );
-                transform_profiles_v1_to_iceberg(batch, &self.materialized.profiles)
+                transform_profiles_v1_to_iceberg(batch, labels)
             }
             _ => Ok(batch),
+        }
+    }
+
+    /// The materialized-label allowlist relevant to this writer's table.
+    fn materialized_labels_for_this_table(&self) -> &[String] {
+        match self.table.identifier().name() {
+            "traces" => &self.materialized.traces,
+            "logs" => &self.materialized.logs,
+            "profiles" => &self.materialized.profiles,
+            "metrics" => &self.materialized.metrics,
+            _ => &[],
         }
     }
 
@@ -282,50 +448,17 @@ impl IcebergTableWriter {
         retention: Duration,
         process_outlived_retention: bool,
     ) -> Result<usize> {
-        let now_secs = common::wal::unix_now_secs();
-        let removals = stale_marker_keys(
-            &self.table.metadata().properties,
+        let retired = retire_stale_markers_on(
+            self.catalog.clone(),
+            &self.table,
             own_writer_ids,
-            now_secs,
             retention,
             process_outlived_retention,
-        );
-        if removals.is_empty() {
-            return Ok(0);
+        )
+        .await?;
+        if retired > 0 {
+            self.reload_table().await?;
         }
-
-        let retired = removals.len();
-        let requirements = match self.table.metadata().current_snapshot_id {
-            Some(snapshot_id) => vec![TableRequirement::AssertRefSnapshotId {
-                r#ref: MAIN_BRANCH.to_string(),
-                snapshot_id,
-            }],
-            // A table with no snapshot has never been committed to, so no
-            // marker can be racing us.
-            None => Vec::new(),
-        };
-
-        self.catalog
-            .clone()
-            .update_table(CommitTable {
-                identifier: self.table.identifier().clone(),
-                requirements,
-                updates: vec![TableUpdate::RemoveProperties { removals }],
-            })
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!(
-                    "Failed to retire stale WAL markers on {}: {e}",
-                    self.table.identifier()
-                )
-            })?;
-        self.reload_table().await?;
-
-        tracing::info!(
-            table = %self.table.identifier(),
-            retired,
-            "Retired WAL idempotency markers from writers that have not committed within retention"
-        );
         Ok(retired)
     }
 
@@ -433,6 +566,18 @@ impl IcebergTableWriter {
     /// with it (W2). The remaining failure modes here (catalog/object-store
     /// I/O) are whole-call: they apply equally to every survivor, so an
     /// `Err` still aborts everything, exactly as before.
+    pub async fn append_batches_with_marker(
+        &mut self,
+        wal_writer_id: &str,
+        entries: Vec<(uuid::Uuid, RecordBatch)>,
+    ) -> Result<CommitOutcome> {
+        self.append_batches_with_marker_carrying(wal_writer_id, entries, &[])
+            .await
+    }
+
+    /// [`Self::append_batches_with_marker`], with `carried` ids (already
+    /// committed to this table, not re-sent in `entries`) kept in the marker
+    /// it writes. They are not part of the returned [`CommitOutcome`].
     #[tracing::instrument(
         skip_all,
         fields(
@@ -441,33 +586,58 @@ impl IcebergTableWriter {
             signaldb.wal.entry_count = entries.len() as i64
         )
     )]
-    pub async fn append_batches_with_marker(
+    pub async fn append_batches_with_marker_carrying(
         &mut self,
         wal_writer_id: &str,
         entries: Vec<(uuid::Uuid, RecordBatch)>,
+        carried: &[uuid::Uuid],
     ) -> Result<CommitOutcome> {
         // The Parquet writer requires batches in the table's exact Arrow
         // schema (derived from the Iceberg schema, e.g. microsecond
         // timestamps), so coerce after the wire→storage transformation.
-        let target_schema: ArrowSchemaRef = Arc::new(
-            self.table
-                .current_schema()
-                .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?
-                .fields()
-                .try_into()
-                .map_err(|e: iceberg_rust::spec::error::Error| {
-                    anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
-                })?,
+        let current_schema = self
+            .table
+            .current_schema()
+            .map_err(|e| anyhow::anyhow!("Failed to get current Iceberg schema: {e}"))?;
+        let target_schema: ArrowSchemaRef = Arc::new(current_schema.fields().try_into().map_err(
+            |e: iceberg_rust::spec::error::Error| {
+                anyhow::anyhow!("Failed to convert Iceberg schema to Arrow: {e}")
+            },
+        )?);
+
+        // Resolved once per call: `self.materialized` and the table's
+        // committed schema cannot change within this call (no `.await`
+        // between here and the entry loop below), so recomputing this per
+        // entry would be pure waste.
+        let label_reconciliation = LabelColumnReconciliation::compute(
+            self.materialized_labels_for_this_table(),
+            current_schema,
         );
 
-        // Step 1: prepare every entry independently. A transform/coercion
-        // failure is a property of that entry's bytes, not of the group —
-        // collecting it as a rejection here (rather than aborting the whole
-        // call via `?`) is what keeps a poison entry from taking its
-        // healthy neighbours down with it.
+        // Resolved once per call, like `label_reconciliation`. A typed
+        // container with no configured authority is a hard error — there is
+        // no observed-type fallback to place values with (4.2a).
+        let typed_containers = detect_typed_containers(&target_schema);
+        let type_authority: Option<Arc<TypeAuthority>> = if typed_containers.is_empty() {
+            None
+        } else {
+            Some(self.type_authority.clone().ok_or_else(|| {
+                anyhow::anyhow!(
+                    "table {} uses the typed attribute layout but this writer has no \
+                     TypeAuthority configured",
+                    self.table.identifier()
+                )
+            })?)
+        };
+
+        // Step 1: prepare every entry independently. A transform failure is
+        // a property of that entry's bytes, not of the group — collecting
+        // it as a rejection here (rather than aborting the whole call via
+        // `?`) is what keeps a poison entry from taking its healthy
+        // neighbours down with it.
         let mut committed_ids = Vec::new();
         let mut rejected = Vec::new();
-        let mut transformed = Vec::new();
+        let mut prepared_batches = Vec::new();
         for (id, batch) in entries {
             if batch.num_rows() == 0 {
                 // Nothing to commit for this id, but there is also nothing
@@ -478,9 +648,82 @@ impl IcebergTableWriter {
             }
             let prepared = self
                 .apply_schema_transformation_if_needed(batch)
-                .and_then(|batch| coerce_batch_to_schema(batch, &target_schema));
+                .and_then(|batch| label_reconciliation.apply(batch));
             match prepared {
-                Ok(batch) => {
+                Ok(batch) => prepared_batches.push((id, batch)),
+                Err(e) => rejected.push((id, e)),
+            }
+        }
+
+        // Every typed container's JSON source column, parsed once per batch
+        // — reused below for both key collection and placement, rather than
+        // parsing each row's JSON twice.
+        let parsed_containers: Vec<ParsedContainerRows> = prepared_batches
+            .iter()
+            .map(|(_, batch)| parse_typed_containers(batch, &typed_containers))
+            .collect();
+
+        // Resolved once per call (reused for both the type-authority scope
+        // and the warm-index metric label below) rather than re-fetched
+        // from the identifier each time.
+        let table_name = self.table.identifier().name().to_string();
+
+        // Step 2: resolve every typed container's distinct keys to a
+        // canonical type, once per call rather than once per entry. An
+        // authority error here is infrastructure (a catalog outage), not a
+        // property of any one entry's bytes, so it propagates as an `Err`
+        // from the whole call instead of a rejection — the processor retries
+        // the group rather than dead-lettering it.
+        let (resolved_types, scope) = match &type_authority {
+            None => (ResolvedAttributeTypes::new(), None),
+            Some(authority) => {
+                let signal =
+                    common::discovery::signal_for_source(&table_name).with_context(|| {
+                        format!("no attribute-type signal for table '{table_name}'")
+                    })?;
+                let batches: Vec<(&RecordBatch, &ParsedContainerRows)> = prepared_batches
+                    .iter()
+                    .map(|(_, batch)| batch)
+                    .zip(parsed_containers.iter())
+                    .collect();
+                let keys = collect_typed_attribute_keys(&typed_containers, &batches);
+                let scope = authority
+                    .scope(&self.tenant_id, &self.dataset_id, signal)
+                    .await
+                    .context("failed to resolve attribute type scope")?;
+                let resolved = resolve_typed_attribute_types(&scope, keys)
+                    .await
+                    .context("failed to resolve canonical attribute types")?;
+                (resolved, Some(scope))
+            }
+        };
+
+        // Step 3: split typed containers into their per-type homes plus
+        // residue, then coerce onto the table's exact Arrow schema. Off-type
+        // placements are surfaced only once the commit lands, so a retried
+        // call never double counts them.
+        let mut off_type_counts = OffTypeCounts::new();
+        let mut transformed = Vec::new();
+        for ((id, batch), parsed) in prepared_batches.into_iter().zip(parsed_containers) {
+            let prepared = apply_typed_attribute_containers(
+                batch,
+                &typed_containers,
+                &target_schema,
+                &parsed,
+                &resolved_types,
+                &table_name,
+            )
+            .and_then(|(batch, counts)| {
+                coerce_batch_to_schema(batch, &target_schema).map(|batch| (batch, counts))
+            });
+            match prepared {
+                Ok((batch, counts)) => {
+                    for (level, keys) in counts {
+                        let merged = off_type_counts.entry(level).or_default();
+                        for (key, (count, observed)) in keys {
+                            merged.entry(key).or_insert((0, observed)).0 += count;
+                        }
+                    }
                     committed_ids.push(id);
                     transformed.push(batch);
                 }
@@ -519,8 +762,9 @@ impl IcebergTableWriter {
         }
 
         let marker_key = wal_marker_key(wal_writer_id);
-        let marker_value = encode_marker_ids(&committed_ids);
-        let id_set: HashSet<uuid::Uuid> = committed_ids.iter().copied().collect();
+        let marker_ids: Vec<uuid::Uuid> = committed_ids.iter().chain(carried).copied().collect();
+        let marker_value = encode_marker_ids(&marker_ids);
+        let id_set: HashSet<uuid::Uuid> = marker_ids.into_iter().collect();
 
         let mut attempt = 0;
         let mut delay = self.retry_config.initial_delay;
@@ -551,6 +795,9 @@ impl IcebergTableWriter {
                     table = %self.table.identifier(),
                     "Committed rows to Iceberg table"
                 );
+                if let Some(scope) = &scope {
+                    record_off_type_counts(scope, off_type_counts, &resolved_types).await;
+                }
                 return Ok(CommitOutcome {
                     committed: committed_ids,
                     rejected,
@@ -649,6 +896,71 @@ fn marker_committed_at(value: &str) -> Option<u64> {
     parse_marker(value).0
 }
 
+/// Delete stale WAL idempotency markers from `table` via `catalog`, without
+/// needing a live [`IcebergTableWriter`] for it.
+///
+/// Backs both [`IcebergTableWriter::retire_stale_markers`] (which sweeps the
+/// tables this process is actively committing to) and the signal-table
+/// reconciler (which sweeps every registered table, including ones no live
+/// writer commits to any more — see #1345). Staleness rules are
+/// [`stale_marker_keys`]; this only performs the guarded commit.
+///
+/// The delete is guarded by an assertion on the branch's current snapshot,
+/// so a marker written between the read and the delete makes this commit
+/// fail rather than discard fresh idempotency evidence. A failure here is
+/// never fatal: the markers simply stay until the next pass.
+pub async fn retire_stale_markers_on(
+    catalog: Arc<dyn IcebergRustCatalog>,
+    table: &Table,
+    own_writer_ids: &HashSet<String>,
+    retention: Duration,
+    process_outlived_retention: bool,
+) -> Result<usize> {
+    let now_secs = common::wal::unix_now_secs();
+    let removals = stale_marker_keys(
+        &table.metadata().properties,
+        own_writer_ids,
+        now_secs,
+        retention,
+        process_outlived_retention,
+    );
+    if removals.is_empty() {
+        return Ok(0);
+    }
+
+    let retired = removals.len();
+    let requirements = match table.metadata().current_snapshot_id {
+        Some(snapshot_id) => vec![TableRequirement::AssertRefSnapshotId {
+            r#ref: MAIN_BRANCH.to_string(),
+            snapshot_id,
+        }],
+        // A table with no snapshot has never been committed to, so no
+        // marker can be racing us.
+        None => Vec::new(),
+    };
+
+    catalog
+        .update_table(CommitTable {
+            identifier: table.identifier().clone(),
+            requirements,
+            updates: vec![TableUpdate::RemoveProperties { removals }],
+        })
+        .await
+        .map_err(|e| {
+            anyhow::anyhow!(
+                "Failed to retire stale WAL markers on {}: {e}",
+                table.identifier()
+            )
+        })?;
+
+    tracing::info!(
+        table = %table.identifier(),
+        retired,
+        "Retired WAL idempotency markers from writers that have not committed within retention"
+    );
+    Ok(retired)
+}
+
 /// Which marker properties in `properties` are safe to delete.
 ///
 /// A marker is live evidence that its writer committed rows it may not yet
@@ -693,6 +1005,308 @@ fn stale_marker_keys(
         .collect()
 }
 
+/// Every attribute container the target schema declares in the typed layout
+/// — a `<container>_residue` `Binary` column — with the [`AttributeLevel`]
+/// its container name implies.
+fn detect_typed_containers(target: &ArrowSchemaRef) -> Vec<(String, AttributeLevel)> {
+    target
+        .fields()
+        .iter()
+        .filter_map(|field| {
+            if field.data_type() != &DataType::Binary {
+                return None;
+            }
+            let container = field.name().strip_suffix("_residue")?;
+            Some((
+                container.to_string(),
+                typed_attributes::container_level(container),
+            ))
+        })
+        .collect()
+}
+
+fn string_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
+    batch.column_by_name(name)?.as_any().downcast_ref()
+}
+
+/// One typed container's JSON source column, parsed row by row (see
+/// [`common::attrs::typed::parse_json_object_rows`]).
+type ParsedRows = Vec<Option<serde_json::Map<String, serde_json::Value>>>;
+
+/// Every typed container present in one batch, keyed by container name —
+/// reused for both key collection and placement so a row's JSON is parsed
+/// only once.
+type ParsedContainerRows = HashMap<String, ParsedRows>;
+
+/// A typed-attribute key's [`ObservedKind`] and (resource, scope) schema
+/// urls at its first occurrence in a call's batches.
+type ObservedAttributeKeys =
+    HashMap<(AttributeLevel, String), (ObservedKind, Option<String>, Option<String>)>;
+
+/// Parses every typed container's JSON source column in `batch`. A
+/// container the table declares but this batch does not carry (e.g. an
+/// unpopulated `resource_attributes`) is simply absent from the result.
+fn parse_typed_containers(
+    batch: &RecordBatch,
+    typed_containers: &[(String, AttributeLevel)],
+) -> ParsedContainerRows {
+    let mut parsed = HashMap::with_capacity(typed_containers.len());
+    for (container, _) in typed_containers {
+        let Some(strings) = string_column(batch, container) else {
+            continue;
+        };
+        parsed.insert(container.clone(), parse_json_object_rows(strings));
+    }
+    parsed
+}
+
+/// Every distinct (level, key) pair across `batches`' already-parsed typed
+/// containers, each paired with the [`ObservedKind`] and schema urls of its
+/// first occurrence -- the only occurrence that matters, since
+/// [`SignalScope::canonical`] (called once per key below) resolves and
+/// caches a key on first sight.
+fn collect_typed_attribute_keys(
+    typed_containers: &[(String, AttributeLevel)],
+    batches: &[(&RecordBatch, &ParsedContainerRows)],
+) -> ObservedAttributeKeys {
+    let mut seen = HashMap::new();
+    for (batch, parsed) in batches {
+        let resource_urls = string_column(batch, "resource_schema_url");
+        let scope_urls = string_column(batch, "scope_schema_url");
+        let row_url = |urls: Option<&StringArray>, row: usize| {
+            urls.filter(|a| !a.is_null(row))
+                .map(|a| a.value(row).to_string())
+        };
+        for (container, level) in typed_containers {
+            let Some(rows) = parsed.get(container) else {
+                continue;
+            };
+            for (row, entries) in rows.iter().enumerate() {
+                let Some(entries) = entries else { continue };
+                for (key, value) in entries {
+                    seen.entry((*level, key.clone())).or_insert_with(|| {
+                        (
+                            observed_kind(value),
+                            row_url(resource_urls, row),
+                            row_url(scope_urls, row),
+                        )
+                    });
+                }
+            }
+        }
+    }
+    seen
+}
+
+/// Canonical types resolved for the call, keyed by level and then by key —
+/// a `&str` lookup in [`apply_typed_attribute_containers`]'s per-value
+/// placement closure, never a per-value `String` allocation.
+type ResolvedAttributeTypes = HashMap<AttributeLevel, HashMap<String, Option<CanonicalType>>>;
+
+/// Off-type placements per level and key: the count and one observed kind
+/// for the warning. Arrays, kvlists, bytes and empty values are never
+/// off-type.
+type OffTypeCounts = HashMap<AttributeLevel, HashMap<String, (i64, ObservedKind)>>;
+
+/// How many [`common::schema::type_authority::SignalScope::canonical`] calls
+/// [`resolve_typed_attribute_types`] runs concurrently.
+const TYPE_RESOLUTION_CONCURRENCY: usize = 16;
+
+/// Resolves every key [`collect_typed_attribute_keys`] found to its
+/// canonical type through `scope`, up to [`TYPE_RESOLUTION_CONCURRENCY`]
+/// calls in flight at once; the first error aborts the rest.
+async fn resolve_typed_attribute_types(
+    scope: &common::schema::type_authority::SignalScope,
+    keys: ObservedAttributeKeys,
+) -> Result<ResolvedAttributeTypes> {
+    use futures::stream::{StreamExt, TryStreamExt};
+
+    let resolved_keys: Vec<(AttributeLevel, String, Option<CanonicalType>)> =
+        futures::stream::iter(keys)
+            .map(
+                |((level, key), (observed, resource_url, scope_url))| async move {
+                    let urls = SchemaUrls {
+                        resource: resource_url.as_deref(),
+                        scope: scope_url.as_deref(),
+                    };
+                    let canonical =
+                        scope
+                            .canonical(level, &key, urls, observed)
+                            .await
+                            .map_err(|e| {
+                                anyhow::anyhow!("failed to resolve canonical type for '{key}': {e}")
+                            })?;
+                    Ok::<_, anyhow::Error>((level, key, canonical))
+                },
+            )
+            .buffer_unordered(TYPE_RESOLUTION_CONCURRENCY)
+            .try_collect()
+            .await?;
+
+    let mut resolved: ResolvedAttributeTypes = HashMap::new();
+    for (level, key, canonical) in resolved_keys {
+        resolved.entry(level).or_default().insert(key, canonical);
+    }
+    Ok(resolved)
+}
+
+/// Surfaces `counts` through `scope` (catalog `off_type_count`, the
+/// mismatch metric, and a once-per-process warning) — called only once the
+/// Iceberg commit carrying these values has actually landed, so a retried
+/// commit attempt never double counts.
+async fn record_off_type_counts(
+    scope: &common::schema::type_authority::SignalScope,
+    counts: OffTypeCounts,
+    resolved: &ResolvedAttributeTypes,
+) {
+    use futures::stream::StreamExt;
+
+    let entries = counts.into_iter().flat_map(|(level, keys)| {
+        keys.into_iter()
+            .filter_map(move |(key, (count, observed))| {
+                let canonical = resolved.get(&level)?.get(&key).copied().flatten()?;
+                Some((level, key, count, canonical, observed))
+            })
+    });
+    futures::stream::iter(entries)
+        .for_each_concurrent(
+            TYPE_RESOLUTION_CONCURRENCY,
+            |(level, key, count, canonical, observed)| async move {
+                scope
+                    .record_off_type(level, &key, canonical, observed, count)
+                    .await;
+            },
+        )
+        .await;
+}
+
+/// Splits every typed container's already-parsed rows (e.g. `span_attributes`)
+/// into its five typed-attribute columns (e.g. `span_attributes_str`, ...,
+/// `span_attributes_residue`), placed per `resolved`. The source JSON
+/// columns are consumed; every other column of `batch` passes through
+/// unchanged, so the result still needs [`coerce_batch_to_schema`] to reach
+/// the table's exact Arrow schema.
+fn apply_typed_attribute_containers(
+    batch: RecordBatch,
+    typed_containers: &[(String, AttributeLevel)],
+    target: &ArrowSchemaRef,
+    parsed: &ParsedContainerRows,
+    resolved: &ResolvedAttributeTypes,
+    table_name: &str,
+) -> Result<(RecordBatch, OffTypeCounts)> {
+    if typed_containers.is_empty() {
+        return Ok((batch, OffTypeCounts::new()));
+    }
+
+    let mut fields: Vec<std::sync::Arc<Field>> = Vec::new();
+    let mut columns: Vec<ArrayRef> = Vec::new();
+    let mut consumed = HashSet::new();
+    let mut off_type_counts = OffTypeCounts::new();
+
+    // Present only on tables opted into the warm containment index (4.3):
+    // every typed home value placed below also feeds one token into this
+    // builder, so a table without the column pays nothing extra.
+    let warm_index_field = target.field_with_name(WARM_INDEX_COLUMN).ok().cloned();
+    let mut warm_index = warm_index_field
+        .is_some()
+        .then(|| WarmIndexBuilder::new(batch.num_rows()));
+
+    for (container, level) in typed_containers {
+        let Some(rows) = parsed.get(container) else {
+            continue;
+        };
+        consumed.insert(container.clone());
+        let level_map = resolved.get(level);
+        let field_names = typed_attributes::typed_columns(container);
+        let mut typed_fields = Vec::with_capacity(5);
+        for name in &field_names {
+            let field = target.field_with_name(name).map_err(|e| {
+                anyhow::anyhow!("typed field '{name}' missing from the target schema: {e}")
+            })?;
+            typed_fields.push(field.as_ref().clone());
+        }
+        let typed_fields: [Field; 5] = typed_fields.try_into().map_err(|_| {
+            anyhow::anyhow!("container '{container}' does not resolve to exactly five typed fields")
+        })?;
+
+        let mut builder = TypedAttrBuilder::new(&typed_fields).map_err(|e| {
+            anyhow::anyhow!("failed to build typed-attribute builder for '{container}': {e}")
+        })?;
+        for (row_idx, row) in rows.iter().enumerate() {
+            builder
+                .append_row_with(
+                    row.as_ref(),
+                    |key, observed| {
+                        let canonical = level_map.and_then(|m| m.get(key)).copied().flatten();
+                        let placement = place(canonical, observed);
+                        if placement == (Placement::Residue { off_type: true }) {
+                            let keys = off_type_counts.entry(*level).or_default();
+                            match keys.get_mut(key) {
+                                Some(entry) => entry.0 += 1,
+                                None => {
+                                    keys.insert(key.to_string(), (1, observed));
+                                }
+                            }
+                        }
+                        placement
+                    },
+                    |key, home| {
+                        if let Some(warm_index) = warm_index.as_mut()
+                            && let Some(token) = encode_token(key, home)
+                        {
+                            warm_index.add(row_idx, token);
+                        }
+                    },
+                )
+                .map_err(|e| {
+                    anyhow::anyhow!("failed to split typed attribute container '{container}': {e}")
+                })?;
+        }
+        let arrays = builder.finish().map_err(|e| {
+            anyhow::anyhow!("failed to finish typed attribute builder for '{container}': {e}")
+        })?;
+        for (field, array) in typed_fields.into_iter().zip(arrays) {
+            fields.push(std::sync::Arc::new(field));
+            columns.push(array);
+        }
+    }
+
+    for (field, column) in batch.schema().fields().iter().zip(batch.columns()) {
+        if consumed.contains(field.name()) {
+            continue;
+        }
+        fields.push(field.clone());
+        columns.push(column.clone());
+    }
+
+    if let (Some(warm_index), Some(warm_index_field)) = (warm_index, warm_index_field.as_ref()) {
+        let array = warm_index.finish(warm_index_field).map_err(|e| {
+            anyhow::anyhow!("failed to build warm-index column '{WARM_INDEX_COLUMN}': {e}")
+        })?;
+        let tokens_written = array
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .map(|list| list.values().len())
+            .unwrap_or(0);
+        common::self_monitoring::app_metrics()
+            .writer_warm_index_tokens_written
+            .add(
+                tokens_written as u64,
+                &[opentelemetry::KeyValue::new(
+                    "signaldb.table",
+                    table_name.to_string(),
+                )],
+            );
+        fields.push(std::sync::Arc::new(warm_index_field.clone()));
+        columns.push(array);
+    }
+
+    let schema = std::sync::Arc::new(datafusion::arrow::datatypes::Schema::new(fields));
+    let batch = RecordBatch::try_new(schema, columns)
+        .map_err(|e| anyhow::anyhow!("failed to build typed-attribute batch: {e}"))?;
+    Ok((batch, off_type_counts))
+}
+
 /// Project and cast a batch onto the table's Arrow schema (columns matched
 /// by name). Extra batch columns are dropped; missing columns are an error,
 /// as is a null in a column the table declares non-nullable.
@@ -716,17 +1330,6 @@ fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result
         let column = batch.column(index);
         let column = if column.data_type() == field.data_type() {
             column.clone()
-        } else if matches!(
-            (column.data_type(), field.data_type()),
-            (
-                datafusion::arrow::datatypes::DataType::Utf8,
-                datafusion::arrow::datatypes::DataType::Map(_, _)
-            )
-        ) {
-            // Attribute maps: the transforms emit flat JSON objects as
-            // strings; tables with a map-typed attribute column get the
-            // parsed entries.
-            json_strings_to_map_array(column, field)?
         } else {
             let options = datafusion::arrow::compute::CastOptions {
                 safe: false,
@@ -748,87 +1351,42 @@ fn coerce_batch_to_schema(batch: RecordBatch, target: &ArrowSchemaRef) -> Result
         .map_err(|e| anyhow::anyhow!("Failed to build coerced batch: {e}"))
 }
 
-/// Parse a column of flat-JSON-object strings into a `MapArray` matching
-/// `target_field`'s entry/key/value naming. Null or unparseable documents
-/// become null map entries; non-string JSON values are rendered with
-/// `to_string` (matching the substring-match era's serialized forms).
-fn json_strings_to_map_array(
-    column: &dyn datafusion::arrow::array::Array,
-    target_field: &datafusion::arrow::datatypes::Field,
-) -> Result<std::sync::Arc<dyn datafusion::arrow::array::Array>> {
-    use datafusion::arrow::array::{Array, MapBuilder, MapFieldNames, StringArray, StringBuilder};
-    use datafusion::arrow::datatypes::DataType;
-
-    let strings = column
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| anyhow::anyhow!("expected a Utf8 column for map coercion"))?;
-    let DataType::Map(entry_field, _) = target_field.data_type() else {
-        return Err(anyhow::anyhow!("target field is not a map"));
-    };
-    let DataType::Struct(kv_fields) = entry_field.data_type() else {
-        return Err(anyhow::anyhow!("map entries are not a struct"));
-    };
-    let names = MapFieldNames {
-        entry: entry_field.name().clone(),
-        key: kv_fields[0].name().clone(),
-        value: kv_fields[1].name().clone(),
-    };
-    let mut builder = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
-    for i in 0..strings.len() {
-        if strings.is_null(i) {
-            builder.append(false)?;
-            continue;
-        }
-        match serde_json::from_str::<serde_json::Value>(strings.value(i)) {
-            Ok(serde_json::Value::Object(map)) => {
-                for (k, v) in map {
-                    builder.keys().append_value(k);
-                    match v {
-                        serde_json::Value::String(s) => builder.values().append_value(s),
-                        other => builder.values().append_value(other.to_string()),
-                    }
-                }
-                builder.append(true)?;
-            }
-            _ => builder.append(false)?,
-        }
-    }
-    let built = builder.finish();
-    // Align entry-field nullability with the target (MapBuilder's inner
-    // struct layout matches by construction; the cast is a no-op check).
-    if built.data_type() == target_field.data_type() {
-        Ok(std::sync::Arc::new(built))
-    } else {
-        datafusion::arrow::compute::cast(&built, target_field.data_type())
-            .map_err(|e| anyhow::anyhow!("map coercion type mismatch: {e}"))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use common::config::{Configuration, SchemaConfig, StorageConfig};
     use datafusion::arrow::array::{Array, StringArray};
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
-    use object_store::memory::InMemory;
     use std::sync::Arc;
 
-    #[test]
-    fn coerce_converts_json_strings_to_map_column() {
-        use datafusion::arrow::array::MapArray;
+    /// Resolves and applies a [`LabelColumnReconciliation`] against
+    /// `writer`'s current table schema and configured labels, for tests
+    /// exercising [`LabelColumnReconciliation::apply`] without duplicating
+    /// its two-step construction at every call site.
+    fn reconcile(writer: &IcebergTableWriter, batch: RecordBatch) -> Result<RecordBatch> {
+        let current_schema = writer.table.current_schema().unwrap();
+        LabelColumnReconciliation::compute(
+            writer.materialized_labels_for_this_table(),
+            current_schema,
+        )
+        .apply(batch)
+    }
 
+    #[test]
+    fn coerce_rejects_a_legacy_map_target_instead_of_parsing_json_into_it() {
+        // Every table is typed after the cutover (4.5); a target schema
+        // still carrying a map-typed attribute container can't occur in
+        // practice, but if it does, it must fail loudly rather than get
+        // silently parsed as legacy JSON-string-to-map.
         let batch = RecordBatch::try_new(
             Arc::new(Schema::new(vec![Field::new(
                 "log_attributes",
                 DataType::Utf8,
                 true,
             )])),
-            vec![Arc::new(StringArray::from(vec![
-                Some(r#"{"namespace":"prod","port":8080}"#),
-                None,
-                Some("not-json"),
-            ]))],
+            vec![Arc::new(StringArray::from(vec![Some(
+                r#"{"namespace":"prod"}"#,
+            )]))],
         )
         .unwrap();
 
@@ -841,20 +1399,12 @@ mod tests {
             true,
         )]));
 
-        let out = coerce_batch_to_schema(batch, &target).unwrap();
-        let map = out
-            .column_by_name("log_attributes")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<MapArray>()
-            .unwrap();
-        // Row 0: two entries, non-string value rendered as text.
-        assert!(!map.is_null(0));
-        let entries = map.value(0);
-        assert_eq!(entries.len(), 2);
-        // Rows 1 (null) and 2 (unparseable) become null maps.
-        assert!(map.is_null(1));
-        assert!(map.is_null(2));
+        let err = coerce_batch_to_schema(batch, &target)
+            .expect_err("a Utf8 batch column against a Map target column must error");
+        assert!(
+            err.to_string().contains("Failed to cast column"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -907,8 +1457,7 @@ mod tests {
             schema: SchemaConfig {
                 catalog_type: "memory".to_string(),
                 catalog_uri: "memory://".to_string(),
-                default_schemas: Default::default(),
-                materialized_labels: Default::default(),
+                ..Default::default()
             },
             storage: StorageConfig {
                 dsn: "memory://".to_string(),
@@ -1029,13 +1578,10 @@ mod tests {
     async fn test_iceberg_writer_with_memory_catalog() {
         let catalog_manager = create_test_catalog_manager().await;
 
-        let object_store = Arc::new(InMemory::new());
-
         // With a real in-memory SQL catalog, creating the writer (and thus the
         // "traces" table) must deterministically succeed.
         let writer = IcebergTableWriter::new(
             &catalog_manager,
-            object_store,
             "test-tenant".to_string(),
             "local".to_string(),
             "traces".to_string(),
@@ -1044,6 +1590,299 @@ mod tests {
         .expect("IcebergTableWriter::new should succeed against an in-memory SQL catalog");
 
         assert_eq!(writer.table_identifier().name(), "traces");
+    }
+
+    #[tokio::test]
+    async fn reconcile_label_columns_fixes_up_a_configured_key_set_grown_since_table_creation() {
+        // Table created with only `http_method` configured -> a real,
+        // doc-tagged `label_http_method` column for that key.
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                materialized_labels: common::config::MaterializedLabels {
+                    logs: vec!["http_method".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
+        };
+        let catalog_manager = CatalogManager::new(config).await.unwrap();
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "logs".to_string(),
+        )
+        .await
+        .unwrap();
+
+        // The operator adds `http.method` to the config -- it collides with
+        // `http_method`'s already-promoted candidate name. The writer's
+        // resolved config reflects the growth (simulating a config reload)
+        // but the table's committed schema still only knows `http_method`.
+        writer.materialized.logs = vec!["http.method".to_string(), "http_method".to_string()];
+
+        // A batch shaped the way the fresh (table-blind) resolver would
+        // produce it: `http.method` claims the unsuffixed candidate,
+        // `http_method` gets bumped to the suffix -- backwards from what
+        // the table's committed schema (and its `doc`) actually says.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("label_http_method", DataType::Utf8, true),
+            Field::new("label_http_method_2", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("t")])),
+                Arc::new(StringArray::from(vec![Some("wrong-http.method-value")])),
+                Arc::new(StringArray::from(vec![Some("real-http_method-value")])),
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile(&writer, batch).unwrap();
+
+        // Exactly one `label_http_method` column survives, carrying
+        // `http_method`'s own value -- `http.method`'s un-promoted column is
+        // dropped rather than silently overwriting it.
+        let reconciled_schema = reconciled.schema();
+        let names: Vec<&str> = reconciled_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(
+            names,
+            vec!["timestamp", "label_http_method"],
+            "http.method's column must be dropped, not merged in: {names:?}"
+        );
+        let idx = reconciled.schema().index_of("label_http_method").unwrap();
+        let value = reconciled
+            .column(idx)
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(value, "real-http_method-value");
+    }
+
+    #[tokio::test]
+    async fn reconcile_label_columns_trusts_stamped_origin_key_over_a_name_collision() {
+        // Same setup as the "grown" test above, but the batch's columns
+        // carry LABEL_ORIGIN_KEY_METADATA stamped by the current (grown)
+        // config generation -- unlike the name-based heuristic, matching by
+        // that stamped key must not rename either column onto the wrong
+        // key, even though the column *names* happen to satisfy the
+        // current generation's fresh-column set.
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                materialized_labels: common::config::MaterializedLabels {
+                    logs: vec!["http_method".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
+        };
+        let catalog_manager = CatalogManager::new(config).await.unwrap();
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "logs".to_string(),
+        )
+        .await
+        .unwrap();
+        writer.materialized.logs = vec!["http.method".to_string(), "http_method".to_string()];
+
+        // An *old*-generation batch that happens to use the exact column
+        // names the current generation's fresh resolution would produce,
+        // but was actually stamped for a different key by an earlier
+        // config generation (e.g. a prior key ordering): `label_http_method`
+        // here was materialized for `some.other.key`, not `http_method`.
+        let stamped =
+            |key: &str| HashMap::from([(LABEL_ORIGIN_KEY_METADATA.to_string(), key.to_string())]);
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("label_http_method", DataType::Utf8, true)
+                .with_metadata(stamped("some.other.key")),
+            Field::new("label_http_method_2", DataType::Utf8, true)
+                .with_metadata(stamped("yet.another.key")),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("t")])),
+                Arc::new(StringArray::from(vec![Some("other-key-value")])),
+                Arc::new(StringArray::from(vec![Some("another-key-value")])),
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile(&writer, batch).unwrap();
+
+        // Neither column matches a key this plan knows about (`http.method`
+        // or `http_method`), so both must pass through untouched -- not
+        // renamed or dropped based on their misleading names.
+        let schema = reconciled.schema();
+        let names: Vec<&str> = schema.fields().iter().map(|f| f.name().as_str()).collect();
+        assert_eq!(
+            names,
+            vec!["timestamp", "label_http_method", "label_http_method_2"],
+            "stamped origin keys with no match in the plan must not be renamed or dropped: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn reconcile_label_columns_resolves_a_two_key_swap_in_one_pass() {
+        // Both keys already have real, promoted columns, but promoted in an
+        // order (`http_method` first, then `http.method`) that lands them
+        // *backwards* relative to canonical (sorted) order: `http_method`
+        // holds the base name, `http.method` the suffix.
+        let catalog_manager = create_test_catalog_manager().await;
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "logs".to_string(),
+        )
+        .await
+        .unwrap();
+
+        common::iceberg::evolution::add_label_columns(
+            catalog_manager.catalog(),
+            writer.table_identifier(),
+            &["http_method".to_string(), "http.method".to_string()],
+        )
+        .await
+        .unwrap();
+        writer.reload_table().await.unwrap();
+        writer.materialized.logs = vec!["http.method".to_string(), "http_method".to_string()];
+
+        // A batch shaped by the fresh (canonical-order) resolver: `http.method`
+        // sorts first and claims the base name; `http_method` gets the
+        // suffix -- the opposite of what the table's committed schema says.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("label_http_method", DataType::Utf8, true),
+            Field::new("label_http_method_2", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("t")])),
+                Arc::new(StringArray::from(vec![Some("http.method-value")])),
+                Arc::new(StringArray::from(vec![Some("http_method-value")])),
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile(&writer, batch).unwrap();
+
+        // Both columns survive (both keys are already promoted) but swapped
+        // back to their authoritative names in a single pass -- neither
+        // value is lost or doubled up.
+        let base = reconciled
+            .column(reconciled.schema().index_of("label_http_method").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string();
+        let suffixed = reconciled
+            .column(reconciled.schema().index_of("label_http_method_2").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0)
+            .to_string();
+        assert_eq!(base, "http_method-value");
+        assert_eq!(suffixed, "http.method-value");
+    }
+
+    #[tokio::test]
+    async fn reconcile_label_columns_leaves_a_batch_named_by_an_older_config_generation_untouched()
+    {
+        // Same setup as the "grown" test: table created with only
+        // `http_method` configured -> a real, doc-tagged `label_http_method`
+        // column for that key, and the writer's resolved config has since
+        // grown to include the colliding `http.method` too.
+        let config = Configuration {
+            schema: SchemaConfig {
+                catalog_type: "memory".to_string(),
+                catalog_uri: "memory://".to_string(),
+                materialized_labels: common::config::MaterializedLabels {
+                    logs: vec!["http_method".to_string()],
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+            storage: StorageConfig {
+                dsn: "memory://".to_string(),
+            },
+            ..Default::default()
+        };
+        let catalog_manager = CatalogManager::new(config).await.unwrap();
+        let mut writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "test-tenant".to_string(),
+            "local".to_string(),
+            "logs".to_string(),
+        )
+        .await
+        .unwrap();
+        writer.materialized.logs = vec!["http.method".to_string(), "http_method".to_string()];
+
+        // Unlike the "grown" test's batch, this one was named under the
+        // *old* single-key config -- a WAL entry queued before the restart
+        // that grew the config -- so it carries only `label_http_method`
+        // (correctly holding `http_method`'s value as written) and is
+        // missing `label_http_method_2`, which the current (grown) config's
+        // fresh resolution would also produce.
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("timestamp", DataType::Utf8, true),
+            Field::new("label_http_method", DataType::Utf8, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec![Some("t")])),
+                Arc::new(StringArray::from(vec![Some("real-http_method-value")])),
+            ],
+        )
+        .unwrap();
+
+        let reconciled = reconcile(&writer, batch).unwrap();
+
+        // Left untouched: renaming by name here would misroute
+        // `http_method`'s value into what the grown config's fresh
+        // resolution thinks is `http.method`'s column, exactly the
+        // WAL-generation-mismatch failure this guard exists to avoid.
+        let reconciled_schema = reconciled.schema();
+        let names: Vec<&str> = reconciled_schema
+            .fields()
+            .iter()
+            .map(|f| f.name().as_str())
+            .collect();
+        assert_eq!(names, vec!["timestamp", "label_http_method"]);
+        let value = reconciled
+            .column(reconciled.schema().index_of("label_http_method").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap()
+            .value(0);
+        assert_eq!(value, "real-http_method-value");
     }
 
     #[tokio::test]
@@ -1056,7 +1895,6 @@ mod tests {
         let catalog_manager = create_test_catalog_manager().await;
         let mut writer = IcebergTableWriter::new(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             "test-tenant".to_string(),
             "local".to_string(),
             "traces".to_string(),
@@ -1119,6 +1957,788 @@ mod tests {
                 .metadata()
                 .properties
                 .contains_key(&wal_marker_key("undated"))
+        );
+    }
+
+    // --- Typed attribute layout (otel-native-schema layer 4.2a) ---
+
+    /// A [`common::config::WarmIndexConfig`] with small, deterministic
+    /// sizing, for tests that just need bloom properties present rather
+    /// than tuned.
+    fn test_warm_index_config() -> common::config::WarmIndexConfig {
+        common::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.01,
+            rows_per_row_group: 1_000,
+            attrs_per_row: 8,
+            max_bloom_ndv: 1_000_000,
+        }
+    }
+
+    /// Creates a `traces` table directly in the typed `physical-v5` layout,
+    /// bypassing `CatalogManager::ensure_table` — which would evolve it back
+    /// down to the still-current legacy `physical-v4` layout, since v5 is
+    /// deliberately not current yet (one-shot cutover, `otel-native-schema`
+    /// design D2). `warm_index` opts the table into the warm containment
+    /// index column and its bloom-filter properties (task 4.3).
+    async fn create_typed_traces_table(
+        catalog_manager: &CatalogManager,
+        tenant_id: &str,
+        dataset_id: &str,
+        warm_index: bool,
+    ) -> Table {
+        use common::iceberg::evolution::SCHEMA_VERSION_PROPERTY;
+        use common::schema::SCHEMA_DEFINITIONS;
+        use common::schema::schema_parser::DerivedColumns;
+        use iceberg_rust::catalog::create::CreateTableBuilder;
+        use iceberg_rust::catalog::tabular::Tabular;
+
+        let schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v5")
+            .unwrap()
+            .to_iceberg_schema_with(&[], DerivedColumns { warm_index })
+            .unwrap();
+
+        let namespace = catalog_manager
+            .build_namespace(tenant_id, dataset_id)
+            .unwrap();
+        let _ = catalog_manager
+            .catalog()
+            .create_namespace(&namespace, None)
+            .await;
+
+        let mut properties = HashMap::from([(
+            SCHEMA_VERSION_PROPERTY.to_string(),
+            "physical-v5".to_string(),
+        )]);
+        if warm_index {
+            properties.extend(common::schema::warm_index_properties(
+                &test_warm_index_config(),
+            ));
+        }
+
+        let identifier = catalog_manager.build_table_identifier(tenant_id, dataset_id, "traces");
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(schema)
+            .with_location(catalog_manager.build_table_location(tenant_id, dataset_id, "traces"))
+            .with_properties(properties)
+            .create()
+            .unwrap();
+        catalog_manager
+            .catalog()
+            .create_table(identifier.clone(), create)
+            .await
+            .unwrap();
+        match catalog_manager
+            .catalog()
+            .load_tabular(&identifier)
+            .await
+            .unwrap()
+        {
+            Tabular::Table(table) => table,
+            _ => panic!("expected a table"),
+        }
+    }
+
+    /// A writer for an already-created table, bypassing `IcebergTableWriter::new`'s
+    /// `ensure_table` call for the same reason `create_typed_traces_table` does.
+    fn writer_for(
+        catalog_manager: &CatalogManager,
+        table: Table,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> IcebergTableWriter {
+        IcebergTableWriter {
+            catalog: catalog_manager.catalog(),
+            table,
+            tenant_id: tenant_id.to_string(),
+            dataset_id: dataset_id.to_string(),
+            materialized: Default::default(),
+            retry_config: RetryConfig::default(),
+            type_authority: None,
+        }
+    }
+
+    /// One wire-format (OTLP) trace batch: one span carrying `attributes`,
+    /// converted the same way the acceptor does.
+    fn wire_trace_batch(
+        span_id_byte: u8,
+        attributes: Vec<(
+            &str,
+            opentelemetry_proto::tonic::common::v1::any_value::Value,
+        )>,
+    ) -> RecordBatch {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{
+            ResourceSpans, ScopeSpans, Span as OtelSpan, Status,
+        };
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![span_id_byte; 8],
+            name: "checkout".to_string(),
+            kind: 2,
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            end_time_unix_nano: 1_700_000_000_100_000_000,
+            attributes: attributes
+                .into_iter()
+                .map(|(key, value)| KeyValue {
+                    key: key.to_string(),
+                    value: Some(AnyValue { value: Some(value) }),
+                    ..Default::default()
+                })
+                .collect(),
+            status: Some(Status {
+                code: 1,
+                message: String::new(),
+            }),
+            ..Default::default()
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: Some(Resource {
+                    attributes: vec![KeyValue {
+                        key: "service.name".to_string(),
+                        value: Some(AnyValue {
+                            value: Some(Value::StringValue("checkout-svc".to_string())),
+                        }),
+                        ..Default::default()
+                    }],
+                    ..Default::default()
+                }),
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        otlp_traces_to_arrow(&request).expect("conversion should succeed")
+    }
+
+    #[tokio::test]
+    async fn typed_layout_writer_without_a_type_authority_errors_clearly() {
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "typed-tenant", "no-authority", false)
+                .await;
+        let mut writer = writer_for(&catalog_manager, table, "typed-tenant", "no-authority");
+
+        // The typed layout is detected from the table's own schema, before
+        // any entry is touched, so an empty call is enough to exercise it.
+        let result = writer.append_batches_with_marker("w1", vec![]).await;
+        let Err(err) = result else {
+            panic!("a typed table with no configured TypeAuthority must error");
+        };
+        assert!(
+            err.to_string().contains("TypeAuthority"),
+            "unexpected error: {err}"
+        );
+    }
+
+    use common::attrs::typed::decode_container;
+
+    /// A `TypeAuthority` backed by a fresh in-memory SQL catalog, plus that
+    /// catalog so a test can inspect what got committed to `attribute_types`.
+    async fn test_type_authority() -> (Arc<TypeAuthority>, common::catalog::Catalog) {
+        let sql_catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+        let resolver = common::schema_registry::SchemaResolver::new(sql_catalog.clone());
+        let authority = TypeAuthority::new(
+            sql_catalog.clone(),
+            resolver,
+            Arc::new(Configuration::default()),
+        );
+        (Arc::new(authority), sql_catalog)
+    }
+
+    /// Reads every committed row for `table` back as decoded Arrow batches,
+    /// the way a query engine would scan it.
+    async fn scan_batches(table: &Table) -> Vec<RecordBatch> {
+        use futures::StreamExt;
+        let manifests = table.manifests(None, None).await.unwrap();
+        let datafiles = table
+            .datafiles(&manifests, None, (None, None))
+            .await
+            .unwrap();
+        let entries: Vec<_> = datafiles.map(|r| r.unwrap().1).collect().await;
+        let stream =
+            iceberg_rust::arrow::read::read(entries.into_iter(), table.object_store()).await;
+        stream.map(|r| r.unwrap()).collect().await
+    }
+
+    /// The scanned batch and row index carrying `span_id_hex`, across
+    /// however many data files the table's commits produced.
+    fn find_row_by_span_id(batches: &[RecordBatch], span_id_hex: &str) -> (RecordBatch, usize) {
+        for batch in batches {
+            let span_ids = batch
+                .column_by_name("span_id")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap();
+            for row in 0..span_ids.len() {
+                if span_ids.value(row) == span_id_hex {
+                    return (batch.clone(), row);
+                }
+            }
+        }
+        panic!("span_id {span_id_hex} not found in scanned batches");
+    }
+
+    #[tokio::test]
+    async fn typed_layout_places_values_through_the_type_authority() {
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "typed-tenant", "local", false).await;
+        let (type_authority, sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "typed-tenant", "local")
+            .with_type_authority(type_authority);
+
+        // First occurrence of `http.status_code` is an int -> establishes
+        // Int64 as its canonical type and lands in `span_attributes_int`.
+        let batch = wire_trace_batch(0x01, vec![("http.status_code", Value::IntValue(200))]);
+        let outcome = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+        assert_eq!(outcome.committed.len(), 1);
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0101010101010101");
+        let int_map = batch
+            .column_by_name("span_attributes_int")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::MapArray>()
+            .unwrap();
+        assert!(!int_map.is_null(row), "the int home must carry the value");
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        assert_eq!(
+            decoded[row],
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!(200)
+            )]))
+        );
+
+        // Second batch sends the same key as a string: the canonical home
+        // stays Int64 (monotonic), so the off-type value lands in the
+        // residue rather than `_str` or coercing into `_int`.
+        let batch2 = wire_trace_batch(
+            0x02,
+            vec![("http.status_code", Value::StringValue("200".to_string()))],
+        );
+        let outcome2 = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch2)])
+            .await
+            .unwrap();
+        assert!(outcome2.rejected.is_empty(), "{:?}", outcome2.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0202020202020202");
+        let str_map = batch
+            .column_by_name("span_attributes_str")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::MapArray>()
+            .unwrap();
+        assert!(
+            str_map.is_null(row) || str_map.value_length(row) == 0,
+            "an off-type string must not land in span_attributes_str"
+        );
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        assert_eq!(
+            decoded[row],
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!("200")
+            )])),
+            "the off-type value must still round-trip, via the residue"
+        );
+
+        // The catalog recorded the canonical type established by the first
+        // (int) occurrence.
+        let field = common::schema::logical::LogicalFieldId {
+            source: "traces".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "http.status_code".to_string(),
+        };
+        let stored = sql_catalog
+            .get_attribute_type("typed-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("http.status_code's canonical type must be committed");
+        assert_eq!(stored.canonical, CanonicalType::Int64);
+
+        // Third batch: an array and a bytes value, neither with a typed
+        // home, round-trip through the residue untouched.
+        let batch3 = wire_trace_batch(
+            0x03,
+            vec![
+                (
+                    "tags",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![
+                            AnyValue {
+                                value: Some(Value::IntValue(1)),
+                            },
+                            AnyValue {
+                                value: Some(Value::IntValue(2)),
+                            },
+                        ],
+                    }),
+                ),
+                ("payload", Value::BytesValue(vec![0, 159, 146, 150])),
+            ],
+        );
+        let outcome3 = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch3)])
+            .await
+            .unwrap();
+        assert!(outcome3.rejected.is_empty(), "{:?}", outcome3.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0303030303030303");
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        let row_doc = decoded[row].as_ref().expect("row must have attributes");
+        assert_eq!(row_doc["tags"], serde_json::json!([1, 2]));
+        assert!(
+            row_doc.get("payload").is_some(),
+            "bytes must round-trip via the residue"
+        );
+    }
+
+    #[tokio::test]
+    async fn off_type_values_are_counted_after_commit_and_warned_once() {
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "offtype-tenant", "local", false).await;
+        let (type_authority, sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "offtype-tenant", "local")
+            .with_type_authority(type_authority);
+
+        let setup = wire_trace_batch(0x01, vec![("http.status_code", Value::IntValue(200))]);
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), setup)])
+            .await
+            .unwrap();
+
+        let field = common::schema::logical::LogicalFieldId {
+            source: "traces".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "http.status_code".to_string(),
+        };
+        let before = sql_catalog
+            .get_attribute_type("offtype-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("established by the int occurrence above");
+        assert_eq!(before.off_type_count, 0);
+        let (warnings, _guard) =
+            common::testing::WarnCapture::install("kept as sent in the residue");
+
+        // Two entries in ONE call each send the same key off-type -- the
+        // commit still lands and both entries' off-type values are summed.
+        let batch_a = wire_trace_batch(
+            0x02,
+            vec![("http.status_code", Value::StringValue("200".to_string()))],
+        );
+        let batch_b = wire_trace_batch(
+            0x03,
+            vec![("http.status_code", Value::StringValue("404".to_string()))],
+        );
+        let outcome = writer
+            .append_batches_with_marker(
+                "w1",
+                vec![
+                    (uuid::Uuid::new_v4(), batch_a),
+                    (uuid::Uuid::new_v4(), batch_b),
+                ],
+            )
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+        assert_eq!(outcome.committed.len(), 2, "the commit still lands");
+
+        let batches = scan_batches(&writer.table).await;
+        let (batch, row) = find_row_by_span_id(&batches, "0202020202020202");
+        let decoded = decode_container(&batch, "span_attributes").unwrap();
+        assert_eq!(
+            decoded[row],
+            Some(serde_json::Map::from_iter([(
+                "http.status_code".to_string(),
+                serde_json::json!("200")
+            )])),
+            "the off-type value is kept, in the residue"
+        );
+
+        let after = sql_catalog
+            .get_attribute_type("offtype-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("still established");
+        assert_eq!(
+            after.off_type_count - before.off_type_count,
+            2,
+            "off-type values from both entries of the one call must be summed"
+        );
+
+        // An array value for the same key has no scalar to compare against
+        // the canonical type, so `place` marks it off-type-free by design;
+        // it must not move the counter.
+        let batch_c = wire_trace_batch(
+            0x04,
+            vec![(
+                "http.status_code",
+                Value::ArrayValue(ArrayValue {
+                    values: vec![AnyValue {
+                        value: Some(Value::IntValue(1)),
+                    }],
+                }),
+            )],
+        );
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch_c)])
+            .await
+            .unwrap();
+
+        let unchanged = sql_catalog
+            .get_attribute_type("offtype-tenant", "local", &field)
+            .await
+            .unwrap()
+            .expect("still established");
+        assert_eq!(
+            unchanged.off_type_count, after.off_type_count,
+            "an array value must not be counted as off-type"
+        );
+
+        let batch_d = wire_trace_batch(
+            0x05,
+            vec![("http.status_code", Value::StringValue("500".to_string()))],
+        );
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch_d)])
+            .await
+            .unwrap();
+        assert_eq!(
+            warnings.messages().len(),
+            1,
+            "warns once per (level, key) per process: {:?}",
+            warnings.messages()
+        );
+    }
+
+    /// End-to-end proof for task 4.3 (warm containment index): a typed
+    /// table opted into `attr_index` gets one token per row for exactly the
+    /// values that land in a typed home -- an off-type value (residue) and
+    /// an array contribute nothing -- and the committed Parquet file's
+    /// `attr_index.list.item` leaf carries a bloom filter sized from the
+    /// table's warm-index properties.
+    #[tokio::test]
+    async fn typed_layout_with_warm_index_writes_tokens_and_a_bloom_filter() {
+        use common::attrs::typed::HomeValue;
+        use common::attrs::warm_index::{WARM_INDEX_COLUMN, encode_token};
+        use datafusion::arrow::array::{BinaryArray, ListArray};
+        use datafusion::object_store::ObjectStoreExt as _;
+        use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, ArrayValue, any_value::Value};
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table = create_typed_traces_table(&catalog_manager, "warm-tenant", "local", true).await;
+        let (type_authority, _sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "warm-tenant", "local")
+            .with_type_authority(type_authority);
+
+        // First establishes "off.type" as Int64, so the second batch's
+        // string value for the same key is a genuine off-type mismatch.
+        let setup = wire_trace_batch(0x01, vec![("off.type", Value::IntValue(1))]);
+        writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), setup)])
+            .await
+            .unwrap();
+
+        let batch = wire_trace_batch(
+            0x02,
+            vec![
+                ("str.attr", Value::StringValue("v".to_string())),
+                ("int.attr", Value::IntValue(7)),
+                ("double.attr", Value::DoubleValue(1.5)),
+                ("bool.attr", Value::BoolValue(true)),
+                ("off.type", Value::StringValue("nope".to_string())),
+                (
+                    "tags",
+                    Value::ArrayValue(ArrayValue {
+                        values: vec![AnyValue {
+                            value: Some(Value::IntValue(1)),
+                        }],
+                    }),
+                ),
+            ],
+        );
+        let outcome = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (record_batch, row) = find_row_by_span_id(&batches, "0202020202020202");
+        let attr_index = record_batch
+            .column_by_name(WARM_INDEX_COLUMN)
+            .expect("attr_index column present")
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let tokens = attr_index.value(row);
+        let tokens = tokens.as_any().downcast_ref::<BinaryArray>().unwrap();
+        let actual: HashSet<Vec<u8>> = (0..tokens.len())
+            .map(|i| tokens.value(i).to_vec())
+            .collect();
+        let expected: HashSet<Vec<u8>> = [
+            encode_token("str.attr", HomeValue::Str("v")),
+            encode_token("int.attr", HomeValue::Int(7)),
+            encode_token("double.attr", HomeValue::Double(1.5)),
+            encode_token("bool.attr", HomeValue::Bool(true)),
+            // `resource_attributes` (`service.name`) is a typed container
+            // too, and shares the same warm-index builder as
+            // `span_attributes` -- one token set per row, across every
+            // typed container.
+            encode_token("service.name", HomeValue::Str("checkout-svc")),
+        ]
+        .into_iter()
+        .map(Option::unwrap)
+        .collect();
+        assert_eq!(
+            actual, expected,
+            "the off-type value and the array must contribute no token"
+        );
+
+        // Every committed file's attr_index leaf carries a bloom filter,
+        // sized per the table's warm-index properties.
+        let store = writer.table.object_store();
+        let mut listing = store.list(None);
+        let mut found_leaf = false;
+        while let Some(meta) = futures::StreamExt::next(&mut listing).await {
+            let meta = meta.unwrap();
+            if !meta.location.as_ref().ends_with(".parquet") {
+                continue;
+            }
+            let bytes = store
+                .get(&meta.location)
+                .await
+                .unwrap()
+                .bytes()
+                .await
+                .unwrap();
+            let reader = SerializedFileReader::new(bytes).unwrap();
+            let row_group = reader.metadata().row_group(0);
+            if let Some(leaf) = row_group
+                .columns()
+                .iter()
+                .find(|c| c.column_path().string() == "attr_index.list.item")
+            {
+                assert!(
+                    leaf.bloom_filter_offset().is_some(),
+                    "attr_index leaf should carry a bloom filter"
+                );
+                found_leaf = true;
+            }
+        }
+        assert!(found_leaf, "no data file carried the attr_index leaf");
+    }
+
+    /// A table that never opted into the warm index gets no `attr_index`
+    /// column and writes exactly as before typed placement gained the
+    /// feature.
+    #[tokio::test]
+    async fn typed_layout_without_warm_index_writes_unchanged() {
+        use common::attrs::warm_index::WARM_INDEX_COLUMN;
+        use opentelemetry_proto::tonic::common::v1::any_value::Value;
+
+        let catalog_manager = create_test_catalog_manager().await;
+        let table =
+            create_typed_traces_table(&catalog_manager, "no-warm-tenant", "local", false).await;
+        assert!(
+            table
+                .current_schema()
+                .unwrap()
+                .fields()
+                .iter()
+                .all(|f| f.name != WARM_INDEX_COLUMN),
+            "table must not have opted into the warm index"
+        );
+        let (type_authority, _sql_catalog) = test_type_authority().await;
+        let mut writer = writer_for(&catalog_manager, table, "no-warm-tenant", "local")
+            .with_type_authority(type_authority);
+
+        let batch = wire_trace_batch(
+            0x09,
+            vec![("str.attr", Value::StringValue("v".to_string()))],
+        );
+        let outcome = writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let batches = scan_batches(&writer.table).await;
+        let (record_batch, _row) = find_row_by_span_id(&batches, "0909090909090909");
+        assert!(
+            record_batch.column_by_name(WARM_INDEX_COLUMN).is_none(),
+            "a table with no warm-index column must not gain one"
+        );
+    }
+
+    fn typed_column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> &'a T {
+        batch
+            .column_by_name(name)
+            .unwrap()
+            .as_any()
+            .downcast_ref::<T>()
+            .unwrap()
+    }
+
+    fn downcast<T: Array + 'static>(array: &dyn Array) -> &T {
+        array.as_any().downcast_ref::<T>().unwrap()
+    }
+
+    /// A wire-format histogram metric batch with one exemplar.
+    fn wire_histogram_metric_batch() -> RecordBatch {
+        use common::flight::conversion::otlp_metrics_to_arrow;
+        use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::metrics::v1::{
+            Exemplar, Histogram, HistogramDataPoint, Metric, ResourceMetrics, ScopeMetrics,
+            exemplar, metric::Data,
+        };
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let attr = |key: &str, value: &str| KeyValue {
+            key: key.to_string(),
+            value: Some(AnyValue {
+                value: Some(Value::StringValue(value.to_string())),
+            }),
+            ..Default::default()
+        };
+
+        let point = HistogramDataPoint {
+            attributes: vec![attr("host", "a")],
+            start_time_unix_nano: 1_700_000_000_000_000_000,
+            time_unix_nano: 1_700_000_001_000_000_000,
+            count: 3,
+            sum: Some(6.0),
+            bucket_counts: vec![1, 2, 0],
+            explicit_bounds: vec![1.0, 2.0],
+            exemplars: vec![Exemplar {
+                time_unix_nano: 1_700_000_001_500_000_000,
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                value: Some(exemplar::Value::AsDouble(2.0)),
+                filtered_attributes: vec![attr("debug", "yes")],
+            }],
+            ..Default::default()
+        };
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(Resource {
+                    attributes: vec![attr("service.name", "checkout")],
+                    ..Default::default()
+                }),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![Metric {
+                        name: "requests.duration".to_string(),
+                        data: Some(Data::Histogram(Histogram {
+                            data_points: vec![point],
+                            aggregation_temporality: 2,
+                        })),
+                        ..Default::default()
+                    }],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        otlp_metrics_to_arrow(&request).expect("conversion should succeed")
+    }
+
+    /// A batch committed to the wide `metrics`/`metric_exemplars` tables must
+    /// land with typed list columns and typed attribute containers.
+    #[tokio::test]
+    async fn wide_metrics_and_exemplars_commit_with_typed_lists_and_attributes() {
+        let catalog_manager = create_test_catalog_manager().await;
+        let (type_authority, _sql_catalog) = test_type_authority().await;
+        let batch = wire_histogram_metric_batch();
+
+        let mut metrics_writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "wide-metrics-tenant".to_string(),
+            "local".to_string(),
+            "metrics".to_string(),
+        )
+        .await
+        .expect("metrics table should be creatable from TableSchema::Metrics")
+        .with_type_authority(type_authority.clone());
+        let outcome = metrics_writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch.clone())])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let mut exemplars_writer = IcebergTableWriter::new(
+            &catalog_manager,
+            "wide-metrics-tenant".to_string(),
+            "local".to_string(),
+            "metric_exemplars".to_string(),
+        )
+        .await
+        .expect("metric_exemplars table should be creatable from TableSchema::MetricExemplars")
+        .with_type_authority(type_authority);
+        let outcome = exemplars_writer
+            .append_batches_with_marker("w1", vec![(uuid::Uuid::new_v4(), batch)])
+            .await
+            .unwrap();
+        assert!(outcome.rejected.is_empty(), "{:?}", outcome.rejected);
+
+        let metrics_batches = scan_batches(&metrics_writer.table).await;
+        let metrics_batch = metrics_batches
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .expect("one committed metrics row");
+        let bucket_counts = typed_column::<ListArray>(metrics_batch, "bucket_counts").value(0);
+        assert_eq!(
+            downcast::<datafusion::arrow::array::Int64Array>(&bucket_counts).values(),
+            &[1, 2, 0]
+        );
+        assert!(
+            !typed_column::<datafusion::arrow::array::MapArray>(metrics_batch, "attributes_str")
+                .is_null(0),
+            "record attributes must land in attributes_str"
+        );
+
+        let exemplar_batches = scan_batches(&exemplars_writer.table).await;
+        let exemplar_batch = exemplar_batches
+            .iter()
+            .find(|b| b.num_rows() > 0)
+            .expect("one committed exemplar row");
+        assert!(
+            !typed_column::<datafusion::arrow::array::MapArray>(
+                exemplar_batch,
+                "filtered_attributes_str"
+            )
+            .is_null(0),
+            "filtered_attributes must land in filtered_attributes_str"
         );
     }
 }

@@ -8,11 +8,18 @@ import {
   type FocusEvent,
   type PointerEvent,
 } from "react";
-import type { RenderResponse } from "../../api/pyroscope";
+import type { RenderResponse } from "../../api/profileTypes";
+import type { FrameLocation } from "../../api/gen";
+import { SourceSnippet } from "../../components/SourceSnippet";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import {
+  useRovingFocus,
+  type RovingFocusItemProps,
+} from "../../hooks/useRovingFocus";
 import {
   type FlameFrame,
   type FlameView,
+  type FramePlacement,
   type FunctionTotal,
   ancestorPath,
   collapseSmallFrames,
@@ -20,6 +27,7 @@ import {
   decodeFlamebearer,
   formatPct,
   formatTicks,
+  frameContains,
   frameView,
   OTHER_FRAME_NAME,
   placeFrames,
@@ -48,6 +56,10 @@ interface HoverInfo {
   total: number;
   /** CSS colour of the frame's bar; top-table rows have none. */
   swatch?: string;
+  /** The frame's source location, when known — shown as `file:line` in the
+   * tooltip footer. No fetch happens on hover; this only reads the
+   * pre-fetched flamegraph-envelope `locations`. */
+  location?: FrameLocation;
 }
 
 /** Colour of a frame's bar, keyed by name; the root uses the accent. */
@@ -72,14 +84,26 @@ const FRAME_STYLE = new Map(
   ]),
 );
 
-function frameHoverInfo(frame: FlameFrame): HoverInfo {
+function frameHoverInfo(
+  frame: FlameFrame,
+  nameLocation?: Map<string, FrameLocation>,
+): HoverInfo {
   const isOther = frame.name === OTHER_FRAME_NAME;
   return {
     name: frame.name,
     self: frame.self,
     total: frame.total,
     swatch: isOther ? undefined : `var(${frameColor(frame)})`,
+    location: nameLocation?.get(frame.name),
   };
+}
+
+/** `file:line` for a tooltip footer, or `undefined` when the location is
+ * unknown (line 0 per the flamegraph envelope's convention). */
+function locationFooter(location: FrameLocation | undefined): string | undefined {
+  return location && location.line > 0
+    ? `${location.file}:${location.line}`
+    : undefined;
 }
 
 interface FlameRowsProps {
@@ -88,6 +112,8 @@ interface FlameRowsProps {
   /** The frame the tooltip currently describes, for `aria-describedby`. */
   hovered: FlameFrame | null;
   tipId: string;
+  /** Roving-tabindex props for a frame — one tab stop for the whole pane. */
+  getItemProps: (frame: FlameFrame) => RovingFocusItemProps;
   onHover: (frame: FlameFrame, e: PointerEvent<HTMLElement>) => void;
   onFocus: (frame: FlameFrame, e: FocusEvent<HTMLElement>) => void;
   onLeave: () => void;
@@ -105,13 +131,19 @@ const FlameRows = memo(function FlameRows({
   needle,
   hovered,
   tipId,
+  getItemProps,
   onHover,
   onFocus,
   onLeave,
   onZoom,
 }: FlameRowsProps) {
   return (
-    <div className="flame-rows" onPointerLeave={onLeave}>
+    <div
+      className="flame-rows"
+      role="group"
+      aria-label="Flame graph frames"
+      onPointerLeave={onLeave}
+    >
       {placed.map((row, depth) =>
         row.length === 0 ? null : (
           <div className="flame-row" key={depth}>
@@ -120,6 +152,7 @@ const FlameRows = memo(function FlameRows({
               const color = frameColor(frame);
               const dim =
                 needle !== "" && !frame.name.toLowerCase().includes(needle);
+              const item = getItemProps(frame);
               return (
                 <div
                   key={`${frame.level}-${frame.x}`}
@@ -132,8 +165,14 @@ const FlameRows = memo(function FlameRows({
                     style={isOther ? undefined : FRAME_STYLE.get(color)}
                     aria-label={frame.name}
                     aria-describedby={hovered === frame ? tipId : undefined}
+                    tabIndex={item.tabIndex}
+                    ref={item.ref}
+                    onKeyDown={item.onKeyDown}
                     onPointerMove={(e) => onHover(frame, e)}
-                    onFocus={(e) => onFocus(frame, e)}
+                    onFocus={(e) => {
+                      item.onFocus();
+                      onFocus(frame, e);
+                    }}
                     onBlur={onLeave}
                     onClick={() => onZoom(frame)}
                   >
@@ -151,6 +190,79 @@ const FlameRows = memo(function FlameRows({
   );
 });
 
+/** Crumbs collapse to past this many levels deep. */
+const BREADCRUMB_COLLAPSE_DEPTH = 4;
+
+/**
+ * The zoom path, `root › a › b › current`. Deeper than
+ * {@link BREADCRUMB_COLLAPSE_DEPTH} levels, the middle collapses to a single
+ * "…" crumb — `root › … › parent › current` — so a deep zoom path stays
+ * readable instead of clipping inside the toolbar; clicking it reveals the
+ * full path. `.flame-breadcrumb` also allows horizontal scroll as a
+ * fallback, for when even the collapsed form (or a caller with unusually
+ * long frame names) still overflows.
+ */
+function Breadcrumb({
+  zoomStack,
+  onNavigate,
+}: {
+  zoomStack: FlameFrame[];
+  onNavigate: (next: FlameFrame[]) => void;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const crumbs = [
+    { key: "root", label: "root", onClick: () => onNavigate([]) },
+    // zoomStack[0] is always the root frame itself — the "root" crumb above
+    // already covers it, so start one past it.
+    ...zoomStack.slice(1).map((f, i) => ({
+      key: `${f.level}-${f.x}`,
+      label: f.name,
+      onClick: () => onNavigate(zoomStack.slice(0, i + 2)),
+    })),
+  ];
+  const collapsed = !expanded && crumbs.length > BREADCRUMB_COLLAPSE_DEPTH;
+  const shown = collapsed
+    ? [crumbs[0]!, crumbs[crumbs.length - 2]!, crumbs[crumbs.length - 1]!]
+    : crumbs;
+
+  return (
+    <div className="flame-breadcrumb" aria-label="Zoom path">
+      <button
+        type="button"
+        className="flame-crumb"
+        onClick={crumbs[0]!.onClick}
+      >
+        {crumbs[0]!.label}
+      </button>
+      {collapsed && (
+        <span>
+          <span className="flame-crumb-sep">›</span>
+          <button
+            type="button"
+            className="flame-crumb flame-crumb-ellipsis"
+            aria-label="Show full zoom path"
+            onClick={() => setExpanded(true)}
+          >
+            …
+          </button>
+        </span>
+      )}
+      {shown.slice(1).map((crumb) => (
+        <span key={crumb.key}>
+          <span className="flame-crumb-sep">›</span>
+          <button
+            type="button"
+            className="flame-crumb"
+            onClick={crumb.onClick}
+          >
+            {crumb.label}
+          </button>
+        </span>
+      ))}
+    </div>
+  );
+}
+
 interface FlamePaneProps {
   levels: FlameFrame[][];
   /** Root width in ticks — the denominator for percentage formatting. */
@@ -159,6 +271,13 @@ interface FlamePaneProps {
   unit: string;
   /** Shown above the toolbar; omitted for the single-flamegraph view. */
   title?: string;
+  /** Set when the caller's tenant can be served source context (see
+   * `useSourceContextEnabled`); enables the Top-functions Source column.
+   * `SourceSnippet` still decides per row, on top of a frame actually
+   * having a location. */
+  tenant?: string;
+  /** Function name → source location, built once by `FlameGraph`. */
+  nameLocation?: Map<string, FrameLocation>;
 }
 
 /**
@@ -167,7 +286,14 @@ interface FlamePaneProps {
  * of the diff view (independently fetched and zoomed, just placed side by
  * side), which only differ in their frame data.
  */
-export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
+export function FlamePane({
+  levels,
+  totalTicks,
+  unit,
+  title,
+  tenant,
+  nameLocation,
+}: FlamePaneProps) {
   const [zoomStack, setZoomStack] = useState<FlameFrame[]>([]);
   const [hovered, setHovered] = useState<FlameFrame | null>(null);
   const [highlight, setHighlight] = useState("");
@@ -187,23 +313,6 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
     setHoverInfo(null);
     pointer.clear();
   }, [pointer.clear]);
-  const hoverFrame = useCallback(
-    (frame: FlameFrame, e: PointerEvent<HTMLElement>) => {
-      setHovered(frame);
-      setHoverInfo(frameHoverInfo(frame));
-      pointer.track(e);
-    },
-    [pointer.track],
-  );
-  const focusFrame = useCallback(
-    (frame: FlameFrame, e: FocusEvent<HTMLElement>) => {
-      setHovered(frame);
-      setHoverInfo(frameHoverInfo(frame));
-      pointer.anchorTo(e.currentTarget);
-    },
-    [pointer.anchorTo],
-  );
-
   // Below-threshold frames (and their subtrees) fold into "(other)" bars so
   // a wide, noisy profile isn't dominated by hairline slivers. Computed
   // against the root total so it stays stable across zoom.
@@ -225,6 +334,101 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
   const placed = useMemo(
     () => placeFrames(effectiveLevels, view),
     [effectiveLevels, view],
+  );
+
+  // Roving tabindex over every visible frame: one tab stop for the pane,
+  // arrow keys move within a level (left/right) or to a covering
+  // parent/child frame in the level above/below (up/down). Kept alongside
+  // `placed` (not `effectiveLevels`) so it only sees frames actually drawn
+  // in the current zoom.
+  const flatFrames = useMemo(() => {
+    const out: FramePlacement[] = [];
+    for (const row of placed) if (row.length > 0) out.push(...row);
+    return out;
+  }, [placed]);
+  const frameIndex = useMemo(() => {
+    const m = new Map<FlameFrame, number>();
+    flatFrames.forEach((p, i) => m.set(p.frame, i));
+    return m;
+  }, [flatFrames]);
+  // Contiguous [start, end) index ranges of `flatFrames` per drawn level, in
+  // the same order rows render — a frame's siblings on its own level.
+  const levelRanges = useMemo(() => {
+    const ranges: { level: number; start: number; end: number }[] = [];
+    let cursor = 0;
+    for (const row of placed) {
+      if (row.length === 0) continue;
+      ranges.push({
+        level: row[0]!.frame.level,
+        start: cursor,
+        end: cursor + row.length,
+      });
+      cursor += row.length;
+    }
+    return ranges;
+  }, [placed]);
+  const stepWithinLevel = useCallback(
+    (index: number, direction: -1 | 1) => {
+      const range = levelRanges.find((r) => index >= r.start && index < r.end);
+      if (!range) return null;
+      const next = index + direction;
+      return next >= range.start && next < range.end ? next : null;
+    },
+    [levelRanges],
+  );
+  const stepAcrossLevel = useCallback(
+    (index: number, direction: -1 | 1) => {
+      const frame = flatFrames[index]?.frame;
+      if (!frame) return null;
+      const targetLevel = frame.level + direction;
+      const range = levelRanges.find((r) => r.level === targetLevel);
+      if (!range) return null;
+      if (direction === -1) {
+        // Up: the unique parent-level frame whose interval contains this one.
+        for (let i = range.start; i < range.end; i++) {
+          if (frameContains(flatFrames[i]!.frame, frame)) return i;
+        }
+        return null;
+      }
+      // Down: the first (leftmost) child whose interval falls within this
+      // frame's.
+      for (let i = range.start; i < range.end; i++) {
+        const f = flatFrames[i]!.frame;
+        if (f.x >= frame.x && f.x < frame.x + frame.total) return i;
+      }
+      return null;
+    },
+    [flatFrames, levelRanges],
+  );
+  const roving = useRovingFocus(flatFrames.length, {
+    horizontal: stepWithinLevel,
+    vertical: stepAcrossLevel,
+  });
+  const getFrameItemProps = useCallback(
+    (frame: FlameFrame) => roving.itemProps(frameIndex.get(frame) ?? -1),
+    [roving.itemProps, frameIndex],
+  );
+
+  // Pointer/focus over a frame also moves the pane's roving tab stop
+  // (`frameIndex`/`roving` above), so Tab picks up keyboard navigation from
+  // wherever the pointer last landed, not just where an arrow key left it.
+  const hoverFrame = useCallback(
+    (frame: FlameFrame, e: PointerEvent<HTMLElement>) => {
+      setHovered(frame);
+      setHoverInfo(frameHoverInfo(frame, nameLocation));
+      const index = frameIndex.get(frame);
+      if (index !== undefined) roving.setActiveIndex(index);
+      pointer.track(e);
+    },
+    [pointer.track, frameIndex, roving.setActiveIndex, nameLocation],
+  );
+  const focusFrame = useCallback(
+    (frame: FlameFrame, e: FocusEvent<HTMLElement>) => {
+      setHovered(frame);
+      setHoverInfo(frameHoverInfo(frame, nameLocation));
+      pointer.anchorTo(e.currentTarget);
+    },
+    [pointer.anchorTo, nameLocation],
   );
 
   // Case-insensitive substring match, and the self-time share it covers —
@@ -330,29 +534,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
           </span>
         )}
         {viewMode === "flame" && zoomStack.length > 0 && (
-          <div className="flame-breadcrumb" aria-label="Zoom path">
-            <button
-              type="button"
-              className="flame-crumb"
-              onClick={() => setZoomStack([])}
-            >
-              root
-            </button>
-            {/* zoomStack[0] is always the root frame itself — the "root"
-                button above already covers it, so start one past it. */}
-            {zoomStack.slice(1).map((f, i) => (
-              <span key={`${f.level}-${f.x}`}>
-                <span className="flame-crumb-sep">›</span>
-                <button
-                  type="button"
-                  className="flame-crumb"
-                  onClick={() => setZoomStack(zoomStack.slice(0, i + 2))}
-                >
-                  {f.name}
-                </button>
-              </span>
-            ))}
-          </div>
+          <Breadcrumb zoomStack={zoomStack} onNavigate={setZoomStack} />
         )}
       </div>
 
@@ -363,6 +545,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
             needle={needle}
             hovered={hovered}
             tipId={tipId}
+            getItemProps={getFrameItemProps}
             onHover={hoverFrame}
             onFocus={focusFrame}
             onLeave={clearHover}
@@ -408,31 +591,54 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
                   numeric
                 />
                 <th className="num">Total %</th>
+                {tenant && <th>Source</th>}
               </tr>
             </thead>
             <tbody>
-              {topRows.map((f) => (
-                <tr
-                  key={f.name}
-                  onClick={() => selectFunction(f.name)}
-                  onPointerMove={(e) => {
-                    setHoverInfo({ name: f.name, self: f.self, total: f.total });
-                    pointer.track(e);
-                  }}
-                  onPointerLeave={clearHover}
-                >
-                  <td>
-                    <button className="flame-top-open">{f.name}</button>
-                    {f.count > 1 && (
-                      <span className="flame-top-count"> ×{f.count}</span>
+              {topRows.map((f) => {
+                const location = nameLocation?.get(f.name);
+                return (
+                  <tr
+                    key={f.name}
+                    onClick={() => selectFunction(f.name)}
+                    onPointerMove={(e) => {
+                      setHoverInfo({
+                        name: f.name,
+                        self: f.self,
+                        total: f.total,
+                        location,
+                      });
+                      pointer.track(e);
+                    }}
+                    onPointerLeave={clearHover}
+                  >
+                    <td>
+                      <button className="flame-top-open">{f.name}</button>
+                      {f.count > 1 && (
+                        <span className="flame-top-count"> ×{f.count}</span>
+                      )}
+                    </td>
+                    <td className="num">{formatTicks(f.self, unit)}</td>
+                    <td className="num">{formatPct(f.self, totalTicks)}</td>
+                    <td className="num">{formatTicks(f.total, unit)}</td>
+                    <td className="num">{formatPct(f.total, totalTicks)}</td>
+                    {tenant && (
+                      <td
+                        className="flame-top-source"
+                        onClick={(e) => e.stopPropagation()}
+                      >
+                        {location && location.line > 0 && (
+                          <SourceSnippet
+                            tenant={tenant}
+                            path={location.file}
+                            line={location.line}
+                          />
+                        )}
+                      </td>
                     )}
-                  </td>
-                  <td className="num">{formatTicks(f.self, unit)}</td>
-                  <td className="num">{formatPct(f.self, totalTicks)}</td>
-                  <td className="num">{formatTicks(f.total, unit)}</td>
-                  <td className="num">{formatPct(f.total, totalTicks)}</td>
-                </tr>
-              ))}
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
           {topRows.length === 0 && (
@@ -464,6 +670,7 @@ export function FlamePane({ levels, totalTicks, unit, title }: FlamePaneProps) {
               value: `${formatTicks(hoverInfo.total, unit)} (${formatPct(hoverInfo.total, totalTicks)})`,
             },
           ]}
+          footer={locationFooter(hoverInfo.location)}
         />
       )}
     </div>
@@ -485,10 +692,37 @@ interface Props {
   render: RenderResponse;
   /** Unit of the selected profile type, e.g. "nanoseconds", for formatting. */
   unit: string;
+  /** Set when the caller's tenant can be served source context; enables
+   * the Top-functions table's Source column. `SourceSnippet` still decides
+   * per row. */
+  tenant?: string;
+  /** Per-name source location, parallel to `render.flamebearer.names` (see
+   * `FlamegraphFetch.locations`). */
+  locations?: Array<FrameLocation | null>;
 }
 
-export function FlameGraph({ render, unit }: Props) {
+export function FlameGraph({ render, unit, tenant, locations }: Props) {
   const fb = render.flamebearer;
   const levels = useMemo(() => decodeFlamebearer(fb), [fb]);
-  return <FlamePane levels={levels} totalTicks={fb.numTicks} unit={unit} />;
+  // Built once per (names, locations) pair — `names`/`locations` are
+  // index-aligned and names are already unique (the flamegraph envelope
+  // itself dedupes), so no need to guard against overwriting an entry.
+  const nameLocation = useMemo(() => {
+    const map = new Map<string, FrameLocation>();
+    if (!locations) return map;
+    fb.names.forEach((name, i) => {
+      const location = locations[i];
+      if (location) map.set(name, location);
+    });
+    return map;
+  }, [fb.names, locations]);
+  return (
+    <FlamePane
+      levels={levels}
+      totalTicks={fb.numTicks}
+      unit={unit}
+      tenant={tenant}
+      nameLocation={nameLocation}
+    />
+  );
 }

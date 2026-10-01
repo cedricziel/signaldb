@@ -46,7 +46,7 @@ describe("management API", () => {
         JSON.stringify({
           id: "key-1",
           key: "sdbk_secret",
-          dataset_id: "prod",
+          dataset_ids: ["prod"],
           scopes: ["metrics:write"],
         }),
         { status: 201, headers: { "Content-Type": "application/json" } },
@@ -57,18 +57,18 @@ describe("management API", () => {
 
     const result = await createApiKey("acme", {
       name: "collector",
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
       scopes: ["metrics:write"],
     });
 
     expect(result.key).toBe("sdbk_secret");
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys");
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({
       name: "collector",
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
       scopes: ["metrics:write"],
     });
     // The interceptor applies the request-scoped tenant headers.
@@ -85,7 +85,7 @@ describe("management API", () => {
     await expect(revokeApiKey("acme", "key-1")).resolves.toBeUndefined();
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys/key-1");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys/key-1");
     expect(req.method).toBe("DELETE");
   });
 
@@ -110,12 +110,12 @@ describe("management API", () => {
     });
   });
 
-  it("updates a live key's scopes and dataset via PATCH", async () => {
+  it("updates a live key's scopes and dataset restriction via PATCH", async () => {
     const fetchMock = vi.fn().mockResolvedValue(
       jsonResponse({
         id: "key-1",
         name: "collector",
-        dataset_id: "prod",
+        dataset_ids: ["prod"],
         scopes: ["schema:read", "traces:write"],
         revoked: false,
         created_at: "2026-08-01T00:00:00Z",
@@ -125,16 +125,118 @@ describe("management API", () => {
 
     const result = await updateApiKey("acme", "key-1", {
       scopes: ["schema:read", "traces:write"],
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
     });
     expect(result.scopes).toEqual(["schema:read", "traces:write"]);
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys/key-1");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys/key-1");
     expect(req.method).toBe("PATCH");
     expect(await req.clone().json()).toEqual({
       scopes: ["schema:read", "traces:write"],
-      dataset_id: "prod",
+      dataset_ids: ["prod"],
+    });
+  });
+
+  it("clears a live key's dataset restriction via clear_dataset_restriction", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        dataset_ids: null,
+        scopes: ["schema:read"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read"],
+      clear_dataset_restriction: true,
+    });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read"],
+      clear_dataset_restriction: true,
+    });
+  });
+
+  it("creates a key restricted to allowed origins", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          id: "key-3",
+          key: "sdbk_origin",
+          allowed_origins: ["https://a.example"],
+          scopes: ["metrics:write"],
+        },
+        201,
+      ),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await createApiKey("acme", {
+      allowed_origins: ["https://a.example"],
+      scopes: ["metrics:write"],
+    });
+
+    expect(result.key).toBe("sdbk_origin");
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      allowed_origins: ["https://a.example"],
+      scopes: ["metrics:write"],
+    });
+  });
+
+  it("updates a live key's allowed origins via PATCH", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        allowed_origins: ["https://a.example"],
+        scopes: ["schema:read"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read"],
+      allowed_origins: ["https://a.example"],
+    });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read"],
+      allowed_origins: ["https://a.example"],
+    });
+  });
+
+  it("clears a live key's allowed-origins restriction via clear_allowed_origins", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse({
+        id: "key-1",
+        name: "collector",
+        allowed_origins: null,
+        scopes: ["schema:read"],
+        revoked: false,
+        created_at: "2026-08-01T00:00:00Z",
+      }),
+    );
+    vi.stubGlobal("fetch", fetchMock);
+
+    await updateApiKey("acme", "key-1", {
+      scopes: ["schema:read"],
+      clear_allowed_origins: true,
+    });
+
+    const req = fetchMock.mock.calls[0]?.[0] as Request;
+    expect(await req.clone().json()).toEqual({
+      scopes: ["schema:read"],
+      clear_allowed_origins: true,
     });
   });
 
@@ -169,7 +271,7 @@ describe("management API", () => {
 
     expect(result).toEqual([{ id: "key-1" }]);
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/api-keys");
+    expect(req.url).toContain("/api/v1/tenants/acme/api-keys");
     expect(req.method).toBe("GET");
   });
 
@@ -183,7 +285,7 @@ describe("management API", () => {
 
     expect(result).toEqual({ id: "staging" });
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/datasets");
+    expect(req.url).toContain("/api/v1/tenants/acme/datasets");
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({ name: "staging" });
   });
@@ -197,7 +299,7 @@ describe("management API", () => {
     await expect(deleteDataset("acme", "staging")).resolves.toBeUndefined();
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/datasets/staging");
+    expect(req.url).toContain("/api/v1/tenants/acme/datasets/staging");
     expect(req.method).toBe("DELETE");
   });
 
@@ -215,7 +317,7 @@ describe("management API", () => {
 
     expect(result).toEqual({ id: "acme" });
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants");
+    expect(req.url).toContain("/api/v1/tenants");
     expect(req.method).toBe("POST");
     expect(await req.clone().json()).toEqual({
       id: "acme",
@@ -234,7 +336,7 @@ describe("management API", () => {
 
     expect(result).toEqual([{ user_id: "u1", role: "admin" }]);
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships");
+    expect(req.url).toContain("/api/v1/tenants/acme/memberships");
     expect(req.method).toBe("GET");
   });
 
@@ -253,7 +355,7 @@ describe("management API", () => {
 
     expect(result).toEqual({ email: "alice@example.com", role: "member" });
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships");
+    expect(req.url).toContain("/api/v1/tenants/acme/memberships");
     expect(req.method).toBe("PUT");
     expect(await req.clone().json()).toEqual({
       email: "alice@example.com",
@@ -293,7 +395,7 @@ describe("management API", () => {
 
     expect(result).toEqual(body);
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/schema");
+    expect(req.url).toContain("/api/v1/schema");
     expect(req.method).toBe("GET");
   });
 
@@ -306,7 +408,7 @@ describe("management API", () => {
     await expect(removeMembership("acme", "u1")).resolves.toBeUndefined();
 
     const req = fetchMock.mock.calls[0]?.[0] as Request;
-    expect(req.url).toContain("/api/v1/manage/tenants/acme/memberships/u1");
+    expect(req.url).toContain("/api/v1/tenants/acme/memberships/u1");
     expect(req.method).toBe("DELETE");
   });
 
@@ -330,17 +432,15 @@ describe("management API", () => {
   });
 
   it("provisions a tenant's enabled signal tables", async () => {
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValue(
-        jsonResponse(
-          {
-            message: "Default tables created for tenant 'acme'",
-            tenant_id: "acme",
-          },
-          201,
-        ),
-      );
+    const fetchMock = vi.fn().mockResolvedValue(
+      jsonResponse(
+        {
+          message: "Default tables created for tenant 'acme'",
+          tenant_id: "acme",
+        },
+        201,
+      ),
+    );
     vi.stubGlobal("fetch", fetchMock);
 
     const result = await provisionTables("acme");

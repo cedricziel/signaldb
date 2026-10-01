@@ -1,16 +1,49 @@
-import { screen, waitFor, within } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router";
-import { renderWithClient, stubFetchRoutes } from "../../test/render";
+import { anyDirty, resetDirtyForms } from "../../lib/dirtyForms";
+import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
+import {
+  outletContextRoute,
+  renderWithClient,
+  stubFetchRoutes,
+} from "../../test/render";
 import { ApiKeys } from "./ApiKeys";
 
-function renderApiKeys() {
+/** The same route shape as `renderApiKeys`, but as a bare element so a test
+ * can `rerender` it with a different outlet `state` against the *same*
+ * `QueryClient` — exercising the whoami query key's tenant/dataset scoping
+ * (fix: switching tenants must refetch, not answer from the old tenant's
+ * cached response). */
+function ApiKeysHarness({ state }: { state: ExploreState }) {
+  return (
+    <MemoryRouter initialEntries={["/api-keys"]}>
+      <Routes>
+        <Route element={outletContextRoute(state)}>
+          <Route path="/api-keys" element={<ApiKeys />} />
+          <Route path="/overview" element={<div>Home page</div>} />
+        </Route>
+      </Routes>
+    </MemoryRouter>
+  );
+}
+
+function renderApiKeys(state: Partial<ExploreState> = {}) {
+  const contextState: ExploreState = {
+    ...DEFAULT_STATE,
+    tenant: "acme",
+    dataset: "production",
+    ...state,
+  };
   return renderWithClient(
     <MemoryRouter initialEntries={["/api-keys"]}>
       <Routes>
-        <Route path="/api-keys" element={<ApiKeys />} />
-        <Route path="/logs" element={<div>Logs page</div>} />
+        <Route element={outletContextRoute(contextState)}>
+          <Route path="/api-keys" element={<ApiKeys />} />
+          <Route path="/overview" element={<div>Home page</div>} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
@@ -41,7 +74,7 @@ const API_KEYS = [
   {
     id: "key-1",
     name: "collector-production",
-    dataset_id: "production",
+    dataset_ids: ["production"],
     scopes: ["metrics:write", "logs:write"],
     created_at: "2026-08-01T00:00:00Z",
     revoked: false,
@@ -49,7 +82,7 @@ const API_KEYS = [
   {
     id: "key-2",
     name: "staging-deploy",
-    dataset_id: "staging",
+    dataset_ids: ["staging"],
     scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
     created_at: "2026-07-15T00:00:00Z",
     revoked: false,
@@ -57,7 +90,7 @@ const API_KEYS = [
   {
     id: "key-3",
     name: "old-key",
-    dataset_id: null,
+    dataset_ids: null,
     scopes: [],
     created_at: "2026-07-01T00:00:00Z",
     revoked: true,
@@ -65,7 +98,7 @@ const API_KEYS = [
   {
     id: "key-4",
     name: "ci-provisioner",
-    dataset_id: null,
+    dataset_ids: null,
     scopes: ["tenant:manage"],
     created_at: "2026-08-10T00:00:00Z",
     revoked: false,
@@ -86,19 +119,82 @@ function findFetchCall(
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  resetDirtyForms();
 });
 
-const API_KEYS_PATH = "/api/v1/manage/tenants/acme/api-keys";
+const API_KEYS_PATH = "/api/v1/tenants/acme/api-keys";
 
 describe("ApiKeys page", () => {
-  it("redirects to /logs when user is not admin", async () => {
+  it("redirects home to /overview when user is not admin", async () => {
     stubFetchRoutes([{ match: "/api/v1/whoami", body: WHOAMI_NON_ADMIN }]);
     renderApiKeys();
 
     await waitFor(() =>
-      expect(screen.getByText("Logs page")).toBeInTheDocument(),
+      expect(screen.getByText("Home page")).toBeInTheDocument(),
     );
     expect(screen.queryByText("API keys")).not.toBeInTheDocument();
+  });
+
+  it("shows an inline error on a non-401 whoami failure instead of redirecting home", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: { error: "boom" }, status: 500 },
+    ]);
+    renderApiKeys();
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(/500/);
+    expect(screen.queryByText("Home page")).not.toBeInTheDocument();
+  });
+
+  it("refetches whoami under its own key when the outlet tenant changes", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+      {
+        match: "/api/v1/tenants/globex/api-keys",
+        body: [],
+      },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(
+        fetchMock.mock.calls.some((call) =>
+          (call[0] as Request).url.includes("/api/v1/whoami"),
+        ),
+      ).toBe(true),
+    );
+    const whoamiCallsForAcme = fetchMock.mock.calls.filter((call) =>
+      (call[0] as Request).url.includes("/api/v1/whoami"),
+    ).length;
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+
+    await waitFor(() => {
+      const whoamiCallsAfter = fetchMock.mock.calls.filter((call) =>
+        (call[0] as Request).url.includes("/api/v1/whoami"),
+      ).length;
+      expect(whoamiCallsAfter).toBeGreaterThan(whoamiCallsForAcme);
+    });
   });
 
   it("shows existing API keys list", async () => {
@@ -117,25 +213,27 @@ describe("ApiKeys page", () => {
     // Metadata (the created-date suffix is locale-dependent, so match by prefix)
     expect(
       screen.getByText((content) =>
-        content.startsWith("production · metrics:write, logs:write"),
-      ),
-    ).toBeInTheDocument();
-    expect(
-      screen.getByText((content) =>
         content.startsWith(
-          "staging · metrics:write, logs:write, traces:write, profiles:write",
+          "production · Any origin · metrics:write, logs:write",
         ),
       ),
     ).toBeInTheDocument();
     expect(
       screen.getByText((content) =>
-        content.startsWith("all datasets · legacy unrestricted"),
+        content.startsWith(
+          "staging · Any origin · metrics:write, logs:write, traces:write, profiles:write",
+        ),
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("unrestricted · Any origin · legacy unrestricted"),
       ),
     ).toBeInTheDocument();
     // A management key lists its tenant:manage scope like any other scope.
     expect(
       screen.getByText((content) =>
-        content.startsWith("all datasets · tenant:manage"),
+        content.startsWith("unrestricted · Any origin · tenant:manage"),
       ),
     ).toBeInTheDocument();
 
@@ -143,6 +241,46 @@ describe("ApiKeys page", () => {
     // (jsdom doesn't apply stylesheet rules, so we check the class).
     const revokedRow = screen.getByText("old-key").closest("li");
     expect(revokedRow?.className).toContain("revoked");
+  });
+
+  it("shows the shared empty state when there are no API keys", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+
+    const status = await screen.findByRole("status");
+    expect(status).toHaveTextContent("No API keys yet");
+  });
+
+  it("shows a multi-dataset key's restriction as the joined dataset list", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      {
+        match: API_KEYS_PATH,
+        body: [
+          {
+            id: "key-multi",
+            name: "multi-dataset-key",
+            dataset_ids: ["production", "staging"],
+            scopes: ["metrics:write"],
+            created_at: "2026-08-05T00:00:00Z",
+            revoked: false,
+          },
+        ],
+      },
+    ]);
+    renderApiKeys();
+
+    await waitFor(() =>
+      expect(screen.getByText("multi-dataset-key")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByText((content) =>
+        content.startsWith("production, staging · Any origin · metrics:write"),
+      ),
+    ).toBeInTheDocument();
   });
 
   it("shows create form for admins", async () => {
@@ -156,7 +294,12 @@ describe("ApiKeys page", () => {
       expect(
         screen.getByPlaceholderText("collector-production"),
       ).toBeInTheDocument();
-      expect(screen.getByText("All datasets")).toBeInTheDocument();
+      expect(
+        screen.getByRole("group", { name: "Datasets" }),
+      ).toBeInTheDocument();
+      expect(screen.getByLabelText("production")).toBeInTheDocument();
+      expect(screen.getByLabelText("staging")).toBeInTheDocument();
+      expect(screen.getByLabelText("production")).not.toBeChecked();
       expect(screen.getByText("metrics:write")).toBeInTheDocument();
       expect(screen.getByText("Create API key")).toBeInTheDocument();
     });
@@ -291,7 +434,7 @@ describe("ApiKeys page", () => {
     });
   });
 
-  it("edits the scopes of a live key via PATCH", async () => {
+  it("edits the scopes of a live key via PATCH, keeping its dataset restriction explicit", async () => {
     const fetchMock = stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
       { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
@@ -317,6 +460,10 @@ describe("ApiKeys page", () => {
     expect(getByLabelText("metrics:write")).toBeChecked();
     expect(getByLabelText("logs:write")).toBeChecked();
     expect(getByLabelText("schema:read")).not.toBeChecked();
+    // key-1 is restricted to `production`: the dataset picker reflects that.
+    expect(getByLabelText("production")).toBeChecked();
+    expect(getByLabelText("staging")).not.toBeChecked();
+    expect(getByLabelText("Remove dataset restriction")).not.toBeChecked();
     await userEvent.click(getByLabelText("logs:write"));
     await userEvent.click(getByLabelText("schema:read"));
     await userEvent.click(getByText("Save scopes"));
@@ -329,6 +476,7 @@ describe("ApiKeys page", () => {
     const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
     expect(await patch.clone().json()).toEqual({
       scopes: ["metrics:write", "schema:read"],
+      dataset_ids: ["production"],
     });
     // Editor closes and the list refetches.
     await waitFor(() =>
@@ -336,6 +484,276 @@ describe("ApiKeys page", () => {
         screen.queryByRole("form", { name: "Edit scopes" }),
       ).not.toBeInTheDocument(),
     );
+  });
+
+  it("clears an existing dataset restriction only via the explicit clear control", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0], dataset_id: null, dataset_ids: null },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+
+    await userEvent.click(getByLabelText("Remove dataset restriction"));
+    // Distinct from unchecking every box: the picker itself is disabled once
+    // the explicit clear control is chosen.
+    expect(getByLabelText("production")).toBeDisabled();
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "logs:write"],
+      clear_dataset_restriction: true,
+    });
+  });
+
+  it("leaves an existing dataset restriction unchanged when boxes are simply unchecked, never sending an empty dataset_ids array", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0] },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+
+    await userEvent.click(getByLabelText("production")); // uncheck, no clear control used
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    const body = (await patch.clone().json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("dataset_ids");
+    expect(body).not.toHaveProperty("clear_dataset_restriction");
+    expect(body).toEqual({ scopes: ["metrics:write", "logs:write"] });
+  });
+
+  it("omits the dataset fields entirely when editing an already-unrestricted key without touching the picker", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-4`,
+        method: "PATCH",
+        body: { ...API_KEYS[3] },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("ci-provisioner")).toBeInTheDocument(),
+    );
+
+    const editButtons = screen.getAllByText("Edit scopes");
+    await userEvent.click(editButtons[editButtons.length - 1]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+    expect(getByLabelText("production")).not.toBeChecked();
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-4", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-4", "PATCH")!;
+    const body = (await patch.clone().json()) as Record<string, unknown>;
+    expect(body).not.toHaveProperty("dataset_ids");
+    expect(body).not.toHaveProperty("clear_dataset_restriction");
+  });
+
+  it("creates a key restricted to the checked datasets", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_multi" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByLabelText("production"));
+    await userEvent.click(screen.getByLabelText("staging"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      dataset_ids: ["production", "staging"],
+      scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
+  });
+
+  it("creates a key restricted to a typed allowed origin", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_origin" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      allowed_origins: ["https://a.example"],
+      scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
+  });
+
+  it("removes a typed origin before submitting", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_origin" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.type(
+      screen.getByLabelText("Add allowed origin"),
+      "https://b.example{Enter}",
+    );
+    await userEvent.click(screen.getByLabelText("Remove https://a.example"));
+    await userEvent.click(screen.getByText("Create API key"));
+
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+    const post = findFetchCall(fetchMock, "/api-keys", "POST")!;
+    expect(await post.clone().json()).toEqual({
+      allowed_origins: ["https://b.example"],
+      scopes: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
+    });
+  });
+
+  it("updates a live key's allowed origins via PATCH", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: {
+          ...API_KEYS[0],
+          allowed_origins: ["https://a.example"],
+        },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+    await userEvent.type(
+      getByLabelText("Add allowed origin"),
+      "https://a.example{Enter}",
+    );
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "logs:write"],
+      dataset_ids: ["production"],
+      allowed_origins: ["https://a.example"],
+    });
+  });
+
+  it("clears a live key's allowed-origins restriction only via the explicit clear control", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: API_KEYS },
+      {
+        match: `${API_KEYS_PATH}/key-1`,
+        method: "PATCH",
+        body: { ...API_KEYS[0], allowed_origins: null },
+      },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    const editor = screen.getByRole("form", { name: "Edit scopes" });
+    const { getByLabelText, getByText } = within(editor);
+
+    // Update-mode help text must not claim an empty list means "unrestricted"
+    // — on this form it means "leave the current restriction unchanged".
+    expect(
+      getByText(/leaves the current restriction unchanged/i),
+    ).toBeInTheDocument();
+
+    await userEvent.click(getByLabelText("Remove allowed-origins restriction"));
+    expect(getByLabelText("Add allowed origin")).toBeDisabled();
+    await userEvent.click(getByText("Save scopes"));
+
+    await waitFor(() =>
+      expect(
+        findFetchCall(fetchMock, "/api-keys/key-1", "PATCH"),
+      ).toBeDefined(),
+    );
+    const patch = findFetchCall(fetchMock, "/api-keys/key-1", "PATCH")!;
+    expect(await patch.clone().json()).toEqual({
+      scopes: ["metrics:write", "logs:write"],
+      dataset_ids: ["production"],
+      clear_allowed_origins: true,
+    });
   });
 
   it("creates new API key and shows secret modal", async () => {
@@ -362,9 +780,8 @@ describe("ApiKeys page", () => {
       screen.getByPlaceholderText("collector-production"),
       "my-key",
     );
-    // Select dataset option
-    const select = screen.getByRole("combobox");
-    await userEvent.selectOptions(select, "production");
+    // Select dataset
+    await userEvent.click(screen.getByLabelText("production"));
     // All four ingestion scopes are checked by default; uncheck logs:write
     await userEvent.click(screen.getByLabelText("logs:write"));
     await userEvent.click(screen.getByText("Create API key"));
@@ -424,6 +841,135 @@ describe("ApiKeys page", () => {
     });
   });
 
+  it("closes an open editor and resets tenant-bound UI state when the outlet tenant changes", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: API_KEYS },
+    ]);
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("collector-production")).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getAllByText("Edit scopes")[0]!);
+    expect(
+      screen.getByRole("form", { name: "Edit scopes" }),
+    ).toBeInTheDocument();
+
+    // Pre-warm the new tenant's whoami cache so the switch resolves
+    // synchronously — otherwise the transient `isLoading` render (which
+    // returns null) would itself unmount the editor, masking the bug this
+    // test targets (editingKeyId surviving the switch in component state).
+    client.setQueryData(["whoami", "globex", "main"], WHOAMI_ADMIN);
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+
+    // A stale editor bound to the previous tenant's key must not survive the
+    // switch — it would otherwise let a save land on the wrong tenant.
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("form", { name: "Edit scopes" }),
+      ).not.toBeInTheDocument(),
+    );
+  });
+
+  it("ignores a late-arriving create-key result from a tenant the user has since left", async () => {
+    let resolvePost!: (value: Response) => void;
+    const postPromise = new Promise<Response>((resolve) => {
+      resolvePost = resolve;
+    });
+    const fetchMock = vi.fn().mockImplementation(async (input, init) => {
+      const url = String(input instanceof Request ? input.url : input);
+      const method = (
+        input instanceof Request ? input.method : (init?.method ?? "GET")
+      ).toUpperCase();
+      const json = (body: unknown, status = 200) =>
+        new Response(JSON.stringify(body), {
+          status,
+          headers: { "Content-Type": "application/json" },
+        });
+      if (url.includes("/api/v1/whoami")) {
+        return json(WHOAMI_ADMIN);
+      }
+      if (url.includes(API_KEYS_PATH) && method === "GET") {
+        return json([]);
+      }
+      if (url.includes(API_KEYS_PATH) && method === "POST") {
+        return postPromise;
+      }
+      return new Response(JSON.stringify({ error: `no stub for ${url}` }), {
+        status: 404,
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const { client: generatedClient } = await import("../../api/gen/client.gen");
+    generatedClient.setConfig({ baseUrl: "http://localhost", fetch: fetchMock });
+
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+    const stateAcme: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "acme",
+      dataset: "production",
+    };
+    const stateGlobex: ExploreState = {
+      ...DEFAULT_STATE,
+      tenant: "globex",
+      dataset: "main",
+    };
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateAcme} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+    await userEvent.click(screen.getByText("Create API key"));
+
+    rerender(
+      <QueryClientProvider client={client}>
+        <ApiKeysHarness state={stateGlobex} />
+      </QueryClientProvider>,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    resolvePost(
+      new Response(JSON.stringify({ key: "sk-stale-acme-key" }), {
+        status: 200,
+        headers: { "Content-Type": "application/json" },
+      }),
+    );
+
+    // The response belongs to the tenant the user has since left, and its
+    // instance is unmounted — it must not resurrect a secret modal here.
+    await new Promise((r) => setTimeout(r, 0));
+    expect(screen.queryByText("Copy this key now")).not.toBeInTheDocument();
+  });
+
   it("shows revoked keys dimmed", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
@@ -439,5 +985,78 @@ describe("ApiKeys page", () => {
     // stylesheet rules, so we check the class).
     const revokedName = screen.getByText("old-key");
     expect(revokedName.className).toContain("revoked");
+  });
+});
+
+describe("create-form dirty tracking", () => {
+  it("is not dirty when the create form is untouched (default scopes only)", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    expect(anyDirty()).toBe(false);
+  });
+
+  it("becomes dirty once a name is typed", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByPlaceholderText("collector-production"),
+      "collector-prod",
+    );
+
+    expect(anyDirty()).toBe(true);
+  });
+
+  it("becomes dirty once a scope is toggled away from the defaults", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, body: [] },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.click(screen.getByLabelText("schema:read"));
+
+    expect(anyDirty()).toBe(true);
+  });
+
+  it("clears after a successful create (form reset)", async () => {
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_ADMIN },
+      { match: API_KEYS_PATH, method: "GET", body: [] },
+      { match: API_KEYS_PATH, method: "POST", body: { key: "sdbk_new" } },
+    ]);
+    renderApiKeys();
+    await waitFor(() =>
+      expect(screen.getByText("Create API key")).toBeInTheDocument(),
+    );
+
+    await userEvent.type(
+      screen.getByPlaceholderText("collector-production"),
+      "collector-prod",
+    );
+    expect(anyDirty()).toBe(true);
+
+    await userEvent.click(screen.getByText("Create API key"));
+    await waitFor(() =>
+      expect(findFetchCall(fetchMock, "/api-keys", "POST")).toBeDefined(),
+    );
+
+    expect(anyDirty()).toBe(false);
   });
 });

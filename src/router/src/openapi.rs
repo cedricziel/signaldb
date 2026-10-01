@@ -1,21 +1,33 @@
 //! Code-first OpenAPI document for the SignalDB HTTP API.
 //!
 //! The document is assembled from the `#[utoipa::path]` annotations on the
-//! admin (`/api/v1/admin/...`) and management (`/api/v1/manage/...`) handlers
-//! plus the `ToSchema`-deriving DTOs in [`signaldb_api`], this crate's
-//! management module, and [`common::catalog::MembershipRole`]. The generated
-//! spec is checked into `api/signaldb-api.json` and kept current by the golden
-//! test in this module.
+//! tenant-resource handlers — every resource lives at one regular path
+//! (`/api/v1/tenants/...`, `/api/v1/users`, `/api/v1/schema`; no
+//! privilege-scope path segment) — plus the `ToSchema`-deriving DTOs in
+//! [`signaldb_api`], this crate's `tenants`/`management` modules, and
+//! [`common::catalog::MembershipRole`]. The generated spec is checked into
+//! `api/signaldb-api.json` and kept current by the golden test in this
+//! module.
 
 use utoipa::{
     Modify, OpenApi,
-    openapi::security::{Http, HttpAuthScheme, SecurityRequirement, SecurityScheme},
+    openapi::security::{
+        ApiKey, ApiKeyValue, Http, HttpAuthScheme, SecurityRequirement, SecurityScheme,
+    },
 };
 
 /// Registers the `bearerAuth` HTTP bearer security scheme and requires it
 /// globally, so every operation (admin and management) is documented as
 /// authenticated. Admin handlers also restate it per-path; management handlers
-/// inherit this default.
+/// inherit this default. Also registers `sessionCookie` (the
+/// `signaldb_session` HttpOnly cookie), a distinct mechanism from
+/// `bearerAuth` that cookie-only endpoints like `GET /ui/session` restate
+/// per-path via `security(("sessionCookie" = []))` rather than inheriting
+/// this default. And `adminApiKey`: the break-glass `[auth].admin_api_key`
+/// bearer, accepted with no tenant at all by the tenant-identity and
+/// tenant-scoped-admin operations that restate it alongside `bearerAuth` as
+/// an alternative (issue #1561) — an OR, not an AND: either credential
+/// authorizes on its own.
 struct SecurityAddon;
 
 impl Modify for SecurityAddon {
@@ -27,10 +39,35 @@ impl Modify for SecurityAddon {
             "bearerAuth",
             SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
         );
+        components.add_security_scheme(
+            "sessionCookie",
+            SecurityScheme::ApiKey(ApiKey::Cookie(ApiKeyValue::new("signaldb_session"))),
+        );
+        components.add_security_scheme(
+            "adminApiKey",
+            SecurityScheme::Http(Http::new(HttpAuthScheme::Bearer)),
+        );
         openapi.security = Some(vec![SecurityRequirement::new(
             "bearerAuth",
             Vec::<String>::new(),
         )]);
+    }
+}
+
+/// Closes the IR's externally tagged enums' single-key wrappers to unknown
+/// keys, as the IR parser does; the derive cannot express it.
+struct ClosedIrVariants;
+
+impl Modify for ClosedIrVariants {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let Some(components) = openapi.components.as_mut() else {
+            return;
+        };
+        for name in ["IrStage", "IrLabels"] {
+            if let Some(schema) = components.schemas.get_mut(name) {
+                common::query_ir::openapi::close_object_variants(schema);
+            }
+        }
     }
 }
 
@@ -42,7 +79,7 @@ impl Modify for SecurityAddon {
         description = "SignalDB admin, tenant-management, and query HTTP API\n\nEvery response whose request was traced carries the server's W3C trace context back to the caller: `Server-Timing: traceparent;desc=\"00-<trace-id>-<span-id>-<flags>\"` (readable in browsers via the Performance API) and the equivalent `traceresponse` header, plus `Server-Timing` `dur` entries with server-side stage timings (always `total`, endpoint-specific stages where available) and `Timing-Allow-Origin: *` so cross-origin pages can read the timing entries. The headers are omitted when self-monitoring tracing is disabled."
     ),
     servers((url = "/")),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &ClosedIrVariants),
     tags(
         (name = "tenants", description = "Tenant lifecycle operations"),
         (name = "api-keys", description = "API key management"),
@@ -57,30 +94,27 @@ impl Modify for SecurityAddon {
         (name = "ops", description = "Operational control (compaction)"),
         (name = "profiles", description = "Pyroscope-compatible continuous-profiling query (flame graphs, trace correlation)"),
         (name = "oauth", description = "OAuth 2.1 connector consent flow"),
+        (name = "session", description = "Browser session login for the embedded UI"),
         (name = "schema", description = "Schema registry: semantic-convention registries, attribute/entity/metric resolution"),
+        (name = "github", description = "GitHub App installations linked to a tenant"),
+        (name = "processors", description = "Tenant OTTL processors applied at ingest"),
+        (name = "eval-sets", description = "Named lists of test cases for offline agent evaluation"),
+        (name = "evals", description = "Offline agent evaluation results"),
     ),
     paths(
-        crate::endpoints::admin::list_tenants,
-        crate::endpoints::admin::create_tenant,
-        crate::endpoints::admin::get_tenant,
-        crate::endpoints::admin::update_tenant,
-        crate::endpoints::admin::delete_tenant,
-        crate::endpoints::admin::list_api_keys,
-        crate::endpoints::admin::create_api_key,
-        crate::endpoints::admin::revoke_api_key,
-        crate::endpoints::admin::update_api_key,
-        crate::endpoints::admin::list_datasets,
-        crate::endpoints::admin::create_dataset,
-        crate::endpoints::admin::delete_dataset,
-        crate::endpoints::admin::create_user,
+        // Tenant identity resource (change: no-scope-prefixed-paths)
+        crate::endpoints::tenants::list_tenants,
+        crate::endpoints::tenants::get_tenant,
+        crate::endpoints::tenants::create_tenant,
+        crate::endpoints::tenants::update_tenant,
+        crate::endpoints::tenants::delete_tenant,
+        crate::endpoints::tenants::list_users,
+        crate::endpoints::tenants::create_user,
         // Tenant self-service endpoints (the caller's own tenant, via API key)
-        crate::endpoints::tenant::list_tenants,
-        crate::endpoints::tenant::get_tenant,
         crate::endpoints::tenant::list_tenant_tables,
         crate::endpoints::tenant::create_tenant_tables,
         crate::endpoints::tenant::list_tenant_schemas,
         crate::endpoints::tenant::list_available_schemas,
-        crate::endpoints::management::create_tenant,
         crate::endpoints::management::list_datasets,
         crate::endpoints::management::create_dataset,
         crate::endpoints::management::delete_dataset,
@@ -91,8 +125,22 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::list_memberships,
         crate::endpoints::management::upsert_membership,
         crate::endpoints::management::remove_membership,
-        crate::endpoints::management::get_schema,
+        crate::endpoints::schema::get_schema,
+        crate::endpoints::github::start_github_link,
+        crate::endpoints::github::list_github_installations,
+        crate::endpoints::github::remove_github_installation,
+        crate::endpoints::github::attach_github_installation,
+        crate::endpoints::github::callback,
+        crate::endpoints::source_context::source_context,
+        crate::endpoints::source_context::source_context_availability,
         crate::endpoints::session::whoami,
+        crate::endpoints::oidc::start,
+        crate::endpoints::oidc::callback,
+        crate::endpoints::session::connection_info,
+        crate::endpoints::session::login_config,
+        crate::endpoints::session::create_session,
+        crate::endpoints::session::delete_session,
+        crate::endpoints::session::current_session,
         // Tempo-compatible trace query endpoints
         crate::endpoints::tempo::search,
         crate::endpoints::tempo::query_single_trace,
@@ -140,35 +188,40 @@ impl Modify for SecurityAddon {
         crate::endpoints::schema::resolve_entity,
         crate::endpoints::schema::search_metrics,
         crate::endpoints::schema::resolve_metric,
+        crate::endpoints::processors::list_processors,
+        crate::endpoints::processors::create_processor,
+        crate::endpoints::processors::validate_processor,
+        crate::endpoints::processors::get_processor,
+        crate::endpoints::processors::replace_processor,
+        crate::endpoints::processors::delete_processor,
+        crate::endpoints::processors::test_processor,
+        crate::endpoints::eval_sets::list_eval_sets,
+        crate::endpoints::eval_sets::create_eval_set,
+        crate::endpoints::eval_sets::get_eval_set,
+        crate::endpoints::eval_sets::replace_eval_set,
+        crate::endpoints::eval_sets::delete_eval_set,
+        crate::endpoints::eval_sets::append_eval_cases,
+        crate::endpoints::eval_sets::append_eval_cases_from_traces,
+        crate::endpoints::evals::upload_eval_results,
     ),
     components(schemas(
-        // signaldb-api admin DTOs
+        // signaldb-api DTOs shared by the tenant identity resource
         signaldb_api::ApiError,
-        signaldb_api::CreateTenantRequest,
         signaldb_api::UpdateTenantRequest,
-        signaldb_api::TenantResponse,
-        signaldb_api::ListTenantsResponse,
-        signaldb_api::CreateApiKeyRequest,
-        signaldb_api::UpdateApiKeyRequest,
-        signaldb_api::CreateApiKeyResponse,
-        signaldb_api::ApiKeyResponse,
-        signaldb_api::ListApiKeysResponse,
-        signaldb_api::CreateDatasetRequest,
-        signaldb_api::DatasetResponse,
-        signaldb_api::ListDatasetsResponse,
         signaldb_api::CreateUserRequest,
         signaldb_api::UserResponse,
+        // Tenant identity resource (change: no-scope-prefixed-paths)
+        crate::endpoints::tenants::TenantResponse,
+        crate::endpoints::tenants::ListTenantsResponse,
+        crate::endpoints::tenants::CreateTenantRequest,
+        crate::endpoints::tenants::ListUsersResponse,
         // Tenant self-service DTOs
-        common::tenant_api::TenantInfo,
-        common::tenant_api::ListTenantsResponse,
         common::tenant_api::TableInfo,
         common::tenant_api::DatasetTables,
         common::tenant_api::ListTablesResponse,
         crate::endpoints::tenant::CreateTenantTablesResponse,
         crate::endpoints::tenant::AvailableSchemasResponse,
-        // management (session-authenticated) DTOs
-        crate::endpoints::management::CreateTenantRequest,
-        crate::endpoints::management::ManageCreatedTenant,
+        // tenant-scoped resource (datasets/api-keys/memberships) DTOs
         crate::endpoints::management::ManageError,
         crate::endpoints::management::DatasetResponse,
         crate::endpoints::management::CreateDatasetRequest,
@@ -178,16 +231,51 @@ impl Modify for SecurityAddon {
         crate::endpoints::management::ManageCreatedApiKey,
         crate::endpoints::management::MembershipResponse,
         crate::endpoints::management::UpsertMembershipRequest,
-        crate::endpoints::management::ManageLogicalField,
-        crate::endpoints::management::ManagePhysicalField,
-        crate::endpoints::management::ManagePhysicalSchema,
-        crate::endpoints::management::ManageSchemaResponse,
+        crate::endpoints::schema::LogicalField,
+        crate::endpoints::schema::PhysicalField,
+        crate::endpoints::schema::PhysicalSchema,
+        crate::endpoints::schema::SchemaResponse,
+        crate::endpoints::github::GitHubLinkStartResponse,
+        crate::endpoints::github::GitHubInstallationResponse,
+        crate::endpoints::github::GitHubInstallationsResponse,
+        crate::endpoints::github::AttachGitHubInstallationRequest,
+        // Source-context snippet lookup (change: github-app-source-context)
+        crate::endpoints::source_context::SourceContextRequest,
+        crate::endpoints::source_context::SourceContextResponse,
+        crate::endpoints::source_context::SourceContextAvailability,
+        crate::endpoints::source_context::SourceContextStatus,
+        crate::source_context::SourceSnippet,
+        crate::source_context::UnavailableReason,
         common::schema::logical::LogicalType,
         common::schema::logical::Filterability,
         common::schema::logical::LogicalFieldKind,
         // authenticated identity
         crate::endpoints::session::WhoamiIdentityResponse,
         crate::endpoints::session::WhoamiTenant,
+        crate::endpoints::session::WhoamiUser,
+        crate::endpoints::session::WhoamiMembership,
+        crate::endpoints::session::WhoamiDataset,
+        // connection details
+        crate::endpoints::session::ConnectionInfoResponse,
+        crate::endpoints::session::ConnectionHeaders,
+        crate::endpoints::session::OtlpGrpcEndpoint,
+        crate::endpoints::session::OtlpHttpEndpoint,
+        crate::endpoints::session::OtlpHttpPaths,
+        crate::endpoints::session::ConnectionIngest,
+        crate::endpoints::session::ConnectionCompat,
+        crate::endpoints::session::ConnectionQuery,
+        crate::endpoints::session::ConnectionMcp,
+        crate::endpoints::session::ConnectionScopes,
+        crate::endpoints::session::ConnectionOtelEnv,
+        // Login-page probe and session introspection (change: dedicated-login-page)
+        crate::endpoints::session::LoginConfigResponse,
+        crate::endpoints::session::OidcLoginConfig,
+        crate::endpoints::session::CurrentSessionResponse,
+        crate::endpoints::session::SessionUser,
+        crate::endpoints::session::SessionMembership,
+        crate::endpoints::session::CreateSessionRequest,
+        crate::endpoints::session::CreateSessionResponse,
+        crate::endpoints::session::SessionErrorBody,
         // shared enums
         common::catalog::MembershipRole,
         // Tempo-compatible trace query DTOs
@@ -209,6 +297,9 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::QueryIrRequest,
         crate::endpoints::query::QueryRange,
         crate::endpoints::query::QueryIrResponse,
+        crate::endpoints::query::QueryPage,
+        common::query_ir::Page,
+        common::query_ir::Stage,
         common::discovery::MetadataResult,
         common::discovery::MetadataKind,
         common::discovery::DiscoveredField,
@@ -227,6 +318,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::HeatmapCell,
         crate::endpoints::query::HeatmapResult,
         crate::endpoints::query::QueryWarning,
+        common::profile::FrameLocation,
         // OAuth 2.1 connector consent DTOs
         crate::endpoints::oauth::ConsentDecision,
         crate::endpoints::oauth::ConsentDecisionResponse,
@@ -242,6 +334,42 @@ impl Modify for SecurityAddon {
         crate::endpoints::schema::AttributeResolution,
         crate::endpoints::schema::EntityResolution,
         crate::endpoints::schema::MetricResolution,
+        common::schema::type_authority::AttributeTypeRecord,
+        common::schema::type_authority::CanonicalType,
+        common::schema::type_authority::TypeSource,
+        common::processors::ProcessorRecord,
+        common::processors::ProcessorSpec,
+        crate::endpoints::processors::ProcessorError,
+        crate::endpoints::processors::StatementError,
+        crate::endpoints::processors::ProcessorResponse,
+        crate::endpoints::processors::ProcessorListResponse,
+        crate::endpoints::processors::ProcessorWriteResponse,
+        crate::endpoints::processors::ValidateRequest,
+        crate::endpoints::processors::ValidateResponse,
+        crate::endpoints::processors::TestRequest,
+        crate::endpoints::processors::TestResponse,
+        crate::endpoints::processors::TestStatementResult,
+        common::eval_sets::EvalCase,
+        common::eval_sets::EvalCaseSource,
+        common::eval_sets::EvalCaseSourceCounts,
+        common::eval_sets::EvalSetSpec,
+        common::eval_sets::EvalSetRecord,
+        common::eval_sets::EvalSetSummary,
+        common::eval_sets::AppendCasesOutcome,
+        crate::endpoints::links::Link,
+        crate::endpoints::eval_sets::EvalSetLinks,
+        crate::endpoints::eval_sets::EvalSetListLinks,
+        crate::endpoints::eval_sets::EvalSetResponse,
+        crate::endpoints::eval_sets::EvalSetSummaryResponse,
+        crate::endpoints::eval_sets::EvalSetListResponse,
+        crate::endpoints::eval_sets::AppendEvalCasesRequest,
+        common::evals::upload::UploadSummary,
+        common::evals::upload::EvaluatorSummary,
+        common::evals::upload::ResultsFormat,
+        crate::endpoints::evals::EvalResultsUploadLinks,
+        crate::endpoints::evals::EvalResultsUploadResponse,
+        crate::endpoints::eval_sets::AppendCasesFromTracesRequest,
+        crate::endpoints::eval_sets::AppendCasesFromTracesOutcome,
         common::schema_registry::RegistrySource,
         common::schema_registry::RegistrySummary,
         common::schema_registry::ValidationReport,
@@ -260,6 +388,7 @@ impl Modify for SecurityAddon {
         schema_model::Role,
         // Rate-limit rejection envelope (change: query-throttle-signalling)
         crate::endpoints::api_error::ApiErrorBody,
+        crate::endpoints::api_error::ApiErrorDetail,
         // Pyroscope-compatible profile query DTOs
         pyroscope_api::RenderResponse,
         pyroscope_api::Flamebearer,
@@ -300,10 +429,324 @@ mod tests {
             "/api/v1/tenants/{tenant_id}/tables/create",
             "/api/v1/tenants/{tenant_id}/schemas",
             "/api/v1/schemas/available",
+            "/api/v1/connection",
         ] {
             assert!(
                 paths.contains_key(path),
                 "OpenAPI document is missing operation for {path}"
+            );
+        }
+    }
+
+    /// `GET /api/v1/schema/entities` ignores `keys=` (only attribute and
+    /// metric search resolve an exact name set), so its documented
+    /// parameters must not advertise one — a caller reading the spec should
+    /// not be led to send a parameter the endpoint silently drops.
+    #[test]
+    fn entity_search_params_do_not_advertise_keys() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let names = |path: &str| -> Vec<String> {
+            spec.pointer(&format!(
+                "/paths/{}/get/parameters",
+                path.replace('/', "~1")
+            ))
+            .and_then(|v| v.as_array())
+            .unwrap_or_else(|| panic!("{path}: missing GET parameters"))
+            .iter()
+            .filter_map(|p| p.get("name").and_then(|n| n.as_str()).map(str::to_string))
+            .collect()
+        };
+
+        assert!(
+            !names("/api/v1/schema/entities").contains(&"keys".to_string()),
+            "entity search must not document a keys parameter it ignores"
+        );
+        for path in ["/api/v1/schema/attributes", "/api/v1/schema/metrics"] {
+            assert!(
+                names(path).contains(&"keys".to_string()),
+                "{path} must document the keys parameter it resolves"
+            );
+        }
+    }
+
+    /// The IR's own stage grammar is published as `IrStage` (externally
+    /// tagged: one single-key object per stage), so the generated clients
+    /// carry a variant per stage. The IR schemas take an `Ir` prefix:
+    /// unprefixed, `HeatmapAxisX`/`Y` collide with the response DTOs and one
+    /// silently replaces the other.
+    #[test]
+    fn ir_stage_schemas_are_published() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        assert_eq!(
+            spec.pointer("/components/schemas/QueryIrRequest/properties/pipeline/items/$ref"),
+            Some(&serde_json::json!("#/components/schemas/IrStage")),
+            "the /api/v1/query pipeline must be typed by the stage grammar"
+        );
+        let variants = spec
+            .pointer("/components/schemas/IrStage/oneOf")
+            .and_then(|v| v.as_array())
+            .expect("IrStage must be a oneOf");
+        let mut tags: Vec<&str> = variants
+            .iter()
+            .filter_map(|v| v.pointer("/required/0").and_then(|t| t.as_str()))
+            .collect();
+        tags.sort_unstable();
+        let mut expected = [
+            "where",
+            "extract",
+            "aggregate",
+            "topk",
+            "bottomk",
+            "order",
+            "limit",
+            "heatmap",
+            "histogram_quantile",
+            "describe",
+            "correlate",
+            "sample",
+            "scalar",
+            "vector",
+            "reduce",
+            "map",
+            "labels",
+            "filter",
+            "sort",
+            "absent",
+            "over_time",
+            "binop",
+            "histogram_fraction",
+            "match",
+        ];
+        expected.sort_unstable();
+        assert_eq!(tags, expected);
+
+        // The server rejects unknown keys in a stage wrapper and a predicate;
+        // the published shapes say so.
+        let closed = |pointer: &str| {
+            let schemas = spec
+                .pointer(pointer)
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{pointer} must be a oneOf"));
+            for schema in schemas {
+                assert_eq!(
+                    schema.get("additionalProperties"),
+                    Some(&serde_json::json!(false)),
+                    "{pointer}: open variant {schema}"
+                );
+            }
+        };
+        closed("/components/schemas/IrStage/oneOf");
+        closed("/components/schemas/IrPredicate/oneOf");
+
+        assert_eq!(
+            spec.pointer(
+                "/components/schemas/IrMatch/properties/spansets/additionalProperties/$ref"
+            ),
+            Some(&serde_json::json!("#/components/schemas/IrPredicate")),
+        );
+        let spansets_doc = spec
+            .pointer("/components/schemas/IrMatch/properties/spansets/description")
+            .and_then(|d| d.as_str())
+            .unwrap_or_default();
+        assert!(
+            spansets_doc.contains("order"),
+            "IrMatch.spansets must document that key order is significant"
+        );
+        let correlate_to = spec
+            .pointer("/components/schemas/IrCorrelate/properties/to")
+            .expect("IrCorrelate.to");
+        assert_eq!(correlate_to.get("type"), Some(&serde_json::json!("string")));
+        assert!(
+            correlate_to
+                .get("description")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| d.contains("parent")),
+            "IrCorrelate.to must document the `parent` target"
+        );
+        assert_eq!(
+            spec.pointer("/components/schemas/IrHeatmap/properties/x/$ref"),
+            Some(&serde_json::json!("#/components/schemas/IrHeatmapAxisX")),
+        );
+    }
+
+    /// `dedicated-login-page` change, section 1, and `oidc-login` task 4.1:
+    /// `GET /ui/session/config` (the login-configuration probe) and the two
+    /// OIDC endpoints require no credential at all and must be published
+    /// unauthenticated (`security: [{}]`, matching what `security(())`
+    /// emits for `oauth_consent_context`). `GET /ui/session` (tenant-less
+    /// session introspection) *does* require a credential — the
+    /// `signaldb_session` HttpOnly cookie, checked by `resolve_session_user`
+    /// (401 with no cookie, see `current_session_without_cookie_is_401`) —
+    /// so it must instead require the `sessionCookie` security scheme
+    /// rather than being left as an empty requirement that reads as
+    /// anonymous. `LoginConfigResponse.oidc` must be schema-nullable (not
+    /// merely optional) so the generated clients type it as `T | null`
+    /// rather than an omittable field.
+    #[test]
+    fn login_page_endpoints_are_published_unauthenticated_and_oidc_is_nullable() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let empty_security = serde_json::json!([{}]);
+        for (path, method) in [
+            ("/ui/session/config", "get"),
+            ("/ui/session/oidc/start", "get"),
+            ("/ui/session/oidc/callback", "get"),
+        ] {
+            let operation = spec
+                .pointer(&format!("/paths/{}/{method}", path.replace('/', "~1")))
+                .unwrap_or_else(|| panic!("{method} {path}: missing from OpenAPI document"));
+            assert_eq!(
+                operation.get("security"),
+                Some(&empty_security),
+                "{method} {path}: expected an empty security requirement"
+            );
+        }
+
+        let cookie_security = serde_json::json!([{ "sessionCookie": [] }]);
+        let current_session_op = spec
+            .pointer("/paths/~1ui~1session/get")
+            .unwrap_or_else(|| panic!("get /ui/session: missing from OpenAPI document"));
+        assert_eq!(
+            current_session_op.get("security"),
+            Some(&cookie_security),
+            "get /ui/session: expected the sessionCookie security requirement"
+        );
+        assert_eq!(
+            spec.pointer("/components/securitySchemes/sessionCookie"),
+            Some(&serde_json::json!({
+                "type": "apiKey",
+                "in": "cookie",
+                "name": "signaldb_session",
+            })),
+            "sessionCookie security scheme must be registered"
+        );
+
+        // A nullable-but-always-serialized field must appear in both its
+        // schema's `required` array (never omittable) and its own schema
+        // must still admit `null` (a `oneOf` null branch or a `type` array
+        // containing `"null"`) — the generated clients type these as
+        // `T | null`, never `T | undefined`.
+        let schema_field_is_nullable = |schema: &serde_json::Value| -> bool {
+            let oneof_null =
+                schema
+                    .get("oneOf")
+                    .and_then(|v| v.as_array())
+                    .is_some_and(|variants| {
+                        variants
+                            .iter()
+                            .any(|v| v.get("type").and_then(|t| t.as_str()) == Some("null"))
+                    });
+            let type_array_null = schema
+                .get("type")
+                .and_then(|v| v.as_array())
+                .is_some_and(|types| types.iter().any(|t| t.as_str() == Some("null")));
+            oneof_null || type_array_null
+        };
+
+        for (schema_name, field) in [
+            ("LoginConfigResponse", "oidc"),
+            ("CurrentSessionResponse", "tenant"),
+            ("CurrentSessionResponse", "dataset"),
+            ("SessionUser", "display_name"),
+            ("CreateSessionResponse", "tenant"),
+            ("CreateSessionResponse", "dataset"),
+            ("WhoamiUser", "display_name"),
+            ("WhoamiIdentityResponse", "default_dataset"),
+        ] {
+            let field_schema = spec
+                .pointer(&format!(
+                    "/components/schemas/{schema_name}/properties/{field}"
+                ))
+                .unwrap_or_else(|| panic!("{schema_name}.{field} schema present"));
+            assert!(
+                schema_field_is_nullable(field_schema),
+                "{schema_name}.{field} must be nullable: {field_schema}"
+            );
+
+            let required = spec
+                .pointer(&format!("/components/schemas/{schema_name}/required"))
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{schema_name}.required present"));
+            assert!(
+                required.iter().any(|v| v.as_str() == Some(field)),
+                "{schema_name}.{field} must be required (always serialized, \
+                 never omitted): {required:?}"
+            );
+        }
+
+        let required = spec
+            .pointer("/components/schemas/LoginConfigResponse/required")
+            .and_then(|v| v.as_array())
+            .expect("LoginConfigResponse.required present");
+        assert!(
+            required
+                .iter()
+                .any(|v| v.as_str() == Some("password_enabled")),
+            "LoginConfigResponse.password_enabled must be required: {required:?}"
+        );
+    }
+
+    /// The UI's login and logout reach the router through the generated
+    /// client, so `POST`/`DELETE /ui/session` need operations with stable
+    /// ids and their real bodies. Login takes no credential; logout works
+    /// with or without a session cookie (it's a no-op without one).
+    #[test]
+    fn session_login_and_logout_are_published() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let login = spec
+            .pointer("/paths/~1ui~1session/post")
+            .expect("post /ui/session: missing from OpenAPI document");
+        assert_eq!(login["operationId"], "create_session");
+        assert_eq!(login["security"], serde_json::json!([{}]));
+        assert_eq!(
+            login.pointer("/requestBody/content/application~1json/schema/$ref"),
+            Some(&serde_json::json!(
+                "#/components/schemas/CreateSessionRequest"
+            ))
+        );
+        assert_eq!(
+            login.pointer("/responses/200/content/application~1json/schema/$ref"),
+            Some(&serde_json::json!(
+                "#/components/schemas/CreateSessionResponse"
+            ))
+        );
+        for status in ["400", "401", "403"] {
+            assert_eq!(
+                login.pointer(&format!(
+                    "/responses/{status}/content/application~1json/schema/$ref"
+                )),
+                Some(&serde_json::json!("#/components/schemas/SessionErrorBody")),
+                "post /ui/session {status}: expected a SessionErrorBody body"
+            );
+        }
+
+        let logout = spec
+            .pointer("/paths/~1ui~1session/delete")
+            .expect("delete /ui/session: missing from OpenAPI document");
+        assert_eq!(logout["operationId"], "delete_session");
+        assert_eq!(
+            logout["security"],
+            serde_json::json!([{}, { "sessionCookie": [] }])
+        );
+        assert!(logout.pointer("/responses/204").is_some());
+
+        let whoami = spec
+            .pointer("/paths/~1api~1v1~1whoami/get")
+            .expect("get /api/v1/whoami: missing from OpenAPI document");
+        for status in ["404", "500"] {
+            assert_eq!(
+                whoami.pointer(&format!(
+                    "/responses/{status}/content/application~1json/schema/$ref"
+                )),
+                Some(&serde_json::json!("#/components/schemas/SessionErrorBody")),
+                "get /api/v1/whoami {status}: expected a SessionErrorBody body"
             );
         }
     }
@@ -317,8 +760,7 @@ mod tests {
     /// paths straight out of those source files and cross-checks them
     /// against `KNOWN_ROUTES` / `ALLOWLISTED_ROUTES` bidirectionally, so a
     /// route added to one of those files without updating this list fails
-    /// loudly instead of silently escaping the guard. `admin.rs` (assembled
-    /// inline in `lib.rs`, not a standalone `router()` fn) and the
+    /// loudly instead of silently escaping the guard. The
     /// public/infra routes (`/health`, `/api/v1/openapi.json`, session,
     /// OAuth) are out of scope for the extraction and are trusted by
     /// inspection instead. `endpoints/pyroscope.rs` mounts two separate
@@ -344,15 +786,10 @@ mod tests {
         "/prometheus/api/v1/query_range",
         "/prometheus/api/v1/labels",
         "/prometheus/api/v1/label/{name}/values",
-        // endpoints/admin.rs, mounted at /api/v1/admin (assembled inline in
-        // lib.rs, not extracted — see `known_routes_match_router_fn_source`)
-        "/api/v1/admin/tenants",
-        "/api/v1/admin/tenants/{tenant_id}",
-        "/api/v1/admin/tenants/{tenant_id}/api-keys",
-        "/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}",
-        "/api/v1/admin/tenants/{tenant_id}/datasets",
-        "/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}",
-        "/api/v1/admin/users",
+        // endpoints/tenants.rs, merged at /api/v1
+        "/api/v1/tenants",
+        "/api/v1/tenants/{tenant_id}",
+        "/api/v1/users",
         // endpoints/ops.rs, mounted at /api/v1/ops
         "/api/v1/ops/compact",
         "/api/v1/ops/compact/status",
@@ -366,25 +803,28 @@ mod tests {
         // endpoints/pyroscope.rs::profiles_router, mounted at /api/profiles
         "/api/profiles/trace/{trace_id}",
         // endpoints/tenant.rs, mounted at /api/v1
-        "/api/v1/tenants",
-        "/api/v1/tenants/{tenant_id}",
         "/api/v1/tenants/{tenant_id}/tables",
         "/api/v1/tenants/{tenant_id}/tables/create",
         "/api/v1/tenants/{tenant_id}/schemas",
         "/api/v1/schemas/available",
+        // endpoints/source_context.rs, mounted at /api/v1
+        "/api/v1/tenants/{tenant_id}/source-context",
         // endpoints/query.rs, mounted at /api/v1
         "/api/v1/query",
         // endpoints/discovery.rs, mounted alongside it
         "/api/v1/query/sources",
-        // endpoints/management.rs, mounted at /api/v1/manage
-        "/api/v1/manage/tenants",
-        "/api/v1/manage/tenants/{tenant_id}/datasets",
-        "/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}",
-        "/api/v1/manage/tenants/{tenant_id}/api-keys",
-        "/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}",
-        "/api/v1/manage/tenants/{tenant_id}/memberships",
-        "/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}",
-        "/api/v1/manage/schema",
+        // endpoints/management.rs, merged at /api/v1
+        "/api/v1/tenants/{tenant_id}/datasets",
+        "/api/v1/tenants/{tenant_id}/datasets/{dataset_name}",
+        "/api/v1/tenants/{tenant_id}/api-keys",
+        "/api/v1/tenants/{tenant_id}/api-keys/{key_id}",
+        "/api/v1/tenants/{tenant_id}/memberships",
+        "/api/v1/tenants/{tenant_id}/memberships/{user_id}",
+        // endpoints/github.rs::manage_router, merged at /api/v1
+        "/api/v1/tenants/{tenant_id}/github-installations/link",
+        "/api/v1/tenants/{tenant_id}/github-installations",
+        "/api/v1/tenants/{tenant_id}/github-installations/{installation_id}",
+        "/api/v1/tenants/{tenant_id}/github-installations/attach",
         // endpoints/schema.rs, mounted at /api/v1/schema
         "/api/v1/schema/registries",
         "/api/v1/schema/registries:validate",
@@ -395,6 +835,16 @@ mod tests {
         "/api/v1/schema/entities/{name}",
         "/api/v1/schema/metrics",
         "/api/v1/schema/metrics/{name}",
+        // endpoints/processors.rs, merged at /api/v1
+        "/api/v1/processors",
+        "/api/v1/processors:validate",
+        "/api/v1/processors:test",
+        "/api/v1/processors/{name}",
+        // endpoints/eval_sets.rs, merged at /api/v1
+        "/api/v1/eval-sets",
+        "/api/v1/eval-sets/{name}",
+        "/api/v1/eval-sets/{name}/cases",
+        "/api/v1/eval-sets/{name}/cases/from-traces",
     ];
 
     /// Routes registered by the auto-extracted files (see
@@ -480,15 +930,20 @@ mod tests {
         let manifest_dir = env!("CARGO_MANIFEST_DIR");
         // (file, mount prefix, Some(fn name) to scope extraction to one
         // function body when the file assembles more than one router).
-        let files_with_prefix: [(&str, &str, Option<&str>); 10] = [
+        let files_with_prefix: [(&str, &str, Option<&str>); 15] = [
             ("src/endpoints/tempo.rs", "/tempo", None),
             ("src/endpoints/logql.rs", "/loki", None),
             ("src/endpoints/promql.rs", "/prometheus", None),
             ("src/endpoints/ops.rs", "/api/v1/ops", None),
             ("src/endpoints/tenant.rs", "/api/v1", None),
+            ("src/endpoints/tenants.rs", "/api/v1", None),
+            ("src/endpoints/source_context.rs", "/api/v1", None),
             ("src/endpoints/query.rs", "/api/v1", None),
-            ("src/endpoints/management.rs", "/api/v1/manage", None),
+            ("src/endpoints/management.rs", "/api/v1", None),
+            ("src/endpoints/github.rs", "/api/v1", Some("manage_router")),
             ("src/endpoints/schema.rs", "/api/v1/schema", None),
+            ("src/endpoints/processors.rs", "/api/v1", None),
+            ("src/endpoints/eval_sets.rs", "/api/v1", Some("router")),
             ("src/endpoints/pyroscope.rs", "/pyroscope", Some("router")),
             (
                 "src/endpoints/pyroscope.rs",
@@ -529,14 +984,9 @@ mod tests {
              with a reason): {undeclared:?}"
         );
 
-        // admin.rs routes are assembled inline in lib.rs (not one of the
-        // extracted `router()` functions above) and are trusted by
-        // inspection rather than extracted; exclude them from the
-        // stale-entry check.
         let mut stale: Vec<&str> = known
             .iter()
             .chain(allowlisted.iter())
-            .filter(|route| !route.starts_with("/api/v1/admin/"))
             .filter(|route| !actual.contains(**route))
             .copied()
             .collect();
@@ -547,12 +997,14 @@ mod tests {
         );
     }
 
-    /// Session login/logout, OAuth 2.1 connector endpoints, `/health`, and
-    /// `/api/v1/openapi.json` itself are deliberately outside the OpenAPI
-    /// document: they are public infrastructure endpoints the SDK has no
-    /// business calling (session cookies, OAuth redirects, the spec document
-    /// itself). Routes in `ALLOWLISTED_ROUTES` are pre-existing gaps out of
-    /// this change's scope, not required to have an operation. The
+    /// OAuth 2.1 connector endpoints, `/health`, and `/api/v1/openapi.json`
+    /// itself are deliberately outside the OpenAPI document: they are public
+    /// infrastructure endpoints the SDK has no business calling (OAuth
+    /// redirects, the spec document itself). The `/ui/session` routes are in
+    /// the document but outside this list (see
+    /// `session_login_and_logout_are_published`). Routes in
+    /// `ALLOWLISTED_ROUTES` are pre-existing gaps out of this change's scope,
+    /// not required to have an operation. The
     /// Pyroscope-compatible routes (`/pyroscope/**`, `/api/profiles/**`) are
     /// part of the tenant HTTP contract and are in `KNOWN_ROUTES`, so this
     /// test does hold them to having an operation.
@@ -592,10 +1044,9 @@ mod tests {
 
     /// Drift guard (change: query-throttle-signalling): every operation
     /// mounted behind the router's rate limiters — the query budget
-    /// (`query_rate_layer`, see `lib.rs`) and the admin per-tenant quotas
-    /// (`endpoints::admin`) — must declare a `429` response carrying at
-    /// least the `Retry-After` header, so a new rate-limited endpoint can't
-    /// silently ship without the retry contract.
+    /// (`query_rate_layer`, see `lib.rs`) — must declare a `429` response
+    /// carrying at least the `Retry-After` header, so a new rate-limited
+    /// endpoint can't silently ship without the retry contract.
     #[test]
     fn every_rate_limited_path_declares_429_with_retry_after() {
         let spec: serde_json::Value =
@@ -607,9 +1058,8 @@ mod tests {
 
         // (path, method) pairs mounted under `query_rate_layer` in
         // `create_router` (tempo/pyroscope/loki/prometheus/api-profiles and
-        // the `/api/v1` tenant-scoped nest: query IR, whoami, management,
-        // schema) plus the admin per-tenant count quotas, which answer 429
-        // via the same header contract (see `endpoints::admin`).
+        // the `/api/v1` tenant-scoped nest: query IR, whoami, connection,
+        // management, schema).
         let rate_limited: &[(&str, &str)] = &[
             ("/tempo/api/search", "get"),
             ("/tempo/api/traces/{trace_id}", "get"),
@@ -632,8 +1082,14 @@ mod tests {
             ("/api/v1/query", "post"),
             ("/api/v1/query/sources", "get"),
             ("/api/v1/whoami", "get"),
-            ("/api/v1/admin/tenants/{tenant_id}/api-keys", "post"),
-            ("/api/v1/admin/tenants/{tenant_id}/datasets", "post"),
+            ("/api/v1/connection", "get"),
+            ("/api/v1/tenants/{tenant_id}/source-context", "post"),
+            ("/api/v1/eval-sets", "get"),
+            ("/api/v1/eval-sets", "post"),
+            ("/api/v1/eval-sets/{name}", "get"),
+            ("/api/v1/eval-sets/{name}", "put"),
+            ("/api/v1/eval-sets/{name}", "delete"),
+            ("/api/v1/eval-sets/{name}/cases", "post"),
         ];
 
         for (path, method) in rate_limited {

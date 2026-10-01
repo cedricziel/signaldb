@@ -42,14 +42,7 @@ Nightly trend + baseline/compare workflow: `docs/contributing/benchmarking.md`.
 
 ## Pre-Commit Checks (MANDATORY before committing)
 
-These run automatically via cargo-husky hooks, but run manually to catch issues early:
-
-```bash
-cargo fmt                                               # Format code
-cargo clippy --workspace --all-targets --all-features   # Lint
-cargo machete --with-metadata                           # Unused dependencies
-cargo deny check                                        # License/security audit
-```
+The cargo-husky hook runs `cargo fmt --check` and workspace-wide clippy on commits that stage Rust files, and the pnpm checks on commits that stage UI files. The scoped checks to run first are in CLAUDE.md, "Verifying a change".
 
 CI additionally enforces span hygiene (no bare `#[tracing::instrument]`;
 `otel.kind` only inside `common::self_monitoring` — boundary spans come from
@@ -84,6 +77,8 @@ cargo run --bin signaldb -- mcp        # MCP server (Streamable HTTP :8228 /mcp;
 ./scripts/run-dev.sh services   # All microservices (logs to .data/logs/)
 ```
 
+Both modes also start `signal-producer --estate all`, which sends sample OTLP traffic to `:4317` every 10s.
+
 ### Storage Locations
 
 - WAL: `.data/wal/`
@@ -114,6 +109,21 @@ pnpm run grafana:dev             # Watch + rebuild frontend
 pnpm run grafana:build           # Production build
 pnpm -C src/grafana-plugin run build:backend   # Rust backend
 ```
+
+## Explore UI
+
+```bash
+pnpm ui:dev                                   # Vite dev server (see src/ui/README.md)
+pnpm ui:test                                  # vitest
+pnpm --filter signaldb-ui lint
+pnpm --filter signaldb-ui build-storybook     # page/component stories
+```
+
+Every new page (a routed view) ships with a `Pages/<Name>` Storybook story —
+a light `Default` and a `Dark` story, fixtures derived from each request's own
+range — and a design-sync entry: a `PAGES` line in `.design-sync/pkg/build.sh`
+plus `titleMap`/`overrides` in `.design-sync/config.json`
+(`.design-sync/NOTES.md` has the details).
 
 ## Health Checks
 

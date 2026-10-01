@@ -179,11 +179,6 @@ impl QueryBar {
         }
     }
 
-    /// Render the query bar into the given area.
-    pub fn render(&self, frame: &mut Frame, area: Rect) {
-        self.render_with_title(frame, area, None);
-    }
-
     pub fn render_with_title(&self, frame: &mut Frame, area: Rect, time_hint: Option<&str>) {
         let border_color = if self.focused {
             Color::Yellow
@@ -410,7 +405,7 @@ mod tests {
         bar.focused = true;
         set_text(&mut bar, "SELECT 1");
         terminal
-            .draw(|frame| bar.render(frame, frame.area()))
+            .draw(|frame| bar.render_with_title(frame, frame.area(), None))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();
@@ -426,7 +421,7 @@ mod tests {
         let mut terminal = Terminal::new(TestBackend::new(120, 3)).unwrap();
         let bar = QueryBar::new();
         terminal
-            .draw(|frame| bar.render(frame, frame.area()))
+            .draw(|frame| bar.render_with_title(frame, frame.area(), None))
             .unwrap();
         let buffer = terminal.backend().buffer().clone();
         let content: String = buffer.content().iter().map(|c| c.symbol()).collect();

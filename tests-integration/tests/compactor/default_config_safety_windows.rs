@@ -34,15 +34,12 @@ use compactor::{
 };
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
-use object_store::ObjectStore;
 use object_store::ObjectStoreExt;
-use object_store::memory::InMemory;
 use object_store::path::Path as ObjectPath;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -261,10 +258,8 @@ async fn default_snapshots_to_keep_protects_a_referenced_file_then_reclaims_it_o
     config.compactor.orphan_cleanup.grace_period_hours = 0;
 
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
-    let placeholder_object_store: Arc<dyn ObjectStore> = Arc::new(InMemory::new());
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        placeholder_object_store,
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

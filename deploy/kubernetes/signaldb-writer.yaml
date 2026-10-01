@@ -18,6 +18,7 @@ spec:
       containers:
       - name: writer
         image: signaldb/writer:latest
+        args: ["--flight-port", "50051"]
         ports:
         - containerPort: 50051
           name: flight
@@ -26,12 +27,12 @@ spec:
           value: "postgres://signaldb:password@postgres:5432/signaldb"
         - name: SIGNALDB_DISCOVERY_DSN
           value: "postgres://signaldb:password@postgres:5432/signaldb"
-        - name: WRITER_FLIGHT_ADDR
-          value: "0.0.0.0:50051"
-        - name: WRITER_ADVERTISE_ADDR
+        - name: POD_IP
           valueFrom:
             fieldRef:
               fieldPath: status.podIP
+        - name: WRITER_ADVERTISE_ADDR
+          value: "$(POD_IP):50051"
         # WAL persistence configuration
         - name: WRITER_WAL_DIR
           value: "/data/wal"

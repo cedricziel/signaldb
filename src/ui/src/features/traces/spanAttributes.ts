@@ -3,9 +3,12 @@
 // The trace detail (api/traceDetail.ts) flattens the three OTel attribute
 // scopes into one object: span attributes as-is, instrumentation-scope
 // attributes prefixed `scope.`, resource attributes prefixed `resource.`.
-import type { AttrValue } from "../../api/tempo";
+import type { AttrValue } from "../../api/traceTypes";
 
-const RESOURCE_PREFIX = "resource.";
+/** Prefix the trace-detail flattening (api/traceDetail.ts) puts on a
+ * resource-scope attribute; also read by `lib/sourceLocation.ts`'s
+ * `repositoryHints` for the same flattened bag. */
+export const RESOURCE_PREFIX = "resource.";
 const SCOPE_PREFIX = "scope.";
 
 export interface AttributeGroup {

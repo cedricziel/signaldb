@@ -21,16 +21,20 @@ One binary: `signaldb` is the monolith, `signaldb <service>` runs one service (a
 
 Storage locations: WAL files in `.data/wal/`, Parquet data in `.data/storage/`, SQLite in `.data/*.db`
 
-### Pre-Commit Workflow
+### Verifying a change
 
-The project uses cargo-husky for pre-commit hooks that automatically run:
+When a commit stages Rust files, the cargo-husky pre-commit hook runs `cargo fmt --check` and `cargo clippy --workspace --all-targets --all-features`, so it compiles the whole workspace (UI files trigger the pnpm checks instead). Run the scoped checks yourself first:
 
 ```bash
-cargo fmt                  # Format code (runs automatically on commit)
-cargo clippy --workspace --all-targets --all-features  # Lint (runs automatically on commit)
-cargo machete --with-metadata  # Check for unused dependencies (run manually before commit)
-cargo deny check           # License and security auditing
+cargo fmt
+cargo clippy -p <crate> --all-targets --all-features -- -D warnings
+cargo test -p <crate> <filter>
+cargo machete --with-metadata        # when a Cargo.toml changed
+cargo deny check                     # when dependencies changed
+pnpm --filter ./src/ui typecheck && pnpm --filter ./src/ui lint && pnpm --filter ./src/ui test   # UI changes
 ```
+
+Build with `CARGO_INCREMENTAL=0` (keeps sccache hits high, matches CI) and stop building below ~8 GB free disk.
 
 JS tooling is pnpm (root workspace + `pnpm-lock.yaml`); `npm install` desyncs the lockfile.
 
@@ -40,7 +44,7 @@ JS tooling is pnpm (root workspace + `pnpm-lock.yaml`); `npm install` desyncs th
 
 Configuration precedence: defaults → TOML file (`signaldb.toml`) → environment variables (`SIGNALDB_*`). Key sections: `[database]`, `[storage]`, `[discovery]`, `[wal]`, `[schema]`, `[auth]`.
 
-The `architecture`, `crate-map`, `storage-layout`, `service-discovery`, `configuration`, and `flight-schemas` skills route into `docs/` for everything else.
+The `architecture`, `crate-map`, `storage-layout`, `service-discovery`, `configuration`, `flight-schemas`, and `http-api` skills route into `docs/` for everything else.
 
 ## Multi-Tenancy & Authentication
 
@@ -78,7 +82,7 @@ compat endpoint.
 - Test Driven Development: write tests before implementing features; all tests pass before committing
 - Use testcontainers for integration tests involving external services
 - Rust coding standards: `docs/contributing/rust.md` (read it when writing or reviewing Rust)
-- Delegate implementation to the `coder` subagent (`.claude/agents/coder.md`, model sonnet): any scoped "write/change code and make it pass" task — feature, fix, refactor, test. The orchestrating session plans, reviews the result (`rust-code-reviewer` for Rust), and integrates. Keep investigation, architecture, and gnarly debugging out of it (route those to `model: fable`). The task prompt must state the acceptance test, files in scope, and whether to push — a prompt checklist overrides inherited rules, so keep it complete or omit it.
+- Delegate implementation to the `oss:coder` subagent: any scoped "write/change code and make it pass" task — feature, fix, refactor, test. The orchestrating session plans, reviews the result (`rust-code-reviewer` for Rust), and integrates. Keep investigation, architecture, and gnarly debugging out of it (route those to `model: fable`). The task prompt must state the acceptance test, files in scope, and whether to push — a prompt checklist overrides inherited rules, so keep it complete or omit it.
 
 ## Commit Guidelines
 

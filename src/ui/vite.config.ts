@@ -2,40 +2,17 @@
 import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, loadEnv, type ProxyOptions } from "vite";
+import { VitePWA } from "vite-plugin-pwa";
 import { configDefaults } from "vitest/config";
+import { PROXIED_PATHS } from "./src/lib/proxiedPaths";
 import { proxyKey } from "./src/lib/proxyKey";
 
 const require = createRequire(import.meta.url);
 const pkg = require("./package.json") as { version: string };
 
-// Paths the SignalDB router serves; the dev server forwards them to a live
-// instance so the browser only ever sees same-origin requests, exactly as in
-// the embedded production build. /ui/session is the router's session login
-// endpoint and /runtime-config.js is its runtime telemetry config — the SPA is
-// served from root, so everything else is served by the dev server itself.
-//
-// The OAuth endpoints proxy too, EXCEPT `/oauth/consent`, which is the SPA
-// consent route (served by the dev server); its `/oauth/consent/context` API
-// sibling is listed on its own.
-//
-// Every entry matches whole path segments (see proxyKey): a bare prefix
-// would also swallow SPA routes that merely start with it, as `/api` once
-// did to `/api-keys`.
-const PROXIED_PATHS = [
-  "/loki",
-  "/tempo",
-  "/prometheus",
-  "/pyroscope",
-  "/api",
-  "/ui/session",
-  "/runtime-config.js",
-  "/.well-known/oauth-authorization-server",
-  "/.well-known/oauth-protected-resource",
-  "/oauth/authorize",
-  "/oauth/consent/context",
-  "/oauth/register",
-  "/oauth/token",
-];
+// See proxiedPaths.ts for what PROXIED_PATHS covers and why. One exception:
+// `/oauth/consent` itself is the SPA consent route (served by the dev
+// server), so only its `/oauth/consent/context` API sibling is listed.
 
 export default defineConfig(({ mode }) => {
   const env = loadEnv(mode, __dirname, "SIGNALDB_");
@@ -73,9 +50,75 @@ export default defineConfig(({ mode }) => {
   );
 
   return {
-    plugins: [react()],
+    plugins: [
+      react(),
+      VitePWA({
+        // Install new versions in the background but wait to activate them —
+        // an ops dashboard is exactly where a half-typed API-key form, a
+        // pending consent selection, or an in-progress registry edit lives,
+        // and autoUpdate's silent reload can land mid-edit and wipe it. The
+        // deferred apply (banner + auto-apply on the next route change once
+        // no form is dirty) lives in src/pwa.ts and src/lib/pwaUpdate.ts.
+        // Periodic re-checks are still wired in src/pwa.ts, since a
+        // long-lived tab may never navigate again to trigger the browser's
+        // own check.
+        registerType: "prompt",
+        // The generated SW (generateSW) has no way to let a same-origin
+        // navigation through to the network while still returning a
+        // redirect response as-is: `networkTimeoutSeconds` only applies to
+        // NetworkFirst, which caches opaqueredirect responses, and its
+        // urlPattern is stringified into the SW so it can't share
+        // PROXIED_PATHS. injectManifest hands full control to src/sw.ts
+        // instead; see src/sw/navigation.ts for the navigation strategy.
+        strategies: "injectManifest",
+        srcDir: "src",
+        filename: "sw.ts",
+        injectManifest: {
+          // Only the app shell needs to be installable offline; the icons
+          // are fetched by the browser itself when it installs the app
+          // (see includeAssets below for the one exception).
+          globPatterns: ["**/*.{js,css,html}"],
+        },
+        // The install-only PNG icons aren't worth precaching for every
+        // visitor; the browser fetches them itself if/when it installs the
+        // app. Only the favicon (tiny) is added for an offline app shell.
+        includeAssets: ["favicon.svg"],
+        manifest: {
+          name: "SignalDB",
+          short_name: "SignalDB",
+          description:
+            "Observability signal database for metrics, logs, and traces.",
+          theme_color: "#14181e",
+          background_color: "#14181e",
+          display: "standalone",
+          start_url: "/",
+          scope: "/",
+          icons: [
+            {
+              src: "/pwa-192x192.png",
+              sizes: "192x192",
+              type: "image/png",
+            },
+            {
+              src: "/pwa-512x512.png",
+              sizes: "512x512",
+              type: "image/png",
+            },
+            {
+              src: "/pwa-512x512-maskable.png",
+              sizes: "512x512",
+              type: "image/png",
+              purpose: "maskable",
+            },
+          ],
+        },
+      }),
+    ],
     // Served by the router at root in production (SPA fallback).
     base: "/",
+    // Shipped alongside the bundle so minified stack frames can be mapped
+    // back to source (DevTools today, server-side symbolication per #1677).
+    build: { sourcemap: true },
     // Surface the dev defaults so the tenant selector can display them, plus
     // the telemetry config baked in at build time (see src/telemetry).
     define: {
@@ -94,9 +137,16 @@ export default defineConfig(({ mode }) => {
       environment: "jsdom",
       setupFiles: "./src/test/setup.ts",
       css: false,
-      // e2e/** are Playwright specs (see playwright.config.ts) — a
-      // different runner, different test() import, not vitest's.
-      exclude: [...configDefaults.exclude, "e2e/**"],
+      // e2e/**, e2e-live/** and e2e-stories/** are Playwright specs (see
+      // playwright.config.ts / playwright.live.config.ts /
+      // playwright.stories.config.ts) — a different runner, different
+      // test() import, not vitest's.
+      exclude: [
+        ...configDefaults.exclude,
+        "e2e/**",
+        "e2e-live/**",
+        "e2e-stories/**",
+      ],
       coverage: {
         provider: "v8",
         include: ["src/**/*.{ts,tsx}"],
@@ -121,6 +171,16 @@ export default defineConfig(({ mode }) => {
           // beyond "it calls registerInstrumentations with the right args",
           // which a type error already catches.
           "src/telemetry/logs.ts",
+          // Imports the `virtual:pwa-register` module, which only resolves
+          // inside a real Vite/PWA build — not under vitest. The update
+          // logic it wires up is tested directly in
+          // src/lib/pwaUpdate.test.ts.
+          "src/pwa.ts",
+          // Only resolves as a service worker (imports workbox modules that
+          // assume a ServiceWorkerGlobalScope) — never runs under vitest.
+          // Its navigation strategy is tested directly in
+          // src/sw/navigation.test.ts.
+          "src/sw.ts",
         ],
         thresholds: {
           lines: 80,

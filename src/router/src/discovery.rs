@@ -4,6 +4,7 @@ use common::flight::transport::{
     FlightServiceMetadata, InMemoryFlightTransport, ServiceCapability,
 };
 use common::service_bootstrap::ServiceType;
+use datafusion::arrow::record_batch::RecordBatch;
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -117,16 +118,6 @@ impl ServiceRegistry {
         Some(candidates[index].clone())
     }
 
-    /// Get services by address pattern (useful for filtering by service type if encoded in address)
-    pub async fn get_services_by_pattern(&self, pattern: &str) -> Vec<Ingester> {
-        let services = self.services.read().await;
-        services
-            .values()
-            .filter(|service| service.address.contains(pattern))
-            .cloned()
-            .collect()
-    }
-
     /// Get Flight services with specific capability
     pub async fn get_flight_services_by_capability(
         &self,
@@ -169,25 +160,27 @@ impl ServiceRegistry {
         }
     }
 
-    /// Perform Flight-specific health check on services
-    pub async fn flight_health_check(
+    /// Send one batch to a writer (`Storage` capability) with the shared
+    /// ingest `DoPut` ([`common::flight::forward::forward_batch_to_writer`]),
+    /// pinned to a writer by `ingest_id`. Errors without a tonic `Status` in
+    /// their chain mean no writer was reachable (including when no Flight
+    /// transport is configured).
+    pub async fn forward_batch_to_writer(
         &self,
-    ) -> Result<bool, Box<dyn std::error::Error + Send + Sync>> {
-        if let Some(transport) = &self.flight_transport {
-            Ok(transport.is_healthy().await)
-        } else {
-            // Fallback to basic health check
-            Ok(self.is_healthy().await)
-        }
-    }
-
-    /// Get Flight connection pool statistics
-    pub async fn flight_pool_stats(&self) -> Option<(usize, usize)> {
-        if let Some(transport) = &self.flight_transport {
-            Some(transport.pool_stats().await)
-        } else {
-            None
-        }
+        batch: RecordBatch,
+        metadata_json: &str,
+        ingest_id: uuid::Uuid,
+    ) -> anyhow::Result<()> {
+        let Some(transport) = &self.flight_transport else {
+            anyhow::bail!("Flight transport not configured");
+        };
+        common::flight::forward::forward_batch_to_writer(
+            transport,
+            batch,
+            Some(metadata_json),
+            ingest_id,
+        )
+        .await
     }
 
     /// Convert existing ingesters to Flight metadata (fallback when no Flight transport)
@@ -257,13 +250,6 @@ impl ServiceRegistry {
                     ],
                 )
             }
-        }
-    }
-
-    /// Start background Flight transport connection cleanup
-    pub fn start_flight_cleanup(&self, cleanup_interval: Duration) {
-        if let Some(transport) = &self.flight_transport {
-            transport.start_connection_cleanup(cleanup_interval);
         }
     }
 

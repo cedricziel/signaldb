@@ -11,6 +11,10 @@ env:
   RUST_BACKTRACE: short # Changed from 1 to short for better performance
   CARGO_INCREMENTAL: 0 # Disable incremental compilation for CI
   CARGO_NET_RETRY: 10
+  # Weaver is 0.x (breaking minor releases), so pin it. Keep in step with
+  # weaver-live-check.yml and the default in scripts/weaver-check-fixtures.sh
+  # (which reads this variable). >= v0.26: GenAI's model uses definition/2.
+  WEAVER_IMAGE: otel/weaver:v0.26.1
 
 # Cancel superseded PR runs, but never main runs: only main saves the
 # rust-cache entries every PR restores from, and a cancelled main run
@@ -122,7 +126,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
 
       - uses: actions/setup-node@v7
         with:
@@ -147,17 +151,93 @@ jobs:
       # `--with-deps` shells out to apt, which can stall for hours on a bad
       # mirror; cap it so the job fails rather than blocking the queue.
       - name: Install Playwright browsers
+        id: pw-install
         timeout-minutes: 10
         run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
 
       - name: E2E tests
         run: pnpm --filter signaldb-ui test:e2e
 
+      # Every page story at 390/768/1280 px: render errors, horizontal
+      # overflow, axe color-contrast (docs/contributing/ui-page-stories.md).
+      # Runs even when the e2e step failed, so one run reports both.
+      - name: Page story checks
+        if: ${{ !cancelled() && steps.pw-install.outcome == 'success' }}
+        run: pnpm --filter signaldb-ui test:stories
+
       - name: Upload Playwright report
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: playwright-report
+          path: src/ui/playwright-report/
+          retention-days: 7
+
+  # Live end-to-end suite: the built UI against a real signaldb monolith
+  # seeded with real OTLP telemetry (src/ui/e2e-live, playwright.live.config.ts).
+  # Distinct from the `ui` job's mocked e2e/ suite — this is what catches a
+  # page sending a Query IR document the server actually rejects (see
+  # src/ui/README.md#end-to-end-tests).
+  ui-e2e-live:
+    name: UI E2E (live backend)
+    runs-on: ubuntu-latest
+    # Tests the release binaries and UI bundle the images ship, instead of
+    # compiling its own.
+    needs: [changes, build-musl-amd64, build-ui]
+    if: >-
+      !cancelled()
+      && needs.build-musl-amd64.result == 'success'
+      && needs.build-ui.result == 'success'
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Download musl binaries
+        uses: actions/download-artifact@v8
+        with:
+          name: musl-binaries-amd64
+          path: e2e-bin/
+
+      - name: Download e2e seeding tool
+        uses: actions/download-artifact@v8
+        with:
+          name: e2e-tools-amd64
+          path: e2e-bin/
+
+      - name: Download UI dist
+        uses: actions/download-artifact@v8
+        with:
+          name: ui-dist
+          path: src/ui/dist/
+
+      - name: Make binaries executable
+        run: chmod +x e2e-bin/*
+
+      - uses: pnpm/action-setup@v6.1.0
+
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      # `--with-deps` shells out to apt, which can stall for hours on a bad
+      # mirror; cap it so the job fails rather than blocking the queue.
+      - name: Install Playwright browsers
+        timeout-minutes: 10
+        run: pnpm --filter signaldb-ui exec playwright install --with-deps chromium
+
+      - name: Live E2E tests
+        env:
+          SIGNALDB_E2E_BIN_DIR: ${{ github.workspace }}/e2e-bin
+        run: pnpm --filter signaldb-ui exec playwright test --config=playwright.live.config.ts
+
+      - name: Upload Playwright report
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: playwright-report-live
           path: src/ui/playwright-report/
           retention-days: 7
 
@@ -181,13 +261,13 @@ jobs:
         with:
           submodules: true
 
-      - name: Install protobuf compiler
+      - name: Install system dependencies
         uses: ./.github/actions/apt-install
         with:
-          packages: protobuf-compiler
+          packages: protobuf-compiler mold clang
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: rustfmt
           cache: false # Using Swatinem/rust-cache instead
@@ -199,7 +279,7 @@ jobs:
           save-if: ${{ github.ref == 'refs/heads/main' }}
           cache-on-failure: true
 
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
 
       - uses: actions/setup-node@v7
         with:
@@ -225,10 +305,10 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: rustfmt, clippy
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -251,9 +331,10 @@ jobs:
       # behind the per-crate `benchmarks` feature (common, writer,
       # tests-integration), so this step doubles as the Criterion suites'
       # compile guard on every core PR (plugin/UI-only PRs skip this job) —
-      # the benches cannot silently bit-rot.
+      # the benches cannot silently bit-rot. `--locked` fails a PR whose
+      # manifests changed without the matching Cargo.lock update.
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       # Span-construction guard (otel-compliant-self-tracing): boundary spans
       # must come from the factories in common::self_monitoring::spans — the
@@ -281,13 +362,20 @@ jobs:
             exit 1
           fi
 
-      # Validate the SignalDB semantic-convention registry (Weaver pinned —
-      # 0.x, breaking minor releases). The factories' literal field names are
-      # pinned against this registry by common's registry_pins tests.
+      # Validate the SignalDB semantic-convention registry. The factories'
+      # literal field names are pinned against this registry by common's
+      # registry_pins tests.
       - name: Weaver registry check
         run: |
           docker run --rm -v "$PWD/otel/registry:/registry" \
-            otel/weaver:v0.25.1 registry check -r /registry
+            "$WEAVER_IMAGE" registry check -r /registry
+
+      # SignalDB groups over the GenAI conventions, kept in a separate
+      # registry (see its manifest).
+      - name: Weaver registry check (GenAI)
+        run: |
+          docker run --rm -v "$PWD/otel/registry-genai:/registry" \
+            "$WEAVER_IMAGE" registry check -r /registry
 
       # The sample custom registries schema-model's validator accepts must
       # pass Weaver too (accept-set ⊆ Weaver, modulo namespaced re-description).
@@ -300,7 +388,7 @@ jobs:
       - name: Install audit tools
         uses: taiki-e/install-action@v2
         with:
-          tool: cargo-audit,cargo-deny,cargo-machete
+          tool: cargo-audit,cargo-deny,cargo-machete,cargo-hakari
 
       - name: Run security audit
         run: cargo audit
@@ -310,6 +398,24 @@ jobs:
 
       - name: Check for unused dependencies
         run: cargo machete --with-metadata
+
+      # workspace-hack (managed by `cargo hakari`) pins one unified feature
+      # set for shared deps across every workspace member — see
+      # .config/hakari.toml. Three checks, because each catches a different
+      # kind of drift a PR could introduce and none subsumes the others
+      # (verified by hand — `cargo hakari verify` alone does not notice a
+      # crate that's missing the `workspace-hack` dependency entirely):
+      #  - `generate --diff`: workspace-hack/Cargo.toml's pinned deps/features
+      #    are stale relative to the rest of the workspace
+      #  - `manage-deps --dry-run`: some member is missing the
+      #    workspace-hack dependency (or an excluded one still has it)
+      #  - `verify`: even with both of the above current, the unified set
+      #    doesn't actually achieve one version/feature-set per dependency
+      - name: Verify workspace-hack is up to date
+        run: |
+          cargo hakari generate --diff
+          cargo hakari manage-deps --dry-run
+          cargo hakari verify
 
       # The compatibility query-language parsers must stay independent of the
       # query engine: their whole value is that "is this query valid?" can be
@@ -342,7 +448,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           cache: false # Using Swatinem/rust-cache instead
 
@@ -377,7 +483,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: stable
           cache: false  # Using Swatinem/rust-cache instead
@@ -419,7 +525,7 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           toolchain: beta
           cache: false  # Using Swatinem/rust-cache instead
@@ -454,7 +560,14 @@ jobs:
     name: Build musl Binaries (amd64)
     runs-on: ubuntu-latest
     needs: [changes, check]
-    if: needs.changes.outputs.images == 'true'
+    # Also feeds the live UI e2e job, so it runs for any core or UI change,
+    # not only image-affecting ones. `check` is skipped on UI-only PRs.
+    if: >-
+      !cancelled()
+      && (needs.check.result == 'success' || needs.check.result == 'skipped')
+      && (needs.changes.outputs.images == 'true'
+          || needs.changes.outputs.core == 'true'
+          || needs.changes.outputs.ui == 'true')
     steps:
       - uses: actions/checkout@v7
 
@@ -462,10 +575,10 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: x86_64-unknown-linux-musl
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
           # Must stay empty: this action defaults RUSTFLAGS to "-D warnings",
           # and a set RUSTFLAGS replaces (never merges with) the per-target
           # rustflags in .cargo/config.toml. With the default, the mold linker
@@ -491,20 +604,30 @@ jobs:
           cargo build --release --target x86_64-unknown-linux-musl \
             --features signaldb-bin/jemalloc \
             --bin signaldb \
-            --bin signaldb-cli
+            --bin signaldb-cli \
+            --bin signal-producer
 
       - name: Stage binaries
         run: |
-          mkdir -p dist
+          mkdir -p dist e2e-tools
           cp target/x86_64-unknown-linux-musl/release/signaldb \
              target/x86_64-unknown-linux-musl/release/signaldb-cli \
              dist/
+          cp target/x86_64-unknown-linux-musl/release/signal-producer e2e-tools/
 
       - name: Upload musl binaries
         uses: actions/upload-artifact@v7
         with:
           name: musl-binaries-amd64
           path: dist/
+          retention-days: 7
+
+      # Kept out of dist/ so the Docker images don't pick it up.
+      - name: Upload e2e seeding tool
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-tools-amd64
+          path: e2e-tools/
           retention-days: 7
 
   # Heap-profiling build of the monolithic binary. Separate from the musl
@@ -527,10 +650,10 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: x86_64-unknown-linux-gnu
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2
@@ -587,10 +710,10 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           target: aarch64-unknown-linux-musl
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
           rustflags: "" # see build-musl-amd64
 
       - name: Setup Rust cache
@@ -633,11 +756,14 @@ jobs:
     name: Build UI dist
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.images == 'true'
+    if: >-
+      needs.changes.outputs.images == 'true'
+      || needs.changes.outputs.core == 'true'
+      || needs.changes.outputs.ui == 'true'
     steps:
       - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v6.0.10
+      - uses: pnpm/action-setup@v6.1.0
 
       - uses: actions/setup-node@v7
         with:
@@ -666,7 +792,8 @@ jobs:
     runs-on: ubuntu-latest
     # test gates the image push: a commit with a red test suite must not
     # be published to ghcr, even though the binaries already built
-    needs: [build-musl-amd64, build-ui, test]
+    needs: [changes, build-musl-amd64, build-ui, test]
+    if: needs.changes.outputs.images == 'true'
     permissions:
       contents: read
       packages: write
@@ -908,7 +1035,8 @@ jobs:
   deployment-test:
     name: Deployment Test
     runs-on: ubuntu-latest
-    needs: build-musl-amd64
+    needs: [changes, build-musl-amd64]
+    if: needs.changes.outputs.images == 'true'
     strategy:
       matrix:
         deployment: [monolithic, microservices]
@@ -982,10 +1110,10 @@ jobs:
         run: git submodule update --init --recursive
 
       - name: Setup Rust toolchain
-        uses: actions-rust-lang/setup-rust-toolchain@v1
+        uses: actions-rust-lang/setup-rust-toolchain@v2
         with:
           components: llvm-tools-preview
-          cache: false  # Using Swatinem/rust-cache instead
+          cache: false # Using Swatinem/rust-cache instead
 
       - name: Setup Rust cache
         uses: Swatinem/rust-cache@v2

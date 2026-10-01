@@ -121,6 +121,12 @@ compute it independently, including the metadata tenant override and
 `metrics_gauge` fallback — two implementations would let the same batch
 land in different tables across a restart).
 
+Amended by #1734 step 2: the ingest-id dedup check (also on `do_put`, after
+the same `wal.flush()`) runs _before_ this memtable insert. A repeat ingest
+id marks its freshly appended entries processed immediately, so they must
+never reach the memtable — inserting first would require a compensating
+removal instead of a plain skip.
+
 ### D3: The memtable is a reconciled cache, not the sole source of truth
 
 The drain reads resident groups, but the WAL remains authoritative for

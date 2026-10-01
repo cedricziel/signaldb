@@ -17,8 +17,6 @@ pub enum Action {
     ScrollDown,
     Select,
     Back,
-    #[allow(dead_code)]
-    Search(String),
     Confirm,
     Cancel,
     OpenContextSelector,

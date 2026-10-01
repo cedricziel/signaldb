@@ -19,13 +19,7 @@ import { msToNanos, type ResolvedRange } from "../lib/time";
 /** Every source the catalog can discover an entity from. Kept here rather
  * than derived from a query so a source that is registered but empty still
  * gets asked — an empty answer is information, an unasked source is not. */
-export const CATALOG_SOURCES = [
-  "traces",
-  "logs",
-  "metrics",
-  "metrics_histogram",
-  "profiles",
-];
+export const CATALOG_SOURCES = ["traces", "logs", "metrics", "profiles"];
 
 /** How stale the metadata behind a detection answer is. `undefined` when the
  * source reported none — see `SourceFields.analyzed`. */

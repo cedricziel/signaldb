@@ -21,6 +21,8 @@ impl RoleArg {
 
 #[derive(Subcommand)]
 pub enum UserAction {
+    /// List users visible to the caller
+    List,
     /// Create a human user and grant an initial tenant membership
     Create {
         /// Login email address
@@ -46,6 +48,10 @@ pub enum UserAction {
 impl UserAction {
     pub async fn run(self, client: &Client) -> anyhow::Result<()> {
         match self {
+            UserAction::List => {
+                let resp = client.list_users().send().await?.into_inner();
+                crate::commands::print_json(&resp)?;
+            }
             UserAction::Create {
                 email,
                 display_name,

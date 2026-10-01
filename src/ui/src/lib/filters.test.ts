@@ -1,11 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
-  compileHistogramQL,
-  compileLogQL,
-  compileSelector,
   filterFromParam,
   filterToParam,
-  MATCH_ALL_SELECTOR,
+  isValidLogLabelName,
+  logFilterFromParam,
   upsertFilter,
   type LabelFilter,
 } from "./filters";
@@ -20,78 +18,23 @@ const f = (
   value,
 });
 
-describe("compileSelector", () => {
-  it("compiles a match-all selector for no filters", () => {
-    expect(compileSelector([])).toBe(MATCH_ALL_SELECTOR);
+describe("isValidLogLabelName", () => {
+  it("accepts dotted segments", () => {
+    expect(isValidLogLabelName("k8s.pod.name")).toBe(true);
+    expect(isValidLogLabelName("service_name")).toBe(true);
   });
 
-  it("compiles multiple matchers", () => {
-    expect(
-      compileSelector([
-        f("service_name", "=", "checkout"),
-        f("level", "!=", "debug"),
-      ]),
-    ).toBe('{service_name="checkout", level!="debug"}');
-  });
-
-  it("drops filters with invalid label names instead of emitting broken LogQL", () => {
-    expect(compileSelector([f("bad-label!", "=", "x")])).toBe(
-      MATCH_ALL_SELECTOR,
-    );
-  });
-
-  it("escapes quotes and backslashes in values", () => {
-    expect(compileSelector([f("path", "=", 'a"b\\c')])).toBe(
-      '{path="a\\"b\\\\c"}',
-    );
-  });
-});
-
-describe("compileLogQL", () => {
-  it("appends a line filter for search text", () => {
-    expect(
-      compileLogQL({ filters: [f("level", "=", "error")], search: "timeout" }),
-    ).toBe('{level="error"} |= "timeout"');
-  });
-
-  it("prefers the raw override verbatim", () => {
-    expect(
-      compileLogQL({
-        filters: [f("level", "=", "error")],
-        search: "x",
-        raw: '{service_name="api"} | json',
-      }),
-    ).toBe('{service_name="api"} | json');
-  });
-
-  it("ignores a whitespace-only raw override", () => {
-    expect(compileLogQL({ filters: [], search: "", raw: "  " })).toBe(
-      MATCH_ALL_SELECTOR,
-    );
-  });
-});
-
-describe("compileHistogramQL", () => {
-  it("wraps the log query in count_over_time grouped by level", () => {
-    expect(compileHistogramQL({ filters: [], search: "" }, "2m")).toBe(
-      `sum by (level) (count_over_time(${MATCH_ALL_SELECTOR} [2m]))`,
-    );
-  });
-
-  it("returns null for raw queries (may already be a metric query)", () => {
-    expect(
-      compileHistogramQL(
-        { filters: [], search: "", raw: "count_over_time(...)" },
-        "2m",
-      ),
-    ).toBeNull();
+  it("rejects double, leading, and trailing dots", () => {
+    expect(isValidLogLabelName("a..b")).toBe(false);
+    expect(isValidLogLabelName(".a")).toBe(false);
+    expect(isValidLogLabelName("a.")).toBe(false);
   });
 });
 
 describe("filter URL params", () => {
   it("round-trips every operator", () => {
     for (const op of ["=", "!=", "=~", "!~"] as const) {
-      const filter = f("service_name", op, "check|out");
+      const filter = f("host", op, "check|out");
       expect(filterFromParam(filterToParam(filter))).toEqual(filter);
     }
   });
@@ -104,6 +47,28 @@ describe("filter URL params", () => {
 
   it("preserves empty values", () => {
     expect(filterFromParam("l|=|")).toEqual(f("l", "=", ""));
+  });
+
+  it("round-trips a dotted label", () => {
+    const filter = f("k8s.pod.name", "=", "x");
+    expect(filterFromParam(filterToParam(filter))).toEqual(filter);
+  });
+});
+
+describe("logFilterFromParam", () => {
+  it("canonicalizes the old Loki-spelled labels from a bookmarked logs URL", () => {
+    expect(logFilterFromParam("level|=|error")).toEqual(
+      f("severity_text", "=", "error"),
+    );
+    expect(logFilterFromParam("service_name|!=|checkout")).toEqual(
+      f("service.name", "!=", "checkout"),
+    );
+  });
+
+  it("leaves an already-canonical IR field name as-is", () => {
+    expect(logFilterFromParam("severity_text|=|error")).toEqual(
+      f("severity_text", "=", "error"),
+    );
   });
 });
 

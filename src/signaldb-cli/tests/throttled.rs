@@ -32,7 +32,7 @@ async fn throttled_command_reports_the_wait_and_the_throttled_exit_code() {
     // the final error still names the server-stated wait.
     let mut server = mockito::Server::new_async().await;
     let always = server
-        .mock("GET", "/api/v1/admin/tenants")
+        .mock("GET", "/api/v1/tenants")
         .with_status(429)
         .with_header("retry-after", "0")
         .with_header("content-type", "application/json")
@@ -56,7 +56,7 @@ async fn throttled_command_reports_the_wait_and_the_throttled_exit_code() {
     // server's wait verbatim.
     let mut server = mockito::Server::new_async().await;
     let once = server
-        .mock("GET", "/api/v1/admin/tenants")
+        .mock("GET", "/api/v1/tenants")
         .with_status(429)
         .with_header("retry-after", "5")
         .expect(1)
@@ -79,7 +79,7 @@ async fn throttled_command_reports_the_wait_and_the_throttled_exit_code() {
     // the switch does not stick across invocations that don't pass it.
     let mut server = mockito::Server::new_async().await;
     let forbidden = server
-        .mock("GET", "/api/v1/admin/tenants")
+        .mock("GET", "/api/v1/tenants")
         .with_status(403)
         .expect(1)
         .create_async()

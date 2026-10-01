@@ -125,7 +125,7 @@ mod tests {
     fn fetch_tenants_returns_ids_and_names_from_admin_api() {
         let mut server = mockito::Server::new();
         let mock = server
-            .mock("GET", "/api/v1/admin/tenants")
+            .mock("GET", "/api/v1/tenants")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
@@ -154,7 +154,7 @@ mod tests {
     fn fetch_tenants_returns_empty_for_malformed_response() {
         let mut server = mockito::Server::new();
         server
-            .mock("GET", "/api/v1/admin/tenants")
+            .mock("GET", "/api/v1/tenants")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"unexpected":true}"#)

@@ -443,7 +443,7 @@ mod tests {
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(
-                r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":60},"flamegraph":{"names":["main"],"levels":[[0,10,10,0]],"total":10,"max_self":10,"truncated":false}}"#,
+                r#"{"result":"flamegraph","window":{"start_ns":0,"end_ns":60},"flamegraph":{"names":["main"],"levels":[[0,10,10,0]],"total":10,"max_self":10,"truncated":false,"locations":[null]}}"#,
             )
             .create_async()
             .await;
@@ -459,6 +459,44 @@ mod tests {
         mock.assert_async().await;
         assert_eq!(response.result, "flamegraph");
         assert_eq!(response.flamegraph.expect("flamegraph envelope").total, 10);
+    }
+
+    /// query-ir-span-join task 4.1 — the generic `query-ir` command forwards
+    /// a version-8 `correlate` document unchanged, same as the heatmap and
+    /// flamegraph precedents above.
+    #[tokio::test]
+    async fn ir_query_accepts_a_v8_correlate_document() {
+        let mut server = mockito::Server::new_async().await;
+        let mock = server
+            .mock("POST", "/api/v1/query")
+            .match_body(mockito::Matcher::PartialJson(serde_json::json!({
+                "irVersion": 8, "from": "traces"
+            })))
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(
+                r#"{"result":"table","window":{"start_ns":0,"end_ns":60},"columns":[{"name":"parent.service_name","type":"string"},{"name":"service_name","type":"string"},{"name":"n","type":"int64"}],"rows":[["web","api",1]]}"#,
+            )
+            .create_async()
+            .await;
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "0", "to": "60" },
+            "result": "table",
+            "pipeline": [
+                { "correlate": { "to": "parent", "kind": "inner" } },
+                { "aggregate": {
+                    "by": ["parent.service.name", "service.name"],
+                    "aggs": [{ "fn": "count", "as": "n" }]
+                } }
+            ]
+        }))
+        .unwrap();
+        let response = submit_ir(&server.url(), None, None, None, request)
+            .await
+            .unwrap();
+        mock.assert_async().await;
+        assert_eq!(response.result, "table");
+        assert_eq!(response.rows.len(), 1);
     }
 
     #[tokio::test]

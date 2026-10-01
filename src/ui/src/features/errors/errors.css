@@ -1,23 +1,24 @@
+/* The view itself is a column that fills the remaining app height — without
+   this the top bar and signal tabs above it scroll away with the page at
+   short viewports instead of staying put while only the table/detail below
+   scrolls. */
+.errors-view {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+
 /* Matches .histo-wrap's left padding (the traces/logs tabs' equivalent
    above-the-sidebar content) so the page title aligns with the rest of the
    explore shell instead of sitting flush against the viewport edge. */
 .errors-head {
-  padding: 10px 16px 4px;
+  padding: 10px var(--gutter) 4px;
 }
 
 .errors-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
-}
-
-.errors-table th {
-  padding: 6px 10px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--faint);
-  border-bottom: 1px solid var(--border);
 }
 
 .errors-table td {
@@ -27,6 +28,36 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Phones (see catalog.css/schema.css breakpoint convention: tablet <=900px,
+   mobile <=600px): Service/Source/Handled/First-seen lose to Type + Message
+   + Count for ~375px of width, so they're hidden rather than truncated to
+   nothing. Message switches from a single ellipsised line to a wrapped
+   2-line clamp so it stays readable without the hidden columns' room. */
+@container app-main (max-width: 600px) {
+  .errors-table .errors-col-secondary {
+    display: none;
+  }
+
+  /* The clamp lives on an inner box: `display: -webkit-box` on the <td>
+     itself takes it out of the table layout, and the clipped third line
+     then bleeds into the next row. */
+  .errors-table .errors-message {
+    min-width: 16ch;
+    max-width: none;
+    white-space: normal;
+  }
+
+  .errors-table .errors-message-text {
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    line-clamp: 2;
+    max-height: 2lh;
+    overflow: hidden;
+    overflow-wrap: break-word;
+  }
 }
 
 .errors-row {
@@ -64,31 +95,50 @@
   border-color: var(--svc-b);
 }
 
+/* .errors-main is itself a `.catalog-main` (padding + its own scroll,
+   ExploreView's shared shell); scroll it horizontally too so the table's
+   Count column isn't cut off at the right edge on a narrow viewport. */
+.errors-main {
+  overflow: auto;
+}
+
+/* The detail block below the table is a second, nested `.catalog-main` (see
+   the same pattern in catalog.css's `.entity-detail .catalog-main`) — reset
+   its padding/overflow so it doesn't double up on the outer one's. */
+.errors-main .catalog-main {
+  padding: 0;
+  overflow: visible;
+}
+
 .errors-detail {
   margin-top: 20px;
 }
 
+.errors-detail > .backbtn {
+  margin-bottom: 10px;
+}
+
+/* Wraps the shared `Sparkline` (bar variant); layout and colour overrides
+   scoped under this class rather than the shared component's own. */
 .errors-sparkline-host {
   margin: 8px 0 4px;
 }
 
-.errors-sparkline {
-  display: block;
-  width: 100%;
-  height: 32px;
+.errors-sparkline-axis {
+  display: flex;
+  justify-content: space-between;
+  margin-top: 2px;
+  font: 10px var(--mono);
+  color: var(--dim);
 }
 
-.errors-sparkline-bar {
-  fill: var(--svc-a);
-}
-
-/* Invisible full-height hit targets; focus tints the column. */
-.errors-sparkline-hit {
-  fill: transparent;
+/* Invisible full-height hit targets; focus tints the column rather than
+   drawing the shared component's default outline. */
+.errors-sparkline-host .sparkline-hit {
   outline: none;
 }
 
-.errors-sparkline-hit:focus-visible {
+.errors-sparkline-host .sparkline-hit:focus-visible {
   fill: var(--accent);
   fill-opacity: 0.12;
 }
@@ -102,17 +152,7 @@
 .errors-occurrences {
   width: 100%;
   border-collapse: collapse;
-  font-size: 13px;
   margin-top: 8px;
-}
-
-.errors-occurrences th {
-  padding: 6px 10px;
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--faint);
-  border-bottom: 1px solid var(--border);
 }
 
 .errors-occurrences td {

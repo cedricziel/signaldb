@@ -50,12 +50,13 @@ The WAL base directory is set in the `[wal]` TOML section and applies to both se
 
 ### Environment Variables
 
-| Variable                       | Default              | Description                                                                                 |
-| ------------------------------ | -------------------- | ------------------------------------------------------------------------------------------- |
-| `ACCEPTOR_WAL_DIR`             | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override)                                          |
-| `WRITER_WAL_DIR`               | `{wal_dir}/writer`   | Full WAL directory for writer service (override)                                            |
-| `SIGNALDB__WAL__WAL_DIR`       | `.data/wal`          | Base WAL directory (figment; equivalent to `[wal].wal_dir`)                                 |
-| `SIGNALDB__WAL__MAX_INSTANCES` | `256`                | Soft cap on cached WAL instances per service (figment; equivalent to `[wal].max_instances`) |
+| Variable                               | Default              | Description                                                                                                                                                  |
+| -------------------------------------- | -------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `ACCEPTOR_WAL_DIR`                     | `{wal_dir}/acceptor` | Full WAL directory for acceptor service (override)                                                                                                           |
+| `WRITER_WAL_DIR`                       | `{wal_dir}/writer`   | Full WAL directory for writer service (override)                                                                                                             |
+| `SIGNALDB__WAL__WAL_DIR`               | `.data/wal`          | Base WAL directory (figment; equivalent to `[wal].wal_dir`)                                                                                                  |
+| `SIGNALDB__WAL__MAX_INSTANCES`         | `256`                | Soft cap on cached WAL instances per service (figment; equivalent to `[wal].max_instances`)                                                                  |
+| `SIGNALDB__WAL__DEAD_LETTER_RETENTION` | `30d`                | How long a dead-lettered entry is kept before the retention sweep deletes it; `0s` disables the sweep (figment; equivalent to `[wal].dead_letter_retention`) |
 
 There are no `[wal.acceptor]`/`[wal.writer]` TOML subsections; the per-service overrides are env/CLI only.
 
@@ -71,9 +72,10 @@ max_buffer_entries = 1000       # Buffer 1000 entries
 flush_interval = "30s"          # Flush every 30 seconds
 max_buffer_size_bytes = 134217728  # 128MB
 max_instances = 256             # Soft cap on cached WAL instances; 0 = unbounded
+dead_letter_retention = "30d"   # How long a dead-lettered entry is kept before the retention sweep deletes it; "0s" disables the sweep
 ```
 
-Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, `wal_dir` and `max_instances` change runtime behavior today.
+Note: segment size, buffer, and flush tuning currently ship as built-in defaults compiled into the services (64MB segments, 1000-entry buffer, 30s flush; the acceptor uses more aggressive per-signal settings for logs and metrics). The `[wal]` TOML block matches these defaults but the services do not yet read the tuning knobs from it — of the `[wal]` settings, `wal_dir`, `max_instances`, and `dead_letter_retention` change runtime behavior today.
 
 `max_segment_size` caps **both** the entry-log file and the payload data file. Because payloads dominate size (the log holds only fixed-size per-entry metadata), rotation is driven in practice by the data file crossing the cap; a segment is sealed and a new one started before either file exceeds it. This keeps individual segments small, bounds recovery cost, and keeps data-file offsets well clear of the 4 GB (2³²) range.
 
@@ -524,6 +526,51 @@ cat /data/wal/*/*/*/dead-letter/*.rejected.json | jq -r '.reason'
 A recurring reason across many entries points at a systematic conversion or
 schema fault rather than isolated corruption.
 
+#### Replaying, listing, and purging dead-lettered entries
+
+`signaldb wal dead-letter list|replay|purge` operates on one WAL's
+`dead-letter/` directory directly. Run it on the node that owns the WAL
+directory; `--wal-dir` is the same _base_ directory as `[wal].wal_dir` /
+`ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (e.g. `/data/wal/acceptor`), not the
+`dead-letter/` path itself:
+
+```bash
+# Counts and bytes by kind
+signaldb wal dead-letter list \
+  --wal-dir /data/wal/acceptor --tenant acme --dataset production --signal metrics
+
+# Re-append every intact, decodable rejected payload — once the rejection
+# cause is fixed — and remove it from dead-letter on success
+signaldb wal dead-letter replay \
+  --wal-dir /data/wal/acceptor --tenant acme --dataset production --signal metrics \
+  --kind rejected
+
+# See what replay/purge would do without touching anything
+signaldb wal dead-letter replay ... --dry-run
+
+# Discard entries outright (e.g. confirmed-unreplayable ones)
+signaldb wal dead-letter purge \
+  --wal-dir /data/wal/acceptor --tenant acme --dataset production --signal metrics \
+  --kind unreadable
+```
+
+`replay` opens a live `Wal` for that tenant/dataset/signal and re-appends
+each payload through the same `Wal::append` path ingest uses, so the
+acceptor's retry consumer or the writer's drain loop picks it up through the
+normal path on its next pass — nothing about replay is special-cased once
+the entry is back in the WAL. A payload that fails to decode
+(`bytes_to_record_batch`) is left in place and counted rather than replayed,
+since replaying a still-broken payload would only recreate the failure that
+dead-lettered it. `--kind` restricts to `rejected` or `unreadable`; omit it
+to operate on everything (`unreadable` entries have no recoverable payload,
+so `replay` always leaves them in place and counts them — `purge` is the
+only way to clear them).
+
+The WAL format does not coordinate two processes writing the same
+directory: prefer running `replay` during a lull in traffic for that tenant,
+or briefly stop the owning service first if the WAL is under heavy write
+load.
+
 ## Permissions
 
 Ensure proper file system permissions:
@@ -583,6 +630,7 @@ Tuning WAL throughput today means tuning the storage underneath it (see Storage 
 - **Open WAL instances** (`signaldb.wal.instances`): one per tenant/dataset/signal, opened on first write, closed by idle eviction or the `[wal].max_instances` cap. Each holds three file descriptors and a flush timer, so this gauge is the early warning for file-descriptor pressure in a deployment that keeps adding tenants
 - **Instance cap hits** (`signaldb.wal.instance_cap_hits`): a `get_wal` miss that found the cache at or over `[wal].max_instances`, labelled `outcome="evicted"` or `outcome="over_cap"`. A sustained `over_cap` rate means the cap is too low for how often this deployment's WALs are actually written
 - **Skipped WALs** (`signaldb.wal.list_failures`): a WAL whose entries could not be listed is skipped for that processing cycle; a non-zero rate means some tenant's backlog is not draining
+- **Dead-lettered entries/bytes** (`signaldb.wal.dead_letter_entries`, `signaldb.wal.dead_letter_bytes`): the true on-disk state of every WAL's `dead-letter/` directory, by `signaldb.tenant.id`, `signaldb.dataset.id`, `signal`, `role` (`acceptor`|`writer`), and `kind` (`rejected`|`unreadable`). A sustained non-zero `rejected` count is actionable — those payloads are intact and replayable once their cause is fixed — while `unreadable` cannot be replayed. Both are swept by `[wal].dead_letter_retention` (default 30d), so persistent growth means the sweep cannot keep up or the same cause keeps recurring
 
 ### Health Check Endpoints
 
@@ -605,13 +653,20 @@ du -sh /data/wal/*
 # Segment count (acceptor: per tenant/dataset/signal)
 find /data/wal -name 'wal-*.log' | wc -l
 
-# Dead-lettered entries (should be empty)
-find /data/wal -path '*/dead-letter/*' | wc -l
+# Dead-letter artifacts -- files, not entries: a rejected entry is a .bin
+# plus a .rejected.json marker, and *.corrupt.bin quarantine files count
+# too, so this over-counts relative to signaldb.wal.dead_letter_entries
+# (0 in a healthy deployment; that gauge is the true per-entry count)
+find /data/wal -path '*/dead-letter/*' -type f | wc -l
 ```
 
-When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself. `signaldb.wal.entries_pending` is the backlog signal: it is process-local (a restart resets it, then re-seeds it from the recovered backlog) and must never read below zero — a negative value means increments and decrements have gone out of balance and the metric cannot be trusted until that is fixed.
+When `[self_monitoring]` is enabled, services also export `signaldb.wal.*` metrics (entries written/processed/pending, flush duration) via OTLP into SignalDB itself. `signaldb.wal.entries_pending` is the backlog signal: it is process-local (a restart resets it, then re-seeds it from the recovered backlog) and is broken down by `signaldb.tenant.id`, `signaldb.dataset.id`, `signal`, and `role` (`acceptor` | `writer`), so a plateau can be attributed to the exact directory holding the backlog instead of showing up only as one unlabelled number.
+
+The writer's drain loop and the acceptor's retry consumer each reconcile the gauge for every WAL they walk, every cycle: they diff the gauge's own running belief for that directory against a fresh count of its unprocessed entries and correct any difference. A path that changes the pending set without keeping the gauge in lockstep — the failure mode behind [issue #1493](https://github.com/cedricziel/signaldb/issues/1493), where the gauge sat flat at a stale value for 53 hours despite entries still draining normally — therefore self-heals within one reconciliation pass instead of drifting until a restart. A `signaldb.wal.entries_pending drifted...` warning log line names the affected directory (`writer_id`, tenant, dataset, signal, role) whenever a correction actually fires; that log should stay silent in a healthy deployment.
 
 `signaldb.wal.corrupt_entries` counts records that failed their integrity check: `record="log"` for entry records discarded during replay (see [Corrupted Entry Records During Replay](#corrupted-entry-records-during-replay)), `record="data"` for payload records that failed their CRC on read. It is an alertable signal, not just a diagnostic: it should stay at zero, and any increase means an entry's data was permanently lost — not merely delayed or retried — with only the quarantined `segment-<id>-offset-<offset>.corrupt.bin` / `<entry_id>.corrupt.bin` file under `dead-letter/` left to inspect by hand. A nonzero rate points at disk-level corruption (OOM kill mid-write, disk fault, or similar) rather than an application bug, so treat it as a storage-health alert.
+
+`signaldb.wal.dead_letter_entries` / `signaldb.wal.dead_letter_bytes` are a different signal from `corrupt_entries`: they count entries retired deliberately (a poison payload, a writer rejection, an unreadable range), not integrity-check failures. Unlike `entries_pending`, these are not maintained incrementally — the acceptor retry consumer and the writer drain loop each re-scan every WAL's `dead-letter/` directory (including one with no live WAL left to drain, since a fully-drained-and-cleaned-up WAL can still leave an orphaned `dead-letter/` behind) on every pass and record the true count, so the gauge cannot drift and always reflects a fresh scan. That same pass enforces `[wal].dead_letter_retention` (default 30d): a `.bin`/marker pair whose newest file is older than the retention is deleted, logging one INFO line with the count and bytes freed. #1494 is the reason this exists: 45k rejected entries (493 MB) sat on a production WAL for a month with nothing reporting or expiring them.
 
 ### Example Prometheus Alerts
 

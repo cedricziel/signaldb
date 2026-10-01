@@ -27,6 +27,23 @@ pub struct Flamegraph {
     pub total: i64,
     /// Largest self value of any block, used for color scaling.
     pub max_self: i64,
+    /// Source location for each entry in `names`, aligned by index
+    /// (`locations[i]` describes `names[i]`); `None` where unknown, always
+    /// `None` for `names[0]` ("total"). Absent (or shorter than `names`) on
+    /// JSON encoded before this field existed — treat a missing index as
+    /// unknown via `locations.get(i).and_then(|l| l.as_ref())` rather than
+    /// indexing directly.
+    #[serde(default)]
+    pub locations: Vec<Option<FrameLocation>>,
+}
+
+/// A function's source location, carried alongside a flamegraph name entry.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, utoipa::ToSchema)]
+pub struct FrameLocation {
+    /// Source file path, as reported by the profiler.
+    pub file: String,
+    /// Line number within `file`; 0 means unknown.
+    pub line: i64,
 }
 
 /// Aggregation tree node: values accumulate on every path node, self value
@@ -35,16 +52,28 @@ pub struct Flamegraph {
 struct Node {
     total: i64,
     self_value: i64,
+    /// Location of the first frame that created this node.
+    location: Option<FrameLocation>,
     /// Child insertion order is preserved so sibling layout is stable.
     children: Vec<(String, Node)>,
 }
 
 impl Node {
-    fn child_mut(&mut self, name: &str) -> &mut Node {
+    /// Find or create the child named `name`. `filename`/`line` describe its
+    /// location and are only turned into an owned [`FrameLocation`] on the
+    /// new-node branch — the common case, an existing node on the hot
+    /// per-frame accumulation path, allocates nothing for them.
+    fn child_mut(&mut self, name: &str, filename: &str, line: i64) -> &mut Node {
         if let Some(index) = self.children.iter().position(|(n, _)| n == name) {
             return &mut self.children[index].1;
         }
-        self.children.push((name.to_string(), Node::default()));
+        self.children.push((
+            name.to_string(),
+            Node {
+                location: frame_location_from(filename, line),
+                ..Node::default()
+            },
+        ));
         &mut self
             .children
             .last_mut()
@@ -79,7 +108,7 @@ pub fn aggregate_profiles_to_flamegraph(profiles: &[Profile]) -> Flamegraph {
             let mut node = &mut root;
             for frame in stacktrace.frames.iter().rev() {
                 let name = frame_name(frame);
-                node = node.child_mut(&name);
+                node = node.child_mut(&name, &frame.filename, frame.line);
                 node.total += value;
             }
             node.self_value += value;
@@ -101,12 +130,13 @@ pub fn aggregate_profiles_to_flamegraph(profiles: &[Profile]) -> Flamegraph {
 fn flatten(root: &Node) -> Flamegraph {
     let mut names = Vec::new();
     let mut name_indices: HashMap<String, usize> = HashMap::new();
+    let mut locations: Vec<Option<FrameLocation>> = Vec::new();
 
     let mut levels: Vec<Vec<i64>> = Vec::new();
     let mut max_self = root.self_value;
 
     // Blocks to lay out at the current level: (absolute x offset, name, node).
-    let root_index = intern_name("total", &mut names, &mut name_indices);
+    let root_index = intern_name("total", &mut names, &mut name_indices, None, &mut locations);
     levels.push(vec![0, root.total, root.self_value, root_index]);
     let mut current: Vec<(i64, &Node)> = vec![(0, root)];
 
@@ -120,7 +150,13 @@ fn flatten(root: &Node) -> Flamegraph {
             // value occupies the tail of its extent.
             let mut x = *offset;
             for (name, child) in &node.children {
-                let name_index = intern_name(name, &mut names, &mut name_indices);
+                let name_index = intern_name(
+                    name,
+                    &mut names,
+                    &mut name_indices,
+                    child.location.as_ref(),
+                    &mut locations,
+                );
                 level.extend_from_slice(&[
                     x - previous_end,
                     child.total,
@@ -145,6 +181,7 @@ fn flatten(root: &Node) -> Flamegraph {
         levels,
         total: root.total,
         max_self,
+        locations,
     }
 }
 
@@ -167,6 +204,9 @@ pub struct DiffFlamegraph {
     pub total: i64,
     /// Largest self value of any block on either side.
     pub max_self: i64,
+    /// Source location for each entry in `names`; see [`Flamegraph::locations`].
+    #[serde(default)]
+    pub locations: Vec<Option<FrameLocation>>,
 }
 
 /// Merged two-sided aggregation node.
@@ -176,15 +216,24 @@ struct DiffNode {
     left_self: i64,
     right_total: i64,
     right_self: i64,
+    /// Location of the first frame that created this node.
+    location: Option<FrameLocation>,
     children: Vec<(String, DiffNode)>,
 }
 
 impl DiffNode {
-    fn child_mut(&mut self, name: &str) -> &mut DiffNode {
+    /// See [`Node::child_mut`]: same shape, same allocate-only-on-insert rule.
+    fn child_mut(&mut self, name: &str, filename: &str, line: i64) -> &mut DiffNode {
         if let Some(index) = self.children.iter().position(|(n, _)| n == name) {
             return &mut self.children[index].1;
         }
-        self.children.push((name.to_string(), DiffNode::default()));
+        self.children.push((
+            name.to_string(),
+            DiffNode {
+                location: frame_location_from(filename, line),
+                ..DiffNode::default()
+            },
+        ));
         &mut self
             .children
             .last_mut()
@@ -194,11 +243,16 @@ impl DiffNode {
 }
 
 /// Intern `name` into `names`, returning its (possibly newly-assigned)
-/// index. Shared by [`flatten`] and [`flatten_diff`]'s name tables.
+/// index. Shared by [`flatten`] and [`flatten_diff`]'s name tables. The
+/// first time a name is interned, `location` is recorded alongside it in
+/// `locations`; later occurrences of the same name (from a different parent)
+/// leave the recorded location untouched — first seen wins.
 fn intern_name(
     name: &str,
     names: &mut Vec<String>,
     name_indices: &mut HashMap<String, usize>,
+    location: Option<&FrameLocation>,
+    locations: &mut Vec<Option<FrameLocation>>,
 ) -> i64 {
     if let Some(&index) = name_indices.get(name) {
         return index as i64;
@@ -206,6 +260,7 @@ fn intern_name(
     let index = names.len();
     names.push(name.to_string());
     name_indices.insert(name.to_string(), index);
+    locations.push(location.cloned());
     index as i64
 }
 
@@ -218,6 +273,20 @@ fn frame_name(frame: &crate::model::profile::Frame) -> String {
         }
     } else {
         frame.function_name.clone()
+    }
+}
+
+/// A location, when `filename` is non-empty (the profiler reported a
+/// source file for this frame). `line` may be 0 (unset); the UI treats 0 as
+/// unknown. The single place a [`FrameLocation`] is allocated.
+fn frame_location_from(filename: &str, line: i64) -> Option<FrameLocation> {
+    if filename.is_empty() {
+        None
+    } else {
+        Some(FrameLocation {
+            file: filename.to_string(),
+            line,
+        })
     }
 }
 
@@ -244,7 +313,7 @@ fn accumulate_into_diff(root: &mut DiffNode, profiles: &[Profile], right: bool) 
             let mut node = &mut *root;
             for frame in stacktrace.frames.iter().rev() {
                 let name = frame_name(frame);
-                node = node.child_mut(&name);
+                node = node.child_mut(&name, &frame.filename, frame.line);
                 if right {
                     node.right_total += value;
                 } else {
@@ -285,9 +354,10 @@ pub fn aggregate_profiles_to_diff_flamegraph(
 fn flatten_diff(root: &DiffNode) -> DiffFlamegraph {
     let mut names = Vec::new();
     let mut name_indices: HashMap<String, usize> = HashMap::new();
+    let mut locations: Vec<Option<FrameLocation>> = Vec::new();
 
     let mut max_self = root.left_self.max(root.right_self);
-    let root_index = intern_name("total", &mut names, &mut name_indices);
+    let root_index = intern_name("total", &mut names, &mut name_indices, None, &mut locations);
     let mut levels: Vec<Vec<i64>> = vec![vec![
         0,
         root.left_total,
@@ -311,7 +381,13 @@ fn flatten_diff(root: &DiffNode) -> DiffFlamegraph {
             let mut left_x = *left_offset;
             let mut right_x = *right_offset;
             for (name, child) in &node.children {
-                let name_index = intern_name(name, &mut names, &mut name_indices);
+                let name_index = intern_name(
+                    name,
+                    &mut names,
+                    &mut name_indices,
+                    child.location.as_ref(),
+                    &mut locations,
+                );
                 level.extend_from_slice(&[
                     left_x - previous_left_end,
                     child.left_total,
@@ -343,6 +419,7 @@ fn flatten_diff(root: &DiffNode) -> DiffFlamegraph {
         right_ticks: root.right_total,
         total: root.left_total + root.right_total,
         max_self,
+        locations,
     }
 }
 
@@ -354,6 +431,15 @@ mod tests {
     fn frame(name: &str) -> Frame {
         Frame {
             function_name: name.to_string(),
+            ..Frame::default()
+        }
+    }
+
+    fn frame_at(name: &str, filename: &str, line: i64) -> Frame {
+        Frame {
+            function_name: name.to_string(),
+            filename: filename.to_string(),
+            line,
             ..Frame::default()
         }
     }
@@ -534,5 +620,113 @@ mod tests {
         assert_eq!(&level2[0..3], &[0, 60, 60]);
         // Previous block ended at 60, b_leaf starts at 60 → delta 0.
         assert_eq!(&level2[4..7], &[0, 40, 40]);
+    }
+
+    #[test]
+    fn locations_align_with_names_for_frames_with_a_known_file() {
+        let profile = Profile {
+            stacktraces: vec![Stacktrace {
+                frames: vec![frame_at("main", "src/main.rs", 12)],
+            }],
+            samples: vec![Sample {
+                stacktrace_index: 0,
+                values: vec![10],
+                ..Sample::default()
+            }],
+            ..Profile::default()
+        };
+
+        let flamegraph = aggregate_profiles_to_flamegraph(&[profile]);
+        assert_eq!(flamegraph.names.len(), flamegraph.locations.len());
+
+        let total_index = flamegraph.names.iter().position(|n| n == "total").unwrap();
+        assert_eq!(flamegraph.locations[total_index], None);
+
+        let main_index = flamegraph.names.iter().position(|n| n == "main").unwrap();
+        assert_eq!(
+            flamegraph.locations[main_index],
+            Some(FrameLocation {
+                file: "src/main.rs".to_string(),
+                line: 12,
+            })
+        );
+    }
+
+    #[test]
+    fn frame_with_empty_filename_has_no_location() {
+        let flamegraph = aggregate_profiles_to_flamegraph(&[sample_profile()]);
+        let main_index = flamegraph.names.iter().position(|n| n == "main").unwrap();
+        assert_eq!(flamegraph.locations[main_index], None);
+    }
+
+    #[test]
+    fn first_seen_location_wins_when_the_same_name_recurs_under_different_files() {
+        // "helper" appears twice, once per root, with two different files.
+        let profile = Profile {
+            stacktraces: vec![
+                Stacktrace {
+                    frames: vec![frame_at("helper", "a.rs", 1), frame_at("root_a", "a.rs", 1)],
+                },
+                Stacktrace {
+                    frames: vec![frame_at("helper", "b.rs", 2), frame_at("root_b", "b.rs", 2)],
+                },
+            ],
+            samples: vec![
+                Sample {
+                    stacktrace_index: 0,
+                    values: vec![10],
+                    ..Sample::default()
+                },
+                Sample {
+                    stacktrace_index: 1,
+                    values: vec![10],
+                    ..Sample::default()
+                },
+            ],
+            ..Profile::default()
+        };
+
+        let flamegraph = aggregate_profiles_to_flamegraph(&[profile]);
+        let helper_index = flamegraph.names.iter().position(|n| n == "helper").unwrap();
+        assert_eq!(
+            flamegraph.locations[helper_index],
+            Some(FrameLocation {
+                file: "a.rs".to_string(),
+                line: 1,
+            })
+        );
+    }
+
+    #[test]
+    fn flamegraph_locations_round_trip_through_json() {
+        let flamegraph = aggregate_profiles_to_flamegraph(&[Profile {
+            stacktraces: vec![Stacktrace {
+                frames: vec![frame_at("main", "src/main.rs", 12)],
+            }],
+            samples: vec![Sample {
+                stacktrace_index: 0,
+                values: vec![10],
+                ..Sample::default()
+            }],
+            ..Profile::default()
+        }]);
+
+        let json = serde_json::to_string(&flamegraph).unwrap();
+        let decoded: Flamegraph = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, flamegraph);
+    }
+
+    #[test]
+    fn old_json_without_locations_decodes_to_an_empty_vec() {
+        let json = serde_json::json!({
+            "names": ["total", "main"],
+            "levels": [[0, 10, 0, 0], [0, 10, 10, 1]],
+            "total": 10,
+            "max_self": 10
+        })
+        .to_string();
+
+        let decoded: Flamegraph = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded.locations, Vec::new());
     }
 }

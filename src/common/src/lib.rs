@@ -8,12 +8,18 @@ pub mod cli;
 pub mod config;
 pub mod datafusion_runtime;
 pub mod discovery;
+pub mod endpoints;
 pub mod error;
+pub mod eval_sets;
+pub mod evals;
 pub mod flight;
 pub mod iceberg;
+pub mod ingest_dedup;
 pub mod model;
 pub mod parquet_metadata_cache;
+pub mod processors;
 pub mod profile;
+pub mod query_cursor;
 /// The query IR lives in its own leaf crate (`serde` only) so a document can be
 /// built and validated without linking the query engine. Re-exported here
 /// because `common::query_ir::…` is how the rest of the workspace addresses it.
@@ -23,6 +29,7 @@ pub mod schema;
 pub mod schema_registry;
 pub mod self_monitoring;
 pub mod service_bootstrap;
+pub mod service_graph;
 pub mod storage;
 pub mod storage_usage;
 pub mod tenant_api;

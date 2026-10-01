@@ -54,7 +54,7 @@ describe("consent API", () => {
       redirect_uri: "https://client.example/callback",
       code_challenge: "challenge",
       code_challenge_method: "S256",
-      tenant: "acme",
+      tenant_grants: [{ tenant_id: "acme" }],
     });
 
     expect(redirect).toBe("https://client.example/callback?code=abc");
@@ -63,7 +63,7 @@ describe("consent API", () => {
     expect(await req.clone().json()).toMatchObject({
       approved: true,
       client_id: "client-1",
-      tenant: "acme",
+      tenant_grants: [{ tenant_id: "acme" }],
     });
   });
 

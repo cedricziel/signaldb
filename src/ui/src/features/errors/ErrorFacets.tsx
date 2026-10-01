@@ -45,7 +45,7 @@ export function ErrorFacets({
               >
                 <span>{errorFacetLabel(field)}</span>
                 {active.length > 0 && (
-                  <span className="facet-active">{active.length}</span>
+                  <span className="facet-active chip">{active.length}</span>
                 )}
               </button>
               {open === field && (

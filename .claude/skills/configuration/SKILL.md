@@ -66,9 +66,10 @@ max_buffer_entries = 1000
 flush_interval = "30s"
 max_buffer_size_bytes = 134217728    # 128 MB
 max_instances = 256                  # soft cap on cached WAL instances; 0 = unbounded
+dead_letter_retention = "30d"        # how long a dead-lettered entry is kept before the sweep deletes it; "0s" disables the sweep
 ```
 
-`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL`, `SIGNALDB__WAL__MAX_INSTANCES` (as does `SIGNALDB__WAL__WAL_DIR`).
+`wal_dir` is the base directory: the acceptor uses `{wal_dir}/acceptor` and the writer `{wal_dir}/writer` (default `.data/wal/acceptor` / `.data/wal/writer`). The service-specific env overrides `ACCEPTOR_WAL_DIR` / `WRITER_WAL_DIR` (read directly by the binaries, not via figment; also available as `--wal-dir`) point at the full service directory and win over `[wal].wal_dir`. Sizing knobs use the double-underscore form: `SIGNALDB__WAL__MAX_SEGMENT_SIZE`, `SIGNALDB__WAL__MAX_BUFFER_ENTRIES`, `SIGNALDB__WAL__FLUSH_INTERVAL`, `SIGNALDB__WAL__MAX_INSTANCES`, `SIGNALDB__WAL__DEAD_LETTER_RETENTION` (as does `SIGNALDB__WAL__WAL_DIR`).
 
 ### Iceberg Schema Catalog
 
@@ -80,7 +81,7 @@ catalog_uri = "sqlite::memory:"      # or sqlite:///path/to/catalog.db
 
 Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-underscore form). Beware: `signaldb.dist.toml` and `scripts/run-dev.sh` mention/set the single-underscore forms `SIGNALDB_SCHEMA_CATALOG_TYPE`/`SIGNALDB_SCHEMA_CATALOG_URI`, which split to `schema.catalog.type` and silently do nothing.
 
-**Note**: Only SQLite supported for Iceberg catalog (not PostgreSQL).
+**Note**: Iceberg catalog accepts `sqlite://`/`sqlite:file:` or `postgres://`/`postgresql://` URIs (`create_sql_catalog_with_builder`, `src/common/src/iceberg/mod.rs`).
 
 #### Materialized labels
 
@@ -89,7 +90,34 @@ Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-u
 logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 ```
 
-Per-signal allowlists of attribute keys promoted from the `*_attributes` JSON into dedicated `label_<key>` columns at ingest, so they match exactly (and support regex / ordered comparisons) instead of the substring-in-JSON approximation. Default empty. Applies to tables created after the change; older tables fall back to JSON matching. Per-tenant: a tenant schema override (`[auth.tenants.schema.materialized_labels]`) replaces the global set wholesale — resolved at table creation and in the writer's transforms. See `docs/architecture/storage-layout.md#materialized-labels`.
+Per-signal allowlists of attribute keys copied, as strings, into dedicated `label_<key>` columns at ingest. The value also stays in its typed home map. The dialects that lower to the IR follow the IR's rule: a `label_<key>` column only stands in for a String-canonical key recorded at one level; only non-IR fallback paths read the column directly. Default empty. Applies to tables created after the change; older tables read the key's typed home instead. Per-tenant: a tenant's schema block, `[tenants.tenants.<id>.schema]` (with `enabled = true` on the tenant), is merged over the global `[schema]` field by field (`TenantSchemaOverride`): every field it leaves unset keeps the global value. A signal's list set here replaces that signal's global list (`[]` clears it); unset signals keep the global list. See `docs/architecture/storage-layout.md#materialized-labels`.
+
+#### Attribute type overrides
+
+```toml
+[[schema.attribute_types]]
+signal = "logs"        # logs | traces | metrics | profiles
+level = "record"       # resource | scope | record
+key = "retry.count"
+type = "int64"          # string | int64 | float64 | bool
+dataset = "prod"        # optional; omitted = every dataset of the tenant
+```
+
+Pins the canonical type of one attribute key instead of leaving it to the first-observed value or a semantic-convention hint. Values of another type still arrive losslessly but aren't typed-queryable. A dataset-specific entry wins over one with no `dataset`. Per-tenant: a tenant's entry replaces the global entries on the same (signal, level, key) it covers — all of them when it has no `dataset`, only that dataset's when it has one; other global entries still apply. Unknown keys in a tenant schema block are rejected, and a tenant's `enabled` defaults to `true`.
+
+#### Warm index
+
+```toml
+[schema.warm_index]
+signals = ["logs"]           # logs | traces | metrics | profiles; empty (default) = off everywhere
+datasets = ["prod"]          # optional; omitted = every dataset of an opted-in signal
+fpp = 0.01                   # bloom filter false-positive probability
+rows_per_row_group = 10000   # Parquet rows per row group (NDV factor)
+attrs_per_row = 16           # typed attributes per row (NDV factor)
+max_bloom_ndv = 2000000      # cap on rows_per_row_group * attrs_per_row
+```
+
+Opt-in containment index: an `attr_index` `List<Binary>` column with a bloom filter, used to skip files for an equality predicate on an unpromoted typed attribute (the typed maps carry no per-key statistics). Only tables on the typed attribute layout gain it. It costs extra storage and write time, which is why it is off by default. Per-tenant: merged per field; `datasets` set by a tenant replaces the global allowlist (it cannot reset it to every dataset). Querier-side gating lives in `[querier.warm_index]` (`enabled = true`, `min_files = 4`, `sample_files = 16`, `max_keep_ratio = 0.5`, `probe_concurrency = 16`): no probe below `min_files` candidate files, and the full probe is skipped when more than `max_keep_ratio` of a `sample_files` sample survives. See `docs/architecture/storage-layout.md#attribute-storage-tiers`.
 
 ### Authentication
 
@@ -98,7 +126,9 @@ on/off switch (the former `enabled` flag was removed in #601).
 
 ```toml
 [auth]
-admin_api_key = "sk-admin-key"           # Required for /api/v1/admin/*
+admin_api_key = "sk-admin-key"           # Required for /api/v1/ops/*, and (tenant-less)
+                                         # /api/v1/* and the tenant-scoped
+                                         # API-key/dataset admin surface
 internal_service_key = "sk-internal"     # Shared secret for service-to-service
                                          # Flight calls; unset = Flight ports
                                          # accept unauthenticated calls
@@ -149,6 +179,78 @@ name = "Production Key"
 max_ingest_requests_per_sec = 500
 max_query_requests_per_sec = 500
 ```
+
+#### GitHub App (`[github]`, change: github-app-source-context)
+
+Optional, top-level. Absent by default (no GitHub surface; the installation
+endpoints and `/ui/github/callback` answer 404). One App per deployment;
+tenants link their own installations at runtime. Full guide:
+`docs/operations/github-app.md`.
+
+```toml
+[github]
+app_id = 12345                                     # required; the App's numeric id
+app_slug = "signaldb"                              # required; github.com/apps/<slug>
+private_key_path = "/run/secrets/github-app.pem"   # or private_key = "-----BEGIN ..." (exactly one)
+client_id = "Iv1.0123456789abcdef"                 # required; OAuth client id (ownership check)
+client_secret = "..."                              # required
+api_url = "https://api.github.com"                 # GHES: https://ghe.example.com/api/v3
+web_url = "https://github.com"                     # GHES: https://ghe.example.com
+link_state_ttl = "10m"                             # link-flow state token lifetime
+snippet_cache_ttl = "10m"                          # source-snippet cache lifetime
+snippet_cache_capacity = 1000                      # cached source files (LRU, ≤512 KiB each)
+```
+
+Env: `SIGNALDB__GITHUB__*`, e.g. `SIGNALDB__GITHUB__CLIENT_SECRET`. A partial
+section fails startup naming the setting (`GitHubAppConfig::validate`);
+`Debug` redacts the key and secret. The callback URL registered on the App is
+`{[public].api_url}/ui/github/callback`.
+
+#### SSO / OIDC login (`[auth.oidc]`, change: oidc-login)
+
+Optional single-provider OIDC relying-party config. Absent by default (no SSO
+surface, password login only). Endpoints are resolved from the issuer's
+`.well-known/openid-configuration`; never configured by hand. Full guide:
+`docs/operations/oidc-sso.md`.
+
+```toml
+[auth.oidc]
+issuer_url = "https://idp.example.com/application/o/signaldb/"  # required; discovery base
+client_id = "signaldb"                                          # required
+client_secret = "sk-oidc-secret"                                # required; confidential client
+redirect_url = "https://signaldb.example.com/ui/session/oidc/callback" # optional; see caveat
+display_name = "Example SSO"          # optional; login-button label, default = issuer host
+allowed_email_domains = ["example.com"] # optional; JIT-creation allowlist (NOT linking)
+group_claim = "groups"                # optional; claim carrying IdP groups (required for mappings)
+disable_password_login = false        # optional; only honoured with a valid provider
+
+[[auth.oidc.group_mappings]]          # optional, repeatable
+group = "observability-admins"
+tenant = "acme"
+role = "admin"                        # admin | member | viewer
+```
+
+Env: `SIGNALDB__AUTH__OIDC__*` (double-underscore), e.g.
+`SIGNALDB__AUTH__OIDC__ISSUER_URL`, `SIGNALDB__AUTH__OIDC__CLIENT_SECRET`.
+
+Field/behaviour notes:
+
+- `redirect_url` overrides the callback URL SignalDB otherwise derives from
+  `[public].api_url` (`{api_url}/ui/session/oidc/callback`). Request headers
+  are never trusted for the callback origin — set `[public].api_url` (or
+  `redirect_url` to pin it exactly) for anything internet-facing.
+- `allowed_email_domains` gates **JIT creation only**; a pre-existing user
+  outside the list can still link via verified email.
+- `group_mappings` need `group_claim`. Mapped memberships (`granted_by =
+'oidc_mapping'`) coexist with locally-granted ones (effective role = higher);
+  a lost group revokes only the mapped row; mapping never grants instance-admin;
+  a rule naming a nonexistent tenant is skipped with a warning.
+- Startup: invalid `[auth.oidc]` (bad `issuer_url`, missing `client_id`/
+  `client_secret`, `disable_password_login` without a provider, `group_mappings`
+  without `group_claim`) fails hard naming the setting. An unreachable/invalid
+  issuer does **not** stop startup — SSO shows unavailable, the probe reports
+  `oidc: null`, the start endpoint 503s, and a background retry (backoff cap 5m)
+  recovers without a restart.
 
 ### Compactor
 
@@ -208,15 +310,16 @@ Env: `SIGNALDB__COMPACTOR__RETENTION__ENABLED`, `SIGNALDB__COMPACTOR__RETENTION_
 ```toml
 [compactor.attr_promotion]
 enabled = false               # Decision pass off by default
-dry_run = true                # Log-only (schema-changing rewrite not yet implemented)
-max_labels_per_table = 32     # Width budget incl. pinned [schema.materialized_labels]
+dry_run = true                # Log-only; false evolves the schema during the rewrite
+max_labels_per_table = 32     # Width budget shared by label columns (pins) and attr_* columns
+demote_after_idle = "7d"      # Demote a promoted column not queried this long; "0s" disables
 min_presence = 0.005          # Min fraction of rows carrying the key
 min_query_hits = 1            # Min accumulated query demand
 promote_streak = 3            # Consecutive over-threshold cycles (hysteresis)
 max_promotions_per_cycle = 4
 ```
 
-Scores persisted attribute stats (compactor scan stats + querier demand counters in the catalog's `attribute_stats` table) as demand × presence; rejects capped-cardinality and generated-looking keys; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
+Scores per-(level, key) stats (compactor presence + querier demand and `last_queried_at` in the catalog's `attribute_level_stats` table) as demand × presence and adds typed `attr_<level>_<key>` copy columns; rejects capped-cardinality and generated-looking keys; demotes idle, then least-recently-queried columns when over budget; pinned `[schema.materialized_labels]` entries are never demoted. Env: `SIGNALDB__COMPACTOR__ATTR_PROMOTION__*`.
 
 #### Orphan Cleanup (Phase 3)
 
@@ -236,14 +339,46 @@ Env: `SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__ENABLED`, `SIGNALDB__COMPACTOR__ORPHA
 
 ```toml
 [querier]
-memory_limit_mb = 4096                # Unset = unbounded (startup warning)
+memory_limit_mb = 4096                # Positive = bounded; 0 = explicitly unbounded; unset = standalone stays unbounded, monolith resolves to min(50% RAM, 4096)
 memory_pool_fraction = 0.8            # Fraction usable before spill/fail (0.0-1.0)
 parquet_metadata_cache_mb = 128       # Parquet footer cache budget; 0 disables. Separate from memory_limit_mb
 query_timeout = "60s"                 # Wall-clock timeout per Flight query
 max_sql_rows = 1000000                # Row cap for raw SQL over Flight
 max_search_limit = 1000               # Upper bound for client `limit` on /api/search
 max_concurrent_queries_per_tenant = 8 # Unset = unlimited
+correlate_max_rows = 5000000          # Row cap on a Query IR `correlate` stage's joined output (irVersion 8)
+correlate_max_source_rows = 10000     # Row cap on a `correlate` stage's source side, every join kind incl. semi/anti (irVersion 11); over the cap, RESOURCE_EXHAUSTED
+match_max_trace_spans = 100000        # Span cap on one trace a `match` stage evaluates (irVersion 12); over it the query fails naming the trace (422 resource_limit)
+match_max_trace_bytes = 67108864      # Byte budget on one trace's buffered rows in a `match` stage; over it the query fails naming the trace (422 resource_limit)
+graph_max_nodes = 200                 # Node cap on a Query IR `graph` result; keeps focus, then highest-traffic nodes, and warns
+page_default_size = 1000              # Query IR page size when `page.size` is omitted (irVersion 14)
+page_max_size = 10000                 # Largest `page.size`; above it is a 400
+page_max_bytes = 16777216             # Page byte budget; past it the page ends early at a sort-key boundary
+page_max_tie_rows = 10000             # Rows sharing one sort key at a page boundary; more is a 422 resource_limit
+page_max_walk_rows = 1000000          # Rows one cursor chain may walk; the page past it is a 422 resource_limit
+page_cursor_ttl = "15m"               # Page cursor lifetime from issue; older is a 410
+
+[querier.datafusion]
+batch_size = 1024                # Scan batch row count; 0 = DataFusion default (8192). Bounds ExternalSorter's unspillable per-batch reservation (#1359)
+target_partitions = 0             # Scan fan-out; 0 = DataFusion default (available parallelism)
+sort_spill_reservation_mb = 10     # Headroom a spilling sort holds back for its merge, taken out of memory_limit_mb
 ```
+
+### Acceptor (Transport Limits, Resend Dedup)
+
+```toml
+[acceptor]
+max_request_body_bytes = 67108864 # 64MB decoded body cap for every OTLP/HTTP and remote_write route; also gRPC's max_decoding_message_size
+retry_dedup_window = "5m"         # Per-acceptor cache: a byte-identical client resend returning to this acceptor is acked without forwarding; "0s" disables this cache only
+```
+
+A resend within `retry_dedup_window` is matched by a fingerprint of the
+WAL-bound batch, taken right after the WAL flush, and its fresh entry is marked
+processed instead of forwarded (`signaldb.acceptor.resends_dropped`). The
+cache is in-memory, per acceptor process, and only a first line: the same
+fingerprint is the batch's `ingest_id`, so a resend at another replica or after
+a restart is dropped by the writer's `ingest_dedup_window`. Rationale:
+`src/acceptor/src/handler/retry_dedup.rs`.
 
 ### Writer (Commit Coalescing)
 
@@ -256,6 +391,7 @@ table_reconcile_interval = "5m"      # How often to re-run the signal-table reco
 wal_marker_retention = "30d"         # How long ANOTHER writer id's WAL idempotency marker is kept on a table; "0s" disables retirement
 max_drain_bytes_per_cycle = 268435456 # 256 MiB. Byte budget per WAL per drain cycle, oldest entries first; 0 disables it
 group_commit_timeout = "120s"        # Wall-clock budget for one group's commit attempt; expiry is a transient failure, never dead-lettered
+ingest_dedup_window = "1h"           # How long an ingest id from do_put's app_metadata is deduped against; in-memory, rebuilt from WAL at startup
 ```
 
 The writer commits ingested data to Iceberg asynchronously via its background
@@ -302,6 +438,19 @@ call. Expiry is a transient commit failure like any other catalog/object-store
 outage: the group's entries stay pending and retry next cycle, never
 dead-lettered.
 
+`do_put`'s `app_metadata` carries an `ingest_id`: the batch's content
+fingerprint, stored in the acceptor WAL entry metadata so hot path and retry
+consumer agree (absent for pre-#1734 acceptors, which get non-deduped
+behavior). Byte-identical batches in different acceptor WAL entries share it. The
+writer keeps an in-memory cache of ingest ids seen within `ingest_dedup_window`
+and, on a repeat, marks that put's freshly appended WAL entries processed
+immediately instead of letting the background loop commit them again —
+counted in `signaldb.writer.ingest_duplicates_dropped`. The cache is rebuilt
+at startup from ingest ids still present in this writer's own WAL entries
+within the window, so a restart does not reopen a window an acceptor retry or
+client resend could exploit; an entry pruned from the WAL before the window elapses is a
+known gap in that rebuild.
+
 ### MCP (Model Context Protocol server)
 
 The `signaldb mcp` server (a subcommand of the `signaldb` binary). A thin, credential-forwarding client: it
@@ -319,9 +468,12 @@ router_timeout = 30                  # Seconds per forwarded request (default 30
 max_concurrent_tool_calls = 8        # Tool calls in flight per MCP session (default 8);
                                      # excess calls wait 2 s for a permit, then fail with
                                      # "too many concurrent tool calls (limit N)"
+ui_base_url = "https://signaldb.example.com" # UI origin; unlocks `_links.ui` deep
+                                     # links on tool results that map to a UI view
+                                     # (unset by default)
 ```
 
-Env (multi-word fields need the double-underscore form): `SIGNALDB__MCP__ENABLED`, `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`, `SIGNALDB__MCP__ROUTER_TIMEOUT`, `SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`. The sidecar reads `[self_monitoring]` too (via `--config`, `signaldb.toml`, or `SIGNALDB__SELF_MONITORING__*`): when enabled it exports `POST /mcp` server spans, `tools/call {tool}` spans, per-call audit events, and the `signaldb.mcp.*` metrics as service `signaldb-mcp`. The MCP server ships in the monolithic image, so it can run as a sidecar container from the same image via `entrypoint: [signaldb-mcp]`.
+Env (multi-word fields need the double-underscore form): `SIGNALDB__MCP__ENABLED`, `SIGNALDB__MCP__BIND_ADDRESS`, `SIGNALDB__MCP__ROUTER_URL`, `SIGNALDB__MCP__ROUTER_TIMEOUT`, `SIGNALDB__MCP__MAX_CONCURRENT_TOOL_CALLS`, `SIGNALDB__MCP__UI_BASE_URL`. The sidecar reads `[self_monitoring]` too (via `--config`, `signaldb.toml`, or `SIGNALDB__SELF_MONITORING__*`): when enabled it exports `POST /mcp` server spans, `tools/call {tool}` spans, per-call audit events, and the `signaldb.mcp.*` metrics as service `signaldb-mcp`. The MCP server ships in the monolithic image, so it can run as a sidecar container from the same image via `entrypoint: [signaldb-mcp]`.
 
 #### MCP OAuth 2.1 authorization server
 
@@ -341,6 +493,38 @@ authorization_code_ttl = "60s"                     # default 60s
 ```
 
 Env: `SIGNALDB__MCP__OAUTH__ENABLED`, `SIGNALDB__MCP__OAUTH__ISSUER_URL`, `SIGNALDB__MCP__OAUTH__RESOURCE_URL`. The sidecar advertises the resource via its own `--oauth-resource-url` / `--oauth-issuer-url` flags (env `SIGNALDB__MCP__OAUTH__RESOURCE_URL` / `_ISSUER_URL`).
+
+### Public endpoints (connection self-service)
+
+How the deployment is reached from _outside_ (load balancer, reverse proxy,
+TLS terminator) — distinct from the bind addresses above. Answers
+`GET /api/v1/connection` (any tenant key) and the MCP `connection_info` tool,
+feeds the Explore UI's "Send data" snippets and the first-boot banner. All
+fields optional; unset fields fall back to localhost defaults and the
+response carries a note saying so.
+
+```toml
+[public]
+otlp_grpc_url = "https://otlp.example.com:4317"  # default http://localhost:4317
+otlp_http_url = "https://otlp.example.com:4318"  # base; /v1/traces etc. appended. default http://localhost:4318
+api_url = "https://signaldb.example.com"         # router HTTP API base. default http://localhost:3000
+mcp_url = "https://signaldb.example.com/mcp"     # falls back to [mcp.oauth].resource_url, else omitted
+```
+
+Env: `SIGNALDB__PUBLIC__OTLP_GRPC_URL`, `SIGNALDB__PUBLIC__OTLP_HTTP_URL`, `SIGNALDB__PUBLIC__API_URL`, `SIGNALDB__PUBLIC__MCP_URL`. Trailing slashes are trimmed; `https` scheme marks the endpoint as TLS in the response.
+
+### Demo Mode
+
+```toml
+[demo]
+enabled = true
+tenant_id = "demo"        # required when enabled
+dataset_id = "otel-demo"  # optional
+username = "demo@example.com" # default
+password = "demo"         # default
+```
+
+Provisions a read-only (Viewer) login at startup, resetting its password and role each start; a router middleware 403s every non-read request from its session. See `docs/operations/demo-mode.md`.
 
 ### Self-Monitoring (Dogfooding)
 
@@ -383,6 +567,18 @@ pyroscope_url = "http://localhost:4040"
 cpu_sample_rate = 100                 # Hz
 memory_profiling = false              # Needs `jemalloc-profiling` build feature
 ```
+
+### Processors (Tenant OTTL Processors)
+
+```toml
+[processors]
+reload_interval = "30s"            # ProcessorRegistry per-tenant cache TTL; cross-process propagation delay
+test_payload_max_bytes = 1048576   # 1 MiB cap on :test's inline OTLP JSON payload
+max_statements = 200               # Compiled-program statement cap per processor
+max_regex_len = 2048               # Max regex pattern source length in bytes (compiled size is capped separately at 1 MiB via regex::RegexBuilder::size_limit)
+```
+
+Env: `SIGNALDB__PROCESSORS__RELOAD_INTERVAL`, `SIGNALDB__PROCESSORS__TEST_PAYLOAD_MAX_BYTES`, `SIGNALDB__PROCESSORS__MAX_STATEMENTS`, `SIGNALDB__PROCESSORS__MAX_REGEX_LEN` (double-underscore form). Optional section; all fields default as shown. See `docs/users/processors.md`.
 
 ### Tenants (Per-Tenant Schema Overrides)
 

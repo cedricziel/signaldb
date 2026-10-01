@@ -10,23 +10,37 @@ import {
   pinsKey,
   type EntityPin,
 } from "../../api/catalog";
-import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
-import { QueryError } from "../../components/QueryError";
-import { DependencyBreakdown } from "./DependencyBreakdown";
-import { EntityMetricsPanel } from "./EntityMetricsPanel";
 import {
-  formatTimestamp,
+  fetchTraceGroupMembers,
+  type MembersSort,
+} from "../../api/traceGroupMembers";
+import { QueryError } from "../../components/QueryError";
+import { KpiCard, KpiStrip } from "../../components/KpiCard";
+import { Sparkline } from "../../components/Sparkline";
+import { DependencyBreakdown } from "./DependencyBreakdown";
+import { ServiceNeighborhood } from "./ServiceNeighborhood";
+import { EntityErrorGroups } from "./EntityErrorGroups";
+import { EntityMetricsPanel } from "./EntityMetricsPanel";
+import { useEntityKpis } from "./useEntityKpis";
+import { errorRatePercent, pctChange, ppChange } from "./entityKpiFormat";
+import type { KpiChangeFigure } from "./entityKpiFormat";
+import {
+  formatTimestampForRange,
   nanosToMs,
   rangeScopeKey,
   type ResolvedRange,
 } from "../../lib/time";
+import { formatDurationMs } from "../../lib/waterfall";
+import { formatRatePerSec } from "../../lib/traceGroups";
+import { formatTimestamp } from "../../lib/vizFormat";
+import type { LabelFilter } from "../../lib/filters";
 import {
   compositeKey,
   groupLabel,
   parseCompositeKey,
 } from "../../lib/traceGroups";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { MemberTable } from "../traces/MemberTable";
+import { MemberTable } from "../../components/MemberTable";
 import { SkeletonLines } from "../explore/Skeleton";
 import {
   catalogRangeSeconds,
@@ -34,15 +48,11 @@ import {
   EntityTable,
   isDrillable,
 } from "./CatalogView";
-import {
-  Observed,
-  redDuration,
-  redErrorClass,
-  redErrorRate,
-  redRate,
-} from "./red";
+import { OperationsTable } from "./OperationsTable";
+import { Observed } from "./red";
 import type { EntityTypeDef } from "./entityTypes";
 import "./catalog.css";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 interface Props {
   /**
@@ -58,21 +68,72 @@ interface Props {
   update: UpdateFn;
 }
 
-/** "Recent" is illustrative context, not the main list — a small, fixed
- * bound rather than the traces tab's user-configurable limit. */
-const MEMBER_LIMIT = 25;
+/** How many of the entity's own slowest inbound spans the "Slowest traces"
+ * section shows — a leaderboard, not the traces tab's user-configurable
+ * limit. */
+const SLOWEST_TRACES_LIMIT = 8;
+
+const SLOWEST_TRACES_SORT: MembersSort = {
+  field: "duration",
+  dir: "desc",
+};
+
+/** Identity fields that describe the emitting resource, which OTel logs
+ * carry the same way spans do — as opposed to a span-only attribute
+ * (`db.namespace`, `messaging.destination.name`, the operation breakdown's
+ * `span.name`), which a log record has no equivalent for. */
+const LOG_COMPATIBLE_FIELDS = new Set([
+  "service.name",
+  "service.namespace",
+  "host.name",
+  "k8s.pod.name",
+  "k8s.namespace.name",
+  "k8s.node.name",
+  "container.name",
+  "process.pid",
+]);
+
+/** The KPI cards' sparklines bucket at ~a minute; shared by all three so a
+ * hover reads the same resolution across the strip. */
+function sparklineLabel(x: number): string {
+  return formatTimestamp(x, 60_000);
+}
+
+/** Which way a KPI card's own tone runs isn't fixed to the figure's
+ * direction — an error rate going up is bad, a rate going up is neither. */
+function toKpiChange(
+  figure: KpiChangeFigure,
+  kind: "neutral" | "errors" | "duration",
+) {
+  const tone: "good" | "bad" | "neutral" =
+    figure.direction === "flat" || kind === "neutral"
+      ? "neutral"
+      : figure.direction === "up"
+        ? "bad"
+        : "good";
+  return { ...figure, tone };
+}
 
 export function EntityDetail({ entity, range, state, update }: Props) {
   const rangeKey = rangeScopeKey(state);
   const rangeSeconds = catalogRangeSeconds(range);
 
+  useBreadcrumbLeaf(groupLabel(state.catalogPrimary));
   const primaryValues = parseCompositeKey(
     state.catalogPrimary,
     entity.identity,
   );
-  const primaryPinned: EntityPin[] = entity.identity
-    .map((field, i) => ({ field, value: primaryValues[i] }))
-    .filter((p): p is EntityPin => p.value != null);
+  // `parseCompositeKey` always returns one entry per identity dimension
+  // (null for a "(not set)" segment), so every dimension is pinned — a
+  // dimension whose value is null pins to "absent on this record" (see
+  // `EntityPin`/`buildEntitySourceDoc` in api/catalog.ts), not left
+  // unconstrained. Dropping a null value here used to let the KPI query
+  // match *any* value for that dimension, pulling in a different entity's
+  // numbers under this one's name.
+  const primaryPinned: EntityPin[] = entity.identity.map((field, i) => ({
+    field,
+    value: primaryValues[i] ?? null,
+  }));
 
   const breakdownEntity: EntityTypeDef | undefined = entity.breakdown
     ? {
@@ -111,12 +172,18 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       : primaryPinned;
   const currentPinKey = pinsKey(currentPinned);
 
+  // Only for the "Signals" badge next to the title — which sources cover
+  // this entity at all isn't something the traces-only KPI query below can
+  // answer (it has no metrics/logs signal to report on).
   const kpiQuery = useQuery({
     queryKey: ["catalog-entity-kpi", current.id, rangeKey, currentPinKey],
     queryFn: () =>
       fetchCatalogEntities(current, range, undefined, currentPinned),
   });
   const kpiRow = kpiQuery.data?.entities[0];
+
+  const kpisQuery = useEntityKpis(current, range, rangeKey, currentPinned);
+  const kpis = kpisQuery.data;
 
   const memberDims =
     atSecondary && breakdownEntity
@@ -126,10 +193,11 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     atSecondary && breakdownEntity
       ? [...primaryValues, state.catalogSecondary]
       : primaryValues;
-  const membersQuery = useQuery({
+  const slowestTracesQuery = useQuery({
     queryKey: [
-      "catalog-entity-members",
+      "catalog-entity-slowest-traces",
       entity.id,
+      entity.spanKindScope,
       rangeKey,
       compositeKey(memberValues),
     ],
@@ -140,57 +208,129 @@ export function EntityDetail({ entity, range, state, update }: Props) {
         range,
         [],
         "spans",
-        MEMBER_LIMIT,
+        SLOWEST_TRACES_LIMIT,
+        SLOWEST_TRACES_SORT,
+        entity.spanKindScope,
       ),
   });
 
   const drillable = isDrillable(entity);
   const openTraces = () => {
-    update(
-      { signal: "traces", traceFilters: drillFilters(entity, primaryValues) },
-      { push: true },
-    );
+    const filters = drillFilters(entity, primaryValues);
+    // At the breakdown level (an operation within a service, say) the
+    // parent entity's own filters say nothing about *which* operation was
+    // drilled into — without this, "View matching traces →" from an
+    // operation page dropped the operation and showed every trace for the
+    // whole service.
+    const withBreakdown =
+      atSecondary && breakdownEntity?.identity[0] === "span.name"
+        ? [...filters, { field: "name", value: state.catalogSecondary }]
+        : filters;
+    update({ signal: "traces", traceFilters: withBreakdown }, { push: true });
+  };
+
+  // Only the entity's own identity dimensions that a log record can also
+  // carry — an entity type pinned on a span-only attribute (`db.namespace`,
+  // `messaging.destination.name`, an operation's `span.name`) has no
+  // equivalent scope in Logs, so that button is left off entirely rather
+  // than jumping to a Logs view that silently ignores part of the entity.
+  const canOpenLogs =
+    drillable && entity.identity.every((f) => LOG_COMPATIBLE_FIELDS.has(f));
+  const openLogs = () => {
+    const filters: LabelFilter[] = entity.identity.flatMap((field, i) => {
+      const v = primaryValues[i];
+      return v == null ? [] : [{ label: field, op: "=" as const, value: v }];
+    });
+    update({ signal: "logs", filters }, { push: true });
   };
 
   const title = atSecondary
     ? groupLabel(state.catalogSecondary)
     : groupLabel(state.catalogPrimary);
 
-  const kpiBody = kpiQuery.isError ? (
-    <QueryError what="this entity" error={kpiQuery.error} />
-  ) : kpiQuery.isPending ? (
+  const kpiBody = kpisQuery.isError ? (
+    <QueryError what="this entity" error={kpisQuery.error} />
+  ) : kpisQuery.isPending ? (
     <SkeletonLines lines={6} />
-  ) : kpiRow ? (
-    <dl className="entity-kpis">
-      <div>
-        <dt>Signals</dt>
-        <dd>
-          <Observed observations={kpiRow.observations} />
-        </dd>
+  ) : kpis?.current ? (
+    <>
+      <KpiStrip>
+        <KpiCard
+          label="Rate"
+          value={formatRatePerSec(kpis.current.ratePerSec)}
+          change={
+            kpis.previous &&
+            toKpiChange(
+              pctChange(kpis.current.ratePerSec, kpis.previous.ratePerSec),
+              "neutral",
+            )
+          }
+          detail={`peak ${formatRatePerSec(kpis.current.peakRatePerSec)} · ${kpis.current.count.toLocaleString()} total`}
+        >
+          <Sparkline
+            points={kpis.series.rate.map((p) => ({ x: p.tMs, v: p.value }))}
+            width="100%"
+            tone="neutral"
+            valueLabel="rate"
+            formatValue={formatRatePerSec}
+            formatLabel={sparklineLabel}
+          />
+        </KpiCard>
+        <KpiCard
+          label="Errors"
+          value={errorRatePercent(kpis.current.errorRate)}
+          valueTone={kpis.current.errorRate > 0 ? "error" : "neutral"}
+          change={
+            kpis.previous &&
+            toKpiChange(
+              ppChange(
+                kpis.current.errorRate * 100,
+                kpis.previous.errorRate * 100,
+              ),
+              "errors",
+            )
+          }
+          detail={`${Math.round(kpis.current.errorRate * kpis.current.count).toLocaleString()} failed`}
+        >
+          <Sparkline
+            points={kpis.series.errorRate.map((p) => ({
+              x: p.tMs,
+              v: p.value,
+            }))}
+            width="100%"
+            tone="error"
+            valueLabel="error rate"
+            formatValue={errorRatePercent}
+            formatLabel={sparklineLabel}
+          />
+        </KpiCard>
+        <KpiCard
+          label="Duration"
+          value={formatDurationMs(kpis.current.p95Ms)}
+          change={
+            kpis.previous &&
+            toKpiChange(
+              pctChange(kpis.current.p95Ms, kpis.previous.p95Ms),
+              "duration",
+            )
+          }
+          detail={`p50 ${formatDurationMs(kpis.current.p50Ms)} · p99 ${formatDurationMs(kpis.current.p99Ms)}`}
+        >
+          <Sparkline
+            points={kpis.series.p95.map((p) => ({ x: p.tMs, v: p.value }))}
+            width="100%"
+            tone="accent"
+            valueLabel="p95"
+            formatValue={formatDurationMs}
+            formatLabel={sparklineLabel}
+          />
+        </KpiCard>
+      </KpiStrip>
+      <div className="entity-last-seen">
+        Last seen{" "}
+        {formatTimestampForRange(nanosToMs(kpis.current.lastNs), range)}
       </div>
-      <div>
-        <dt>Rate</dt>
-        <dd>{redRate(kpiRow.red, rangeSeconds)}</dd>
-      </div>
-      <div>
-        <dt>Errors</dt>
-        <dd className={redErrorClass(kpiRow.red) ? "err-rate" : undefined}>
-          {redErrorRate(kpiRow.red)}
-        </dd>
-      </div>
-      <div>
-        <dt>P50</dt>
-        <dd>{redDuration(kpiRow.red, "p50Ms")}</dd>
-      </div>
-      <div>
-        <dt>P95</dt>
-        <dd>{redDuration(kpiRow.red, "p95Ms")}</dd>
-      </div>
-      <div>
-        <dt>Last seen</dt>
-        <dd>{formatTimestamp(nanosToMs(kpiRow.lastNs))}</dd>
-      </div>
-    </dl>
+    </>
   ) : (
     <div className="view-note">No matching spans in this window.</div>
   );
@@ -199,20 +339,26 @@ export function EntityDetail({ entity, range, state, update }: Props) {
     <div className="catalog-main entity-detail">
       <nav className="catalog-breadcrumb" aria-label="Breadcrumb">
         <button
-          onClick={() => update({ catalogPrimary: "", catalogSecondary: "" })}
+          onClick={() =>
+            update({ catalogPrimary: "", catalogSecondary: "" }, { push: true })
+          }
         >
           catalog
         </button>
         <span className="catalog-crumb-sep">/</span>
         <button
-          onClick={() => update({ catalogPrimary: "", catalogSecondary: "" })}
+          onClick={() =>
+            update({ catalogPrimary: "", catalogSecondary: "" }, { push: true })
+          }
         >
           {entity.label}
         </button>
         <span className="catalog-crumb-sep">/</span>
         {atSecondary ? (
           <>
-            <button onClick={() => update({ catalogSecondary: "" })}>
+            <button
+              onClick={() => update({ catalogSecondary: "" }, { push: true })}
+            >
               {groupLabel(state.catalogPrimary)}
             </button>
             <span className="catalog-crumb-sep">/</span>
@@ -228,28 +374,28 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       </nav>
 
       <div className="catalog-headline">
-        <span className="catalog-title">{title}</span>
+        <div className="entity-detail-title">
+          <span className="catalog-title">{title}</span>
+          {kpiRow && <Observed observations={kpiRow.observations} />}
+        </div>
         {drillable && (
-          <button className="act" onClick={openTraces}>
-            View matching traces →
-          </button>
+          <div className="entity-detail-actions">
+            {canOpenLogs && (
+              <button className="btn" onClick={openLogs}>
+                Logs
+              </button>
+            )}
+            <button className="btn" onClick={openTraces}>
+              Traces
+            </button>
+          </div>
         )}
       </div>
 
       {kpiBody}
 
-      {/* Pinned to the entity, never to `currentPinned`: a breakdown row is a
-          dimension within the entity, not something a resource attribute
-          identifies, so metrics pinned to it could not exist. */}
-      <EntityMetricsPanel
-        entity={entity}
-        pinned={primaryPinned}
-        range={range}
-        rangeKey={rangeKey}
-      />
-
       {!atSecondary && breakdownEntity && (
-        <EntityTable
+        <OperationsTable
           entity={breakdownEntity}
           range={range}
           rangeKey={rangeKey}
@@ -258,6 +404,15 @@ export function EntityDetail({ entity, range, state, update }: Props) {
           onRowClick={(values) =>
             update({ catalogSecondary: compositeKey(values) }, { push: true })
           }
+        />
+      )}
+
+      {entity.id === "service" && !atSecondary && primaryValues[0] && (
+        <EntityErrorGroups
+          serviceName={primaryValues[0]}
+          range={range}
+          rangeKey={rangeKey}
+          update={update}
         />
       )}
 
@@ -272,34 +427,61 @@ export function EntityDetail({ entity, range, state, update }: Props) {
       )}
 
       {entity.id === "service" && !atSecondary && primaryValues[0] && (
-        <div className="catalog-main">
-          <div className="catalog-headline">
-            <span className="catalog-title">Time by dependency</span>
-            <span className="catalog-sub">
-              discovered from db.system.name, http.request.method, rpc.system,
-              messaging.system
-            </span>
+        <div className="entity-service-maps">
+          <div className="catalog-main">
+            <div className="catalog-headline">
+              <span className="catalog-title">Time by dependency</span>
+              <span className="catalog-sub">
+                discovered from db.system.name, http.request.method, rpc.system,
+                messaging.system
+              </span>
+            </div>
+            <DependencyBreakdown
+              serviceName={primaryValues[0]}
+              range={range}
+              rangeKey={rangeKey}
+            />
           </div>
-          <DependencyBreakdown
+          <ServiceNeighborhood
             serviceName={primaryValues[0]}
             range={range}
             rangeKey={rangeKey}
+            update={update}
           />
         </div>
       )}
 
       <div className="catalog-headline">
-        <span className="catalog-title">Recent matching spans</span>
+        <span className="catalog-title">Slowest traces</span>
+        {drillable && (
+          <button className="btn" onClick={openTraces}>
+            Open in Traces
+          </button>
+        )}
       </div>
       <MemberTable
-        members={membersQuery.data}
-        error={membersQuery.error}
-        what="spans"
+        members={slowestTracesQuery.data}
+        error={slowestTracesQuery.error}
+        what="traces"
         identityLabel="Span"
-        emptyMessage="No matching spans in this window."
+        emptyMessage="No traces in this range"
+        footnote={`Slowest ${SLOWEST_TRACES_LIMIT} ${entity.spanKindScope ? "inbound requests to" : "spans for"} ${title} in this window.`}
+        initialSort={{ key: "duration", dir: "desc" }}
         onOpenTrace={(traceId) =>
           update({ signal: "traces", trace: traceId }, { push: true })
         }
+      />
+
+      {/* Pinned to the entity, never to `currentPinned`: a breakdown row is a
+          dimension within the entity, not something a resource attribute
+          identifies, so metrics pinned to it could not exist. Last on the
+          page — metrics are supplementary context, not the primary signal a
+          service/host/process page leads with. */}
+      <EntityMetricsPanel
+        entity={entity}
+        pinned={primaryPinned}
+        range={range}
+        rangeKey={rangeKey}
       />
     </div>
   );

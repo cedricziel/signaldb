@@ -14,7 +14,7 @@
  * to scope by, so they go unscoped, naturally limited to whichever records
  * carry the identity attribute at all.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrAgg, IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { sortRows, type SortValue } from "../lib/sortTable";
@@ -26,17 +26,25 @@ import type { EntityTypeDef } from "../features/catalog/entityTypes";
  * previously-fetched row), not user-typed input, so it bypasses
  * `FACET_FIELDS`/`TraceFilter` entirely; that mechanism exists for
  * compiling user-facing filters (TraceQL search, URL round-tripping), a
- * different concern from pinning a query to one specific entity. */
+ * different concern from pinning a query to one specific entity. `value` is
+ * `null` for a dimension whose row carries no value at all (a `"(not set)"`
+ * breakdown) — compiled to `not exists`, not `eq null` (see
+ * `buildEntitySourceDoc`), since "(not set)" means the field is absent, the
+ * same distinction `api/traceGroupMembers.ts`'s `buildMembersDoc` and
+ * `api/errors.ts`'s `pin()` make. */
 export interface EntityPin {
   field: string;
-  value: string;
+  value: string | null;
 }
 
 /** A pin set as one cache-key element. Spelled in one place so that a change
  * to the shape — escaping a value that contains `,` or `=`, say — cannot
- * leave some call sites on the old spelling and others on the new. */
+ * leave some call sites on the old spelling and others on the new. A `null`
+ * value gets its own marker rather than the literal string "null", so a
+ * genuine `field=null` value (unlikely, but not impossible) can't collide
+ * with an absent one. */
 export function pinsKey(pinned: EntityPin[]): string {
-  return pinned.map((p) => `${p.field}=${p.value}`).join(",");
+  return JSON.stringify(pinned);
 }
 
 const NANOS_PER_MS = 1_000_000;
@@ -47,6 +55,16 @@ function timeField(source: string): string {
   return source === "traces" ? "start_time_unix_nano" : "timestamp";
 }
 
+/** This entity type's identity as grouped for one source: the degraded
+ * per-source tuple where `observedEntityTypes` computed one, falling back to
+ * the full identity for a type that bypassed it (an unanalyzed deployment,
+ * or a caller in a test). A source absent from `identityBySource` here would
+ * mean the source was never confirmed to carry even the primary attribute —
+ * callers only reach this for a source `entityType.sources` already lists. */
+function sourceIdentity(entityType: EntityTypeDef, source: string): string[] {
+  return entityType.identityBySource?.[source] ?? entityType.identity;
+}
+
 /**
  * Builds the aggregate for one entity type against one of its sources.
  * Ordered by count, descending, regardless of the table's displayed sort:
@@ -55,6 +73,26 @@ function timeField(source: string): string {
  * only to bias which rows survive the per-source budget below toward the
  * ones most likely to matter.
  */
+/** One `where` stage per pin: an equality check, or — for a pin recording
+ * "this record carries no value here" — an absence check. Shared by every
+ * module that pins a query to an already-known identity (this file,
+ * `entityDetailStats.ts`, `operationSeries.ts`), so a change to how a pin
+ * compiles can't leave one of them behind. */
+export function pinsWhere(pinned: EntityPin[]): IrStage[] {
+  return pinned.map((p) => ({
+    where:
+      p.value === null
+        ? { not: { field: p.field, op: "exists" } }
+        : { field: p.field, op: "eq", value: p.value },
+  }));
+}
+
+/** A `where` stage scoping to one span kind, or no stage when `kind` is
+ * undefined. */
+export function spanKindWhere(kind: string | undefined): IrStage[] {
+  return kind ? [{ where: { field: "span_kind", op: "eq", value: kind } }] : [];
+}
+
 export function buildEntitySourceDoc(
   entityType: EntityTypeDef,
   source: string,
@@ -62,21 +100,10 @@ export function buildEntitySourceDoc(
   pinned: EntityPin[] = [],
 ): QueryIrRequest {
   const isTraces = source === "traces";
-  const scope: Record<string, unknown>[] = [
-    ...(isTraces && entityType.spanKindScope
-      ? [
-          {
-            where: {
-              field: "span_kind",
-              op: "eq",
-              value: entityType.spanKindScope,
-            },
-          },
-        ]
-      : []),
-    ...pinned.map((p) => ({
-      where: { field: p.field, op: "eq", value: p.value },
-    })),
+  const identity = sourceIdentity(entityType, source);
+  const scope: IrStage[] = [
+    ...spanKindWhere(isTraces ? entityType.spanKindScope : undefined),
+    ...pinsWhere(pinned),
   ];
 
   return {
@@ -91,11 +118,11 @@ export function buildEntitySourceDoc(
       ...scope,
       {
         aggregate: {
-          by: entityType.identity,
+          by: identity,
           aggs: [
             { fn: "count", as: "n" },
             ...(isTraces
-              ? [
+              ? ([
                   {
                     fn: "count",
                     as: "errors",
@@ -107,7 +134,7 @@ export function buildEntitySourceDoc(
                   },
                   { fn: "quantile", of: "duration", arg: 0.5, as: "p50" },
                   { fn: "quantile", of: "duration", arg: 0.95, as: "p95" },
-                ]
+                ] satisfies IrAgg[])
               : []),
             { fn: "max", of: timeField(source), as: "last" },
           ],
@@ -233,6 +260,23 @@ function entitySortValue(e: CatalogEntity, key: string): SortValue {
   return rankOf(e);
 }
 
+/** Realigns a source's row values, positioned per that source's own
+ * (possibly degraded) identity tuple, onto the entity type's full identity
+ * order — so that merging across sources compares like dimensions. A
+ * dimension the source dropped (absent from its field list) reads as
+ * unknown for that source's rows, the same way an absent value would. */
+function alignValues(
+  values: (string | null)[],
+  sourceIdentity: string[],
+  fullIdentity: string[],
+): (string | null)[] {
+  if (sourceIdentity.length === fullIdentity.length) return values;
+  return fullIdentity.map((field) => {
+    const i = sourceIdentity.indexOf(field);
+    return i === -1 ? null : values[i]!;
+  });
+}
+
 export async function fetchCatalogEntities(
   entityType: EntityTypeDef,
   range: ResolvedRange,
@@ -240,19 +284,27 @@ export async function fetchCatalogEntities(
   pinned: EntityPin[] = [],
 ): Promise<CatalogEntityResult> {
   const sources = entityType.sources ?? ["traces"];
-  const dimensionCount = entityType.identity.length;
 
   const perSource = await Promise.all(
     sources.map(async (source) => {
+      const identity = sourceIdentity(entityType, source);
       const res = await runIrQuery(
         buildEntitySourceDoc(entityType, source, range, pinned),
       );
       const decoded = decodeSourceRows(
         res,
-        dimensionCount,
+        identity.length,
         source === "traces",
       );
-      return { ...decoded, source };
+      return {
+        ...decoded,
+        rows: decoded.rows.map((row) => ({
+          ...row,
+          values: alignValues(row.values, identity, entityType.identity),
+        })),
+        source,
+        dimensions: identity.join("\u0000"),
+      };
     }),
   );
 
@@ -261,9 +313,12 @@ export async function fetchCatalogEntities(
   // never clobber a real trace measurement for the same identity, nor
   // manufacture one for an identity traces never saw.
   const merged = new Map<string, CatalogEntity>();
-  for (const { source, rows } of perSource) {
+  for (const { source, rows, dimensions } of perSource) {
     for (const row of rows) {
-      const key = compositeKey(row.values);
+      // The grouped dimensions are part of the key: a degraded row's `null`
+      // means "not carried", a full-tuple row's `null` means "absent value",
+      // and the two must not merge.
+      const key = `${dimensions}\u0001${compositeKey(row.values)}`;
       const observation = { source, count: row.count };
       const existing = merged.get(key);
       if (!existing) {

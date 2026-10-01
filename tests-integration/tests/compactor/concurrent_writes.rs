@@ -8,7 +8,6 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::busiest_partition;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
@@ -61,7 +60,6 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
@@ -70,9 +68,8 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // Phase 1: Create initial small files via Writer
     tracing::info!("Phase 1: Creating initial small files via Writer");
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -149,9 +146,8 @@ async fn test_compaction_with_concurrent_writes() -> Result<()> {
     // Phase 4: Simulate concurrent write from Writer service
     tracing::info!("Phase 4: Writing concurrent data via Writer");
 
-    let mut concurrent_writer = IcebergTableWriter::new(
+    let mut concurrent_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -274,16 +270,14 @@ async fn test_concurrent_compactions_different_partitions() -> Result<()> {
     tracing::info!("=== Starting concurrent compactions test ===");
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
     // Create initial data via Writer
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

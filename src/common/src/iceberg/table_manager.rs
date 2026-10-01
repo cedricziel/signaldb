@@ -13,11 +13,25 @@ use super::evolution;
 use super::names;
 use super::schemas;
 use crate::schema::SCHEMA_DEFINITIONS;
+use crate::schema::schema_parser::TableSchemaDefinition;
+use crate::schema::typed_attributes;
 
 /// Standard Iceberg property: delete aged-out metadata files after commit.
 const DELETE_AFTER_COMMIT_KEY: &str = "write.metadata.delete-after-commit.enabled";
 /// Standard Iceberg property: how many previous metadata files to retain.
 const PREVIOUS_VERSIONS_MAX_KEY: &str = "write.metadata.previous-versions-max";
+
+/// Parameters for creating a signal table fresh, bundled to keep
+/// [`IcebergTableManager::create_fresh_table`]/[`IcebergTableManager::recreate_as_typed`]
+/// under clippy's argument-count limit.
+struct NewTableRequest<'a> {
+    tenant_slug: &'a str,
+    dataset_slug: &'a str,
+    table_name: &'a str,
+    labels: &'a crate::config::MaterializedLabels,
+    /// Opts the table into the warm containment index when `Some` (task 4.3).
+    warm_index: Option<crate::config::WarmIndexConfig>,
+}
 
 /// Manages the lifecycle of Iceberg tables.
 ///
@@ -31,6 +45,16 @@ pub struct IcebergTableManager {
     catalog: Arc<dyn IcebergCatalog>,
     /// `write.metadata.previous-versions-max` applied to tables at creation.
     metadata_previous_versions_max: usize,
+    /// Per-table-identifier mutex serializing [`Self::recreate_as_typed`]
+    /// within this process, so two tasks racing the same identifier (e.g.
+    /// a writer and the table reconciler, or a writer and the compactor in
+    /// microservices mode, both loading the table while it is still
+    /// legacy) can never interleave their drop-then-create. Keyed by the
+    /// identifier's string form since [`Identifier`] itself isn't `Eq`+`Hash`
+    /// in a form `DashMap` can use directly. Entries are never evicted --
+    /// bounded by the number of distinct tables this process ever
+    /// recreates, not by ongoing load.
+    recreation_locks: dashmap::DashMap<String, Arc<tokio::sync::Mutex<()>>>,
 }
 
 impl IcebergTableManager {
@@ -40,7 +64,17 @@ impl IcebergTableManager {
         Self {
             catalog,
             metadata_previous_versions_max,
+            recreation_locks: dashmap::DashMap::new(),
         }
+    }
+
+    /// The mutex serializing [`Self::recreate_as_typed`] calls for `ident`
+    /// within this process, created on first use.
+    fn recreation_lock_for(&self, ident: &Identifier) -> Arc<tokio::sync::Mutex<()>> {
+        self.recreation_locks
+            .entry(ident.to_string())
+            .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+            .clone()
     }
 
     /// Commit the metadata pruning properties onto tables that lack them.
@@ -164,27 +198,69 @@ impl IcebergTableManager {
         }
     }
 
+    /// The `schemas.toml` schema map and current version for `table_name`,
+    /// shared by [`Self::ensure_schema_evolved`] (which walks a table
+    /// forward within that map) and [`Self::target_is_typed`] (which asks
+    /// whether the destination of that walk is the typed layout). `None`
+    /// for any table name `schemas.toml` doesn't source.
+    fn schema_target_for(
+        table_name: &str,
+    ) -> Option<(
+        &'static std::collections::HashMap<String, TableSchemaDefinition>,
+        &'static str,
+    )> {
+        match table_name {
+            "traces" => Some((
+                &SCHEMA_DEFINITIONS.traces,
+                SCHEMA_DEFINITIONS.current_trace_version(),
+            )),
+            "logs" => Some((
+                &SCHEMA_DEFINITIONS.logs,
+                SCHEMA_DEFINITIONS.metadata.current_log_version.as_str(),
+            )),
+            "profiles" => Some((
+                &SCHEMA_DEFINITIONS.profiles,
+                SCHEMA_DEFINITIONS.metadata.current_profile_version.as_str(),
+            )),
+            "metrics" => Some((&SCHEMA_DEFINITIONS.metrics, schemas::TYPED_METRIC_VERSION)),
+            "metric_exemplars" => Some((
+                &SCHEMA_DEFINITIONS.metric_exemplars,
+                schemas::TYPED_METRIC_VERSION,
+            )),
+            _ => None,
+        }
+    }
+
+    /// Whether `table_name`'s current `schemas.toml` version realizes the
+    /// typed attribute layout (see `typed_attributes`) rather than the
+    /// legacy single map/JSON column per container.
+    ///
+    /// `false` both for a table name `schemas.toml` doesn't source and for
+    /// one whose current version genuinely predates the typed layout --
+    /// either way there is nothing to cut over.
+    fn target_is_typed(table_name: &str) -> Result<bool> {
+        let Some((schemas_map, current_version)) = Self::schema_target_for(table_name) else {
+            return Ok(false);
+        };
+        let resolved = SCHEMA_DEFINITIONS.resolve_table_schema(schemas_map, current_version)?;
+        Ok(typed_attributes::is_typed_layout(
+            resolved.fields.iter().map(|f| f.name.as_str()),
+        ))
+    }
+
     /// Bring `table_name`'s schema forward to its current `schemas.toml`
     /// version via [`evolution::ensure_schema_current`].
     ///
-    /// Scoped to `traces` and `logs` only: those are the only signals whose
-    /// physical schema is actually sourced from `schemas.toml` today.
-    /// Metrics (all five representations) and profiles are hand-written in
-    /// `iceberg::schemas` with no versioned definition to evolve against —
-    /// see `openspec/changes/iceberg-schema-evolution`'s scope correction
-    /// and `unified-table-schema`, which owns migrating them onto
-    /// `schemas.toml`. A no-op for any other table name.
+    /// Covers every `schemas.toml`-sourced signal: traces, logs, all five
+    /// metrics representations, and profiles. A no-op for any other table
+    /// name. Must never be reached for a legacy table whose target version
+    /// is typed -- [`evolution::ensure_schema_current`] can only add/remove
+    /// scalar columns, never the map/binary columns the typed layout needs
+    /// (see [`Self::ensure_table`]'s recreate-as-typed gate, which
+    /// intercepts that case first).
     async fn ensure_schema_evolved(&self, table_name: &str, ident: &Identifier) -> Result<()> {
-        let (schemas_map, current_version) = match table_name {
-            "traces" => (
-                &SCHEMA_DEFINITIONS.traces,
-                SCHEMA_DEFINITIONS.current_trace_version(),
-            ),
-            "logs" => (
-                &SCHEMA_DEFINITIONS.logs,
-                SCHEMA_DEFINITIONS.metadata.current_log_version.as_str(),
-            ),
-            _ => return Ok(()),
+        let Some((schemas_map, current_version)) = Self::schema_target_for(table_name) else {
+            return Ok(());
         };
         evolution::ensure_schema_current(
             self.catalog.clone(),
@@ -226,18 +302,149 @@ impl IcebergTableManager {
         table
     }
 
+    /// Drops `ident` and creates it fresh at the current (typed)
+    /// `schemas.toml` version -- the one-shot cutover's data-loss step for a
+    /// table still in the legacy `map<string,string>` layout. Intentional:
+    /// pre-cutover data in this table is not migrated (breaking-changes
+    /// policy). Logged once per recreated table. `request` is forwarded
+    /// to [`Self::create_fresh_table`] unchanged, same as any other fresh
+    /// creation, so an opted-in warm index survives the recreation.
+    ///
+    /// `expected_table_uuid` is the `table_uuid` of the legacy table the
+    /// *caller* loaded and decided needed recreating. Two tasks can load
+    /// the same identifier while it is still legacy and both reach this
+    /// method (e.g. a writer and the table reconciler, or a writer and the
+    /// compactor in microservices mode) -- without re-checking, the second
+    /// caller would drop the table the first one just created and is
+    /// already committing to, losing every write in between. This method
+    /// closes that window three ways:
+    ///
+    /// 1. Serializes every call for `ident` within this process via
+    ///    [`Self::recreation_lock_for`] -- the whole check-drop-create
+    ///    sequence below runs under the lock, so a same-process racer
+    ///    always observes the *other* racer's outcome before acting.
+    /// 2. Immediately before dropping, reloads `ident` and re-checks: a
+    ///    table that no longer exists or is already typed is never
+    ///    touched -- the caller's stale legacy view is simply superseded.
+    /// 3. Only drops when the freshly reloaded table is still legacy
+    ///    *and* its `table_uuid` still equals `expected_table_uuid` -- the
+    ///    literal table the caller observed, not a same-identifier
+    ///    successor. A legacy table with a different uuid (a same-identity
+    ///    table this call didn't expect) is left alone; a later
+    ///    [`Self::ensure_table`] call retries recreation if it still needs
+    ///    it.
+    ///
+    /// This closes every *within-process* race. A residual, much narrower
+    /// window remains *across processes*: the reload-then-drop gap itself
+    /// is not atomic (the underlying `Catalog::drop_table` has no
+    /// compare-and-delete by uuid), so a different process could still
+    /// drop+recreate `ident` in the instant between this call's reload and
+    /// its own `drop_table`, and this call's `drop_table` would then remove
+    /// that process's new typed table. Unlike the pre-reload window this
+    /// replaces, that requires two processes to race the exact same
+    /// still-legacy identifier within microseconds of each other, not
+    /// merely within the same recreation cycle.
+    async fn recreate_as_typed(
+        &self,
+        request: NewTableRequest<'_>,
+        ident: &Identifier,
+        expected_table_uuid: uuid::Uuid,
+        from_version: Option<&str>,
+    ) -> Result<Table> {
+        let lock = self.recreation_lock_for(ident);
+        let _guard = lock.lock().await;
+
+        let reloaded = match self.catalog.clone().load_tabular(ident).await {
+            Ok(Tabular::Table(table)) => Some(table),
+            Ok(_) => {
+                return Err(anyhow::anyhow!(
+                    "Expected table but found different tabular type for {ident}"
+                ));
+            }
+            Err(_) => None,
+        };
+
+        // Re-check under the lock before touching anything: a table that
+        // vanished, was already cut over, or is a different table than the
+        // one our caller observed is superseded, not ours to drop.
+        match reloaded {
+            None => {}
+            Some(table) => {
+                let already_typed = table.current_schema().is_ok_and(|schema| {
+                    typed_attributes::is_typed_layout(
+                        schema.fields().iter().map(|f| f.name.as_str()),
+                    )
+                });
+                let same_table = table.metadata().table_uuid == expected_table_uuid;
+                if already_typed || !same_table {
+                    return Ok(self
+                        .reconcile_existing_table(request.table_name, ident, table)
+                        .await);
+                }
+
+                let to_version =
+                    Self::schema_target_for(request.table_name).map(|(_, version)| version);
+                tracing::warn!(
+                    table = %ident,
+                    from_version = from_version.unwrap_or("unrecorded"),
+                    to_version = to_version.unwrap_or("unknown"),
+                    "Recreating table in the typed attribute layout for the one-shot cutover; \
+                     pre-cutover data in this table is dropped and not migrated"
+                );
+
+                if let Err(e) = self.catalog.drop_table(ident).await {
+                    let message = e.to_string().to_lowercase();
+                    let already_gone = message.contains("not found")
+                        || message.contains("does not exist")
+                        || message.contains("no such");
+                    if !already_gone {
+                        return Err(anyhow::anyhow!(
+                            "Failed to drop legacy table {ident} for typed-layout recreation: {e}"
+                        ));
+                    }
+                }
+            }
+        }
+
+        self.create_fresh_table(request).await
+    }
+
     /// Load an existing table or create it if it doesn't exist.
     ///
     /// This method:
     /// 1. Tries `load_tabular()` -- single catalog round-trip, fresh metadata
     /// 2. On NotFound -> creates the table with schema from `schemas::TableSchema`
     /// 3. Handles `AlreadyExists` gracefully (concurrent callers)
+    ///
+    /// A loaded table still in the legacy layout, whose current
+    /// `schemas.toml` version is typed, is dropped and recreated rather
+    /// than reconciled (one-shot cutover; see [`Self::recreate_as_typed`]):
+    /// [`evolution::ensure_schema_current`] can only add/remove scalar
+    /// columns, so it can never carry a table from the legacy
+    /// `map<string,string>` layout to the typed one.
     pub async fn ensure_table(
         &self,
         tenant_slug: &str,
         dataset_slug: &str,
         table_name: &str,
         labels: &crate::config::MaterializedLabels,
+    ) -> Result<Table> {
+        self.ensure_table_with_warm_index(tenant_slug, dataset_slug, table_name, labels, None)
+            .await
+    }
+
+    /// Like [`Self::ensure_table`], additionally opting a brand-new table
+    /// into the warm containment index when `warm_index` is `Some`. Only
+    /// affects table *creation*: an already-existing table is loaded and
+    /// reconciled exactly as [`Self::ensure_table`] does, since evolving a
+    /// live table's derived columns is out of scope (task 4.3).
+    pub async fn ensure_table_with_warm_index(
+        &self,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        table_name: &str,
+        labels: &crate::config::MaterializedLabels,
+        warm_index: Option<crate::config::WarmIndexConfig>,
     ) -> Result<Table> {
         let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         if let Ok(tabular) = self.catalog.clone().load_tabular(&ident).await {
@@ -251,11 +458,60 @@ impl IcebergTableManager {
                 }
             };
 
+            let already_typed = table.current_schema().is_ok_and(|schema| {
+                typed_attributes::is_typed_layout(schema.fields().iter().map(|f| f.name.as_str()))
+            });
+            if !already_typed && Self::target_is_typed(table_name)? {
+                let from_version = table
+                    .metadata()
+                    .properties
+                    .get(evolution::SCHEMA_VERSION_PROPERTY)
+                    .map(String::as_str);
+                let expected_table_uuid = table.metadata().table_uuid;
+                let request = NewTableRequest {
+                    tenant_slug,
+                    dataset_slug,
+                    table_name,
+                    labels,
+                    warm_index,
+                };
+                return self
+                    .recreate_as_typed(request, &ident, expected_table_uuid, from_version)
+                    .await;
+            }
+
             return Ok(self
                 .reconcile_existing_table(table_name, &ident, table)
                 .await);
         }
 
+        self.create_fresh_table(NewTableRequest {
+            tenant_slug,
+            dataset_slug,
+            table_name,
+            labels,
+            warm_index,
+        })
+        .await
+    }
+
+    /// Creates `table_name` fresh at its current `schemas.toml` version:
+    /// schema (with materialized labels), partitioning, sort order, bloom
+    /// and metrics properties, and metadata-pruning properties. Shared by
+    /// [`Self::ensure_table`]'s missing-table path and
+    /// [`Self::recreate_as_typed`]'s post-drop recreation.
+    ///
+    /// A lost create race (`AlreadyExists`) reloads the winner's table and
+    /// reconciles it, same as the load-existing path.
+    async fn create_fresh_table(&self, request: NewTableRequest<'_>) -> Result<Table> {
+        let NewTableRequest {
+            tenant_slug,
+            dataset_slug,
+            table_name,
+            labels,
+            warm_index,
+        } = request;
+        let ident = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
         let table_schema = schemas::TableSchema::from_table_name(table_name)
             .ok_or_else(|| anyhow::anyhow!("Unknown table name: {table_name}"))?;
 
@@ -286,26 +542,27 @@ impl IcebergTableManager {
             }
         }
 
-        // Enable a Parquet bloom filter for every materialized label column,
-        // plus (for logs) the derived `attr_tokens` column and (for traces
-        // and logs) the `trace_id`/`span_id` point-lookup columns. The
-        // pinned iceberg-rust Parquet writer reads these standard Iceberg
-        // properties from the table metadata on every write.
-        let bloom_properties = crate::schema::bloom_filter_properties_for_table(
-            &table_schema,
-            table_schema.materialized_labels_of(labels),
-        );
-
         // Drop the min/max bounds of the free-text columns. Bounds ride along
         // in every data file's manifest entry, and no query compares these
         // columns by range, so they are permanent cost for no pruning. Every
         // other column keeps iceberg-rust's default `truncate(16)`.
-        let schema = table_schema.schema_with_labels(labels)?;
+        let schema =
+            table_schema.schema_with_labels_and_warm_index(labels, warm_index.is_some())?;
         let column_names: Vec<String> = schema
             .fields()
             .iter()
             .map(|field| field.name.clone())
             .collect();
+
+        // Enable a Parquet bloom filter for every materialized label column,
+        // plus (for traces and logs) the `trace_id`/`span_id` point-lookup
+        // columns. The pinned iceberg-rust Parquet writer reads these standard Iceberg
+        // properties from the table metadata on every write. Read back from
+        // `schema` itself (built just above) rather than independently
+        // re-resolved from `labels`, so the two can never target different
+        // columns under a collision (#1448).
+        let bloom_properties =
+            crate::schema::bloom_filter_properties_for_table(&table_schema, &schema);
         let metrics_properties =
             crate::schema::metrics_properties_for_free_text_columns(&column_names);
 
@@ -337,6 +594,15 @@ impl IcebergTableManager {
             bloom_properties.into_iter().collect();
         properties.extend(metrics_properties);
         properties.extend(crate::schema::compression_properties());
+        // Only set when the schema actually gained the column: a legacy
+        // version silently drops the request (see `DerivedColumns::warm_index`).
+        if let Some(cfg) = &warm_index
+            && column_names
+                .iter()
+                .any(|name| name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        {
+            properties.extend(crate::schema::warm_index_properties(cfg));
+        }
         properties.insert(DELETE_AFTER_COMMIT_KEY.to_string(), "true".to_string());
         properties.insert(
             PREVIOUS_VERSIONS_MAX_KEY.to_string(),
@@ -346,11 +612,7 @@ impl IcebergTableManager {
         // now so `ensure_schema_evolved` never treats a brand-new table as
         // pre-dating this mechanism. Only for signals evolution actually
         // covers today (see `ensure_schema_evolved`'s doc comment).
-        let current_version = match table_name {
-            "traces" => Some(SCHEMA_DEFINITIONS.current_trace_version()),
-            "logs" => Some(SCHEMA_DEFINITIONS.metadata.current_log_version.as_str()),
-            _ => None,
-        };
+        let current_version = Self::schema_target_for(table_name).map(|(_, version)| version);
         if let Some(version) = current_version {
             properties.insert(
                 evolution::SCHEMA_VERSION_PROPERTY.to_string(),
@@ -513,6 +775,17 @@ mod tests {
         Ok(())
     }
 
+    #[test]
+    fn schema_target_for_resolves_metrics_and_metric_exemplars_at_the_typed_version() {
+        let (_, version) = IcebergTableManager::schema_target_for("metrics")
+            .expect("metrics should be schemas.toml-sourced");
+        assert_eq!(version, schemas::TYPED_METRIC_VERSION);
+
+        let (_, version) = IcebergTableManager::schema_target_for("metric_exemplars")
+            .expect("metric_exemplars should be schemas.toml-sourced");
+        assert_eq!(version, schemas::TYPED_METRIC_VERSION);
+    }
+
     #[tokio::test]
     async fn ensure_table_evolves_an_existing_table_behind_the_current_version()
     -> anyhow::Result<()> {
@@ -621,37 +894,90 @@ mod tests {
         Ok(())
     }
 
+    /// Creates `table_name` (must be a real table name `ensure_schema_evolved`
+    /// dispatches on: "metrics_gauge", "profiles", etc.) directly at its real
+    /// `physical-v1` shape -- map-typed attribute columns, the shape every
+    /// live pre-#1340 table has -- with no `signaldb.schema.version`
+    /// property, the same way [`create_stale_traces_table`] simulates a
+    /// pre-mechanism traces table.
+    async fn create_v1_table(
+        catalog: &Arc<dyn IcebergCatalog>,
+        schemas_map: &std::collections::HashMap<
+            String,
+            crate::schema::schema_parser::TableSchemaDefinition,
+        >,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        table_name: &str,
+    ) -> anyhow::Result<()> {
+        let schema = SCHEMA_DEFINITIONS
+            .resolve_table_schema(schemas_map, "physical-v1")?
+            .to_iceberg_schema()?;
+
+        let namespace = names::build_namespace(tenant_slug, dataset_slug)?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let identifier = names::build_table_identifier(tenant_slug, dataset_slug, table_name);
+        let create = CreateTableBuilder::default()
+            .with_name(table_name.to_string())
+            .with_schema(schema)
+            .with_location(names::build_table_location(
+                tenant_slug,
+                dataset_slug,
+                table_name,
+            ))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog.clone().create_table(identifier, create).await?;
+        Ok(())
+    }
+
+    /// A `physical-v1` profiles table (legacy `map<string,string>`
+    /// attributes) is behind a *typed* current version, so `ensure_table`
+    /// cannot evolve it -- `diff_schema` doesn't support adding/removing map
+    /// columns. It is dropped and recreated fresh instead
+    /// (`recreate_as_typed`), landing directly on the current typed schema.
     #[tokio::test]
-    async fn ensure_table_does_not_attempt_evolution_for_metrics_tables() -> anyhow::Result<()> {
-        // Metrics tables are hand-written, not schemas.toml-sourced (see
-        // `ensure_schema_evolved`'s doc comment) -- this must not panic or
-        // error trying to resolve a schemas.toml version for them.
+    async fn ensure_table_recreates_a_stale_v1_profiles_table_as_typed() -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;
         let catalog = manager.catalog();
-        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        create_v1_table(
+            &catalog,
+            &SCHEMA_DEFINITIONS.profiles,
+            "evo_tenant4",
+            "evo_dataset4",
+            "profiles",
+        )
+        .await?;
 
-        table_manager
-            .ensure_table(
-                "evo_tenant3",
-                "evo_dataset3",
-                "metrics_gauge",
-                &MaterializedLabels::default(),
-            )
-            .await?;
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
         let table = table_manager
             .ensure_table(
-                "evo_tenant3",
-                "evo_dataset3",
-                "metrics_gauge",
+                "evo_tenant4",
+                "evo_dataset4",
+                "profiles",
                 &MaterializedLabels::default(),
             )
             .await?;
+
+        let schema = table.current_schema()?;
         assert!(
-            !table
+            typed_attributes::is_typed_layout(schema.fields().iter().map(|f| f.name.as_str())),
+            "recreated table should be in the typed attribute layout"
+        );
+        assert!(
+            schema
+                .fields()
+                .iter()
+                .any(|f| f.name == "resource_identity"),
+            "resource_identity should be present on the recreated table"
+        );
+        assert_eq!(
+            table
                 .metadata()
                 .properties
-                .contains_key(evolution::SCHEMA_VERSION_PROPERTY),
-            "metrics tables are not versioned by this mechanism yet"
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.metadata.current_profile_version),
+            "schema version property should be stamped to current after recreation"
         );
         Ok(())
     }
@@ -686,10 +1012,7 @@ mod tests {
         for (table_name, expected) in [
             ("traces", vec!["timestamp", "trace_id"]),
             ("logs", vec!["timestamp", "service_name", "severity_text"]),
-            (
-                "metrics_gauge",
-                vec!["timestamp", "metric_name", "service_name"],
-            ),
+            ("metrics", vec!["timestamp", "metric_name", "service_name"]),
             ("profiles", vec!["timestamp", "service_name"]),
         ] {
             let table = table_manager
@@ -772,6 +1095,340 @@ mod tests {
             again.metadata().metadata_log.len(),
             commits_after_first,
             "a second reconcile must not commit the sort order again"
+        );
+        Ok(())
+    }
+
+    /// A traces table created explicitly at `physical-v4` (legacy
+    /// `map<string,string>` attributes, the shape every table predates the
+    /// typed-layout cutover has) is a genuinely different table -- not an
+    /// evolved version of it -- after `ensure_table`: a new `table_uuid`,
+    /// the typed layout, and the current (typed) version property.
+    #[tokio::test]
+    async fn ensure_table_drops_and_recreates_a_legacy_traces_table_as_typed() -> anyhow::Result<()>
+    {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+
+        let namespace = names::build_namespace("cutover_tenant", "cutover_dataset")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let ident = names::build_table_identifier("cutover_tenant", "cutover_dataset", "traces");
+        let legacy_schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v4")?
+            .to_iceberg_schema()?;
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(legacy_schema)
+            .with_location(names::build_table_location(
+                "cutover_tenant",
+                "cutover_dataset",
+                "traces",
+            ))
+            .with_properties(std::collections::HashMap::from([(
+                evolution::SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v4".to_string(),
+            )]))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        let legacy = catalog.clone().create_table(ident.clone(), create).await?;
+        assert!(
+            !typed_attributes::is_typed_layout(
+                legacy
+                    .current_schema()?
+                    .fields()
+                    .iter()
+                    .map(|f| f.name.as_str())
+            ),
+            "the seeded table must start out in the legacy layout"
+        );
+        let legacy_uuid = legacy.metadata().table_uuid;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let recreated = table_manager
+            .ensure_table(
+                "cutover_tenant",
+                "cutover_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+
+        assert_ne!(
+            recreated.metadata().table_uuid,
+            legacy_uuid,
+            "recreation must produce a genuinely new table, not an evolved one"
+        );
+        let schema = recreated.current_schema()?;
+        assert!(
+            typed_attributes::is_typed_layout(schema.fields().iter().map(|f| f.name.as_str())),
+            "recreated table should be in the typed attribute layout"
+        );
+        assert_eq!(
+            recreated
+                .metadata()
+                .properties
+                .get(evolution::SCHEMA_VERSION_PROPERTY),
+            Some(&SCHEMA_DEFINITIONS.current_trace_version().to_string())
+        );
+        Ok(())
+    }
+
+    /// A table already in the typed layout is left alone by `ensure_table`
+    /// -- same `table_uuid`, same `metadata_location` -- even though its
+    /// current version is the typed one, which is what would otherwise
+    /// trigger recreation.
+    #[tokio::test]
+    async fn ensure_table_never_drops_an_already_typed_table() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+
+        let created = table_manager
+            .ensure_table(
+                "typed_tenant",
+                "typed_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+        let created_uuid = created.metadata().table_uuid;
+        let created_location = created.metadata().location.clone();
+
+        let reconciled = table_manager
+            .ensure_table(
+                "typed_tenant",
+                "typed_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+            )
+            .await?;
+
+        assert_eq!(
+            reconciled.metadata().table_uuid,
+            created_uuid,
+            "an already-typed table must never be dropped and recreated"
+        );
+        assert_eq!(reconciled.metadata().location, created_location);
+        Ok(())
+    }
+
+    /// A legacy table opted into the warm containment index recreates
+    /// through the same [`IcebergTableManager::create_fresh_table`] path a
+    /// brand-new table uses, so the recreated table carries the index
+    /// column exactly as if it had never existed before -- the recreate
+    /// path must not bypass warm-index opt-in.
+    #[tokio::test]
+    async fn ensure_table_with_warm_index_recreates_a_legacy_table_with_the_index_column()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+
+        let namespace = names::build_namespace("warm_tenant", "warm_dataset")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let ident = names::build_table_identifier("warm_tenant", "warm_dataset", "traces");
+        let legacy_schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v4")?
+            .to_iceberg_schema()?;
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(legacy_schema)
+            .with_location(names::build_table_location(
+                "warm_tenant",
+                "warm_dataset",
+                "traces",
+            ))
+            .with_properties(std::collections::HashMap::from([(
+                evolution::SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v4".to_string(),
+            )]))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog.clone().create_table(ident.clone(), create).await?;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let warm_index = crate::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.01,
+            rows_per_row_group: 1_000,
+            attrs_per_row: 8,
+            max_bloom_ndv: 1_000_000,
+        };
+        let recreated = table_manager
+            .ensure_table_with_warm_index(
+                "warm_tenant",
+                "warm_dataset",
+                "traces",
+                &MaterializedLabels::default(),
+                Some(warm_index),
+            )
+            .await?;
+
+        let schema = recreated.current_schema()?;
+        assert!(
+            typed_attributes::is_typed_layout(schema.fields().iter().map(|f| f.name.as_str())),
+            "recreated table should be in the typed attribute layout"
+        );
+        assert!(
+            schema
+                .fields()
+                .iter()
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN),
+            "recreated table should carry the warm-index column since it was opted in"
+        );
+        assert!(
+            recreated
+                .metadata()
+                .properties
+                .contains_key(crate::schema::WARM_INDEX_ENCODING_PROPERTY),
+            "recreated table should carry the warm-index bloom properties"
+        );
+        Ok(())
+    }
+
+    /// Creates a legacy `traces` table at `physical-v4` for the given
+    /// tenant/dataset, returning its identifier and `table_uuid` -- the pair
+    /// a caller needs to exercise [`IcebergTableManager::recreate_as_typed`]
+    /// directly, the way the race tests below do.
+    async fn create_legacy_traces_table(
+        catalog: &Arc<dyn IcebergCatalog>,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> anyhow::Result<(Identifier, uuid::Uuid)> {
+        let namespace = names::build_namespace(tenant_slug, dataset_slug)?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let ident = names::build_table_identifier(tenant_slug, dataset_slug, "traces");
+        let legacy_schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v4")?
+            .to_iceberg_schema()?;
+        let create = CreateTableBuilder::default()
+            .with_name("traces".to_string())
+            .with_schema(legacy_schema)
+            .with_location(names::build_table_location(
+                tenant_slug,
+                dataset_slug,
+                "traces",
+            ))
+            .with_properties(std::collections::HashMap::from([(
+                evolution::SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v4".to_string(),
+            )]))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        let table = catalog.clone().create_table(ident.clone(), create).await?;
+        Ok((ident, table.metadata().table_uuid))
+    }
+
+    /// Two callers racing `recreate_as_typed` against the same legacy table
+    /// (e.g. a writer and the table reconciler both discovering the same
+    /// stale table): neither call errors, and -- because the in-process
+    /// lock in `recreate_as_typed` serializes them -- the second caller
+    /// reloads under the lock, observes the first caller's typed table, and
+    /// reconciles onto it rather than dropping it. Both callers therefore
+    /// end up holding the exact same table (same `table_uuid`), not merely
+    /// "a" typed table.
+    #[tokio::test]
+    async fn recreate_as_typed_is_idempotent_under_a_concurrent_recreation() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let (ident, legacy_uuid) =
+            create_legacy_traces_table(&catalog, "race_tenant", "race_dataset").await?;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let labels = MaterializedLabels::default();
+        let request = || NewTableRequest {
+            tenant_slug: "race_tenant",
+            dataset_slug: "race_dataset",
+            table_name: "traces",
+            labels: &labels,
+            warm_index: None,
+        };
+        let (first, second) = tokio::join!(
+            table_manager.recreate_as_typed(request(), &ident, legacy_uuid, Some("physical-v4")),
+            table_manager.recreate_as_typed(request(), &ident, legacy_uuid, Some("physical-v4")),
+        );
+        let first = first?;
+        let second = second?;
+
+        assert!(typed_attributes::is_typed_layout(
+            first
+                .current_schema()?
+                .fields()
+                .iter()
+                .map(|f| f.name.as_str())
+        ));
+        assert_eq!(
+            first.metadata().table_uuid,
+            second.metadata().table_uuid,
+            "the in-process lock must serialize the racers onto one table, not two"
+        );
+        assert_ne!(
+            first.metadata().table_uuid,
+            legacy_uuid,
+            "the surviving table must be a genuinely new one, not the legacy table reused"
+        );
+        Ok(())
+    }
+
+    /// The scenario the race is actually about: caller A recreates the
+    /// table and commits real data to it; caller B still holds its
+    /// *original* stale legacy load (recorded before A ever ran) and only
+    /// now gets around to calling `recreate_as_typed`. B must not drop A's
+    /// table -- the reload-and-recheck inside `recreate_as_typed` sees the
+    /// table is already typed and reconciles instead, so A's committed
+    /// data survives.
+    #[tokio::test]
+    async fn a_stale_caller_never_drops_a_typed_table_another_caller_already_committed_to()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let (ident, legacy_uuid) =
+            create_legacy_traces_table(&catalog, "commit_tenant", "commit_dataset").await?;
+
+        let table_manager = IcebergTableManager::new(catalog.clone(), 5);
+        let labels = MaterializedLabels::default();
+        let request = || NewTableRequest {
+            tenant_slug: "commit_tenant",
+            dataset_slug: "commit_dataset",
+            table_name: "traces",
+            labels: &labels,
+            warm_index: None,
+        };
+
+        // Caller A recreates the table...
+        let recreated = table_manager
+            .recreate_as_typed(request(), &ident, legacy_uuid, Some("physical-v4"))
+            .await?;
+        // ...and commits real data to it (stood in for by a metadata-only
+        // property commit -- a genuine drop would erase this along with
+        // any real data, which is exactly what this test guards against).
+        let mut recreated = recreated;
+        recreated
+            .new_transaction(None)
+            .update_properties(vec![(
+                "committed-marker".to_string(),
+                "a-wrote-this".to_string(),
+            )])
+            .commit()
+            .await?;
+        let committed_uuid = recreated.metadata().table_uuid;
+
+        // Caller B still has `legacy_uuid` from *before* A ever ran (it
+        // never re-observes the table in between) and only now calls
+        // `recreate_as_typed`.
+        let after_b = table_manager
+            .recreate_as_typed(request(), &ident, legacy_uuid, Some("physical-v4"))
+            .await?;
+
+        assert_eq!(
+            after_b.metadata().table_uuid,
+            committed_uuid,
+            "B must reconcile onto A's table, not drop and replace it"
+        );
+        assert_eq!(
+            after_b.metadata().properties.get("committed-marker"),
+            Some(&"a-wrote-this".to_string()),
+            "A's committed data must survive B's call"
         );
         Ok(())
     }

@@ -1,5 +1,94 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.1...signaldb-ui-v0.2.2) (2026-09-23)
+
+
+### Features
+
+* demo mode and a TrueNAS demo app with a trimmed OpenTelemetry Demo ([#1632](https://github.com/cedricziel/signaldb/issues/1632)) ([d6da0cf](https://github.com/cedricziel/signaldb/commit/d6da0cfb53d79b8167d92e0c3689aea65323d97b))
+* GitHub App integration for connecting a tenant's repositories ([#1600](https://github.com/cedricziel/signaldb/issues/1600)) ([6c9721e](https://github.com/cedricziel/signaldb/commit/6c9721ef0cf630df85e227a07be6ae30ee263191))
+* **logs:** filter on an attribute's real dotted key from the explore UI ([#1594](https://github.com/cedricziel/signaldb/issues/1594)) ([523633b](https://github.com/cedricziel/signaldb/commit/523633b43096658ff884886134753e783500e1e6))
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+* **router:** attach an existing GitHub App installation to a tenant ([#1618](https://github.com/cedricziel/signaldb/issues/1618)) ([0ab8e95](https://github.com/cedricziel/signaldb/commit/0ab8e95581f5213b02e8cded8af5b2b71c827516))
+* **router:** serialize API timestamps as native UTC DateTime ([#1643](https://github.com/cedricziel/signaldb/issues/1643)) ([1327fae](https://github.com/cedricziel/signaldb/commit/1327fae5760510f7e2180ab9e323ba6961d8b657))
+* source context for stack frames from linked GitHub repositories ([#1601](https://github.com/cedricziel/signaldb/issues/1601)) ([acca49c](https://github.com/cedricziel/signaldb/commit/acca49ca770ab96464b12676211144bc20b5cc7c))
+* **ui:** add a refresh button next to the time picker ([#1610](https://github.com/cedricziel/signaldb/issues/1610)) ([3b722df](https://github.com/cedricziel/signaldb/commit/3b722dfa1bd5428eaa724ba74445aadc9bf63bd1))
+* **ui:** declutter attribute lists and add entity pivots in the explore views ([#1593](https://github.com/cedricziel/signaldb/issues/1593)) ([2189701](https://github.com/cedricziel/signaldb/commit/2189701fcb5f51faccaeb82ad4506d49172a91bf))
+* **ui:** degrade catalog entity identity per source ([#1626](https://github.com/cedricziel/signaldb/issues/1626)) ([af19554](https://github.com/cedricziel/signaldb/commit/af1955432513b740c1aed02d0876bf93c42d2a3b))
+* **ui:** guard every navigation against unsaved edits and clear AA on the light accent ([#1591](https://github.com/cedricziel/signaldb/issues/1591)) ([fb2361f](https://github.com/cedricziel/signaldb/commit/fb2361f646c848ae4c1d1cf2ca1d80eb3b0550e4))
+* **ui:** install Storybook and publish it to GitHub Pages ([#1639](https://github.com/cedricziel/signaldb/issues/1639)) ([55813aa](https://github.com/cedricziel/signaldb/commit/55813aa29645ce11c1a449e0e3a7e3759bc87b52))
+* **ui:** live ingest verification and a deferred service-worker update ([#1587](https://github.com/cedricziel/signaldb/issues/1587)) ([a351a29](https://github.com/cedricziel/signaldb/commit/a351a297c7975c9944ed82fb9809b297790c6e76))
+* **ui:** make the Explore UI installable as a PWA ([#1555](https://github.com/cedricziel/signaldb/issues/1555)) ([6510a1d](https://github.com/cedricziel/signaldb/commit/6510a1d49ffdcfda59016bf677d713fdf8a29615))
+* **ui:** move the explore UI onto the query IR ([#1627](https://github.com/cedricziel/signaldb/issues/1627)) ([c20ad3e](https://github.com/cedricziel/signaldb/commit/c20ad3e6a91e43ba01c201c6c37faafd376d6b6d))
+* **ui:** page stories and shared components for Storybook ([#1649](https://github.com/cedricziel/signaldb/issues/1649)) ([bb588bb](https://github.com/cedricziel/signaldb/commit/bb588bbb1605de0eb4d1788da6b1f246d6292a1e))
+* **ui:** page stories for the admin, Processors and Schema screens ([#1666](https://github.com/cedricziel/signaldb/issues/1666)) ([392da0e](https://github.com/cedricziel/signaldb/commit/392da0e61d99f69c2f9eb21e3f7861110a0b63c9))
+* **ui:** page stories for the Metrics, Profiles, Errors, Catalog and Query tabs ([#1661](https://github.com/cedricziel/signaldb/issues/1661)) ([a497290](https://github.com/cedricziel/signaldb/commit/a497290ca11a6a2dd87a5c41ffe94c15fed1f1da))
+* **ui:** stories for the app shell, login and consent screens ([#1659](https://github.com/cedricziel/signaldb/issues/1659)) ([42dbac0](https://github.com/cedricziel/signaldb/commit/42dbac0b1da5db03ad0bc380cd15797eb051b71e))
+
+
+### Bug Fixes
+
+* **auth:** slide browser session expiry forward on activity ([#1578](https://github.com/cedricziel/signaldb/issues/1578)) ([a8cfad3](https://github.com/cedricziel/signaldb/commit/a8cfad3d853e024510b0f82975f5c9971d428b68))
+* **ui:** chart keyboard access, tooltip placement, palette and metric tile sizing ([#1585](https://github.com/cedricziel/signaldb/issues/1585)) ([406028b](https://github.com/cedricziel/signaldb/commit/406028b0b3814ceef13497e5c05f76eb1f280524))
+* **ui:** cover the consent route with the unsaved-changes guard and let the editor's own redirects through ([#1592](https://github.com/cedricziel/signaldb/issues/1592)) ([b2e7d09](https://github.com/cedricziel/signaldb/commit/b2e7d09fc6daf7cac03a0fd1e85487b9823838d4))
+* **ui:** explore UI flow breakages, layout defects and responsive arrangement ([#1584](https://github.com/cedricziel/signaldb/issues/1584)) ([ce69231](https://github.com/cedricziel/signaldb/commit/ce69231444221f7b335e8d0d93b229041587b18b))
+* **ui:** live facet counts, span-to-profile unit and absent identity filters ([#1586](https://github.com/cedricziel/signaldb/issues/1586)) ([57bf4f1](https://github.com/cedricziel/signaldb/commit/57bf4f1e2878bc080f4bcc10847a5a3302d0ed8c))
+* **ui:** make the top-bar logo a link back to Explore ([#1542](https://github.com/cedricziel/signaldb/issues/1542)) ([6c5652a](https://github.com/cedricziel/signaldb/commit/6c5652a91fdc15a6b9071a9505c49a156cc72b88))
+* **ui:** roving focus follows the pointer and stays in range, signed axis compaction, distinct palette ([#1589](https://github.com/cedricziel/signaldb/issues/1589)) ([cbb0e8c](https://github.com/cedricziel/signaldb/commit/cbb0e8c2b415e91c1c627b4a670a6c17f93d76b1))
+* **ui:** stop nanosToMs truncating sub-millisecond durations to zero ([#1545](https://github.com/cedricziel/signaldb/issues/1545)) ([946e1f8](https://github.com/cedricziel/signaldb/commit/946e1f8cb93f298527b2f247c59f591da9fb8514))
+* **ui:** stop the default dataset badge duplicating its own id ([#1546](https://github.com/cedricziel/signaldb/issues/1546)) ([b99d359](https://github.com/cedricziel/signaldb/commit/b99d35950352fcd7c2e572bbc50d3f64ee4d5c91))
+* **ui:** stop the PWA service worker from swallowing the GitHub OAuth callback ([#1612](https://github.com/cedricziel/signaldb/issues/1612)) ([f5c9e38](https://github.com/cedricziel/signaldb/commit/f5c9e38d5acac58803e4d1cffa59da51650ad02a))
+* **ui:** surface query failures and hung requests on Traces and Catalog ([#1544](https://github.com/cedricziel/signaldb/issues/1544)) ([66ed94a](https://github.com/cedricziel/signaldb/commit/66ed94ac93c24bf3ab07343ef95ab868e5adedd2))
+
+
+### Styles
+
+* **ui:** one visual vocabulary for gutters, tables, headings, buttons, chips, empty states and errors ([#1590](https://github.com/cedricziel/signaldb/issues/1590)) ([9af6070](https://github.com/cedricziel/signaldb/commit/9af607038b279139c0a073a98d6f912faacff5c1))
+
+
+### Code Refactoring
+
+* remove cross-crate dead code ([#1647](https://github.com/cedricziel/signaldb/issues/1647)) ([8b5b1d9](https://github.com/cedricziel/signaldb/commit/8b5b1d98f1150e75a8306beea29bb90465a4f921))
+
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.2.0...signaldb-ui-v0.2.1) (2026-09-12)
+
+
+### Features
+
+* **auth:** OIDC login (relying-party SSO) ([#1485](https://github.com/cedricziel/signaldb/issues/1485)) ([c681bee](https://github.com/cedricziel/signaldb/commit/c681bee369d9a1b636357edf70b6f88f236b96a2))
+* **compactor:** keep a bounded value sketch so discovery can suggest values ([#1329](https://github.com/cedricziel/signaldb/issues/1329)) ([dd64a3d](https://github.com/cedricziel/signaldb/commit/dd64a3dd8a8846499ac75bea818ba938c6ca9a87))
+* dedicated login page with a login-configuration probe ([#1484](https://github.com/cedricziel/signaldb/issues/1484)) ([d536466](https://github.com/cedricziel/signaldb/commit/d53646688a580256711f0534ae7ed526c58a769a))
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* **schema-registry:** accept keys= batch resolution on GET /api/v1/schema/metrics ([#1508](https://github.com/cedricziel/signaldb/issues/1508)) ([6facbdc](https://github.com/cedricziel/signaldb/commit/6facbdcd182285bf54c1d2e922724d6bdeb6bae6))
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+* **ui:** chart an entity's metrics in the catalog ([#1368](https://github.com/cedricziel/signaldb/issues/1368)) ([deba724](https://github.com/cedricziel/signaldb/commit/deba7241690f4f6390c1da806abd19e78e116c17))
+* **ui:** discover catalog entities from the schema registry across every signal ([#1350](https://github.com/cedricziel/signaldb/issues/1350)) ([5e6f67d](https://github.com/cedricziel/signaldb/commit/5e6f67d1fec16f6286f43398f854496a75b53d80))
+* **ui:** make the frontend responsive across shell, explore, and screen widgets ([#1438](https://github.com/cedricziel/signaldb/issues/1438)) ([7f79d30](https://github.com/cedricziel/signaldb/commit/7f79d3093c72fadc360ed514638faaae63f05219))
+* **ui:** one Dialog shell and inline confirmation for destructive actions ([#1466](https://github.com/cedricziel/signaldb/issues/1466)) ([c68be01](https://github.com/cedricziel/signaldb/commit/c68be0120f19a52a891201ce3afe5dadc91411c1))
+* **ui:** remove the old login modal, redirect to /login instead ([#1539](https://github.com/cedricziel/signaldb/issues/1539)) ([7dc4fd8](https://github.com/cedricziel/signaldb/commit/7dc4fd88983efa5265f510644b4257d831012c35))
+
+
+### Bug Fixes
+
+* **auth:** remove the dataset_id legacy shims from multi-dataset-key-restriction ([#1480](https://github.com/cedricziel/signaldb/issues/1480)) ([e8c85de](https://github.com/cedricziel/signaldb/commit/e8c85dedc0a9a73c5a133b952e858603d78c0c36))
+* **query-ir:** stop an unknown group-by field from answering silently ([#1301](https://github.com/cedricziel/signaldb/issues/1301)) ([b4f8464](https://github.com/cedricziel/signaldb/commit/b4f8464f71192f80d407f81e8bd837efd8fafd79))
+* **ui:** align catalog cache keys and resolve entity identity from the schema ([#1354](https://github.com/cedricziel/signaldb/issues/1354)) ([0cc9910](https://github.com/cedricziel/signaldb/commit/0cc99105bfe4cc3ab0a48c9e23eacb0b20a48525))
+* **ui:** pre-check all ingest scopes on API key creation ([#1440](https://github.com/cedricziel/signaldb/issues/1440)) ([cb26cfb](https://github.com/cedricziel/signaldb/commit/cb26cfb642e15af662d102c2509c0f5482bd3f3d))
+* **ui:** resolve a catalog detail page's entity type from the observed set ([#1366](https://github.com/cedricziel/signaldb/issues/1366)) ([3f76e1d](https://github.com/cedricziel/signaldb/commit/3f76e1db18acfdc6bc0dde8c351838a58dc23b2f))
+* **ui:** resolve empty screen after login and add a dedicated /login route ([#1473](https://github.com/cedricziel/signaldb/issues/1473)) ([13feff8](https://github.com/cedricziel/signaldb/commit/13feff808f7378515475994df1348581ee874693))
+* **ui:** shared sort headers, class collisions, dead tokens, toolbar wrap, dev proxy ([#1455](https://github.com/cedricziel/signaldb/issues/1455)) ([b5060ea](https://github.com/cedricziel/signaldb/commit/b5060ea94f79db4055aa77ca4baf1c63dc6c464b))
+* **ui:** span-detail drawer and small-screen rules for the explore toolbars ([#1468](https://github.com/cedricziel/signaldb/issues/1468)) ([e63761a](https://github.com/cedricziel/signaldb/commit/e63761a563773508699c30b6e68cddac6204dacf))
+
+
+### Code Refactoring
+
+* **ui:** one error alert, skeleton loaders and empty-state wording across the explore views ([#1465](https://github.com/cedricziel/signaldb/issues/1465)) ([0b702cd](https://github.com/cedricziel/signaldb/commit/0b702cd6de330caf3774a644ad0ce4de418af62b))
+* **ui:** one resizer, one attribute-key combobox, one note class ([#1463](https://github.com/cedricziel/signaldb/issues/1463)) ([70aed7e](https://github.com/cedricziel/signaldb/commit/70aed7ec1968cfcf253e66e86ccd4fc8538846cb))
+* **ui:** table header base rule, shared scroll wrapper, soft flame fills ([#1462](https://github.com/cedricziel/signaldb/issues/1462)) ([e30840f](https://github.com/cedricziel/signaldb/commit/e30840f9599af357aa87139d17c3943fd88adfa8))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/signaldb-ui-v0.1.2...signaldb-ui-v0.2.0) (2026-08-17)
 
 

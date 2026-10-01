@@ -329,6 +329,39 @@ describe("observedEntityTypes", () => {
     expect(observed.length).toBeLessThanOrEqual(ENTITY_TYPE_BUDGET);
   });
 
+  it("computes each carrying source's own degraded identity", () => {
+    // metrics carries process.pid but not host.name; traces carries both.
+    // The metrics listing query must group by pid alone, not the full
+    // tuple, or every process would collapse into one null-host bucket.
+    const withHost = new Map([
+      ["traces", new Set(["process.pid", "host.name"])],
+      ["metrics", new Set(["process.pid"])],
+    ]);
+    const process = observedEntityTypes(
+      deriveEntityTypes(registry),
+      withHost,
+    ).find((e) => e.id === "process");
+    expect(process?.identityBySource).toEqual({
+      traces: ["process.pid", "host.name"],
+      metrics: ["process.pid"],
+    });
+  });
+
+  it("omits a source from identityBySource when it lacks the primary attribute", () => {
+    const withHost = new Map([
+      ["traces", new Set(["process.pid", "host.name"])],
+      ["logs", new Set(["host.name"])],
+    ]);
+    const process = observedEntityTypes(
+      deriveEntityTypes(registry),
+      withHost,
+    ).find((e) => e.id === "process");
+    expect(process?.sources).toEqual(["traces"]);
+    expect(process?.identityBySource).toEqual({
+      traces: ["process.pid", "host.name"],
+    });
+  });
+
   it("keeps curated types when the budget truncates registry ones", () => {
     // Curated types lead the list, so truncation drops the tail — the
     // registry-derived long tail — rather than the eight pages that carry

@@ -10,7 +10,7 @@ sources:
   - src/common/src/tenant_api.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/management.rs
-  - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/tenants.rs
 ---
 
 # Signal Table Provisioning
@@ -19,7 +19,7 @@ Every tenant/dataset SignalDB knows about converges on an Iceberg table for
 each signal type enabled for it, so a dataset becomes complete without waiting
 for telemetry to arrive for each signal.
 
-Creating a dataset — through the management API, the admin API, or the MCP
+Creating a dataset — through the management API or the MCP
 tools that proxy them — provisions its tables synchronously, best-effort,
 before the creation call returns: the new dataset is queryable immediately in
 the common case. That provisioning attempt never blocks or fails the dataset's
@@ -39,16 +39,17 @@ tell whether it is working.
 
 ## What gets provisioned
 
-Up to eight tables per dataset, gated on the signal types enabled **for that
-tenant** — a tenant that carries its own `[schema]` block narrows the set, so
-one that disabled metrics gets no `metrics_*` tables:
+Up to five tables per dataset, gated on the signal types enabled **for that
+tenant** — a tenant's own schema block overrides the gates it sets and keeps
+the global value for the rest, so one that disabled metrics gets no
+`metrics`/`metric_exemplars` tables:
 
-| Signal   | Tables                                                                                                  | Gate                               |
-| -------- | ------------------------------------------------------------------------------------------------------- | ---------------------------------- |
-| Traces   | `traces`                                                                                                | `default_schemas.traces_enabled`   |
-| Logs     | `logs`                                                                                                  | `default_schemas.logs_enabled`     |
-| Metrics  | `metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary` | `default_schemas.metrics_enabled`  |
-| Profiles | `profiles`                                                                                              | `default_schemas.profiles_enabled` |
+| Signal   | Tables                        | Gate                               |
+| -------- | ----------------------------- | ---------------------------------- |
+| Traces   | `traces`                      | `default_schemas.traces_enabled`   |
+| Logs     | `logs`                        | `default_schemas.logs_enabled`     |
+| Metrics  | `metrics`, `metric_exemplars` | `default_schemas.metrics_enabled`  |
+| Profiles | `profiles`                    | `default_schemas.profiles_enabled` |
 
 Custom tables declared in `default_schemas.custom_schemas` are a config-only
 concept and are never provisioned.
@@ -81,12 +82,25 @@ long a _newly created_ dataset waits.
 ## What a pass does
 
 1. Enumerate the tenant registry — config-defined tenants **and** tenants
-   created through the admin API.
+   created through the management API. Provisioning is driven by the registry and
+   each tenant's enabled signal types alone; it is independent of who (if
+   anyone) holds a membership in the tenant, so a dataset is provisioned
+   whether its users authenticate by password, API key, or SSO.
 2. For each tenant, take its datasets. The registry guarantees a tenant's
    `default_dataset` is among them even when no dataset row names it, so a
    tenant whose default exists only as a column on its tenant row is
    provisioned like any other.
 3. For each dataset, load-or-create every enabled table.
+4. For each dataset, the reconciler drops the legacy tables on its passes
+   until the drop succeeds — the five legacy per-type metric tables
+   (`metrics_gauge`, `metrics_sum`, `metrics_histogram`,
+   `metrics_exponential_histogram`, `metrics_summary`), part of the
+   otel-native-schema layer 7 cutover to the typed `metrics`/`metric_exemplars`
+   tables. Dropped data is not migrated; see
+   [the metrics table](../architecture/storage-layout.md#metrics-table-physical-v4----current).
+   This runs on every pass, converged datasets included, until one purge of
+   the dataset drops everything without a failure; after that the process
+   stops checking it.
 
 Datasets created while the writer was down, datasets predating this behavior,
 and datasets added at runtime all converge on a later pass — no restart, no
@@ -96,9 +110,16 @@ Loading an existing table also reconciles its metadata, which is how tables
 created by older builds catch up. Each step is idempotent, metadata-only, and
 commits at most once per table: metadata-pruning properties are backfilled, the
 canonical [sort order](../architecture/storage-layout.md#declared-sort-order) is
-declared if the table predates it, and traces/logs schemas are evolved to the
+declared if the table predates it, and the table's schema is evolved to the
 current `schemas.toml` version. A step that loses a commit race is logged at
 `warn` and retried on the next load; it never fails the pass.
+
+Every table named by a pass also has its stale WAL idempotency markers
+retired, using the same `[writer].wal_marker_retention` rules the WAL commit
+path applies. This is what retires markers on a table that has gone dormant —
+one no `IcebergTableWriter` commits to anymore, and so is never reached by the
+commit-path sweep — since the reconciler walks the tenant/dataset registry
+directly rather than a process's cache of active writers.
 
 ### Steady-state cost
 
@@ -120,9 +141,10 @@ behavior — rather than to data loss.
 
 ## Provisioning at dataset creation
 
-`POST /api/v1/manage/tenants/{tenant_id}/datasets` (management API) and
-`POST /api/v1/admin/tenants/{tenant_id}/datasets` (admin API) — and the MCP
-`create_dataset`/`tenant_create_dataset` tools, which proxy them — provision
+`POST /api/v1/tenants/{tenant_id}/datasets` — reachable by a
+tenant-admin session/`tenant:manage`-scoped key, or by the break-glass
+admin key with no tenant — and the MCP `create_dataset`/`tenant_create_dataset`
+tools, which proxy it — provision
 the new dataset's enabled tables right after the dataset row commits, using
 the same [`CatalogManager::ensure_dataset_tables`](#what-gets-provisioned)
 path a reconcile pass uses per dataset. The response still reflects the
@@ -219,25 +241,46 @@ A converged pass logs at `debug`.
 ## Consequences to expect
 
 - **Empty tables multiply catalog objects.** Each provisioned dataset gains up
-  to eight catalog rows and eight `metadata.json` files. They carry no
+  to five catalog rows and five `metadata.json` files. They carry no
   snapshots and no data files, so retention, orphan cleanup, storage
   accounting, and the compactor all treat them as no-ops.
 - **Materialized labels are fixed at creation time.** `[schema]
 materialized_labels` is applied when a table is created; `ensure_table`'s
-  own catch-up path (below) only brings a **traces or logs** table's
-  `schemas.toml`-declared columns forward, it does not retrofit a changed
-  label configuration onto an existing table. Provisioning means the initial
-  labels-at-creation behavior now happens for every dataset, not only for
-  ones that ingest, so prefer setting `materialized_labels` before a dataset
-  is provisioned. Existing tables are not stuck: the compactor's
-  attribute-promotion pass can add `label_<key>` columns to them — see
-  [label columns can be added to existing tables](../architecture/storage-layout.md#label-columns-can-be-added-to-existing-tables).
-- **`ensure_table` does evolve an existing traces or logs table's schema**
-  (not metrics/profiles yet — those are hand-written, not `schemas.toml`-sourced).
-  Every load, not just creation, brings the table's schema forward to the
-  current `schemas.toml` version if it's behind, additively — new nullable
-  columns only, never a rewrite of existing data. See
+  own catch-up path (below) only brings a table's `schemas.toml`-declared
+  columns forward, it does not retrofit a changed label configuration onto
+  an existing table. Provisioning means the initial labels-at-creation
+  behavior now happens for every dataset, not only for ones that ingest, so
+  prefer setting `materialized_labels` before a dataset is provisioned.
+  The compactor no longer adds `label_<key>` columns; its attribute-promotion
+  pass adds typed `attr_<level>_<key>` copies of hot attributes instead — see
+  [Attribute Promotion](compactor/operations.md#attribute-promotion).
+- **`ensure_table` does evolve an existing table's schema** — every
+  `schemas.toml`-sourced signal (traces, logs, both metrics tables, and
+  profiles). Every load, not just creation, brings the
+  table's schema forward to the current `schemas.toml` version if it's
+  behind. New columns are always nullable and historical rows are never
+  rewritten to backfill them; beyond that, a table whose recorded starting
+  version is trusted (found on the version chain) also gets renames and
+  removals applied hop by hop, not just additions — an untrusted starting
+  version (no recorded version, or one not found on the chain) skips
+  straight to current with additions only. See
   [schema evolution](../architecture/storage-layout.md#an-existing-tables-schema-tracks-and-catches-up-to-schematomls-version).
+- **The typed-attribute-layout cutover recreates a legacy table instead of
+  evolving it, and that recreation drops its data.** Every signal's current
+  `schemas.toml` version is now the typed attribute layout (one typed map per
+  canonical type plus a binary residue per attribute container, replacing the
+  single `map<string,string>` column -- see
+  [Typed attribute layout](../architecture/storage-layout.md#typed-attribute-layout-v5-one-shot-cutover)).
+  Iceberg schema evolution cannot add or remove a map-typed column on a live
+  table, so `ensure_table` detects a table still in the legacy layout and,
+  instead of evolving it, drops and recreates it fresh at the current typed
+  version -- with the same schema, partitioning, bloom/compression
+  properties, and sort order a brand-new table gets. **The dropped table's
+  data is not migrated**; this is a deliberate one-shot cutover under the
+  post-1.0 breaking-changes policy, not a bug. It happens the first time any
+  reconcile pass or write touches a still-legacy table after upgrading past
+  the cutover, so plan the upgrade around each table's retention window if
+  the pre-cutover data matters.
 - **Not every table property is set at creation.** Provisioning applies the
   bloom-filter, column-statistics, compression and metadata-pruning
   properties, but deliberately not `write.target-file-size-bytes`: compaction

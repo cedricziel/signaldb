@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .explore {
   display: flex;
   flex-direction: column;
@@ -6,50 +6,16 @@
   min-height: 0;
 }
 
+/* The per-view window controls (range, refresh, Live). Page navigation
+   lives in the app sidebar (features/shell/AppNav.tsx). */
 .explore-controls {
   display: flex;
   align-items: center;
-  padding: 0 14px;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  padding: 8px var(--gutter);
   border-bottom: 1px solid var(--border);
   gap: 10px;
-}
-
-/* breakpoints: tablet <=900px, mobile <=600px */
-.signal-tabs {
-  display: flex;
-  gap: 2px;
-  flex: 1;
-  min-width: 0;
-  /* Seven tabs don't fit at mobile widths; scroll the strip horizontally
-     instead of squeezing each tab unreadable. Native touch/drag/wheel
-     scrolling stays fully functional — only the scrollbar chrome is hidden. */
-  flex-wrap: nowrap;
-  overflow-x: auto;
-  scrollbar-width: none;
-  -ms-overflow-style: none;
-}
-
-.signal-tabs::-webkit-scrollbar {
-  display: none;
-}
-
-.sigtab {
-  flex: none;
-  padding: 9px 13px 7px;
-  font-size: 12.5px;
-  font-weight: 550;
-  color: var(--dim);
-  border-bottom: 2px solid transparent;
-  margin-bottom: -1px;
-  white-space: nowrap;
-  /* It's a <Link> now (a real route change, not a click handler) — undo the
-     browser's default anchor styling so it still reads as a tab. */
-  text-decoration: none;
-}
-
-.sigtab[aria-selected="true"] {
-  color: var(--text);
-  border-bottom-color: var(--accent);
 }
 
 .explore-controls-right {
@@ -58,8 +24,7 @@
   gap: 8px;
 }
 
-.time-picker select,
-.livebtn {
+.time-picker select {
   border: 1px solid var(--border);
   background: var(--surface2);
   border-radius: 6px;
@@ -67,9 +32,31 @@
   font-size: 12px;
 }
 
+.refresh-btn {
+  padding: 4px 8px;
+}
+
+.refresh-icon {
+  width: 14px;
+  height: 14px;
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 1.5;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+
+.refresh-btn[aria-busy="true"] .refresh-icon {
+  animation: refresh-spin 0.9s linear infinite;
+}
+
+@keyframes refresh-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
 .livebtn {
-  display: inline-flex;
-  align-items: center;
   gap: 7px;
 }
 
@@ -82,7 +69,7 @@
 
 .livebtn[aria-pressed="true"] {
   border-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 
@@ -98,14 +85,11 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .livebtn .live-pip {
+  .livebtn .live-pip,
+  .refresh-btn[aria-busy="true"] .refresh-icon {
     animation: none !important;
+    opacity: 0.5;
   }
-}
-
-.view-placeholder {
-  color: var(--dim);
-  padding: 24px;
 }
 
 .visually-hidden {
@@ -130,11 +114,11 @@
   align-items: flex-start;
   flex-wrap: wrap;
   gap: 7px;
-  padding: 10px 14px;
+  padding: 10px var(--gutter);
   border-bottom: 1px solid var(--border);
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* The search input otherwise shares a row with the chips/qlmode toggle at
      an unreadably narrow width; give it the full row instead. */
   .search-form {
@@ -149,15 +133,16 @@
   gap: 7px;
 }
 
-.chip {
-  display: inline-flex;
-  align-items: center;
-  border: 1px solid var(--border);
-  border-radius: 6px;
+/* Segmented (label:op:value + its own × control), so — unlike a plain
+   .chip — the padding lives on each segment below, not the chip itself.
+   Compounded with .chip so it beats the global pill base (same
+   specificity as a bare .chip) regardless of CSS import order. */
+.chip.chip-segmented {
+  padding: 0;
   overflow: hidden;
   font-family: var(--mono);
-  font-size: 11.5px;
   background: var(--surface2);
+  border-radius: 6px;
 }
 
 .chip-k {
@@ -167,7 +152,7 @@
 
 .chip-op {
   padding: 4px 4px;
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 600;
 }
 
@@ -181,7 +166,13 @@
 }
 
 .chip-x:hover {
-  color: var(--err);
+  color: var(--err-text);
+}
+
+/* `.chip`'s `overflow: hidden` (its rounded corners) otherwise clips the
+   default outline's outer half. */
+.chip-x:focus-visible {
+  outline-offset: -2px;
 }
 
 /* Active-filter pills (traces, errors): the whole chip is the remove
@@ -195,13 +186,7 @@
 }
 
 .filter-chip {
-  display: inline-flex;
   align-items: baseline;
-  gap: 5px;
-  font-size: 11.5px;
-  padding: 2px 7px;
-  border: 1px solid var(--border);
-  border-radius: 12px;
   background: var(--surface);
 }
 
@@ -253,12 +238,30 @@
   max-width: 160px;
 }
 
-.chip-form button {
-  font-size: 12px;
-  color: var(--dim);
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 9px;
+@container app-main (max-width: 600px) {
+  /* The label/operator/value inputs plus Add/Cancel otherwise run off the
+     right edge of the page at this width instead of wrapping. */
+  .chip-form {
+    flex-wrap: wrap;
+  }
+
+  .chip-form input,
+  .chip-form select {
+    flex: 1 1 120px;
+    max-width: none;
+  }
+
+  /* The label field is AttributeKeyInput's `.chip-label` wrapper, not a bare
+     `<input>` — it's the flex item .chip-form actually lays out, so the grow
+     rule above has to target it instead for the label field to share this
+     wrapping. */
+  .chip-form .chip-label {
+    flex: 1 1 120px;
+  }
+
+  .chip-form .chip-label input {
+    width: 100%;
+  }
 }
 
 .search-form {
@@ -311,14 +314,6 @@
   gap: 8px;
 }
 
-.raw-actions button {
-  font-size: 12px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  padding: 3px 11px;
-  color: var(--dim);
-}
-
 /* ---------- layout ---------- */
 
 /* One sidebar width for every signal: logs' fields panel and traces' facets
@@ -326,17 +321,19 @@
    user preference — see lib/sidebarWidth.ts, which applies it to <html>
    before first paint and on drag, same as lib/theme.ts does for --theme. The
    248px fallback here only covers the sliver of time (or test render) before
-   that runs. */
+   that runs. The saved width applies up to about a third of the main column
+   (`cqi` resolves against the `app-main` container), so a width chosen on a
+   wide screen never leaves the list a sliver on a laptop or tablet. */
 .logs-body,
 .traces-body,
 .errors-body {
   display: grid;
-  grid-template-columns: var(--sidebar-w, 248px) 1fr;
+  grid-template-columns: min(var(--sidebar-w, 248px), 32cqi) 1fr;
   flex: 1;
   min-height: 0;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .logs-body,
   .traces-body,
   .errors-body {
@@ -355,9 +352,10 @@
 }
 
 /* ---------- mobile sidebar drawer ----------
-   Below the tablet breakpoint the sidebar above is plain `display:none` —
-   these back the "Filters" toggle (useMobileSidebar) that reveals it again
-   as a dismissible overlay instead. See components/MobileSidebarDrawer.tsx. */
+   Below the drawer breakpoint (main column <=720px) the sidebar above is
+   plain `display:none` — these back the "Filters" toggle (useMobileSidebar)
+   that reveals it again as a dismissible overlay instead. See
+   components/MobileSidebarDrawer.tsx. */
 
 .mobile-filters-toggle {
   display: none;
@@ -374,23 +372,34 @@
   display: none;
 }
 
-@media (max-width: 900px) {
+/* `.mobile-sidebar-drawer`'s own `display: contents` above promotes this
+   button into whatever grid/flex the drawer sits in once real layout rules
+   (below) only apply below the drawer breakpoint — without a default here,
+   a drawer left open across a resize past that breakpoint leaves the button
+   as a stray grid item instead of disappearing with the rest of the drawer
+   chrome. */
+.mobile-sidebar-close {
+  display: none;
+}
+
+@container app-main (max-width: 720px) {
   .mobile-filters-toggle {
     display: inline-flex;
     align-items: center;
     gap: 6px;
+    align-self: flex-start;
     margin: 10px 14px 0;
-    border: 1px solid var(--border);
-    background: var(--surface2);
-    border-radius: 6px;
-    padding: 4px 10px;
-    font-size: 12px;
     color: var(--dim);
+  }
+
+  /* Inside the query bar it's one more control in the row, not a strip. */
+  .querybar .mobile-filters-toggle {
+    margin: 0;
   }
 
   .mobile-filters-toggle[aria-expanded="true"] {
     border-color: var(--accent);
-    color: var(--accent);
+    color: var(--accent-text);
   }
 
   .mobile-sidebar-backdrop {
@@ -398,7 +407,7 @@
     position: fixed;
     inset: 0;
     z-index: 49;
-    background: rgba(0, 0, 0, 0.4);
+    background: color-mix(in srgb, var(--shadow) 40%, transparent);
   }
 
   .mobile-sidebar-drawer.open {
@@ -411,7 +420,7 @@
     width: min(320px, 85vw);
     z-index: 50;
     background: var(--surface);
-    box-shadow: 4px 0 24px rgba(0, 0, 0, 0.35);
+    box-shadow: 4px 0 24px color-mix(in srgb, var(--shadow) 35%, transparent);
   }
 
   /* Right-edge variant (the trace waterfall's span-detail pane, which sits
@@ -420,7 +429,7 @@
   .mobile-sidebar-drawer--right.open {
     left: auto;
     right: 0;
-    box-shadow: -4px 0 24px rgba(0, 0, 0, 0.35);
+    box-shadow: -4px 0 24px color-mix(in srgb, var(--shadow) 35%, transparent);
   }
 
   /* Whatever aside the drawer wraps (a facet/field .sidebar, the trace
@@ -438,13 +447,10 @@
   }
 
   .mobile-sidebar-close {
+    display: block;
     flex: none;
     margin: 8px 10px 0 auto;
-    font-size: 12px;
     color: var(--dim);
-    border: 1px solid var(--border);
-    border-radius: 5px;
-    padding: 3px 10px;
   }
 }
 
@@ -462,7 +468,7 @@
 .sidebar {
   /* Also fixed here, so a sidebar dropped into a flex container matches the
      grid-based ones rather than shrinking to its content. */
-  width: var(--sidebar-w, 248px);
+  width: min(var(--sidebar-w, 248px), 32cqi);
   flex: none;
   position: relative;
   border-right: 1px solid var(--border);
@@ -500,6 +506,7 @@
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
   margin: 0 12px 6px;
   font-size: 11.5px;
   color: var(--dim);
@@ -552,6 +559,60 @@
 
 .field-row .sem-info {
   padding-right: 10px;
+  opacity: 0;
+}
+
+.field-row:hover .sem-info,
+.field-row:focus-within .sem-info {
+  opacity: 1;
+}
+
+/* No hover to reveal it on touch. Kept beside the base rule: global.css
+   loads first, so a copy there would lose to the opacity above. */
+@media (max-width: 1023px), (hover: none) {
+  .field-row .sem-info {
+    opacity: 1;
+  }
+}
+
+/* Group headers in the fields sidebar (semantic title, e.g. "Kubernetes"):
+   collapsible, with a field count. Absent for the flat fallback list (no
+   semantics resolved yet), which keeps the un-grouped layout/padding. */
+.fieldgroup-head {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 12px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  color: var(--faint);
+}
+
+.fieldgroup-count {
+  margin-left: auto;
+  color: var(--faint);
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+.fieldgroup .field {
+  padding-left: 20px;
+}
+
+.fieldgroup .fieldvals {
+  padding-left: 20px;
+}
+
+.field-dep {
+  margin-left: 4px;
+  font-family: var(--ui);
+  font-size: 10px;
+  color: var(--warn-text);
 }
 
 .field-row:hover {
@@ -584,13 +645,13 @@
 
 .fieldval:hover {
   border-left-color: var(--accent);
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* ---------- histogram ---------- */
 
 .histo-wrap {
-  padding: 10px 16px 4px;
+  padding: 10px var(--gutter) 4px;
   border-bottom: 1px solid var(--border);
 }
 
@@ -614,14 +675,12 @@
 }
 
 .query-error {
-  color: var(--err);
   font-family: var(--mono);
-  font-size: 12px;
   padding: 12px 16px;
 }
 
 .trace-not-found {
-  padding: 16px;
+  padding: var(--gutter);
 }
 
 .trace-not-found h3 {
@@ -663,7 +722,7 @@
 }
 
 .logrow-ts {
-  color: var(--faint);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
 }
@@ -676,11 +735,11 @@
 }
 
 span.level-error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 span.level-warn {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 span.level-info {
@@ -709,6 +768,25 @@ span.level-debug {
   font-size: 10px;
 }
 
+@container app-main (max-width: 600px) {
+  /* Timestamp, level and service leave the message a few characters on a
+     phone; drop the message onto its own line under them instead. */
+  .logrow {
+    flex-wrap: wrap;
+    row-gap: 2px;
+  }
+
+  .logrow-msg {
+    order: 1;
+    flex-basis: 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    display: -webkit-box;
+    -webkit-line-clamp: 3;
+    -webkit-box-orient: vertical;
+  }
+}
+
 .logdetail {
   background: var(--surface2);
   border-top: 1px solid var(--border);
@@ -723,86 +801,10 @@ span.level-debug {
   margin-bottom: 10px;
 }
 
-.act {
-  font-size: 11.5px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 10px;
-  background: var(--surface);
-}
-
+/* .btn-primary now supplies the accent treatment (was its own accent-border
+   and soft-background variant); only the row's own weight stays here. */
 .act-primary {
-  border-color: var(--accent);
-  color: var(--accent);
-  background: var(--accent-soft);
   font-weight: 550;
-}
-
-.attr-grid {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  max-width: 720px;
-}
-
-/* Semantic-title sub-heading when the registry resolved keys in a scope. */
-.attr-grid-title {
-  font-size: 10.5px;
-  color: var(--dim);
-  font-weight: 600;
-  margin: 6px 0 1px;
-}
-
-.attr-row {
-  display: grid;
-  grid-template-columns: minmax(120px, 220px) minmax(0, 1fr) max-content;
-  gap: 0 14px;
-  font-size: 11.5px;
-}
-
-.attr-row dt {
-  font-family: var(--mono);
-  color: var(--dim);
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* A resolved key renders a multi-line SemanticKey; the key itself keeps its
-   ellipsis via `.semkey-name`. */
-.attr-row dt:has(.semkey) {
-  white-space: normal;
-}
-
-.attr-row dd {
-  font-family: var(--mono);
-  margin: 0;
-  overflow-wrap: anywhere;
-}
-
-.attr-actions {
-  visibility: hidden;
-  display: inline-flex;
-  gap: 6px;
-}
-
-.attr-row:hover .attr-actions {
-  visibility: visible;
-}
-
-.attr-actions button {
-  font-size: 10px;
-  color: var(--faint);
-  border: 1px solid var(--border);
-  border-radius: 4px;
-  padding: 0 5px;
-}
-
-.attr-actions button:hover {
-  color: var(--accent);
-  border-color: var(--accent);
 }
 
 /* ---------- signal volume chart ---------- */
@@ -833,7 +835,7 @@ span.level-debug {
   font-size: 9.5px;
   font-family: var(--mono);
   font-variant-numeric: tabular-nums;
-  color: var(--faint);
+  color: var(--dim);
   /* Nudge the end labels onto their gridlines rather than past them. */
   padding: 0 0 1px;
   white-space: nowrap;
@@ -842,6 +844,9 @@ span.level-debug {
 .svol-bars {
   position: relative;
   display: flex;
+  /* A sideways finger drag scrubs the bars (SignalHistogram); vertical
+     still scrolls the page. */
+  touch-action: pan-y;
   align-items: flex-end;
   gap: 2px;
   flex: 1;
@@ -891,13 +896,13 @@ span.level-debug {
   display: flex;
   justify-content: space-between;
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
   font-variant-numeric: tabular-nums;
   font-family: var(--mono);
   padding: 3px 0 4px 78px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   /* The bucket-width select and log-scale toggle otherwise wrap under each
      other, mid-row, next to the start/end axis labels — give them their own
      centered row underneath instead. */
@@ -922,7 +927,7 @@ span.level-debug {
 }
 
 .svol-scale[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 
@@ -939,13 +944,6 @@ span.level-debug {
   font-variant-numeric: tabular-nums;
 }
 
-.attr-scope {
-  font-size: 10px;
-  color: var(--faint);
-  font-style: italic;
-  white-space: nowrap;
-}
-
 .svol-controls {
   display: flex;
   align-items: center;
@@ -956,7 +954,7 @@ span.level-debug {
   font-size: 10.5px;
   font-family: var(--ui);
   color: var(--dim);
-  background: var(--surface);
+  background: var(--surface2);
   border: 1px solid var(--border);
   border-radius: 3px;
   padding: 1px 4px;
@@ -1006,4 +1004,12 @@ span.level-debug {
     animation: none !important;
     background: var(--surface2);
   }
+}
+
+/* Inline validation under the add-filter form: a picked registry key is
+   flattened to its Loki label spelling, but a hand-typed key can still be
+   invalid; the hint says why Add is disabled instead of failing silently. */
+.chip-form-hint {
+  font-size: 11px;
+  color: var(--dim);
 }

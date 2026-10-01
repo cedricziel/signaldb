@@ -3,6 +3,11 @@
 .user-menu {
   position: relative;
   display: inline-block;
+  /* The `topbar` variant sat after a `flex: 1` spacer in the old top bar;
+     this pins the pair to the right edge even when `.topbar` wraps to a
+     second row at narrow widths, so the popover below has a stable right
+     edge to anchor from. */
+  margin-left: auto;
 }
 
 .user-menu-toggle {
@@ -41,7 +46,7 @@
   height: 24px;
   border-radius: 6px;
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   font-family: var(--mono);
   font-size: 11px;
   font-weight: 700;
@@ -51,6 +56,16 @@
 .user-name {
   font-family: var(--mono);
   color: var(--text);
+  max-width: 40vw;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 719px) {
+  .user-name {
+    display: none;
+  }
 }
 
 .user-caret {
@@ -64,7 +79,7 @@
   z-index: 40;
 }
 
-/* breakpoints: tablet <=900px, mobile <=600px (see explore.css) */
+/* The mobile top bar (<720px, AppNav.css) anchors the popover differently. */
 .user-menu-popover {
   position: absolute;
   top: 44px;
@@ -76,8 +91,21 @@
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.25);
+  box-shadow: 0 12px 32px color-mix(in srgb, var(--shadow) 25%, transparent);
   overflow: hidden;
+}
+
+@media (max-width: 719px) {
+  /* `.user-menu`'s `margin-left: auto` (above) already keeps the toggle
+     itself on-screen, but anchor the popover to the viewport rather than the
+     toggle's own box here too: the top bar can still wrap to a second row at
+     this width, and a viewport-fixed corner is robust to exactly where on
+     that row the toggle lands. */
+  .user-menu-popover {
+    position: fixed;
+    top: 56px;
+    right: 12px;
+  }
 }
 
 .user-menu-info {
@@ -147,12 +175,23 @@
   margin-left: auto;
 }
 
+.user-menu-alert {
+  display: flex;
+  gap: 8px;
+  align-items: flex-start;
+  margin: 4px 10px;
+  padding: 8px 10px;
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--err) 35%, transparent);
+}
+
 .user-menu-signout {
   color: var(--text);
 }
 
 .user-menu-signout:hover {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* Ensure internal links look consistent */

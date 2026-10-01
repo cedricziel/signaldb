@@ -18,3 +18,14 @@ thiserror.workspace = true
 # Both are leaf registry crates — nothing here reaches the FDAP stack.
 base64.workspace = true
 chrono.workspace = true
+# `labels.replace` regexes are compiled at validation, as the engine will.
+regex.workspace = true
+# `ToSchema` for the stage grammar, published in the router's OpenAPI
+# document. Optional: the CLI builds this crate and has no use for it.
+utoipa = { workspace = true, optional = true }
+
+[features]
+openapi = ["dep:utoipa"]
+
+[lints]
+workspace = true

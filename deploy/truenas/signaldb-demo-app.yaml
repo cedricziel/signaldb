@@ -1,0 +1,760 @@
+# SignalDB demo instance as a TrueNAS SCALE custom app (Docker Compose).
+#
+# A self-contained SignalDB monolith fed by a trimmed-down OpenTelemetry
+# Demo (https://github.com/open-telemetry/opentelemetry-demo): the shop
+# frontend and the services it calls on a normal page load and checkout,
+# driven by the Locust load generator. Kafka, the accounting/fraud
+# consumers, Envoy, the image provider and the observability
+# backends of the upstream demo are left out.
+#
+# Everything the demo emits lands in tenant `demo`, dataset `otel-demo`.
+# Two ports are published on the host: the SignalDB UI/query API (30210)
+# and the shop (30211), whose pages carry browser RUM instrumentation
+# (app `frontend-web` on the Real users page). Put a reverse proxy (e.g. a
+# Pangolin resource) in front of each for public access.
+# Search for REPLACE and example.com before installing.
+
+networks:
+  default:
+    enable_ipv6: false
+
+configs:
+  signaldb_toml:
+    content: |
+      [database]
+      dsn = "sqlite:///data/signaldb.db"
+
+      [storage]
+      dsn = "file:///data/storage"
+
+      [schema]
+      catalog_type = "sql"
+      catalog_uri = "sqlite:///data/catalog.db"
+
+      [discovery]
+      dsn = "sqlite:///data/discovery.db"
+
+      [wal]
+      wal_dir = "/data/wal"
+
+      [querier]
+      memory_limit_mb = 1024
+
+      [auth]
+      admin_api_key = "sk-admin-REPLACE"
+
+      [[auth.tenants]]
+      id = "demo"
+      slug = "demo"
+      name = "OpenTelemetry Demo"
+      default_dataset = "otel-demo"
+
+      [[auth.tenants.api_keys]]
+      key = "sk-demo-REPLACE"
+      name = "Demo key"
+
+      [[auth.tenants.datasets]]
+      id = "otel-demo"
+      slug = "otel-demo"
+      is_default = true
+
+      [demo]
+      enabled = true
+      tenant_id = "demo"
+      dataset_id = "otel-demo"
+      username = "demo@example.com"
+      password = "demo"
+
+  # Upstream mounts these from its source tree; the images don't ship them.
+  flagd_json:
+    content: |
+      {
+        "$schema": "https://flagd.dev/schema/v0/flags.json",
+        "flags": {
+          "productCatalogFailure": {
+            "description": "Fail product catalog service on a specific product",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "recommendationCacheFailure": {
+            "description": "Fail recommendation service cache",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "adManualGc": {
+            "description": "Triggers full manual garbage collections in the ad service",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "adHighCpu": {
+            "description": "Triggers high cpu load in the ad service",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "adFailure": {
+            "description": "Fail ad service",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "kafkaQueueProblems": {
+            "description": "Overloads Kafka queue while simultaneously introducing a consumer side delay leading to a lag spike",
+            "state": "ENABLED",
+            "variants": {
+              "on": 100,
+              "off": 0
+            },
+            "defaultVariant": "off"
+          },
+          "cartFailure": {
+            "description": "Fail cart service",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "paymentFailure": {
+            "description": "Fail payment service charge requests n%",
+            "state": "ENABLED",
+            "variants": {
+              "100%": 1,
+              "90%": 0.95,
+              "75%": 0.75,
+              "50%": 0.5,
+              "25%": 0.25,
+              "10%": 0.1,
+              "off": 0
+            },
+            "defaultVariant": "off"
+          },
+          "paymentUnreachable": {
+            "description": "Payment service is unavailable",
+            "state": "ENABLED",
+            "variants": {
+              "on": true,
+              "off": false
+            },
+            "defaultVariant": "off"
+          },
+          "loadGeneratorFloodHomepage": {
+            "description": "Flood the frontend with a large amount of requests.",
+            "state": "ENABLED",
+            "variants": {
+              "on": 100,
+              "off": 0
+            },
+            "defaultVariant": "off"
+          },
+          "imageSlowLoad": {
+            "description": "slow loading images in the frontend",
+            "state": "ENABLED",
+            "variants": {
+              "10sec": 10000,
+              "5sec": 5000,
+              "off": 0
+            },
+            "defaultVariant": "off"
+          },
+          "emailMemoryLeak": {
+            "description": "Memory leak in the email service.",
+            "state": "ENABLED",
+            "variants": {
+              "off": 0,
+              "1x": 1,
+              "10x": 10,
+              "100x": 100,
+              "1000x": 1000,
+              "10000x": 10000
+            },
+            "defaultVariant": "off"
+          }
+        }
+      }
+  products_json:
+    content: |
+      {
+        "products": [
+          {
+            "id": "OLJCESPC7Z",
+            "name": "National Park Foundation Explorascope",
+            "description": "The National Park Foundation’s (NPF) Explorascope 60AZ is a manual alt-azimuth, refractor telescope perfect for celestial viewing on the go. The NPF Explorascope 60 can view the planets, moon, star clusters and brighter deep sky objects like the Orion Nebula and Andromeda Galaxy.",
+            "picture": "NationalParkFoundationExplorascope.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 101,
+              "nanos": 960000000
+            },
+            "categories": [
+              "telescopes"
+            ]
+          },
+          {
+            "id": "66VCHSJNUP",
+            "name": "Starsense Explorer Refractor Telescope",
+            "description": "The first telescope that uses your smartphone to analyze the night sky and calculate its position in real time. StarSense Explorer is ideal for beginners thanks to the app’s user-friendly interface and detailed tutorials. It’s like having your own personal tour guide of the night sky",
+            "picture": "StarsenseExplorer.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 349,
+              "nanos": 950000000
+            },
+            "categories": [
+              "telescopes"
+            ]
+          },
+          {
+            "id": "1YMWWN1N4O",
+            "name": "Eclipsmart Travel Refractor Telescope",
+            "description": "Dedicated white-light solar scope for the observer on the go. The 50mm refracting solar scope uses Solar Safe, ISO compliant, full-aperture glass filter material to ensure the safest view of solar events.  The kit comes complete with everything you need, including the dedicated travel solar scope, a Solar Safe finderscope, tripod, a high quality 20mm (18x) Kellner eyepiece and a nylon backpack to carry everything in.  This Travel Solar Scope makes it easy to share the Sun as well as partial and total solar eclipses with the whole family and offers much higher magnifications than you would otherwise get using handheld solar viewers or binoculars.",
+            "picture": "EclipsmartTravelRefractorTelescope.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 129,
+              "nanos": 950000000
+            },
+            "categories": [
+              "telescopes",
+              "travel"
+            ]
+          },
+          {
+            "id": "L9ECAV7KIM",
+            "name": "Lens Cleaning Kit",
+            "description": "Wipe away dust, dirt, fingerprints and other particles on your lenses to see clearly with the Lens Cleaning Kit. This cleaning kit works on all glass and optical surfaces, including telescopes, binoculars, spotting scopes, monoculars, microscopes, and even your camera lenses, computer screens, and mobile devices.  The kit comes complete with a retractable lens brush to remove dust particles and dirt and two options to clean smudges and fingerprints off of your optics, pre-moistened lens wipes and a bottled lens cleaning fluid with soft cloth.",
+            "picture": "LensCleaningKit.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 21,
+              "nanos": 950000000
+            },
+            "categories": [
+              "accessories"
+            ]
+          },
+          {
+            "id": "2ZYFJ3GM2N",
+            "name": "Roof Binoculars",
+            "description": "This versatile, all-around binocular is a great choice for the trail, the stadium, the arena, or just about anywhere you want a close-up view of the action without sacrificing brightness or detail. It’s an especially great companion for nature observation and bird watching, with ED glass that helps you spot the subtlest field markings and a close focus of just 6.5 feet.",
+            "picture": "RoofBinoculars.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 209,
+              "nanos": 950000000
+            },
+            "categories": [
+              "binoculars"
+            ]
+          },
+          {
+            "id": "0PUK6V6EV0",
+            "name": "Solar System Color Imager",
+            "description": "You have your new telescope and have observed Saturn and Jupiter. Now you're ready to take the next step and start imaging them. But where do you begin? The NexImage 10 Solar System Imager is the perfect solution.",
+            "picture": "SolarSystemColorImager.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 175,
+              "nanos": 0
+            },
+            "categories": [
+              "accessories",
+              "telescopes"
+            ]
+          },
+          {
+            "id": "LS4PSXUNUM",
+            "name": "Red Flashlight",
+            "description": "This 3-in-1 device features a 3-mode red flashlight, a hand warmer, and a portable power bank for recharging your personal electronics on the go. Whether you use it to light the way at an astronomy star party, a night walk, or wildlife research, ThermoTorch 3 Astro Red’s rugged, IPX4-rated design will withstand your everyday activities.",
+            "picture": "RedFlashlight.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 57,
+              "nanos": 80000000
+            },
+            "categories": [
+              "accessories",
+              "flashlights"
+            ]
+          },
+          {
+            "id": "9SIQT8TOJO",
+            "name": "Optical Tube Assembly",
+            "description": "Capturing impressive deep-sky astroimages is easier than ever with Rowe-Ackermann Schmidt Astrograph (RASA) V2, the perfect companion to today’s top DSLR or astronomical CCD cameras. This fast, wide-field f/2.2 system allows for shorter exposure times compared to traditional f/10 astroimaging, without sacrificing resolution. Because shorter sub-exposure times are possible, your equatorial mount won’t need to accurately track over extended periods. The short focal length also lessens equatorial tracking demands. In many cases, autoguiding will not be required.",
+            "picture": "OpticalTubeAssembly.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 3599,
+              "nanos": 0
+            },
+            "categories": [
+              "accessories",
+              "telescopes",
+              "assembly"
+            ]
+          },
+          {
+            "id": "6E92ZMYYFZ",
+            "name": "Solar Filter",
+            "description": "Enhance your viewing experience with EclipSmart Solar Filter for 8” telescopes. With two Velcro straps and four self-adhesive Velcro pads for added safety, you can be assured that the solar filter cannot be accidentally knocked off and will provide Solar Safe, ISO compliant viewing.",
+            "picture": "SolarFilter.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 69,
+              "nanos": 950000000
+            },
+            "categories": [
+              "accessories",
+              "telescopes"
+            ]
+          },
+          {
+            "id": "HQTGWGPNH4",
+            "name": "The Comet Book",
+            "description": "A 16th-century treatise on comets, created anonymously in Flanders (now northern France) and now held at the Universitätsbibliothek Kassel. Commonly known as The Comet Book (or Kometenbuch in German), its full title translates as “Comets and their General and Particular Meanings, According to Ptolomeé, Albumasar, Haly, Aliquind and other Astrologers”. The image is from https://publicdomainreview.org/collection/the-comet-book, made available by the Universitätsbibliothek Kassel under a CC-BY SA 4.0 license (https://creativecommons.org/licenses/by-sa/4.0/)",
+            "picture": "TheCometBook.jpg",
+            "priceUsd": {
+              "currencyCode": "USD",
+              "units": 0,
+              "nanos": 990000000
+            },
+            "categories": [
+              "books"
+            ]
+          }
+        ]
+      }
+
+  frontend_proxy_conf:
+    content: |
+      # The shop as browsers see it: the frontend with the RUM script injected,
+      # plus the paths upstream's Envoy proxy serves next to it.
+      map $$http_x_forwarded_proto $$origin_scheme {
+        default $$http_x_forwarded_proto;
+        "" $$scheme;
+      }
+
+      server {
+        listen 8080;
+
+        location = /rum.js {
+          root /usr/share/nginx/rum;
+          add_header Cache-Control no-cache;
+        }
+
+        location /otlp-http/ {
+          proxy_pass http://otel-collector:4318/;
+          proxy_http_version 1.1;
+          proxy_set_header Connection "";
+          client_max_body_size 5m;
+        }
+
+        location /images/ {
+          proxy_pass http://image-provider:8081/;
+        }
+
+        location /flagservice/ {
+          proxy_pass http://flagd:8013/;
+          proxy_http_version 1.1;
+          proxy_buffering off;
+          proxy_read_timeout 1h;
+        }
+
+        location / {
+          proxy_pass http://frontend:8080;
+          proxy_set_header Host $$host;
+          # sub_filter only rewrites uncompressed bodies.
+          proxy_set_header Accept-Encoding "";
+          sub_filter_once off;
+          sub_filter '</head>' '<script type="module" src="/rum.js"></script></head>';
+          # The frontend's web tracer needs an absolute export URL; see
+          # PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT on the frontend service.
+          sub_filter 'http://__PUBLIC_ORIGIN__' '$$origin_scheme://$$http_host';
+        }
+      }
+
+  rum_js:
+    content: |
+      // Real-user monitoring for the demo shop: the Real users Setup tab's log
+      // pipeline, layered on the OTel Demo frontend's own web tracer, which
+      // already traces fetches (with traceparent) and stamps session.id on spans.
+      import { logs } from "https://esm.sh/@opentelemetry/api-logs@0.221.0";
+      import { registerInstrumentations } from "https://esm.sh/@opentelemetry/instrumentation@0.221.0";
+      import {
+        BatchLogRecordProcessor,
+        LoggerProvider,
+      } from "https://esm.sh/@opentelemetry/sdk-logs@0.221.0";
+      import { OTLPLogExporter } from "https://esm.sh/@opentelemetry/exporter-logs-otlp-http@0.221.0";
+      import { resourceFromAttributes } from "https://esm.sh/@opentelemetry/resources@2.10.0";
+      import { ErrorsInstrumentation } from "https://esm.sh/@opentelemetry/browser-instrumentation@0.7.0/experimental/errors";
+      import { NavigationInstrumentation } from "https://esm.sh/@opentelemetry/browser-instrumentation@0.7.0/experimental/navigation";
+      import { NavigationTimingInstrumentation } from "https://esm.sh/@opentelemetry/browser-instrumentation@0.7.0/experimental/navigation-timing";
+      import { ResourceTimingInstrumentation } from "https://esm.sh/@opentelemetry/browser-instrumentation@0.7.0/experimental/resource-timing";
+      import { UserActionInstrumentation } from "https://esm.sh/@opentelemetry/browser-instrumentation@0.7.0/experimental/user-action";
+      import { WebVitalsInstrumentation } from "https://esm.sh/@opentelemetry/browser-instrumentation@0.7.0/experimental/web-vitals";
+
+      // Same localStorage entry the shop's SessionIdProcessor reads, so log
+      // records and spans share one session.id.
+      function sessionId() {
+        try {
+          let session = JSON.parse(localStorage.getItem("session") || "null");
+          if (!session?.userId) {
+            session = { userId: crypto.randomUUID(), currencyCode: "USD" };
+            localStorage.setItem("session", JSON.stringify(session));
+          }
+          return session.userId;
+        } catch {
+          return undefined;
+        }
+      }
+
+      const loggerProvider = new LoggerProvider({
+        resource: resourceFromAttributes({
+          "service.name": "frontend-web",
+          "service.namespace": "opentelemetry-demo",
+          "deployment.environment.name": "demo",
+        }),
+        processors: [
+          {
+            onEmit(record) {
+              const id = sessionId();
+              if (id) record.setAttribute("session.id", id);
+            },
+            forceFlush: () => Promise.resolve(),
+            shutdown: () => Promise.resolve(),
+          },
+          new BatchLogRecordProcessor({
+            exporter: new OTLPLogExporter({
+              url: location.origin + "/otlp-http/v1/logs",
+            }),
+            scheduledDelayMillis: 500,
+          }),
+        ],
+      });
+      logs.setGlobalLoggerProvider(loggerProvider);
+
+      registerInstrumentations({
+        loggerProvider,
+        instrumentations: [
+          new WebVitalsInstrumentation(),
+          new NavigationInstrumentation(),
+          new NavigationTimingInstrumentation(),
+          new ResourceTimingInstrumentation({
+            // The SDK's own exports and the esm.sh module loads above.
+            ignoreUrls: [/\/v1\/(traces|logs)$$/, /^https:\/\/esm\.sh\//],
+          }),
+          new ErrorsInstrumentation(),
+          new UserActionInstrumentation(),
+        ],
+      });
+
+      addEventListener("pagehide", () => loggerProvider.forceFlush());
+
+x-otel: &otel
+  OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4317
+  OTEL_EXPORTER_OTLP_METRICS_TEMPORALITY_PREFERENCE: cumulative
+  OTEL_RESOURCE_ATTRIBUTES: service.namespace=opentelemetry-demo,deployment.environment.name=demo
+  FLAGD_HOST: flagd
+  FLAGD_PORT: "8013"
+
+x-demo: &demo
+  restart: unless-stopped
+  depends_on:
+    - otel-collector
+    - flagd
+
+services:
+  signaldb:
+    image: ghcr.io/cedricziel/signaldb:main
+    restart: unless-stopped
+    user: "1000:1000"
+    mem_limit: 2g
+    working_dir: /etc/signaldb
+    ports:
+      - "30210:3000" # query API + UI
+    volumes:
+      # Must be owned by uid/gid 1000.
+      - /mnt/tank/apps/signaldb-demo:/data
+    configs:
+      - source: signaldb_toml
+        target: /etc/signaldb/signaldb.toml
+    environment:
+      RUST_LOG: info
+      SIGNALDB__PUBLIC__API_URL: https://signaldb-demo.example.com
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    restart: unless-stopped
+    mem_limit: 256m
+    command: ["--config=env:OTELCOL_CONFIG"]
+    depends_on:
+      - signaldb
+    environment:
+      OTELCOL_CONFIG: |
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+              http:
+                endpoint: 0.0.0.0:4318
+                # For requests carrying the synthetic_request baggage (the load
+                # generator's browsers), the frontend points its web tracer
+                # straight at otel-collector:4318, cross-origin from the shop.
+                cors:
+                  allowed_origins: ["http://*", "https://*"]
+        processors:
+          batch: {}
+          # The Node services hardcode the AWS/GCP resource detectors, whose
+          # startup probes of the cloud metadata endpoints fail off-cloud.
+          filter/cloud_metadata:
+            error_mode: ignore
+            traces:
+              span:
+                - 'IsMatch(attributes["net.peer.name"], "^(169\\.254\\.169\\.254|metadata\\.google\\.internal\\.?)$")'
+        exporters:
+          otlp:
+            endpoint: signaldb:4317
+            compression: none
+            tls:
+              insecure: true
+            headers:
+              authorization: "Bearer sk-demo-REPLACE"
+              x-tenant-id: demo
+              x-dataset-id: otel-demo
+        service:
+          pipelines:
+            traces:
+              receivers: [otlp]
+              processors: [filter/cloud_metadata, batch]
+              exporters: [otlp]
+            metrics:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [otlp]
+            logs:
+              receivers: [otlp]
+              processors: [batch]
+              exporters: [otlp]
+
+  flagd:
+    image: ghcr.io/open-feature/flagd:v0.12.8
+    restart: unless-stopped
+    mem_limit: 96m
+    command: ["start", "--uri", "file:/etc/flagd/demo.flagd.json"]
+    configs:
+      - source: flagd_json
+        target: /etc/flagd/demo.flagd.json
+    environment:
+      FLAGD_OTEL_COLLECTOR_URI: otel-collector:4317
+      FLAGD_METRICS_EXPORTER: otel
+      OTEL_SERVICE_NAME: flagd
+
+  valkey-cart:
+    image: valkey/valkey:8.1-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+
+  frontend:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-frontend
+    mem_limit: 256m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: frontend
+      PORT: "8080"
+      FRONTEND_ADDR: frontend:8080
+      AD_ADDR: ad:9555
+      CART_ADDR: cart:7070
+      CHECKOUT_ADDR: checkout:5050
+      CURRENCY_ADDR: currency:7001
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      RECOMMENDATION_ADDR: recommendation:9001
+      SHIPPING_ADDR: http://shipping:50050
+      OTEL_COLLECTOR_HOST: otel-collector
+      WEB_OTEL_SERVICE_NAME: frontend-web
+      # Rewritten to the page's own origin by frontend-proxy.
+      PUBLIC_OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://__PUBLIC_ORIGIN__/otlp-http/v1/traces
+
+  image-provider:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-image-provider
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: image-provider
+      IMAGE_PROVIDER_PORT: "8081"
+      OTEL_COLLECTOR_HOST: otel-collector
+      OTEL_COLLECTOR_PORT_GRPC: "4317"
+
+  # The shop, published on 30211; see frontend_proxy_conf.
+  frontend-proxy:
+    image: nginx:1.29-alpine
+    restart: unless-stopped
+    mem_limit: 64m
+    depends_on:
+      - frontend
+      - image-provider
+      - otel-collector
+      - flagd
+    ports:
+      - "30211:8080" # the shop
+    configs:
+      - source: frontend_proxy_conf
+        target: /etc/nginx/conf.d/default.conf
+      - source: rum_js
+        target: /usr/share/nginx/rum/rum.js
+
+  product-catalog:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-product-catalog
+    mem_limit: 64m
+    configs:
+      - source: products_json
+        target: /usr/src/app/products/products.json
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: product-catalog
+      PRODUCT_CATALOG_PORT: "3550"
+      PRODUCT_CATALOG_RELOAD_INTERVAL: "10"
+
+  currency:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-currency
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: currency
+      CURRENCY_PORT: "7001"
+      VERSION: "2.1.3"
+
+  cart:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-cart
+    mem_limit: 160m
+    depends_on:
+      - otel-collector
+      - valkey-cart
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: cart
+      CART_PORT: "7070"
+      ASPNETCORE_URLS: http://*:7070
+      VALKEY_ADDR: valkey-cart:6379
+
+  recommendation:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-recommendation
+    mem_limit: 128m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: recommendation
+      RECOMMENDATION_PORT: "9001"
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      OTEL_PYTHON_LOG_CORRELATION: "true"
+      PROTOCOL_BUFFERS_PYTHON_IMPLEMENTATION: python
+
+  ad:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-ad
+    mem_limit: 384m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: ad
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      AD_PORT: "9555"
+      OTEL_LOGS_EXPORTER: otlp
+
+  checkout:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-checkout
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: checkout
+      CHECKOUT_PORT: "5050"
+      CART_ADDR: cart:7070
+      CURRENCY_ADDR: currency:7001
+      EMAIL_ADDR: http://email:6060
+      PAYMENT_ADDR: payment:50051
+      PRODUCT_CATALOG_ADDR: product-catalog:3550
+      SHIPPING_ADDR: http://shipping:50050
+
+  payment:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-payment
+    mem_limit: 128m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: payment
+      PAYMENT_PORT: "50051"
+
+  shipping:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-shipping
+    mem_limit: 32m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: shipping
+      SHIPPING_PORT: "50050"
+      QUOTE_ADDR: http://quote:8090
+
+  quote:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-quote
+    mem_limit: 64m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: quote
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+      QUOTE_PORT: "8090"
+      OTEL_PHP_AUTOLOAD_ENABLED: "true"
+
+  email:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-email
+    mem_limit: 128m
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: email
+      EMAIL_PORT: "6060"
+      APP_ENV: production
+      OTEL_EXPORTER_OTLP_TRACES_ENDPOINT: http://otel-collector:4318/v1/traces
+
+  load-generator:
+    <<: *demo
+    image: ghcr.io/open-telemetry/demo:2.1.3-load-generator
+    # Headless Chromium for the browser users.
+    mem_limit: 1536m
+    depends_on:
+      - frontend-proxy
+    environment:
+      <<: *otel
+      OTEL_SERVICE_NAME: load-generator
+      LOCUST_HOST: http://frontend-proxy:8080
+      LOCUST_USERS: "3"
+      LOCUST_SPAWN_RATE: "1"
+      LOCUST_HEADLESS: "true"
+      LOCUST_AUTOSTART: "true"
+      LOCUST_WEB_PORT: "8089"
+      LOCUST_BROWSER_TRAFFIC_ENABLED: "true"
+      PYTHONUNBUFFERED: "1"

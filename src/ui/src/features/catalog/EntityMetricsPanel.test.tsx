@@ -122,6 +122,37 @@ describe("EntityMetricsPanel", () => {
     expect(counter).toHaveTextContent("s");
   });
 
+  it("carries the full name and instrument/unit in a title, for when either truncates", async () => {
+    useEntityMetrics.mockReturnValue({
+      metrics: [
+        metric(
+          "system.network.io.unusually.long.metric.name.for.this.tile",
+          "counter",
+          "By",
+        ),
+      ],
+      isPending: false,
+      isError: false,
+    });
+    fetchEntityMetricSeries.mockResolvedValue(
+      seriesFor([
+        "system.network.io.unusually.long.metric.name.for.this.tile",
+      ]),
+    );
+
+    render();
+
+    const tile = await screen.findByRole("figure");
+    expect(within(tile).getByText(/unusually\.long/)).toHaveAttribute(
+      "title",
+      "system.network.io.unusually.long.metric.name.for.this.tile",
+    );
+    expect(within(tile).getByText("counter · By")).toHaveAttribute(
+      "title",
+      "counter · By",
+    );
+  });
+
   it("says so when the association lookup itself failed", () => {
     // An empty list because the lookup broke must not render like an empty
     // list because the entity has no metrics.
@@ -196,7 +227,7 @@ describe("EntityMetricsPanel", () => {
     render();
 
     expect(
-      await screen.findByText(/No metric data for this host in this window/),
+      await screen.findByText(/No metrics for this host in this range/),
     ).toBeInTheDocument();
     expect(screen.queryByRole("figure")).not.toBeInTheDocument();
   });
@@ -223,6 +254,36 @@ describe("EntityMetricsPanel", () => {
         `Showing ${METRIC_TILE_CAP} of ${METRIC_TILE_CAP + 4} metrics.`,
       ),
     ).toBeInTheDocument();
+  });
+
+  it("hides the metrics panel when a pinned identity value is unset", () => {
+    // A null pin can't be compiled to an equality predicate, so silently
+    // dropping it would widen the panel to every value of that dimension
+    // while the KPIs above stay scoped to the absent value.
+    useEntityMetrics.mockReturnValue({
+      metrics: [metric("system.cpu.utilization")],
+      isPending: false,
+      isError: false,
+    });
+
+    renderWithClient(
+      <EntityMetricsPanel
+        entity={host}
+        pinned={[
+          { field: "service.name", value: "gateway" },
+          { field: "host.name", value: null },
+        ]}
+        range={range}
+        rangeKey="1h|acme|prod"
+      />,
+    );
+
+    expect(
+      screen.getByText(
+        /Metrics are not shown for an unset identity dimension/,
+      ),
+    ).toBeInTheDocument();
+    expect(fetchEntityMetricSeries).not.toHaveBeenCalled();
   });
 
   it("names the registry association its selection came from", async () => {

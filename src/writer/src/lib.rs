@@ -20,48 +20,28 @@ pub mod schema_transform;
 /// Shared test helpers for the writer crate.
 #[cfg(test)]
 pub(crate) mod test_support {
-    use crate::schema_transform::create_metrics_gauge_arrow_schema;
-    use datafusion::arrow::array::{
-        Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
-    };
+    use datafusion::arrow::array::RecordBatch;
     use std::sync::Arc;
 
-    /// A schema-valid `metrics_gauge` batch serialized for WAL append, so a
-    /// test can drive a real Iceberg commit through the writer.
+    /// A wire-format gauge metrics batch serialized for WAL append, so a
+    /// test can drive a real Iceberg commit through the writer. An alias for
+    /// [`metrics_wire_bytes`] kept under its own name where call sites read
+    /// better naming the legacy per-type target table they route through
+    /// (the in-flight redirect to the wide `metrics` table, #1926-class).
     pub(crate) fn metrics_gauge_bytes(num_rows: usize) -> Vec<u8> {
-        let schema = create_metrics_gauge_arrow_schema();
+        metrics_wire_bytes(num_rows)
+    }
 
-        let timestamps: Vec<i64> = (0..num_rows)
-            .map(|i| 1_000_000_000 + (i as i64 * 1_000_000))
-            .collect();
+    /// A wire-format gauge metrics batch, built from a real OTLP request via
+    /// [`common::flight::conversion::otlp_metrics_to_arrow`].
+    pub(crate) fn metrics_wire_bytes(num_rows: usize) -> Vec<u8> {
         let values: Vec<f64> = (0..num_rows).map(|i| i as f64).collect();
-
-        let batch = RecordBatch::try_new(
-            schema,
-            vec![
-                Arc::new(TimestampNanosecondArray::from(timestamps)),
-                Arc::new(TimestampNanosecondArray::from(vec![None; num_rows])),
-                Arc::new(StringArray::from(vec!["coalesce-test"; num_rows])),
-                Arc::new(StringArray::from(vec!["test.metric"; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(Float64Array::from(values)),
-                Arc::new(Int32Array::from(vec![None; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(Int32Array::from(vec![None; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-                Arc::new(Date32Array::from(vec![19000; num_rows])),
-                Arc::new(Int32Array::from(vec![10; num_rows])),
-            ],
-        )
-        .unwrap();
-
+        let request = common::testing::gauge_metrics_request_with_values(
+            "test.metric",
+            "coalesce-test",
+            &values,
+        );
+        let batch = common::flight::conversion::otlp_metrics_to_arrow(&request).unwrap();
         common::wal::record_batch_to_bytes(&batch).unwrap()
     }
 

@@ -3,6 +3,7 @@ import { NOT_SET, compositeKey } from "./traceGroups";
 import {
   buildPath,
   buildSearch,
+  crossSignalSearch,
   DEFAULT_STATE,
   decodeCatalogSegment,
   encodeCatalogSegment,
@@ -30,16 +31,19 @@ describe("parseExploreState", () => {
 
   it("parses a fully-populated URL", () => {
     const state = parseExploreState(
-      "?range=15m&f=level%7C%3D%7Cerror&q=timeout&limit=100&live=1&promql=up",
+      "?range=15m&f=level%7C%3D%7Cerror&q=timeout&limit=100&live=1",
     );
     expect(state.range).toEqual({ type: "relative", seconds: 900 });
     expect(state.filters).toEqual([
-      { label: "level", op: "=", value: "error" },
+      { label: "severity_text", op: "=", value: "error" },
     ]);
     expect(state.search).toBe("timeout");
     expect(state.limit).toBe(100);
     expect(state.live).toBe(true);
-    expect(state.promql).toBe("up");
+  });
+
+  it("ignores a legacy ?promql= param — there is no PromQL escape hatch anymore", () => {
+    expect(parseExploreState("?promql=rate(x[5m])").metricQuery).toBe("");
   });
 
   it("ignores invalid limits and filters", () => {
@@ -76,6 +80,15 @@ describe("buildSearch", () => {
     );
   });
 
+  it("round-trips the Runs page's eval-set filter", () => {
+    const search = buildSearch({
+      ...DEFAULT_STATE,
+      evals: { ...DEFAULT_STATE.evals, set: "triage-golden-200" },
+    });
+    expect(search).toBe("?set=triage-golden-200");
+    expect(parseExploreState(search).evals.set).toBe("triage-golden-200");
+  });
+
   it("never emits a trace param", () => {
     // Single-trace view is a route (see buildPath), not a ?trace= param.
     expect(buildSearch({ ...DEFAULT_STATE, trace: "deadbeef" })).not.toContain(
@@ -88,8 +101,8 @@ describe("buildSearch", () => {
       ...DEFAULT_STATE,
       range: { type: "absolute" as const, fromMs: 1000, toMs: 2000 },
       filters: [
-        { label: "service_name", op: "=" as const, value: "checkout" },
-        { label: "level", op: "!=" as const, value: "debug" },
+        { label: "service.name", op: "=" as const, value: "checkout" },
+        { label: "severity_text", op: "!=" as const, value: "debug" },
       ],
       search: "a b",
       raw: '{x="y"}',
@@ -97,13 +110,50 @@ describe("buildSearch", () => {
       live: true,
       group: "POST /checkout",
       groupBy: "resource.host.name",
-      promql: "rate(x[5m])",
+      querySource: "traces" as const,
+      queryResult: "series" as const,
+      queryFilters: [{ label: "kind", op: "=" as const, value: "server" }],
+      queryRun: true,
       profileType: "cpu:nanoseconds",
       profileService: "signaldb-router",
       tenant: "acme",
       dataset: "production",
     };
     expect(parseExploreState(buildSearch(state))).toEqual(state);
+  });
+
+  it("round-trips the metrics builder query through ?mq=", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const state = { ...DEFAULT_STATE, metricQuery: mq };
+    const search = buildSearch(state);
+    expect(search).toContain("mq=");
+    expect(parseExploreState(search).metricQuery).toBe(mq);
+  });
+
+  it("drops the metrics builder query when switching signals", () => {
+    const mq = JSON.stringify({ ref: "a", metric: "up", filters: [] });
+    const search = crossSignalSearch({ ...DEFAULT_STATE, metricQuery: mq });
+    expect(search).not.toContain("mq=");
+  });
+
+  it("round-trips the Query tab's builder state", () => {
+    const state = {
+      ...DEFAULT_STATE,
+      querySource: "traces" as const,
+      queryResult: "table" as const,
+      queryFilters: [{ label: "service_name", op: "=" as const, value: "x" }],
+      queryRun: true,
+    };
+    const search = buildSearch(state);
+    expect(parseExploreState(search)).toEqual(state);
+  });
+
+  it("omits the Query tab params at their defaults", () => {
+    const search = buildSearch(DEFAULT_STATE);
+    expect(search).not.toContain("qsrc");
+    expect(search).not.toContain("qres");
+    expect(search).not.toContain("qf=");
+    expect(search).not.toContain("qrun");
   });
 
   it("omits the groupBy param for the default dimension", () => {
@@ -155,6 +205,7 @@ describe("buildSearch", () => {
       profileCompare: true,
       profileBaseline: { type: "relative" as const, seconds: 86400 },
       profileId: "abc123",
+      profileUnit: "nanoseconds",
     };
     const search = buildSearch(state);
     expect(search).toContain("plabel=region");
@@ -162,6 +213,7 @@ describe("buildSearch", () => {
     expect(search).toContain("pcmp=1");
     expect(search).toContain("pbase=1d");
     expect(search).toContain("pid=abc123");
+    expect(search).toContain("punit=nanoseconds");
     expect(parseExploreState(search)).toEqual({ ...state, signal: "logs" });
   });
 
@@ -172,6 +224,7 @@ describe("buildSearch", () => {
     expect(search).not.toContain("plabel");
     expect(search).not.toContain("pvalue");
     expect(search).not.toContain("pid");
+    expect(search).not.toContain("punit");
   });
 
   it("no longer emits or parses catalog entity/primary/secondary query params", () => {
@@ -186,9 +239,7 @@ describe("buildSearch", () => {
     expect(search).not.toContain("entity=");
     expect(search).not.toContain("primary=");
     expect(search).not.toContain("secondary=");
-    const parsed = parseExploreState(
-      "?entity=service&primary=x&secondary=y",
-    );
+    const parsed = parseExploreState("?entity=service&primary=x&secondary=y");
     expect(parsed.catalogEntity).toBe(DEFAULT_STATE.catalogEntity);
     expect(parsed.catalogPrimary).toBe("");
     expect(parsed.catalogSecondary).toBe("");
@@ -199,6 +250,36 @@ describe("buildSearch", () => {
     const state = parseExploreState("?tenant=acme&dataset=prod");
     expect(state.tenant).toBe("acme");
     expect(state.dataset).toBe("prod");
+  });
+
+  it("round-trips the Real users page's selected app through ?app=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("app");
+    const state = { ...DEFAULT_STATE, rumApp: "storefront-web" };
+    expect(buildSearch(state)).toContain("app=storefront-web");
+    expect(parseExploreState(buildSearch(state)).rumApp).toBe("storefront-web");
+  });
+
+  it("round-trips the Real users Pages tab's selected route through ?route=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("route");
+    const state = { ...DEFAULT_STATE, rumRoute: "/orders/:id" };
+    expect(buildSearch(state)).toContain("route=");
+    expect(parseExploreState(buildSearch(state)).rumRoute).toBe("/orders/:id");
+  });
+
+  it("round-trips the Real users Sessions tab's selected session through ?session=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("session");
+    const state = { ...DEFAULT_STATE, rumSession: "sess-1" };
+    expect(buildSearch(state)).toContain("session=sess-1");
+    expect(parseExploreState(buildSearch(state)).rumSession).toBe("sess-1");
+  });
+
+  it("round-trips the Real users Errors tab's selected group through ?errgroup=", () => {
+    expect(buildSearch(DEFAULT_STATE)).not.toContain("errgroup");
+    const state = { ...DEFAULT_STATE, rumErrorGroup: "TypeError\u001fboom" };
+    expect(buildSearch(state)).toContain("errgroup=");
+    expect(parseExploreState(buildSearch(state)).rumErrorGroup).toBe(
+      "TypeError\u001fboom",
+    );
   });
 });
 
@@ -351,7 +432,9 @@ describe("catalog path segments", () => {
       catalogPrimary: "",
       catalogSecondary: "",
     });
-    expect(parseCatalogPath("/catalog/service/checkout,shop/GET%20%2Fhealth")).toEqual({
+    expect(
+      parseCatalogPath("/catalog/service/checkout,shop/GET%20%2Fhealth"),
+    ).toEqual({
       catalogEntity: "service",
       catalogPrimary: compositeKey(["checkout", "shop"]),
       catalogSecondary: compositeKey(["GET /health"]),

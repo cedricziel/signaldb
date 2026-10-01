@@ -28,7 +28,7 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterState, discovery::ServiceRegistry, endpoints::logql};
+use router::{RouterAppState, endpoints::logql};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,7 +37,6 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 /// A base timestamp (2023-11-14T22:13:20Z) shared by the ingested logs.
 const BASE_NS: i64 = 1_700_000_000_000_000_000;
@@ -58,7 +57,9 @@ fn test_tenant_context() -> TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -150,12 +151,13 @@ async fn setup() -> TestServices {
             .await
             .expect("catalog mgr"),
     );
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -213,7 +215,12 @@ async fn setup() -> TestServices {
         wal_config.clone(),
         wal_config.clone(),
     ));
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager);
+    let processor_catalog = Arc::new(Catalog::new(&catalog_dsn).await.expect("catalog"));
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {
@@ -333,48 +340,12 @@ async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
         (*services.flight_transport).clone(),
     );
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    #[derive(Clone)]
-    struct State {
-        catalog: Catalog,
-        service_registry: ServiceRegistry,
-        config: Configuration,
-        authenticator: Arc<common::auth::Authenticator>,
-    }
-    impl std::fmt::Debug for State {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("State")
-        }
-    }
-    impl RouterState for State {
-        fn catalog(&self) -> &Catalog {
-            &self.catalog
-        }
-        fn service_registry(&self) -> &ServiceRegistry {
-            &self.service_registry
-        }
-        fn config(&self) -> &Configuration {
-            &self.config
-        }
-        fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-            &self.authenticator
-        }
-    }
-
-    let state = State {
-        catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator: authenticator.clone(),
-    };
+    let authenticator = state.authenticator().clone();
     Router::new()
         .nest("/loki", logql::router().with_state(state))
         .layer(middleware::from_fn(move |req, next| {

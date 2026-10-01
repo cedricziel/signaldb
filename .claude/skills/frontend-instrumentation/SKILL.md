@@ -51,19 +51,22 @@ Design outcomes:
 
 ## Module map
 
-| File                                          | Responsibility                                                                                                                                                                        |
-| --------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `telemetry/index.ts`                          | `initTelemetry()` — trace provider, context manager, propagators, span auto-instrumentations, exporter selection; calls `initBrowserLogs()`; exports `tracer`                         |
-| `telemetry/logs.ts`                           | `initBrowserLogs()` — `LoggerProvider`, log exporter selection, event-based instrumentations (Web Vitals, timing, navigation, errors, console)                                        |
-| `telemetry/resource.ts`                       | Shared `SERVICE_NAME`/`SERVICE_VERSION`/`RUNTIME_CONFIG` and `buildResource()`, used by both providers so traces and logs carry identical resource attributes                         |
-| `telemetry/session.ts`                        | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                        |
-| `telemetry/sessionSpanProcessor.ts`           | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                                   |
-| `telemetry/sessionLogRecordProcessor.ts`      | `LogRecordProcessor` counterpart — same three attributes, on every log record                                                                                                         |
-| `telemetry/navigationSpanProcessor.ts`        | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query`         |
-| `telemetry/sanitizeNavigationUrl.ts`          | `sanitizeUrl` hook for the log-based `NavigationInstrumentation` — strips userinfo credentials and redacts known-sensitive query params before a URL reaches a log record             |
-| `telemetry/serverTiming.ts`                   | Shared `parseTraceparent()` plus a `Server-Timing`-entry-specific wrapper, for the trace context SignalDB returns on every HTTP response (see `docs/users/response-trace-context.md`) |
-| `telemetry/documentTraceContext.ts`           | Reads `<meta name="traceparent">` and builds the real parent `Context` for the `documentLoad` span, read _before_ that span is created                                                |
-| `telemetry/serverCorrelationSpanProcessor.ts` | `SpanProcessor` that **links** (never parents) `documentLoad` to the server span via the navigation entry's `serverTiming` — the fallback when the meta tag is absent                 |
+| File                                           | Responsibility                                                                                                                                                                                 |
+| ---------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `telemetry/index.ts`                           | `initTelemetry()` — trace provider, context manager, propagators, span auto-instrumentations, exporter selection; calls `initBrowserLogs()`; exports `tracer`                                  |
+| `telemetry/logs.ts`                            | `initBrowserLogs()` — `LoggerProvider`, log exporter selection, event-based instrumentations (Web Vitals, timing, navigation, errors, console)                                                 |
+| `telemetry/resource.ts`                        | Shared `SERVICE_NAME`/`SERVICE_VERSION`/`RUNTIME_CONFIG` and `buildResource()`, used by both providers so traces and logs carry identical resource attributes                                  |
+| `telemetry/session.ts`                         | `createSessionManager()` — RUM session id with sliding inactivity window + absolute cap, `localStorage`-backed                                                                                 |
+| `telemetry/sessionSpanProcessor.ts`            | `SpanProcessor` that stamps `session.id` / `tenant.id` / `dataset.id` on every span                                                                                                            |
+| `telemetry/sessionLogRecordProcessor.ts`       | `LogRecordProcessor` counterpart — same three attributes, on every log record                                                                                                                  |
+| `telemetry/routeTemplate.ts`                   | Pure `buildRouteTemplate()` — joins the matched routes' declared paths into `url.template`, filling in only low-cardinality params (`signal`, `entity`, `kind`)                                |
+| `telemetry/routeTemplateLogRecordProcessor.ts` | Module-level `setRouteTemplate()`/holder plus `RouteTemplateLogRecordProcessor` — stamps `url.template` on every log record once the router has set one; fed from `RootLayout` in `routes.tsx` |
+| `telemetry/userAction.ts`                      | `SvgAwareUserActionInstrumentation` — click log records, with SVG icon clicks retargeted to their `HTMLElement` ancestor                                                                       |
+| `telemetry/navigationSpanProcessor.ts`         | `SpanProcessor` that collapses the auto-instrumentation's `Navigation: <url>` span to the static name `Navigation`, moving the URL into `url.full` / `url.path` / `url.query`                  |
+| `telemetry/sanitizeNavigationUrl.ts`           | `sanitizeUrl` hook for the log-based `NavigationInstrumentation` — strips userinfo credentials and redacts known-sensitive query params before a URL reaches a log record                      |
+| `telemetry/serverTiming.ts`                    | Shared `parseTraceparent()` plus a `Server-Timing`-entry-specific wrapper, for the trace context SignalDB returns on every HTTP response (see `docs/users/response-trace-context.md`)          |
+| `telemetry/documentTraceContext.ts`            | Reads `<meta name="traceparent">` and builds the real parent `Context` for the `documentLoad` span, read _before_ that span is created                                                         |
+| `telemetry/serverCorrelationSpanProcessor.ts`  | `SpanProcessor` that **links** (never parents) `documentLoad` to the server span via the navigation entry's `serverTiming` — the fallback when the meta tag is absent                          |
 
 ## Event-based instrumentation (`logs.ts`)
 
@@ -71,15 +74,15 @@ Design outcomes:
 `./experimental/*` subpaths; not all are enabled, because several duplicate a
 span-based signal we already emit:
 
-| Instrumentation                     | Enabled?                                   | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
-| ----------------------------------- | ------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Web Vitals                          | Yes                                        | No existing equivalent — Core Web Vitals (LCP, CLS, INP, FCP, TTFB) as log records.                                                                                                                                                                                                                                                                                                                                                                        |
-| Navigation Timing / Resource Timing | Yes                                        | No existing equivalent at this granularity; `documentLoad`'s span events are coarser. `ResourceTimingInstrumentation` is configured with `ignoreUrls: [/\/v1\/traces$/, /\/v1\/logs$/]` so it doesn't report on its own telemetry export requests.                                                                                                                                                                                                         |
-| Navigation                          | Yes, **alongside** the span-based collapse | Emits a dedicated `browser.navigation` log event with `sanitizeUrl` redaction (see `sanitizeNavigationUrl.ts`). Does **not** replace `navigationSpanProcessor.ts`: `instrumentation-user-interaction` renames the _active click span_ to `Navigation: <url>` on any `history.pushState`/`replaceState` call, with no config to disable just that behavior while keeping click spans — so both signals coexist rather than one cleanly replacing the other. |
-| Errors                              | Yes, **replaces** `installErrorCapture()`  | Same `window` `error`/`unhandledrejection` listeners, now as log-record `exception` events instead of hand-rolled `browser.error`/`browser.unhandledrejection` spans. **Deliberate signal change** — anything that grouped the Explore UI's Traces view by the `browser.error` span name (e.g. a saved trace-group view) stops seeing new entries; browser errors now show up as logs instead.                                                             |
-| Console                             | Yes, **scoped down**                       | `logMethods: ["error", "warn"]` only — not the package's `log`/`warn`/`error`/`info`/`debug` default. Full console capture ships stack dumps, debug output, and potentially accidentally-logged tokens/PII to the backend; scoping to error/warn only keeps the signal (surfaced console errors) while cutting that risk substantially. Widen deliberately, not by accident.                                                                               |
-| Fetch                               | **No**                                     | Straight duplicate of the existing span-based `@opentelemetry/instrumentation-fetch` (via `getWebAutoInstrumentations()`) — would double-instrument every request.                                                                                                                                                                                                                                                                                         |
-| User Action                         | **No**                                     | Duplicates `instrumentation-user-interaction`'s click spans.                                                                                                                                                                                                                                                                                                                                                                                               |
+| Instrumentation                     | Enabled?                                     | Why                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
+| ----------------------------------- | -------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Web Vitals                          | Yes                                          | No existing equivalent — Core Web Vitals (LCP, CLS, INP, FCP, TTFB) as log records.                                                                                                                                                                                                                                                                                                                                                                        |
+| Navigation Timing / Resource Timing | Yes                                          | No existing equivalent at this granularity; `documentLoad`'s span events are coarser. `ResourceTimingInstrumentation` is configured with `ignoreUrls: [/\/v1\/traces$/, /\/v1\/logs$/]` so it doesn't report on its own telemetry export requests.                                                                                                                                                                                                         |
+| Navigation                          | Yes, **alongside** the span-based collapse   | Emits a dedicated `browser.navigation` log event with `sanitizeUrl` redaction (see `sanitizeNavigationUrl.ts`). Does **not** replace `navigationSpanProcessor.ts`: `instrumentation-user-interaction` renames the _active click span_ to `Navigation: <url>` on any `history.pushState`/`replaceState` call, with no config to disable just that behavior while keeping click spans — so both signals coexist rather than one cleanly replacing the other. |
+| Errors                              | Yes, **replaces** `installErrorCapture()`    | Same `window` `error`/`unhandledrejection` listeners, now as log-record `exception` events instead of hand-rolled `browser.error`/`browser.unhandledrejection` spans. **Deliberate signal change** — anything that grouped the Explore UI's Traces view by the `browser.error` span name (e.g. a saved trace-group view) stops seeing new entries; browser errors now show up as logs instead.                                                             |
+| Console                             | Yes, **scoped down**                         | `logMethods: ["error", "warn"]` only — not the package's `log`/`warn`/`error`/`info`/`debug` default. Full console capture ships stack dumps, debug output, and potentially accidentally-logged tokens/PII to the backend; scoping to error/warn only keeps the signal (surfaced console errors) while cutting that risk substantially. Widen deliberately, not by accident.                                                                               |
+| Fetch                               | **No**                                       | Straight duplicate of the existing span-based `@opentelemetry/instrumentation-fetch` (via `getWebAutoInstrumentations()`) — would double-instrument every request.                                                                                                                                                                                                                                                                                         |
+| User Action                         | Yes, via `SvgAwareUserActionInstrumentation` | `browser.user_action.click` log records (selector and tag name, never text or values) for the Real users page; coexists with `instrumentation-user-interaction`'s click spans. The subclass retargets SVG icon clicks, which SDK 0.7 drops — see `userAction.ts`.                                                                                                                                                                                          |
 
 All instrumentations are registered with `loggerProvider: provider` (the
 `LoggerProvider` built in `initBrowserLogs()`, not the global one implicitly)
@@ -115,6 +118,12 @@ immutable `Resource`. The Resource holds only stable facts (`service.name`,
 `service.version`, `service.namespace`, `signaldb.server.version`,
 `deployment.environment.name`, `browser.*`) — see `resource.ts`.
 
+`url.template` is likewise stamped per-log-record, since it changes on every
+navigation: `routeTemplateFor()` in `routes.tsx` matches the pathname against
+the route tree and `RootLayout` feeds the result to
+`RouteTemplateLogRecordProcessor`. Records emitted before the router mounts
+carry none.
+
 Session lifetime follows the common RUM convention: a new session starts after
 **4h of inactivity** or at a **24h absolute cap**, whichever first. Each span
 start counts as activity and slides the inactivity window. The id persists in
@@ -135,8 +144,9 @@ Two ways to configure the export target, in precedence order:
    `GET /runtime-config.js` (see `resolveExportConfig` in
    `telemetry/runtimeConfig.ts`), so one image serves every deployment with no
    rebuild. When `api_key` is set it is delivered to the browser and sent as
-   `Authorization: Bearer` on cross-origin exports to the acceptor (whose
-   `[self_monitoring.frontend].allowed_origins` drives the CORS layer). This
+   `Authorization: Bearer` on cross-origin exports to the acceptor (CORS for
+   that key's origin is controlled per-key via `allowed_origins` on the API
+   key itself, not by a setting here). This
    **deliberately** puts an ingest key in the browser — only acceptable on a
    trusted network, and the key **must be ingest-only**, scoped to
    `tenant_id`, never an admin key.
@@ -170,6 +180,18 @@ in `logs.ts` (see the table above), not hand-rolled `window` listeners — raw
 browser OTel does not capture these on its own, so _something_ has to install
 the listeners, and this package's instrumentation does it as log-record
 `exception` events.
+
+React render errors never reach `window`: React Router's error boundary
+catches them. `RouteErrorBoundary` (the root route's `errorElement`) records
+them through `recordRenderError` in `telemetry/renderErrors.ts`, as the same
+`exception` log records. `createRoot`'s `onUncaughtError` covers render errors
+outside the router. Don't also wire `onCaughtError`: it fires for errors the
+boundary already recorded, so each one would be logged twice.
+
+Release builds ship source maps (`build.sourcemap` in `vite.config.ts`), served
+next to the bundles. Browsers don't apply them to `error.stack`, so recorded
+frames stay minified until they are symbolicated on the server (#1677).
+DevTools uses the maps directly.
 
 ### Manual spans
 
@@ -240,7 +262,9 @@ every response, which is what the document-load correlation above consumes.
 ## Testing
 
 Unit-test the pure logic (`session.ts`, `sessionSpanProcessor.ts`,
-`sessionLogRecordProcessor.ts`, `navigationSpanProcessor.ts`,
+`sessionLogRecordProcessor.ts`, `routeTemplate.ts`,
+`routeTemplateLogRecordProcessor.ts`, `userAction.ts`,
+`navigationSpanProcessor.ts`,
 `sanitizeNavigationUrl.ts`, `serverTiming.ts`,
 `serverCorrelationSpanProcessor.ts`, `documentTraceContext.ts`,
 `resource.ts`, `runtimeConfig.ts`) with injected clock/storage/id/entry
@@ -274,7 +298,6 @@ Set in the SignalDB config file; the router serves it to the browser at
 | `tenant_id`             | `[self_monitoring.frontend]`    | `_system`     | → `X-Tenant-ID` on exports.                                                                                                                                  |
 | `dataset_id`            | `[self_monitoring.frontend]`    | `_monitoring` | → `X-Dataset-ID` on exports.                                                                                                                                 |
 | `service_name`          | `[self_monitoring.frontend]`    | `signaldb-ui` | `service.name` on exported spans/logs.                                                                                                                       |
-| `allowed_origins`       | `[self_monitoring.frontend]`    | _(any)_       | Acceptor CORS allow-list for browser exports; empty allows any origin.                                                                                       |
 | `namespace`             | hardcoded `"signaldb"`          | —             | → `service.namespace`. Always present regardless of `enabled`.                                                                                               |
 | `version`               | `env!("CARGO_PKG_VERSION")`     | —             | The **router's own build version** → `signaldb.server.version` (not `service.version`, which stays the UI bundle's own — see `resource.ts`). Always present. |
 | `deploymentEnvironment` | `[self_monitoring].environment` | `production`  | → `deployment.environment.name`. Always present.                                                                                                             |
@@ -315,10 +338,28 @@ draws its own tooltip markup is a defect
   `u.cursor.idx` in a `setCursor` hook (see `MetricsChart.rowsForCursorIndex`).
 - Format through `src/ui/src/lib/vizFormat.ts` (`formatTimestamp`,
   `formatTimeBucket`, `formatValue`, `formatRange`, `formatShare`,
-  `compactCount`), not ad-hoc `toFixed`/`Intl` calls.
-- Data marks that can take focus (bars, cells, segments) get `tabIndex={0}`
-  and `aria-describedby` pointing at the tooltip `id` while active; focus sets
-  the same "active datum" state as hover. Empty marks show no tooltip.
+  `compactCount` — pass the metric's unit so a byte-valued metric scales
+  as `KB`/`MB`/`GB` on axis ticks and in the tooltip alike; it compacts by
+  magnitude and keeps the sign, so budget a leading `-` when measuring an
+  axis gutter from it, `formatErrorRate`
+  — a dash for no errors, `<1%` for a non-zero rate that would round to
+  zero, never a red `0%`; colour it with `errorRateClass` /
+  `errorRateSeverity`, the one 0.5%/2% threshold rule), not ad-hoc
+  `toFixed`/`Intl` calls. Table timestamps on multi-day ranges go through
+  `formatTimestampForRange` in `src/ui/src/lib/time.ts`, which prepends the
+  date once the window spans more than a day.
+- Data marks that can take focus (bars, cells, segments, frames) are one
+  tab stop per chart: spread `useRovingFocus(count, { horizontal, vertical })`
+  from `src/ui/src/hooks/useRovingFocus.ts` `itemProps(i)` onto each mark
+  (roving `tabIndex`, arrow/`Home`/`End` handling, a ref so the arrow keys move
+  real focus) — never `tabIndex={0}` on every mark. Pass `horizontal`/
+  `vertical` steppers for 2-D layouts (heatmap rows, flame levels); omit
+  `vertical` for a flat list so up/down still scroll the page. The active
+  mark gets `aria-describedby` pointing at the tooltip `id`; focus sets the
+  same "active datum" state as hover. Empty marks show no tooltip.
+- Series colour comes from `seriesColorVar(i)` / `seriesDash(i)` in
+  `src/ui/src/lib/promSeries.ts` (twelve `--svc-*` tokens, then a dash
+  pattern past twelve), not a per-chart palette.
 - Tests assert tooltip _content_ after `fireEvent.pointerMove`/`focus` on the
   mark (jsdom does no layout); for uPlot, test the pure row resolver.
 
@@ -338,3 +379,10 @@ draws its own tooltip markup is a defect
   build that served this session, as opposed to `service.version` (the UI
   bundle's own version). Follows the same "dotted custom attribute, not yet
   a stable convention" pattern as `tenant.id`/`dataset.id`.
+- `url.template` — per-log-record (see above), the active route's pattern,
+  never a concrete path with ids (incubating convention).
+- `user_agent.original`, `browser.brands`, `browser.platform` — browser
+  identity on the Resource (`resource.ts`). The last two come from
+  `navigator.userAgentData` (Chromium only) and are omitted elsewhere; like
+  `browser.language`, they are string literals because their constants live
+  only in `@opentelemetry/semantic-conventions/incubating`.

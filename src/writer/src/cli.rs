@@ -4,6 +4,8 @@ use clap::Subcommand;
 use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
+use common::schema::type_authority::TypeAuthority;
+use common::schema_registry::SchemaResolver;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
 use common::wal::manager::WalManager;
@@ -92,11 +94,8 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     let flight_addr = std::net::SocketAddr::new(bind_ip, args.flight_port);
 
     // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr =
-        std::env::var("WRITER_ADVERTISE_ADDR").unwrap_or_else(|_| flight_addr.to_string());
-
     let service_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Writer, advertise_addr.clone())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Writer, flight_addr)
             .await
             .context("Failed to initialize service bootstrap")?;
 
@@ -132,12 +131,8 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
         CatalogManager::new(config.clone())
             .await
             .context("Failed to create catalog manager")?
-            .with_tenant_source(sql_catalog),
+            .with_tenant_source(sql_catalog.clone()),
     );
-
-    // Initialize object store from configuration
-    let object_store = common::storage::create_object_store(&config.storage)
-        .context("Failed to initialize object store")?;
 
     // Initialize WAL for durability. The --wal-dir / WRITER_WAL_DIR override
     // wins, otherwise [wal].wal_dir from the configuration with the service
@@ -154,18 +149,35 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     // One WAL per tenant/dataset/signal (#932): WALs are created lazily on
     // first write; ones left on disk by a previous run are opened now so their
     // pending entries drain before that tenant sends new traffic.
-    let wal_manager =
-        Arc::new(WalManager::uniform(wal_config).with_max_instances(config.wal.max_instances));
+    let wal_manager = Arc::new(
+        WalManager::uniform(wal_config)
+            .with_max_instances(config.wal.max_instances)
+            .with_role("writer"),
+    );
     open_existing_writer_wals(&wal_manager).await;
     wal_manager.warn_if_fd_headroom_thin("writer").await;
 
+    // Canonical-type resolver for the typed attribute layout (otel-native-schema
+    // layer 4.2a): shared across every table writer the WAL processor creates,
+    // so a key resolved for one commit group is cached for the next.
+    let type_authority = Arc::new(TypeAuthority::new(
+        sql_catalog.as_ref().clone(),
+        SchemaResolver::new(sql_catalog.as_ref().clone()),
+        Arc::new(config.clone()),
+    ));
+
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let flight_service = IcebergWriterFlightService::new(
+    let flight_service = IcebergWriterFlightService::with_type_authority(
         catalog_manager,
-        object_store,
         wal_manager.clone(),
         &config.writer,
+        type_authority,
     );
+
+    // Seed the ingest-id dedup cache from WAL entries a previous run left on
+    // disk, so a restart does not reopen a window an acceptor resend could
+    // exploit (#1734 step 2). Must run after `open_existing_writer_wals`.
+    flight_service.rebuild_ingest_dedup_from_wal().await;
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = flight_service.start_background_processing();

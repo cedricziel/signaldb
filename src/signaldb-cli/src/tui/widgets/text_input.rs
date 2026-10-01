@@ -53,6 +53,7 @@ impl TextInput {
     }
 
     /// Create a text input with initial text.
+    #[cfg(test)]
     pub fn with_text(text: &str) -> Self {
         let len = text.len();
         Self {

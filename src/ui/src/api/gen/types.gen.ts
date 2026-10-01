@@ -19,7 +19,7 @@ export type ApiError = {
 };
 
 /**
- * The JSON envelope every query-surface error responds with: `status` is
+ * The JSON envelope every [`ApiError`] responds with: `status` is
  * always `"error"`, `errorType` a stable low-cardinality code, `error` a
  * human-readable message, and `retryAfterMs` present only on rate-limit
  * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -27,6 +27,12 @@ export type ApiError = {
  * response of every rate-limited operation.
  */
 export type ApiErrorBody = {
+    /**
+     * The individual problems behind the error, when the endpoint reports
+     * them one by one (e.g. the invalid rows of an uploaded results file).
+     * Absent otherwise.
+     */
+    details?: Array<ApiErrorDetail> | null;
     error: string;
     errorType: string;
     /**
@@ -41,33 +47,131 @@ export type ApiErrorBody = {
 };
 
 /**
- * API key information (without the raw key).
+ * One problem behind an [`ApiErrorBody`]: where it is and why.
  */
-export type ApiKeyResponse = {
+export type ApiErrorDetail = {
     /**
-     * ISO 8601 creation timestamp.
+     * The column or field at fault, when there is one.
      */
-    created_at: string;
+    column?: string | null;
+    reason: string;
     /**
-     * Dataset the key is restricted to, if any.
+     * 1-based line of the request body the problem starts on; absent for
+     * a problem with the body as a whole.
      */
-    dataset_id?: string | null;
+    row?: number | null;
+};
+
+/**
+ * Result of appending cases from traces.
+ */
+export type AppendCasesFromTracesOutcome = {
+    added: number;
     /**
-     * Unique key identifier.
+     * Ids of the new cases, in the order they now appear in the set.
      */
-    id: string;
+    added_ids: Array<string>;
     /**
-     * Optional human-readable name.
+     * Matching traces the set already holds a case for.
      */
-    name?: string | null;
+    already_present: number;
     /**
-     * ISO 8601 revocation timestamp (if revoked).
+     * Distinct matching traces (after the `failing_evaluator` filter), at
+     * most 10,000.
      */
-    revoked_at?: string | null;
+    matches: number;
+};
+
+/**
+ * Body of `POST /api/v1/eval-sets/{name}/cases/from-traces`.
+ *
+ * Unknown keys are rejected: every option narrows or shapes the query, so
+ * a misspelt one silently widening it would add the wrong cases.
+ */
+export type AppendCasesFromTracesRequest = {
     /**
-     * Scopes the key carries; `null` for a legacy unrestricted key.
+     * `gen_ai.agent.name` of the agent span (a span without one matches on
+     * `service.name`). Defaults to the eval set's agent.
      */
-    scopes?: Array<string> | null;
+    agent?: string | null;
+    /**
+     * Set each case's expected tools to the trace's `execute_tool` spans'
+     * `gen_ai.tool.name`s in call order.
+     */
+    expected_tools?: boolean;
+    /**
+     * Keep only traces holding at least one failing result
+     * (`gen_ai.evaluation.result`) of the evaluator with this
+     * `gen_ai.evaluation.name` in the same window. Evaluator errors never
+     * count as failures.
+     */
+    failing_evaluator?: string | null;
+    /**
+     * Extra Query IR predicates the agent span must satisfy (logical field
+     * names, e.g. `{"field": "deployment.environment", "op": "eq", "value":
+     * "prod"}`).
+     */
+    filters?: Array<{
+        [key: string]: unknown;
+    }>;
+    /**
+     * `gen_ai.operation.name` of the agent span. Default `invoke_agent`.
+     */
+    operation?: string | null;
+    /**
+     * Time window of the agent spans, as in a Query IR document (e.g.
+     * `{"from": "now-7d", "to": "now"}`).
+     */
+    range: QueryRange;
+    /**
+     * Set each case's reference to the agent's answer (the last text of
+     * the agent span's `gen_ai.output.messages`).
+     */
+    reference_from_answer?: boolean;
+    /**
+     * How many new cases to add, 1-1000. Default 50.
+     */
+    sample?: number | null;
+    /**
+     * Tags put on every new case.
+     */
+    tags?: Array<string>;
+};
+
+/**
+ * Result of appending cases to a set: ids already in the set are reported,
+ * never overwritten.
+ */
+export type AppendCasesOutcome = {
+    added: number;
+    /**
+     * Ids appended, in the order they now appear in the set.
+     */
+    added_ids: Array<string>;
+    already_present: number;
+    /**
+     * Ids skipped because the set already held them.
+     */
+    already_present_ids: Array<string>;
+};
+
+/**
+ * Body of `POST /api/v1/eval-sets/{name}/cases`.
+ */
+export type AppendEvalCasesRequest = {
+    cases: Array<EvalCase>;
+};
+
+/**
+ * Request body for [`attach_github_installation`].
+ */
+export type AttachGitHubInstallationRequest = {
+    /**
+     * A GitHub App installation id that already exists for this App —
+     * e.g. one already linked to another tenant on the same GitHub
+     * account, or read off GitHub's own installation settings page.
+     */
+    installation_id: number;
 };
 
 export type Attribute = {
@@ -122,6 +226,13 @@ export type AttributeLevel = 'resource' | 'scope' | 'record';
  * precedence order; `primary` is the first.
  */
 export type AttributeResolution = {
+    /**
+     * The canonical type the type authority committed for this key, per
+     * dataset/signal/level it has been observed in, and how many values
+     * arrived with a different type (kept, but not typed-queryable). Absent
+     * when no type has been established yet.
+     */
+    canonical_types?: Array<AttributeTypeRecord>;
     hits: Array<AttributeHit>;
     key: string;
     primary?: null | AttributeHit;
@@ -136,6 +247,20 @@ export type AttributeSearchResponse = {
 };
 
 /**
+ * One stored row for an attribute key, scoped to a single dataset, signal,
+ * and attribute level within a tenant.
+ */
+export type AttributeTypeRecord = {
+    canonical_type: CanonicalType;
+    dataset: string;
+    hint_schema_url?: string | null;
+    level: AttributeLevel;
+    off_type_count: number;
+    signal: string;
+    source: TypeSource;
+};
+
+/**
  * Response body for `GET /schemas/available`.
  */
 export type AvailableSchemasResponse = {
@@ -144,6 +269,8 @@ export type AvailableSchemasResponse = {
      */
     schemas: Array<TableInfo>;
 };
+
+export type CanonicalType = 'string' | 'int64' | 'float64' | 'bool';
 
 /**
  * An approximate distinct-value count.
@@ -158,6 +285,105 @@ export type CardinalityEstimate = {
      * The estimated number of distinct values.
      */
     estimate: number;
+};
+
+/**
+ * Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+ * dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+ * — first-party callers use [`ConnectionQuery::query_ir`].
+ */
+export type ConnectionCompat = {
+    loki: string;
+    prometheus: string;
+    pyroscope: string;
+    tempo: string;
+};
+
+/**
+ * `Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+ * filled-in credential placeholder, ready to paste into a client config.
+ */
+export type ConnectionHeaders = {
+    authorization: string;
+    'x-dataset-id': string;
+    'x-tenant-id': string;
+};
+
+/**
+ * `GET /api/v1/connection` response: everything needed to send data to and
+ * query this deployment from outside, for the caller's own tenant/dataset.
+ */
+export type ConnectionInfoResponse = {
+    dataset_id: string;
+    headers: ConnectionHeaders;
+    ingest: ConnectionIngest;
+    mcp?: null | ConnectionMcp;
+    /**
+     * Operator guidance, e.g. that `[public]` is unset and URLs are
+     * localhost fallbacks. Empty when everything is configured.
+     */
+    notes: Array<string>;
+    otel_env: ConnectionOtelEnv;
+    /**
+     * Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+     * been explicitly set. `false` means at least one of those URLs below is
+     * a localhost fallback, unlikely to be reachable from outside this
+     * machine — see `notes` for which.
+     */
+    public_endpoints_configured: boolean;
+    query: ConnectionQuery;
+    required_scopes: ConnectionScopes;
+    tenant_id: string;
+};
+
+/**
+ * Every ingest endpoint this deployment exposes.
+ */
+export type ConnectionIngest = {
+    otlp_grpc: OtlpGrpcEndpoint;
+    otlp_http: OtlpHttpEndpoint;
+    /**
+     * The Prometheus remote-write ingest URL.
+     */
+    prometheus_remote_write: string;
+};
+
+/**
+ * The MCP Streamable HTTP endpoint, present only when this deployment has
+ * one configured (directly or via `[mcp.oauth].resource_url`).
+ */
+export type ConnectionMcp = {
+    transport: string;
+    url: string;
+};
+
+/**
+ * Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+ * OTel-instrumented application.
+ */
+export type ConnectionOtelEnv = {
+    OTEL_EXPORTER_OTLP_ENDPOINT: string;
+    OTEL_EXPORTER_OTLP_HEADERS: string;
+    OTEL_EXPORTER_OTLP_PROTOCOL: string;
+};
+
+/**
+ * The router's query surface: the native Query IR plus the compatibility
+ * dialects, relative to `api_url`.
+ */
+export type ConnectionQuery = {
+    api_url: string;
+    compat: ConnectionCompat;
+    openapi: string;
+    query_ir: string;
+};
+
+/**
+ * The API-key scopes ingest and query each require.
+ */
+export type ConnectionScopes = {
+    ingest: Array<string>;
+    query: Array<string>;
 };
 
 /**
@@ -176,8 +402,32 @@ export type ConsentContextResponse = {
 };
 
 /**
- * Consent decision posted by the explore-UI (change: mcp-oauth-dcr). The user
- * is authenticated by their session cookie; `tenant` is their chosen grant.
+ * A dataset within a tenant the consenting user may restrict a grant to
+ * (D5).
+ */
+export type ConsentDataset = {
+    /**
+     * Dataset id.
+     */
+    id: string;
+    /**
+     * Dataset name.
+     */
+    name: string;
+};
+
+/**
+ * Consent decision posted by the explore-UI (change: mcp-oauth-dcr;
+ * generalized to a set of tenants by mcp-multi-tenant-oauth-grants D2/D6).
+ * The user is authenticated by their session cookie; `tenant_grants` is
+ * their chosen set of one or more tenants to grant, each with its own
+ * independent dataset restriction.
+ *
+ * The legacy singular `tenant`/`dataset_id` fields are not accepted (the
+ * latter removed in the multi-dataset-key-restriction change, D8): a
+ * request body carrying either is rejected rather than silently ignored,
+ * since dropping it would grant unrestricted or differently-scoped access
+ * than the caller asked for.
  */
 export type ConsentDecision = {
     /**
@@ -210,9 +460,10 @@ export type ConsentDecision = {
      */
     state?: string | null;
     /**
-     * The tenant the user grants access to (must be one they belong to).
+     * The set of tenants the user grants access to (each must be one they
+     * belong to). Must be non-empty and name each tenant at most once.
      */
-    tenant: string;
+    tenant_grants: Array<ConsentTenantGrant>;
 };
 
 /**
@@ -232,6 +483,11 @@ export type ConsentDecisionResponse = {
  */
 export type ConsentTenant = {
     /**
+     * Datasets in the tenant, so the consent screen can offer a per-tenant
+     * "only these datasets" checklist (D5).
+     */
+    datasets: Array<ConsentDataset>;
+    /**
      * Tenant id.
      */
     id: string;
@@ -242,88 +498,69 @@ export type ConsentTenant = {
 };
 
 /**
+ * One tenant (and optional dataset restriction) the user grants in a
+ * consent decision (design: mcp-multi-tenant-oauth-grants D2/D6). Mirrors
+ * [`common::catalog::TenantGrant`]'s shape; kept as a router-local request
+ * DTO (rather than reusing that type directly) so it can derive
+ * [`ToSchema`] for the OpenAPI spec.
+ */
+export type ConsentTenantGrant = {
+    /**
+     * Dataset set to restrict this tenant's grant to (D5/D6). Omitted or
+     * `null` grants unrestricted access to the tenant. A non-empty array
+     * restricts the grant to exactly that set; every named dataset must
+     * belong to `tenant_id`. An explicit empty array is rejected (D1a), as
+     * is any non-empty selection while
+     * `[auth].dataset_restriction_rollout_complete` is `false` (stricter
+     * than the API-key rule — OAuth has no legacy column to fall back to).
+     */
+    dataset_ids?: Array<string> | null;
+    /**
+     * The tenant being granted (must be one the user belongs to).
+     */
+    tenant_id: string;
+};
+
+/**
  * Which tier answered a discovery request, and therefore what it cost.
  */
 export type CostMode = 'metadata' | 'sampled_scan' | 'none';
 
 /**
- * Request body for creating a new API key.
- *
- * `scopes` is required and non-empty: a key's permissions are always
- * explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
- * `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
- * `profiles:read`, `schema:read`, `schema:write`.
+ * `POST /ui/session`'s request body.
  */
-export type CreateApiKeyRequest = {
+export type CreateSessionRequest = {
+    dataset?: string | null;
+    email: string;
+    password: string;
     /**
-     * Optional dataset the key is restricted to.
+     * Optional: when omitted, the response lists the user's tenant
+     * memberships so the UI can offer a picker (auto-selected when the
+     * user belongs to exactly one tenant).
      */
-    dataset_id?: string | null;
-    /**
-     * Optional human-readable name for the key.
-     */
-    name?: string | null;
-    /**
-     * Scopes the key carries (required, at least one).
-     */
-    scopes: Array<string>;
+    tenant?: string | null;
 };
 
 /**
- * Response returned when a new API key is created (includes the raw key).
+ * `POST /ui/session`'s response: the tenant/dataset the login landed in and
+ * every membership the session may enter.
  */
-export type CreateApiKeyResponse = {
+export type CreateSessionResponse = {
     /**
-     * ISO 8601 creation timestamp.
+     * Always serialized, `null` alongside `tenant`.
      */
-    created_at: string;
+    dataset: string | null;
+    memberships: Array<SessionMembership>;
     /**
-     * Dataset the key is restricted to, if any.
+     * Always serialized, `null` when the user must still pick a tenant
+     * from `memberships`.
      */
-    dataset_id?: string | null;
-    /**
-     * Unique key identifier.
-     */
-    id: string;
-    /**
-     * The raw API key (only shown once at creation time).
-     */
-    key: string;
-    /**
-     * Optional human-readable name.
-     */
-    name?: string | null;
-    /**
-     * Scopes the key carries.
-     */
-    scopes: Array<string>;
+    tenant: string | null;
 };
 
-/**
- * Request body for creating a new dataset.
- */
-export type CreateDatasetRequest = {
-    /**
-     * Dataset name.
-     */
-    name: string;
-};
-
-/**
- * Request body for creating a new tenant.
- */
 export type CreateTenantRequest = {
-    /**
-     * Default dataset name.
-     */
     default_dataset?: string | null;
-    /**
-     * Unique tenant identifier.
-     */
     id: string;
-    /**
-     * Human-readable tenant name.
-     */
     name: string;
 };
 
@@ -372,25 +609,22 @@ export type CreateUserRequest = {
 };
 
 /**
- * Dataset information returned by the API.
+ * `GET /ui/session`'s response: the signed-in user, the memberships the
+ * session may enter, and the auto-selected tenant/dataset.
  */
-export type DatasetResponse = {
+export type CurrentSessionResponse = {
     /**
-     * ISO 8601 creation timestamp.
+     * Always serialized, `null` when no tenant is auto-selected — not an
+     * omittable field.
      */
-    created_at: string;
+    dataset: string | null;
+    memberships: Array<SessionMembership>;
     /**
-     * Unique dataset identifier.
+     * Always serialized, `null` when no tenant is auto-selected — not an
+     * omittable field.
      */
-    id: string;
-    /**
-     * Dataset name.
-     */
-    name: string;
-    /**
-     * Tenant that owns this dataset.
-     */
-    tenant_id: string;
+    tenant: string | null;
+    user: SessionUser;
 };
 
 /**
@@ -406,6 +640,16 @@ export type DatasetTables = {
      * Tables provisioned in this dataset.
      */
     tables: Array<TableInfo>;
+};
+
+/**
+ * The demo account's credentials, returned by `login_config` only when
+ * `[demo].enabled` is true (change: demo-mode) so the login page can offer
+ * an "Explore the demo" shortcut.
+ */
+export type DemoLoginConfig = {
+    password: string;
+    username: string;
 };
 
 /**
@@ -451,7 +695,9 @@ export type DiscoveredField = {
      */
     origin: FieldOrigin;
     /**
-     * The canonical value type a literal is coerced to.
+     * The canonical value type a literal is coerced to: the type
+     * authority's for an attribute it has typed, else the registry's, else
+     * string.
      */
     type: LogicalType;
 };
@@ -586,9 +832,203 @@ export type EnumMember = {
 };
 
 /**
+ * One test case of an eval set.
+ */
+export type EvalCase = {
+    /**
+     * Expected tool trajectory, in call order. Empty when not checked.
+     */
+    expected_tools?: Array<string>;
+    /**
+     * Unique within the set; 1-128 characters.
+     */
+    id: string;
+    /**
+     * The input the agent under test receives.
+     */
+    input: string;
+    /**
+     * Reference answer for evaluators that compare against one.
+     */
+    reference?: string | null;
+    source?: EvalCaseSource;
+    tags?: Array<string>;
+};
+
+/**
+ * Where a case came from.
+ */
+export type EvalCaseSource = {
+    kind: 'trace';
+    /**
+     * W3C trace id: 32 hex characters, stored lower-case.
+     */
+    trace_id: string;
+} | {
+    kind: 'upload';
+} | {
+    kind: 'hand_written';
+};
+
+/**
+ * How many of a set's cases came from each [`EvalCaseSource`] kind.
+ */
+export type EvalCaseSourceCounts = {
+    hand_written: number;
+    trace: number;
+    upload: number;
+};
+
+/**
+ * The format of an uploaded results file.
+ */
+export type EvalResultsFormat = 'csv' | 'jsonl';
+
+/**
+ * Links on an upload response.
+ */
+export type EvalResultsUploadLinks = {
+    /**
+     * The Query IR endpoint to read the run back: `logs` where
+     * `signaldb.eval.run_id` is the run id.
+     */
+    query: Link;
+    /**
+     * The Explore UI's Runs page (a UI path, not an API resource).
+     */
+    runs: Link;
+};
+
+/**
+ * The run an upload wrote, with its per-evaluator summary.
+ */
+export type EvalResultsUploadResponse = UploadSummary & {
+    _links: EvalResultsUploadLinks;
+    agent: string;
+    run_id: string;
+    set: string;
+    version: string;
+};
+
+/**
+ * Links on one eval set. The mutation links appear only when the caller
+ * may write.
+ */
+export type EvalSetLinks = {
+    append_cases?: null | Link;
+    append_cases_from_traces?: null | Link;
+    delete?: null | Link;
+    replace?: null | Link;
+    self: Link;
+};
+
+/**
+ * Links on the eval-set collection.
+ */
+export type EvalSetListLinks = {
+    create?: null | Link;
+    self: Link;
+};
+
+/**
+ * Every eval set in the caller's dataset, ordered by name.
+ */
+export type EvalSetListResponse = {
+    _links: EvalSetListLinks;
+    items: Array<EvalSetSummaryResponse>;
+};
+
+/**
+ * A stored eval set with its cases in order.
+ */
+export type EvalSetRecord = EvalSetSummary & {
+    cases: Array<EvalCase>;
+    /**
+     * The dataset *name* the set belongs to.
+     */
+    dataset: string;
+    tenant_id: string;
+};
+
+/**
+ * An eval set with its cases in order.
+ */
+export type EvalSetResponse = EvalSetRecord & {
+    _links: EvalSetLinks;
+};
+
+/**
+ * Caller-supplied eval set: the body of a create/replace request.
+ */
+export type EvalSetSpec = {
+    /**
+     * The agent this set evaluates (`gen_ai.agent.name`).
+     */
+    agent: string;
+    /**
+     * Cases, in order.
+     */
+    cases?: Array<EvalCase>;
+    description?: string | null;
+    /**
+     * Slug: lowercase letters, digits, `-`, `_` and `.`, starting with a
+     * letter or digit; 1-128 characters.
+     */
+    name: string;
+};
+
+/**
+ * An eval set without its cases, as listed.
+ */
+export type EvalSetSummary = {
+    agent: string;
+    case_count: number;
+    created_at: string;
+    description?: string | null;
+    name: string;
+    updated_at: string;
+};
+
+/**
+ * An eval set as listed, without its cases but with how many of them came
+ * from each source kind.
+ */
+export type EvalSetSummaryResponse = EvalSetSummary & {
+    _links: EvalSetLinks;
+    sources: EvalCaseSourceCounts;
+};
+
+/**
+ * Figures for one evaluator of an upload.
+ */
+export type EvaluatorSummary = {
+    /**
+     * Rows with an `error`: never counted as failures.
+     */
+    errors: number;
+    /**
+     * Mean score over the rows with a score and no error; `null` when none.
+     */
+    mean?: number | null;
+    /**
+     * `gen_ai.evaluation.name`.
+     */
+    name: string;
+    /**
+     * Passes / (passes + fails) under the pass rule; `null` when no row
+     * has a verdict.
+     */
+    pass_rate?: number | null;
+    /**
+     * Result rows, evaluator errors included.
+     */
+    results: number;
+};
+
+/**
  * Which metadata tier a discovered item came from.
  */
-export type FieldOrigin = 'declared' | 'registry' | 'observed';
+export type FieldOrigin = 'declared' | 'registry' | 'observed' | 'authority';
 
 /**
  * Whether predicates may address a field.
@@ -654,10 +1094,28 @@ export type FlamebearerMetadata = {
  */
 export type FlamegraphResult = {
     /**
+     * Present iff the document declared `baseline`: the baseline window's
+     * total.
+     */
+    baseline_total?: number | null;
+    /**
+     * Present iff the document declared `baseline`: the `range` window's
+     * total.
+     */
+    comparison_total?: number | null;
+    /**
      * One entry per depth level; each level is a flat sequence of
-     * `[offset_delta, total, self, name_index]` quadruples.
+     * `[offset_delta, total, self, name_index]` quadruples, or with a
+     * `baseline`, `[offset_delta_baseline, total_baseline, self_baseline,
+     * offset_delta, total, self, name_index]` septuples.
      */
     levels: Array<Array<number>>;
+    /**
+     * Source location for each entry in `names`, aligned by index; `None`
+     * (or the array is shorter than `names`) where unknown. See
+     * `common::profile::Flamegraph::locations`.
+     */
+    locations: Array<null | FrameLocation>;
     /**
      * Largest self value of any block, used for color scaling.
      */
@@ -667,16 +1125,181 @@ export type FlamegraphResult = {
      */
     names: Array<string>;
     /**
-     * Total value of the root (sum of all samples).
+     * Total value of the root (sum of all samples); with a `baseline`, the
+     * sum of both windows.
      */
     total: number;
     /**
      * `true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
      * matched — a row-count cap, not a byte-size one — and the flamegraph
-     * was aggregated over only the first 1,000 of them.
+     * was aggregated over only the newest 1,000 of them (by timestamp).
      */
     truncated: boolean;
 };
+
+/**
+ * A function's source location, carried alongside a flamegraph name entry.
+ */
+export type FrameLocation = {
+    /**
+     * Source file path, as reported by the profiler.
+     */
+    file: string;
+    /**
+     * Line number within `file`; 0 means unknown.
+     */
+    line: number;
+};
+
+/**
+ * One linked installation, as reported by [`list_github_installations`].
+ */
+export type GitHubInstallationResponse = {
+    account_login: string;
+    account_type: string;
+    /**
+     * RFC 3339 timestamp.
+     */
+    created_at: string;
+    installation_id: number;
+    linked_by_github_login?: string | null;
+    /**
+     * GitHub's own installation-settings page for this installation.
+     */
+    manage_url: string;
+    /**
+     * The installation's covered repositories, as `"owner/name"` full
+     * names.
+     */
+    repositories: Array<string>;
+    /**
+     * RFC 3339 timestamp of the last successful repository-list refresh.
+     */
+    repositories_synced_at: string;
+    /**
+     * `true` when the live GitHub refresh failed and `repositories` is the
+     * last successfully fetched copy rather than a fresh one.
+     */
+    stale: boolean;
+    /**
+     * RFC 3339 timestamp.
+     */
+    updated_at: string;
+};
+
+/**
+ * 200 response body for [`list_github_installations`].
+ */
+export type GitHubInstallationsResponse = {
+    /**
+     * The App's URL slug, present only when `configured`.
+     */
+    app_slug?: string | null;
+    /**
+     * `false` when `[github]` is absent (or failed to build) — the
+     * endpoint answers 200 rather than 404 so a caller can render "GitHub
+     * is not set up" without special-casing an error status.
+     */
+    configured: boolean;
+    installations: Array<GitHubInstallationResponse>;
+};
+
+/**
+ * 201 response body for [`start_github_link`].
+ */
+export type GitHubLinkStartResponse = {
+    /**
+     * RFC 3339 timestamp naming when the state token (and so this link
+     * attempt) expires.
+     */
+    expires_at: string;
+    /**
+     * GitHub's install page to redirect the admin's browser to. Carries
+     * the single-use state token as its `state` query parameter.
+     */
+    install_url: string;
+};
+
+/**
+ * One tenant a credential's grant reaches, with its own dataset-set
+ * restriction — the `whoami`/`/oauth/introspect` output shape (change:
+ * mcp-multi-tenant-oauth-grants D4/D5). Mirrors
+ * [`common::catalog::TenantGrant`]; kept as a router-local response DTO so
+ * it can derive [`utoipa::ToSchema`].
+ */
+export type GrantedTenant = {
+    dataset_ids?: Array<string> | null;
+    tenant_id: string;
+};
+
+/**
+ * Calls from `source` to `target` in the window.
+ */
+export type GraphEdge = {
+    count: number;
+    /**
+     * Share (0..1) of the calls with error status.
+     */
+    error_rate: number;
+    /**
+     * p95 call duration in nanoseconds.
+     */
+    p95_ns?: number | null;
+    /**
+     * Calls per second: `count` over the window length in seconds.
+     */
+    rate: number;
+    /**
+     * The calling node's `id`.
+     */
+    source: string;
+    /**
+     * The called node's `id`.
+     */
+    target: string;
+};
+
+/**
+ * A service or an uninstrumented dependency.
+ */
+export type GraphNode = {
+    /**
+     * External nodes only: `database`, `messaging`, `rpc`, `http` or `other`.
+     */
+    dependency_kind?: string | null;
+    /**
+     * Share (0..1) of the node's server/consumer spans with error status.
+     */
+    error_rate?: number | null;
+    /**
+     * Stable identity, distinct from `name`: `service:<name>` for a
+     * service, `external:<kind>:<name>` for an external dependency, and
+     * `external:<kind>:unnamed:<caller>` for an external with no naming
+     * attribute. Edges reference nodes by this id.
+     */
+    id: string;
+    kind: GraphNodeKind;
+    /**
+     * Display name: the service name, or for an external node the first present of
+     * `db.namespace`, `messaging.destination.name`, `rpc.service`,
+     * `server.address`, `peer.service` (`unnamed <kind>` if none is set).
+     */
+    name: string;
+    /**
+     * p95 duration of the node's server/consumer spans, in nanoseconds.
+     */
+    p95_ns?: number | null;
+    /**
+     * Service nodes with server/consumer spans only: requests per second.
+     */
+    request_rate?: number | null;
+};
+
+/**
+ * Whether a node reported spans of its own or was inferred from a client
+ * or producer span with no instrumented callee.
+ */
+export type GraphNodeKind = 'service' | 'external';
 
 /**
  * Epoch-aligned time axis with a fixed nanosecond step.
@@ -711,6 +1334,653 @@ export type HeatmapResult = {
 };
 
 /**
+ * The `absent` stage: one series valued 1 where the input has none.
+ */
+export type IrAbsent = {
+    labels?: {
+        [key: string]: string;
+    };
+};
+
+/**
+ * A single named aggregate output.
+ */
+export type IrAgg = {
+    across?: null | IrAggFn;
+    /**
+     * A numeric argument (e.g. the quantile in `[0,1]`).
+     */
+    arg?: number | null;
+    /**
+     * The output column name — the only thing later stages may reference.
+     */
+    as: string;
+    /**
+     * Divide the aggregate's value by this scalar, so a measure can be
+     * reported per unit rather than absolute (`irVersion` 5).
+     *
+     * This is what a rate is: a count over a window, divided by the window.
+     * Named for the operation rather than for time — dividing an aggregate
+     * by a scalar is not inherently temporal, and this IR is
+     * signal-agnostic.
+     */
+    divisor?: number | null;
+    fn: IrAggFn;
+    /**
+     * The field being aggregated (a logical name). Omitted for `count`.
+     */
+    of?: string | null;
+    where?: null | IrPredicate;
+    /**
+     * For a per-series range function, the lookback window: each step's
+     * value uses samples in `(t - window, t]`. A duration string like
+     * `step`. Defaults to `step` (the historical behaviour). `irVersion` 7.
+     */
+    window?: string | null;
+};
+
+/**
+ * An aggregate function. Member of the versioned function registry.
+ */
+export type IrAggFn = 'count' | 'sum' | 'avg' | 'min' | 'max' | 'quantile' | 'stddev' | 'stdvar' | 'first' | 'last' | 'rate' | 'increase' | 'irate' | 'avg_over_time' | 'min_over_time' | 'max_over_time' | 'sum_over_time' | 'count_over_time' | 'count_distinct';
+
+/**
+ * The `aggregate` stage: group-reduce, optionally time-bucketed by `step`.
+ */
+export type IrAggregate = {
+    /**
+     * The named aggregate outputs.
+     */
+    aggs: Array<IrAgg>;
+    /**
+     * Grouping fields (logical names).
+     */
+    by?: Array<string>;
+    /**
+     * A time-bucket width (`"1m"`). Present → the result is a `series`.
+     */
+    step?: string | null;
+};
+
+/**
+ * The `binop` stage: combine the pipeline (left) with `right`.
+ *
+ * Two series match on a key of their labels, as in PromQL: by default every
+ * label but `metric.name`; with `ignoring`, every label but `metric.name`
+ * and the listed ones; with `on`, exactly the listed labels.
+ */
+export type IrBinop = {
+    /**
+     * Comparison ops only: yield 0/1 instead of filtering.
+     */
+    bool?: boolean;
+    group?: null | IrBinopGroup;
+    ignoring?: Array<string> | null;
+    on?: Array<string> | null;
+    op: IrBinopOp;
+    /**
+     * Evaluate `right op left` (e.g. `2 - series`).
+     */
+    reverse?: boolean;
+    right: IrBinopOperand;
+};
+
+/**
+ * A `binop`'s one-to-many (`group_left`/`group_right`) match.
+ */
+export type IrBinopGroup = {
+    /**
+     * Labels copied from the "one" side onto the result.
+     */
+    include?: Array<string>;
+    side: IrGroupSide;
+};
+
+/**
+ * A `binop` operator (`irVersion` 10).
+ */
+export type IrBinopOp = 'add' | 'sub' | 'mul' | 'div' | 'mod' | 'pow' | 'atan2' | 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le' | 'and' | 'or' | 'unless';
+
+/**
+ * A `binop`'s right operand: a number or a sub-document.
+ */
+export type IrBinopOperand = number | IrSubDocument;
+
+/**
+ * A comparison against a number.
+ */
+export type IrCompareOp = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+
+/**
+ * A comparison operator. Members of the versioned operator registry.
+ */
+export type IrComparisonOp = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'between' | 'contains' | 'regex' | 'exists';
+
+/**
+ * The `correlate` stage. With `to: "parent"` (`irVersion` 8) it joins each
+ * span to its parent span, whose columns come back under a fixed `parent.`
+ * prefix. With a signal target (`irVersion` 11) it joins the relation to
+ * that source `on` a logical key; `pipeline` (`where` stages only) narrows
+ * the target side.
+ */
+export type IrCorrelate = {
+    /**
+     * inner/left only: the most target rows kept per source row.
+     */
+    fanout?: number | null;
+    kind: IrJoinKind;
+    on?: null | IrCorrelateKey;
+    pipeline?: Array<IrStage>;
+    /**
+     * `"parent"` for the span's parent span, or the name of another signal
+     * source.
+     */
+    to: string;
+    window?: null | IrCorrelateWindow;
+};
+
+/**
+ * A logical join key a signal `correlate` matches on.
+ */
+export type IrCorrelateKey = 'trace_id' | 'span_id' | 'resource_identity' | 'series_id';
+
+/**
+ * How far a signal `correlate` widens its target scan beyond the source
+ * rows' time envelope. Both default to zero.
+ */
+export type IrCorrelateWindow = {
+    after?: string | null;
+    before?: string | null;
+};
+
+/**
+ * A field derived by an `extract` stage, with its declared type.
+ */
+export type IrDerivedField = {
+    name: string;
+    type: IrValueType;
+};
+
+/**
+ * The `describe` stage: introspect the source instead of reading its records.
+ *
+ * Terminal, and legal only with the `metadata` result envelope. It is answered
+ * from declared schema, the type authority, the tenant's schema registries
+ * and maintained statistics — not by lowering to a query plan — so it carries
+ * no predicate: see `openspec/changes/archive/2026-09-22-query-field-discovery`
+ * (design D6) for why a predicate-scoped answer is refused rather than approximated.
+ */
+export type IrDescribe = {
+    /**
+     * The logical field whose values to suggest. Required by `values`,
+     * rejected by `fields`.
+     */
+    field?: string | null;
+    /**
+     * Maximum items to return. Bounded by the server's own cap.
+     */
+    limit?: number | null;
+    /**
+     * Opt in to reading signal data when no metadata covers the request.
+     * Without it, an uncovered request is answered with an explanation
+     * rather than a scan.
+     */
+    sample?: boolean;
+    target: IrDescribeTarget;
+};
+
+/**
+ * What a `describe` stage introspects.
+ */
+export type IrDescribeTarget = 'fields' | 'values';
+
+/**
+ * A sort direction.
+ */
+export type IrDirection = 'asc' | 'desc';
+
+/**
+ * The `extract` stage: derive typed, query-local fields from log content.
+ */
+export type IrExtract = {
+    as: Array<IrDerivedField>;
+    parser: IrParser;
+};
+
+/**
+ * The `filter` stage: keep the values that compare true, or with `bool`
+ * replace every value by 0/1.
+ */
+export type IrFilter = {
+    bool?: boolean;
+    op: IrCompareOp;
+    value: number;
+};
+
+/**
+ * Which operand of a `binop` holds many series per match.
+ */
+export type IrGroupSide = 'left' | 'right';
+
+export type IrHeatmap = {
+    value: IrHeatmapValue;
+    x: IrHeatmapAxisX;
+    y: IrHeatmapAxisY;
+};
+
+/**
+ * A terminal two-dimensional count aggregate, available in IR v2.
+ */
+export type IrHeatmapAxisX = {
+    align: string;
+    step: string;
+};
+
+export type IrHeatmapAxisY = {
+    bounds: Array<unknown>;
+    of: string;
+    overflow?: boolean;
+};
+
+export type IrHeatmapValue = {
+    as: string;
+    fn: IrAggFn;
+};
+
+/**
+ * The estimated fraction of histogram observations in `(lower, upper]`,
+ * cumulative(`upper`) − cumulative(`lower`): the `histogram_quantile`
+ * sibling (`irVersion` 10). A bound inside a bucket is interpolated, so the
+ * result is an estimate.
+ */
+export type IrHistogramFraction = {
+    as: string;
+    by?: Array<string>;
+    /**
+     * As on `histogram_quantile`.
+     */
+    lookback?: string | null;
+    lower: number;
+    mode?: IrHistogramMode;
+    /**
+     * One result per stored series instead of merging them (`irVersion`
+     * 10). Excludes `by`; the output keeps each series' labels less
+     * `metric.name`.
+     */
+    per_series?: boolean;
+    step: string;
+    upper: number;
+    window?: string | null;
+};
+
+/**
+ * How data points sharing a `histogram_quantile` step bucket combine.
+ */
+export type IrHistogramMode = 'rate' | 'instant';
+
+/**
+ * A terminal quantile-over-buckets stage, available in IR v3. Only legal on
+ * the `metrics` source, over its histogram rows: interpolates a percentile
+ * from OTLP classic-histogram bucket data, distinct from the `aggregate` stage's
+ * `fn: "quantile"` (`approx_percentile_cont` over independent scalar
+ * values — a different algorithm entirely, over a different source shape).
+ */
+export type IrHistogramQuantile = {
+    /**
+     * The output value column name.
+     */
+    as: string;
+    /**
+     * Grouping labels (logical names), and the output's labels. Grouping
+     * also separates metrics internally — merging bucket data across
+     * different metrics is meaningless, since different metrics carry
+     * different bucket bounds — but, as in Prometheus, the output does not
+     * carry `metric.name`.
+     */
+    by?: Array<string>;
+    /**
+     * Instant mode only: at each evaluation instant `t`, read each series'
+     * latest point within `(t - lookback, t]`, as a PromQL instant vector
+     * does (`irVersion` 10). Without it the lookback is `step`.
+     */
+    lookback?: string | null;
+    mode?: IrHistogramMode;
+    /**
+     * One result per stored series instead of merging them (`irVersion`
+     * 10). Excludes `by`; the output keeps each series' labels less
+     * `metric.name`.
+     */
+    per_series?: boolean;
+    /**
+     * The quantile, in `[0, 1]`.
+     */
+    q: number;
+    /**
+     * Evaluation step: the stage is evaluated at `t = from + k·step` and
+     * each value labelled `t`. The result is always a `series`.
+     */
+    step: string;
+    /**
+     * Rate mode's window: each instant reads `(t - window, t]` (default:
+     * `step`), `irVersion` 10.
+     */
+    window?: string | null;
+};
+
+/**
+ * A join kind for a `correlate` stage. `semi`/`anti` need a signal target.
+ */
+export type IrJoinKind = 'inner' | 'left' | 'semi' | 'anti';
+
+/**
+ * `labels.join`: PromQL's `label_join`.
+ */
+export type IrLabelJoin = {
+    dst: string;
+    separator: string;
+    src: Array<string>;
+};
+
+/**
+ * `labels.replace`: PromQL's `label_replace`.
+ */
+export type IrLabelReplace = {
+    dst: string;
+    regex: string;
+    replacement: string;
+    src: string;
+};
+
+/**
+ * The `labels` stage: rewrite one label of every series.
+ */
+export type IrLabels = {
+    replace: IrLabelReplace;
+} | {
+    join: IrLabelJoin;
+};
+
+/**
+ * The `map` stage: apply a function to every value.
+ */
+export type IrMap = {
+    args?: Array<number>;
+    fn: IrMapFn;
+};
+
+/**
+ * A per-value `map` function (`irVersion` 10).
+ */
+export type IrMapFn = 'abs' | 'ceil' | 'floor' | 'round' | 'sqrt' | 'exp' | 'ln' | 'log2' | 'log10' | 'sgn' | 'clamp' | 'clamp_min' | 'clamp_max' | 'timestamp' | 'day_of_month' | 'day_of_week' | 'day_of_year' | 'days_in_month' | 'hour' | 'minute' | 'month' | 'year';
+
+/**
+ * The `match` stage (`irVersion` 12): keep the traces in which every
+ * span-set has a matching span and every relation holds, returning the
+ * witnessing spans.
+ */
+export type IrMatch = {
+    relations?: Array<IrMatchRelation>;
+    /**
+     * Named span-set predicates. Key order is significant: it is the
+     * declaration order, which orders the names in each row's `spansets`
+     * column.
+     */
+    spansets: {
+        [key: string]: IrPredicate;
+    };
+};
+
+/**
+ * How a `match` relation relates its two span-sets.
+ */
+export type IrMatchOp = 'child' | 'descendant' | 'ancestor' | 'sibling';
+
+/**
+ * One structural relation of a `match` stage, between two declared span-sets.
+ */
+export type IrMatchRelation = {
+    left: string;
+    op: IrMatchOp;
+    right: string;
+};
+
+/**
+ * The operand of a stage that takes none (`{"scalar": {}}`).
+ */
+export type IrNoOperands = {
+    [key: string]: never;
+};
+
+/**
+ * An `order` key: a field or aggregate name plus a direction.
+ */
+export type IrOrder = {
+    dir: IrDirection;
+    /**
+     * A `FieldRef` or `AggRef` (a name), never an expression string.
+     */
+    of: string;
+};
+
+/**
+ * The `over_time` stage: re-window a Series evaluated at its own step (a
+ * subquery).
+ */
+export type IrOverTime = {
+    arg?: number | null;
+    fn: IrOverTimeFn;
+    step?: string | null;
+    window: string;
+};
+
+/**
+ * An `over_time` function (`irVersion` 10).
+ */
+export type IrOverTimeFn = 'avg' | 'min' | 'max' | 'sum' | 'count' | 'last' | 'stddev' | 'stdvar' | 'present' | 'quantile' | 'delta' | 'deriv' | 'changes' | 'resets';
+
+/**
+ * A document-level `page`: walk the result `size` rows (or traces) at a time.
+ */
+export type IrPage = {
+    /**
+     * The previous response's `page.next_cursor`; absent on the first page.
+     */
+    cursor?: string | null;
+    /**
+     * Rows (or, for the `trace` envelope, traces) per page; the server
+     * default when omitted.
+     */
+    size?: number | null;
+};
+
+/**
+ * A parser for the `extract` stage. `regex` is deferred (registry-gated).
+ */
+export type IrParser = 'json' | 'logfmt';
+
+/**
+ * A predicate: exactly one of a comparison leaf (`field`, `op`, and a
+ * `value` unless `op` is `exists`), `and`, `or`, or `not`.
+ */
+export type IrPredicate = {
+    field: string;
+    op: IrComparisonOp;
+    /**
+     * Absent for `exists`.
+     */
+    value?: unknown;
+} | {
+    and: Array<IrPredicate>;
+} | {
+    or: Array<IrPredicate>;
+} | {
+    not: IrPredicate;
+};
+
+/**
+ * A `topk`/`bottomk` rank stage.
+ */
+export type IrRank = {
+    /**
+     * Must be an integer `> 0` (validated).
+     */
+    n: number;
+    /**
+     * The `AggRef` or `FieldRef` to rank by (a name).
+     */
+    of: string;
+};
+
+/**
+ * The `reduce` stage: Series → Series, grouped `by` or `without` labels.
+ *
+ * `without` also drops `metric.name`, as Prometheus does; `by` keeps
+ * exactly the listed labels (so `by (metric.name)` keeps the name).
+ */
+export type IrReduce = {
+    /**
+     * `topk`/`bottomk`: the integer k; `quantile`: the quantile.
+     */
+    arg?: number | null;
+    by?: Array<string> | null;
+    fn: IrReduceFn;
+    /**
+     * `count_values`: the label that carries each value.
+     */
+    label?: string | null;
+    without?: Array<string> | null;
+};
+
+/**
+ * A `reduce` function: folds series into groups at every instant
+ * (`irVersion` 10).
+ */
+export type IrReduceFn = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'group' | 'stddev' | 'stdvar' | 'quantile' | 'topk' | 'bottomk' | 'count_values';
+
+/**
+ * The `sample` stage: evaluate a metric point stream into a `Series` at
+ * every evaluation instant (`irVersion` 10).
+ */
+export type IrSample = {
+    /**
+     * `quantile_over_time` only: the quantile in `[0, 1]`.
+     */
+    arg?: number | null;
+    /**
+     * Pin every evaluation instant to this timestamp literal.
+     */
+    at?: unknown;
+    fn: IrSampleFn;
+    /**
+     * `latest` only: how far back a point still counts (default `5m`).
+     */
+    lookback?: string | null;
+    of?: IrSampleOf;
+    /**
+     * Shift the read window back by this non-negative duration.
+     */
+    offset?: string | null;
+    /**
+     * The evaluation step; defaults to the document `step`.
+     */
+    step?: string | null;
+    /**
+     * The range read by every function but `latest`: `(t - window, t]`.
+     */
+    window?: string | null;
+};
+
+/**
+ * A function a `sample` stage evaluates over each series' point stream
+ * (`irVersion` 10).
+ */
+export type IrSampleFn = 'latest' | 'rate' | 'increase' | 'irate' | 'delta' | 'idelta' | 'deriv' | 'resets' | 'changes' | 'avg_over_time' | 'min_over_time' | 'max_over_time' | 'sum_over_time' | 'count_over_time' | 'last_over_time' | 'stddev_over_time' | 'stdvar_over_time' | 'present_over_time' | 'quantile_over_time';
+
+/**
+ * Which value of a metric point a `sample` reads.
+ */
+export type IrSampleOf = 'metric.value' | 'metric.count' | 'metric.sum';
+
+/**
+ * A transform stage in the pipeline. Externally tagged: a single-key object
+ * whose key names the stage. An unknown key is an unsupported stage and is
+ * rejected by name.
+ */
+export type IrStage = {
+    where: IrPredicate;
+} | {
+    extract: IrExtract;
+} | {
+    aggregate: IrAggregate;
+} | {
+    topk: IrRank;
+} | {
+    bottomk: IrRank;
+} | {
+    order: Array<IrOrder>;
+} | {
+    limit: number;
+} | {
+    heatmap: IrHeatmap;
+} | {
+    histogram_quantile: IrHistogramQuantile;
+} | {
+    describe: IrDescribe;
+} | {
+    correlate: IrCorrelate;
+} | {
+    sample: IrSample;
+} | {
+    scalar: IrNoOperands;
+} | {
+    vector: IrNoOperands;
+} | {
+    reduce: IrReduce;
+} | {
+    map: IrMap;
+} | {
+    labels: IrLabels;
+} | {
+    filter: IrFilter;
+} | {
+    sort: IrDirection;
+} | {
+    absent: IrAbsent;
+} | {
+    over_time: IrOverTime;
+} | {
+    binop: IrBinop;
+} | {
+    histogram_fraction: IrHistogramFraction;
+} | {
+    match: IrMatch;
+};
+
+/**
+ * A `binop`'s right operand as a sub-document: it inherits `irVersion`,
+ * `range` and `step` from the enclosing document.
+ */
+export type IrSubDocument = {
+    constant?: number | null;
+    from: string;
+    pipeline?: Array<IrStage>;
+};
+
+/**
+ * The canonical value types that flow through the IR.
+ *
+ * Each logical field has exactly one canonical `ValueType`, owned by the
+ * attribute registry. Literal coercion always targets a field's canonical
+ * type — see [`coerce`].
+ */
+export type IrValueType = 'string' | 'int64' | 'float64' | 'bool' | 'timestamp_ns' | 'duration_ns' | 'bytes' | {
+    /**
+     * A homogeneous array of a single element type.
+     */
+    array: IrValueType;
+};
+
+/**
  * Response body of the label-names / label-values endpoints.
  */
 export type LabelsResponse = {
@@ -718,23 +1988,11 @@ export type LabelsResponse = {
 };
 
 /**
- * Response containing a list of API keys.
+ * A hypermedia link. `method` is omitted for `GET`.
  */
-export type ListApiKeysResponse = {
-    /**
-     * List of API key records (without raw keys).
-     */
-    api_keys: Array<ApiKeyResponse>;
-};
-
-/**
- * Response containing a list of datasets.
- */
-export type ListDatasetsResponse = {
-    /**
-     * List of dataset records.
-     */
-    datasets: Array<DatasetResponse>;
+export type Link = {
+    href: string;
+    method?: string | null;
 };
 
 /**
@@ -759,89 +2017,19 @@ export type ListTablesResponse = {
     tenant_id: string;
 };
 
-/**
- * Response containing a list of tenants.
- */
 export type ListTenantsResponse = {
-    /**
-     * List of tenant records.
-     */
     tenants: Array<TenantResponse>;
 };
 
-/**
- * The semantic role of a logical field.
- */
-export type LogicalFieldKind = 'attribute' | 'record_metadata' | 'join_key' | 'signal_db_defined';
-
-/**
- * The client-visible type of a logical field.
- */
-export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_ns' | 'duration_ns' | 'bytes' | 'any_value';
-
-export type ManageApiKeyResponse = {
-    created_at: string;
-    dataset_id?: string | null;
-    id: string;
-    name?: string | null;
-    revoked: boolean;
-    scopes?: Array<string> | null;
-};
-
-export type ManageCreateApiKeyRequest = {
-    dataset_id?: string | null;
-    name?: string | null;
-    scopes: Array<string>;
-};
-
-export type ManageCreateDatasetRequest = {
-    name: string;
-};
-
-export type ManageCreateTenantRequest = {
-    default_dataset?: string | null;
-    id: string;
-    name: string;
-};
-
-/**
- * 201 response body for API key creation via the management API.
- *
- * Fields mirror the previous `json!` body exactly (including `null` for
- * absent `name`/`dataset_id`), preserving the wire format.
- */
-export type ManageCreatedApiKey = {
-    dataset_id?: string | null;
-    id: string;
-    key: string;
-    name?: string | null;
-    scopes: Array<string>;
-};
-
-/**
- * 201 response body for tenant creation via the management API.
- */
-export type ManageCreatedTenant = {
-    id: string;
-};
-
-export type ManageDatasetResponse = {
-    id: string;
-    name: string;
-};
-
-/**
- * Error response body for the management API.
- */
-export type ManageError = {
-    error: string;
+export type ListUsersResponse = {
+    users: Array<UserResponse>;
 };
 
 /**
  * One logical (client-visible, OTel-native) field, as registered in
  * [`common::schema::logical::LogicalSchema`].
  */
-export type ManageLogicalField = {
+export type LogicalField = {
     filterability: Filterability;
     kind: LogicalFieldKind;
     /**
@@ -858,43 +2046,113 @@ export type ManageLogicalField = {
 };
 
 /**
- * One physical (storage) column, as resolved from `schemas.toml`.
+ * The semantic role of a logical field.
  */
-export type ManagePhysicalField = {
-    computed?: string | null;
-    field_type: string;
+export type LogicalFieldKind = 'attribute' | 'record_metadata' | 'join_key' | 'signal_db_defined';
+
+/**
+ * The client-visible type of a logical field.
+ */
+export type LogicalType = 'string' | 'bool' | 'int64' | 'float64' | 'timestamp_ns' | 'duration_ns' | 'bytes' | 'any_value';
+
+/**
+ * `GET /ui/session/config`'s response: which credentials the login page
+ * may offer. `oidc` is `null` until an OIDC provider is configured.
+ */
+export type LoginConfigResponse = {
+    demo: null | DemoLoginConfig;
+    oidc: null | OidcLoginConfig;
+    password_enabled: boolean;
+};
+
+export type ManageApiKeyResponse = {
+    allowed_origins?: Array<string> | null;
+    created_at: string;
+    dataset_ids?: Array<string> | null;
+    id: string;
+    name?: string | null;
+    revoked: boolean;
+    scopes?: Array<string> | null;
+};
+
+/**
+ * `dataset_ids` mirrors [`signaldb_api::CreateApiKeyRequest`] (D1a): omitted
+ * or `null` creates an unrestricted key, a non-empty array restricts it,
+ * and an explicit empty array or duplicate name is rejected. The legacy
+ * singular `dataset_id` field is not accepted — `deny_unknown_fields`
+ * rejects a request body still sending it, rather than silently dropping
+ * it and creating an unrestricted key when the caller asked for a
+ * restricted one.
+ */
+export type ManageCreateApiKeyRequest = {
+    allowed_origins?: Array<string> | null;
+    dataset_ids?: Array<string> | null;
+    name?: string | null;
+    scopes: Array<string>;
+};
+
+export type ManageCreateDatasetRequest = {
     name: string;
-    physical_only: boolean;
-    required: boolean;
 };
 
 /**
- * One resolved table-schema version for one signal source.
+ * 201 response body for API key creation via the management API.
+ *
+ * Fields mirror the previous `json!` body exactly (including `null` for
+ * absent `name`), preserving the wire format.
  */
-export type ManagePhysicalSchema = {
-    description: string;
-    fields: Array<ManagePhysicalField>;
-    is_current: boolean;
-    partition_by: Array<string>;
-    source: string;
-    version: string;
+export type ManageCreatedApiKey = {
+    allowed_origins?: Array<string> | null;
+    dataset_ids?: Array<string> | null;
+    id: string;
+    key: string;
+    name?: string | null;
+    scopes: Array<string>;
 };
 
-export type ManageSchemaResponse = {
-    logical: Array<ManageLogicalField>;
-    logical_schema_version: string;
-    physical: Array<ManagePhysicalSchema>;
+export type ManageDatasetResponse = {
+    id: string;
+    name: string;
 };
 
 /**
- * Body for `PATCH /api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`.
- * Absent fields are left untouched.
+ * Error response body for the tenant-scoped resource endpoints.
+ */
+export type ManageError = {
+    error: string;
+};
+
+/**
+ * Body for `PATCH /api/v1/tenants/{tenant_id}/api-keys/{key_id}`.
+ * Absent fields are left untouched. `dataset_ids`/`clear_dataset_restriction`
+ * mirror [`signaldb_api::UpdateApiKeyRequest`] (D1a); the legacy singular
+ * `dataset_id` field is rejected via `deny_unknown_fields` rather than
+ * silently dropped.
  */
 export type ManageUpdateApiKeyRequest = {
     /**
-     * Replacement dataset restriction.
+     * Replacement allowed-origins set (non-empty; an explicit empty array
+     * is rejected). Omitted/`null` leaves the current restriction
+     * unchanged. Mutually exclusive with `clear_allowed_origins: true`.
      */
-    dataset_id?: string | null;
+    allowed_origins?: Array<string> | null;
+    /**
+     * Clear an existing allowed-origins restriction back to unrestricted.
+     * Must not be combined with a non-empty `allowed_origins` in the same
+     * request.
+     */
+    clear_allowed_origins?: boolean;
+    /**
+     * Clear an existing dataset restriction back to unrestricted. Must not
+     * be combined with a non-empty `dataset_ids` in the same request.
+     */
+    clear_dataset_restriction?: boolean;
+    /**
+     * Replacement dataset set (non-empty; an explicit empty array is
+     * rejected). Omitted/`null` leaves the current restriction unchanged.
+     * Mutually exclusive with `clear_dataset_restriction: true`.
+     */
+    dataset_ids?: Array<string> | null;
     /**
      * Replacement scope list (non-empty, drawn from the shared vocabulary).
      */
@@ -903,6 +2161,13 @@ export type ManageUpdateApiKeyRequest = {
 
 export type MembershipResponse = {
     email: string;
+    /**
+     * `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced
+     * from an OIDC group claim, change: oidc-login). A local and a mapped
+     * row can coexist for the same user, yielding two response rows that
+     * differ only by this field — the UI keys on `user_id` + `granted_by`.
+     */
+    granted_by: string;
     role: MembershipRole;
     user_id: string;
 };
@@ -987,6 +2252,173 @@ export type MetricResolution = {
 
 export type MetricSearchResponse = {
     hits: Array<MetricHit>;
+    /**
+     * Present when `keys=` was given: one resolution per requested name.
+     */
+    resolutions?: Array<MetricResolution>;
+};
+
+/**
+ * A multi-query document (D5): several named IR queries — each required to
+ * declare `result: "series"` — plus formulas evaluated over their results
+ * after every inner query has run. Series join on an identical label set
+ * and timestamp; a formula input missing a series present in another
+ * contributes nothing to the join, and a zero divisor drops the point,
+ * rather than either erroring.
+ */
+export type MultiQueryIrRequest = {
+    formulas: Array<QueryFormula>;
+    queries: {
+        [key: string]: QueryIrRequest;
+    };
+    /**
+     * Always `"series"` — a formula document has no other shape.
+     */
+    result: string;
+};
+
+/**
+ * A single-sign-on provider offered by the login-configuration probe.
+ */
+export type OidcLoginConfig = {
+    /**
+     * Display name shown on the "Continue with {name}" control.
+     */
+    name: string;
+};
+
+/**
+ * The public OTLP/gRPC ingest endpoint.
+ */
+export type OtlpGrpcEndpoint = {
+    /**
+     * `host[:port]`, with the port included only when the configured URL
+     * states one explicitly.
+     */
+    authority: string;
+    protocol: string;
+    signals: Array<string>;
+    tls: boolean;
+    url: string;
+};
+
+/**
+ * The public OTLP/HTTP ingest endpoint.
+ */
+export type OtlpHttpEndpoint = {
+    paths: OtlpHttpPaths;
+    protocol: string;
+    tls: boolean;
+    url: string;
+};
+
+/**
+ * Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+ */
+export type OtlpHttpPaths = {
+    logs: string;
+    metrics: string;
+    profiles: string;
+    traces: string;
+};
+
+/**
+ * One physical (storage) column, as resolved from `schemas.toml`.
+ */
+export type PhysicalField = {
+    computed?: string | null;
+    field_type: string;
+    name: string;
+    physical_only: boolean;
+    required: boolean;
+};
+
+/**
+ * One resolved table-schema version for one signal source.
+ */
+export type PhysicalSchema = {
+    description: string;
+    fields: Array<PhysicalField>;
+    is_current: boolean;
+    partition_by: Array<string>;
+    source: string;
+    version: string;
+};
+
+/**
+ * Error body for the processors API.
+ */
+export type ProcessorError = {
+    error: string;
+    /**
+     * Positional compile errors (422 only).
+     */
+    errors?: Array<StatementError>;
+};
+
+export type ProcessorListResponse = {
+    processors: Array<ProcessorResponse>;
+};
+
+/**
+ * A stored processor row.
+ */
+export type ProcessorRecord = {
+    /**
+     * RFC3339 timestamp, as stored (`StoredRegistry` follows the same
+     * string-typed convention for the same reason: one dialect-agnostic
+     * decode path in the store, see `row_to_record`).
+     */
+    created_at: string;
+    /**
+     * The dataset *name* this processor applies to, or `None` for a
+     * tenant-wide rule.
+     */
+    dataset?: string | null;
+    description?: string | null;
+    enabled: boolean;
+    error_mode: string;
+    name: string;
+    priority: number;
+    signal: string;
+    statements: Array<string>;
+    tenant_id: string;
+    updated_at: string;
+};
+
+/**
+ * A processor row plus its compiled status.
+ */
+export type ProcessorResponse = ProcessorRecord & {
+    /**
+     * `"invalid"` when the stored statements currently fail to compile
+     * (skipped at apply time, never blocking ingest); `"ok"` otherwise.
+     */
+    status: string;
+};
+
+/**
+ * Caller-supplied processor definition, without tenant scoping or
+ * timestamps — the body of a create/replace request.
+ */
+export type ProcessorSpec = {
+    dataset?: string | null;
+    description?: string | null;
+    enabled?: boolean;
+    error_mode?: string;
+    name: string;
+    priority?: number;
+    signal: string;
+    statements: Array<string>;
+};
+
+/**
+ * Every write response carries the cross-process propagation bound for the
+ * change: the `ProcessorRegistry` cache TTL, in seconds.
+ */
+export type ProcessorWriteResponse = ProcessorRecord & {
+    applies_within_seconds: number;
+    status: string;
 };
 
 /**
@@ -1028,57 +2460,118 @@ export type QualifiedEntityRole = {
 };
 
 /**
+ * One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
+ * (`+ - * /`, numeric constants, parentheses) over the request's own query
+ * names, e.g. `"errors / total"`.
+ */
+export type QueryFormula = {
+    expr: string;
+    /**
+     * The formula's identity: tags each output series' `labels` under the
+     * `formula` key, so a request with several formulas stays distinguishable.
+     */
+    name: string;
+};
+
+/**
  * A versioned Query IR request document.
  *
- * The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
- * querier validates and lowers them per the versioned IR contract. See the
- * `query-ir-core` capability for the full stage/predicate grammar.
+ * The `pipeline` stages are published as the IR's own stage grammar
+ * (`IrStage`) but kept as raw JSON at the HTTP boundary — the querier
+ * validates and lowers them per the versioned IR contract, rejecting an
+ * unsupported stage by name.
  */
 export type QueryIrRequest = {
+    baseline?: null | QueryRange;
+    /**
+     * The value of the `constant` pseudo-source (irVersion 10+).
+     */
+    constant?: number | null;
+    /**
+     * `graph` only: hops from `focus` (1-3, default 1).
+     */
+    depth?: number | null;
     /**
      * Curated projection (logical field names) for `rows`/`table`.
      */
     fields?: Array<string> | null;
     /**
-     * The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
+     * `graph` only: restrict to this service's neighbourhood.
+     */
+    focus?: string | null;
+    /**
+     * The registered signal source (`logs`, `traces`, `metrics`,
+     * `exemplars`, profile-summary `profiles`), or (irVersion 10+) the
+     * Scalar pseudo-source `time` or `constant`.
      */
     from: string;
     /**
      * IR document version (the server accepts a bounded range).
      */
     irVersion: number;
+    page?: null | IrPage;
     /**
-     * Ordered transform stages (opaque objects; see the IR spec).
+     * Ordered transform stages.
      */
-    pipeline?: Array<{
-        [key: string]: unknown;
-    }>;
+    pipeline?: Array<IrStage>;
     range: QueryRange;
     /**
-     * Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
-     * (for the `profiles` source only) `flamegraph`.
+     * Declared result envelope: `rows`, `series`, `table`, `heatmap`,
+     * (for the `profiles` source only) `flamegraph`, (for the `traces`
+     * source, irVersion 8+) `graph`, (irVersion 10+) `scalar`, or (for the
+     * `traces` source, irVersion 12+) `trace`.
      */
     result: string;
+    /**
+     * The default evaluation step of the series-algebra stages; required by
+     * the `time`/`constant` pseudo-sources (irVersion 10+).
+     */
+    step?: string | null;
+    /**
+     * `graph` only: restrict to the services and calls of one trace.
+     */
+    trace_id?: string | null;
 };
+
+/**
+ * The `POST /api/v1/query` request body: either a single IR document or a
+ * [`MultiQueryIrRequest`], discriminated by the presence of `queries` — a
+ * document without it is a single [`QueryIrRequest`], so an ordinary
+ * request needs no wrapper key.
+ */
+export type QueryIrRequestBody = MultiQueryIrRequest | QueryIrRequest;
 
 /**
  * The single canonical response contract. `result` discriminates which fields
  * are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
  * `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
- * `flamegraph`.
+ * `flamegraph`; `graph` fills `graph`; `trace` fills `traces`; `scalar` fills `points` + `step_ns`.
  */
 export type QueryIrResponse = {
     columns?: Array<ResultColumn>;
     flamegraph?: null | FlamegraphResult;
+    graph?: null | ServiceGraph;
     heatmap?: HeatmapResult;
     metadata?: null | MetadataResult;
+    page?: null | QueryPage;
     /**
-     * The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
+     * Present iff `result == "scalar"`: one `[t_ns, value]` point per
+     * evaluation instant, with no labels (`null` is NaN or ±Inf).
+     */
+    points?: Array<Array<unknown>> | null;
+    /**
+     * The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
+     * `graph`, `metadata`, `scalar`, or `trace`.
      */
     result: string;
     rows?: Array<Array<unknown>>;
     series?: Array<ResultSeries>;
     step_ns?: number | null;
+    /**
+     * Present iff `result == "trace"` — the result rows grouped per trace, in
+     * order of first appearance. `Some` even when no row matched.
+     */
+    traces?: Array<TraceGroup> | null;
     /**
      * Non-fatal diagnostics about this query. Empty (and omitted) when the
      * server has nothing to report; a warning never suppresses the result.
@@ -1088,6 +2581,17 @@ export type QueryIrResponse = {
      * The resolved absolute window the query ran over.
      */
     window: ResolvedWindow;
+};
+
+/**
+ * The `page` member of a paged response.
+ */
+export type QueryPage = {
+    /**
+     * Present exactly when more of the result exists; send it back as
+     * `page.cursor` with the same document. Opaque: never build or edit one.
+     */
+    next_cursor?: string | null;
 };
 
 /**
@@ -1109,8 +2613,9 @@ export type QueryRange = {
 export type QueryWarning = {
     /**
      * Stable machine-readable identifier — clients branch on this, not on
-     * `message`. Today `unknown_group_by_field` and
-     * `no_attribute_statistics`.
+     * `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
+     * `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
+     * `graph_node_limit` and `match_incomplete_trace`.
      */
     code: string;
     /**
@@ -1230,6 +2735,12 @@ export type SchemaError = {
     errors?: Array<ValidationError>;
 };
 
+export type SchemaResponse = {
+    logical: Array<LogicalField>;
+    logical_schema_version: string;
+    physical: Array<PhysicalSchema>;
+};
+
 /**
  * Result of GET /api/search
  * See <https://grafana.com/docs/tempo/latest/api_docs/#example-of-traceql-search>
@@ -1239,6 +2750,159 @@ export type SearchResult = {
         [key: string]: number;
     };
     traces: Array<Trace>;
+};
+
+/**
+ * The assembled graph. `dropped_nodes` counts the nodes removed by the
+ * server-side node cap (`[querier].graph_max_nodes`).
+ */
+export type ServiceGraph = {
+    dropped_nodes?: number;
+    edges: Array<GraphEdge>;
+    nodes: Array<GraphNode>;
+};
+
+/**
+ * The `{"error": "..."}` body the session and whoami endpoints answer
+ * failures with.
+ */
+export type SessionErrorBody = {
+    error: string;
+};
+
+/**
+ * A tenant the signed-in user may select, returned by `POST /ui/session`
+ * and `GET /ui/session` so the UI can present a picker instead of
+ * free-text tenant entry.
+ */
+export type SessionMembership = {
+    name: string;
+    role: MembershipRole;
+    tenant_id: string;
+};
+
+/**
+ * The signed-in user, as reported by `GET /ui/session`.
+ */
+export type SessionUser = {
+    /**
+     * Always serialized, `null` when the user has no display name.
+     */
+    display_name: string | null;
+    email: string;
+    id: string;
+    /**
+     * True when this is the `[demo]` read-only account (change:
+     * demo-mode), so the UI can show a "read-only" badge and hide
+     * mutating navigation without hardcoding the demo username.
+     */
+    is_demo: boolean;
+    is_instance_admin: boolean;
+};
+
+/**
+ * Whether source context can be served for a tenant at all — the UI's
+ * read-level probe for showing or hiding "View source" (the installation
+ * *list* is a management-only endpoint that ordinary readers cannot call).
+ */
+export type SourceContextAvailability = {
+    /**
+     * `[github]` is configured on this deployment.
+     */
+    configured: boolean;
+    /**
+     * The tenant has linked at least one GitHub App installation.
+     */
+    linked: boolean;
+};
+
+/**
+ * Request body for [`source_context`].
+ */
+export type SourceContextRequest = {
+    /**
+     * Lines of context on each side of `line`; defaults to
+     * [`DEFAULT_CONTEXT_LINES`] and is clamped to
+     * [`crate::source_context::MAX_CONTEXT_LINES`].
+     */
+    context_lines?: number | null;
+    /**
+     * The 1-based line number to center the snippet on.
+     */
+    line: number;
+    /**
+     * The file path within the repository.
+     */
+    path: string;
+    /**
+     * The ref (branch, tag, or commit SHA) to read the file at. Omit it to
+     * read the repository's default branch.
+     */
+    ref?: string | null;
+    /**
+     * `owner/name`, or a GitHub URL naming the repository (`https://github.com/owner/name`,
+     * `owner/name.git`, ...). Omit it to probe every repository covered by
+     * the tenant's linked GitHub installations by path alone.
+     */
+    repository?: string | null;
+};
+
+/**
+ * Response body for [`source_context`]. Always `200` for a well-formed
+ * request, whether or not a snippet could be served.
+ */
+export type SourceContextResponse = {
+    reason?: null | UnavailableReason;
+    snippet?: null | SourceSnippet;
+    /**
+     * Whether a snippet was served.
+     */
+    status: SourceContextStatus;
+};
+
+/**
+ * Whether [`source_context`] served a snippet.
+ */
+export type SourceContextStatus = 'available' | 'unavailable';
+
+/**
+ * A bounded window of source lines around one line of one file, plus
+ * enough metadata to render and link to it.
+ */
+export type SourceSnippet = {
+    /**
+     * GitHub's `html_url` for the file, with a `#L{line}` fragment.
+     */
+    html_url: string;
+    /**
+     * The 1-based line number the snippet is centered on.
+     */
+    line: number;
+    /**
+     * The window of source lines, `start_line..=start_line + lines.len() - 1`.
+     */
+    lines: Array<string>;
+    /**
+     * The file path within the repository.
+     */
+    path: string;
+    /**
+     * The ref the caller asked for; `None` means the repository's default
+     * branch.
+     */
+    ref?: string | null;
+    /**
+     * The `"owner/name"` repository that served the snippet.
+     */
+    repository: string;
+    /**
+     * The blob's `sha`, as GitHub reports it.
+     */
+    sha: string;
+    /**
+     * The 1-based line number `lines[0]` corresponds to.
+     */
+    start_line: number;
 };
 
 export type Span = {
@@ -1287,6 +2951,15 @@ export type SpanSet = {
 };
 
 /**
+ * One compile error, positioned to a statement and (where known) a column.
+ */
+export type StatementError = {
+    column?: number | null;
+    message: string;
+    statement: number;
+};
+
+/**
  * API response for table information
  */
 export type TableInfo = {
@@ -1331,79 +3004,57 @@ export type TagValuesResponse = {
 };
 
 /**
- * API response for tenant information
- */
-export type TenantInfo = {
-    /**
-     * Custom schema definitions
-     */
-    custom_schemas?: {
-        [key: string]: string;
-    } | null;
-    /**
-     * Whether tenant is enabled
-     */
-    enabled: boolean;
-    /**
-     * Tenant-specific schema configuration
-     */
-    schema: {
-        [key: string]: unknown;
-    } | null;
-    /**
-     * Tenant ID
-     */
-    tenant_id: string;
-};
-
-/**
- * Tenant information returned by the API.
+ * Superset tenant response: the catalog-backed identity fields
+ * (`id`/`name`/`default_dataset`/`source`/timestamps) every caller of the
+ * old admin surface relied on, unchanged.
  */
 export type TenantResponse = {
-    /**
-     * ISO 8601 creation timestamp.
-     */
     created_at: string;
-    /**
-     * Default dataset name.
-     */
     default_dataset?: string | null;
-    /**
-     * Unique tenant identifier.
-     */
     id: string;
-    /**
-     * Human-readable tenant name.
-     */
     name: string;
-    /**
-     * Source of the tenant record (config or database).
-     */
     source: string;
-    /**
-     * ISO 8601 last-updated timestamp.
-     */
     updated_at: string;
 };
 
-/**
- * API response for listing tenants
- *
- * Renamed in the OpenAPI document (`#[schema(as = ...)]`) to avoid
- * colliding with `signaldb_api::ListTenantsResponse` (the admin API's
- * tenant list, a different shape) — both are plain Rust structs named
- * `ListTenantsResponse`, and utoipa keys OpenAPI schema components by Rust
- * type name unless told otherwise.
- */
-export type TenantSelfListResponse = {
+export type TestRequest = {
+    dataset?: string | null;
     /**
-     * Default tenant ID
+     * The OTLP export request (OTLP/JSON), for `signal`.
      */
-    default_tenant: string;
+    payload: unknown;
     /**
-     * List of tenants
+     * Processors to apply, in the given order; when omitted, the tenant's
+     * stored processors for `signal`/`dataset` are used instead.
      */
-    tenants: Array<TenantInfo>;
+    processors?: Array<ProcessorSpec> | null;
+    signal: string;
+};
+
+export type TestResponse = {
+    /**
+     * The submitted payload after decoding into the OTLP types and encoding
+     * again, before any statement ran. It has the same field order and
+     * defaults as `payload`, so a diff of the two shows only what the
+     * statements changed.
+     */
+    input: unknown;
+    /**
+     * The payload after every statement ran.
+     */
+    payload: unknown;
+    statements: Array<TestStatementResult>;
+};
+
+export type TestStatementResult = {
+    errors: number;
+    index: number;
+    matched: number;
+    /**
+     * Name of the processor this statement belongs to, so results from
+     * multiple processors (each restarting `index` at 0) can be told apart.
+     */
+    processor: string;
 };
 
 /**
@@ -1473,20 +3124,28 @@ export type Trace = {
 };
 
 /**
- * Request body for updating a live API key's scopes and/or dataset restriction.
- *
- * Absent fields are left untouched. Revoked keys cannot be updated.
+ * One trace in a `trace` result: its spans, each an object keyed by result
+ * column name.
  */
-export type UpdateApiKeyRequest = {
+export type TraceGroup = {
     /**
-     * New dataset restriction.
+     * The trace's result rows, in result order.
      */
-    dataset_id?: string | null;
+    spans: Array<{
+        [key: string]: unknown;
+    }>;
     /**
-     * New scope list (replaces the current one; must be non-empty).
+     * The trace's `trace_id`.
      */
-    scopes?: Array<string> | null;
+    trace_id: string;
 };
+
+export type TypeSource = 'config' | 'semconv' | 'observed';
+
+/**
+ * Why a lookup could not serve a snippet.
+ */
+export type UnavailableReason = 'not_configured' | 'no_installation' | 'not_found' | 'not_a_file' | 'too_large' | 'undecodable' | 'line_out_of_range' | 'github_error' | 'internal';
 
 /**
  * Request body for updating an existing tenant.
@@ -1502,6 +3161,32 @@ export type UpdateTenantRequest = {
     name?: string | null;
 };
 
+/**
+ * What an upload holds.
+ */
+export type UploadSummary = {
+    /**
+     * Distinct case ids.
+     */
+    cases: number;
+    /**
+     * Per evaluator, ordered by name.
+     */
+    evaluators: Array<EvaluatorSummary>;
+    /**
+     * Result rows written.
+     */
+    rows: number;
+    /**
+     * Rows without a `trace_id` (run-level results).
+     */
+    run_level: number;
+    /**
+     * Rows with a `trace_id`.
+     */
+    span_linked: number;
+};
+
 export type UpsertMembershipRequest = {
     email: string;
     role: MembershipRole;
@@ -1512,7 +3197,7 @@ export type UpsertMembershipRequest = {
  */
 export type UserResponse = {
     /**
-     * ISO 8601 creation timestamp.
+     * RFC 3339 creation timestamp.
      */
     created_at: string;
     /**
@@ -1531,6 +3216,15 @@ export type UserResponse = {
      * Whether the user is an instance administrator.
      */
     instance_admin: boolean;
+};
+
+export type ValidateRequest = {
+    signal: string;
+    statements: Array<string>;
+};
+
+export type ValidateResponse = {
+    errors?: Array<StatementError>;
 };
 
 /**
@@ -1561,22 +3255,80 @@ export type ValidationReport = {
  */
 export type ValueOrigin = 'registry' | 'statistics' | 'sampled';
 
+export type WhoamiDataset = {
+    id: string;
+    is_default: boolean;
+    slug: string;
+};
+
 /**
- * The non-null identity contract shared by generated clients.
+ * `GET /api/v1/whoami`'s response.
  */
 export type WhoamiIdentityResponse = {
-    dataset: string;
-    tenant: WhoamiTenant;
     /**
-     * Stable authenticated user ID. Empty for API key credentials.
+     * Dataset resolved by the authentication middleware from the requested
+     * header or the tenant default.
+     */
+    dataset: string;
+    /**
+     * The credential's own dataset-set restriction (`TenantContext::
+     * api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+     * Callers that need to know which of `datasets` they may actually
+     * query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+     * read this rather than assuming every listed dataset is reachable.
+     */
+    dataset_ids?: Array<string> | null;
+    /**
+     * The tenant's datasets, narrowed to the credential's own restriction.
+     */
+    datasets: Array<WhoamiDataset>;
+    /**
+     * Always serialized, `null` when the tenant (or the credential's
+     * restriction) has no default dataset.
+     */
+    default_dataset: string | null;
+    /**
+     * Every tenant this specific credential's grant reaches (change:
+     * mcp-multi-tenant-oauth-grants D5) — a one-element array equal to
+     * `tenant`/`dataset_ids` for a single-tenant credential (API key or
+     * single-tenant OAuth grant), or every tenant in the grant for a
+     * multi-tenant OAuth credential. Distinct from `memberships`, which
+     * lists every tenant the *human user* belongs to regardless of what
+     * this credential was scoped to.
+     */
+    granted_tenants: Array<GrantedTenant>;
+    /**
+     * Every tenant the human user belongs to (every tenant, as admin, for
+     * an instance admin); empty for API key credentials.
+     */
+    memberships: Array<WhoamiMembership>;
+    tenant: WhoamiTenant;
+    user?: null | WhoamiUser;
+    /**
+     * Authenticated human user ID. Empty for API key credentials.
      */
     user_id: string;
+};
+
+export type WhoamiMembership = {
+    role: MembershipRole;
+    tenant_id: string;
 };
 
 export type WhoamiTenant = {
     id: string;
     name: string;
     slug: string;
+};
+
+export type WhoamiUser = {
+    /**
+     * Always serialized, `null` when the user has no display name.
+     */
+    display_name: string | null;
+    email: string;
+    id: string;
+    is_instance_admin: boolean;
 };
 
 export type TempoApiV2TagSearchResponse = {
@@ -1618,7 +3370,7 @@ export type ProfilesByTraceData = {
 
 export type ProfilesByTraceErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -1626,6 +3378,12 @@ export type ProfilesByTraceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -1651,450 +3409,72 @@ export type ProfilesByTraceResponses = {
 
 export type ProfilesByTraceResponse = ProfilesByTraceResponses[keyof ProfilesByTraceResponses];
 
-export type ListTenantsData = {
+export type ConnectionInfoData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/v1/admin/tenants';
+    url: '/api/v1/connection';
 };
 
-export type ListTenantsResponses = {
+export type ConnectionInfoErrors = {
     /**
-     * List of tenants
+     * Invalid or expired credential
      */
-    200: ListTenantsResponse;
-};
-
-export type ListTenantsResponse2 = ListTenantsResponses[keyof ListTenantsResponses];
-
-export type CreateTenantData = {
-    body: CreateTenantRequest;
-    path?: never;
-    query?: never;
-    url: '/api/v1/admin/tenants';
-};
-
-export type CreateTenantErrors = {
+    401: unknown;
     /**
-     * Validation error
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
      */
-    400: ApiError;
-    /**
-     * Tenant already exists
-     */
-    409: ApiError;
-};
-
-export type CreateTenantError = CreateTenantErrors[keyof CreateTenantErrors];
-
-export type CreateTenantResponses = {
-    /**
-     * Tenant created
-     */
-    201: TenantResponse;
-};
-
-export type CreateTenantResponse = CreateTenantResponses[keyof CreateTenantResponses];
-
-export type DeleteTenantData = {
-    body?: never;
-    path: {
+    429: {
         /**
-         * Tenant identifier
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
          */
-        tenant_id: string;
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
     };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}';
 };
 
-export type DeleteTenantErrors = {
+export type ConnectionInfoError = ConnectionInfoErrors[keyof ConnectionInfoErrors];
+
+export type ConnectionInfoResponses = {
     /**
-     * Config-sourced tenants cannot be deleted
+     * Connection details for this deployment, scoped to the caller's tenant
      */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
+    200: ConnectionInfoResponse;
 };
 
-export type DeleteTenantError = DeleteTenantErrors[keyof DeleteTenantErrors];
+export type ConnectionInfoResponse2 = ConnectionInfoResponses[keyof ConnectionInfoResponses];
 
-export type DeleteTenantResponses = {
-    /**
-     * Tenant deleted
-     */
-    204: void;
-};
-
-export type DeleteTenantResponse = DeleteTenantResponses[keyof DeleteTenantResponses];
-
-export type GetTenantData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}';
-};
-
-export type GetTenantErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type GetTenantError = GetTenantErrors[keyof GetTenantErrors];
-
-export type GetTenantResponses = {
-    /**
-     * Tenant found
-     */
-    200: TenantResponse;
-};
-
-export type GetTenantResponse = GetTenantResponses[keyof GetTenantResponses];
-
-export type UpdateTenantData = {
-    body: UpdateTenantRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}';
-};
-
-export type UpdateTenantErrors = {
-    /**
-     * Config-sourced tenants cannot be modified
-     */
-    403: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type UpdateTenantError = UpdateTenantErrors[keyof UpdateTenantErrors];
-
-export type UpdateTenantResponses = {
-    /**
-     * Tenant updated
-     */
-    200: TenantResponse;
-};
-
-export type UpdateTenantResponse = UpdateTenantResponses[keyof UpdateTenantResponses];
-
-export type ListApiKeysData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys';
-};
-
-export type ListApiKeysErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ListApiKeysError = ListApiKeysErrors[keyof ListApiKeysErrors];
-
-export type ListApiKeysResponses = {
-    /**
-     * List of API keys
-     */
-    200: ListApiKeysResponse;
-};
-
-export type ListApiKeysResponse2 = ListApiKeysResponses[keyof ListApiKeysResponses];
-
-export type CreateApiKeyData = {
-    body: CreateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys';
-};
-
-export type CreateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * Invalid or empty scopes
-     */
-    422: ApiError;
-    /**
-     * Tenant API key quota exceeded
-     */
-    429: ApiError;
-};
-
-export type CreateApiKeyError = CreateApiKeyErrors[keyof CreateApiKeyErrors];
-
-export type CreateApiKeyResponses = {
-    /**
-     * API key created
-     */
-    201: CreateApiKeyResponse;
-};
-
-export type CreateApiKeyResponse2 = CreateApiKeyResponses[keyof CreateApiKeyResponses];
-
-export type RevokeApiKeyData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type RevokeApiKeyErrors = {
-    /**
-     * API key not found
-     */
-    404: ApiError;
-};
-
-export type RevokeApiKeyError = RevokeApiKeyErrors[keyof RevokeApiKeyErrors];
-
-export type RevokeApiKeyResponses = {
-    /**
-     * API key revoked
-     */
-    204: void;
-};
-
-export type RevokeApiKeyResponse = RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
-
-export type UpdateApiKeyData = {
-    body: UpdateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type UpdateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ApiError;
-    /**
-     * API key not found
-     */
-    404: ApiError;
-    /**
-     * API key is revoked
-     */
-    409: ApiError;
-    /**
-     * Invalid scopes
-     */
-    422: ApiError;
-};
-
-export type UpdateApiKeyError = UpdateApiKeyErrors[keyof UpdateApiKeyErrors];
-
-export type UpdateApiKeyResponses = {
-    /**
-     * API key updated
-     */
-    200: ApiKeyResponse;
-};
-
-export type UpdateApiKeyResponse = UpdateApiKeyResponses[keyof UpdateApiKeyResponses];
-
-export type ListDatasetsData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets';
-};
-
-export type ListDatasetsErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-};
-
-export type ListDatasetsError = ListDatasetsErrors[keyof ListDatasetsErrors];
-
-export type ListDatasetsResponses = {
-    /**
-     * List of datasets
-     */
-    200: ListDatasetsResponse;
-};
-
-export type ListDatasetsResponse2 = ListDatasetsResponses[keyof ListDatasetsResponses];
-
-export type CreateDatasetData = {
-    body: CreateDatasetRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets';
-};
-
-export type CreateDatasetErrors = {
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * Tenant dataset quota exceeded
-     */
-    429: ApiError;
-};
-
-export type CreateDatasetError = CreateDatasetErrors[keyof CreateDatasetErrors];
-
-export type CreateDatasetResponses = {
-    /**
-     * Dataset created
-     */
-    201: DatasetResponse;
-};
-
-export type CreateDatasetResponse = CreateDatasetResponses[keyof CreateDatasetResponses];
-
-export type DeleteDatasetData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * Dataset identifier
-         */
-        dataset_id: string;
-    };
-    query?: never;
-    url: '/api/v1/admin/tenants/{tenant_id}/datasets/{dataset_id}';
-};
-
-export type DeleteDatasetErrors = {
-    /**
-     * Config-sourced datasets cannot be deleted
-     */
-    403: ApiError;
-    /**
-     * Dataset not found
-     */
-    404: ApiError;
-};
-
-export type DeleteDatasetError = DeleteDatasetErrors[keyof DeleteDatasetErrors];
-
-export type DeleteDatasetResponses = {
-    /**
-     * Dataset deleted
-     */
-    204: void;
-};
-
-export type DeleteDatasetResponse = DeleteDatasetResponses[keyof DeleteDatasetResponses];
-
-export type CreateUserData = {
-    body: CreateUserRequest;
-    path?: never;
-    query?: never;
-    url: '/api/v1/admin/users';
-};
-
-export type CreateUserErrors = {
-    /**
-     * Validation error
-     */
-    400: ApiError;
-    /**
-     * Tenant not found
-     */
-    404: ApiError;
-    /**
-     * User already exists
-     */
-    409: ApiError;
-};
-
-export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
-
-export type CreateUserResponses = {
-    /**
-     * User created
-     */
-    201: UserResponse;
-};
-
-export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
-
-export type ManageGetSchemaData = {
+export type ListEvalSetsData = {
     body?: never;
     path?: never;
     query?: never;
-    url: '/api/v1/manage/schema';
+    url: '/api/v1/eval-sets';
 };
 
-export type ManageGetSchemaErrors = {
+export type ListEvalSetsErrors = {
     /**
-     * Tenant administrator role or tenant:manage scope required
+     * Missing evals:read scope
      */
-    403: ManageError;
+    403: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2102,6 +3482,12 @@ export type ManageGetSchemaErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2114,41 +3500,53 @@ export type ManageGetSchemaErrors = {
          */
         status: string;
     };
-};
-
-export type ManageGetSchemaError = ManageGetSchemaErrors[keyof ManageGetSchemaErrors];
-
-export type ManageGetSchemaResponses = {
     /**
-     * Logical and physical schema
+     * Internal error
      */
-    200: ManageSchemaResponse;
+    500: ApiErrorBody;
 };
 
-export type ManageGetSchemaResponse = ManageGetSchemaResponses[keyof ManageGetSchemaResponses];
+export type ListEvalSetsError = ListEvalSetsErrors[keyof ListEvalSetsErrors];
 
-export type ManageCreateTenantData = {
-    body: ManageCreateTenantRequest;
+export type ListEvalSetsResponses = {
+    /**
+     * Eval sets without their cases, ordered by name
+     */
+    200: EvalSetListResponse;
+};
+
+export type ListEvalSetsResponse = ListEvalSetsResponses[keyof ListEvalSetsResponses];
+
+export type CreateEvalSetData = {
+    body: EvalSetSpec;
     path?: never;
     query?: never;
-    url: '/api/v1/manage/tenants';
+    url: '/api/v1/eval-sets';
 };
 
-export type ManageCreateTenantErrors = {
+export type CreateEvalSetErrors = {
     /**
-     * Validation error
+     * Malformed JSON body
      */
-    400: ManageError;
+    400: ApiErrorBody;
     /**
-     * Instance administrator required
+     * Missing evals:write scope, or a session without the tenant-admin role
      */
-    403: ManageError;
+    403: ApiErrorBody;
     /**
-     * Tenant already exists
+     * An eval set with this name already exists in the dataset
      */
-    409: ManageError;
+    409: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * Invalid name, empty agent, duplicate or invalid case ids, or an invalid trace id
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2156,6 +3554,12 @@ export type ManageCreateTenantErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2171,39 +3575,43 @@ export type ManageCreateTenantErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
+    500: ApiErrorBody;
 };
 
-export type ManageCreateTenantError = ManageCreateTenantErrors[keyof ManageCreateTenantErrors];
+export type CreateEvalSetError = CreateEvalSetErrors[keyof CreateEvalSetErrors];
 
-export type ManageCreateTenantResponses = {
+export type CreateEvalSetResponses = {
     /**
-     * Tenant created
+     * Eval set created
      */
-    201: ManageCreatedTenant;
+    201: EvalSetResponse;
 };
 
-export type ManageCreateTenantResponse = ManageCreateTenantResponses[keyof ManageCreateTenantResponses];
+export type CreateEvalSetResponse = CreateEvalSetResponses[keyof CreateEvalSetResponses];
 
-export type ManageListApiKeysData = {
+export type DeleteEvalSetData = {
     body?: never;
     path: {
         /**
-         * Tenant identifier
+         * Eval set name
          */
-        tenant_id: string;
+        name: string;
     };
     query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys';
+    url: '/api/v1/eval-sets/{name}';
 };
 
-export type ManageListApiKeysErrors = {
+export type DeleteEvalSetErrors = {
     /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     * Missing evals:write scope, or a session without the tenant-admin role
      */
-    403: ManageError;
+    403: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2211,6 +3619,12 @@ export type ManageListApiKeysErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2226,244 +3640,43 @@ export type ManageListApiKeysErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
+    500: ApiErrorBody;
 };
 
-export type ManageListApiKeysError = ManageListApiKeysErrors[keyof ManageListApiKeysErrors];
+export type DeleteEvalSetError = DeleteEvalSetErrors[keyof DeleteEvalSetErrors];
 
-export type ManageListApiKeysResponses = {
+export type DeleteEvalSetResponses = {
     /**
-     * List of API keys
-     */
-    200: Array<ManageApiKeyResponse>;
-};
-
-export type ManageListApiKeysResponse = ManageListApiKeysResponses[keyof ManageListApiKeysResponses];
-
-export type ManageCreateApiKeyData = {
-    body: ManageCreateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys';
-};
-
-export type ManageCreateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ManageError;
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * Unable to create API key
-     */
-    409: ManageError;
-    /**
-     * Invalid or empty scopes
-     */
-    422: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageCreateApiKeyError = ManageCreateApiKeyErrors[keyof ManageCreateApiKeyErrors];
-
-export type ManageCreateApiKeyResponses = {
-    /**
-     * API key created
-     */
-    201: ManageCreatedApiKey;
-};
-
-export type ManageCreateApiKeyResponse = ManageCreateApiKeyResponses[keyof ManageCreateApiKeyResponses];
-
-export type ManageRevokeApiKeyData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type ManageRevokeApiKeyErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * API key not found
-     */
-    404: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageRevokeApiKeyError = ManageRevokeApiKeyErrors[keyof ManageRevokeApiKeyErrors];
-
-export type ManageRevokeApiKeyResponses = {
-    /**
-     * API key revoked
+     * Eval set deleted
      */
     204: void;
 };
 
-export type ManageRevokeApiKeyResponse = ManageRevokeApiKeyResponses[keyof ManageRevokeApiKeyResponses];
+export type DeleteEvalSetResponse = DeleteEvalSetResponses[keyof DeleteEvalSetResponses];
 
-export type ManageUpdateApiKeyData = {
-    body: ManageUpdateApiKeyRequest;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * API key identifier
-         */
-        key_id: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}';
-};
-
-export type ManageUpdateApiKeyErrors = {
-    /**
-     * Dataset does not exist
-     */
-    400: ManageError;
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * API key not found
-     */
-    404: ManageError;
-    /**
-     * API key is revoked
-     */
-    409: ManageError;
-    /**
-     * Invalid or empty scopes
-     */
-    422: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
-        error: string;
-        errorType: string;
-        /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
-         */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-    /**
-     * Internal error
-     */
-    500: ManageError;
-};
-
-export type ManageUpdateApiKeyError = ManageUpdateApiKeyErrors[keyof ManageUpdateApiKeyErrors];
-
-export type ManageUpdateApiKeyResponses = {
-    /**
-     * API key updated
-     */
-    200: ManageApiKeyResponse;
-};
-
-export type ManageUpdateApiKeyResponse = ManageUpdateApiKeyResponses[keyof ManageUpdateApiKeyResponses];
-
-export type ManageListDatasetsData = {
+export type GetEvalSetData = {
     body?: never;
     path: {
         /**
-         * Tenant identifier
+         * Eval set name
          */
-        tenant_id: string;
+        name: string;
     };
     query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/datasets';
+    url: '/api/v1/eval-sets/{name}';
 };
 
-export type ManageListDatasetsErrors = {
+export type GetEvalSetErrors = {
     /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     * Missing evals:read scope
      */
-    403: ManageError;
+    403: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2471,6 +3684,12 @@ export type ManageListDatasetsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2486,47 +3705,55 @@ export type ManageListDatasetsErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
+    500: ApiErrorBody;
 };
 
-export type ManageListDatasetsError = ManageListDatasetsErrors[keyof ManageListDatasetsErrors];
+export type GetEvalSetError = GetEvalSetErrors[keyof GetEvalSetErrors];
 
-export type ManageListDatasetsResponses = {
+export type GetEvalSetResponses = {
     /**
-     * List of datasets
+     * The eval set and its cases
      */
-    200: Array<ManageDatasetResponse>;
+    200: EvalSetResponse;
 };
 
-export type ManageListDatasetsResponse = ManageListDatasetsResponses[keyof ManageListDatasetsResponses];
+export type GetEvalSetResponse = GetEvalSetResponses[keyof GetEvalSetResponses];
 
-export type ManageCreateDatasetData = {
-    body: ManageCreateDatasetRequest;
+export type ReplaceEvalSetData = {
+    body: EvalSetSpec;
     path: {
         /**
-         * Tenant identifier
+         * Eval set name
          */
-        tenant_id: string;
+        name: string;
     };
     query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/datasets';
+    url: '/api/v1/eval-sets/{name}';
 };
 
-export type ManageCreateDatasetErrors = {
+export type ReplaceEvalSetErrors = {
     /**
-     * Validation error
+     * Malformed JSON body
      */
-    400: ManageError;
+    400: ApiErrorBody;
     /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     * Missing evals:write scope, or a session without the tenant-admin role
      */
-    403: ManageError;
+    403: ApiErrorBody;
     /**
-     * Unable to create dataset
+     * No such eval set (PUT never creates)
      */
-    409: ManageError;
+    404: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * Invalid spec, or the body name differs from the path name
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2534,69 +3761,12 @@ export type ManageCreateDatasetErrors = {
      * response of every rate-limited operation.
      */
     429: {
-        error: string;
-        errorType: string;
         /**
-         * Milliseconds until the request would be admitted; present only when
-         * `errorType` is `"rate_limited"`.
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
          */
-        retryAfterMs?: number | null;
-        /**
-         * Always `"error"`.
-         */
-        status: string;
-    };
-};
-
-export type ManageCreateDatasetError = ManageCreateDatasetErrors[keyof ManageCreateDatasetErrors];
-
-export type ManageCreateDatasetResponses = {
-    /**
-     * Dataset created
-     */
-    201: ManageDatasetResponse;
-};
-
-export type ManageCreateDatasetResponse = ManageCreateDatasetResponses[keyof ManageCreateDatasetResponses];
-
-export type ManageDeleteDatasetData = {
-    body?: never;
-    path: {
-        /**
-         * Tenant identifier
-         */
-        tenant_id: string;
-        /**
-         * Dataset name
-         */
-        dataset_name: string;
-    };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/datasets/{dataset_name}';
-};
-
-export type ManageDeleteDatasetErrors = {
-    /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
-     */
-    403: ManageError;
-    /**
-     * Dataset not found
-     */
-    404: ManageError;
-    /**
-     * Dataset cannot be deleted
-     */
-    409: ManageError;
-    /**
-     * The JSON envelope every query-surface error responds with: `status` is
-     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
-     * human-readable message, and `retryAfterMs` present only on rate-limit
-     * rejections. Exists as a real (rather than `serde_json::json!`-built)
-     * type so the OpenAPI document can declare its schema on the `429`
-     * response of every rate-limited operation.
-     */
-    429: {
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2612,39 +3782,55 @@ export type ManageDeleteDatasetErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
+    500: ApiErrorBody;
 };
 
-export type ManageDeleteDatasetError = ManageDeleteDatasetErrors[keyof ManageDeleteDatasetErrors];
+export type ReplaceEvalSetError = ReplaceEvalSetErrors[keyof ReplaceEvalSetErrors];
 
-export type ManageDeleteDatasetResponses = {
+export type ReplaceEvalSetResponses = {
     /**
-     * Dataset deleted
+     * Eval set replaced
      */
-    204: void;
+    200: EvalSetResponse;
 };
 
-export type ManageDeleteDatasetResponse = ManageDeleteDatasetResponses[keyof ManageDeleteDatasetResponses];
+export type ReplaceEvalSetResponse = ReplaceEvalSetResponses[keyof ReplaceEvalSetResponses];
 
-export type ManageListMembershipsData = {
-    body?: never;
+export type AppendEvalCasesData = {
+    body: AppendEvalCasesRequest;
     path: {
         /**
-         * Tenant identifier
+         * Eval set name
          */
-        tenant_id: string;
+        name: string;
     };
     query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/memberships';
+    url: '/api/v1/eval-sets/{name}/cases';
 };
 
-export type ManageListMembershipsErrors = {
+export type AppendEvalCasesErrors = {
     /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     * Malformed JSON body
      */
-    403: ManageError;
+    400: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Missing evals:write scope, or a session without the tenant-admin role
+     */
+    403: ApiErrorBody;
+    /**
+     * No such eval set in the caller's dataset
+     */
+    404: ApiErrorBody;
+    /**
+     * Body exceeds the 32 MiB limit
+     */
+    413: ApiErrorBody;
+    /**
+     * Duplicate or invalid case ids, an invalid trace id, or the set would exceed its case limit
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2652,6 +3838,12 @@ export type ManageListMembershipsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2667,47 +3859,51 @@ export type ManageListMembershipsErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
+    500: ApiErrorBody;
 };
 
-export type ManageListMembershipsError = ManageListMembershipsErrors[keyof ManageListMembershipsErrors];
+export type AppendEvalCasesError = AppendEvalCasesErrors[keyof AppendEvalCasesErrors];
 
-export type ManageListMembershipsResponses = {
+export type AppendEvalCasesResponses = {
     /**
-     * List of memberships
+     * Cases appended; ids already in the set are reported, not overwritten
      */
-    200: Array<MembershipResponse>;
+    200: AppendCasesOutcome;
 };
 
-export type ManageListMembershipsResponse = ManageListMembershipsResponses[keyof ManageListMembershipsResponses];
+export type AppendEvalCasesResponse = AppendEvalCasesResponses[keyof AppendEvalCasesResponses];
 
-export type ManageUpsertMembershipData = {
-    body: UpsertMembershipRequest;
+export type AppendEvalCasesFromTracesData = {
+    body: AppendCasesFromTracesRequest;
     path: {
         /**
-         * Tenant identifier
+         * Eval set name
          */
-        tenant_id: string;
+        name: string;
     };
     query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/memberships';
+    url: '/api/v1/eval-sets/{name}/cases/from-traces';
 };
 
-export type ManageUpsertMembershipErrors = {
+export type AppendEvalCasesFromTracesErrors = {
     /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     * Malformed JSON body
      */
-    403: ManageError;
+    400: ApiErrorBody;
     /**
-     * User not found
+     * Missing evals:write scope (or, for a session, the tenant-admin role), or missing traces:read (logs:read with failing_evaluator)
      */
-    404: ManageError;
+    403: ApiErrorBody;
     /**
-     * Last administrator cannot be demoted
+     * No such eval set in the caller's dataset
      */
-    409: ManageError;
+    404: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Invalid options or range, a filter the query engine rejects, or the set would exceed its case limit
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2715,6 +3911,12 @@ export type ManageUpsertMembershipErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2730,51 +3932,79 @@ export type ManageUpsertMembershipErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
-};
-
-export type ManageUpsertMembershipError = ManageUpsertMembershipErrors[keyof ManageUpsertMembershipErrors];
-
-export type ManageUpsertMembershipResponses = {
+    500: ApiErrorBody;
     /**
-     * Membership updated
+     * No querier service available
      */
-    200: MembershipResponse;
+    503: ApiErrorBody;
 };
 
-export type ManageUpsertMembershipResponse = ManageUpsertMembershipResponses[keyof ManageUpsertMembershipResponses];
+export type AppendEvalCasesFromTracesError = AppendEvalCasesFromTracesErrors[keyof AppendEvalCasesFromTracesErrors];
 
-export type ManageRemoveMembershipData = {
-    body?: never;
-    path: {
+export type AppendEvalCasesFromTracesResponses = {
+    /**
+     * Matching, already-present and added counts, with the new case ids
+     */
+    200: AppendCasesFromTracesOutcome;
+};
+
+export type AppendEvalCasesFromTracesResponse = AppendEvalCasesFromTracesResponses[keyof AppendEvalCasesFromTracesResponses];
+
+export type UploadEvalResultsData = {
+    /**
+     * The results file: JSONL (one JSON object per line) or CSV with a header row. Sent as `text/csv` or `application/x-ndjson`, or with any type plus the `format` parameter.
+     */
+    body: string;
+    path?: never;
+    query: {
         /**
-         * Tenant identifier
+         * The agent the run evaluated (`gen_ai.agent.name`, and the records'
+         * `service.name`).
          */
-        tenant_id: string;
+        agent: string;
         /**
-         * User identifier
+         * The agent version (`gen_ai.agent.version`, and `service.version`).
          */
-        user_id: string;
+        version: string;
+        /**
+         * The eval set the run replayed: a valid eval set name; the set need
+         * not exist.
+         */
+        set: string;
+        /**
+         * Run id (`signaldb.eval.run_id`); a UUID is generated when absent.
+         * Re-using a run id adds the file's results to that run.
+         */
+        run_id?: string;
+        /**
+         * File format. Overrides the `Content-Type` (`text/csv` for CSV,
+         * `application/x-ndjson` or `application/jsonl` for JSONL); one of the
+         * two must name the format.
+         */
+        format?: EvalResultsFormat;
     };
-    query?: never;
-    url: '/api/v1/manage/tenants/{tenant_id}/memberships/{user_id}';
+    url: '/api/v1/evals/results';
 };
 
-export type ManageRemoveMembershipErrors = {
+export type UploadEvalResultsErrors = {
     /**
-     * Cannot remove own membership
+     * Invalid run metadata, unknown format, a file that is not UTF-8, or invalid rows (listed in `details`)
      */
-    400: ManageError;
+    400: ApiErrorBody;
     /**
-     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     * Missing evals:write scope, or a session without the tenant-admin role
      */
-    403: ManageError;
+    403: ApiErrorBody;
     /**
-     * Last administrator cannot be removed
+     * Body exceeds the 32 MiB limit
      */
-    409: ManageError;
+    413: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * A tenant log processor rejected the results
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2782,6 +4012,12 @@ export type ManageRemoveMembershipErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2797,19 +4033,27 @@ export type ManageRemoveMembershipErrors = {
     /**
      * Internal error
      */
-    500: ManageError;
-};
-
-export type ManageRemoveMembershipError = ManageRemoveMembershipErrors[keyof ManageRemoveMembershipErrors];
-
-export type ManageRemoveMembershipResponses = {
+    500: ApiErrorBody;
     /**
-     * Membership removed
+     * No writer service available
      */
-    204: void;
+    503: ApiErrorBody;
+    /**
+     * The writer did not accept the results in time
+     */
+    504: ApiErrorBody;
 };
 
-export type ManageRemoveMembershipResponse = ManageRemoveMembershipResponses[keyof ManageRemoveMembershipResponses];
+export type UploadEvalResultsError = UploadEvalResultsErrors[keyof UploadEvalResultsErrors];
+
+export type UploadEvalResultsResponses = {
+    /**
+     * Results written; the run and its per-evaluator summary
+     */
+    201: EvalResultsUploadResponse;
+};
+
+export type UploadEvalResultsResponse = UploadEvalResultsResponses[keyof UploadEvalResultsResponses];
 
 export type OpsCompactData = {
     body?: never;
@@ -2898,8 +4142,435 @@ export type OpsCompactStatusResponses = {
     200: unknown;
 };
 
+export type ProcessorsListData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors';
+};
+
+export type ProcessorsListErrors = {
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsListError = ProcessorsListErrors[keyof ProcessorsListErrors];
+
+export type ProcessorsListResponses = {
+    /**
+     * This tenant's processors
+     */
+    200: ProcessorListResponse;
+};
+
+export type ProcessorsListResponse = ProcessorsListResponses[keyof ProcessorsListResponses];
+
+export type ProcessorsCreateData = {
+    body: ProcessorSpec;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors';
+};
+
+export type ProcessorsCreateErrors = {
+    /**
+     * Unparseable body
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:write scope
+     */
+    403: ProcessorError;
+    /**
+     * Processor already exists
+     */
+    409: ProcessorError;
+    /**
+     * Invalid spec or unknown dataset
+     */
+    422: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsCreateError = ProcessorsCreateErrors[keyof ProcessorsCreateErrors];
+
+export type ProcessorsCreateResponses = {
+    /**
+     * Processor created
+     */
+    201: ProcessorWriteResponse;
+};
+
+export type ProcessorsCreateResponse = ProcessorsCreateResponses[keyof ProcessorsCreateResponses];
+
+export type ProcessorsDeleteData = {
+    body?: never;
+    path: {
+        /**
+         * Processor name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/processors/{name}';
+};
+
+export type ProcessorsDeleteErrors = {
+    /**
+     * Missing processors:write scope
+     */
+    403: ProcessorError;
+    /**
+     * No such processor
+     */
+    404: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsDeleteError = ProcessorsDeleteErrors[keyof ProcessorsDeleteErrors];
+
+export type ProcessorsDeleteResponses = {
+    /**
+     * Processor deleted
+     */
+    204: void;
+};
+
+export type ProcessorsDeleteResponse = ProcessorsDeleteResponses[keyof ProcessorsDeleteResponses];
+
+export type ProcessorsGetData = {
+    body?: never;
+    path: {
+        /**
+         * Processor name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/processors/{name}';
+};
+
+export type ProcessorsGetErrors = {
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * No such processor
+     */
+    404: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsGetError = ProcessorsGetErrors[keyof ProcessorsGetErrors];
+
+export type ProcessorsGetResponses = {
+    /**
+     * The processor
+     */
+    200: ProcessorResponse;
+};
+
+export type ProcessorsGetResponse = ProcessorsGetResponses[keyof ProcessorsGetResponses];
+
+export type ProcessorsReplaceData = {
+    body: ProcessorSpec;
+    path: {
+        /**
+         * Processor name
+         */
+        name: string;
+    };
+    query?: never;
+    url: '/api/v1/processors/{name}';
+};
+
+export type ProcessorsReplaceErrors = {
+    /**
+     * Unparseable body
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:write scope
+     */
+    403: ProcessorError;
+    /**
+     * No such processor (PUT never upserts)
+     */
+    404: ProcessorError;
+    /**
+     * Invalid spec or unknown dataset
+     */
+    422: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsReplaceError = ProcessorsReplaceErrors[keyof ProcessorsReplaceErrors];
+
+export type ProcessorsReplaceResponses = {
+    /**
+     * Processor replaced
+     */
+    200: ProcessorWriteResponse;
+};
+
+export type ProcessorsReplaceResponse = ProcessorsReplaceResponses[keyof ProcessorsReplaceResponses];
+
+export type ProcessorsTestData = {
+    body: TestRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors:test';
+};
+
+export type ProcessorsTestErrors = {
+    /**
+     * Unparseable body or payload
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * Payload exceeds processors.test_payload_max_bytes
+     */
+    413: ProcessorError;
+    /**
+     * Inline processors failed to compile
+     */
+    422: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsTestError = ProcessorsTestErrors[keyof ProcessorsTestErrors];
+
+export type ProcessorsTestResponses = {
+    /**
+     * The transformed payload and per-statement counts
+     */
+    200: TestResponse;
+};
+
+export type ProcessorsTestResponse = ProcessorsTestResponses[keyof ProcessorsTestResponses];
+
+export type ProcessorsValidateData = {
+    body: ValidateRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/processors:validate';
+};
+
+export type ProcessorsValidateErrors = {
+    /**
+     * Unparseable body
+     */
+    400: ProcessorError;
+    /**
+     * Missing processors:read scope
+     */
+    403: ProcessorError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type ProcessorsValidateError = ProcessorsValidateErrors[keyof ProcessorsValidateErrors];
+
+export type ProcessorsValidateResponses = {
+    /**
+     * Validation outcome; nothing is stored
+     */
+    200: ValidateResponse;
+};
+
+export type ProcessorsValidateResponse = ProcessorsValidateResponses[keyof ProcessorsValidateResponses];
+
 export type QueryIrData = {
-    body: QueryIrRequest;
+    body: QueryIrRequestBody;
     path?: never;
     query?: never;
     url: '/api/v1/query';
@@ -2909,13 +4580,25 @@ export type QueryIrErrors = {
     /**
      * Invalid IR document
      */
-    400: unknown;
+    400: ApiErrorBody;
     /**
      * Missing or invalid credentials
      */
-    401: unknown;
+    401: ApiErrorBody;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Missing read scope for a queried source
+     */
+    403: ApiErrorBody;
+    /**
+     * The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk
+     */
+    410: ApiErrorBody;
+    /**
+     * The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry
+     */
+    422: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2923,6 +4606,12 @@ export type QueryIrErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -2938,7 +4627,7 @@ export type QueryIrErrors = {
     /**
      * No querier service available
      */
-    503: unknown;
+    503: ApiErrorBody;
 };
 
 export type QueryIrError = QueryIrErrors[keyof QueryIrErrors];
@@ -2965,7 +4654,7 @@ export type QuerySourcesErrors = {
      */
     401: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -2973,6 +4662,12 @@ export type QuerySourcesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3002,6 +4697,58 @@ export type QuerySourcesResponses = {
 
 export type QuerySourcesResponse = QuerySourcesResponses[keyof QuerySourcesResponses];
 
+export type GetSchemaData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/schema';
+};
+
+export type GetSchemaErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: unknown;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type GetSchemaError = GetSchemaErrors[keyof GetSchemaErrors];
+
+export type GetSchemaResponses = {
+    /**
+     * Logical and physical schema
+     */
+    200: SchemaResponse;
+};
+
+export type GetSchemaResponse = GetSchemaResponses[keyof GetSchemaResponses];
+
 export type SchemaSearchAttributesData = {
     body?: never;
     path?: never;
@@ -3015,7 +4762,8 @@ export type SchemaSearchAttributesData = {
          */
         limit?: number | null;
         /**
-         * Comma-separated exact keys to resolve in one call (attributes only).
+         * Comma-separated exact keys to resolve in one call (attributes and
+         * metrics only).
          */
         keys?: string | null;
     };
@@ -3028,7 +4776,7 @@ export type SchemaSearchAttributesErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3036,6 +4784,12 @@ export type SchemaSearchAttributesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3079,7 +4833,7 @@ export type SchemaResolveAttributeErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3087,6 +4841,12 @@ export type SchemaResolveAttributeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3124,10 +4884,6 @@ export type SchemaSearchEntitiesData = {
          * Maximum hits (default 50, max 200).
          */
         limit?: number | null;
-        /**
-         * Comma-separated exact keys to resolve in one call (attributes only).
-         */
-        keys?: string | null;
     };
     url: '/api/v1/schema/entities';
 };
@@ -3138,7 +4894,7 @@ export type SchemaSearchEntitiesErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3146,6 +4902,12 @@ export type SchemaSearchEntitiesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3189,7 +4951,7 @@ export type SchemaResolveEntityErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3197,6 +4959,12 @@ export type SchemaResolveEntityErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3235,7 +5003,8 @@ export type SchemaSearchMetricsData = {
          */
         limit?: number | null;
         /**
-         * Comma-separated exact keys to resolve in one call (attributes only).
+         * Comma-separated exact keys to resolve in one call (attributes and
+         * metrics only).
          */
         keys?: string | null;
     };
@@ -3248,7 +5017,7 @@ export type SchemaSearchMetricsErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3256,6 +5025,12 @@ export type SchemaSearchMetricsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3274,7 +5049,7 @@ export type SchemaSearchMetricsError = SchemaSearchMetricsErrors[keyof SchemaSea
 
 export type SchemaSearchMetricsResponses = {
     /**
-     * Metrics whose name starts with the prefix
+     * Prefix hits (and per-name resolutions when keys= is given)
      */
     200: MetricSearchResponse;
 };
@@ -3299,7 +5074,7 @@ export type SchemaResolveMetricErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3307,6 +5082,12 @@ export type SchemaResolveMetricErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3345,7 +5126,7 @@ export type SchemaListRegistriesErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3353,6 +5134,12 @@ export type SchemaListRegistriesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3380,7 +5167,7 @@ export type SchemaListRegistriesResponse = SchemaListRegistriesResponses[keyof S
 
 export type SchemaCreateRegistryData = {
     /**
-     * Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type
+     * Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form
      */
     body: {
         [key: string]: unknown;
@@ -3404,11 +5191,11 @@ export type SchemaCreateRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * Invalid document (errors carry paths)
+     * Invalid document (errors carry paths) or unsupported file_format
      */
     422: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3416,6 +5203,12 @@ export type SchemaCreateRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3471,7 +5264,7 @@ export type SchemaDeleteRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3479,6 +5272,12 @@ export type SchemaDeleteRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3530,7 +5329,7 @@ export type SchemaGetRegistryErrors = {
      */
     404: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3538,6 +5337,12 @@ export type SchemaGetRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3565,7 +5370,7 @@ export type SchemaGetRegistryResponse = SchemaGetRegistryResponses[keyof SchemaG
 
 export type SchemaReplaceRegistryData = {
     /**
-     * Replacement registry document; its name/version must match the path
+     * Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path
      */
     body: {
         [key: string]: unknown;
@@ -3602,11 +5407,11 @@ export type SchemaReplaceRegistryErrors = {
      */
     409: SchemaError;
     /**
-     * Invalid document or identity mismatch
+     * Invalid document, identity mismatch, or unsupported file_format
      */
     422: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3614,6 +5419,12 @@ export type SchemaReplaceRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3641,7 +5452,7 @@ export type SchemaReplaceRegistryResponse = SchemaReplaceRegistryResponses[keyof
 
 export type SchemaValidateRegistryData = {
     /**
-     * Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored
+     * Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored
      */
     body: {
         [key: string]: unknown;
@@ -3661,7 +5472,11 @@ export type SchemaValidateRegistryErrors = {
      */
     403: SchemaError;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Unsupported file_format
+     */
+    422: SchemaError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3669,6 +5484,12 @@ export type SchemaValidateRegistryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3710,27 +5531,104 @@ export type ListAvailableSchemasResponses = {
 
 export type ListAvailableSchemasResponse = ListAvailableSchemasResponses[keyof ListAvailableSchemasResponses];
 
-export type ListTenantsSelfData = {
+export type ListTenantsData = {
     body?: never;
     path?: never;
     query?: never;
     url: '/api/v1/tenants';
 };
 
-export type ListTenantsSelfResponses = {
+export type ListTenantsErrors = {
     /**
-     * The caller's own tenant, as a single-entry list
+     * Missing or invalid credentials
      */
-    200: TenantSelfListResponse;
+    401: ApiError;
 };
 
-export type ListTenantsSelfResponse = ListTenantsSelfResponses[keyof ListTenantsSelfResponses];
+export type ListTenantsError = ListTenantsErrors[keyof ListTenantsErrors];
 
-export type GetTenantSelfData = {
+export type ListTenantsResponses = {
+    /**
+     * Tenants visible to the caller
+     */
+    200: ListTenantsResponse;
+};
+
+export type ListTenantsResponse2 = ListTenantsResponses[keyof ListTenantsResponses];
+
+export type CreateTenantData = {
+    body: CreateTenantRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/tenants';
+};
+
+export type CreateTenantErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant already exists
+     */
+    409: ApiError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiError;
+};
+
+export type CreateTenantError = CreateTenantErrors[keyof CreateTenantErrors];
+
+export type CreateTenantResponses = {
+    /**
+     * Tenant created
+     */
+    201: TenantResponse;
+};
+
+export type CreateTenantResponse = CreateTenantResponses[keyof CreateTenantResponses];
+
+export type DeleteTenantData = {
     body?: never;
     path: {
         /**
-         * Tenant identifier (must match the authenticated tenant)
+         * Tenant identifier
          */
         tenant_id: string;
     };
@@ -3738,25 +5636,1109 @@ export type GetTenantSelfData = {
     url: '/api/v1/tenants/{tenant_id}';
 };
 
-export type GetTenantSelfErrors = {
+export type DeleteTenantErrors = {
     /**
-     * Requested tenant does not match the authenticated tenant
+     * Missing or invalid credentials
      */
-    403: unknown;
+    401: ApiError;
+    /**
+     * Config-sourced tenants cannot be deleted, or instance administrator required
+     */
+    403: ApiError;
     /**
      * Tenant not found
      */
-    404: unknown;
+    404: ApiError;
 };
 
-export type GetTenantSelfResponses = {
+export type DeleteTenantError = DeleteTenantErrors[keyof DeleteTenantErrors];
+
+export type DeleteTenantResponses = {
     /**
-     * Tenant information
+     * Tenant deleted
      */
-    200: TenantInfo;
+    204: void;
 };
 
-export type GetTenantSelfResponse = GetTenantSelfResponses[keyof GetTenantSelfResponses];
+export type DeleteTenantResponse = DeleteTenantResponses[keyof DeleteTenantResponses];
+
+export type GetTenantData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}';
+};
+
+export type GetTenantErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Requested tenant does not match the authenticated tenant
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type GetTenantError = GetTenantErrors[keyof GetTenantErrors];
+
+export type GetTenantResponses = {
+    /**
+     * Tenant found
+     */
+    200: TenantResponse;
+};
+
+export type GetTenantResponse = GetTenantResponses[keyof GetTenantResponses];
+
+export type UpdateTenantData = {
+    body: UpdateTenantRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}';
+};
+
+export type UpdateTenantErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Config-sourced tenants cannot be modified, or instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+};
+
+export type UpdateTenantError = UpdateTenantErrors[keyof UpdateTenantErrors];
+
+export type UpdateTenantResponses = {
+    /**
+     * Tenant updated
+     */
+    200: TenantResponse;
+};
+
+export type UpdateTenantResponse = UpdateTenantResponses[keyof UpdateTenantResponses];
+
+export type ListApiKeysData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys';
+};
+
+export type ListApiKeysErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListApiKeysError = ListApiKeysErrors[keyof ListApiKeysErrors];
+
+export type ListApiKeysResponses = {
+    /**
+     * List of API keys
+     */
+    200: Array<ManageApiKeyResponse>;
+};
+
+export type ListApiKeysResponse = ListApiKeysResponses[keyof ListApiKeysResponses];
+
+export type CreateApiKeyData = {
+    body: ManageCreateApiKeyRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys';
+};
+
+export type CreateApiKeyErrors = {
+    /**
+     * Dataset does not exist
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Unable to create API key
+     */
+    409: ManageError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type CreateApiKeyError = CreateApiKeyErrors[keyof CreateApiKeyErrors];
+
+export type CreateApiKeyResponses = {
+    /**
+     * API key created
+     */
+    201: ManageCreatedApiKey;
+};
+
+export type CreateApiKeyResponse = CreateApiKeyResponses[keyof CreateApiKeyResponses];
+
+export type RevokeApiKeyData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * API key identifier
+         */
+        key_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys/{key_id}';
+};
+
+export type RevokeApiKeyErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * API key not found
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type RevokeApiKeyError = RevokeApiKeyErrors[keyof RevokeApiKeyErrors];
+
+export type RevokeApiKeyResponses = {
+    /**
+     * API key revoked
+     */
+    204: void;
+};
+
+export type RevokeApiKeyResponse = RevokeApiKeyResponses[keyof RevokeApiKeyResponses];
+
+export type UpdateApiKeyData = {
+    body: ManageUpdateApiKeyRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * API key identifier
+         */
+        key_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/api-keys/{key_id}';
+};
+
+export type UpdateApiKeyErrors = {
+    /**
+     * Dataset does not exist
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * API key not found
+     */
+    404: ManageError;
+    /**
+     * API key is revoked
+     */
+    409: ManageError;
+    /**
+     * Invalid or empty scopes
+     */
+    422: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type UpdateApiKeyError = UpdateApiKeyErrors[keyof UpdateApiKeyErrors];
+
+export type UpdateApiKeyResponses = {
+    /**
+     * API key updated
+     */
+    200: ManageApiKeyResponse;
+};
+
+export type UpdateApiKeyResponse = UpdateApiKeyResponses[keyof UpdateApiKeyResponses];
+
+export type ListDatasetsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/datasets';
+};
+
+export type ListDatasetsErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListDatasetsError = ListDatasetsErrors[keyof ListDatasetsErrors];
+
+export type ListDatasetsResponses = {
+    /**
+     * List of datasets
+     */
+    200: Array<ManageDatasetResponse>;
+};
+
+export type ListDatasetsResponse = ListDatasetsResponses[keyof ListDatasetsResponses];
+
+export type CreateDatasetData = {
+    body: ManageCreateDatasetRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/datasets';
+};
+
+export type CreateDatasetErrors = {
+    /**
+     * Validation error
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Unable to create dataset
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type CreateDatasetError = CreateDatasetErrors[keyof CreateDatasetErrors];
+
+export type CreateDatasetResponses = {
+    /**
+     * Dataset created
+     */
+    201: ManageDatasetResponse;
+};
+
+export type CreateDatasetResponse = CreateDatasetResponses[keyof CreateDatasetResponses];
+
+export type DeleteDatasetData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * Dataset name
+         */
+        dataset_name: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/datasets/{dataset_name}';
+};
+
+export type DeleteDatasetErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Dataset not found
+     */
+    404: ManageError;
+    /**
+     * Dataset cannot be deleted
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type DeleteDatasetError = DeleteDatasetErrors[keyof DeleteDatasetErrors];
+
+export type DeleteDatasetResponses = {
+    /**
+     * Dataset deleted
+     */
+    204: void;
+};
+
+export type DeleteDatasetResponse = DeleteDatasetResponses[keyof DeleteDatasetResponses];
+
+export type ListGithubInstallationsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations';
+};
+
+export type ListGithubInstallationsErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListGithubInstallationsError = ListGithubInstallationsErrors[keyof ListGithubInstallationsErrors];
+
+export type ListGithubInstallationsResponses = {
+    /**
+     * Linked GitHub installations
+     */
+    200: GitHubInstallationsResponse;
+};
+
+export type ListGithubInstallationsResponse = ListGithubInstallationsResponses[keyof ListGithubInstallationsResponses];
+
+export type AttachGithubInstallationData = {
+    body: AttachGitHubInstallationRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations/attach';
+};
+
+export type AttachGithubInstallationErrors = {
+    /**
+     * Instance administrator required, or the installation carries a write-capable permission
+     */
+    403: ManageError;
+    /**
+     * GitHub integration is not configured, or the installation was not found on GitHub
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+    /**
+     * GitHub request failed
+     */
+    502: ManageError;
+};
+
+export type AttachGithubInstallationError = AttachGithubInstallationErrors[keyof AttachGithubInstallationErrors];
+
+export type AttachGithubInstallationResponses = {
+    /**
+     * Installation attached
+     */
+    201: GitHubInstallationResponse;
+};
+
+export type AttachGithubInstallationResponse = AttachGithubInstallationResponses[keyof AttachGithubInstallationResponses];
+
+export type StartGithubLinkData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations/link';
+};
+
+export type StartGithubLinkErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * GitHub integration is not configured
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type StartGithubLinkError = StartGithubLinkErrors[keyof StartGithubLinkErrors];
+
+export type StartGithubLinkResponses = {
+    /**
+     * Link flow started
+     */
+    201: GitHubLinkStartResponse;
+};
+
+export type StartGithubLinkResponse = StartGithubLinkResponses[keyof StartGithubLinkResponses];
+
+export type RemoveGithubInstallationData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * GitHub installation identifier
+         */
+        installation_id: number;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/github-installations/{installation_id}';
+};
+
+export type RemoveGithubInstallationErrors = {
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * GitHub installation not found for this tenant, or GitHub integration is not configured
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type RemoveGithubInstallationError = RemoveGithubInstallationErrors[keyof RemoveGithubInstallationErrors];
+
+export type RemoveGithubInstallationResponses = {
+    /**
+     * Installation link removed
+     */
+    204: void;
+};
+
+export type RemoveGithubInstallationResponse = RemoveGithubInstallationResponses[keyof RemoveGithubInstallationResponses];
+
+export type ListMembershipsData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/memberships';
+};
+
+export type ListMembershipsErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Tenant not found
+     */
+    404: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type ListMembershipsError = ListMembershipsErrors[keyof ListMembershipsErrors];
+
+export type ListMembershipsResponses = {
+    /**
+     * List of memberships
+     */
+    200: Array<MembershipResponse>;
+};
+
+export type ListMembershipsResponse = ListMembershipsResponses[keyof ListMembershipsResponses];
+
+export type UpsertMembershipData = {
+    body: UpsertMembershipRequest;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/memberships';
+};
+
+export type UpsertMembershipErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * User or tenant not found
+     */
+    404: ManageError;
+    /**
+     * Last administrator cannot be demoted
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type UpsertMembershipError = UpsertMembershipErrors[keyof UpsertMembershipErrors];
+
+export type UpsertMembershipResponses = {
+    /**
+     * Membership updated
+     */
+    200: MembershipResponse;
+};
+
+export type UpsertMembershipResponse = UpsertMembershipResponses[keyof UpsertMembershipResponses];
+
+export type RemoveMembershipData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier
+         */
+        tenant_id: string;
+        /**
+         * User identifier
+         */
+        user_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/memberships/{user_id}';
+};
+
+export type RemoveMembershipErrors = {
+    /**
+     * Cannot remove own membership
+     */
+    400: ManageError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ManageError;
+    /**
+     * Tenant administrator role or tenant:manage scope required, and the tenant must match the caller
+     */
+    403: ManageError;
+    /**
+     * Tenant not found
+     */
+    404: ManageError;
+    /**
+     * Last administrator cannot be removed
+     */
+    409: ManageError;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ManageError;
+};
+
+export type RemoveMembershipError = RemoveMembershipErrors[keyof RemoveMembershipErrors];
+
+export type RemoveMembershipResponses = {
+    /**
+     * Membership removed
+     */
+    204: void;
+};
+
+export type RemoveMembershipResponse = RemoveMembershipResponses[keyof RemoveMembershipResponses];
 
 export type ListTenantSchemasData = {
     body?: never;
@@ -3789,6 +6771,128 @@ export type ListTenantSchemasResponses = {
 };
 
 export type ListTenantSchemasResponse = ListTenantSchemasResponses[keyof ListTenantSchemasResponses];
+
+export type SourceContextAvailabilityData = {
+    body?: never;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/source-context';
+};
+
+export type SourceContextAvailabilityErrors = {
+    /**
+     * Requested tenant does not match the authenticated tenant, or the caller has no read access to any signal
+     */
+    403: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+    /**
+     * Internal error
+     */
+    500: ApiErrorBody;
+};
+
+export type SourceContextAvailabilityError = SourceContextAvailabilityErrors[keyof SourceContextAvailabilityErrors];
+
+export type SourceContextAvailabilityResponses = {
+    /**
+     * Whether source context can be served for this tenant
+     */
+    200: SourceContextAvailability;
+};
+
+export type SourceContextAvailabilityResponse = SourceContextAvailabilityResponses[keyof SourceContextAvailabilityResponses];
+
+export type SourceContextData = {
+    body: SourceContextRequest;
+    path: {
+        /**
+         * Tenant identifier (must match the authenticated tenant)
+         */
+        tenant_id: string;
+    };
+    query?: never;
+    url: '/api/v1/tenants/{tenant_id}/source-context';
+};
+
+export type SourceContextErrors = {
+    /**
+     * Empty path, line is zero, or an unsafe (traversal/absolute) path
+     */
+    400: ApiErrorBody;
+    /**
+     * Requested tenant does not match the authenticated tenant, or the caller has no read access to any signal
+     */
+    403: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
+     * always `"error"`, `errorType` a stable low-cardinality code, `error` a
+     * human-readable message, and `retryAfterMs` present only on rate-limit
+     * rejections. Exists as a real (rather than `serde_json::json!`-built)
+     * type so the OpenAPI document can declare its schema on the `429`
+     * response of every rate-limited operation.
+     */
+    429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
+        error: string;
+        errorType: string;
+        /**
+         * Milliseconds until the request would be admitted; present only when
+         * `errorType` is `"rate_limited"`.
+         */
+        retryAfterMs?: number | null;
+        /**
+         * Always `"error"`.
+         */
+        status: string;
+    };
+};
+
+export type SourceContextError = SourceContextErrors[keyof SourceContextErrors];
+
+export type SourceContextResponses = {
+    /**
+     * Snippet lookup result (available or unavailable, never an error for a well-formed request)
+     */
+    200: SourceContextResponse;
+};
+
+export type SourceContextResponse2 = SourceContextResponses[keyof SourceContextResponses];
 
 export type ListTenantTablesData = {
     body?: never;
@@ -3854,6 +6958,76 @@ export type CreateTenantTablesResponses = {
 
 export type CreateTenantTablesResponse2 = CreateTenantTablesResponses[keyof CreateTenantTablesResponses];
 
+export type ListUsersData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users';
+};
+
+export type ListUsersErrors = {
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Internal error
+     */
+    500: ApiError;
+};
+
+export type ListUsersError = ListUsersErrors[keyof ListUsersErrors];
+
+export type ListUsersResponses = {
+    /**
+     * Users visible to the caller
+     */
+    200: ListUsersResponse;
+};
+
+export type ListUsersResponse2 = ListUsersResponses[keyof ListUsersResponses];
+
+export type CreateUserData = {
+    body: CreateUserRequest;
+    path?: never;
+    query?: never;
+    url: '/api/v1/users';
+};
+
+export type CreateUserErrors = {
+    /**
+     * Validation error
+     */
+    400: ApiError;
+    /**
+     * Missing or invalid credentials
+     */
+    401: ApiError;
+    /**
+     * Instance administrator required
+     */
+    403: ApiError;
+    /**
+     * Tenant not found
+     */
+    404: ApiError;
+    /**
+     * User already exists
+     */
+    409: ApiError;
+};
+
+export type CreateUserError = CreateUserErrors[keyof CreateUserErrors];
+
+export type CreateUserResponses = {
+    /**
+     * User created
+     */
+    201: UserResponse;
+};
+
+export type CreateUserResponse = CreateUserResponses[keyof CreateUserResponses];
+
 export type WhoamiData = {
     body?: never;
     path?: never;
@@ -3867,7 +7041,11 @@ export type WhoamiErrors = {
      */
     401: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The authenticated tenant no longer exists
+     */
+    404: SessionErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3875,6 +7053,12 @@ export type WhoamiErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3887,6 +7071,10 @@ export type WhoamiErrors = {
          */
         status: string;
     };
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
 };
 
 export type WhoamiError = WhoamiErrors[keyof WhoamiErrors];
@@ -3923,7 +7111,7 @@ export type LogqlLabelValuesData = {
 
 export type LogqlLabelValuesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3931,6 +7119,12 @@ export type LogqlLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -3972,7 +7166,7 @@ export type LogqlLabelsData = {
 
 export type LogqlLabelsErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -3980,6 +7174,12 @@ export type LogqlLabelsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4029,7 +7229,7 @@ export type LogqlQueryData = {
 
 export type LogqlQueryErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4037,6 +7237,12 @@ export type LogqlQueryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4094,7 +7300,7 @@ export type LogqlQueryRangeData = {
 
 export type LogqlQueryRangeErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4102,6 +7308,12 @@ export type LogqlQueryRangeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4211,7 +7423,7 @@ export type PromqlLabelValuesData = {
 
 export type PromqlLabelValuesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4219,6 +7431,12 @@ export type PromqlLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4260,7 +7478,7 @@ export type PromqlLabelsData = {
 
 export type PromqlLabelsErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4268,6 +7486,12 @@ export type PromqlLabelsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4309,7 +7533,11 @@ export type PromqlQueryData = {
 
 export type PromqlQueryErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)
+     */
+    400: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4317,6 +7545,12 @@ export type PromqlQueryErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4329,6 +7563,14 @@ export type PromqlQueryErrors = {
          */
         status: string;
     };
+    /**
+     * The querier does not implement the query (`not_implemented`)
+     */
+    501: ApiErrorBody;
+    /**
+     * No querier service available (`unavailable`)
+     */
+    503: ApiErrorBody;
 };
 
 export type PromqlQueryError = PromqlQueryErrors[keyof PromqlQueryErrors];
@@ -4366,7 +7608,11 @@ export type PromqlQueryRangeData = {
 
 export type PromqlQueryRangeErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)
+     */
+    400: ApiErrorBody;
+    /**
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4374,6 +7620,12 @@ export type PromqlQueryRangeErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4386,6 +7638,14 @@ export type PromqlQueryRangeErrors = {
          */
         status: string;
     };
+    /**
+     * The querier does not implement the query (`not_implemented`)
+     */
+    501: ApiErrorBody;
+    /**
+     * No querier service available (`unavailable`)
+     */
+    503: ApiErrorBody;
 };
 
 export type PromqlQueryRangeError = PromqlQueryRangeErrors[keyof PromqlQueryRangeErrors];
@@ -4419,7 +7679,7 @@ export type PyroscopeLabelNamesData = {
 
 export type PyroscopeLabelNamesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4427,6 +7687,12 @@ export type PyroscopeLabelNamesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4474,7 +7740,7 @@ export type PyroscopeLabelValuesData = {
 
 export type PyroscopeLabelValuesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4482,6 +7748,12 @@ export type PyroscopeLabelValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4529,7 +7801,7 @@ export type PyroscopeProfileTypesData = {
 
 export type PyroscopeProfileTypesErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4537,6 +7809,12 @@ export type PyroscopeProfileTypesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4600,7 +7878,7 @@ export type PyroscopeRenderData = {
 
 export type PyroscopeRenderErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4608,6 +7886,12 @@ export type PyroscopeRenderErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4671,7 +7955,7 @@ export type PyroscopeRenderDiffData = {
 
 export type PyroscopeRenderDiffErrors = {
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4679,6 +7963,12 @@ export type PyroscopeRenderDiffErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4726,7 +8016,7 @@ export type SearchErrors = {
      */
     400: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4734,6 +8024,12 @@ export type SearchErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4786,7 +8082,7 @@ export type SearchTagValuesErrors = {
      */
     400: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4794,6 +8090,12 @@ export type SearchTagValuesErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4841,7 +8143,7 @@ export type SearchTagsErrors = {
      */
     400: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4849,6 +8151,12 @@ export type SearchTagsErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -4899,7 +8207,7 @@ export type QuerySingleTraceErrors = {
      */
     404: unknown;
     /**
-     * The JSON envelope every query-surface error responds with: `status` is
+     * The JSON envelope every [`ApiError`] responds with: `status` is
      * always `"error"`, `errorType` a stable low-cardinality code, `error` a
      * human-readable message, and `retryAfterMs` present only on rate-limit
      * rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -4907,6 +8215,12 @@ export type QuerySingleTraceErrors = {
      * response of every rate-limited operation.
      */
     429: {
+        /**
+         * The individual problems behind the error, when the endpoint reports
+         * them one by one (e.g. the invalid rows of an uploaded results file).
+         * Absent otherwise.
+         */
+        details?: Array<ApiErrorDetail> | null;
         error: string;
         errorType: string;
         /**
@@ -5008,3 +8322,185 @@ export type SearchTagsV2Responses = {
 };
 
 export type SearchTagsV2Response = SearchTagsV2Responses[keyof SearchTagsV2Responses];
+
+export type GithubCallbackData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * OAuth-on-install authorization code
+         */
+        code?: string;
+        /**
+         * The installation id GitHub reports
+         */
+        installation_id?: string;
+        /**
+         * GitHub's setup_action (install/update/request)
+         */
+        setup_action?: string;
+        /**
+         * The state token issued by the link-start endpoint
+         */
+        state?: string;
+    };
+    url: '/ui/github/callback';
+};
+
+export type GithubCallbackErrors = {
+    /**
+     * GitHub integration is not configured
+     */
+    404: unknown;
+};
+
+export type DeleteSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session';
+};
+
+export type DeleteSessionErrors = {
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
+};
+
+export type DeleteSessionError = DeleteSessionErrors[keyof DeleteSessionErrors];
+
+export type DeleteSessionResponses = {
+    /**
+     * Session revoked and cookie cleared
+     */
+    204: void;
+};
+
+export type DeleteSessionResponse = DeleteSessionResponses[keyof DeleteSessionResponses];
+
+export type CurrentSessionData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session';
+};
+
+export type CurrentSessionErrors = {
+    /**
+     * No valid session cookie
+     */
+    401: unknown;
+};
+
+export type CurrentSessionResponses = {
+    /**
+     * Signed-in user, memberships, and auto-selected tenant/dataset
+     */
+    200: CurrentSessionResponse;
+};
+
+export type CurrentSessionResponse2 = CurrentSessionResponses[keyof CurrentSessionResponses];
+
+export type CreateSessionData = {
+    body: CreateSessionRequest;
+    path?: never;
+    query?: never;
+    url: '/ui/session';
+};
+
+export type CreateSessionErrors = {
+    /**
+     * Malformed request body, or malformed tenant or dataset ID
+     */
+    400: SessionErrorBody;
+    /**
+     * Invalid email or password
+     */
+    401: SessionErrorBody;
+    /**
+     * Password login disabled, no tenant memberships, or not a member of the requested tenant
+     */
+    403: SessionErrorBody;
+    /**
+     * Internal error
+     */
+    500: SessionErrorBody;
+};
+
+export type CreateSessionError = CreateSessionErrors[keyof CreateSessionErrors];
+
+export type CreateSessionResponses = {
+    /**
+     * Session created; sets the `signaldb_session` HttpOnly cookie
+     */
+    200: CreateSessionResponse;
+};
+
+export type CreateSessionResponse2 = CreateSessionResponses[keyof CreateSessionResponses];
+
+export type LoginConfigData = {
+    body?: never;
+    path?: never;
+    query?: never;
+    url: '/ui/session/config';
+};
+
+export type LoginConfigResponses = {
+    /**
+     * Login credential configuration
+     */
+    200: LoginConfigResponse;
+};
+
+export type LoginConfigResponse2 = LoginConfigResponses[keyof LoginConfigResponses];
+
+export type SessionOidcCallbackData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Authorization code returned by the IdP
+         */
+        code?: string;
+        /**
+         * Opaque state value echoed back by the IdP
+         */
+        state?: string;
+        /**
+         * Present when the IdP failed the request before ever issuing a code
+         */
+        error?: string;
+    };
+    url: '/ui/session/oidc/callback';
+};
+
+export type SessionOidcCallbackErrors = {
+    /**
+     * OIDC is not configured
+     */
+    404: unknown;
+};
+
+export type SessionOidcStartData = {
+    body?: never;
+    path?: never;
+    query?: {
+        /**
+         * Same-origin path to return to after a successful login; anything else (or absent) falls back to `/logs`
+         */
+        redirect?: string;
+    };
+    url: '/ui/session/oidc/start';
+};
+
+export type SessionOidcStartErrors = {
+    /**
+     * OIDC is not configured
+     */
+    404: unknown;
+    /**
+     * OIDC provider is currently unavailable
+     */
+    503: unknown;
+};

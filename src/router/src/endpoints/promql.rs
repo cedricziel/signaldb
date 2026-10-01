@@ -7,16 +7,16 @@
 //! - `GET|POST /api/v1/query` — instant query → vector
 //! - `GET /api/v1/labels`, `/api/v1/label/{name}/values`, `/api/v1/series`
 //!
-//! Handlers build a `query_promql` Flight ticket, execute it against a
-//! querier, and convert the returned matrix RecordBatches into Prometheus
-//! JSON. Metadata endpoints (labels/values/series) query the metrics tables via the querier.
+//! The query handlers lower PromQL to a Query IR document
+//! (`ql_ir::promql_to_ir`), run it the way `POST /api/v1/query` runs one, and
+//! shape the metric Series or Scalar result into Prometheus JSON. Metadata
+//! endpoints (labels/values/series) query the metrics tables via the querier.
 
-use std::collections::HashMap;
-use tracing::Instrument;
+use std::collections::{BTreeMap, HashMap};
 
 use super::api_error::ApiError;
-use crate::RouterState;
-use arrow_flight::Ticket;
+use super::query::DecodedSeries;
+use crate::RouterAppState;
 use axum::{
     Router,
     extract::{Path, Query, State},
@@ -25,28 +25,22 @@ use axum::{
 };
 use common::auth::TenantContextExtractor;
 use common::catalog::{AttributeStatsRecord, Catalog};
-use common::flight::transport::ServiceCapability;
-use datafusion::arrow::array::{
-    Array, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
-};
-use futures::StreamExt;
+use common::query_ir::ResultEnvelope;
+use datafusion::arrow::array::{Array, Float64Array, RecordBatch, StringArray};
 use prometheus_api::{
     InstantVector, LabelStat, LabelStatsResponse, LabelsResponse, QueryResponse, QueryResult,
     RangeVector, Sample, SeriesResponse,
 };
 use serde::Deserialize;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/api/v1/query", get(query::<S>).post(query::<S>))
-        .route(
-            "/api/v1/query_range",
-            get(query_range::<S>).post(query_range::<S>),
-        )
-        .route("/api/v1/labels", get(labels::<S>))
-        .route("/api/v1/label/{name}/values", get(label_values::<S>))
-        .route("/api/v1/label_stats", get(label_stats::<S>))
-        .route("/api/v1/series", get(series::<S>))
+        .route("/api/v1/query", get(query).post(query))
+        .route("/api/v1/query_range", get(query_range).post(query_range))
+        .route("/api/v1/labels", get(labels))
+        .route("/api/v1/label/{name}/values", get(label_values))
+        .route("/api/v1/label_stats", get(label_stats))
+        .route("/api/v1/series", get(series))
 }
 
 /// One hour in nanoseconds, the default range-query lookback.
@@ -94,38 +88,40 @@ pub struct MetadataParams {
     ),
     responses(
         (status = 200, description = "Prometheus range-query response (matrix)", body = serde_json::Value),
+        (status = 400, description = "Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 501, description = "The querier does not implement the query (`not_implemented`)", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 503, description = "No querier service available (`unavailable`)", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
 #[tracing::instrument(
-    skip(state, tenant_ctx, params),
+    skip_all,
     fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
-pub async fn query_range<S: RouterState>(
-    State(state): State<S>,
+pub async fn query_range(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
-    let Some(promql) = non_empty(&params.query) else {
-        return Ok(axum::Json(QueryResponse::error(
-            "bad_data",
-            "missing or empty 'query'",
-        )));
-    };
-    let end = parse_timestamp_ns(params.end.as_deref()).unwrap_or_else(super::now_ns);
-    let start = parse_timestamp_ns(params.start.as_deref()).unwrap_or(end - HOUR_NS);
-    let step = parse_step_ns(params.step.as_deref()).unwrap_or_else(|| default_step_ns(start, end));
+    let promql = required_query(&params.query)?;
+    let end = timestamp_param("end", params.end.as_deref())?.unwrap_or_else(super::now_ns);
+    let start = timestamp_param("start", params.start.as_deref())?.unwrap_or(end - HOUR_NS);
+    let step = step_param(params.step.as_deref())?.unwrap_or_else(|| default_step_ns(start, end));
 
-    let batches = run_promql(&state, &tenant_ctx, &promql, start, end, step).await?;
+    let params = ql_ir::PromqlParams::range(start, end, step);
+    // A range query answers a matrix even for a scalar expression: one
+    // label-less series.
+    let (_, series) = run_promql(&state, &tenant_ctx, &promql, &params).await?;
     Ok(axum::Json(QueryResponse::success(QueryResult::Matrix(
-        batches_to_matrix(&batches),
+        series.into_iter().map(range_vector).collect(),
     ))))
 }
 
 /// GET|POST /prometheus/api/v1/query — instant query.
 ///
-/// Evaluated as a one-bucket range at `time`, returning the latest sample
-/// per series as a vector.
+/// Evaluated once, at `time` (default: now): each series' value at that
+/// instant, its latest point in the 5-minute lookback, as a vector, or a
+/// scalar for a scalar expression.
 #[utoipa::path(
     get,
     path = "/prometheus/api/v1/query",
@@ -138,34 +134,49 @@ pub async fn query_range<S: RouterState>(
     ),
     responses(
         (status = 200, description = "Prometheus instant-query response (vector)", body = serde_json::Value),
+        (status = 400, description = "Missing or invalid parameter, or a query the Query IR cannot express (`bad_data`)", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 501, description = "The querier does not implement the query (`not_implemented`)", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 503, description = "No querier service available (`unavailable`)", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
 #[tracing::instrument(
-    skip(state, tenant_ctx, params),
+    skip_all,
     fields(signaldb.tenant.id = %tenant_ctx.0.tenant_id, signaldb.dataset.id = %tenant_ctx.0.dataset_id)
 )]
-pub async fn query<S: RouterState>(
-    State(state): State<S>,
+pub async fn query(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
-    let Some(promql) = non_empty(&params.query) else {
-        return Ok(axum::Json(QueryResponse::error(
-            "bad_data",
-            "missing or empty 'query'",
-        )));
+    let promql = required_query(&params.query)?;
+    // Evaluated once, at `time`: each series' value at that instant (its
+    // latest point in the lookback), or a scalar for a scalar expression.
+    let at = timestamp_param("time", params.time.as_deref())?.unwrap_or_else(super::now_ns);
+    let params = ql_ir::PromqlParams::instant(at);
+    let (envelope, series) = run_promql(&state, &tenant_ctx, &promql, &params).await?;
+    let result = match envelope {
+        ResultEnvelope::Scalar => {
+            let value = series
+                .into_iter()
+                .next()
+                .and_then(|(_, points)| value_at(points, at))
+                .unwrap_or(f64::NAN);
+            QueryResult::Scalar(sample(at, value))
+        }
+        _ => QueryResult::Vector(
+            series
+                .into_iter()
+                .filter_map(|(labels, points)| {
+                    Some(InstantVector {
+                        metric: prometheus_labels(labels),
+                        value: sample(at, value_at(points, at)?),
+                    })
+                })
+                .collect(),
+        ),
     };
-    let at = parse_timestamp_ns(params.time.as_deref()).unwrap_or_else(super::now_ns);
-    let start = at - HOUR_NS;
-    // One bucket spanning the lookback so each series yields one sample.
-    let step = HOUR_NS;
-
-    let batches = run_promql(&state, &tenant_ctx, &promql, start, at, step).await?;
-    let vector = matrix_to_vector(batches_to_matrix(&batches));
-    Ok(axum::Json(QueryResponse::success(QueryResult::Vector(
-        vector,
-    ))))
+    Ok(axum::Json(QueryResponse::success(result)))
 }
 
 /// GET /prometheus/api/v1/labels — metric label names.
@@ -184,8 +195,8 @@ pub async fn query<S: RouterState>(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
-pub async fn labels<S: RouterState>(
-    State(state): State<S>,
+pub async fn labels(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<LabelsResponse>, ApiError> {
@@ -194,7 +205,7 @@ pub async fn labels<S: RouterState>(
         "query_metric_labels:{}:{}:{start}:{end}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     );
-    let batches = execute_ticket(&state, ticket).await?;
+    let batches = execute_metadata_ticket(&state, ticket).await?;
     Ok(axum::Json(LabelsResponse::success(string_column(
         &batches, "label",
     ))))
@@ -217,8 +228,8 @@ pub async fn labels<S: RouterState>(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
     )
 )]
-pub async fn label_values<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_values(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
@@ -232,15 +243,15 @@ pub async fn label_values<S: RouterState>(
         "query_metric_label_values:{}:{}:{name}:{start}:{end}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     );
-    let batches = execute_ticket(&state, ticket).await?;
+    let batches = execute_metadata_ticket(&state, ticket).await?;
     Ok(axum::Json(LabelsResponse::success(string_column(
         &batches, "value",
     ))))
 }
 
 /// GET /prometheus/api/v1/series — series matching a selector.
-pub async fn series<S: RouterState>(
-    State(state): State<S>,
+pub async fn series(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<SeriesResponse>, ApiError> {
@@ -256,7 +267,7 @@ pub async fn series<S: RouterState>(
         "query_metric_series:{}:{}:{payload}",
         tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
     );
-    let batches = execute_ticket(&state, ticket).await?;
+    let batches = execute_metadata_ticket(&state, ticket).await?;
     Ok(axum::Json(SeriesResponse::success(series_from_batches(
         &batches,
     ))))
@@ -270,8 +281,8 @@ const METRICS_SIGNAL: &str = "metrics";
 /// Reads the compactor's advisory attribute statistics straight from the
 /// catalog (no querier round-trip), so the metrics explorer can warn before a
 /// user groups by a high-cardinality label. Names match `/api/v1/labels`.
-pub async fn label_stats<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_stats(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
 ) -> Result<axum::Json<LabelStatsResponse>, ApiError> {
     let stats = fetch_label_stats(
@@ -315,174 +326,91 @@ fn label_stat_from_record(record: AttributeStatsRecord) -> LabelStat {
 
 // ---- execution + conversion ----
 
-/// Build and execute a `query_promql` ticket.
-async fn run_promql<S: RouterState>(
-    state: &S,
+/// Lower PromQL to an IR document and run it the way `POST /api/v1/query`
+/// runs one. Every lowering failure is the caller's (400).
+async fn run_promql(
+    state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     promql: &str,
-    start: i64,
-    end: i64,
-    step: i64,
-) -> Result<Vec<RecordBatch>, ApiError> {
-    let payload = serde_json::json!({
-        "query": promql,
-        "start": start,
-        "end": end,
-        "step": step,
-    });
-    let ticket = format!(
-        "query_promql:{}:{}:{payload}",
-        tenant_ctx.0.tenant_slug, tenant_ctx.0.dataset_slug
-    );
-    execute_ticket(state, ticket).await
+    params: &ql_ir::PromqlParams,
+) -> Result<(ResultEnvelope, Vec<DecodedSeries<f64>>), ApiError> {
+    let document =
+        ql_ir::promql_to_ir(promql, params).map_err(|e| ApiError::bad_request(e.to_string()))?;
+    let ticket = super::query::query_ir_ticket(&tenant_ctx.0, &document, super::now_ns())?;
+    let (batches, _correlate_report) = super::query::execute_ticket(state, ticket).await?;
+    let series = super::query::decode_series(&batches, |array, row| {
+        array
+            .as_any()
+            .downcast_ref::<Float64Array>()
+            .filter(|values| values.is_valid(row))
+            .map(|values| values.value(row))
+    })?;
+    Ok((document.result, series))
 }
 
-/// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
-    ticket_content: String,
+/// Run a metadata ticket (`query_metric_*`) on a querier, bounded like an IR
+/// query by the shared timeout and result size.
+async fn execute_metadata_ticket(
+    state: &RouterAppState,
+    ticket: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
-    let (mut client, server_address) = state
-        .service_registry()
-        .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
-        .await
-        .map_err(|e| {
-            tracing::error!(error = %e, "Failed to get Flight client for PromQL query");
-            ApiError::new(StatusCode::SERVICE_UNAVAILABLE, "no querier available")
-        })?;
-
-    let verb = common::self_monitoring::spans::ticket_verb(&ticket_content).map(str::to_owned);
-    let ticket = Ticket::new(ticket_content);
-    let mut flight_request = tonic::Request::new(ticket);
-    let rpc_span = common::flight::trace_context::do_get_client_span(
-        verb.as_deref(),
-        &mut flight_request,
-        Some(&server_address),
-    );
-    if let Some(key) = &state.config().auth.internal_service_key {
-        common::flight::auth::attach_internal_auth(&mut flight_request, key);
-    }
-
-    let mut stream = client
-        .do_get(flight_request)
-        .instrument(rpc_span.clone())
-        .await
-        .map_err(|e| rpc_span.in_scope(|| ApiError::from_flight(&e, "promql")))?
-        .into_inner();
-
-    let mut data = Vec::new();
-    while let Some(flight_data) = stream.next().await {
-        data.push(flight_data.map_err(|e| ApiError::from_flight(&e, "promql"))?);
-    }
-
-    super::flight_decode::decode_flight_batches(data, "promql")
-        .await
-        .map_err(ApiError::from)
+    let (batches, _correlate_report) = super::query::execute_ticket(state, ticket).await?;
+    Ok(batches)
 }
 
-/// Group matrix rows (`bucket`, `metric_name`, label columns, `value`)
-/// into Prometheus range vectors. `bucket` is nanoseconds; Prometheus
-/// samples use unix seconds.
-fn batches_to_matrix(batches: &[RecordBatch]) -> Vec<RangeVector> {
-    let mut order: Vec<String> = Vec::new();
-    let mut series: HashMap<String, RangeVector> = HashMap::new();
+fn range_vector((labels, points): DecodedSeries<f64>) -> RangeVector {
+    RangeVector {
+        metric: prometheus_labels(labels),
+        values: points
+            .into_iter()
+            .filter_map(|(t, v)| Some(sample(t.as_i64()?, v)))
+            .collect(),
+    }
+}
 
-    for batch in batches {
-        let Some(buckets) = timestamps_ns(batch, "bucket") else {
-            continue;
-        };
-        let value = batch
-            .column_by_name("value")
-            .and_then(|c| c.as_any().downcast_ref::<Float64Array>());
+/// A series' value at the evaluation instant `at_ns`.
+fn value_at(points: Vec<(serde_json::Value, f64)>, at_ns: i64) -> Option<f64> {
+    points
+        .into_iter()
+        .find_map(|(t, v)| (t.as_i64() == Some(at_ns)).then_some(v))
+}
 
-        let schema = batch.schema();
-        let label_cols: Vec<(String, &StringArray)> = schema
-            .fields()
-            .iter()
-            .filter_map(|f| {
-                let name = f.name();
-                if name == "bucket" || name == "value" {
-                    return None;
-                }
-                str_col(batch, name).map(|c| (name.clone(), c))
-            })
-            .collect();
+fn sample(t_ns: i64, v: f64) -> Sample {
+    Sample::new(t_ns as f64 / 1_000_000_000.0, format_value(v))
+}
 
-        for i in 0..batch.num_rows() {
-            let mut metric: HashMap<String, String> = HashMap::new();
-            for (name, col) in &label_cols {
-                if col.is_null(i) || col.value(i).is_empty() {
-                    continue;
-                }
-                // `metric_name` is Prometheus's `__name__`; materialized
-                // `label_<key>` columns surface under their label name.
-                let key = if name == "metric_name" {
-                    "__name__"
-                } else {
-                    name.strip_prefix("label_").unwrap_or(name.as_str())
-                };
-                metric.insert(key.to_string(), col.value(i).to_string());
+/// A Series label set under Prometheus label names: `metric.name` is
+/// `__name__` and `service.name` is `service_name`; every other label keeps
+/// its IR name. A label literally named `service_name` wins over the
+/// renamed `service.name`.
+fn prometheus_labels(labels: BTreeMap<String, String>) -> HashMap<String, String> {
+    let mut metric = HashMap::with_capacity(labels.len());
+    let mut renamed = Vec::new();
+    for (name, value) in labels {
+        match name.as_str() {
+            "metric.name" => renamed.push(("__name__", value)),
+            "service.name" => renamed.push(("service_name", value)),
+            _ => {
+                metric.insert(name, value);
             }
-            let key = label_key(&metric);
-            let seconds = if buckets.is_null(i) {
-                0.0
-            } else {
-                buckets.value(i) as f64 / 1_000_000_000.0
-            };
-            let v = value
-                .map(|c| if c.is_null(i) { f64::NAN } else { c.value(i) })
-                .unwrap_or(f64::NAN);
-            series
-                .entry(key.clone())
-                .or_insert_with(|| {
-                    order.push(key.clone());
-                    RangeVector {
-                        metric,
-                        values: Vec::new(),
-                    }
-                })
-                .values
-                .push(Sample::new(seconds, format_value(v)));
         }
     }
-
-    order
-        .into_iter()
-        .filter_map(|k| series.remove(&k))
-        .collect()
+    for (name, value) in renamed {
+        metric.entry(name.to_string()).or_insert(value);
+    }
+    metric
 }
 
-/// Reduce a matrix to an instant vector: each series' last sample.
-fn matrix_to_vector(matrix: Vec<RangeVector>) -> Vec<InstantVector> {
-    matrix
-        .into_iter()
-        .filter_map(|series| {
-            series.values.into_iter().last().map(|value| InstantVector {
-                metric: series.metric,
-                value,
-            })
-        })
-        .collect()
-}
-
+/// A sample value as Prometheus renders it: Go's shortest float text, with
+/// `NaN`, `+Inf` and `-Inf` spelled out.
 fn format_value(v: f64) -> String {
     if v.is_nan() {
         "NaN".to_string()
-    } else if v.fract() == 0.0 {
-        format!("{}", v as i64)
+    } else if v.is_infinite() {
+        if v > 0.0 { "+Inf" } else { "-Inf" }.to_string()
     } else {
         format!("{v}")
     }
-}
-
-fn label_key(labels: &HashMap<String, String>) -> String {
-    let mut pairs: Vec<_> = labels.iter().collect();
-    pairs.sort();
-    pairs
-        .into_iter()
-        .map(|(k, v)| format!("{k}={v}"))
-        .collect::<Vec<_>>()
-        .join(",")
 }
 
 fn str_col<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
@@ -525,24 +453,44 @@ fn metadata_window(params: &MetadataParams) -> (i64, i64) {
     (start, end)
 }
 
-/// Read a timestamp column as nanoseconds, casting from the storage unit.
-fn timestamps_ns(batch: &RecordBatch, name: &str) -> Option<TimestampNanosecondArray> {
-    use datafusion::arrow::compute::cast;
-    use datafusion::arrow::datatypes::{DataType, TimeUnit};
-    let column = batch.column_by_name(name)?;
-    let nanos = cast(column, &DataType::Timestamp(TimeUnit::Nanosecond, None)).ok()?;
-    nanos
-        .as_any()
-        .downcast_ref::<TimestampNanosecondArray>()
-        .cloned()
-}
-
-fn non_empty(value: &Option<String>) -> Option<String> {
+/// The `query` parameter, trimmed; a missing or blank one is a 400.
+fn required_query(value: &Option<String>) -> Result<String, ApiError> {
     value
         .as_deref()
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .map(str::to_string)
+        .ok_or_else(|| ApiError::bad_request("missing or empty 'query'"))
+}
+
+/// An optional timestamp parameter: absent or blank is `None`, one that does
+/// not parse is a 400.
+fn timestamp_param(name: &str, value: Option<&str>) -> Result<Option<i64>, ApiError> {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) => parse_timestamp_ns(Some(raw)).map(Some).ok_or_else(|| {
+            ApiError::bad_request(format!(
+                "invalid parameter '{name}': cannot parse \"{raw}\" to a valid timestamp"
+            ))
+        }),
+    }
+}
+
+/// The optional `step` parameter: absent or blank is `None`; one that does
+/// not parse, or is not positive, is a 400.
+fn step_param(value: Option<&str>) -> Result<Option<i64>, ApiError> {
+    match value.map(str::trim).filter(|s| !s.is_empty()) {
+        None => Ok(None),
+        Some(raw) => match parse_step_ns(Some(raw)) {
+            Some(step) if step > 0 => Ok(Some(step)),
+            Some(_) => Err(ApiError::bad_request(
+                "invalid parameter 'step': zero or negative resolution step",
+            )),
+            None => Err(ApiError::bad_request(format!(
+                "invalid parameter 'step': cannot parse \"{raw}\" to a valid duration"
+            ))),
+        },
+    }
 }
 
 /// Parse a Prometheus timestamp (unix seconds float, or RFC3339) → ns.
@@ -578,71 +526,424 @@ fn default_step_ns(start: i64, end: i64) -> i64 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use datafusion::arrow::array::TimestampNanosecondArray;
     use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
+    use futures::StreamExt;
     use std::sync::Arc;
 
-    fn matrix_batch() -> RecordBatch {
+    /// An IR metric Series frame: `bucket`, `__labels`, `value`.
+    fn series_batch(rows: Vec<(i64, &str, f64)>) -> RecordBatch {
         let schema = Arc::new(Schema::new(vec![
             Field::new(
                 "bucket",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
                 false,
             ),
-            Field::new("metric_name", DataType::Utf8, false),
-            Field::new("service_name", DataType::Utf8, true),
-            Field::new("value", DataType::Float64, false),
+            Field::new("__labels", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, true),
         ]));
         RecordBatch::try_new(
             schema,
             vec![
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    1_000_000_000,
-                    2_000_000_000,
-                    1_000_000_000,
-                ])),
-                Arc::new(StringArray::from(vec!["reqs", "reqs", "reqs"])),
-                Arc::new(StringArray::from(vec!["api", "api", "web"])),
-                Arc::new(Float64Array::from(vec![2.0, 3.0, 5.5])),
+                Arc::new(TimestampNanosecondArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(Float64Array::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
             ],
         )
         .unwrap()
     }
 
+    fn decode(batch: RecordBatch) -> Vec<DecodedSeries<f64>> {
+        super::super::query::decode_series(&[batch], |array, row| {
+            Some(
+                array
+                    .as_any()
+                    .downcast_ref::<Float64Array>()
+                    .unwrap()
+                    .value(row),
+            )
+        })
+        .unwrap()
+    }
+
+    const API: &str = r#"{"code":"200","metric.name":"reqs","service.name":"api"}"#;
+    const WEB: &str = r#"{"code":"500","service.name":"web"}"#;
+
     #[test]
-    fn matrix_groups_rows_and_maps_name() {
-        let matrix = batches_to_matrix(&[matrix_batch()]);
+    fn a_series_frame_becomes_a_matrix_under_prometheus_label_names() {
+        let matrix: Vec<RangeVector> = decode(series_batch(vec![
+            (1_000_000_000, API, 2.0),
+            (2_000_000_000, API, f64::NAN),
+            (1_000_000_000, WEB, f64::INFINITY),
+            (2_000_000_000, WEB, f64::NEG_INFINITY),
+        ]))
+        .into_iter()
+        .map(range_vector)
+        .collect();
+
         assert_eq!(matrix.len(), 2);
-        let api = matrix
-            .iter()
-            .find(|s| s.metric.get("service_name") == Some(&"api".to_string()))
-            .unwrap();
-        assert_eq!(api.metric.get("__name__"), Some(&"reqs".to_string()));
+        let api = &matrix[0];
+        assert_eq!(
+            api.metric,
+            HashMap::from([
+                ("__name__".to_string(), "reqs".to_string()),
+                ("service_name".to_string(), "api".to_string()),
+                ("code".to_string(), "200".to_string()),
+            ])
+        );
         assert_eq!(
             api.values,
-            vec![Sample::new(1.0, "2"), Sample::new(2.0, "3")]
+            vec![Sample::new(1.0, "2"), Sample::new(2.0, "NaN")]
         );
-        let web = matrix
-            .iter()
-            .find(|s| s.metric.get("service_name") == Some(&"web".to_string()))
-            .unwrap();
-        assert_eq!(web.values, vec![Sample::new(1.0, "5.5")]);
+        // The lowering dropped `metric.name`; it stays dropped.
+        let web = &matrix[1];
+        assert!(!web.metric.contains_key("__name__"));
+        assert_eq!(
+            web.values,
+            vec![Sample::new(1.0, "+Inf"), Sample::new(2.0, "-Inf")]
+        );
     }
 
     #[test]
-    fn instant_vector_takes_last_sample() {
-        let vector = matrix_to_vector(batches_to_matrix(&[matrix_batch()]));
-        let api = vector
-            .iter()
-            .find(|s| s.metric.get("service_name") == Some(&"api".to_string()))
-            .unwrap();
-        assert_eq!(api.value, Sample::new(2.0, "3"));
+    fn an_instant_value_is_the_point_at_the_evaluation_time() {
+        let series = decode(series_batch(vec![
+            (1_000_000_000, API, 2.0),
+            (2_000_000_000, API, 3.0),
+        ]));
+        let (_, points) = series.into_iter().next().unwrap();
+        assert_eq!(value_at(points.clone(), 1_000_000_000), Some(2.0));
+        assert_eq!(value_at(points, 3_000_000_000), None);
+    }
+
+    #[test]
+    fn a_point_label_named_service_name_wins_over_the_renamed_service() {
+        let labels = BTreeMap::from([
+            ("service.name".to_string(), "api".to_string()),
+            ("service_name".to_string(), "own".to_string()),
+        ]);
+        assert_eq!(
+            prometheus_labels(labels),
+            HashMap::from([("service_name".to_string(), "own".to_string())])
+        );
     }
 
     #[test]
     fn value_formatting() {
         assert_eq!(format_value(3.0), "3");
         assert_eq!(format_value(2.5), "2.5");
+        assert_eq!(format_value(-0.25), "-0.25");
+        assert_eq!(format_value(1e20), "100000000000000000000");
         assert_eq!(format_value(f64::NAN), "NaN");
+        assert_eq!(format_value(f64::INFINITY), "+Inf");
+        assert_eq!(format_value(f64::NEG_INFINITY), "-Inf");
+    }
+
+    type Stream<T> = futures::stream::BoxStream<'static, Result<T, tonic::Status>>;
+
+    /// What the stand-in querier answers every `do_get` with.
+    #[derive(Clone)]
+    enum Reply {
+        Batches(Vec<RecordBatch>),
+        Error(tonic::Code),
+    }
+
+    /// A querier stand-in that answers every ticket with its [`Reply`].
+    #[derive(Clone)]
+    struct FakeQuerier(Reply);
+
+    #[tonic::async_trait]
+    impl arrow_flight::flight_service_server::FlightService for FakeQuerier {
+        type HandshakeStream = Stream<arrow_flight::HandshakeResponse>;
+        type ListFlightsStream = Stream<arrow_flight::FlightInfo>;
+        type DoGetStream = Stream<arrow_flight::FlightData>;
+        type DoPutStream = Stream<arrow_flight::PutResult>;
+        type DoExchangeStream = Stream<arrow_flight::FlightData>;
+        type DoActionStream = Stream<arrow_flight::Result>;
+        type ListActionsStream = Stream<arrow_flight::ActionType>;
+
+        async fn do_get(
+            &self,
+            _: tonic::Request<arrow_flight::Ticket>,
+        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+            match &self.0 {
+                Reply::Error(code) => Err(tonic::Status::new(*code, "querier says no")),
+                Reply::Batches(batches) => {
+                    let frames = arrow_flight::encode::FlightDataEncoderBuilder::new()
+                        .build(futures::stream::iter(batches.clone().into_iter().map(Ok)))
+                        .map(|f| f.map_err(|e| tonic::Status::internal(e.to_string())));
+                    Ok(tonic::Response::new(frames.boxed()))
+                }
+            }
+        }
+        async fn handshake(
+            &self,
+            _: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("handshake"))
+        }
+        async fn list_flights(
+            &self,
+            _: tonic::Request<arrow_flight::Criteria>,
+        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_flights"))
+        }
+        async fn get_flight_info(
+            &self,
+            _: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_flight_info"))
+        }
+        async fn poll_flight_info(
+            &self,
+            _: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("poll_flight_info"))
+        }
+        async fn get_schema(
+            &self,
+            _: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_schema"))
+        }
+        async fn do_put(
+            &self,
+            _: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_put"))
+        }
+        async fn do_exchange(
+            &self,
+            _: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_exchange"))
+        }
+        async fn do_action(
+            &self,
+            _: tonic::Request<arrow_flight::Action>,
+        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_action"))
+        }
+        async fn list_actions(
+            &self,
+            _: tonic::Request<arrow_flight::Empty>,
+        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_actions"))
+        }
+    }
+
+    /// GET `uri` as tenant `acme`. With a `querier`, one serving that reply is
+    /// registered; without, none is.
+    async fn send(uri: &str, querier: Option<Reply>) -> (StatusCode, serde_json::Value) {
+        use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+        use tower::ServiceExt;
+        let catalog = Catalog::new_in_memory().await.unwrap();
+        let mut config = common::config::Configuration::default();
+        config.auth.tenants = vec![common::config::TenantConfig {
+            id: "acme".into(),
+            slug: "acme".into(),
+            name: "Acme".into(),
+            default_dataset: Some("default".into()),
+            datasets: vec![],
+            api_keys: vec![common::config::ApiKeyConfig {
+                key: "sk-test-key".into(),
+                name: Some("test".into()),
+            }],
+            schema_config: None,
+            limits: None,
+        }];
+        let state = match querier {
+            None => RouterAppState::new(catalog, config),
+            Some(reply) => {
+                let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let address = listener.local_addr().unwrap();
+                tokio::spawn(
+                    tonic::transport::Server::builder()
+                        .add_service(common::flight::flight_service_server(FakeQuerier(reply)))
+                        .serve_with_incoming(tonic::transport::server::TcpIncoming::from(listener)),
+                );
+                ServiceBootstrap::new_for_test_with_catalog(
+                    catalog.clone(),
+                    ServiceType::Querier,
+                    &address.to_string(),
+                )
+                .await
+                .unwrap();
+                let router = ServiceBootstrap::new_for_test_with_catalog(
+                    catalog.clone(),
+                    ServiceType::Router,
+                    "127.0.0.1:0",
+                )
+                .await
+                .unwrap();
+                let transport = common::flight::transport::InMemoryFlightTransport::new(router);
+                RouterAppState::new_with_flight_transport(catalog, config, transport)
+            }
+        };
+        let request = axum::http::Request::builder()
+            .uri(uri)
+            .header("authorization", "Bearer sk-test-key")
+            .header("x-tenant-id", "acme")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let response = crate::create_router(state).oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json = serde_json::from_slice(&body)
+            .unwrap_or_else(|e| panic!("{uri}: {status} {body:?}: {e}"));
+        (status, json)
+    }
+
+    async fn get_status(uri: &str) -> (StatusCode, serde_json::Value) {
+        send(uri, None).await
+    }
+
+    /// A Series frame whose value cells may be null.
+    fn nullable_series_batch(rows: Vec<(i64, &str, Option<f64>)>) -> RecordBatch {
+        let batch = series_batch(rows.iter().map(|r| (r.0, r.1, 0.0)).collect());
+        let mut columns = batch.columns().to_vec();
+        columns[2] = Arc::new(Float64Array::from(
+            rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+        ));
+        RecordBatch::try_new(batch.schema(), columns).unwrap()
+    }
+
+    #[tokio::test]
+    async fn invalid_or_inexpressible_promql_is_bad_data_before_any_querier() {
+        // No querier is registered: a 400 proves the lowering rejected the
+        // query before execution was attempted.
+        for query in ["sum(", "requests%5B5m%5D", "requests%20offset%20-5m"] {
+            for uri in [
+                format!("/prometheus/api/v1/query?query={query}&time=1700000000"),
+                format!(
+                    "/prometheus/api/v1/query_range?query={query}&start=1700000000&end=1700000060&step=15"
+                ),
+            ] {
+                let (status, body) = get_status(&uri).await;
+                assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+                assert_eq!(body["status"], "error", "{uri}: {body}");
+                assert_eq!(body["errorType"], "bad_data", "{uri}: {body}");
+            }
+        }
+    }
+
+    /// Prometheus answers 400 `bad_data` for a parameter it cannot parse and
+    /// for a missing query, never a default or a 200.
+    #[tokio::test]
+    async fn invalid_parameters_and_missing_queries_are_bad_data() {
+        let range = "/prometheus/api/v1/query_range";
+        for uri in [
+            "/prometheus/api/v1/query".to_string(),
+            "/prometheus/api/v1/query?query=".to_string(),
+            "/prometheus/api/v1/query?query=%20%20".to_string(),
+            "/prometheus/api/v1/query?query=up&time=yesterday".to_string(),
+            range.to_string(),
+            format!("{range}?query=&start=1&end=2&step=1"),
+            format!("{range}?query=up&start=1&end=2&step=often"),
+            format!("{range}?query=up&start=1&end=2&step=0"),
+            format!("{range}?query=up&start=1&end=2&step=-15"),
+            format!("{range}?query=up&start=later&end=2&step=1"),
+            format!("{range}?query=up&start=1&end=soon&step=1"),
+        ] {
+            let (status, body) = get_status(&uri).await;
+            assert_eq!(status, StatusCode::BAD_REQUEST, "{uri}: {body}");
+            assert_eq!(body["status"], "error", "{uri}: {body}");
+            assert_eq!(body["errorType"], "bad_data", "{uri}: {body}");
+        }
+    }
+
+    /// A scalar expression answers `resultType: "scalar"` at the instant.
+    #[tokio::test]
+    async fn an_instant_scalar_expression_is_a_scalar_result() {
+        let frame = series_batch(vec![(1_700_000_000_000_000_000, "{}", 3.0)]);
+        let (status, body) = send(
+            "/prometheus/api/v1/query?query=1%2B2&time=1700000000",
+            Some(Reply::Batches(vec![frame])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"]["resultType"], "scalar", "{body}");
+        let result = &body["data"]["result"];
+        assert_eq!(result[0].as_f64(), Some(1_700_000_000.0), "{body}");
+        assert_eq!(result[1], "3", "{body}");
+    }
+
+    /// A null value is no sample: it is dropped, not turned into NaN, and a
+    /// series left with no samples is dropped with it.
+    #[tokio::test]
+    async fn null_values_are_dropped_not_nan() {
+        let frame = nullable_series_batch(vec![
+            (1_000_000_000, API, Some(2.0)),
+            (2_000_000_000, API, None),
+            (1_000_000_000, WEB, None),
+        ]);
+        let (status, body) = send(
+            "/prometheus/api/v1/query_range?query=up&start=1&end=2&step=1",
+            Some(Reply::Batches(vec![frame])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        let matrix = body["data"]["result"].as_array().unwrap();
+        assert_eq!(matrix.len(), 1, "{body}");
+        let values = matrix[0]["values"].as_array().unwrap();
+        assert_eq!(values.len(), 1, "{body}");
+        assert_eq!(values[0][0].as_f64(), Some(1.0), "{body}");
+        assert_eq!(values[0][1], "2", "{body}");
+    }
+
+    /// The metadata endpoints read their values off the querier's batches.
+    #[tokio::test]
+    async fn label_names_come_from_the_querier() {
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            "label",
+            DataType::Utf8,
+            false,
+        )]));
+        let labels = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(StringArray::from(vec!["service.name", "code"]))],
+        )
+        .unwrap();
+        let (status, body) = send(
+            "/prometheus/api/v1/labels",
+            Some(Reply::Batches(vec![labels])),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{body}");
+        assert_eq!(body["data"], serde_json::json!(["service.name", "code"]));
+
+        let (status, body) = send(
+            "/prometheus/api/v1/labels",
+            Some(Reply::Error(tonic::Code::InvalidArgument)),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    }
+
+    /// The querier's Flight status decides the HTTP status.
+    #[tokio::test]
+    async fn querier_errors_map_to_http_statuses() {
+        for (code, want) in [
+            (tonic::Code::InvalidArgument, StatusCode::BAD_REQUEST),
+            (tonic::Code::Unimplemented, StatusCode::NOT_IMPLEMENTED),
+            (tonic::Code::Internal, StatusCode::INTERNAL_SERVER_ERROR),
+        ] {
+            for uri in [
+                "/prometheus/api/v1/query?query=up&time=1700000000",
+                "/prometheus/api/v1/query_range?query=up&start=1700000000&end=1700000060&step=15",
+            ] {
+                let (status, body) = send(uri, Some(Reply::Error(code))).await;
+                assert_eq!(status, want, "{code:?} {uri}: {body}");
+                assert_eq!(body["status"], "error", "{code:?} {uri}: {body}");
+            }
+        }
     }
 
     #[test]

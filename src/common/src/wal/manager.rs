@@ -71,6 +71,10 @@ pub struct WalManager {
     metrics_config: WalConfig,
     /// Base configuration template for profile WALs
     profiles_config: WalConfig,
+    /// `"acceptor"` | `"writer"` for the `role` attribute this manager's
+    /// WALs report on `signaldb.wal.entries_pending`. Set via
+    /// [`Self::with_role`]; `"unknown"` otherwise (chiefly tests).
+    role: &'static str,
 }
 
 impl WalManager {
@@ -103,6 +107,7 @@ impl WalManager {
             logs_config,
             metrics_config,
             profiles_config,
+            role: "unknown",
         }
     }
 
@@ -111,6 +116,14 @@ impl WalManager {
     /// `{tenant}/{dataset}/{signal}` tree is created.
     pub fn uniform(base: WalConfig) -> Self {
         Self::new(base.clone(), base.clone(), base.clone(), base)
+    }
+
+    /// Set the `role` (`"acceptor"` | `"writer"`) every WAL this manager
+    /// opens attributes its `signaldb.wal.entries_pending` data points with —
+    /// how a plateau in the gauge is told apart from a directory (#1493).
+    pub fn with_role(mut self, role: &'static str) -> Self {
+        self.role = role;
+        self
     }
 
     /// How long a WAL may go without an append before [`Self::evict_idle`]
@@ -258,7 +271,9 @@ impl WalManager {
         let mut config = self.traces_config.clone();
         config.tenant_id = "default".to_string();
         config.dataset_id = "default".to_string();
-        let wal = Wal::new(config).await?;
+        let wal = Wal::new(config)
+            .await?
+            .with_gauge_attribution(self.role, "_legacy");
         *legacy_wal = Some(Arc::new(wal));
         Self::record_instance_opened();
         Ok(true)
@@ -370,7 +385,7 @@ impl WalManager {
 
         // Initialize WAL
         let mut wal = match Wal::new(wal_config).await {
-            Ok(wal) => wal,
+            Ok(wal) => wal.with_gauge_attribution(self.role, signal_type),
             Err(e) => return Err(e),
         };
 
@@ -1017,20 +1032,8 @@ impl WalManager {
     ///
     /// Returns the number of newly opened WAL instances.
     pub async fn discover_existing_wals(&self) -> Result<usize, anyhow::Error> {
-        let mut base_dirs = Vec::new();
-        for config in [
-            &self.traces_config,
-            &self.logs_config,
-            &self.metrics_config,
-            &self.profiles_config,
-        ] {
-            if !base_dirs.contains(&config.wal_dir) {
-                base_dirs.push(config.wal_dir.clone());
-            }
-        }
-
         let mut opened = 0;
-        for base_dir in base_dirs {
+        for base_dir in self.base_wal_dirs() {
             if !base_dir.is_dir() {
                 continue;
             }
@@ -1061,6 +1064,24 @@ impl WalManager {
         Ok(opened)
     }
 
+    /// This manager's base WAL directories (one per signal config,
+    /// deduplicated — all four commonly share one). Shared by every method
+    /// that walks the on-disk layout from scratch rather than the WAL cache.
+    fn base_wal_dirs(&self) -> Vec<std::path::PathBuf> {
+        let mut base_dirs = Vec::new();
+        for config in [
+            &self.traces_config,
+            &self.logs_config,
+            &self.metrics_config,
+            &self.profiles_config,
+        ] {
+            if !base_dirs.contains(&config.wal_dir) {
+                base_dirs.push(config.wal_dir.clone());
+            }
+        }
+        base_dirs
+    }
+
     /// Whether `dir` directly contains any `wal-*.log` segment files.
     async fn dir_has_wal_segments(dir: &std::path::Path) -> Result<bool, anyhow::Error> {
         let mut files = tokio::fs::read_dir(dir).await?;
@@ -1075,12 +1096,15 @@ impl WalManager {
         Ok(false)
     }
 
-    /// Scan a base WAL directory for `{tenant}/{dataset}/{signal}` triples
-    /// that contain WAL segment files.
-    async fn scan_wal_layout(
+    /// Walk every `{tenant}/{dataset}` directory under `base_dir`, yielding
+    /// `(tenant, dataset, dataset_dir)`. Shared by [`Self::scan_wal_layout`]
+    /// (leaf check: `wal-*.log` segments under `{dataset_dir}/{signal}`) and
+    /// [`Self::scan_dead_letter_dirs`] (leaf check: a `dead-letter`
+    /// subdirectory under `{dataset_dir}/{signal}`) — the two differ only in
+    /// what they consider a live leaf, not in how they get there.
+    async fn walk_tenant_datasets(
         base_dir: &std::path::Path,
-    ) -> Result<Vec<(String, String, String)>, anyhow::Error> {
-        const SIGNALS: [&str; 4] = ["traces", "logs", "metrics", "profiles"];
+    ) -> Result<Vec<(String, String, std::path::PathBuf)>, anyhow::Error> {
         let mut found = Vec::new();
 
         let mut tenants = tokio::fs::read_dir(base_dir).await?;
@@ -1100,15 +1124,70 @@ impl WalManager {
                 let Some(dataset) = dataset_entry.file_name().to_str().map(String::from) else {
                     continue;
                 };
+                found.push((tenant.clone(), dataset, dataset_entry.path()));
+            }
+        }
 
+        Ok(found)
+    }
+
+    /// Scan a base WAL directory for `{tenant}/{dataset}/{signal}` triples
+    /// that contain WAL segment files.
+    async fn scan_wal_layout(
+        base_dir: &std::path::Path,
+    ) -> Result<Vec<(String, String, String)>, anyhow::Error> {
+        const SIGNALS: [&str; 4] = ["traces", "logs", "metrics", "profiles"];
+        let mut found = Vec::new();
+
+        for (tenant, dataset, dataset_dir) in Self::walk_tenant_datasets(base_dir).await? {
+            for signal in SIGNALS {
+                let signal_dir = dataset_dir.join(signal);
+                if !signal_dir.is_dir() {
+                    continue;
+                }
+                // Only open directories that actually contain WAL segments
+                if Self::dir_has_wal_segments(&signal_dir).await? {
+                    found.push((tenant.clone(), dataset.clone(), signal.to_string()));
+                }
+            }
+        }
+
+        Ok(found)
+    }
+
+    /// Discover every `{tenant}/{dataset}/{signal}/dead-letter/` directory
+    /// under this manager's base WAL directories, whether or not that
+    /// tenant/dataset/signal currently has a live, cached [`Wal`] instance.
+    ///
+    /// [`Self::discover_existing_wals`] only opens directories that still
+    /// hold `wal-*.log` segments — exactly the ones with something left to
+    /// drain. A WAL whose live segments have all been processed and cleaned
+    /// up drops out of that discovery, but its `dead-letter/` subdirectory
+    /// does not: the payloads written by [`Wal::dead_letter`],
+    /// [`Wal::dead_letter_rejected`] and [`Wal::dead_letter_unreadable`]
+    /// just sit there, orphaned from anything that would revisit them. That
+    /// is the exact shape of #1494 (45k rejected entries, unreported and
+    /// unexpired for a month) — so dead-letter reconciliation walks the
+    /// directory tree directly instead of riding on the WAL cache.
+    pub async fn scan_dead_letter_dirs(
+        &self,
+    ) -> Result<Vec<(String, String, String, std::path::PathBuf)>, anyhow::Error> {
+        const SIGNALS: [&str; 4] = ["traces", "logs", "metrics", "profiles"];
+        let mut found = Vec::new();
+        for base_dir in self.base_wal_dirs() {
+            if !base_dir.is_dir() {
+                continue;
+            }
+            for (tenant, dataset, dataset_dir) in Self::walk_tenant_datasets(&base_dir).await? {
                 for signal in SIGNALS {
-                    let signal_dir = dataset_entry.path().join(signal);
-                    if !signal_dir.is_dir() {
-                        continue;
-                    }
-                    // Only open directories that actually contain WAL segments
-                    if Self::dir_has_wal_segments(&signal_dir).await? {
-                        found.push((tenant.clone(), dataset.clone(), signal.to_string()));
+                    let dead_letter_dir = dataset_dir.join(signal).join("dead-letter");
+                    if dead_letter_dir.is_dir() {
+                        found.push((
+                            tenant.clone(),
+                            dataset.clone(),
+                            signal.to_string(),
+                            dead_letter_dir,
+                        ));
                     }
                 }
             }
@@ -2175,5 +2254,54 @@ mod tests {
             5,
             "max_instances = 0 must keep every WAL uncapped"
         );
+    }
+
+    #[tokio::test]
+    async fn scan_dead_letter_dirs_finds_a_directory_with_no_live_wal() {
+        // The #1494 shape: live segments were fully drained and cleaned up
+        // (or never existed this run), but a dead-letter directory from
+        // earlier is still sitting on disk. `discover_existing_wals` would
+        // not open this WAL at all, so dead-letter discovery must not depend
+        // on it.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("metrics")
+            .join("dead-letter");
+        tokio::fs::create_dir_all(&dead_letter_dir).await.unwrap();
+        tokio::fs::write(dead_letter_dir.join("a.bin"), b"payload")
+            .await
+            .unwrap();
+
+        assert_eq!(
+            manager.wal_count().await,
+            0,
+            "nothing should have opened a live WAL for this tenant"
+        );
+
+        let found = manager.scan_dead_letter_dirs().await.unwrap();
+        assert_eq!(found.len(), 1);
+        let (tenant, dataset, signal, dir) = &found[0];
+        assert_eq!(tenant, "acme");
+        assert_eq!(dataset, "production");
+        assert_eq!(signal, "metrics");
+        assert_eq!(dir, &dead_letter_dir);
+    }
+
+    #[tokio::test]
+    async fn scan_dead_letter_dirs_ignores_tenants_with_none() {
+        let temp_dir = TempDir::new().unwrap();
+        let manager = uniform_manager(temp_dir.path());
+        manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+
+        let found = manager.scan_dead_letter_dirs().await.unwrap();
+        assert!(found.is_empty());
     }
 }

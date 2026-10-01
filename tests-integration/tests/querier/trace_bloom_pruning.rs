@@ -23,9 +23,7 @@ use std::sync::Arc;
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
 use datafusion::prelude::SessionContext;
-use object_store::memory::InMemory;
 use tests_integration::generators::{self, BLOOM_TARGET_TRACE_ID};
-use writer::IcebergTableWriter;
 
 const NUM_FILES: usize = 5;
 const TARGET_FILE: usize = 2;
@@ -50,11 +48,9 @@ async fn single_trace_lookup_prunes_row_groups_via_bloom_filter() -> Result<()> 
         .with_tenant(tenant_id, dataset_id)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let object_store = Arc::new(InMemory::new());
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

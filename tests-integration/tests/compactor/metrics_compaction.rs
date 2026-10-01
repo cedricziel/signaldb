@@ -9,7 +9,6 @@ use common::flight::conversion::conversion_metrics::otlp_metrics_to_arrow;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use object_store::memory::InMemory;
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue};
 use opentelemetry_proto::tonic::metrics::v1::{
@@ -19,7 +18,6 @@ use opentelemetry_proto::tonic::metrics::v1::{
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::busiest_partition;
-use writer::IcebergTableWriter;
 
 /// Helper function to create a resource with service name
 fn make_resource(service_name: &str) -> Resource {
@@ -164,18 +162,16 @@ async fn test_metrics_gauge_compaction() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics_gauge";
+    let table_name = "metrics";
 
     // Phase 1: Write 10 small batches via Writer
     tracing::info!("Phase 1: Writing 10 small gauge metric batches");
 
-    let writer_result = IcebergTableWriter::new(
+    let writer_result = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -268,18 +264,16 @@ async fn test_metrics_histogram_compaction() -> Result<()> {
 
     // Setup: Create in-memory catalog and object store
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
-    let table_name = "metrics_histogram";
+    let table_name = "metrics";
 
     // Phase 1: Write 10 small batches via Writer
     tracing::info!("Phase 1: Writing 10 small histogram metric batches");
 
-    let writer_result = IcebergTableWriter::new(
+    let writer_result = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

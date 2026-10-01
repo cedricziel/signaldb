@@ -326,7 +326,6 @@ impl App {
             | Action::ScrollDown
             | Action::Select
             | Action::Back
-            | Action::Search(_)
             | Action::Confirm
             | Action::Cancel
             | Action::None => {}

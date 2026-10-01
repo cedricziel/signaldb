@@ -42,6 +42,16 @@ pub struct AppMetrics {
     // found the cache at or over `[wal].max_instances`, labelled by
     // `outcome` (`evicted` | `over_cap`).
     pub wal_instance_cap_hits: Counter<u64>,
+    // Dead-lettered WAL entries/bytes currently on disk under
+    // `<wal_dir>/.../dead-letter/`, by `signaldb.tenant.id`,
+    // `signaldb.dataset.id`, `signal`, `role` (`acceptor` | `writer`), and
+    // `kind` (`rejected` | `unreadable`). Recorded fresh on every retention
+    // sweep (`common::wal::dead_letter::reconcile_and_sweep`), never
+    // adjusted incrementally, so the value is always the true on-disk state
+    // as of the last sweep (#1494: 45k rejected entries sat unreported for a
+    // month because nothing exported this).
+    pub wal_dead_letter_entries: Gauge<u64>,
+    pub wal_dead_letter_bytes: Gauge<u64>,
 
     // Flight metrics
     pub flight_request_duration: Histogram<f64>,
@@ -96,6 +106,25 @@ pub struct AppMetrics {
     pub writer_tables_provisioned: Counter<u64>,
     pub writer_table_provisioning_failures: Counter<u64>,
 
+    // Warm containment index tokens (4.3) written to `attr_index` per typed
+    // batch, by `signaldb.table`. Zero for a table that hasn't opted into
+    // the column; a rate far below `ingest_batches_written` on an opted-in
+    // table means most values are landing as residue, not a typed home.
+    pub writer_warm_index_tokens_written: Counter<u64>,
+
+    // Ingest ids (from `do_put`'s `app_metadata`, #1734) recognized as a
+    // repeat within the writer's dedup window, by tenant and signal. Its
+    // freshly appended WAL entries are marked processed immediately instead
+    // of committed again. It counts acceptor forward retries and client
+    // resends that reached a different acceptor (or one that restarted); a
+    // rising rate explained by neither means the acceptor's writer pinning
+    // (rendezvous hashing on ingest id) is unstable.
+    pub ingest_duplicates_dropped: Counter<u64>,
+
+    // By tenant and signal. A steady rate means clients give up before the
+    // acceptor answers: its ingest latency is above their export timeout.
+    pub acceptor_resends_dropped: Counter<u64>,
+
     // MCP server audit: one count per tool call by tool and outcome
     // (`ok | truncated | denied | throttled | error`), and the call duration
     // by tool. Prometheus renders them as `signaldb_mcp_tool_calls_total`
@@ -109,6 +138,20 @@ pub struct AppMetrics {
     // `requests`, `bytes`, `quota`). Exported as
     // `signaldb_rate_limit_rejections_total` over Prometheus.
     pub rate_limit_rejections: Counter<u64>,
+
+    // Tenant OTTL processors (change: tenant-ottl-processors, design D9):
+    // one increment per statement evaluation outcome (`outcome=applied|
+    // error|skipped`, plus `tenant`/`processor`), and one per export
+    // rejected by an `ErrorMode::Propagate` processor.
+    pub processors_statements: Counter<u64>,
+    pub processors_rejected_requests: Counter<u64>,
+
+    // Attribute values kept in the residue because their sent type differs
+    // from the field's canonical type, and config pins that retype an
+    // already-established field. By `signaldb.tenant.id`, `signal`, `level`
+    // (resource|scope|record), and `reason` (`off_type` | `pin_conflict`) —
+    // never the attribute key.
+    pub writer_attribute_type_mismatches: Counter<u64>,
 }
 
 /// Attribute key naming the tool on the MCP metrics (`gen_ai.tool.name`).
@@ -131,6 +174,32 @@ impl AppMetrics {
         self.mcp_tool_call_duration.record(
             duration.as_secs_f64(),
             &[KeyValue::new(MCP_TOOL_ATTR, tool.to_owned())],
+        );
+    }
+
+    /// Bump `signaldb.writer.attribute_type_mismatches` by `count` for
+    /// `(tenant_id, signal, level, reason)`. Never pass the attribute key —
+    /// it would make this an unbounded label.
+    pub fn record_attribute_type_mismatches(
+        &self,
+        tenant_id: &str,
+        signal: &str,
+        level: &str,
+        reason: &str,
+        count: u64,
+    ) {
+        use opentelemetry::KeyValue;
+        if !should_count_tenant(tenant_id) {
+            return;
+        }
+        self.writer_attribute_type_mismatches.add(
+            count,
+            &[
+                KeyValue::new("signaldb.tenant.id", tenant_id.to_owned()),
+                KeyValue::new("signal", signal.to_owned()),
+                KeyValue::new("level", level.to_owned()),
+                KeyValue::new("reason", reason.to_owned()),
+            ],
         );
     }
 }
@@ -246,6 +315,22 @@ impl AppMetrics {
                 )
                 .with_unit("{creation}")
                 .build(),
+            wal_dead_letter_entries: meter
+                .u64_gauge("signaldb.wal.dead_letter_entries")
+                .with_description(
+                    "Dead-lettered WAL entries currently on disk, by kind (rejected: \
+                     replayable once its cause is fixed; unreadable: no intact payload)",
+                )
+                .with_unit("{entry}")
+                .build(),
+            wal_dead_letter_bytes: meter
+                .u64_gauge("signaldb.wal.dead_letter_bytes")
+                .with_description(
+                    "Bytes occupied by dead-lettered WAL entries currently on disk \
+                     (payload plus marker), by kind",
+                )
+                .with_unit("By")
+                .build(),
             flight_request_duration: meter
                 .f64_histogram("signaldb.flight.request.duration")
                 .with_description("Duration of Flight RPC handling")
@@ -352,6 +437,27 @@ impl AppMetrics {
                 .with_description("Signal tables the reconciler could not create")
                 .with_unit("{table}")
                 .build(),
+            writer_warm_index_tokens_written: meter
+                .u64_counter("signaldb.writer.warm_index_tokens_written")
+                .with_description(
+                    "Warm containment index tokens written to attr_index, by table",
+                )
+                .with_unit("{token}")
+                .build(),
+            ingest_duplicates_dropped: meter
+                .u64_counter("signaldb.writer.ingest_duplicates_dropped")
+                .with_description(
+                    "do_put ingest ids recognized as a repeat within the writer's dedup window",
+                )
+                .with_unit("{entry}")
+                .build(),
+            acceptor_resends_dropped: meter
+                .u64_counter("signaldb.acceptor.resends_dropped")
+                .with_description(
+                    "Client resends of an already-durable batch acknowledged without re-ingesting it",
+                )
+                .with_unit("{batch}")
+                .build(),
             mcp_tool_calls: meter
                 .u64_counter("signaldb.mcp.tool_calls")
                 .with_description("MCP tool calls by tool and audit outcome")
@@ -369,8 +475,61 @@ impl AppMetrics {
                 )
                 .with_unit("{rejection}")
                 .build(),
+            processors_statements: meter
+                .u64_counter("signaldb.processors.statements")
+                .with_description(
+                    "Tenant OTTL processor statement evaluations, by tenant, processor, and outcome",
+                )
+                .with_unit("{statement}")
+                .build(),
+            writer_attribute_type_mismatches: meter
+                .u64_counter("signaldb.writer.attribute_type_mismatches")
+                .with_description(
+                    "Attribute values stored in the residue because their type differs from \
+                     the field's canonical type, and pin conflicts",
+                )
+                .with_unit("{value}")
+                .build(),
+            processors_rejected_requests: meter
+                .u64_counter("signaldb.processors.rejected_requests")
+                .with_description(
+                    "Ingest requests rejected by a tenant OTTL processor in propagate error mode",
+                )
+                .with_unit("{request}")
+                .build(),
         }
     }
+}
+
+/// Record one tenant-OTTL-processor statement evaluation outcome
+/// (`applied`, `error`, or `skipped`), labelled by tenant and processor
+/// name. Bounded by tenant count × processor count, both small.
+pub fn record_processor_statement(
+    tenant_id: &str,
+    processor: &str,
+    outcome: &'static str,
+    count: u64,
+) {
+    use opentelemetry::KeyValue;
+
+    app_metrics().processors_statements.add(
+        count,
+        &[
+            KeyValue::new("tenant", tenant_id.to_owned()),
+            KeyValue::new("processor", processor.to_owned()),
+            KeyValue::new("outcome", outcome),
+        ],
+    );
+}
+
+/// Record one export rejected by a processor running in `propagate` error
+/// mode.
+pub fn record_processor_rejected_request(tenant_id: &str) {
+    use opentelemetry::KeyValue;
+
+    app_metrics()
+        .processors_rejected_requests
+        .add(1, &[KeyValue::new("tenant", tenant_id.to_owned())]);
 }
 
 /// Record one rate-limit rejection, labelled by the rejecting surface

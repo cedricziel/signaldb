@@ -1,14 +1,14 @@
 // Flamegraph data for the Profiles tab, exclusively over the native Query IR
 // API — mirrors the mcp-server's `get_profile` tool, which submits the same
 // `flamegraph`-enveloped `profiles` query shape. Discovery (which services,
-// sample types, or attribute keys/values exist) has no Query IR equivalent
-// yet, so that stays on the Pyroscope-compat endpoints in api/pyroscope.ts;
+// sample types, or attribute keys/values exist) is api/ir/discovery.ts;
 // this module is the only thing that actually renders a flamegraph.
 
 import { runIrQuery } from "./queryIr";
 import { ApiError } from "./http";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import type { RenderResponse } from "./pyroscope";
+import type { RenderResponse } from "./profileTypes";
+import type { FrameLocation, IrStage } from "./gen";
 
 /** An additional attribute matcher beyond service/sample-type — the field
  * is a bare attribute key, which Query IR coalesces across the profile's
@@ -29,9 +29,12 @@ export interface FlamegraphFetch {
   /** True when the match set exceeded the server's per-query row cap and
    * the flamegraph only reflects the first N profiles matched. */
   truncated: boolean;
+  /** Per-name source location, parallel to `render.flamebearer.names`; see
+   * `FlamegraphResult.locations`. */
+  locations: Array<FrameLocation | null>;
 }
 
-function whereEq(field: string, value: string): Record<string, unknown> {
+function whereEq(field: string, value: string): IrStage {
   return { where: { field, op: "eq", value } };
 }
 
@@ -60,7 +63,7 @@ export async function fetchFlamegraph(
   range: ResolvedRange,
   query: FlamegraphQuery,
 ): Promise<FlamegraphFetch> {
-  const pipeline: Record<string, unknown>[] = [];
+  const pipeline: IrStage[] = [];
   if (query.service) pipeline.push(whereEq("service.name", query.service));
   if (query.sampleType) pipeline.push(whereEq("sample.type", query.sampleType));
   if (query.matcher?.label) {
@@ -80,6 +83,7 @@ export async function fetchFlamegraph(
   return {
     render: toRenderResponse(res.flamegraph, query.sampleType ?? ""),
     truncated: res.flamegraph.truncated,
+    locations: res.flamegraph.locations,
   };
 }
 

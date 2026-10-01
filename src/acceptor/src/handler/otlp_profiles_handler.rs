@@ -17,14 +17,17 @@ use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceRequest;
 
 use super::WalManager;
-use super::forward::forward_batch_to_writer;
+use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
 use super::ingest_error::IngestError;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct ProfileHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Recognizes a client's resend of a batch already made durable
+    retry_dedup: Arc<RetryDedup>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -69,7 +72,16 @@ impl ProfileHandler {
         Self {
             flight_transport,
             wal_manager,
+            retry_dedup: Arc::new(RetryDedup::default()),
         }
+    }
+
+    /// Share one resend-dedup cache (`[acceptor].retry_dedup_window`) with
+    /// the acceptor's other handlers; the default is a private cache with
+    /// the default window.
+    pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
+        self.retry_dedup = retry_dedup;
+        self
     }
 
     /// Handle an OTLP profiles export.
@@ -126,14 +138,20 @@ impl ProfileHandler {
             }
         }
 
-        // Serialize metadata for WAL storage (enables background processor routing)
-        let metadata_str = serde_json::to_string(&metadata).ok();
-
         // Step 1: Write to WAL first for durability
         let batch_bytes = record_batch_to_bytes(&record_batch)
             .context("Failed to serialize record batch")
             .map_err(IngestError::Unavailable)?;
 
+        let ingest_id = stamp_batch_fingerprint(
+            &mut metadata,
+            &tenant_context.tenant_id,
+            &tenant_context.dataset_id,
+            &WalOperation::WriteProfiles,
+            &batch_bytes,
+        );
+        // Serialize metadata for WAL storage (enables background processor routing)
+        let metadata_str = serde_json::to_string(&metadata).ok();
         let wal_entry_id = wal
             .append(
                 WalOperation::WriteProfiles,
@@ -152,24 +170,31 @@ impl ProfileHandler {
 
         tracing::debug!(entry_id = %wal_entry_id, "Profiles written to WAL");
 
-        // Step 2: Forward from WAL to writer via Flight
-        match forward_batch_to_writer(
-            &self.flight_transport,
-            record_batch,
-            metadata_str.as_deref(),
-        )
-        .await
-        {
-            Ok(()) => {
-                tracing::debug!("Successfully forwarded profiles via Flight protocol");
-                // Mark WAL entry as processed after successful forwarding
-                if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                    tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
-                }
-            }
-            Err(e) => {
-                tracing::error!(error = %e, "Failed to forward profiles - data remains in WAL for retry");
-            }
+        // Step 2: Forward from WAL to writer via Flight, detached from this
+        // request future so a client disconnect cannot cancel it after the
+        // flush above (issue #1734). Awaiting the handle keeps behavior for
+        // connected clients unchanged. A client's resend of a batch already
+        // accepted is retired instead (see `retry_dedup`).
+        let forward_task = if self.retry_dedup.is_resend(ingest_id) {
+            spawn_retire_resend(
+                wal,
+                wal_entry_id,
+                &tenant_context.tenant_id,
+                &WalOperation::WriteProfiles,
+            )
+        } else {
+            spawn_forward_and_mark(
+                self.flight_transport.clone(),
+                wal,
+                wal_entry_id,
+                ingest_id,
+                record_batch,
+                metadata_str,
+                "profiles",
+            )
+        };
+        if let Err(e) = forward_task.await {
+            tracing::error!(entry_id = %wal_entry_id, error = %e, "Forward-and-mark task for profiles did not complete");
         }
 
         // Data is durable in the WAL at this point; forward failures are

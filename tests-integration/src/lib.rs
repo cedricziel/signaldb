@@ -6,8 +6,10 @@ use tempfile::TempDir;
 pub mod compaction_helpers;
 pub mod fixtures;
 pub mod generators;
+pub mod mcp_test_helpers;
 pub mod ordering;
 pub mod test_helpers;
+pub mod test_support;
 
 /// Create a test configuration with temporary directories
 pub fn create_test_config() -> (Configuration, TempDir) {

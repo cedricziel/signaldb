@@ -22,6 +22,13 @@ export interface PanelWidth {
   /** Clamp, apply, and persist a width. Returns the clamped value. */
   set(px: number): number;
   clamp(px: number): number;
+  /**
+   * Where a drag starts: the saved width, or the width the pane is drawn at
+   * when that is narrower. The CSS caps a saved width to a share of the
+   * available space (explore.css, traces.css), and starting from the saved
+   * value would leave a dead zone before a capped pane visibly moves.
+   */
+  dragStart(renderedPx?: number): number;
 }
 
 interface PanelWidthConfig {
@@ -80,6 +87,13 @@ export function createPanelWidth({
     return clamped;
   };
 
+  const dragStart = (renderedPx?: number): number => {
+    const saved = read();
+    return renderedPx !== undefined && renderedPx > 0
+      ? Math.min(saved, Math.round(renderedPx))
+      : saved;
+  };
+
   return {
     grows,
     resizerClassName,
@@ -89,6 +103,7 @@ export function createPanelWidth({
     apply,
     set,
     clamp,
+    dragStart,
   };
 }
 

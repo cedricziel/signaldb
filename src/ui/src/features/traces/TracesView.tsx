@@ -1,28 +1,39 @@
 import { useQuery } from "@tanstack/react-query";
-import { Fragment, useId, useMemo, useRef, useState } from "react";
+import { type CSSProperties, useId, useMemo, useRef, useState } from "react";
+import { useNavigate } from "react-router";
 import {
-  tempoSearchTags,
+  type AttrValue,
   type ProfileSummaryView,
   type SpanEventView,
   type TempoSpan,
-} from "../../api/tempo";
+} from "../../api/traceTypes";
+import { fields as describeFields } from "../../api/ir/discovery";
 import { ApiError } from "../../api/http";
 import { fetchTraceDetail } from "../../api/traceDetail";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
+import { SourceSnippet } from "../../components/SourceSnippet";
+import { StacktraceLines } from "../../components/StacktraceLines";
 import {
   STATUS_COLORS,
   STATUS_ORDER,
   fetchTraceLatencyHeatmap,
   fetchTraceVolume,
 } from "../../api/traceVolume";
-import { SignalHistogram } from "../explore/SignalHistogram";
+import { SignalHistogram } from "../../components/SignalHistogram";
 import { AttributeKeyInput } from "../../components/AttributeKeyInput";
 import { AttributeValue } from "../../components/AttributeValue";
+import {
+  AttributeSection,
+  AttributeSummary,
+  AttributeTable,
+  DescriptionsToggle,
+  type AttributeRowAction,
+} from "../../components/AttributeTable";
 import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
 } from "../../components/MobileSidebarDrawer";
-import { SemanticKey } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import {
   useVizPointer,
@@ -31,16 +42,35 @@ import {
 } from "../../components/VizTooltip";
 import { useSemantics } from "../../hooks/useSemantics";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import { useAttrDescriptions } from "../../lib/attrDescriptions";
+import { pivotRowActions } from "../../lib/attrPivots";
+import {
+  RESOURCE_IDENTITY_FIELDS,
+  summarizeAttributes,
+  type SummaryField,
+} from "../../lib/attrSummary";
 import { spanDetailWidth } from "../../lib/sidebarWidth";
-import { groupBySemanticTitle } from "../../lib/semantics";
+import { liveRefetchInterval } from "../../lib/live";
+import { goBackOr } from "../../lib/router";
+import {
+  codeLocationFromAttributes,
+  repositoryHints,
+} from "../../lib/sourceLocation";
+import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
+import {
+  errorRateClass,
+  formatErrorRate,
+  pluralCount,
+} from "../../lib/vizFormat";
 import { TraceFacets } from "./TraceFacets";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
 import { TraceVolumeHeatmap } from "./TraceVolumeHeatmap";
 import {
   KIND_VALUES,
-  compileTraceQL,
   facetField,
+  facetableField,
   removeTraceFilter,
+  traceFilterToParam,
   upsertTraceFilter,
   withDefaultTraceFilters,
   type TraceFilter,
@@ -54,6 +84,7 @@ import {
   resolveStep,
   stepOptionsForRange,
   type ResolvedRange,
+  type TimeRange,
 } from "../../lib/time";
 import {
   BUILTIN_DIMENSIONS,
@@ -69,18 +100,35 @@ import {
   DEFAULT_GROUP_SORT,
   GROUP_BUDGET,
   fetchTraceGroups,
+  groupPinStages,
   type GroupGrain,
   type GroupSort,
 } from "../../api/traceGroups";
 import { fetchTraceGroupMembers } from "../../api/traceGroupMembers";
 import { SkeletonLines, SkeletonRows } from "../explore/Skeleton";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { buildWaterfall, formatDurationMs } from "../../lib/waterfall";
+import {
+  buildWaterfall,
+  formatDurationMs,
+  rulerTicks,
+} from "../../lib/waterfall";
+import { traceToGraph } from "../../lib/traceToGraph";
+import {
+  ServiceGraph,
+  type ServiceGraphEdge,
+  type ServiceGraphNode,
+} from "../../components/ServiceGraph";
 import { fetchWindowTotal, looksUnresolved } from "./unresolvedGroup";
 import { describeService, groupSpanAttributes } from "./spanAttributes";
 import { SortTh, useSort } from "../../lib/sortTable";
-import { MemberTable } from "./MemberTable";
+import { MemberTable } from "../../components/MemberTable";
+// Shared explore-view chrome (`.traces-body`, sidebar/facets, chips, the
+// mobile drawer, `.svol-*` volume chart, ...) — normally loaded once via
+// ExploreView, but this view depends on those classnames directly, so it
+// owns the import too rather than assuming a parent already loaded it.
+import "../explore/explore.css";
 import "./traces.css";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 interface Props {
   state: ExploreState;
@@ -139,8 +187,38 @@ function spanTooltipRows(
   ];
 }
 
-function plural(n: number, noun: string): string {
-  return `${n} ${noun}${n === 1 ? "" : "s"}`;
+/** Maps the pure `traceToGraph` derivation onto `ServiceGraph`'s props —
+ * the metric line is time spent in the service, the mockup's "time in
+ * service" figure. */
+function traceGraphView(spans: TempoSpan[]): {
+  nodes: ServiceGraphNode[];
+  edges: ServiceGraphEdge[];
+} {
+  const { nodes, edges } = traceToGraph(spans);
+  return {
+    nodes: nodes.map((n) => ({
+      id: n.service,
+      label: n.service,
+      failed: n.failed,
+      external: n.external,
+      metricLine: `${formatDurationMs(n.durationMs)} in service`,
+    })),
+    edges: edges.map((e) => ({
+      from: e.from,
+      to: e.to,
+      count: e.count,
+      failed: e.failed,
+    })),
+  };
+}
+
+type TraceViewMode = "waterfall" | "map" | "both";
+
+/** A stable string for a filter set, used only as a react-query cache key
+ * (the queries below take `filters` directly — see api/traceGroups.ts,
+ * api/traceGroupMembers.ts — this just tells the cache when they changed). */
+function filterCacheKey(filters: TraceFilter[]): string {
+  return filters.map(traceFilterToParam).join(",");
 }
 
 export function TracesView({ state, update }: Props) {
@@ -160,28 +238,46 @@ function TraceSearch({ state, update }: Props) {
   // view): the default kinds apply on read, and every update writes the
   // full, explicit set back.
   const filters = withDefaultTraceFilters(state.traceFilters);
-  const traceql = compileTraceQL(filters);
+  const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
+  // When a group is drilled into, the volume/heatmap charts at the top must
+  // describe that group's spans — the same ones `GroupDetail`'s member list
+  // shows — not the whole traces tab (see `groupPinStages`).
+  const groupPins =
+    state.group === ""
+      ? []
+      : groupPinStages(dims, parseCompositeKey(state.group, dims));
+  const groupPinKey =
+    state.group === "" ? "" : `${dims.join(",")}=${state.group}`;
 
   const resolvedForStep = resolveRange(state.range, Date.now());
   const step = resolveStep(resolvedForStep, state.step);
   // Deliberately keyed without `state.limit`: the volume aggregate covers the
   // whole window and must not move when the trace list's limit changes. It
   // does follow the filters, so the chart describes what the table shows.
+  const refetchInterval = liveRefetchInterval(state.live);
   const volume = useQuery({
-    queryKey: ["trace-volume", rangeKey, step, traceql],
+    queryKey: ["trace-volume", rangeKey, step, filterKey, groupPinKey],
     queryFn: () =>
-      fetchTraceVolume(resolveRange(state.range, Date.now()), step, filters),
+      fetchTraceVolume(
+        resolveRange(state.range, Date.now()),
+        step,
+        filters,
+        groupPins,
+      ),
+    refetchInterval,
   });
   const latencyHeatmap = useQuery({
-    queryKey: ["trace-latency", rangeKey, step, traceql],
+    queryKey: ["trace-latency", rangeKey, step, filterKey, groupPinKey],
     queryFn: () =>
       fetchTraceLatencyHeatmap(
         resolveRange(state.range, Date.now()),
         step,
         filters,
+        groupPins,
       ),
     enabled: volumeView === "heatmap",
+    refetchInterval,
   });
 
   const addFilter = (f: TraceFilter) =>
@@ -236,47 +332,59 @@ function TraceSearch({ state, update }: Props) {
           ) : latencyHeatmap.isError ? (
             <QueryError what="latency" error={latencyHeatmap.error} />
           ) : null
-        ) : volume.data && volumeView === "histogram" ? (
-          <SignalHistogram
-            series={volume.data}
-            order={STATUS_ORDER}
-            colors={STATUS_COLORS}
-            rangeMs={resolvedForStep}
-            stepMs={(durationToSeconds(step) ?? 60) * 1000}
-            scale={state.scale}
-            unit="spans"
-            label="Span volume over time by status"
-            onScaleChange={(scale) => update({ scale })}
-            step={state.step}
-            stepOptions={stepOptionsForRange(resolvedForStep)}
-            onStepChange={(step) => update({ step })}
-          />
-        ) : volume.data && volumeView === "area" ? (
-          <TraceVolumeAreaChart
-            series={volume.data}
-            order={STATUS_ORDER}
-            colors={STATUS_COLORS}
-            rangeMs={resolvedForStep}
-            stepMs={(durationToSeconds(step) ?? 60) * 1000}
-            unit="spans"
-            label="Span volume"
-          />
+        ) : volume.data ? (
+          volumeView === "histogram" ? (
+            <SignalHistogram
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              scale={state.scale}
+              unit="spans"
+              label="Span volume over time by status"
+              onScaleChange={(scale) => update({ scale })}
+              step={state.step}
+              stepOptions={stepOptionsForRange(resolvedForStep)}
+              onStepChange={(step) => update({ step })}
+            />
+          ) : (
+            <TraceVolumeAreaChart
+              series={volume.data}
+              order={STATUS_ORDER}
+              colors={STATUS_COLORS}
+              rangeMs={resolvedForStep}
+              stepMs={(durationToSeconds(step) ?? 60) * 1000}
+              unit="spans"
+              label="Span volume"
+            />
+          )
+        ) : volume.isPending ? (
+          <div className="trace-heatmap-empty">Loading…</div>
+        ) : volume.isError ? (
+          <QueryError what="span volume" error={volume.error} />
         ) : null}
       </div>
       {chips.length > 0 && (
         <div className="filter-chips" aria-label="Active filters">
-          {chips.map((f) => (
-            <button
-              className="filter-chip"
-              key={`${f.field}|${f.value}`}
-              aria-label={`Remove filter ${f.field} = ${f.value}`}
-              onClick={() => removeFilter(f)}
-            >
-              <span className="filter-chip-k">{f.field}</span>
-              <span className="filter-chip-v">{f.value}</span>
-              <span className="filter-chip-x">×</span>
-            </button>
-          ))}
+          {chips.map((f) => {
+            // An absent-value filter (see CatalogView.tsx's drillFilters)
+            // has no value to show — "(not set)" says what it actually
+            // means, the same label the group table uses for the same case.
+            const display = f.op === "absent" ? NOT_SET : f.value;
+            return (
+              <button
+                className="filter-chip chip"
+                key={`${f.field}|${f.value}`}
+                aria-label={`Remove filter ${f.field} = ${display}`}
+                onClick={() => removeFilter(f)}
+              >
+                <span className="filter-chip-k">{f.field}</span>
+                <span className="filter-chip-v">{display}</span>
+                <span className="filter-chip-x">×</span>
+              </button>
+            );
+          })}
         </div>
       )}
       <MobileFiltersToggle
@@ -295,6 +403,7 @@ function TraceSearch({ state, update }: Props) {
             filters={filters}
             onAddFilter={addFilter}
             onRemoveFilter={removeFilter}
+            refetchInterval={refetchInterval}
           />
         </MobileSidebarDrawer>
         <div className="traces-main">
@@ -314,7 +423,9 @@ function TraceSearch({ state, update }: Props) {
                 aria-label="Trace ID"
                 placeholder="Open trace by ID…"
               />
-              <button type="submit">Open</button>
+              <button type="submit" className="btn btn-primary">
+                Open
+              </button>
             </form>
             {state.group === "" && (
               <>
@@ -333,11 +444,12 @@ function TraceSearch({ state, update }: Props) {
             <GroupList
               dims={dims}
               filters={filters}
-              traceql={traceql}
-              range={resolvedForStep}
+              filterKey={filterKey}
+              timeRange={state.range}
               rangeKey={rangeKey}
               grain={state.grain}
               rangeSeconds={rangeSeconds(state)}
+              live={state.live}
               update={update}
             />
           ) : (
@@ -438,8 +550,9 @@ function CustomDimensionInput({
 }) {
   const [value, setValue] = useState("");
   const tags = useQuery({
-    queryKey: ["trace-tag-names", rangeKey],
-    queryFn: () => tempoSearchTags(range),
+    queryKey: ["ir-trace-fields", rangeKey],
+    queryFn: () =>
+      describeFields("traces", range).then((fs) => fs.map((f) => f.name)),
     staleTime: 60_000,
   });
 
@@ -508,20 +621,22 @@ function GrainToggle({
 function GroupList({
   dims,
   filters,
-  traceql,
-  range,
+  filterKey,
+  timeRange,
   rangeKey,
   grain,
   rangeSeconds,
+  live,
   update,
 }: {
   dims: string[];
   filters: TraceFilter[];
-  traceql: string;
-  range: ResolvedRange;
+  filterKey: string;
+  timeRange: TimeRange;
   rangeKey: string;
   grain: GroupGrain;
   rangeSeconds: number;
+  live: boolean;
   update: UpdateFn;
 }) {
   // Sorting is a server-side `order` stage (see api/traceGroups), so a new
@@ -530,18 +645,41 @@ function GroupList({
     DEFAULT_GROUP_SORT.key,
     DEFAULT_GROUP_SORT.dir,
   );
+  // Rate is count over a fixed window: it keeps its own header key so the
+  // arrow follows the clicked column, but shares the count query and cache.
+  const querySort: GroupSort = {
+    key: sort.key === "rate" ? "n" : sort.key,
+    dir: sort.dir,
+  };
+  const refetchInterval = liveRefetchInterval(live);
   const result = useQuery({
     queryKey: [
       "trace-groups",
       rangeKey,
       dims.join(","),
       grain,
-      traceql,
-      sort.key,
-      sort.dir,
+      filterKey,
+      querySort.key,
+      querySort.dir,
     ],
-    queryFn: () =>
-      fetchTraceGroups(dims, range, filters, grain, sort as GroupSort),
+    // Resolved fresh on every fetch (as the volume chart does), not hoisted
+    // from a render captured before this call — a live refetch of a relative
+    // range must slide the window forward with it, not repeat the exact same
+    // one every 15s. The resolved bounds are carried on the result (rather
+    // than re-resolved by the window-total query below) so a relative
+    // range's shifting "now" can't put the two queries on different windows.
+    queryFn: async () => {
+      const range = resolveRange(timeRange, Date.now());
+      const groups = await fetchTraceGroups(
+        dims,
+        range,
+        filters,
+        grain,
+        querySort,
+      );
+      return { ...groups, range };
+    },
+    refetchInterval,
   });
 
   // #1070: an unresolvable dimension answers 200 with a single null-labelled
@@ -551,10 +689,23 @@ function GroupList({
   // it a suspect — confirming it needs the window total under the same
   // scope, fetched only when suspect.
   const suspect = result.data ? looksUnresolved(result.data.groups) : false;
+  const resolvedRange = result.data?.range;
   const windowTotal = useQuery({
-    queryKey: ["trace-window-total", rangeKey, grain, traceql],
-    queryFn: () => fetchWindowTotal(range, filters, grain),
-    enabled: suspect,
+    // Keyed on the group query's own resolved bounds (not a fresh
+    // `resolveRange` call) so this query only ever runs against the exact
+    // window the group counts came from, and refetches in lockstep whenever
+    // that window moves.
+    queryKey: [
+      "trace-window-total",
+      rangeKey,
+      grain,
+      filterKey,
+      resolvedRange?.fromMs,
+      resolvedRange?.toMs,
+    ],
+    queryFn: () => fetchWindowTotal(resolvedRange!, filters, grain),
+    enabled: suspect && resolvedRange !== undefined,
+    refetchInterval,
   });
   const unresolved =
     suspect &&
@@ -580,103 +731,112 @@ function GroupList({
       {result.isError && (
         <QueryError what="trace groups" error={result.error} />
       )}
-      <table className="trace-table" aria-busy={pending}>
-        <thead>
-          <tr>
-            {dims.map((d, i) => (
+      <div className="table-scroll">
+        <table className="trace-table" aria-busy={pending}>
+          <thead>
+            <tr>
+              {dims.map((d, i) => (
+                <SortTh
+                  key={d}
+                  label={d}
+                  sortKey={`dim:${i}`}
+                  sort={sort}
+                  toggle={toggle}
+                />
+              ))}
               <SortTh
-                key={d}
-                label={d}
-                sortKey={`dim:${i}`}
+                label={countLabel}
+                sortKey="n"
                 sort={sort}
                 toggle={toggle}
+                numeric
               />
-            ))}
-            <SortTh
-              label={countLabel}
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            {/* Rate is count / a fixed window — strictly increasing in count,
-                so it sorts identically to n; no separate sort key needed. */}
-            <SortTh
-              label="Rate"
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Errors"
-              sortKey="errors"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P50"
-              sortKey="p50"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P95"
-              sortKey="p95"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Last seen"
-              sortKey="last"
-              sort={sort}
-              toggle={toggle}
-              firstDir="desc"
-            />
-          </tr>
-        </thead>
-        <tbody>
-          {pending ? (
-            <SkeletonRows
-              rows={8}
-              columns={columns}
-              numericFrom={dims.length}
-            />
-          ) : (
-            groups.map((g) => {
-              const key = compositeKey(g.values);
-              return (
-                <tr
-                  key={key}
-                  onClick={() => update({ group: key }, { push: true })}
-                >
-                  <td>
-                    <button className="trace-open">
-                      {g.values[0] ?? NOT_SET}
-                    </button>
-                  </td>
-                  {g.values.slice(1).map((v, i) => (
-                    <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
-                  ))}
-                  <td className="num">{g.count}</td>
-                  <td className="num">{formatRate(g.count, rangeSeconds)}</td>
-                  <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
-                    {g.errors > 0
-                      ? `${Math.round((100 * g.errors) / g.count)}%`
-                      : "–"}
-                  </td>
-                  <td className="num">{formatDurationMs(g.p50Ms)}</td>
-                  <td className="num">{formatDurationMs(g.p95Ms)}</td>
-                  <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
-                </tr>
-              );
-            })
-          )}
-        </tbody>
-      </table>
+              <SortTh
+                label="Rate"
+                sortKey="rate"
+                sort={sort}
+                toggle={toggle}
+                numeric
+                className="col-secondary"
+              />
+              <SortTh
+                label="Errors"
+                sortKey="errors"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P50"
+                sortKey="p50"
+                sort={sort}
+                toggle={toggle}
+                numeric
+                className="col-secondary"
+              />
+              <SortTh
+                label="P95"
+                sortKey="p95"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Last seen"
+                sortKey="last"
+                sort={sort}
+                toggle={toggle}
+                firstDir="desc"
+                className="col-secondary"
+              />
+            </tr>
+          </thead>
+          <tbody>
+            {pending ? (
+              <SkeletonRows
+                rows={8}
+                columns={columns}
+                numericFrom={dims.length}
+              />
+            ) : (
+              groups.map((g) => {
+                const key = compositeKey(g.values);
+                return (
+                  <tr
+                    key={key}
+                    onClick={() => update({ group: key }, { push: true })}
+                  >
+                    <td>
+                      <button className="trace-open">
+                        {g.values[0] ?? NOT_SET}
+                      </button>
+                    </td>
+                    {g.values.slice(1).map((v, i) => (
+                      <td key={dims[i + 1]}>{v ?? NOT_SET}</td>
+                    ))}
+                    <td className="num">{g.count}</td>
+                    <td className="num col-secondary">
+                      {formatRate(g.count, rangeSeconds)}
+                    </td>
+                    <td
+                      className={`num ${g.count > 0 ? errorRateClass(g.errors / g.count) : ""}`}
+                    >
+                      {formatErrorRate(g.errors, g.count)}
+                    </td>
+                    <td className="num col-secondary">
+                      {formatDurationMs(g.p50Ms)}
+                    </td>
+                    <td className="num">{formatDurationMs(g.p95Ms)}</td>
+                    <td className="col-secondary">
+                      {formatTimestamp(nanosToMs(g.lastNs))}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
       {unresolved && (
         <div className="view-note">
           &ldquo;{dims.join(", ")}&rdquo; isn&rsquo;t queryable for this tenant
@@ -684,18 +844,17 @@ function GroupList({
         </div>
       )}
       {done && !unresolved && groups.length === 0 && rootGrainOnly && (
-        <div className="view-note">
-          No groups: trace grain only inspects each trace's root span, and one
-          of the active filters is on a field that only appears on a child span.
-          Switch to span grain to see it.
-        </div>
+        <EmptyState title="No groups in this range">
+          Trace grain only inspects each trace's root span, and one of the
+          active filters is on a field that only appears on a child span. Switch
+          to span grain to see it.
+        </EmptyState>
       )}
       {done && !unresolved && groups.length === 0 && !rootGrainOnly && (
-        <div className="view-note">
-          No groups in this window.
+        <EmptyState title="No groups in this range">
           {kindsNarrowed &&
-            " Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
-        </div>
+            "Only the selected span kinds are included — Internal spans are off by default; adjust span.kind in the sidebar."}
+        </EmptyState>
       )}
       {result.data?.truncated && (
         <div className="view-note">
@@ -715,8 +874,12 @@ function GroupDetail({
   update: UpdateFn;
 }) {
   const rangeKey = rangeScopeKey(state);
-  const range = resolveRange(state.range, Date.now());
-  const traceql = compileTraceQL(state.traceFilters);
+  // Same default-kind read as the group table (see TraceSearch): the state
+  // may name no kind filter, in which case the default remote-boundary
+  // kinds apply. Both the key and the drill-in members query must agree
+  // with the group table on what "this group" means.
+  const filters = withDefaultTraceFilters(state.traceFilters);
+  const filterKey = filterCacheKey(filters);
   const dims = parseGroupBy(state.groupBy);
   const values = parseCompositeKey(state.group, dims);
 
@@ -730,18 +893,22 @@ function GroupDetail({
       dims.join(","),
       values.join(KEY_SEP),
       state.grain,
-      traceql,
+      filterKey,
       state.limit,
     ],
+    // Resolved fresh on every fetch, not once per render — a live refetch of
+    // a relative range must slide the window forward with it (see GroupList
+    // above for the same fix on the group table's own queries).
     queryFn: () =>
       fetchTraceGroupMembers(
         dims,
         values,
-        range,
-        state.traceFilters,
+        resolveRange(state.range, Date.now()),
+        filters,
         state.grain,
         state.limit,
       ),
+    refetchInterval: liveRefetchInterval(state.live),
   });
 
   // At trace grain the root-span predicate makes every row a whole trace,
@@ -766,10 +933,10 @@ function GroupDetail({
         error={membersQuery.error}
         what={`${memberNoun}s`}
         identityLabel={isSpanGrain ? "Span" : "Root"}
-        emptyMessage={`No ${memberNoun}s for this group in this window.`}
+        emptyMessage={`No ${memberNoun}s in this range`}
         // Always true (the query always applies a limit) — states the bound
         // rather than claiming truncation we can't detect here.
-        footnote={`Showing up to ${plural(state.limit, memberNoun)}, newest first.`}
+        footnote={`Showing up to ${pluralCount(state.limit, memberNoun)}, newest first.`}
         onOpenTrace={(traceId) => update({ trace: traceId }, { push: true })}
       />
     </>
@@ -777,7 +944,13 @@ function GroupDetail({
 }
 
 function TraceDetail({ state, update }: Props) {
+  useBreadcrumbLeaf(state.trace.slice(0, 8));
   const [selected, setSelected] = useState<string | null>(null);
+  const [viewMode, setViewMode] = useState<TraceViewMode>("waterfall");
+  // Set by clicking a service node in the map; narrows the waterfall to
+  // that service's spans until cleared (waterfall/both modes only — the
+  // map itself always shows the whole trace).
+  const [serviceFilter, setServiceFilter] = useState<string | null>(null);
   const mobileDetail = useMobileSidebar();
   // Waterfall hover tooltip: the shared VizTooltip, hosted on the (non-
   // scrolling) trace body so it can overlap the detail pane and isn't
@@ -786,6 +959,12 @@ function TraceDetail({ state, update }: Props) {
   const pointer = useVizPointer(bodyRef);
   const [hoveredSpanId, setHoveredSpanId] = useState<string | null>(null);
   const tipId = useId();
+  const navigate = useNavigate();
+  // A trace opened by push (from the search list, a group, a log row, …)
+  // leaves in-app history behind it; stepping out with Back rather than a
+  // fresh `update({ trace: "" })` returns to wherever it was opened from
+  // instead of always landing on the bare /traces list.
+  const backToTraces = () => goBackOr(navigate, () => update({ trace: "" }));
   const clearHover = () => {
     setHoveredSpanId(null);
     pointer.clear();
@@ -793,9 +972,11 @@ function TraceDetail({ state, update }: Props) {
   // One Query IR read for the whole trace: spans with kind, status,
   // attribute containers, and events, plus the profiles captured during it.
   // The viewer's range is tried first; a trace opened by ID that lies
-  // outside it is retried over a wide window (see fetchTraceDetail).
+  // outside it is retried over a wide window (see fetchTraceDetail). The
+  // range rides in the key so widening it (per the not-found copy below)
+  // actually refetches instead of serving the same empty result.
   const trace = useQuery({
-    queryKey: ["trace-detail", state.trace, state.tenant, state.dataset],
+    queryKey: ["trace-detail", state.trace, rangeScopeKey(state)],
     queryFn: () =>
       fetchTraceDetail(state.trace, resolveRange(state.range, Date.now())),
   });
@@ -810,27 +991,44 @@ function TraceDetail({ state, update }: Props) {
     () => (trace.data ? buildWaterfall(trace.data.spans) : undefined),
     [trace.data],
   );
+  // Built from the already-loaded spans — no extra request for the map.
+  const graph = useMemo(
+    () => (trace.data ? traceGraphView(trace.data.spans) : undefined),
+    [trace.data],
+  );
+  const visibleRows = useMemo(
+    () =>
+      serviceFilter
+        ? (waterfall?.rows.filter(
+            (r) => r.span.serviceName === serviceFilter,
+          ) ?? [])
+        : (waterfall?.rows ?? []),
+    [waterfall, serviceFilter],
+  );
 
   if (trace.isError || (trace.isSuccess && trace.data === null)) {
-    if (
+    const notFound =
       !trace.isError ||
-      (trace.error instanceof ApiError && trace.error.status === 404)
-    ) {
-      return (
-        <div className="trace-not-found" role="alert">
-          <button className="backbtn" onClick={() => update({ trace: "" })}>
-            ← traces
-          </button>
-          <h3>Trace not found</h3>
-          <p>
-            <code>{state.trace}</code> isn&rsquo;t in the selected time window.
-            Trace storage is scoped by time — if you know roughly when it
-            happened, widen the range and try again.
-          </p>
-        </div>
-      );
-    }
-    return <QueryError what="the trace" error={trace.error} />;
+      (trace.error instanceof ApiError && trace.error.status === 404);
+    return (
+      <div className="trace-not-found" role={notFound ? "alert" : undefined}>
+        <button className="backbtn" onClick={backToTraces}>
+          ← traces
+        </button>
+        {notFound ? (
+          <>
+            <h3>Trace not found</h3>
+            <p>
+              <code>{state.trace}</code> wasn&rsquo;t found in the selected time
+              window or the last 30 days. Trace storage is scoped by time — if
+              you know roughly when it happened, widen the range and try again.
+            </p>
+          </>
+        ) : (
+          <QueryError what="the trace" error={trace.error} />
+        )}
+      </div>
+    );
   }
   if (trace.isPending) {
     return (
@@ -862,7 +1060,7 @@ function TraceDetail({ state, update }: Props) {
   return (
     <div className="traceview">
       <div className="trace-head">
-        <button className="backbtn" onClick={() => update({ trace: "" })}>
+        <button className="backbtn" onClick={backToTraces}>
           ← traces
         </button>
         <h3>{traceData.rootTraceName}</h3>
@@ -873,16 +1071,39 @@ function TraceDetail({ state, update }: Props) {
               ? traceData.durationMs
               : Number(waterfall.traceDurationNs) / 1e6,
           )}{" "}
-          · {plural(waterfall.rows.length, "span")} ·{" "}
-          {plural(waterfall.services.length, "service")}
+          · {pluralCount(waterfall.rows.length, "span")} ·{" "}
+          {pluralCount(waterfall.services.length, "service")}
           {waterfall.errorCount > 0 && (
-            <em className="tmeta-err">
+            <em className="tmeta-err error-text">
               {" "}
-              · {plural(waterfall.errorCount, "error")}
+              · {pluralCount(waterfall.errorCount, "error")}
             </em>
           )}
         </span>
         <span className="trace-id">{traceData.traceId}</span>
+        <div className="trace-volume-mode" role="group" aria-label="Trace view">
+          <button
+            type="button"
+            aria-pressed={viewMode === "waterfall"}
+            onClick={() => setViewMode("waterfall")}
+          >
+            Waterfall
+          </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === "map"}
+            onClick={() => setViewMode("map")}
+          >
+            Map
+          </button>
+          <button
+            type="button"
+            aria-pressed={viewMode === "both"}
+            onClick={() => setViewMode("both")}
+          >
+            Both
+          </button>
+        </div>
         {selectedRow && (
           <MobileFiltersToggle
             open={mobileDetail.open}
@@ -891,7 +1112,37 @@ function TraceDetail({ state, update }: Props) {
           />
         )}
       </div>
-      {Object.keys(spanKinds).length > 0 && (
+      {serviceFilter && viewMode !== "map" && (
+        <div className="filter-chips" aria-label="Active filters">
+          <button
+            className="filter-chip chip"
+            aria-label={`Clear service filter ${serviceFilter}`}
+            onClick={() => setServiceFilter(null)}
+          >
+            <span className="filter-chip-k">service</span>
+            <span className="filter-chip-v">{serviceFilter}</span>
+            <span className="filter-chip-x">×</span>
+          </button>
+        </div>
+      )}
+      {(viewMode === "map" || viewMode === "both") && graph && (
+        <div
+          className="trace-map"
+          role="group"
+          aria-label="Services in this trace"
+        >
+          <h4 className="trace-map-title">Services in this trace</h4>
+          <ServiceGraph
+            nodes={graph.nodes}
+            edges={graph.edges}
+            selected={serviceFilter}
+            onNodeClick={(id) =>
+              setServiceFilter((current) => (current === id ? null : id))
+            }
+          />
+        </div>
+      )}
+      {viewMode !== "map" && Object.keys(spanKinds).length > 0 && (
         <div className="span-kind-legend" aria-label="Span kind legend">
           {Array.from(new Set(Object.values(spanKinds)))
             .sort()
@@ -902,96 +1153,153 @@ function TraceDetail({ state, update }: Props) {
             ))}
         </div>
       )}
-      <div className="trace-body viz-host" ref={bodyRef}>
-        <div
-          className="waterfall"
-          role="list"
-          aria-label="Spans"
-          onPointerLeave={clearHover}
-        >
-          {waterfall.rows.map((row) => (
-            <button
-              key={row.span.spanId}
-              role="listitem"
-              className="span-row"
-              aria-selected={selectedRow?.span.spanId === row.span.spanId}
-              aria-describedby={
-                hoveredSpanId === row.span.spanId ? tipId : undefined
-              }
-              onClick={() => setSelected(row.span.spanId)}
-              onPointerMove={(e) => {
-                setHoveredSpanId(row.span.spanId);
-                pointer.track(e);
-              }}
-              onFocus={(e) => {
-                setHoveredSpanId(row.span.spanId);
-                pointer.anchorTo(e.currentTarget);
-              }}
-              onBlur={clearHover}
-            >
-              <span
-                className="span-label"
-                style={{ paddingLeft: row.depth * 16 }}
-              >
-                <span className="span-svc">{row.span.serviceName}</span>
-                <span className="span-name">{row.span.name}</span>
+      {viewMode !== "map" && (
+        <div className="trace-body viz-host" ref={bodyRef}>
+          {/* A labelled group of native buttons, not a listbox: a proper
+            listbox owes its `option`s a roving-focus keyboard pattern
+            (arrow-key navigation, one tab stop) that this doesn't implement
+            yet — that lands in a later pass. `aria-pressed` states each
+            span's selection without asserting a pattern the markup doesn't
+            back up. */}
+          <div
+            className="waterfall"
+            role="group"
+            aria-label="Spans"
+            onPointerLeave={clearHover}
+          >
+            <div className="wf-ruler" aria-hidden="true">
+              <span className="span-label" />
+              <span className="wf-ruler-track">
+                {rulerTicks(waterfall.traceDurationNs).map((tick) => (
+                  <span
+                    key={tick.pct}
+                    className="wf-tick"
+                    style={{ "--pct": tick.pct } as CSSProperties}
+                  >
+                    {tick.label}
+                  </span>
+                ))}
               </span>
-              <span className="span-track">
+              <span className="span-dur" />
+            </div>
+            {visibleRows.map((row) => (
+              <button
+                key={row.span.spanId}
+                className="span-row"
+                aria-pressed={selectedRow?.span.spanId === row.span.spanId}
+                aria-describedby={
+                  hoveredSpanId === row.span.spanId ? tipId : undefined
+                }
+                onClick={() => {
+                  setSelected(row.span.spanId);
+                  mobileDetail.show();
+                }}
+                onPointerMove={(e) => {
+                  setHoveredSpanId(row.span.spanId);
+                  pointer.track(e);
+                }}
+                onFocus={(e) => {
+                  setHoveredSpanId(row.span.spanId);
+                  pointer.anchorTo(e.currentTarget);
+                }}
+                onBlur={clearHover}
+              >
                 <span
-                  className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}${row.extentInferred ? " inferred" : ""}`}
-                  title={
-                    row.extentInferred
-                      ? "No duration recorded; drawn over its child spans"
-                      : undefined
-                  }
-                  style={{
-                    left: `${row.leftPct}%`,
-                    width: `${row.widthPct}%`,
-                  }}
-                />
-              </span>
-              <span
-                className={`span-dur${row.span.status === "error" ? " error" : ""}`}
+                  className="span-label"
+                  style={{ paddingLeft: row.depth * 16 }}
+                >
+                  <span className="span-svc">{row.span.serviceName}</span>
+                  <span className="span-name">{row.span.name}</span>
+                </span>
+                <span className="span-track">
+                  <span
+                    className={`span-bar ${kindClass(spanKinds[row.span.spanId])}${row.span.status === "error" ? " error" : ""}${row.extentInferred ? " inferred" : ""}`}
+                    title={
+                      row.extentInferred
+                        ? "No duration recorded; drawn over its child spans"
+                        : undefined
+                    }
+                    style={{
+                      left: `${row.leftPct}%`,
+                      width: `${row.widthPct}%`,
+                    }}
+                  />
+                </span>
+                <span
+                  className={`span-dur${row.span.status === "error" ? " error" : ""}`}
+                >
+                  {formatDurationMs(row.durationMs)}
+                </span>
+              </button>
+            ))}
+          </div>
+          {selectedRow && (
+            <>
+              <SidebarResizer panel={spanDetailWidth} />
+              <MobileSidebarDrawer
+                open={mobileDetail.open}
+                onClose={mobileDetail.close}
+                side="right"
               >
-                {formatDurationMs(row.durationMs)}
-              </span>
-            </button>
-          ))}
+                <SpanDetail
+                  span={selectedRow.span}
+                  traceId={traceData.traceId}
+                  profiles={traceData.profiles}
+                  kind={spanKinds[selectedRow.span.spanId]}
+                  update={update}
+                  traceFilters={state.traceFilters}
+                  tenant={state.tenant}
+                />
+              </MobileSidebarDrawer>
+            </>
+          )}
+          {hoveredRow && pointer.anchor && (
+            <VizTooltip
+              id={tipId}
+              anchor={pointer.anchor}
+              host={pointer.host}
+              title={hoveredRow.span.name}
+              rows={spanTooltipRows(
+                hoveredRow.span,
+                hoveredRow.durationMs,
+                spanKinds[hoveredRow.span.spanId],
+              )}
+            />
+          )}
         </div>
-        {selectedRow && (
-          <>
-            <SidebarResizer panel={spanDetailWidth} />
-            <MobileSidebarDrawer
-              open={mobileDetail.open}
-              onClose={mobileDetail.close}
-              side="right"
-            >
-              <SpanDetail
-                span={selectedRow.span}
-                traceId={traceData.traceId}
-                profiles={traceData.profiles}
-                kind={spanKinds[selectedRow.span.spanId]}
-                update={update}
-              />
-            </MobileSidebarDrawer>
-          </>
-        )}
-        {hoveredRow && pointer.anchor && (
-          <VizTooltip
-            id={tipId}
-            anchor={pointer.anchor}
-            host={pointer.host}
-            title={hoveredRow.span.name}
-            rows={spanTooltipRows(
-              hoveredRow.span,
-              hoveredRow.durationMs,
-              spanKinds[hoveredRow.span.spanId],
-            )}
-          />
-        )}
-      </div>
+      )}
     </div>
   );
+}
+
+/** Collapsed Resource-section summary, in preference order — the first
+ * present spelling of each field wins, then `+ N more`; the SDK language and
+ * version are shown together as one `sdk go 1.28.0` entry. Built from the
+ * shared resource-identity fields (`lib/attrSummary.ts`) plus the service
+ * version (ahead of the pod/host/region identity fields), the k8s node, and
+ * the sdk pair (trailing). */
+const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
+  ...RESOURCE_IDENTITY_FIELDS.slice(0, 3),
+  { keys: ["service.version"] },
+  RESOURCE_IDENTITY_FIELDS[3]!,
+  { keys: ["k8s.node.name"] },
+  ...RESOURCE_IDENTITY_FIELDS.slice(4),
+  {
+    keys: ["telemetry.sdk.language", "telemetry.sdk.version"],
+    render: (found) => ({
+      key: "sdk",
+      value: [
+        found.get("telemetry.sdk.language"),
+        found.get("telemetry.sdk.version"),
+      ]
+        .filter(Boolean)
+        .join(" "),
+    }),
+  },
+];
+
+function stringEntries(entries: [string, AttrValue][]): [string, string][] {
+  return entries.map(([k, v]) => [k, String(v)]);
 }
 
 function SpanDetail({
@@ -1000,6 +1308,8 @@ function SpanDetail({
   profiles,
   kind,
   update,
+  traceFilters,
+  tenant,
 }: {
   span: TempoSpan;
   traceId: string;
@@ -1007,6 +1317,9 @@ function SpanDetail({
   /** OTel span kind, when the IR row carried one. */
   kind: string | undefined;
   update: UpdateFn;
+  /** The URL's raw trace filters, for the "+ filter" row action. */
+  traceFilters: TraceFilter[];
+  tenant: string;
 }) {
   const groups = useMemo(
     () => groupSpanAttributes(span.attributes),
@@ -1017,24 +1330,119 @@ function SpanDetail({
     [groups],
   );
   const semantics = useSemantics(attributeKeys);
+  // Every span/scope/resource attribute on this span, for a catalog pivot's
+  // identity check (lib/attrPivots.ts) — it needs an entity's full identity,
+  // not just the one row's own key/value.
+  const attributeBag = useMemo(
+    (): ReadonlyMap<string, string> =>
+      new Map(groups.flatMap((g) => stringEntries(g.entries))),
+    [groups],
+  );
   const spanProfiles = profiles.filter((p) => p.spanId === span.spanId);
+  const [showDescriptions, toggleDescriptions] = useAttrDescriptions();
+  const [scopeExpanded, setScopeExpanded] = useState(false);
+  const [resourceExpanded, setResourceExpanded] = useState(false);
+
+  const spanGroup = groups.find((g) => g.label === "Span");
+  const scopeGroup = groups.find((g) => g.label === "Scope");
+  const resourceGroup = groups.find((g) => g.label === "Resource");
+  const spanEntries = useMemo(
+    () => (spanGroup ? stringEntries(spanGroup.entries) : []),
+    [spanGroup],
+  );
+  const scopeEntries = useMemo(
+    () => (scopeGroup ? stringEntries(scopeGroup.entries) : []),
+    [scopeGroup],
+  );
+  const resourceEntries = useMemo(
+    () => (resourceGroup ? stringEntries(resourceGroup.entries) : []),
+    [resourceGroup],
+  );
+  const resourceSummary = useMemo(
+    () => summarizeAttributes(resourceEntries, RESOURCE_SUMMARY_FIELDS),
+    [resourceEntries],
+  );
+  // The span's own `code.file.path`/`code.line.number` (or pre-1.30
+  // spelling), when the instrumentation recorded one — see
+  // docs/users/explore-ui.md's "View source (GitHub)".
+  // The wrapper label only makes sense when a snippet can actually be
+  // offered; `SourceSnippet` gates itself the same way (react-query dedupes
+  // the probe).
+  const sourceContextEnabled = useSourceContextEnabled(tenant);
+  const codeLocation = useMemo(
+    () => codeLocationFromAttributes(span.attributes),
+    [span.attributes],
+  );
+  const repoHints = useMemo(
+    () => repositoryHints(span.attributes),
+    [span.attributes],
+  );
+
+  const rowActions = (key: string, value: string): AttributeRowAction[] => {
+    const actions: AttributeRowAction[] = [
+      {
+        label: "group by",
+        ariaLabel: `Group by ${key}`,
+        onClick: () => update({ groupBy: key, group: "" }),
+      },
+    ];
+    const field = facetableField(key);
+    if (field) {
+      actions.push({
+        label: "+ filter",
+        ariaLabel: `Filter for ${key} = ${value}`,
+        onClick: () =>
+          update(
+            {
+              trace: "",
+              traceFilters: upsertTraceFilter(traceFilters, { field, value }),
+              group: "",
+            },
+            { push: true },
+          ),
+      });
+    }
+    actions.push(
+      ...pivotRowActions(
+        key,
+        value,
+        semantics.get(key),
+        attributeBag,
+        "traces",
+        update,
+      ),
+    );
+    return actions;
+  };
+
   return (
     <aside className="span-detail" aria-label="Span details">
       <h4>{span.name}</h4>
       <div className="span-detail-sub">
         {kind && <span className={`kind-chip ${kindClass(kind)}`}>{kind}</span>}
         {describeService(span.serviceName, span.attributes)}
-        {span.status === "error" && <em className="tmeta-err"> · error</em>}
+        {span.status === "error" && (
+          <em className="tmeta-err error-text"> · error</em>
+        )}
       </div>
       <button
-        className="act act-primary"
+        className="act-primary btn btn-primary"
         onClick={() =>
-          update({
-            signal: "logs",
-            trace: "",
-            raw: "",
-            filters: [{ label: "trace_id", op: "=", value: traceId }],
-          })
+          update(
+            {
+              signal: "logs",
+              trace: "",
+              raw: "",
+              // Trace-only params must not ride into /logs — an active
+              // search/group-detail/trace-filter selection would silently
+              // narrow (or error against) a view that doesn't understand it.
+              search: "",
+              group: "",
+              traceFilters: [],
+              filters: [{ label: "trace_id", op: "=", value: traceId }],
+            },
+            { push: true },
+          )
         }
       >
         Logs for this trace →
@@ -1042,10 +1450,15 @@ function SpanDetail({
       {spanProfiles.map((p) => (
         <button
           key={p.profileId}
-          className="act"
+          className="btn"
           onClick={() =>
             update(
-              { signal: "profiles", trace: "", profileId: p.profileId },
+              {
+                signal: "profiles",
+                trace: "",
+                profileId: p.profileId,
+                profileUnit: p.sampleUnit,
+              },
               { push: true },
             )
           }
@@ -1055,47 +1468,89 @@ function SpanDetail({
       ))}
       {span.events.length > 0 && (
         <>
-          <div className="span-detail-sec">Events</div>
+          <AttributeSection title="Events" />
           <ul className="span-events">
             {span.events.map((event, i) => (
-              <SpanEventItem key={i} event={event} spanStartNs={span.startNs} />
+              <SpanEventItem
+                key={i}
+                event={event}
+                spanStartNs={span.startNs}
+                hints={repoHints}
+                tenant={tenant}
+              />
             ))}
           </ul>
         </>
       )}
-      {groups.length === 0 && (
+      <AttributeSection title="Span">
+        <DescriptionsToggle
+          checked={showDescriptions}
+          onToggle={toggleDescriptions}
+        />
+      </AttributeSection>
+      {codeLocation && sourceContextEnabled && (
+        <div className="span-code-location">
+          <span className="span-code-location-label">Code location</span>
+          <SourceSnippet
+            tenant={tenant}
+            repository={repoHints.repository}
+            gitRef={repoHints.ref}
+            path={codeLocation.path}
+            line={codeLocation.line}
+          />
+        </div>
+      )}
+      {spanGroup ? (
+        <AttributeTable
+          entries={spanEntries}
+          semantics={semantics}
+          layout="stacked"
+          showDescriptions={showDescriptions}
+          actions={rowActions}
+        />
+      ) : (
+        <div className="view-note">No attributes recorded.</div>
+      )}
+      {scopeGroup && (
         <>
-          <div className="span-detail-sec">Attributes</div>
-          <div className="view-note">No attributes recorded.</div>
+          <AttributeSection
+            title="Scope"
+            count={scopeGroup.entries.length}
+            expanded={scopeExpanded}
+            onToggle={() => setScopeExpanded((current) => !current)}
+          />
+          {scopeExpanded && (
+            <AttributeTable
+              entries={scopeEntries}
+              semantics={semantics}
+              layout="stacked"
+              showDescriptions={showDescriptions}
+              actions={rowActions}
+            />
+          )}
         </>
       )}
-      {groups.map((group) => (
-        <div key={group.label}>
-          <div className="span-detail-sec">{group.label}</div>
-          {groupBySemanticTitle(group.entries, semantics).map((sub) => (
-            <Fragment key={sub.title ?? ""}>
-              {sub.title && (
-                <div className="span-detail-subsec">{sub.title}</div>
-              )}
-              <dl className="span-attrs">
-                {sub.entries.map(([k, v]) => (
-                  <div key={k}>
-                    <dt>
-                      <SemanticKey name={k} semantics={semantics.get(k)} />
-                    </dt>
-                    <dd>
-                      <AttributeValue
-                        value={String(v)}
-                        label={`value for ${k}`}
-                      />
-                    </dd>
-                  </div>
-                ))}
-              </dl>
-            </Fragment>
-          ))}
-        </div>
-      ))}
+      {resourceGroup && (
+        <>
+          <AttributeSection
+            title="Resource"
+            count={resourceGroup.entries.length}
+            expanded={resourceExpanded}
+            onToggle={() => setResourceExpanded((current) => !current)}
+          />
+          {resourceExpanded ? (
+            <AttributeTable
+              entries={resourceEntries}
+              semantics={semantics}
+              layout="stacked"
+              showDescriptions={showDescriptions}
+              actions={rowActions}
+            />
+          ) : (
+            <AttributeSummary summary={resourceSummary} />
+          )}
+        </>
+      )}
     </aside>
   );
 }
@@ -1156,9 +1611,16 @@ function EventTime({
 function SpanEventItem({
   event,
   spanStartNs,
+  hints,
+  tenant,
 }: {
   event: SpanEventView;
   spanStartNs: string;
+  /** The span's own `vcs.*`/`service.version` hints for a "View source"
+   * lookup, computed once by `SpanDetail` (`repositoryHints`) rather than
+   * re-derived per event. */
+  hints: { repository?: string; ref?: string };
+  tenant: string;
 }) {
   const isException = event.name === "exception";
   if (isException) {
@@ -1203,6 +1665,11 @@ function SpanEventItem({
             <AttributeValue
               value={String(stacktrace)}
               label="value for exception.stacktrace"
+            />
+            <StacktraceLines
+              text={String(stacktrace)}
+              tenant={tenant}
+              hints={hints}
             />
           </div>
         )}

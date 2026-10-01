@@ -21,10 +21,8 @@ use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::iceberg::ManifestReader;
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::generators::generate_trace_files_with_ids;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -67,15 +65,13 @@ async fn compaction_rolls_output_files_at_the_real_encoded_target_size() -> Resu
         .try_init();
 
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

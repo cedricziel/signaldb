@@ -19,41 +19,13 @@ use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use opentelemetry::trace::TracerProvider as _;
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
-use router::RouterState;
-use router::discovery::ServiceRegistry;
+use router::RouterAppState;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
 use uuid::Uuid;
 
 const ADMIN_KEY: &str = "admin-key-123";
-
-#[derive(Clone)]
-struct State {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("State")
-    }
-}
-impl RouterState for State {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
 
 /// Build a real (in-memory-backed) compactor Flight service, the same way
 /// `compactor::flight::tests::make_service` does.
@@ -154,21 +126,11 @@ async fn ops_compact_status_client_span_carries_server_address_and_joins_compact
     )
     .await
     .expect("router bootstrap");
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        config,
         InMemoryFlightTransport::new(router_bootstrap),
     );
-
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-    let state = State {
-        catalog,
-        service_registry,
-        config,
-        authenticator,
-    };
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

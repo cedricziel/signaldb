@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .profilesview {
   display: flex;
   flex-direction: column;
@@ -9,7 +9,7 @@
 .profiles-controls {
   display: flex;
   gap: 16px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
@@ -36,7 +36,7 @@
   cursor: pointer;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .profiles-controls {
     flex-direction: column;
     align-items: stretch;
@@ -53,10 +53,6 @@
   .profiles-compare-toggle {
     margin-left: 0;
   }
-}
-
-.profiles-compare-ranges {
-  border-top: none;
 }
 
 .profiles-compare {
@@ -80,7 +76,7 @@
 /* Side by side panes each squeeze their own toolbar (view toggle, collapse
    selector, search box) into unreadable, overlapping slivers well before the
    page itself runs out of width — stack baseline above comparison instead. */
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   .profiles-compare {
     grid-template-columns: 1fr;
   }
@@ -96,11 +92,11 @@
 }
 
 .profiles-compare-pane .flame-title {
-  padding: 8px 16px 0;
+  padding: 8px var(--gutter) 0;
 }
 
 .profiles-compare-pane .flamegraph {
-  padding: 8px 16px 12px;
+  padding: 8px var(--gutter) 12px;
 }
 
 /* ---------- flame graph ---------- */
@@ -108,7 +104,7 @@
 .flamegraph {
   display: flex;
   flex-direction: column;
-  padding: 8px 16px 12px;
+  padding: 8px var(--gutter) 12px;
   gap: 6px;
   /* Flex items default to min-width:auto, which lets a wide child (the
    * top-functions table) force this container — and its ancestors —
@@ -137,11 +133,11 @@
 
 .flame-matched {
   font-size: 11px;
-  color: var(--accent);
+  color: var(--accent-text);
   font-variant-numeric: tabular-nums;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .flame-search {
     flex: 1 1 100%;
   }
@@ -198,15 +194,25 @@
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  overflow: hidden;
+  max-width: 100%;
+  /* The collapsed form (root › … › parent › current) handles most deep
+     zooms; horizontal scroll is the fallback for what's still too long
+     (unusually long frame names). */
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
 }
 
 .flame-crumb {
-  color: var(--accent);
+  color: var(--accent-text);
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+  flex: none;
+}
+
+.flame-crumb-ellipsis {
+  max-width: none;
 }
 
 .flame-crumb:last-child {
@@ -305,6 +311,8 @@
 }
 
 .flame-detail-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--mono);
   color: var(--text);
   overflow: hidden;
@@ -327,17 +335,6 @@
 .flame-top-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
-}
-
-.flame-top-table th {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--faint);
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 650;
 }
 
 .flame-top-table td {
@@ -362,7 +359,7 @@
   white-space: nowrap;
   vertical-align: bottom;
   font-weight: 550;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .flame-top-count {

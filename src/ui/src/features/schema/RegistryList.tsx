@@ -18,9 +18,9 @@ function formatUpdated(value: string | null | undefined): string {
  * custom registry.
  */
 export function RegistryList() {
-  const { isTenantAdmin } = useSchemaSession();
+  const { isTenantAdmin, tenant, dataset } = useSchemaSession();
   const registries = useQuery({
-    queryKey: ["schema-registries"],
+    queryKey: ["schema-registries", tenant, dataset],
     queryFn: listRegistries,
     staleTime: 60_000,
   });
@@ -37,10 +37,13 @@ export function RegistryList() {
         </div>
         {isTenantAdmin && (
           <div className="schema-actions">
-            <Link className="schema-button" to={`${CONVENTIONS}/new?upload=1`}>
+            <Link className="btn" to={`${CONVENTIONS}/new?upload=1`}>
               Upload registry
             </Link>
-            <Link className="schema-button primary" to={`${CONVENTIONS}/new`}>
+            <Link
+              className="btn btn-primary"
+              to={`${CONVENTIONS}/new`}
+            >
               New
             </Link>
           </div>
@@ -51,7 +54,7 @@ export function RegistryList() {
 
       {registries.isPending && <p className="schema-note">Loading…</p>}
       {registries.isError && (
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load registries: {toErrorMessage(registries.error)}
         </p>
       )}

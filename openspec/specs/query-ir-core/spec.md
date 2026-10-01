@@ -105,12 +105,14 @@ client SHALL NOT express an operand as a mini-expression string.
 This capability SHALL support the single-signal stage set `from`, `where`,
 `extract`, `aggregate`, `topk`/`bottomk`, `order`, and `limit` in IR v1. IR v2
 SHALL additionally support the terminal `heatmap` stage for a bounded
-time-by-numeric-distribution count aggregate. An unknown stage, or a stage
-illegal for the source or IR version, SHALL be rejected as unsupported rather
-than silently ignored. The `extract` stage SHALL support the `json` and
-`logfmt` parsers; the `regex` parser is not part of this capability and,
-together with the predicate `regex` operator, SHALL run only behind a bounded,
-timeout-guarded matcher.
+time-by-numeric-distribution count aggregate. IR v4 SHALL additionally support
+the terminal `describe` stage, which introspects the source rather than reading
+its records and is legal only with the `metadata` result envelope. An unknown
+stage, or a stage illegal for the source or IR version, SHALL be rejected as
+unsupported rather than silently ignored. The `extract` stage SHALL support the
+`json` and `logfmt` parsers; the `regex` parser is not part of this capability
+and, together with the predicate `regex` operator, SHALL run only behind a
+bounded, timeout-guarded matcher.
 
 #### Scenario: A supported stage executes
 
@@ -139,6 +141,21 @@ timeout-guarded matcher.
   and a derived name that collides with a registry-owned logical field or an
   earlier extracted field is rejected rather than silently shadowing it
 
+#### Scenario: A v4-only describe stage is rejected under an earlier version
+
+- **WHEN** a client submits a `describe` stage or a `metadata` result envelope
+  with an `irVersion` below 4
+- **THEN** the server rejects the document as unsupported for that version,
+  naming the version the stage requires
+
+#### Scenario: Describe is terminal and admits no record stages before it
+
+- **WHEN** a document places a `where`, `extract`, `aggregate`, `topk`/`bottomk`,
+  `order`, `limit`, or `heatmap` stage before a `describe` stage, or places any
+  stage after it
+- **THEN** the document is rejected at validation naming the offending stage,
+  rather than executing with the stage ignored
+
 ### Requirement: Shared predicate grammar over logical field names
 
 Filtering SHALL use one predicate grammar — comparison leaves (`{field, op,
@@ -166,17 +183,70 @@ matcher so a pathological pattern cannot exhaust resources.
 
 ### Requirement: Registry-mediated field resolution independent of promotion
 
-Every logical field SHALL be resolved to its physical location — a promoted
-column or an attribute-JSON extraction — through the attribute registry at plan
-time. The result of a query SHALL NOT depend on whether a field is currently
-promoted; promotion state SHALL affect only performance.
+Every logical field SHALL be resolved through the attribute registry at plan time
+to its one canonical physical home — a promoted typed column, the cold typed store,
+or (for off-type/array/kvlist/bytes values) the structured residue — and typed
+values SHALL be returned under the field's registry-owned canonical type by
+retrieval rather than by reconstructing the type from a stringified value. The
+canonical type SHALL be the same one enforced at ingest (write) as at query (read).
+The result of a query — set and types — SHALL NOT depend on whether a field is
+currently promoted; promotion state SHALL affect only performance. This holds
+because a field has exactly one canonical home and a promoted column is only a
+per-level copy of it, read as `coalesce(promoted, home)` for each level in
+precedence order; a promoted column whose type is not the canonical type SHALL be
+ignored.
+
+Resolution SHALL distinguish two performance properties that are NOT implied by
+typing alone: (a) **cast-free retrieval** — always available from the typed store
+or a promoted column; and (b) **pruning/pushdown** — available only from a promoted
+column (row-group stats + bloom) or the derived typed containment index, never from
+the typed map itself, since Parquet keeps no per-key statistics inside a map.
 
 #### Scenario: Same result before and after promotion
 
 - **WHEN** the same IR query is executed against a field served as an
-  attribute-JSON extraction, and later against the same field after it has been
-  promoted to a physical column
+  attribute-JSON extraction, and later against the same field after it has
+  been promoted to a physical column
 - **THEN** both executions return the same result set
+
+#### Scenario: Same result and type before and after promotion
+
+- **WHEN** the same IR query is executed against a field served from the cold typed
+  store, and later against the same field after it has been promoted to a typed
+  physical column
+- **THEN** both executions return the same result set with the same field types,
+  differing only in performance
+
+#### Scenario: A key present at two levels keeps its precedence when promoted
+
+- **WHEN** a key is present at both the record and the resource level and one or
+  both levels are promoted
+- **THEN** the IR returns the record-level value where present and the
+  resource-level value otherwise, exactly as with no promotion
+
+#### Scenario: Typed retrieval does not reconstruct from a string
+
+- **WHEN** an IR query reads or filters a canonical-typed field served from the
+  typed store
+- **THEN** the value is returned under its stored canonical type without casting a
+  stringified value, even though an unpromoted range predicate over it is an
+  unpruned scan
+
+#### Scenario: Pruning comes from promotion or the derived index, not the map
+
+- **WHEN** an unpromoted equality predicate `key = value` is planned
+- **THEN** pruning is obtained from the derived containment index (or from a
+  promoted column when present), and the plan does not claim row-group pruning from
+  the typed map's value leaf
+
+#### Scenario: One scan resolves mixed physical layouts to one typed column
+
+- **WHEN** a single table scan spans files in the typed-store layout and files in
+  a promoted-column layout for the same field (generations from before/after a
+  promotion or demotion)
+- **THEN** the registry resolves each file's physical representation to the one
+  logical field and returns a single column under the canonical type — files
+  predating the promoted column read from the typed home, never a query error
 
 ### Requirement: Extensible signal-source model
 
@@ -258,18 +328,20 @@ offending stage.
 ### Requirement: Declared and validated result envelope
 
 A query SHALL declare its result envelope (`rows`, `series`, or `table` in
-IR v1; `heatmap` additionally in IR v2; and, for the `profiles` source
-only, `flamegraph`), and the system SHALL validate the declared envelope
-against the inferred terminal relation type and against the selected
-source, rejecting a mismatch before execution. Each envelope SHALL have a
-single canonical response payload shape and value encoding, described by
-the OpenAPI schema so the generated clients decode one contract. The
-columns of a `rows`/`table` result SHALL be a curated projection: taken
-from an explicit document-level `fields` list of logical names when
-present, otherwise a bounded server default — never all physical columns
-implicitly. A `fields` entry absent from the terminal relation, or a
-`fields` list on a `series`, `heatmap`, or `flamegraph` result, SHALL be
-rejected.
+IR v1; `heatmap` additionally in IR v2; `metadata` additionally in IR v4;
+and, for the `profiles` source only, `flamegraph`), and the system SHALL
+validate the declared envelope against the inferred terminal relation type
+and against the selected source, rejecting a mismatch before execution. Each
+envelope SHALL have a single canonical response payload shape and value
+encoding, described by the OpenAPI schema so the generated clients decode one
+contract. The `metadata` envelope SHALL be legal only for a pipeline whose
+terminal stage is `describe`, and a `describe`-terminated pipeline SHALL be
+legal only with the `metadata` envelope. The columns of a `rows`/`table` result
+SHALL be a curated projection: taken from an explicit document-level `fields`
+list of logical names when present, otherwise a bounded server default — never
+all physical columns implicitly. A `fields` entry absent from the terminal
+relation, or a `fields` list on a `series`, `heatmap`, `flamegraph`, or
+`metadata` result, SHALL be rejected.
 
 #### Scenario: Envelope mismatch is rejected
 
@@ -289,8 +361,8 @@ rejected.
 #### Scenario: Invalid projection is rejected
 
 - **WHEN** a query's `fields` list names something the terminal relation
-  does not carry, or a `series`, `heatmap`, or `flamegraph` query declares
-  `fields`
+  does not carry, or a `series`, `heatmap`, `flamegraph`, or `metadata` query
+  declares `fields`
 - **THEN** the query is rejected at validation time
 
 #### Scenario: Flamegraph envelope requires the profiles source
@@ -299,6 +371,12 @@ rejected.
   `from: "traces"`
 - **THEN** the query is rejected at validation as an envelope/source
   mismatch, naming the source
+
+#### Scenario: Metadata envelope requires a describe terminal
+
+- **WHEN** a document declares the `metadata` envelope without a terminal
+  `describe` stage, or terminates in `describe` while declaring another envelope
+- **THEN** the document is rejected at validation as an envelope mismatch
 
 ### Requirement: Bounded two-dimensional heatmap aggregate
 
@@ -612,3 +690,144 @@ against the previous lowering rather than by assertion.
   evidence green
 - **THEN** the superseded implementation and the mechanism for choosing between
   them are both deleted, leaving no second code path and no dormant switch
+
+### Requirement: The IR computes counter rates
+
+The IR SHALL compute the per-second rate and the increase of a monotonic counter
+per series over each `step`, treating a drop in value as a counter reset, on the
+`metrics` and `metrics_histogram` sources.
+
+#### Scenario: Rate across a reset
+
+- **WHEN** a counter series reads 10, 20, 5, 15 at 10s intervals and a rate over
+  a 30s step is asked for
+- **THEN** the increase is 25 (10 + 5 + 10) and the rate is 25/30 per second
+
+#### Scenario: Matches PromQL on the same data
+
+- **WHEN** the same counter data is queried with PromQL `rate(x[30s])` and the
+  IR rate at a 30s step
+- **THEN** the values agree within floating-point tolerance
+
+### Requirement: The IR evaluates formulas across queries
+
+One IR request SHALL be able to carry several named queries and formulas over
+their `series` results (`+ - * /`, scalar constants, parentheses), joining
+series on identical label sets and timestamps.
+
+#### Scenario: Error ratio
+
+- **WHEN** a request holds query `a` (error count by service) and `b` (total
+  count by service) and formula `a / b`
+- **THEN** the result has one series per service whose points are `a/b`, and a
+  service missing from `a` yields no series rather than an error
+
+#### Scenario: Division by zero
+
+- **WHEN** a point of `b` is 0
+- **THEN** that point is absent from the formula result, not an error
+
+### Requirement: Approximate distinct-count aggregate
+
+The `aggregate` stage SHALL accept `fn: "count_distinct"` with an `of` field
+of type `string`, `int64`, `bool` or `timestamp` — DataFusion's
+`approx_distinct` rejects floating point — and SHALL reject `float64` at
+validation, naming the field and its type. It returns an integer estimate of the number of distinct
+non-null values of that field in the group. The estimate SHALL be computed
+with a bounded-memory sketch (DataFusion `approx_distinct`, HyperLogLog), so
+its cost does not grow with the number of distinct values, and the IR
+documentation SHALL state it is approximate. It SHALL accept a scope
+predicate like every other aggregate. Introducing it SHALL bump the IR
+version; documents at earlier versions that use it SHALL be rejected at
+validation.
+
+#### Scenario: Counting sessions
+
+- **WHEN** a logs query aggregates
+  `{"fn": "count_distinct", "of": "session.id", "as": "sessions"}` over
+  records carrying 1,000 distinct `session.id` values
+- **THEN** `sessions` is within 2% of 1,000
+
+#### Scenario: Scoped distinct count
+
+- **WHEN** the same query also declares `count_distinct` of `session.id`
+  scoped to `event_name = exception`
+- **THEN** that column counts only sessions with at least one exception
+  record, and groups without one report zero
+
+#### Scenario: Nulls are not a value
+
+- **WHEN** some records in a group have no `user.id`
+- **THEN** `count_distinct` of `user.id` counts only the records' present
+  values
+
+#### Scenario: Unsupported type
+
+- **WHEN** a query declares `count_distinct` of a `float64` field
+- **THEN** validation rejects it, naming the field and `float64`
+
+#### Scenario: Version gate
+
+- **WHEN** a document declaring the previous IR version uses `count_distinct`
+- **THEN** validation rejects it naming the version that introduced it
+
+### Requirement: The flamegraph cap keeps the newest profiles
+
+When more profile rows match a `flamegraph` query than the row cap, the
+aggregated rows SHALL be the newest by `timestamp`, so a truncated flamegraph
+is deterministic.
+
+#### Scenario: Truncation keeps the newest rows
+
+- **WHEN** more profiles match a `flamegraph` query than the cap
+- **THEN** the result aggregates the newest profiles up to the cap and
+  carries `truncated: true`
+
+### Requirement: Inverted windows are rejected
+
+A document whose `range` resolves to a `from` after its `to` SHALL be rejected
+as invalid input naming the window, not answered with an empty result.
+
+#### Scenario: Inverted range
+
+- **WHEN** a document's `range` is `{ "from": "now", "to": "now-1h" }`
+- **THEN** the request is rejected with a 400 naming `range.from`
+
+### Requirement: Differential flamegraph over a baseline window
+
+A `profiles` query declaring the `flamegraph` envelope MAY carry a
+document-level `baseline` range. The query SHALL then read its `from`/`where`
+stages over both the `baseline` window and the document `range`, apply the
+flamegraph row cap to each window independently, and merge both into one
+differential flamegraph using the same aggregation as the Pyroscope-compatible
+render-diff endpoint. Each level SHALL be a sequence of
+`[offset_delta_baseline, total_baseline, self_baseline, offset_delta, total,
+self, name_index]` septuples, and the response SHALL carry `baseline_total`
+and `comparison_total` alongside `total` (their sum). `truncated` SHALL be
+`true` when either window exceeded the cap. A `flamegraph` query without a
+`baseline` SHALL return exactly the single-window shape and SHALL NOT carry
+`baseline_total` or `comparison_total`.
+
+`baseline` SHALL require `irVersion` 13 and SHALL be rejected at validation
+on any envelope other than `flamegraph`, when either bound is not a
+timestamp literal, and when its `from` is after its `to`. The two windows
+SHALL be read one after the other, each keeping its newest rows under the
+cap, and the two sides SHALL NOT be normalized for window length.
+
+#### Scenario: Two windows are diffed
+
+- **WHEN** a `profiles` query filters `service.name = checkout`, declares the
+  `flamegraph` envelope, `irVersion` 13 and a `baseline` window
+- **THEN** the result is a differential flamegraph whose `baseline_total` is
+  the baseline window's total and whose `comparison_total` is the `range`
+  window's total
+
+#### Scenario: Baseline needs the flamegraph envelope
+
+- **WHEN** a document declares a `baseline` with `result: "rows"`
+- **THEN** the query is rejected at validation naming `baseline`
+
+#### Scenario: Baseline below irVersion 13
+
+- **WHEN** a `flamegraph` document declares a `baseline` and `irVersion` 12
+- **THEN** the query is rejected naming `irVersion 13`

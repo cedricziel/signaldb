@@ -83,11 +83,8 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
     let flight_addr = std::net::SocketAddr::new(bind_ip, args.flight_port);
 
     // Initialize service bootstrap for catalog-based discovery
-    let advertise_addr =
-        std::env::var("QUERIER_ADVERTISE_ADDR").unwrap_or_else(|_| flight_addr.to_string());
-
     let service_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Querier, advertise_addr.clone())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Querier, flight_addr)
             .await
             .context("Failed to initialize service bootstrap")?;
 
@@ -132,6 +129,9 @@ pub async fn run(common: &CommonArgs, args: Args) -> anyhow::Result<()> {
         query_timeout = ?config.querier.query_timeout,
         max_sql_rows = config.querier.max_sql_rows,
         max_search_limit = config.querier.max_search_limit,
+        batch_size = config.querier.datafusion.batch_size,
+        sort_spill_reservation_mb = config.querier.datafusion.sort_spill_reservation_mb,
+        target_partitions = config.querier.datafusion.target_partitions,
         "Querier resource limits"
     );
     let flight_service = QuerierFlightService::new_with_catalog_manager(

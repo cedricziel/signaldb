@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import {
   fetchCatalogEntities,
@@ -7,6 +7,7 @@ import {
 } from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
 import { fetchFieldValueSketch } from "../../api/sourceFields";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
@@ -17,13 +18,14 @@ import {
 } from "../../lib/traceFilters";
 import { NOT_SET, compositeKey } from "../../lib/traceGroups";
 import {
-  formatTimestamp,
+  formatTimestampForRange,
   nanosToMs,
   rangeScopeKey,
   resolveRange,
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
+import { CatalogServiceMap } from "./CatalogServiceMap";
 import { EntityDetail } from "./EntityDetail";
 import { redDuration, redErrorClass, redErrorRate, redRate } from "./red";
 import {
@@ -33,10 +35,7 @@ import {
 } from "./entityTypes";
 import { useCatalogEntityTypes } from "./useEntityTypes";
 import { useSparklineColumn } from "./useEntityMetrics";
-import {
-  EntitySparkline,
-  type SparklinePoint,
-} from "./EntitySparkline";
+import { EntitySparkline, type SparklinePoint } from "./EntitySparkline";
 import {
   MobileFiltersToggle,
   MobileSidebarDrawer,
@@ -45,6 +44,9 @@ import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
 import { useMobileSidebar } from "../../hooks/useMobileSidebar";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
+// `.trace-open` (a drillable row's primary-cell button) is a shared button
+// style this view reuses from the Traces tab rather than catalog.css.
+import "../traces/traces.css";
 
 interface Props {
   state: ExploreState;
@@ -81,10 +83,8 @@ export function CatalogView({ state, update }: Props) {
   // Called before the detail branch below: an early return above a hook
   // changes the hook count between renders of the same instance, and drilling
   // into a row is exactly that transition.
-  const { types, isPending, analyzed, asOf } = useCatalogEntityTypes(
-    range,
-    rangeKey,
-  );
+  const { types, isPending, analyzed, asOf, isError, error } =
+    useCatalogEntityTypes(range, rangeKey);
   const mobileSidebar = useMobileSidebar();
   const resolved = resolveEntityType(state.catalogEntity, types);
 
@@ -133,25 +133,76 @@ export function CatalogView({ state, update }: Props) {
             rangeKey={rangeKey}
             analyzed={analyzed}
             asOf={asOf}
+            isError={isError}
+            error={error}
             onSelect={(id) => {
               update({ catalogEntity: id });
               mobileSidebar.close();
             }}
           />
         </MobileSidebarDrawer>
-        <EntityTable
-          key={selected.id}
-          entity={selected}
-          range={range}
-          rangeKey={rangeKey}
-          rangeSeconds={catalogRangeSeconds(range)}
-          sparkline
-          onRowClick={(values) =>
-            update({ catalogPrimary: compositeKey(values) }, { push: true })
-          }
-        />
+        <div className="catalog-list-pane">
+          {selected.id === "service" && state.catalogView === "map" ? (
+            <CatalogServiceMap
+              range={range}
+              rangeKey={rangeKey}
+              update={update}
+              viewSwitch={
+                <CatalogViewSwitch view={state.catalogView} update={update} />
+              }
+            />
+          ) : (
+            <EntityTable
+              key={selected.id}
+              entity={selected}
+              range={range}
+              rangeKey={rangeKey}
+              rangeSeconds={catalogRangeSeconds(range)}
+              sparkline
+              onRowClick={(values) =>
+                update({ catalogPrimary: compositeKey(values) }, { push: true })
+              }
+              viewSwitch={
+                selected.id === "service" && (
+                  <CatalogViewSwitch view={state.catalogView} update={update} />
+                )
+              }
+            />
+          )}
+        </div>
       </div>
     </>
+  );
+}
+
+/** The service entity type's List | Map switch — compact, sitting inline
+ * next to whichever view's own title ("Services", either from `EntityTable`
+ * or `CatalogServiceMap`), same as the service map's own Map | Table
+ * switch. Never a full-width row of its own. */
+function CatalogViewSwitch({
+  view,
+  update,
+}: {
+  view: ExploreState["catalogView"];
+  update: UpdateFn;
+}) {
+  return (
+    <div className="trace-volume-mode" role="group" aria-label="Catalog view">
+      <button
+        type="button"
+        aria-pressed={view === "list"}
+        onClick={() => update({ catalogView: "list" })}
+      >
+        List
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === "map"}
+        onClick={() => update({ catalogView: "map" })}
+      >
+        Map
+      </button>
+    </div>
   );
 }
 
@@ -162,6 +213,8 @@ function CatalogNav({
   rangeKey,
   analyzed,
   asOf,
+  isError,
+  error,
   onSelect,
 }: {
   types: EntityTypeDef[];
@@ -170,6 +223,8 @@ function CatalogNav({
   rangeKey: string;
   analyzed: boolean;
   asOf?: string;
+  isError?: boolean;
+  error?: unknown;
   onSelect: (id: string) => void;
 }) {
   const results = useQueries({
@@ -199,19 +254,23 @@ function CatalogNav({
               onClick={() => onSelect(e.id)}
             >
               <span>{e.label}</span>
-              <span className="facet-active">{countLabel}</span>
+              <span className="facet-active chip">{countLabel}</span>
             </button>
           );
         })}
       </div>
-      {/* Absence of an entity type is a claim about the data; absence of
-          metadata is a claim about what we know. Saying so keeps a
-          never-compacted deployment from reading as an empty one. */}
-      <div className="sidebar-note">
-        {analyzed
-          ? asOf && `Field metadata as of ${asOf}`
-          : "Not analyzed yet — entity types appear once compaction has run."}
-      </div>
+      {isError ? (
+        <QueryError what="entity types" error={error} />
+      ) : (
+        // Absence of an entity type is a claim about the data; absence of
+        // metadata is a claim about what we know. Saying so keeps a
+        // never-compacted deployment from reading as an empty one.
+        <div className="sidebar-note">
+          {analyzed
+            ? asOf && `Field metadata as of ${asOf}`
+            : "Not analyzed yet — entity types appear once compaction has run."}
+        </div>
+      )}
     </aside>
   );
 }
@@ -236,8 +295,14 @@ export function drillFilters(
   entity.identity.forEach((field, i) => {
     if (facetField(field) === undefined) return;
     const v = values[i];
-    if (v == null) return;
-    filters = upsertTraceFilter(filters, { field, value: v });
+    // A `(not set)` identity value means the field is absent, not that it
+    // equals the literal string "(not set)" — an `eq` filter here would
+    // match nothing, and dropping the dimension (the old behavior) matched
+    // everything instead of just the traces missing it.
+    filters = upsertTraceFilter(
+      filters,
+      v == null ? { field, value: "", op: "absent" } : { field, value: v },
+    );
   });
   return filters;
 }
@@ -312,9 +377,8 @@ function EmptyEntityState({
   });
 
   return (
-    <div className="view-note">
-      No {entity.label.toLowerCase()} observed in this window — no matching{" "}
-      <code>{primary}</code> value seen in {sources.join(" or ")}.
+    <EmptyState title={`No ${entity.label.toLowerCase()} in this range`}>
+      No matching <code>{primary}</code> value seen in {sources.join(" or ")}.
       {sketch.data && (
         <>
           {" "}
@@ -331,7 +395,7 @@ function EmptyEntityState({
           . Try a wider time range.
         </>
       )}
-    </div>
+    </EmptyState>
   );
 }
 
@@ -350,6 +414,7 @@ export function EntityTable({
   pinned,
   sparkline = false,
   onRowClick,
+  viewSwitch,
 }: {
   entity: EntityTypeDef;
   range: ResolvedRange;
@@ -367,6 +432,10 @@ export function EntityTable({
   /** Omit for a read-only table (e.g. a `topValues` ranking with nothing
    * to drill into) — rows render without a click affordance. */
   onRowClick?: (values: (string | null)[]) => void;
+  /** The service entity type's List | Map switch, rendered inline in the
+   * headline next to the title — `CatalogView`'s to build, this table just
+   * gives it a slot. */
+  viewSwitch?: ReactNode;
 }) {
   const [sort, toggle] = useSort("n", "desc");
   const result = useQuery({
@@ -412,98 +481,115 @@ export function EntityTable({
             ? ` across ${entity.sources.join(", ")}`
             : ""}
         </span>
+        {viewSwitch && (
+          <div className="catalog-headline-switch">{viewSwitch}</div>
+        )}
       </div>
       {result.isError && <QueryError what="entities" error={result.error} />}
-      <table className="trace-table" aria-busy={pending}>
-        <thead>
-          <tr>
-            {entity.identity.map((dim) => (
-              <th key={dim}>{dim}</th>
-            ))}
-            <SortTh
-              label="Rate"
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Errors"
-              sortKey="errors"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P50"
-              sortKey="p50"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P95"
-              sortKey="p95"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Last seen"
-              sortKey="last"
-              sort={sort}
-              toggle={toggle}
-              firstDir="desc"
-            />
-            {/* Named, not decorative: the reader must know which metric the
+      <div className="table-scroll">
+        <table className="trace-table" aria-busy={pending}>
+          <thead>
+            <tr>
+              {entity.identity.map((dim) => (
+                <th key={dim}>{dim}</th>
+              ))}
+              <SortTh
+                label="Rate"
+                sortKey="n"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Errors"
+                sortKey="errors"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P50"
+                sortKey="p50"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P95"
+                sortKey="p95"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Last seen"
+                sortKey="last"
+                sort={sort}
+                toggle={toggle}
+                firstDir="desc"
+              />
+              {/* Named, not decorative: the reader must know which metric the
                 shape belongs to without opening the entity. */}
-            {sparklineLabel && (
-              <th title={sparklineLabel}>{sparklineLabel}</th>
+              {sparklineLabel && (
+                <th title={sparklineLabel}>{sparklineLabel}</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {pending ? (
+              <SkeletonRows
+                rows={8}
+                columns={columns}
+                numericFrom={entity.identity.length}
+              />
+            ) : (
+              rows.map((g) => (
+                <tr
+                  key={g.values.join("")}
+                  className={
+                    onRowClick ? "catalog-row-drillable" : "catalog-row-static"
+                  }
+                  onClick={onRowClick ? () => onRowClick(g.values) : undefined}
+                >
+                  {g.values.map((v, i) => (
+                    <td key={entity.identity[i]} title={v ?? undefined}>
+                      {/* Only the primary identity cell is a button: it's the
+                        one drill target a row has, mirroring
+                        MemberTable.tsx's span-name cell. No own onClick — a
+                        native button dispatches a click on Enter/Space too,
+                        which bubbles to the row's own handler above, making
+                        the row keyboard-reachable without a second handler. */}
+                      {onRowClick && i === 0 ? (
+                        <button type="button" className="trace-open">
+                          {v ?? NOT_SET}
+                        </button>
+                      ) : (
+                        (v ?? NOT_SET)
+                      )}
+                    </td>
+                  ))}
+                  <td className="num">{redRate(g.red, rangeSeconds)}</td>
+                  <td className={`num ${redErrorClass(g.red)}`}>
+                    {redErrorRate(g.red)}
+                  </td>
+                  <td className="num">{redDuration(g.red, "p50Ms")}</td>
+                  <td className="num">{redDuration(g.red, "p95Ms")}</td>
+                  <td>{formatTimestampForRange(nanosToMs(g.lastNs), range)}</td>
+                  {sparklineLabel && (
+                    <td className="entity-sparkline-cell">
+                      <EntitySparkline
+                        series={byRow.get(compositeKey(g.values)) ?? []}
+                        label={sparklineLabel}
+                        onHover={onHover}
+                      />
+                    </td>
+                  )}
+                </tr>
+              ))
             )}
-          </tr>
-        </thead>
-        <tbody>
-          {pending ? (
-            <SkeletonRows
-              rows={8}
-              columns={columns}
-              numericFrom={entity.identity.length}
-            />
-          ) : (
-            rows.map((g) => (
-              <tr
-                key={g.values.join("")}
-                className={
-                  onRowClick ? "catalog-row-drillable" : "catalog-row-static"
-                }
-                onClick={onRowClick ? () => onRowClick(g.values) : undefined}
-              >
-                {g.values.map((v, i) => (
-                  <td key={entity.identity[i]} title={v ?? undefined}>
-                    {v ?? NOT_SET}
-                  </td>
-                ))}
-                <td className="num">{redRate(g.red, rangeSeconds)}</td>
-                <td className={`num${redErrorClass(g.red) ? " err-rate" : ""}`}>
-                  {redErrorRate(g.red)}
-                </td>
-                <td className="num">{redDuration(g.red, "p50Ms")}</td>
-                <td className="num">{redDuration(g.red, "p95Ms")}</td>
-                <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
-                {sparklineLabel && (
-                  <td className="entity-sparkline-cell">
-                    <EntitySparkline
-                      series={byRow.get(compositeKey(g.values)) ?? []}
-                      label={sparklineLabel}
-                      onHover={onHover}
-                    />
-                  </td>
-                )}
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+          </tbody>
+        </table>
+      </div>
       {hovered && sparklineLabel && pointer.anchor && (
         <VizTooltip
           anchor={pointer.anchor}

@@ -43,9 +43,10 @@ APIs (see [Authentication](authentication.md)):
 | `GET /loki/api/v1/detected_fields`     | Discover attribute fields in a window: name, inferred type, approximate cardinality (samples the data; no declaration or indexing needed) |
 | `GET /loki/api/v1/tail`                | Not implemented — live tail is tracked separately                                                                                         |
 
-Labels are also reachable without raw HTTP: `signaldb-cli discover
-attributes --signal logs [--tag NAME]`, and the MCP `discover_attributes`
-(`signal: "logs"`) tool for AI agents — see [the MCP server doc](mcp.md).
+First-party discovery does not use these endpoints: `signaldb-cli discover
+attributes --signal logs [--tag NAME]` and the MCP `discover_attributes`
+(`signal: "logs"`) tool go through the Query IR `describe` stage — see
+[the MCP server doc](mcp.md).
 
 Common query parameters: `query` (the LogQL string), `start`/`end`
 (unix nanoseconds, unix seconds, or RFC3339), `limit`, `direction`
@@ -57,13 +58,13 @@ Common query parameters: `query` (the LogQL string), `start`/`end`
 SignalDB stores logs in columnar form, not as free-form label sets. LogQL
 labels resolve as follows:
 
-| LogQL label                           | Resolves to                                       |
-| ------------------------------------- | ------------------------------------------------- |
-| `service_name`, `service`, `job`      | the `service_name` column                         |
-| `level`, `severity`, `detected_level` | the `severity_text` column                        |
-| `trace_id`, `span_id`                 | the matching columns                              |
-| a **materialized** label (see below)  | its dedicated `label_<key>` column                |
-| any other label                       | the `log_attributes` / `resource_attributes` maps |
+| LogQL label                                      | Resolves to                                       |
+| ------------------------------------------------ | ------------------------------------------------- |
+| `service_name`, `service`, `job`, `service.name` | the `service_name` column                         |
+| `level`, `severity`, `detected_level`            | the `severity_text` column                        |
+| `trace_id`, `span_id`                            | the matching columns                              |
+| a **materialized** label (see below)             | its dedicated `label_<key>` column                |
+| any other label                                  | the `log_attributes` / `resource_attributes` maps |
 
 Labels backed by a column are exact. On tables created since attributes
 became typed maps, **any other label is also exact**: the value is looked
@@ -72,6 +73,17 @@ every attribute. Older tables store attributes as serialized JSON, where a
 label is matched by its `"key":"value"` fragment — an approximation that
 can over-match and supports only `=`/`!=`; the querier picks the right
 form per table automatically.
+
+A label name may contain dots (`{k8s.pod.name="checkout-7c9f"}`,
+`| http.response.status_code >= 500`), so a query can name an attribute by
+its real OTel key. Apart from the well-known aliases in the table above
+(`service.name` reaches the `service_name` column), a dotted key resolves
+directly against the attribute maps by exact key — no materialization
+needed. The underscore spelling of
+the same attribute (`k8s_pod_name`) only resolves to that data once the
+label has been **materialized** (see below): both spellings sanitize to
+the identical `label_<key>` column, so either works once the column
+exists, but only the dotted form is guaranteed to match beforehand.
 
 ### Materialized labels
 
@@ -88,6 +100,13 @@ to tables created after that point; a table that predates the column falls
 back to the JSON substring match for that label. Because the promoted value
 is also kept in the attribute JSON, label discovery (`/labels`,
 `/label/{name}/values`) is unchanged.
+
+Two distinct label keys can sanitize to the same `label_<key>` column name
+(see the dotted-vs-underscore example above); the writer resolves that by
+suffixing the later key's column (`label_<key>_2`). As an interim guard
+(#1533), a query against either colliding key currently falls back to the
+attribute-map extraction path rather than risk reading the wrong key's
+column; full per-key resolution of the collision is still open.
 
 Series identity (in `/series` results and bare range aggregations such as
 `count_over_time(...)` with no vector wrapper) is the `service_name` and

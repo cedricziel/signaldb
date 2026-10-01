@@ -1,7 +1,8 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { Link, Navigate, NavLink, useParams } from "react-router";
 import { getRegistry, listRegistries, type DefinitionKind } from "./api";
+import { EmptyState } from "../../components/EmptyState";
 import { DefinitionPane } from "./DefinitionPane";
 import {
   CONVENTIONS,
@@ -13,7 +14,9 @@ import {
 } from "./paths";
 import { filterByName, indexRegistry } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
+import { useOutletState } from "../../lib/outletState";
 import { toErrorMessage } from "../../api/http";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 /**
  * `/schema/conventions/:ns/:version[/:kind/:name]` — one registry: a search
@@ -30,6 +33,7 @@ export function RegistryBrowser() {
   }>();
   const namespace = params.ns ?? "";
   const version = params.version ?? "";
+  useBreadcrumbLeaf(`${namespace}@${version}`);
   if (version === LATEST) {
     return (
       <LatestRedirect
@@ -59,8 +63,9 @@ function LatestRedirect({
   kind?: DefinitionKind;
   name?: string;
 }) {
+  const { tenant, dataset } = useOutletState().state;
   const registries = useQuery({
-    queryKey: ["schema-registries"],
+    queryKey: ["schema-registries", tenant, dataset],
     queryFn: listRegistries,
     staleTime: 60_000,
   });
@@ -68,7 +73,7 @@ function LatestRedirect({
   if (registries.isError) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load registries: {toErrorMessage(registries.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -79,7 +84,7 @@ function LatestRedirect({
   if (!found) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           No visible registry named <code>{namespace}</code>.
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -104,10 +109,10 @@ function RegistryView({
   kind?: DefinitionKind;
   name?: string;
 }) {
-  const { isTenantAdmin } = useSchemaSession();
+  const { isTenantAdmin, tenant, dataset } = useSchemaSession();
   const [query, setQuery] = useState("");
   const registry = useQuery({
-    queryKey: ["schema-registry", namespace, version],
+    queryKey: ["schema-registry", namespace, version, tenant, dataset],
     queryFn: () => getRegistry(namespace, version),
     staleTime: 60_000,
   });
@@ -115,12 +120,21 @@ function RegistryView({
     () => (registry.data ? indexRegistry(registry.data.document) : undefined),
     [registry.data],
   );
+  const paneRef = useRef<HTMLDivElement>(null);
+  // Definition URLs are addressable deep links; on arrival (or when the
+  // selection changes) the pane may be off-screen below the nav/lists on
+  // narrow viewports, so it scrolls into view. `scrollIntoView` is absent in
+  // jsdom, hence the optional chaining.
+  useEffect(() => {
+    if (!kind || !name) return;
+    paneRef.current?.scrollIntoView?.({ block: "start" });
+  }, [kind, name]);
 
   if (registry.isPending) return <p className="schema-note">Loading…</p>;
   if (registry.isError || !index) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
+        <p className="error-text" role="alert">
           Could not load {namespace}@{version}: {toErrorMessage(registry.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
@@ -171,7 +185,7 @@ function RegistryView({
         </span>
         {canEdit && (
           <div className="schema-actions">
-            <Link className="schema-button" to={editorPath(namespace, version)}>
+            <Link className="btn" to={editorPath(namespace, version)}>
               Edit
             </Link>
           </div>
@@ -197,6 +211,7 @@ function RegistryView({
             kind="attributes"
             namespace={namespace}
             version={version}
+            activeName={kind === "attributes" ? name : undefined}
           />
           <Section
             title="Entities"
@@ -205,6 +220,7 @@ function RegistryView({
             kind="entities"
             namespace={namespace}
             version={version}
+            activeName={kind === "entities" ? name : undefined}
           />
           <Section
             title="Metrics"
@@ -213,22 +229,27 @@ function RegistryView({
             kind="metrics"
             namespace={namespace}
             version={version}
+            activeName={kind === "metrics" ? name : undefined}
           />
         </nav>
-        {kind && name ? (
-          <DefinitionPane
-            namespace={namespace}
-            version={version}
-            kind={kind}
-            name={name}
-          />
-        ) : (
-          <div className="schema-definition">
-            <p className="schema-note">
-              Select an attribute, entity, or metric to see its definition.
-            </p>
-          </div>
-        )}
+        {/* When the main column is <=720px this pane renders above the nav/lists (schema.css) so
+            it is reachable without scrolling past ~850px of sections. */}
+        <div ref={paneRef} className="schema-definition-slot">
+          {kind && name ? (
+            <DefinitionPane
+              namespace={namespace}
+              version={version}
+              kind={kind}
+              name={name}
+            />
+          ) : (
+            <div className="schema-definition">
+              <p className="schema-note">
+                Select an attribute, entity, or metric to see its definition.
+              </p>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   );
@@ -243,6 +264,7 @@ function Section({
   kind,
   namespace,
   version,
+  activeName,
 }: {
   title: string;
   count: number;
@@ -250,8 +272,19 @@ function Section({
   kind: DefinitionKind;
   namespace: string;
   version: string;
+  /** The currently-selected name in this section, kept visible even past
+   * `MAX_LISTED` and scrolled into view (desktop) when it changes. */
+  activeName?: string;
 }) {
-  const shown = items.slice(0, MAX_LISTED);
+  const capped = items.slice(0, MAX_LISTED);
+  const shown =
+    activeName && !capped.some((item) => item.name === activeName)
+      ? [...capped, ...items.filter((item) => item.name === activeName)]
+      : capped;
+  const activeRef = useRef<HTMLAnchorElement>(null);
+  useEffect(() => {
+    activeRef.current?.scrollIntoView?.({ block: "nearest" });
+  }, [activeName]);
   return (
     <section className="schema-section" aria-label={title}>
       <h2>
@@ -259,12 +292,13 @@ function Section({
         <span>{count}</span>
       </h2>
       {shown.length === 0 ? (
-        <p className="schema-note">No matches.</p>
+        <EmptyState title="No matches yet" />
       ) : (
         <ul>
           {shown.map((item) => (
             <li key={item.name}>
               <NavLink
+                ref={item.name === activeName ? activeRef : undefined}
                 to={definitionPath(namespace, version, kind, item.name)}
                 title={item.title}
               >

@@ -7,7 +7,6 @@
 
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::{
     aligned_hour_start, attested_sort_order_ids, context_for, load_table, trace_sort_keys,
@@ -25,9 +24,8 @@ async fn writer_for(table: &str) -> Result<(Arc<CatalogManager>, IcebergTableWri
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        Arc::new(InMemory::new()),
         TENANT.to_string(),
         DATASET.to_string(),
         table.to_string(),

@@ -1,0 +1,48 @@
+WHITESPACE = _{ " " | "\t" | "\n" | "\r" }
+
+statement = { SOI ~ call ~ (kw_where ~ condition)? ~ EOI }
+
+// Atomic (not merely silent): the negative lookahead must see the character
+// immediately following the keyword, not one after implicit whitespace has
+// been skipped past it — otherwise `where`/`and`/`or`/`not` followed by a
+// space and an identifier would wrongly fail the lookahead (it would test the
+// identifier's first letter instead of the space right after the keyword).
+kw_where = @{ "where" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_and = @{ "and" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_or = @{ "or" ~ !(ASCII_ALPHANUMERIC | "_") }
+kw_not = @{ "not" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+call = { ident ~ "(" ~ (expr ~ ("," ~ expr)*)? ~ ")" }
+
+expr = { call | list_literal | literal | path }
+
+list_literal = { "[" ~ (expr ~ ("," ~ expr)*)? ~ "]" }
+
+path = { ident ~ path_seg* }
+path_seg = { ("." ~ ident) | ("[" ~ string ~ "]") }
+
+literal = { float | int | bool_lit | nil_lit | string }
+
+bool_lit = @{ ("true" | "false") ~ !(ASCII_ALPHANUMERIC | "_") }
+nil_lit = @{ "nil" ~ !(ASCII_ALPHANUMERIC | "_") }
+
+int = @{ "-"? ~ ASCII_DIGIT+ ~ !("." ~ ASCII_DIGIT) }
+float = @{ "-"? ~ ASCII_DIGIT+ ~ "." ~ ASCII_DIGIT+ }
+
+string = ${ "\"" ~ string_inner ~ "\"" }
+string_inner = @{ str_char* }
+str_char = {
+    !("\"" | "\\") ~ ANY
+    | "\\" ~ ANY
+}
+
+ident = @{ (ASCII_ALPHA | "_") ~ (ASCII_ALPHANUMERIC | "_")* }
+
+condition = { or_expr }
+or_expr = { and_expr ~ (kw_or ~ and_expr)* }
+and_expr = { not_expr ~ (kw_and ~ not_expr)* }
+not_expr = { negated | cond_atom }
+negated = { kw_not ~ cond_atom }
+cond_atom = { "(" ~ condition ~ ")" | comparison }
+comparison = { expr ~ (cmp_op ~ expr)? }
+cmp_op = { "==" | "!=" | "<=" | ">=" | "<" | ">" }

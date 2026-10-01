@@ -15,8 +15,8 @@ use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use datafusion::arrow::array::{
-    Array as _, MapBuilder, MapFieldNames, RecordBatch, StringArray, StringBuilder,
-    TimestampMicrosecondArray,
+    Array as _, ArrayRef, BinaryArray, MapBuilder, MapFieldNames, RecordBatch, StringArray,
+    StringBuilder, TimestampMicrosecondArray, new_null_array,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef, TimeUnit};
 use datafusion::prelude::SessionContext;
@@ -25,53 +25,28 @@ use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
-use iceberg_rust::spec::partition::{
-    PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
-};
 use iceberg_rust::spec::schema::Schema as IcebergSchema;
 use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
 use iceberg_rust::table::Table;
 use std::sync::Arc;
-use tests_integration::compaction_helpers::busiest_partition;
+use tests_integration::compaction_helpers::{
+    busiest_partition, hour_partition_spec, load_table_by_identifier, map_field, string_field,
+};
 
 const TENANT: &str = "t1";
 const DATASET: &str = "d1";
 const TABLE: &str = "logs";
 
-fn string_field(id: i32, name: &str) -> StructField {
-    StructField {
-        id,
-        name: name.to_string(),
-        required: false,
-        field_type: Type::Primitive(PrimitiveType::String),
-        doc: None,
-        initial_default: None,
-        write_default: None,
-    }
-}
+// A tenant id deliberately different from its slug (#1535): the
+// promotion/demotion pass only ever sees the slug, taken from the Iceberg
+// namespace, so the pinned-label guard must resolve it back to this id
+// before reading `[schema.materialized_labels]`.
+const SLUG_TENANT_ID: &str = "tenant-internal-id";
+const SLUG_TENANT_SLUG: &str = "acme-corp";
 
 /// A logs-shaped table that already carries a materialized `label_env`
 /// column (id 8, after the map's nested key/value ids 6 and 7), as a
 /// previous auto-promotion would have left it.
-/// Hour-partition spec on `timestamp`, matching what every production signal
-/// table uses (`common::iceberg::schemas`). Compaction is partition-scoped
-/// (issue #933), so a test table must be partitioned the way real tables are —
-/// an unpartitioned table has no `timestamp_hour` value for the planner or
-/// executor to scope a job to.
-fn hour_partition_spec() -> PartitionSpec {
-    PartitionSpecBuilder::default()
-        .with_spec_id(0)
-        // Iceberg convention: partition field_id = 1000 + source field id.
-        .with_partition_field(PartitionField::new(
-            1,
-            1001,
-            "timestamp_hour",
-            Transform::Hour,
-        ))
-        .build()
-        .expect("hour partition spec should build")
-}
-
 fn table_schema() -> IcebergSchema {
     let timestamp = StructField {
         id: 1,
@@ -84,7 +59,7 @@ fn table_schema() -> IcebergSchema {
     };
     let attributes = StructField {
         id: 5,
-        name: "log_attributes".to_string(),
+        name: "log_attributes_str".to_string(),
         required: false,
         field_type: Type::Map(MapType {
             key_id: 6,
@@ -117,17 +92,22 @@ fn table_schema() -> IcebergSchema {
                 initial_default: None,
                 write_default: None,
             },
+            StructField {
+                id: 9,
+                name: "log_attributes_residue".to_string(),
+                required: false,
+                field_type: Type::Primitive(PrimitiveType::Binary),
+                doc: None,
+                initial_default: None,
+                write_default: None,
+            },
+            map_field(10, "log_attributes_int", PrimitiveType::Long),
+            map_field(13, "log_attributes_double", PrimitiveType::Double),
+            map_field(16, "log_attributes_bool", PrimitiveType::Boolean),
         ]),
         0,
         None,
     )
-}
-
-async fn load_table(catalog_manager: &CatalogManager, identifier: &Identifier) -> Result<Table> {
-    match catalog_manager.catalog().load_tabular(identifier).await? {
-        Tabular::Table(table) => Ok(table),
-        _ => anyhow::bail!("expected a table"),
-    }
 }
 
 /// One test row: (timestamp, service, body, attributes, label_env value).
@@ -145,7 +125,7 @@ async fn write_file(
     identifier: &Identifier,
     rows: &[TestRow<'_>],
 ) -> Result<()> {
-    let mut table = load_table(catalog_manager, identifier).await?;
+    let mut table = load_table_by_identifier(catalog_manager, identifier).await?;
 
     // Derive the Arrow schema from the table so the map entry/key/value
     // field names line up with what the table declares.
@@ -156,9 +136,9 @@ async fn write_file(
             .try_into()
             .map_err(|e: iceberg_rust::spec::error::Error| anyhow::anyhow!("to arrow: {e}"))?,
     );
-    let attr_field = arrow_schema.field_with_name("log_attributes")?;
+    let attr_field = arrow_schema.field_with_name("log_attributes_str")?;
     let DataType::Map(entry_field, _) = attr_field.data_type() else {
-        anyhow::bail!("log_attributes should convert to an Arrow Map");
+        anyhow::bail!("log_attributes_str should convert to an Arrow Map");
     };
     let DataType::Struct(kv_fields) = entry_field.data_type() else {
         anyhow::bail!("map entries should be a struct");
@@ -194,7 +174,16 @@ async fn write_file(
     let attrs = attrs.finish();
     let ts = TimestampMicrosecondArray::from(timestamps);
 
-    let batch_schema = Arc::new(ArrowSchema::new(vec![
+    let empty_homes = [
+        "log_attributes_int",
+        "log_attributes_double",
+        "log_attributes_bool",
+    ]
+    .into_iter()
+    .map(|name| arrow_schema.field_with_name(name).cloned())
+    .collect::<Result<Vec<_>, _>>()?;
+
+    let mut fields = vec![
         Field::new(
             "timestamp",
             DataType::Timestamp(TimeUnit::Microsecond, None),
@@ -203,20 +192,26 @@ async fn write_file(
         Field::new("service_name", DataType::Utf8, true),
         Field::new("severity_text", DataType::Utf8, true),
         Field::new("body", DataType::Utf8, true),
-        Field::new("log_attributes", attrs.data_type().clone(), true),
+        Field::new("log_attributes_str", attrs.data_type().clone(), true),
         Field::new("label_env", DataType::Utf8, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        batch_schema,
-        vec![
-            Arc::new(ts),
-            Arc::new(StringArray::from(services)),
-            Arc::new(StringArray::from(severities)),
-            Arc::new(StringArray::from(bodies)),
-            Arc::new(attrs),
-            Arc::new(StringArray::from(labels)),
-        ],
-    )?;
+        Field::new("log_attributes_residue", DataType::Binary, true),
+    ];
+    fields.extend(empty_homes.iter().cloned());
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(ts),
+        Arc::new(StringArray::from(services)),
+        Arc::new(StringArray::from(severities)),
+        Arc::new(StringArray::from(bodies)),
+        Arc::new(attrs),
+        Arc::new(StringArray::from(labels)),
+        Arc::new(BinaryArray::from(vec![None::<&[u8]>; rows.len()])),
+    ];
+    columns.extend(
+        empty_homes
+            .iter()
+            .map(|f| new_null_array(f.data_type(), rows.len())),
+    );
+    let batch = RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), columns)?;
 
     let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch)]), None).await?;
     table
@@ -241,9 +236,25 @@ async fn setup(
     Arc<common::catalog::Catalog>,
     Identifier,
 )> {
+    setup_with_tenant(dry_run, pinned, TENANT, TENANT).await
+}
+
+/// Like [`setup`], but lets the caller give the tenant a slug distinct from
+/// its id — regression coverage for #1535, where the pinned-label guard
+/// looked up the schema config by slug instead of id.
+async fn setup_with_tenant(
+    dry_run: bool,
+    pinned: bool,
+    tenant_id: &str,
+    tenant_slug: &str,
+) -> Result<(
+    Arc<CatalogManager>,
+    Arc<common::catalog::Catalog>,
+    Identifier,
+)> {
     let mut config = common::testing::TestConfigBuilder::new()
         .in_memory()
-        .with_tenant(TENANT, DATASET)
+        .with_tenant_and_slugs(tenant_id, tenant_slug, DATASET, DATASET)
         .build();
     config.compactor.attr_promotion = common::config::AttrPromotionConfig {
         enabled: true,
@@ -253,23 +264,44 @@ async fn setup(
         min_query_hits: 1,
         promote_streak: 1,
         max_promotions_per_cycle: 4,
+        demote_after_idle: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     if pinned {
-        config.schema.materialized_labels.logs = vec!["env".to_string()];
+        if tenant_id == tenant_slug {
+            config.schema.materialized_labels.logs = vec!["env".to_string()];
+        } else {
+            // Pin the label on this tenant's own schema config (keyed by
+            // id, `config.tenants.tenants`), not the global one — the
+            // guard must resolve the namespace slug back to this id to
+            // find it (#1535).
+            config.tenants.tenants.insert(
+                tenant_id.to_string(),
+                common::config::TenantSchemaConfig {
+                    schema: Some(common::config::TenantSchemaOverride {
+                        materialized_labels: common::config::MaterializedLabelsOverride {
+                            logs: Some(vec!["env".to_string()]),
+                            ..Default::default()
+                        },
+                        ..Default::default()
+                    }),
+                    ..Default::default()
+                },
+            );
+        }
     }
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
-    let namespace = catalog_manager.build_namespace(TENANT, DATASET)?;
+    let namespace = catalog_manager.build_namespace(tenant_id, DATASET)?;
     catalog_manager
         .catalog()
         .create_namespace(&namespace, None)
         .await?;
-    let identifier = catalog_manager.build_table_identifier(TENANT, DATASET, TABLE);
+    let identifier = catalog_manager.build_table_identifier(tenant_id, DATASET, TABLE);
     let create = CreateTableBuilder::default()
         .with_name(TABLE.to_string())
         .with_schema(table_schema())
         .with_partition_spec(hour_partition_spec())
-        .with_location(catalog_manager.build_table_location(TENANT, DATASET, TABLE))
+        .with_location(catalog_manager.build_table_location(tenant_id, DATASET, TABLE))
         .create()
         .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
     catalog_manager
@@ -330,7 +362,15 @@ async fn run_compaction(
     catalog_manager: Arc<CatalogManager>,
     service_catalog: Arc<common::catalog::Catalog>,
 ) -> Result<()> {
-    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
+    run_compaction_for_tenant(catalog_manager, service_catalog, TENANT).await
+}
+
+async fn run_compaction_for_tenant(
+    catalog_manager: Arc<CatalogManager>,
+    service_catalog: Arc<common::catalog::Catalog>,
+    tenant_id: &str,
+) -> Result<()> {
+    let partition = busiest_partition(&catalog_manager, tenant_id, DATASET, TABLE).await?;
     let executor = CompactionExecutor::new(
         catalog_manager,
         ExecutorConfig::default(),
@@ -338,7 +378,7 @@ async fn run_compaction(
     )
     .with_service_catalog(service_catalog);
     let candidate = CompactionCandidate {
-        tenant_id: TENANT.to_string(),
+        tenant_id: tenant_id.to_string(),
         dataset_id: DATASET.to_string(),
         table_name: TABLE.to_string(),
         partition_id: partition.to_string(),
@@ -373,6 +413,74 @@ fn register(table: Table, ctx: &SessionContext) -> Result<()> {
     Ok(())
 }
 
+/// A rewrite that evolves the schema must still read the snapshot its
+/// caller pinned, not a freshly loaded one.
+///
+/// The demotion pass commits AddSchema/SetCurrentSchema, after which the
+/// rewrite reloads the table to write under the new schema. If it also
+/// *read* from that reload it would pick up any snapshot committed since
+/// — including a late write into this very partition — and rewrite rows
+/// the delta commit does not remove. The row-parity check turns that into
+/// an abort on every cycle that evolves the schema. Demotion drives this
+/// scenario now that legacy label promotion no longer creates columns
+/// (otel-native-schema layer 6): it is the only mechanism this file has
+/// left that evolves the schema on its own.
+#[tokio::test]
+async fn schema_evolution_does_not_sweep_in_a_late_write() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+    let (catalog_manager, service_catalog, identifier) = setup(false, false).await?;
+    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
+
+    // Pin the table the way the executor does, *before* the late write.
+    let pinned = load_table_by_identifier(&catalog_manager, &identifier).await?;
+
+    // A late write lands in the same hour partition after pinning.
+    write_file(
+        &catalog_manager,
+        &identifier,
+        &[(
+            5_000_000,
+            "late",
+            "arrived after pinning",
+            &[("env", "prod")],
+            Some("prod"),
+        )],
+    )
+    .await?;
+
+    let mut rewriter = compactor::rewriter::ParquetRewriter::new(catalog_manager.clone());
+    rewriter.set_service_catalog(service_catalog);
+
+    let outcome = rewriter
+        .rewrite_partition(&pinned, partition, 128 * 1024 * 1024)
+        .await?
+        .expect("partition has data to rewrite");
+
+    // The schema did evolve — otherwise this test would pass for the
+    // wrong reason (no reload, so no way to read the wrong snapshot).
+    let reloaded = load_table_by_identifier(&catalog_manager, &identifier).await?;
+    assert!(
+        !reloaded
+            .current_schema()?
+            .fields()
+            .iter()
+            .any(|f| f.name == "label_env"),
+        "fixture must actually evolve the schema (by demoting label_env)"
+    );
+
+    assert_eq!(
+        outcome.rows_written, 4,
+        "the rewrite must cover only the 4 rows in the pinned snapshot; \
+         reading the reloaded table would sweep in the late 5th row, which \
+         the delta commit does not remove"
+    );
+
+    Ok(())
+}
+
 #[tokio::test]
 async fn active_demotion_drops_unqueried_column_and_keeps_data_queryable() -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -384,14 +492,17 @@ async fn active_demotion_drops_unqueried_column_and_keeps_data_queryable() -> Re
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
     // Schema pruned: `label_env` is gone, the base columns survive.
-    let table = load_table(&catalog_manager, &identifier).await?;
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
         !schema.fields().iter().any(|f| f.name == "label_env"),
         "unqueried materialized column must be demoted"
     );
     assert!(
-        schema.fields().iter().any(|f| f.name == "log_attributes"),
+        schema
+            .fields()
+            .iter()
+            .any(|f| f.name == "log_attributes_str"),
         "attributes map must survive the demotion"
     );
     assert_eq!(table.metadata().current_schema_id, 1);
@@ -406,7 +517,7 @@ async fn active_demotion_drops_unqueried_column_and_keeps_data_queryable() -> Re
     assert_eq!(
         count_rows(
             &ctx,
-            "SELECT body FROM logs WHERE log_attributes['env'] = 'prod'"
+            "SELECT body FROM logs WHERE log_attributes_str['env'] = 'prod'"
         )
         .await?,
         2,
@@ -415,7 +526,7 @@ async fn active_demotion_drops_unqueried_column_and_keeps_data_queryable() -> Re
     assert_eq!(
         count_rows(
             &ctx,
-            "SELECT body FROM logs WHERE log_attributes['env'] = 'staging'"
+            "SELECT body FROM logs WHERE log_attributes_str['env'] = 'staging'"
         )
         .await?,
         1
@@ -440,7 +551,7 @@ async fn pinned_label_is_never_demoted_even_with_zero_demand() -> Result<()> {
 
     // `env` is pinned via [schema.materialized_labels]: no demotion, no
     // schema churn.
-    let table = load_table(&catalog_manager, &identifier).await?;
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
         schema.fields().iter().any(|f| f.name == "label_env"),
@@ -461,6 +572,32 @@ async fn pinned_label_is_never_demoted_even_with_zero_demand() -> Result<()> {
 }
 
 #[tokio::test]
+async fn pinned_label_survives_when_tenant_slug_differs_from_id() -> Result<()> {
+    let _ = tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
+        .with_test_writer()
+        .try_init();
+    let (catalog_manager, service_catalog, identifier) =
+        setup_with_tenant(false, true, SLUG_TENANT_ID, SLUG_TENANT_SLUG).await?;
+
+    run_compaction_for_tenant(catalog_manager.clone(), service_catalog, SLUG_TENANT_ID).await?;
+
+    // The compactor only ever sees the tenant *slug* (from the Iceberg
+    // namespace); the pinned-label guard must resolve it back to the
+    // tenant id to find this tenant's own `[schema.materialized_labels]`,
+    // not the global schema config.
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
+    let schema = table.current_schema()?;
+    assert!(
+        schema.fields().iter().any(|f| f.name == "label_env"),
+        "pinned label must never be demoted, even when tenant slug != id"
+    );
+    assert_eq!(table.metadata().schemas.len(), 1, "no schema was committed");
+
+    Ok(())
+}
+
+#[tokio::test]
 async fn dry_run_demotion_changes_nothing() -> Result<()> {
     let _ = tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
@@ -471,7 +608,7 @@ async fn dry_run_demotion_changes_nothing() -> Result<()> {
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
     // Schema untouched: the column survives and no schema was committed.
-    let table = load_table(&catalog_manager, &identifier).await?;
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
         schema.fields().iter().any(|f| f.name == "label_env"),

@@ -16,7 +16,7 @@
  * Kept local to the traces feature rather than in api/traceGroups.ts: it
  * exists only to feed this one guard, not as a general-purpose aggregate.
  */
-import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import { runIrQuery } from "../../api/queryIr";
 import {
   ROOT_SPAN_SENTINEL,
@@ -46,7 +46,7 @@ export function buildWindowTotalDoc(
   filters: TraceFilter[],
   grain: GroupGrain,
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] =
+  const scope: IrStage[] =
     grain === "traces"
       ? [
           {

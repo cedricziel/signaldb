@@ -1,9 +1,4 @@
-import {
-  fireEvent,
-  screen,
-  waitFor,
-  within,
-} from "@testing-library/react";
+import { fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
@@ -23,6 +18,7 @@ import * as membersApi from "../../api/traceGroupMembers";
 import * as entityTypesHook from "./useEntityTypes";
 import * as sparklineApi from "../../api/entitySparkline";
 import * as entityMetricsApi from "../../api/entityMetrics";
+import * as serviceGraphApi from "../../api/serviceGraph";
 import type { CatalogEntity, EntityObservation } from "../../api/catalog";
 
 // The entity table is a server-side aggregate (see api/catalog) — mocked at
@@ -65,6 +61,11 @@ vi.mock("../../api/entityMetrics", async (importOriginal) => {
     fetchMetricDefinitions: vi.fn(),
   };
 });
+vi.mock("../../api/serviceGraph", async (importOriginal) => {
+  const actual =
+    await importOriginal<typeof import("../../api/serviceGraph")>();
+  return { ...actual, fetchServiceGraph: vi.fn() };
+});
 vi.mock("./useEntityTypes", async (importOriginal) => {
   const actual = await importOriginal<typeof import("./useEntityTypes")>();
   return { ...actual, useCatalogEntityTypes: vi.fn() };
@@ -85,6 +86,7 @@ const fetchEntityMetricNames = vi.mocked(
 const fetchMetricDefinitions = vi.mocked(
   entityMetricsApi.fetchMetricDefinitions,
 );
+const fetchServiceGraph = vi.mocked(serviceGraphApi.fetchServiceGraph);
 
 /** A registry metric definition, as the association lookup returns it. */
 function metricDef(name: string) {
@@ -123,6 +125,11 @@ beforeEach(() => {
   discoverObservedMetricNames.mockResolvedValue([]);
   fetchEntityMetricNames.mockResolvedValue([]);
   fetchMetricDefinitions.mockResolvedValue([]);
+  fetchServiceGraph.mockReset();
+  fetchServiceGraph.mockResolvedValue({
+    graph: { nodes: [], edges: [], dropped_nodes: 0 },
+    warnings: [],
+  });
   useCatalogEntityTypes.mockReset();
   // The curated list, unanalyzed: what a deployment reports before any field
   // metadata has landed.
@@ -130,6 +137,7 @@ beforeEach(() => {
     types: ENTITY_TYPES,
     isPending: false,
     analyzed: false,
+    isError: false,
   });
 });
 
@@ -199,6 +207,33 @@ describe("CatalogView", () => {
     expect(within(nav).getByText("Hosts")).toBeInTheDocument();
   });
 
+  it("says entity types aren't analyzed yet when nothing errored", async () => {
+    renderView();
+    const nav = screen.getByRole("complementary", { name: "Entity types" });
+    expect(within(nav).getByText(/Not analyzed yet/)).toBeInTheDocument();
+  });
+
+  it("surfaces a real query failure instead of the benign 'not analyzed' note", async () => {
+    // A 403 (dataset not found for this tenant) must read as a backend
+    // failure, not as "compaction hasn't run yet" — the two collapse to the
+    // same curated fallback otherwise and hide a real problem from the user.
+    useCatalogEntityTypes.mockReturnValue({
+      types: ENTITY_TYPES,
+      isPending: false,
+      analyzed: false,
+      isError: true,
+      error: new Error("Dataset 'default' not found for tenant 'jobradar'"),
+    });
+    renderView();
+    const nav = screen.getByRole("complementary", { name: "Entity types" });
+    expect(
+      within(nav).getByText(
+        /Could not load entity types: Dataset 'default' not found/,
+      ),
+    ).toBeInTheDocument();
+    expect(within(nav).queryByText(/Not analyzed yet/)).not.toBeInTheDocument();
+  });
+
   it("switches the selected entity type through the URL state", async () => {
     const update = renderView();
     const user = userEvent.setup();
@@ -233,8 +268,22 @@ describe("CatalogView", () => {
 
   it("shows an honest empty state naming the missing identity attribute", async () => {
     renderView({ catalogEntity: "host" });
-    const note = await screen.findByText(/No hosts observed in this window/);
+    await screen.findByText(/No hosts in this range/);
+    const note = screen.getByRole("status");
     expect(within(note).getByText("host.name")).toBeInTheDocument();
+  });
+
+  it("prefixes last-seen with the date on a multi-day range", async () => {
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 1240, 5, 12, 48, "1700000100000000000"),
+      ],
+      truncated: false,
+    });
+    renderView({ range: { type: "relative", seconds: 7 * 86400 } });
+    expect(
+      await screen.findByText(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/),
+    ).toBeInTheDocument();
   });
 
   it("opens a service row's own detail page rather than jumping to Traces", async () => {
@@ -247,6 +296,24 @@ describe("CatalogView", () => {
     const update = renderView();
     const user = userEvent.setup();
     await user.click(await screen.findByText("gateway"));
+    expect(update).toHaveBeenCalledWith(
+      { catalogPrimary: compositeKey(["gateway", "edge"]) },
+      { push: true },
+    );
+  });
+
+  it("opens a row via keyboard (focus + Enter on its primary identity button)", async () => {
+    fetchCatalogEntities.mockResolvedValue({
+      entities: [
+        group(["gateway", "edge"], 1240, 5, 12, 48, "1700000000000000000"),
+      ],
+      truncated: false,
+    });
+    const update = renderView();
+    const user = userEvent.setup();
+    const cell = await screen.findByRole("button", { name: "gateway" });
+    cell.focus();
+    await user.keyboard("{Enter}");
     expect(update).toHaveBeenCalledWith(
       { catalogPrimary: compositeKey(["gateway", "edge"]) },
       { push: true },
@@ -313,6 +380,56 @@ describe("CatalogView", () => {
   });
 });
 
+describe("the Catalog Map view", () => {
+  it("offers the List | Map switch for the service entity type", async () => {
+    renderView();
+    const nav = screen.getByRole("complementary", { name: "Entity types" });
+    await within(nav).findByText("Databases");
+    expect(
+      screen.getByRole("group", { name: "Catalog view" }),
+    ).toBeInTheDocument();
+  });
+
+  it("hides the switch for a non-service entity type", async () => {
+    renderView({ catalogEntity: "database" });
+    await screen.findByRole("complementary", { name: "Entity types" });
+    expect(
+      screen.queryByRole("group", { name: "Catalog view" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("switches to the map, recording it in the URL, and back to the list", async () => {
+    const update = renderView();
+    await screen.findByRole("complementary", { name: "Entity types" });
+
+    fireEvent.click(screen.getByRole("button", { name: "Map" }));
+    expect(update).toHaveBeenCalledWith({ catalogView: "map" });
+  });
+
+  it("renders the service graph when the URL already names the map view", async () => {
+    fetchServiceGraph.mockResolvedValue({
+      graph: {
+        nodes: [
+          {
+            id: "service:checkout",
+            name: "checkout",
+            kind: "service",
+            request_rate: 4,
+            error_rate: 0,
+            p95_ns: 1_000_000,
+          },
+        ],
+        edges: [],
+        dropped_nodes: 0,
+      },
+      warnings: [],
+    });
+    renderView({ catalogView: "map" });
+    expect(await screen.findByText("checkout")).toBeInTheDocument();
+    expect(screen.queryByRole("table")).not.toBeInTheDocument();
+  });
+});
+
 describe("the empty state", () => {
   it("separates 'none in this window' from 'none ever'", async () => {
     // The value sketch is not window-scoped, so it cannot list what is here —
@@ -328,7 +445,8 @@ describe("the empty state", () => {
     // The note renders as soon as the window comes back empty; the sketch is
     // a second, later fetch that appends to it — so this waits for the
     // sketch's own sentence rather than reading the note the moment it exists.
-    const note = await screen.findByText(/No hosts observed in this window/);
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent("No hosts in this range");
     await waitFor(() =>
       expect(note).toHaveTextContent("3 values have been seen outside it"),
     );
@@ -343,7 +461,8 @@ describe("the empty state", () => {
     fetchFieldValueSketch.mockResolvedValue(undefined);
     renderView({ catalogEntity: "host" });
 
-    const note = await screen.findByText(/No hosts observed in this window/);
+    const note = await screen.findByRole("status");
+    expect(note).toHaveTextContent("No hosts in this range");
     expect(note).not.toHaveTextContent("seen outside it");
     expect(note).not.toHaveTextContent("wider time range");
   });
@@ -355,7 +474,7 @@ describe("the empty state", () => {
     });
     renderView({ catalogEntity: "host" });
 
-    const note = await screen.findByText(/No hosts observed in this window/);
+    const note = await screen.findByRole("status");
     await waitFor(() =>
       expect(note).toHaveTextContent("One value has been seen outside it"),
     );
@@ -567,7 +686,8 @@ describe("the entity list's sparkline column", () => {
     await screen.findByText("spans");
 
     const bands = await waitFor(() => {
-      const found = document.querySelectorAll(".entity-sparkline-hit");
+      // Structural: hit bands now come from the shared `Sparkline`.
+      const found = document.querySelectorAll(".sparkline-hit");
       expect(found.length).toBeGreaterThan(0);
       return found;
     });
@@ -626,6 +746,26 @@ describe("isDrillable / drillFilters", () => {
     expect(isDrillable(service)).toBe(true);
     expect(drillFilters(service, ["gateway", "edge"])).toEqual([
       { field: "service.name", value: "gateway" },
+    ]);
+  });
+
+  it("emits an absent-value filter for a null identity value, rather than dropping it", () => {
+    // Dropping the dimension entirely (the old behavior) turned "View
+    // matching traces" for `api · (not set)` into an unfiltered list of
+    // every host, not just the traces missing one.
+    const withHost: EntityTypeDef = {
+      id: "service_host",
+      label: "Service hosts",
+      singular: "service host",
+      identity: ["service.name", "host.name"],
+    };
+    expect(drillFilters(withHost, ["api", null])).toEqual([
+      { field: "service.name", value: "api" },
+      { field: "host.name", value: "", op: "absent" },
+    ]);
+    expect(drillFilters(withHost, [null, null])).toEqual([
+      { field: "service.name", value: "", op: "absent" },
+      { field: "host.name", value: "", op: "absent" },
     ]);
   });
 });

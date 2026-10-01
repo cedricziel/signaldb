@@ -1,6 +1,6 @@
 [package]
 name = "compactor"
-version = "0.3.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 
@@ -39,8 +39,17 @@ tonic.workspace = true
 
 # Phase 6 dependencies (observability HTTP endpoints)
 axum.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
 
 [dev-dependencies]
 opentelemetry = { workspace = true }
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
 tracing-opentelemetry.workspace = true
+common = { workspace = true, features = ["testing"] }
+
+[lints]
+workspace = true

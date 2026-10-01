@@ -1,5 +1,5 @@
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use arrow_flight::{FlightData, Ticket};
 use axum::{
     Router,
@@ -52,22 +52,19 @@ pub struct TagValueSearchV2Params {
     pub q: Option<String>,
 }
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
         .route("/api/echo", get(echo))
-        .route("/api/traces/{trace_id}", get(query_single_trace::<S>))
-        .route("/api/search", get(search::<S>))
-        .route("/api/search/tags", get(search_tags::<S>))
-        .route(
-            "/api/search/tag/{tag_name}/values",
-            get(search_tag_values::<S>),
-        )
+        .route("/api/traces/{trace_id}", get(query_single_trace))
+        .route("/api/search", get(search))
+        .route("/api/search/tags", get(search_tags))
+        .route("/api/search/tag/{tag_name}/values", get(search_tag_values))
         // v2 routes
-        .route("/api/v2/traces/{trace_id}", get(query_single_trace::<S>)) // V2 uses same handler for now
-        .route("/api/v2/search/tags", get(search_tags_v2::<S>))
+        .route("/api/v2/traces/{trace_id}", get(query_single_trace)) // V2 uses same handler for now
+        .route("/api/v2/search/tags", get(search_tags_v2))
         .route(
             "/api/v2/search/tag/{tag_name}/values",
-            get(search_tag_values_v2::<S>),
+            get(search_tag_values_v2),
         )
         // metrics endpoints
         .route("/api/metrics/query", get(metrics_query))
@@ -170,13 +167,11 @@ fn record_batches_to_trace(
             .as_any()
             .downcast_ref::<BooleanArray>()
             .ok_or("Invalid is_root column type")?;
-        // Optional attribute columns (may not exist in older data)
-        let span_attrs_col = batch
-            .column_by_name("span_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let resource_attrs_col = batch
-            .column_by_name("resource_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        // Optional attribute columns (may not exist in older data), read as
+        // native-typed per-row documents from whichever storage form the
+        // batch carries (legacy JSON string or the typed layout).
+        let mut span_attrs = common::attrs::json_documents(&batch, "span_attributes");
+        let mut resource_attrs = common::attrs::json_documents(&batch, "resource_attributes");
         let events_col = batch
             .column_by_name("events")
             .and_then(|c| c.as_any().downcast_ref::<StringArray>());
@@ -191,24 +186,16 @@ fn record_batches_to_trace(
 
             let span_id = span_id_col.value(row_index).to_string();
 
-            let attributes = span_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let attributes = span_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
-            let resource = resource_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let resource = resource_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
             let span = common::model::span::Span {
@@ -505,36 +492,26 @@ async fn flight_data_to_search_results(
             .as_any()
             .downcast_ref::<BooleanArray>()
             .ok_or("Invalid is_root column type")?;
-        // Optional attribute columns (may not exist in older data)
-        let span_attrs_col = batch
-            .column_by_name("span_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
-        let resource_attrs_col = batch
-            .column_by_name("resource_attributes")
-            .and_then(|c| c.as_any().downcast_ref::<StringArray>());
+        // Optional attribute columns (may not exist in older data), read as
+        // native-typed per-row documents from whichever storage form the
+        // batch carries (legacy JSON string or the typed layout).
+        let mut span_attrs = common::attrs::json_documents(&batch, "span_attributes");
+        let mut resource_attrs = common::attrs::json_documents(&batch, "resource_attributes");
 
         for row_index in 0..batch.num_rows() {
             let trace_id = trace_id_col.value(row_index).to_string();
             let span_id = span_id_col.value(row_index).to_string();
 
-            let attributes = span_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let attributes = span_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
-            let resource = resource_attrs_col
-                .and_then(|arr| {
-                    if arr.is_null(row_index) {
-                        None
-                    } else {
-                        serde_json::from_str(arr.value(row_index)).ok()
-                    }
-                })
+            let resource = resource_attrs
+                .get_mut(row_index)
+                .and_then(std::mem::take)
+                .map(|m| m.into_iter().collect())
                 .unwrap_or_default();
 
             let span = common::model::span::Span {
@@ -609,8 +586,8 @@ pub async fn echo() -> &'static str {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query_single_trace<S: RouterState>(
-    state: State<S>,
+pub async fn query_single_trace(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(trace_id): Path<String>,
     Query(params): Query<TraceQueryParams>,
@@ -830,8 +807,8 @@ fn trace_lookup_status_to_http(trace_id: &str, status: &tonic::Status) -> ApiErr
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn search<S: RouterState>(
-    state: State<S>,
+pub async fn search(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(query): Query<tempo_api::SearchQueryParams>,
 ) -> Result<axum::Json<tempo_api::SearchResult>, ApiError> {
@@ -1018,8 +995,8 @@ fn normalize_tag_name(tag_name: &str) -> String {
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state
@@ -1118,8 +1095,8 @@ fn decode_json_batch<T: serde::de::DeserializeOwned + Default>(
 
 /// Fetch trace tag names for the tenant via the querier's `trace_tags`
 /// Flight ticket, bounded to the caller's (or default) time window.
-async fn fetch_tag_names<S: RouterState>(
-    state: &State<S>,
+async fn fetch_tag_names(
+    state: &State<RouterAppState>,
     tenant_ctx: &common::auth::TenantContext,
     scope: Option<tempo_api::TagScope>,
     start: Option<i64>,
@@ -1147,8 +1124,8 @@ async fn fetch_tag_names<S: RouterState>(
 /// Fetch the distinct values of one (already-unscoped) trace tag for the
 /// tenant via the querier's `trace_tag_values` Flight ticket, bounded to
 /// the caller's (or default) time window.
-async fn tag_values_for<S: RouterState>(
-    state: &State<S>,
+async fn tag_values_for(
+    state: &State<RouterAppState>,
     tenant_ctx: &common::auth::TenantContext,
     tag_name: &str,
     start: Option<i64>,
@@ -1193,8 +1170,8 @@ async fn tag_values_for<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tags<S: RouterState>(
-    state: State<S>,
+pub async fn search_tags(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<TagSearchParams>,
 ) -> Result<axum::Json<tempo_api::TagSearchResponse>, ApiError> {
@@ -1227,8 +1204,8 @@ pub async fn search_tags<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tag_values<S: RouterState>(
-    state: State<S>,
+pub async fn search_tag_values(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(tag_name): Path<String>,
     Query(params): Query<TagValueSearchParams>,
@@ -1255,8 +1232,8 @@ pub async fn search_tag_values<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tags_v2<S: RouterState>(
-    state: State<S>,
+pub async fn search_tags_v2(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<TagSearchV2Params>,
 ) -> Result<axum::Json<tempo_api::v2::TagSearchResponse>, ApiError> {
@@ -1317,8 +1294,8 @@ pub async fn search_tags_v2<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn search_tag_values_v2<S: RouterState>(
-    state: State<S>,
+pub async fn search_tag_values_v2(
+    state: State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(scoped_tag): Path<String>,
     Query(params): Query<TagValueSearchV2Params>,
@@ -1682,6 +1659,58 @@ mod tests {
         );
         let names: Vec<_> = timings.entries().iter().map(|(name, _)| *name).collect();
         assert_eq!(names, ["querier", "convert"]);
+    }
+
+    #[test]
+    fn record_batches_to_trace_reads_typed_layout_span_attributes() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray, UInt64Array};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let row = serde_json::Map::from_iter([(
+            "http.method".to_string(),
+            serde_json::Value::String("GET".to_string()),
+        )]);
+        let (attr_fields, attr_arrays) =
+            common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
+
+        let mut fields = vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("status_code", DataType::Utf8, false),
+            Field::new("is_root", DataType::Boolean, false),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("span_kind", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::UInt64, false),
+            Field::new("duration_nano", DataType::UInt64, false),
+        ];
+        fields.extend(attr_fields.clone());
+        let schema = Arc::new(Schema::new(fields));
+
+        let mut columns: Vec<datafusion::arrow::array::ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["trace-1"])),
+            Arc::new(StringArray::from(vec!["root"])),
+            Arc::new(StringArray::from(vec![""])),
+            Arc::new(StringArray::from(vec!["Ok"])),
+            Arc::new(BooleanArray::from(vec![true])),
+            Arc::new(StringArray::from(vec!["op"])),
+            Arc::new(StringArray::from(vec!["svc"])),
+            Arc::new(StringArray::from(vec!["Server"])),
+            Arc::new(UInt64Array::from(vec![1_000u64])),
+            Arc::new(UInt64Array::from(vec![10u64])),
+        ];
+        columns.extend(attr_arrays);
+        let batch = RecordBatch::try_new(schema, columns).unwrap();
+
+        let trace = record_batches_to_trace(vec![batch], "trace-1").unwrap();
+        let tempo = internal_trace_to_tempo(&trace, None);
+        let span = &tempo.span_sets[0].spans[0];
+        assert_eq!(
+            span.attributes.get("http.method").map(|a| &a.value),
+            Some(&tempo_api::Value::StringValue("GET".to_string()))
+        );
     }
 
     #[test]

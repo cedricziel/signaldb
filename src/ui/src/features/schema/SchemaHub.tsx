@@ -1,4 +1,5 @@
 import { NavLink, Outlet, useLocation } from "react-router";
+import { useOutletState } from "../../lib/outletState";
 import { useSchemaSession } from "./useSchemaSession";
 import "./schema.css";
 
@@ -9,6 +10,11 @@ import "./schema.css";
  * routes render into the outlet, so the browser back button walks views.
  */
 export function SchemaHub() {
+  // Forwards the shell's outlet context (tenant/dataset) to every schema
+  // page below — an `<Outlet/>` that doesn't repeat `context` resets it to
+  // `undefined` for descendants, which would leave those pages unable to
+  // react to a tenant switch.
+  const shell = useOutletState();
   const { isInstanceAdmin } = useSchemaSession();
   const { pathname } = useLocation();
   const tab = (to: string, label: string) => {
@@ -30,7 +36,7 @@ export function SchemaHub() {
         {tab("/schema/conventions", "Conventions")}
         {isInstanceAdmin && tab("/schema/storage", "Storage")}
       </div>
-      <Outlet />
+      <Outlet context={shell} />
     </div>
   );
 }

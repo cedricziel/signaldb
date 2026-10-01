@@ -12,7 +12,7 @@
 //! the JSON results into `pyroscope-api` types.
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use arrow_flight::Ticket;
 use axum::{
     Router,
@@ -32,18 +32,18 @@ use serde::Deserialize;
 use tracing::Instrument;
 use utoipa::IntoParams;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/render", get(render::<S>))
-        .route("/render-diff", get(render_diff::<S>))
-        .route("/label-names", get(label_names::<S>))
-        .route("/label-values", get(label_values::<S>))
-        .route("/profile-types", get(profile_types::<S>))
+        .route("/render", get(render))
+        .route("/render-diff", get(render_diff))
+        .route("/label-names", get(label_names))
+        .route("/label-values", get(label_values))
+        .route("/profile-types", get(profile_types))
 }
 
 /// Routes for trace-to-profile correlation, nested at `/api/profiles`.
-pub fn profiles_router<S: RouterState>() -> Router<S> {
-    Router::new().route("/trace/{trace_id}", get(profiles_by_trace::<S>))
+pub fn profiles_router() -> Router<RouterAppState> {
+    Router::new().route("/trace/{trace_id}", get(profiles_by_trace))
 }
 
 /// Query parameters for `/render` and `/render-diff`.
@@ -194,8 +194,8 @@ fn search_params_json(parsed: &ParsedQuery, from: Option<i64>, until: Option<i64
 }
 
 /// Execute a Flight ticket against a querier and collect the batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state
@@ -320,8 +320,8 @@ fn decode_json_result<T: serde::de::DeserializeOwned>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn render<S: RouterState>(
-    State(state): State<S>,
+pub async fn render(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RenderParams>,
 ) -> Result<axum::Json<RenderResponse>, ApiError> {
@@ -378,8 +378,8 @@ pub async fn render<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn render_diff<S: RouterState>(
-    State(state): State<S>,
+pub async fn render_diff(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RenderParams>,
 ) -> Result<axum::Json<RenderResponse>, ApiError> {
@@ -448,8 +448,8 @@ fn discovery_params_json(params: &DiscoveryParams) -> String {
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn label_names<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_names(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DiscoveryParams>,
 ) -> Result<axum::Json<LabelsResponse>, ApiError> {
@@ -479,8 +479,8 @@ pub async fn label_names<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn label_values<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_values(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DiscoveryParams>,
 ) -> Result<axum::Json<LabelsResponse>, ApiError> {
@@ -515,8 +515,8 @@ pub async fn label_values<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip(state, tenant_ctx, params))]
-pub async fn profile_types<S: RouterState>(
-    State(state): State<S>,
+pub async fn profile_types(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DiscoveryParams>,
 ) -> Result<axum::Json<Vec<ProfileType>>, ApiError> {
@@ -604,8 +604,8 @@ pub(crate) fn batches_to_profile_summaries(
 }
 
 /// Fetch summaries of profiles linked to a trace via the querier.
-pub(crate) async fn fetch_profiles_for_trace<S: RouterState>(
-    state: &S,
+pub(crate) async fn fetch_profiles_for_trace(
+    state: &RouterAppState,
     tenant_slug: &str,
     dataset_slug: &str,
     trace_id: &str,
@@ -637,8 +637,8 @@ pub(crate) async fn fetch_profiles_for_trace<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn profiles_by_trace<S: RouterState>(
-    State(state): State<S>,
+pub async fn profiles_by_trace(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     axum::extract::Path(trace_id): axum::extract::Path<String>,
 ) -> Result<axum::Json<Vec<tempo_api::ProfileSummary>>, ApiError> {

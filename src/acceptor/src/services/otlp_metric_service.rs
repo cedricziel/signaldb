@@ -10,8 +10,10 @@ use tonic::{Request, Response, Status};
 use crate::handler::IngestError;
 use crate::handler::otlp_metrics_handler::MetricsHandler;
 use crate::middleware::get_tenant_context;
+use crate::type_warning::WithOffTypeWarning;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::schema::type_authority::TypeSnapshots;
 use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
@@ -40,6 +42,7 @@ pub struct MetricsAcceptorService<H: MetricsHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
     storage_quota: Option<Arc<StorageUsageTracker>>,
+    type_snapshots: Option<Arc<TypeSnapshots>>,
 }
 
 impl<H: MetricsHandlerTrait> MetricsAcceptorService<H> {
@@ -48,6 +51,7 @@ impl<H: MetricsHandlerTrait> MetricsAcceptorService<H> {
             handler,
             rate_limiter: None,
             storage_quota: None,
+            type_snapshots: None,
         }
     }
 
@@ -60,6 +64,12 @@ impl<H: MetricsHandlerTrait> MetricsAcceptorService<H> {
     /// Enforce per-tenant storage quotas on this service.
     pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
         self.storage_quota = Some(storage_quota);
+        self
+    }
+
+    /// Warn senders of off-type attribute values via `partial_success`.
+    pub fn with_type_snapshots(mut self, type_snapshots: Arc<TypeSnapshots>) -> Self {
+        self.type_snapshots = Some(type_snapshots);
         self
     }
 }
@@ -109,6 +119,14 @@ impl<H: MetricsHandlerTrait + Send + Sync + 'static> MetricsService for MetricsA
             .map(|sm| sm.metrics.len() as u64)
             .sum();
         let rpc_start = std::time::Instant::now();
+
+        // Computed before the handler takes ownership of the request.
+        let off_type_warning = crate::type_warning::off_type_warning(
+            self.type_snapshots.as_ref(),
+            &tenant_context,
+            "metrics",
+            &request_inner,
+        );
 
         // Anti-loop guard: processing the _system tenant's own telemetry must
         // not generate more self-monitoring telemetry.
@@ -164,7 +182,9 @@ impl<H: MetricsHandlerTrait + Send + Sync + 'static> MetricsService for MetricsA
             )],
         );
 
-        Ok(Response::new(ExportMetricsServiceResponse::default()))
+        Ok(Response::new(
+            ExportMetricsServiceResponse::with_off_type_warning(off_type_warning),
+        ))
     }
 }
 
@@ -247,7 +267,9 @@ mod tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,

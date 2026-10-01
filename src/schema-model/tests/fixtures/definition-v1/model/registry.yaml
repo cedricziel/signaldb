@@ -1,0 +1,76 @@
+groups:
+  - id: registry.widget
+    type: attribute_group
+    brief: Widget registry attributes.
+    attributes:
+      - id: widget.color
+        type:
+          members:
+            - id: red
+              value: "red"
+              brief: Red widget.
+            - id: blue
+              value: "blue"
+              brief: Blue widget.
+        brief: The color of the widget.
+        stability: development
+      - id: widget.id
+        type: string
+        brief: The unique identifier of the widget.
+        examples: ["w-1"]
+        stability: development
+
+  - id: widget.common
+    type: attribute_group
+    attributes:
+      - ref: widget.id
+        requirement_level: required
+      - ref: widget.color
+        requirement_level: recommended
+
+  - id: entity.widget
+    type: entity
+    name: widget
+    brief: A physical widget.
+    stability: development
+    attributes:
+      - ref: widget.id
+        role: identifying
+      - ref: widget.color
+        role: descriptive
+
+  - id: metric.widget.production.count
+    type: metric
+    metric_name: widget.production.count
+    instrument: counter
+    unit: "{widget}"
+    brief: The number of widgets produced.
+    stability: development
+    entity_associations:
+      - widget
+    attributes:
+      - ref: widget.id
+        requirement_level: required
+      - ref: widget.color
+        requirement_level: recommended
+
+  - id: span.widget.factory.produce
+    type: span
+    brief: A span describing widget production.
+    stability: development
+    attributes:
+      - ref: widget.id
+        requirement_level: required
+      - ref: widget.color
+        requirement_level: recommended
+
+  - id: event.widget.produced
+    type: event
+    name: widget.produced
+    brief: Emitted when a widget is produced.
+    stability: development
+    attributes:
+      - ref: widget.id
+        requirement_level: required
+      - ref: widget.color
+        requirement_level: recommended

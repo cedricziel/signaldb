@@ -22,6 +22,8 @@ pub enum Grain {
     Trace,
     /// One group produced by an aggregate.
     Group,
+    /// One OTLP metric data point.
+    Point,
 }
 
 /// A named, typed column in an inferred relation schema.
@@ -61,16 +63,36 @@ pub struct RowSet {
     /// in addition to `columns`. An `aggregate` closes the schema so only
     /// `columns` are referenceable thereafter.
     pub open: bool,
+    /// `true` once a `correlate` stage has joined this relation to its parent
+    /// span. Gates the `parent.` field scope and rejects a second `correlate`
+    /// (`irVersion` 8).
+    pub correlated: bool,
+    /// `true` only for an unbroken `metrics` point stream: a fresh scan,
+    /// optionally narrowed by `where`. Every other stage clears it, and the
+    /// operators that read a point stream (`sample`, the range aggregates,
+    /// `histogram_quantile`) require it (`irVersion` 10).
+    pub identity: bool,
 }
 
 /// A time-series relation.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Series {
-    /// The grouping labels (the aggregate's `by` fields).
+    /// The grouping labels (the aggregate's `by` fields). With
+    /// `open_labels`, only the names known at plan time.
     pub labels: Vec<String>,
+    /// The label set is not known at plan time (e.g. a `sample` keeps each
+    /// series' full label set).
+    pub open_labels: bool,
     /// The value type of the single series value (the aggregate output).
     pub value: ValueType,
     /// The bucket width in nanoseconds.
+    pub step_ns: i64,
+}
+
+/// One value per evaluation instant, with no labels (`irVersion` 10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Scalar {
+    /// The evaluation step in nanoseconds.
     pub step_ns: i64,
 }
 
@@ -96,6 +118,7 @@ pub struct Metadata {
 pub enum RelationType {
     RowSet(RowSet),
     Series(Series),
+    Scalar(Scalar),
     Heatmap(Heatmap),
     /// Introspection about a source rather than its records: the relation a
     /// terminal `describe` stage produces. It carries no columns — the answer
@@ -111,6 +134,7 @@ impl RelationType {
             RelationType::RowSet(rs) if rs.aggregated => "table (aggregated row-set)".to_string(),
             RelationType::RowSet(_) => "rows (row-set)".to_string(),
             RelationType::Series(_) => "series".to_string(),
+            RelationType::Scalar(_) => "scalar".to_string(),
             RelationType::Heatmap(_) => "heatmap".to_string(),
             RelationType::Metadata(m) => format!("metadata ({})", m.target.as_str()),
         }
@@ -120,9 +144,10 @@ impl RelationType {
     pub fn column(&self, name: &str) -> Option<&Column> {
         match self {
             RelationType::RowSet(rs) => rs.columns.iter().find(|c| c.name == name),
-            RelationType::Series(_) => None,
-            RelationType::Heatmap(_) => None,
-            RelationType::Metadata(_) => None,
+            RelationType::Series(_)
+            | RelationType::Scalar(_)
+            | RelationType::Heatmap(_)
+            | RelationType::Metadata(_) => None,
         }
     }
 }

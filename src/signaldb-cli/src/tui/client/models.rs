@@ -68,64 +68,8 @@ pub struct SpanInfo {
 /// Full detail for a single trace, including all spans.
 #[derive(Debug, Clone)]
 pub struct TraceDetail {
-    /// Hex-encoded trace ID
-    pub trace_id: String,
     /// All spans belonging to this trace
     pub spans: Vec<SpanInfo>,
-}
-
-/// A system-level metric data point.
-#[derive(Debug, Clone)]
-pub struct SystemMetric {
-    /// Metric name
-    pub name: String,
-    /// Metric value
-    pub value: f64,
-    /// Unit of measurement
-    pub unit: String,
-    /// ISO-8601 timestamp
-    pub timestamp: String,
-}
-
-/// Health status of a discovered service.
-#[derive(Debug, Clone)]
-pub struct ServiceHealth {
-    /// Service identifier
-    pub service_id: String,
-    /// Service type (e.g. `writer`, `querier`)
-    pub service_type: String,
-    /// Network address
-    pub address: String,
-    /// Whether the service is healthy
-    pub healthy: bool,
-    /// Last heartbeat timestamp
-    pub last_heartbeat: String,
-}
-
-/// Write-Ahead Log status.
-#[derive(Debug, Clone)]
-pub struct WalStatus {
-    /// WAL directory path
-    pub wal_dir: String,
-    /// Number of pending (unprocessed) entries
-    pub pending_entries: u64,
-    /// Total WAL size in bytes
-    pub total_size_bytes: u64,
-    /// Oldest unprocessed entry timestamp
-    pub oldest_entry: Option<String>,
-}
-
-/// Connection pool statistics.
-#[derive(Debug, Clone)]
-pub struct PoolStats {
-    /// Number of active connections
-    pub active_connections: u32,
-    /// Number of idle connections
-    pub idle_connections: u32,
-    /// Maximum pool size
-    pub max_connections: u32,
-    /// Total connections created since startup
-    pub total_connections: u64,
 }
 
 /// Metric type enumeration.
@@ -139,14 +83,15 @@ pub enum MetricType {
 }
 
 impl MetricType {
-    /// Get the Iceberg table name for this metric type.
-    pub fn table_name(&self) -> &str {
+    /// The `metric_type` column value identifying this type's rows in the
+    /// wide `metrics` table.
+    pub fn metric_type_value(&self) -> &str {
         match self {
-            Self::Gauge => "metrics_gauge",
-            Self::Sum => "metrics_sum",
-            Self::Histogram => "metrics_histogram",
-            Self::ExponentialHistogram => "metrics_exponential_histogram",
-            Self::Summary => "metrics_summary",
+            Self::Gauge => "gauge",
+            Self::Sum => "sum",
+            Self::Histogram => "histogram",
+            Self::ExponentialHistogram => "exponential_histogram",
+            Self::Summary => "summary",
         }
     }
 
@@ -267,15 +212,15 @@ mod tests {
     use super::*;
 
     #[test]
-    fn metric_type_table_names() {
-        assert_eq!(MetricType::Gauge.table_name(), "metrics_gauge");
-        assert_eq!(MetricType::Sum.table_name(), "metrics_sum");
-        assert_eq!(MetricType::Histogram.table_name(), "metrics_histogram");
+    fn metric_type_values() {
+        assert_eq!(MetricType::Gauge.metric_type_value(), "gauge");
+        assert_eq!(MetricType::Sum.metric_type_value(), "sum");
+        assert_eq!(MetricType::Histogram.metric_type_value(), "histogram");
         assert_eq!(
-            MetricType::ExponentialHistogram.table_name(),
-            "metrics_exponential_histogram"
+            MetricType::ExponentialHistogram.metric_type_value(),
+            "exponential_histogram"
         );
-        assert_eq!(MetricType::Summary.table_name(), "metrics_summary");
+        assert_eq!(MetricType::Summary.metric_type_value(), "summary");
     }
 
     #[test]

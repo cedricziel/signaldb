@@ -1,34 +1,50 @@
 import { describe, expect, it } from "vitest";
-import type { LabelStat } from "../../api/prom";
+import type { DiscoveredField } from "../../api/gen";
 import {
   cardinalityLabel,
-  indexLabelStats,
+  indexFields,
   isHighCardinality,
   optionLabel,
 } from "./cardinality";
 
-const stat = (patch: Partial<LabelStat>): LabelStat => ({
+const field = (patch: Partial<DiscoveredField> = {}): DiscoveredField => ({
   name: "x",
-  distinct_estimate: 10,
-  presence: 1,
-  capped: false,
+  type: "string",
+  filterable: true,
+  origin: "declared",
+  cardinality: { estimate: 10, at_least: false },
   ...patch,
 });
 
 describe("isHighCardinality", () => {
   it("is false for unknown or low-cardinality labels", () => {
     expect(isHighCardinality(undefined)).toBe(false);
-    expect(isHighCardinality(stat({ distinct_estimate: 12 }))).toBe(false);
+    expect(isHighCardinality(field({ cardinality: null }))).toBe(false);
+    expect(
+      isHighCardinality(
+        field({ cardinality: { estimate: 12, at_least: false } }),
+      ),
+    ).toBe(false);
   });
 
   it("flags counts at or above the threshold", () => {
-    expect(isHighCardinality(stat({ distinct_estimate: 1000 }))).toBe(true);
-    expect(isHighCardinality(stat({ distinct_estimate: 5000 }))).toBe(true);
+    expect(
+      isHighCardinality(
+        field({ cardinality: { estimate: 1000, at_least: false } }),
+      ),
+    ).toBe(true);
+    expect(
+      isHighCardinality(
+        field({ cardinality: { estimate: 5000, at_least: false } }),
+      ),
+    ).toBe(true);
   });
 
   it("always flags a capped estimate", () => {
     expect(
-      isHighCardinality(stat({ distinct_estimate: 10, capped: true })),
+      isHighCardinality(
+        field({ cardinality: { estimate: 10, at_least: true } }),
+      ),
     ).toBe(true);
   });
 });
@@ -36,14 +52,19 @@ describe("isHighCardinality", () => {
 describe("cardinalityLabel", () => {
   it("returns null for unknown cardinality", () => {
     expect(cardinalityLabel(undefined)).toBeNull();
+    expect(cardinalityLabel(field({ cardinality: null }))).toBeNull();
   });
 
-  it("uses ≈ for estimates and ≥ for capped", () => {
-    expect(cardinalityLabel(stat({ distinct_estimate: 240 }))).toBe(
-      "≈240 values",
-    );
+  it("uses ≈ for estimates and ≥ for a capped collector estimate", () => {
     expect(
-      cardinalityLabel(stat({ distinct_estimate: 10000, capped: true })),
+      cardinalityLabel(
+        field({ cardinality: { estimate: 240, at_least: false } }),
+      ),
+    ).toBe("≈240 values");
+    expect(
+      cardinalityLabel(
+        field({ cardinality: { estimate: 10000, at_least: true } }),
+      ),
     ).toBe("≥10000 values");
   });
 });
@@ -54,18 +75,20 @@ describe("optionLabel", () => {
   });
 
   it("appends a warning marker only when high", () => {
-    expect(optionLabel(stat({ distinct_estimate: 12 }))).toBe("≈12 values");
-    expect(optionLabel(stat({ distinct_estimate: 2000 }))).toBe(
-      "≈2000 values ⚠",
-    );
+    expect(
+      optionLabel(field({ cardinality: { estimate: 12, at_least: false } })),
+    ).toBe("≈12 values");
+    expect(
+      optionLabel(field({ cardinality: { estimate: 2000, at_least: false } })),
+    ).toBe("≈2000 values ⚠");
   });
 });
 
-describe("indexLabelStats", () => {
-  it("keys stats by name", () => {
-    const idx = indexLabelStats([
-      stat({ name: "service" }),
-      stat({ name: "pod" }),
+describe("indexFields", () => {
+  it("keys fields by name", () => {
+    const idx = indexFields([
+      field({ name: "service" }),
+      field({ name: "pod" }),
     ]);
     expect(idx.get("service")?.name).toBe("service");
     expect(idx.get("pod")?.name).toBe("pod");

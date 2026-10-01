@@ -39,13 +39,8 @@ use datafusion::arrow::{error::ArrowError, record_batch::RecordBatch};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 
 use super::WalManager;
-use super::forward::forward_batch_to_writer;
-
-/// Content type for Prometheus remote_write requests
-pub const PROMETHEUS_CONTENT_TYPE: &str = "application/x-protobuf";
-
-/// Content encoding for Prometheus remote_write (snappy compression)
-pub const PROMETHEUS_CONTENT_ENCODING: &str = "snappy";
+use super::forward::{forward_batch_to_writer, spawn_retire_resend};
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 /// Header indicating remote_write protocol version
 pub const HEADER_REMOTE_WRITE_VERSION: &str = "X-Prometheus-Remote-Write-Version";
@@ -62,6 +57,8 @@ pub struct PrometheusHandler {
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Recognizes a client's resend of a batch already made durable
+    retry_dedup: Arc<RetryDedup>,
     /// Per-tenant ingest rate limiter (no limiting when unset)
     rate_limiter: Option<Arc<TenantRateLimiter>>,
     /// Per-tenant storage quota enforcement (no quotas when unset)
@@ -77,9 +74,18 @@ impl PrometheusHandler {
         Self {
             flight_transport,
             wal_manager,
+            retry_dedup: Arc::new(RetryDedup::default()),
             rate_limiter: None,
             storage_quota: None,
         }
+    }
+
+    /// Share one resend-dedup cache (`[acceptor].retry_dedup_window`) with
+    /// the acceptor's other handlers; the default is a private cache with
+    /// the default window.
+    pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
+        self.retry_dedup = retry_dedup;
+        self
     }
 
     /// Enforce per-tenant ingest rate limits on remote_write requests.
@@ -313,8 +319,14 @@ impl PrometheusHandler {
                     wal_metadata["tracestate"] = tracestate.into();
                 }
             }
+            let ingest_id = stamp_batch_fingerprint(
+                &mut wal_metadata,
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                &WalOperation::WriteMetrics,
+                &batch_bytes,
+            );
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
-
             let wal_entry_id = wal
                 .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
                 .await
@@ -334,6 +346,22 @@ impl PrometheusHandler {
                 "Written to WAL"
             );
 
+            // A remote_write retry of a partition already accepted is retired
+            // instead of forwarded (see `retry_dedup`).
+            if self.retry_dedup.is_resend(ingest_id) {
+                if let Err(e) = spawn_retire_resend(
+                    wal.clone(),
+                    wal_entry_id,
+                    &tenant_context.tenant_id,
+                    &WalOperation::WriteMetrics,
+                )
+                .await
+                {
+                    tracing::error!(wal_entry_id = %wal_entry_id, error = %e, "Retire task for resent metrics did not complete");
+                }
+                continue;
+            }
+
             let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
@@ -341,7 +369,6 @@ impl PrometheusHandler {
                 "target_table": target_table,
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
-                "wal_entry_id": wal_entry_id,
                 "source": "prometheus_remote_write"
             });
             if let Some((traceparent, tracestate)) =
@@ -358,6 +385,7 @@ impl PrometheusHandler {
                 &self.flight_transport,
                 record_batch,
                 Some(&metadata.to_string()),
+                ingest_id,
             )
             .await
             {
@@ -570,7 +598,9 @@ mod tests {
                 dataset_slug: TEST_DATASET.to_string(),
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,

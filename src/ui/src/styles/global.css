@@ -7,10 +7,10 @@
   --surface3: #dfe3ea;
   --border: #d3d8e0;
   --text: #1c222b;
-  --dim: #5d6675;
-  --faint: #8b93a2;
-  --accent: #c25a0a;
-  --accent-soft: rgba(194, 90, 10, 0.12);
+  --dim: #4f5866;
+  --faint: #5f6775;
+  --accent: #b85408;
+  --accent-soft: rgba(184, 84, 8, 0.12);
   --err: #c43a42;
   --warn: #96760c;
   --info: #2f66c9;
@@ -20,22 +20,55 @@
   --info-bar: #6f95dd;
   --debug-bar: #aab2bf;
   --ok: #2c9070;
-  --svc-a: #2f66c9;
-  --svc-b: #2c9070;
+  --svc-a: #1d7a21;
+  --svc-b: #9a2f8f;
   --svc-c: #8a56c9;
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
-  /* Darker than --warn: text-on-tint contexts (e.g. ThrottleBanner) sit on
-     a `color-mix(--warn-bar, --surface)` background, where --warn itself
-     falls under WCAG AA (~3.9:1) in the light theme. */
-  --warn-banner-text: #7a5f0a;
+  --svc-f: #0b7d86;
+  --svc-g: #a8540c;
+  --svc-h: #b23a5c;
+  --svc-i: #2b7fae;
+  --svc-j: #5c7a1a;
+  --svc-k: #8a4a2a;
+  --svc-l: #5b4fc4;
+  /* Status/accent colours as TEXT. The base tokens above are tuned for
+     marks (bars, dots, borders, fills) and fall under WCAG AA as text on
+     --bg, --surface2 or their own 12-14% tints in the light theme; these
+     clear 4.5:1 on --bg, --surface, --surface2 and on
+     color-mix(<base> 14%, --surface) in both themes (global.contrast.test.ts). */
+  --ok-text: #17704c;
+  --warn-text: #7a5f0a;
+  --accent-text: #9e4706;
+  --err-text: #b0303a;
+  /* Deprecated alias for metrics.css; use --warn-text. */
+  --warn-banner-text: var(--warn-text);
+  /* Text on a solid `--accent` background (buttons, not the tinted
+     `--accent-soft`): white here, where --accent is dark enough for it;
+     dark in the dark theme below, where --accent is a much lighter orange
+     white barely shows up on. */
+  --on-accent: #ffffff;
+  /* Opaque shadow colour; each site sets its own strength with
+     color-mix(in srgb, var(--shadow) N%, transparent). */
+  --shadow: #101620;
+  color-scheme: light;
   /* Theme-neutral like --mono/--ui below: a grey wash that reads as an
      inset on both grounds. */
   --bg-inset: rgba(127, 127, 127, 0.08);
   --mono:
     ui-monospace, "SF Mono", "JetBrains Mono", "Cascadia Code", Menlo, Consolas,
-    monospace;
-  --ui: -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif;
+    monospace; /* @kind font */
+  --ui:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", system-ui, sans-serif; /* @kind font */
+  /* Shared horizontal inset for every view-level toolbar and pane. Use
+     --gutter-sm only for a bar that's genuinely compact (e.g. the app's own
+     single-row top bar), not as a per-feature alternative to --gutter. */
+  --gutter: 16px;
+  --gutter-sm: 12px;
+  /* Every page/dialog title reads at the same size and weight; every
+     in-page section heading (a card or list's own <h2>/<h3>) does too. */
+  --text-title: 18px;
+  --text-section: 14px;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -46,8 +79,8 @@
     --surface3: #222a36;
     --border: #29303c;
     --text: #e4e8ef;
-    --dim: #8b94a3;
-    --faint: #626b7a;
+    --dim: #9aa3b1;
+    --faint: #8a93a1;
     --accent: #f58a3c;
     --accent-soft: rgba(245, 138, 60, 0.14);
     --err: #f2555a;
@@ -59,25 +92,46 @@
     --info-bar: #4a72c2;
     --debug-bar: #414b5a;
     --ok: #46b58a;
-    --svc-a: #6f9cf0;
-    --svc-b: #46b58a;
+    --svc-a: #63d454;
+    --svc-b: #e07fd9;
     --svc-c: #b183e6;
-    --svc-d: #e4c452;
+    --svc-d: #f0d890;
     --svc-e: #e070a8;
-    /* Dark theme's --warn already clears WCAG AA against the banner tint. */
-    --warn-banner-text: #e4c452;
+    --svc-f: #4fd0bc;
+    --svc-g: #e8934f;
+    --svc-h: #f07a94;
+    --svc-i: #5fb8e8;
+    --svc-j: #b8d24a;
+    --svc-k: #d99a6c;
+    --svc-l: #9d94f0;
+    --ok-text: #46b58a;
+    --warn-text: #e4c452;
+    --accent-text: #f58a3c;
+    /* Lighter than --err, which sits at ~4.5:1 on its own tint here. */
+    --err-text: #f76c70;
+    --warn-banner-text: var(--warn-text);
+    /* Dark text: dark theme's --accent is a light orange white barely
+       contrasts against. */
+    --on-accent: #0d1014;
+    --shadow: #000000;
+    color-scheme: dark;
   }
 }
 
-:root[data-theme="dark"] {
+/* Scoped theming: :root[data-theme] forces the whole app; [data-theme] on
+   any other element (e.g. a Storybook decorator root) scopes the override
+   to that subtree and paints its own background/text so a themed panel
+   looks right embedded in an oppositely-themed page. */
+:root[data-theme="dark"],
+[data-theme="dark"] {
   --bg: #0d1014;
   --surface: #14181e;
   --surface2: #1a202a;
   --surface3: #222a36;
   --border: #29303c;
   --text: #e4e8ef;
-  --dim: #8b94a3;
-  --faint: #626b7a;
+  --dim: #9aa3b1;
+  --faint: #8a93a1;
   --accent: #f58a3c;
   --accent-soft: rgba(245, 138, 60, 0.14);
   --err: #f2555a;
@@ -89,25 +143,48 @@
   --info-bar: #4a72c2;
   --debug-bar: #414b5a;
   --ok: #46b58a;
-  --svc-a: #6f9cf0;
-  --svc-b: #46b58a;
+  --svc-a: #63d454;
+  --svc-b: #e07fd9;
   --svc-c: #b183e6;
-  --svc-d: #e4c452;
+  --svc-d: #f0d890;
   --svc-e: #e070a8;
-  --warn-banner-text: #e4c452;
+  --svc-f: #4fd0bc;
+  --svc-g: #e8934f;
+  --svc-h: #f07a94;
+  --svc-i: #5fb8e8;
+  --svc-j: #b8d24a;
+  --svc-k: #d99a6c;
+  --svc-l: #9d94f0;
+  --ok-text: #46b58a;
+  --warn-text: #e4c452;
+  --accent-text: #f58a3c;
+  --err-text: #f76c70;
+  --warn-banner-text: var(--warn-text);
+  --on-accent: #0d1014;
+  --shadow: #000000;
+  color-scheme: dark;
 }
 
-:root[data-theme="light"] {
+/* :root's own background/color come from the `body` rule below; a scoped
+   [data-theme] element (not :root) paints itself directly. */
+[data-theme="dark"]:not(:root),
+[data-theme="light"]:not(:root) {
+  background: var(--bg);
+  color: var(--text);
+}
+
+:root[data-theme="light"],
+[data-theme="light"] {
   --bg: #f2f3f6;
   --surface: #ffffff;
   --surface2: #e9ecf1;
   --surface3: #dfe3ea;
   --border: #d3d8e0;
   --text: #1c222b;
-  --dim: #5d6675;
-  --faint: #8b93a2;
-  --accent: #c25a0a;
-  --accent-soft: rgba(194, 90, 10, 0.12);
+  --dim: #4f5866;
+  --faint: #5f6775;
+  --accent: #b85408;
+  --accent-soft: rgba(184, 84, 8, 0.12);
   --err: #c43a42;
   --warn: #96760c;
   --info: #2f66c9;
@@ -117,12 +194,44 @@
   --info-bar: #6f95dd;
   --debug-bar: #aab2bf;
   --ok: #2c9070;
-  --svc-a: #2f66c9;
-  --svc-b: #2c9070;
+  --svc-a: #1d7a21;
+  --svc-b: #9a2f8f;
   --svc-c: #8a56c9;
   --svc-d: #b08a10;
   --svc-e: #c04f8a;
-  --warn-banner-text: #7a5f0a;
+  --svc-f: #0b7d86;
+  --svc-g: #a8540c;
+  --svc-h: #b23a5c;
+  --svc-i: #2b7fae;
+  --svc-j: #5c7a1a;
+  --svc-k: #8a4a2a;
+  --svc-l: #5b4fc4;
+  --ok-text: #17704c;
+  --warn-text: #7a5f0a;
+  --accent-text: #9e4706;
+  --err-text: #b0303a;
+  --warn-banner-text: var(--warn-text);
+  --on-accent: #ffffff;
+  --shadow: #101620;
+  color-scheme: light;
+}
+
+/* Shared warn-tint callout (ThrottleBanner, Instrumentation's "public
+   endpoints not configured" note): colour + background only, so each caller
+   adds its own padding/border.
+   Not --warn: on this tinted background --warn falls under WCAG AA (~3.9:1)
+   in the light theme; --warn-text clears it in both. */
+.warn-callout {
+  color: var(--warn-text);
+  background: color-mix(in srgb, var(--warn-bar) 14%, var(--surface));
+}
+
+/* Shared full-width accent strip (the demo banner, UpdateBanner). */
+.accent-banner {
+  padding: 5px 14px;
+  font-weight: 600;
+  color: var(--on-accent);
+  background: var(--accent);
 }
 
 * {
@@ -130,9 +239,21 @@
 }
 
 html,
-body,
+body {
+  height: 100%;
+}
+
+/* The update banner (AppRoot.tsx) sits above the routed page, which fills
+   whatever height is left. */
 #root {
   height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+.app-root-main {
+  flex: 1;
+  min-height: 0;
 }
 
 body {
@@ -159,6 +280,15 @@ select {
   color: inherit;
 }
 
+/* Baseline for any plain <a> no feature stylesheet styles (e.g. an inline
+   "see the docs" link): the browser default blue/purple is unreadable on
+   the dark surface. Matches `.trace-open`'s existing accent-as-link-color
+   convention. A feature's own class (e.g. `.trace-open`) still wins on
+   specificity for whatever else it needs. */
+a {
+  color: var(--accent-text);
+}
+
 button:focus-visible,
 a:focus-visible,
 input:focus-visible,
@@ -166,6 +296,80 @@ select:focus-visible {
   outline: 2px solid var(--accent);
   outline-offset: 1px;
   border-radius: 3px;
+}
+
+/* ---------- shared buttons (every feature's own toolbar/dialog/form
+   buttons) ---------- */
+
+/* The base look every plain "secondary" button shared already, just
+   restated per feature with small drifts in padding/radius/colour. Compose
+   with a modifier below for a different treatment; a feature's own class
+   stays alongside for whatever layout or hover rule is still its own. */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  padding: 6px 12px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface2);
+  color: var(--text);
+  font-size: 12px;
+  cursor: pointer;
+  /* .btn is also applied to <a>/<Link> (e.g. "New", "Cancel"); those must
+     never carry the browser's default underline. */
+  text-decoration: none;
+}
+
+.btn:hover:not(:disabled) {
+  border-color: var(--dim);
+}
+
+.btn:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The one call-to-action treatment: every button that used to reach for a
+   solid, soft-tinted or accent-bordered accent look renders this way now. */
+.btn-primary {
+  border-color: var(--accent);
+  background: var(--accent);
+  color: var(--on-accent);
+}
+
+.btn-primary:hover:not(:disabled) {
+  filter: brightness(1.06);
+}
+
+/* Disabled, a primary button looks like any other disabled button rather
+   than a faded accent. */
+.btn-primary:disabled {
+  border-color: var(--border);
+  background: var(--surface2);
+  color: var(--text);
+}
+
+/* No border or background until interaction — a menu item or a quiet
+   inline action, not a boxed control. */
+.btn-ghost {
+  border-color: transparent;
+  background: none;
+}
+
+.btn-ghost:hover:not(:disabled) {
+  border-color: var(--border);
+  background: var(--surface2);
+}
+
+.btn-danger {
+  color: var(--err-text);
+}
+
+.btn-danger:hover:not(:disabled) {
+  border-color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, var(--surface2));
 }
 
 .copy-value {
@@ -185,6 +389,18 @@ select:focus-visible {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Inside the attribute table a value wraps instead of ellipsizing — the row
+   already has a whole line to itself, so cutting it off there hides text an
+   ellipsis elsewhere (a log row's inline preview, say) has a real space
+   reason to trim. The >=200-char collapse/"More" threshold in
+   AttributeValue is unaffected: this only changes how the shown text (the
+   whole value, or its truncated preview) wraps within its own line. */
+.attrtable .copy-value-text {
+  overflow-wrap: anywhere;
+  white-space: normal;
+  text-overflow: clip;
 }
 
 .attribute-value {
@@ -218,7 +434,7 @@ select:focus-visible {
 }
 
 .attribute-value-toggle:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 
@@ -259,16 +475,16 @@ select:focus-visible {
 }
 
 .json-key {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 .json-string {
-  color: var(--ok);
+  color: var(--ok-text);
 }
 .json-number {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 .json-boolean {
-  color: var(--err);
+  color: var(--err-text);
 }
 .json-null {
   color: var(--faint);
@@ -291,12 +507,12 @@ select:focus-visible {
 }
 
 .copy-value-button:hover {
-  color: var(--accent);
+  color: var(--accent-text);
   border-color: var(--accent);
 }
 
 .copy-value-button[data-copied] {
-  color: var(--ok);
+  color: var(--ok-text);
   border-color: var(--ok);
   background: color-mix(in srgb, var(--ok) 12%, transparent);
 }
@@ -313,80 +529,37 @@ select:focus-visible {
 
 /* ---------- semantic attribute labels (schema registry) ---------- */
 
-/* Detail-row key label: raw key first (copyable), brief and markers below,
-   namespace tag trailing. Unresolved keys never reach these rules. */
-.semkey {
-  display: flex;
-  flex-direction: column;
-  gap: 1px;
-  min-width: 0;
-  white-space: normal;
-}
-
-.semkey-head {
-  display: inline-flex;
-  align-items: baseline;
-  gap: 6px;
-  min-width: 0;
-  position: relative;
-  border-radius: 3px;
-}
-
 .semkey-name {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.semkey[data-deprecated] .semkey-name {
-  text-decoration: line-through;
-  text-decoration-color: var(--warn);
-}
-
-.semkey-ns {
-  font-family: var(--ui);
-  font-size: 9.5px;
-  line-height: 1.3;
-  padding: 0 5px;
-  border-radius: 8px;
-  color: var(--faint);
-  border: 1px solid var(--border);
-  white-space: nowrap;
-}
-
-.semkey-ns[data-source="custom"] {
-  color: var(--accent);
-  border-color: color-mix(in srgb, var(--accent) 45%, var(--border));
-}
-
-.semkey-brief {
-  font-family: var(--ui);
-  font-size: 11px;
-  line-height: 1.35;
-  color: var(--faint);
+  flex: 1 1 auto;
+  min-width: 0;
   overflow-wrap: anywhere;
 }
 
-.semkey-meta {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 4px 10px;
+/* Dotted-underline affordance for a key the registry resolved — set on the
+   attribute-table key label (`.semkey-name`) and the fields sidebar's row
+   button (`.field`, features/explore/explore.css). */
+[data-known] {
+  text-decoration: underline dotted;
+  text-decoration-color: var(--faint);
+  text-underline-offset: 2px;
+}
+
+/* `cursor: help` is specific to the attribute-table key label — the fields
+   sidebar's row button has its own click affordance. */
+.semkey-name[data-known] {
+  cursor: help;
+}
+
+.chip-suggest-ns {
   font-family: var(--ui);
-  font-size: 10px;
+  font-size: 9.5px;
+  padding: 0 5px;
   color: var(--faint);
 }
 
-.semkey-title {
-  color: var(--dim);
-  font-weight: 550;
-}
-
-.semkey-role-identifying {
-  color: var(--info);
-}
-
 .semkey-dep {
-  color: var(--warn);
+  margin-left: 6px;
+  color: var(--warn-text);
 }
 
 /* Compact info glyph for sidebars and facet headers. */
@@ -403,7 +576,7 @@ select:focus-visible {
 
 .sem-info:hover,
 .sem-info:focus-visible {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 /* Shared tooltip: portaled to <body> and placed with fixed inline coordinates
@@ -411,7 +584,12 @@ select:focus-visible {
    trigger cannot clip it. */
 .sem-tip {
   position: fixed;
-  z-index: 30;
+  /* Above the mobile sidebar drawer (z-index 50, explore.css) and its
+     backdrop (49): a facet header's info glyph lives inside that drawer on a
+     phone, and its tooltip must render above the drawer it's in. No
+     SemanticKey renders inside a Dialog (z-index 40), so this never has to
+     clear that layer too. */
+  z-index: 60;
   min-width: 220px;
   max-width: 360px;
   padding: 8px 10px;
@@ -419,7 +597,7 @@ select:focus-visible {
   border-radius: 6px;
   background: var(--surface);
   color: var(--text);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow) 18%, transparent);
   font-family: var(--ui);
   font-size: 11.5px;
   line-height: 1.4;
@@ -480,7 +658,7 @@ select:focus-visible {
 }
 
 .sem-tip-deprecated {
-  color: var(--warn);
+  color: var(--warn-text);
 }
 
 /* ---------- viz tooltip (components/VizTooltip.tsx) ---------- */
@@ -488,6 +666,10 @@ select:focus-visible {
 /* Every visualization panel that shows a tooltip is a positioning context. */
 .viz-host {
   position: relative;
+  /* A new stacking context, so uPlot's own z-index:100 cursor lines
+     (MetricsChart) can't escape above sibling UI (e.g. a mobile drawer)
+     outside this panel. */
+  isolation: isolate;
 }
 
 .viz-tip {
@@ -500,12 +682,12 @@ select:focus-visible {
      which shrinks as the pointer moves right. */
   width: max-content;
   min-width: 132px;
-  max-width: 320px;
+  max-width: min(320px, calc(100vw - 24px));
   padding: 6px 8px;
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 4px;
-  box-shadow: 0 4px 14px rgb(0 0 0 / 12%);
+  box-shadow: 0 4px 14px color-mix(in srgb, var(--shadow) 12%, transparent);
   font-size: 11px;
   color: var(--text);
   pointer-events: none;
@@ -567,11 +749,81 @@ select:focus-visible {
   color: var(--dim);
 }
 
-/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
+/* ---------- shared empty state (components/EmptyState.tsx) ---------- */
 
-/* The browser default centres headers; every table here wants them left. */
+.empty-state {
+  padding: 14px 16px;
+}
+
+.empty-state-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--dim);
+}
+
+.empty-state-detail {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--faint);
+}
+
+/* ---------- shared inline error text (every feature's own failed-load or
+   validation message) ---------- */
+
+.error-text {
+  font-size: 12px;
+  color: var(--err-text);
+}
+
+/* ---------- shared error-rate cells, coloured by `errorRateSeverity` */
+
+.err-rate-ok {
+  color: var(--dim);
+}
+
+.err-rate-warn {
+  color: var(--warn-text);
+  font-weight: 600;
+}
+
+.err-rate-critical {
+  color: var(--err-text);
+  font-weight: 600;
+}
+
+/* ---------- shared chips (filter/tenant/origin/status/facet/semantic-key
+   pills) ---------- */
+
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-size: 11px;
+}
+
+/* ---------- data tables (every feature's own <table>) ---------- */
+
+/* The browser default centres headers, sizes them like the body text and
+   bolds them; every data table here wants them left, quieter than the rows
+   below and set apart by case rather than weight alone. Per-feature widths,
+   numeric alignment and other genuinely feature-specific column rules stay
+   in that feature's own stylesheet. */
 th {
+  padding: 8px 10px;
   text-align: left;
+  font-size: 11px;
+  font-weight: 650;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+
+td {
+  font-size: 12px;
 }
 
 th.num,
@@ -580,11 +832,15 @@ td.num {
   font-variant-numeric: tabular-nums;
 }
 
+/* ---------- sortable table headers (lib/sortTable.tsx) ---------- */
+
 .th-sort {
   font: inherit;
   color: inherit;
   text-transform: inherit;
   letter-spacing: inherit;
+  /* Keeps the ::after sort arrow on the label's line in a narrow column. */
+  white-space: nowrap;
   cursor: pointer;
 }
 
@@ -601,17 +857,53 @@ th[aria-sort="descending"] .th-sort::after {
   content: " ↓";
 }
 
+/* ---------- pane resizer (components/SidebarResizer.tsx) ---------- */
+
+/* Behaviour every resizer handle needs; placement and size live with each
+   feature's own resizer class. The drag uses pointer capture, so the handle
+   must not start a touch scroll. */
+.pane-resizer {
+  touch-action: none;
+}
+
+.pane-resizer:focus-visible {
+  outline: none;
+  background: var(--info-bar);
+}
+
 /* A table wider than the viewport scrolls on its own axis instead of
-   blowing out the page — these tables don't reasonably reflow. */
+   blowing out the page — these tables don't reasonably reflow. Every data
+   table sits in one.
+
+   The scroll cue: an edge shade (attachment `scroll`, pinned to the
+   wrapper's edge) under a cover in the background colour (attachment
+   `local`, riding on the content's own ends). A cover hides its shadow
+   while that end of the table is in view, so a shadow only shows on a side
+   that has more columns to scroll to. The cover must match what the
+   wrapper sits on: the page's --bg unless an ancestor card declares
+   `--scroll-cover: var(--surface)` in its own CSS. */
 .table-scroll {
+  /* From --text, not --shadow: it flips with the theme, so the edge is a
+     shade on the light theme and a lighter band on the dark one, where a
+     near-black shadow would vanish into the near-black page. */
+  --scroll-edge: color-mix(in srgb, var(--text) 16%, transparent);
   overflow-x: auto;
+  background:
+    linear-gradient(to right, var(--scroll-cover, var(--bg)) 40%, transparent)
+      left center / 36px 100% no-repeat local,
+    linear-gradient(to left, var(--scroll-cover, var(--bg)) 40%, transparent)
+      right center / 36px 100% no-repeat local,
+    linear-gradient(to right, var(--scroll-edge), transparent) left center /
+      14px 100% no-repeat scroll,
+    linear-gradient(to left, var(--scroll-edge), transparent) right center /
+      14px 100% no-repeat scroll;
 }
 
 /* ---------- view note (features/*: every explore view) ---------- */
 
 /* Explanatory or empty-state note under a view's header. */
 .view-note {
-  color: var(--faint);
+  color: var(--dim);
   padding: 14px 16px;
   font-size: 12px;
 }
@@ -638,14 +930,14 @@ th[aria-sort="descending"] .th-sort::after {
   margin: 0;
   padding: 3px 0;
   list-style: none;
-  min-width: 260px;
-  max-width: 380px;
+  min-width: min(260px, calc(100vw - 24px));
+  max-width: min(380px, calc(100vw - 24px));
   max-height: 320px;
   overflow-y: auto;
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface);
-  box-shadow: 0 6px 20px rgba(0, 0, 0, 0.18);
+  box-shadow: 0 6px 20px color-mix(in srgb, var(--shadow) 18%, transparent);
 }
 
 .chip-suggest-item {
@@ -673,26 +965,27 @@ th[aria-sort="descending"] .th-sort::after {
   overflow-wrap: anywhere;
 }
 
-.chip-suggest-ns {
-  font-family: var(--ui);
-  font-size: 9.5px;
-  padding: 0 5px;
-  border-radius: 8px;
-  color: var(--faint);
-  border: 1px solid var(--border);
-}
-
 .chip-suggest-seen {
   margin-left: auto;
   font-family: var(--ui);
   font-size: 9.5px;
-  color: var(--ok);
+  color: var(--ok-text);
   white-space: nowrap;
 }
 
 .chip-suggest-brief {
   font-size: 11px;
-  color: var(--faint);
+  color: var(--dim);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 100%;
+}
+
+.chip-suggest-dep {
+  color: var(--warn-text);
+  font-size: 10px;
+  font-family: var(--ui);
 }
 
 /* ---------- dialog (components/Dialog.tsx) ---------- */
@@ -712,7 +1005,7 @@ th[aria-sort="descending"] .th-sort::after {
   background: var(--surface);
   border: 1px solid var(--border);
   border-radius: 10px;
-  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  box-shadow: 0 24px 80px color-mix(in srgb, var(--shadow) 35%, transparent);
   max-height: calc(100vh - 48px);
   overflow: auto;
 }
@@ -724,16 +1017,17 @@ th[aria-sort="descending"] .th-sort::after {
   z-index: 100;
 }
 
-@media (max-width: 600px) {
+@media (max-width: 719px) {
   .dialog-backdrop {
     padding: 8px;
   }
 }
 
 /* The panel itself is only a focus target as a fallback (no focusable
-   child); keep the ring for keyboard users, drop it for a mouse/touch
-   click on the panel background. */
-.dialog-panel:focus:not(:focus-visible) {
+   child yet, e.g. consent while its context loads — it keeps focus once the
+   form renders). Its own border already frames it; the browser's ring there
+   read as a leaked focus outline, not a cue. */
+.dialog-panel:focus {
   outline: none;
 }
 
@@ -745,4 +1039,300 @@ th[aria-sort="descending"] .th-sort::after {
   gap: 6px;
   color: var(--dim);
   font-size: 12px;
+}
+
+/* ---------- attribute table (components/AttributeTable.tsx) ---------- */
+
+.attrtable {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.attrtable[data-layout="grid"] {
+  max-width: 720px;
+}
+
+/* One <dl> per group (see components/AttributeTable.tsx), stacked the same
+   way the single table-wide <dl> used to lay out its rows. */
+.attrtable-list {
+  margin: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+/* Facts shared by every row in a titled group, stated once instead of
+   repeated per row: the title, the group's namespace, and (when every
+   resolved row agrees on one) the entity it describes. */
+.attrtable-group {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-family: var(--ui);
+  margin: 8px 0 1px;
+}
+
+.attrtable-title {
+  font-size: 10.5px;
+  color: var(--dim);
+  font-weight: 600;
+}
+
+.attrtable-ns {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.attrtable-ns[data-source="custom"] {
+  color: var(--accent-text);
+}
+
+.attrtable-entity {
+  font-size: 9.5px;
+  color: var(--faint);
+}
+
+.attrtable-row {
+  font-family: var(--mono);
+}
+
+.attrtable[data-layout="grid"] .attrtable-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 260px) minmax(0, 1fr);
+  gap: 0 14px;
+  align-items: baseline;
+  font-size: 11.5px;
+}
+
+.attrtable[data-layout="stacked"] .attrtable-row {
+  display: flex;
+  flex-direction: column;
+  font-size: 11px;
+}
+
+.attrtable-row dt {
+  color: var(--dim);
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+/* The value, the action strip, and (with the descriptions toggle on) the
+   brief line all live in `dd` now (see components/AttributeTable.tsx) — a
+   wrapping flex row rather than a grid cell, so the actions sit beside the
+   value instead of needing their own grid column or absolute position. */
+.attrtable-row dd {
+  margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+}
+
+/* The value stretches across the cell so its copy button lines up at the
+   right edge from row to row instead of trailing each value's text. */
+.attrtable-row dd > .copy-value,
+.attrtable-row dd > .attribute-value {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.attrtable[data-layout="stacked"] .attrtable-row dd {
+  padding-left: 10px;
+}
+
+/* Plain-text brief, shown under a resolved row only with the descriptions
+   toggle on; forced onto its own line within `dd`'s wrapping flex row rather
+   than sharing one with the value/actions. */
+.attrtable-desc {
+  flex-basis: 100%;
+  margin-top: 2px;
+  font-family: var(--ui);
+  font-size: 11px;
+  color: var(--dim);
+  overflow-wrap: anywhere;
+}
+
+.attrtable-desc-suffix {
+  color: var(--faint);
+}
+
+/* `opacity`, not `visibility: hidden` — the latter also drops the buttons
+   from keyboard tab order and defeats a `:focus-within` reveal, so a
+   keyboard/touch user could never reach them; the override below keeps them
+   reachable without a hover at all, below the shell's tablet width (1024px,
+   AppNav.tsx TABLET_QUERY) or on any device that reports no hover
+   capability (touch). */
+.attrtable-actions {
+  opacity: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-family: var(--ui);
+  /* Hidden, the strip takes no width, so it never wraps onto a line of its
+     own under the value and leaves a blank gap there; revealed, it grows to
+     its content and wraps below the value only when it does not fit beside
+     it. `max-width`, not `width: 0`, so the buttons keep their own size and
+     stay focusable. */
+  max-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  /* No spacing while hidden either: `dd` has no gap of its own, so a
+     zero-width strip always fits on the value's line. */
+  margin-left: 0;
+}
+
+/* Each button keeps its intrinsic width while the strip is clipped to zero
+   (otherwise its label would wrap letter by letter and stretch the row), and
+   its own resting look. */
+.attrtable-actions button {
+  flex: none;
+  white-space: nowrap;
+  font-size: 10px;
+  color: var(--faint);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 5px;
+}
+
+.attrtable-row:hover .attrtable-actions,
+.attrtable-row:focus-within .attrtable-actions {
+  opacity: 1;
+  max-width: none;
+  overflow: visible;
+  margin-left: 6px;
+}
+
+@media (max-width: 1023px), (hover: none) {
+  .attrtable-actions {
+    opacity: 1;
+    max-width: none;
+    overflow: visible;
+    margin-left: 6px;
+  }
+}
+
+.attrtable-actions button:hover {
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+
+/* Section head above a titled block of an attribute table (`AttributeSection`
+   in components/AttributeTable.tsx — LogList's "This line"/"Resource ·
+   stream", TracesView's "Span"/"Scope"/"Resource"/"Events"). A collapsible
+   section renders it as a button carrying `aria-expanded`. */
+.attrtable-section {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  margin: 14px 0 6px;
+  font-family: var(--ui);
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--faint);
+  font-weight: 650;
+  background: none;
+  border: none;
+  padding: 0;
+  text-align: left;
+}
+
+button.attrtable-section {
+  cursor: pointer;
+}
+
+.attrtable-count {
+  font-variant-numeric: tabular-nums;
+  text-transform: none;
+  letter-spacing: normal;
+}
+
+/* Collapsed-section one-line preview (LogList's stream summary, TracesView's
+   resource summary): a row of `key value` parts (components/AttributeTable.
+   tsx's AttributeSummary) plus a trailing "+N more", wrapping as a group
+   rather than each part fighting for its own line. */
+.attrtable-summary {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 10px;
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.attrtable-summary-kv {
+  display: inline-flex;
+  gap: 4px;
+  max-width: 260px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attrtable-summary-k {
+  color: var(--dim);
+}
+
+.attrtable-summary-v {
+  color: var(--text);
+}
+
+.attrtable-summary-more {
+  color: var(--accent-text);
+}
+
+.attrtable-desc-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: auto;
+  font-family: var(--ui);
+  font-size: 11px;
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--faint);
+}
+
+/* ---------- touch targets ----------
+   A coarse pointer (finger) gets at least a 32px hit area on the small
+   controls below; a mouse keeps the compact look. Inline buttons that sit in
+   text rows grow an invisible `::after` hit area so the row height does not
+   change; controls inside an `overflow: hidden` group (segmented toggles, a
+   filter chip) would clip that, so they grow a min-height instead. */
+@media (pointer: coarse) {
+  .attrtable-actions button,
+  .copy-value-button,
+  .attribute-value-toggle {
+    position: relative;
+  }
+
+  .attrtable-actions button::after,
+  .copy-value-button::after,
+  .attribute-value-toggle::after,
+  .pane-resizer::after {
+    content: "";
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    width: max(100%, 32px);
+    height: max(100%, 32px);
+    transform: translate(-50%, -50%);
+  }
+
+  .trace-volume-mode button,
+  .flame-view-toggle button,
+  .qrow-filter-remove,
+  .query-remove,
+  .chip-x {
+    min-width: 32px;
+    min-height: 32px;
+  }
+
+  .facet-check,
+  .sidebar-toggle {
+    min-height: 32px;
+  }
 }

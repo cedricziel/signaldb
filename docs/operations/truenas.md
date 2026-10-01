@@ -126,3 +126,38 @@ and bump them in the compose instead of pulling `:main`.
   need `<ip>:<port>`.
 - **Memory.** `mem_limit: 6g` pairs with `[querier] memory_limit_mb = 4096` in
   `signaldb.toml`; scale both together.
+
+## Demo instance
+
+[`deploy/truenas/signaldb-demo-app.yaml`](https://github.com/cedricziel/signaldb/blob/main/deploy/truenas/signaldb-demo-app.yaml)
+is a separate, self-contained app for a public demo: a SignalDB monolith fed
+by a trimmed [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
+(frontend, image provider, cart + Valkey, product catalog, currency,
+recommendation, ad, checkout, payment, shipping, quote, email, flagd with every
+flag off, and the Locust load generator — no Kafka or Envoy). The flag
+definitions and the product list, which upstream mounts from its source tree,
+are inlined as compose `configs:`. The collector drops the spans from the Node services' startup probes of
+the AWS/GCP metadata endpoints, which always fail off-cloud. All demo telemetry lands in tenant `demo`, dataset
+`otel-demo`.
+
+- `signaldb.toml` is inlined through a compose `configs:` entry, so the data
+  dataset only needs to exist and be owned by uid/gid 1000.
+- Two ports are published: the UI/query API (`30210`) and the shop (`30211`);
+  SignalDB's OTLP ports stay on the app network. Point a reverse proxy (the
+  maintainers use Pangolin resources) at each and set
+  `SIGNALDB__PUBLIC__API_URL` to the UI's public URL. The shop's proxy must
+  forward the original `Host` and set `X-Forwarded-Proto`.
+- The shop is served by `frontend-proxy`, an nginx standing in for upstream's
+  Envoy. It injects `rum.js`, the Real users Setup tab's log pipeline loaded
+  from esm.sh, into every page, next to the frontend's own web tracer. Both
+  report as app `frontend-web` on the Real users page, with the shop's session
+  id as `session.id`. Browsers export to the shop's own `/otlp-http`; the
+  collector behind it holds the key.
+- The load generator's Playwright browser users surf `frontend-proxy`, so the
+  Real users page has traffic without visitors.
+- Visitors sign in to the Explore UI as `demo@example.com`/`demo` (see
+  [demo-mode.md](demo-mode.md)) rather than using an API key: the account is
+  provisioned as a tenant Viewer, and a middleware refuses every write it
+  might otherwise be able to make, so it's safe to publish. The `sk-demo-*`
+  key in `signaldb.toml` still has full tenant write access for the
+  OTel-Demo services themselves — keep that one out of the UI.

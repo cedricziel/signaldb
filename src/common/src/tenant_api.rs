@@ -38,7 +38,8 @@ pub struct UpdateTenantRequest {
 pub struct TenantInfo {
     /// Tenant ID
     pub tenant_id: String,
-    /// Tenant-specific schema configuration
+    /// The tenant's effective schema configuration (its schema block merged
+    /// over the global one); `None` when it has no schema block
     #[schema(value_type = Object, nullable)]
     pub schema: Option<SchemaConfig>,
     /// Custom schema definitions
@@ -125,6 +126,8 @@ fn table_schema_type_and_description(name: &str) -> (&'static str, &'static str)
         ),
         "metrics_summary" => ("metrics_summary", "OpenTelemetry summary metrics"),
         "profiles" => ("profiles", "OpenTelemetry profiles"),
+        "metrics" => ("metrics", "OpenTelemetry metrics"),
+        "metric_exemplars" => ("metric_exemplars", "OpenTelemetry metric exemplars"),
         _ => ("custom", "Custom table"),
     }
 }
@@ -138,14 +141,9 @@ fn table_info_for_schema(schema: iceberg_schemas::TableSchema) -> TableInfo {
     let description = match schema {
         iceberg_schemas::TableSchema::Traces => "OpenTelemetry traces and spans",
         iceberg_schemas::TableSchema::Logs => "OpenTelemetry log entries",
-        iceberg_schemas::TableSchema::MetricsGauge => "OpenTelemetry gauge metrics",
-        iceberg_schemas::TableSchema::MetricsSum => "OpenTelemetry sum/counter metrics",
-        iceberg_schemas::TableSchema::MetricsHistogram => "OpenTelemetry histogram metrics",
-        iceberg_schemas::TableSchema::MetricsExponentialHistogram => {
-            "OpenTelemetry exponential histogram metrics"
-        }
-        iceberg_schemas::TableSchema::MetricsSummary => "OpenTelemetry summary metrics",
         iceberg_schemas::TableSchema::Profiles => "OpenTelemetry profiles",
+        iceberg_schemas::TableSchema::Metrics => "OpenTelemetry metrics",
+        iceberg_schemas::TableSchema::MetricExemplars => "OpenTelemetry metric exemplars",
         iceberg_schemas::TableSchema::Custom(ref name) => {
             // For custom schemas, use a generic description
             return TableInfo {
@@ -185,6 +183,12 @@ impl TenantApi {
         self
     }
 
+    /// Reuse a shared `CatalogManager` rather than building one per call.
+    pub fn with_catalog_manager(mut self, manager: Arc<crate::CatalogManager>) -> Self {
+        self.registry = self.registry.with_catalog_manager(manager);
+        self
+    }
+
     /// List all tenants
     pub fn list_tenants(&self) -> ListTenantsResponse {
         let mut tenants: Vec<TenantInfo> = self
@@ -195,7 +199,10 @@ impl TenantApi {
             .iter()
             .map(|(tenant_id, config)| TenantInfo {
                 tenant_id: tenant_id.clone(),
-                schema: config.schema.clone(),
+                schema: config
+                    .schema
+                    .as_ref()
+                    .map(|_| self.registry.config.get_tenant_schema_config(tenant_id)),
                 custom_schemas: config.custom_schemas.clone(),
                 enabled: config.enabled,
             })
@@ -223,7 +230,10 @@ impl TenantApi {
         if let Some(config) = self.registry.config.tenants.tenants.get(tenant_id) {
             Ok(TenantInfo {
                 tenant_id: tenant_id.to_string(),
-                schema: config.schema.clone(),
+                schema: config
+                    .schema
+                    .as_ref()
+                    .map(|_| self.registry.config.get_tenant_schema_config(tenant_id)),
                 custom_schemas: config.custom_schemas.clone(),
                 enabled: config.enabled,
             })
@@ -379,7 +389,7 @@ impl TenantApi {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{Configuration, TenantSchemaConfig, TenantsConfig};
+    use crate::config::{Configuration, TenantSchemaConfig, TenantSchemaOverride, TenantsConfig};
 
     #[test]
     fn test_tenant_api_default_configuration() {
@@ -414,11 +424,10 @@ mod tests {
     #[test]
     fn test_tenant_api_with_custom_tenant() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
-                default_schemas: crate::config::DefaultSchemas::default(),
-                materialized_labels: Default::default(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -550,7 +559,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            8
+            crate::iceberg::schemas::TableSchema::all().len()
         );
     }
 
@@ -572,7 +581,8 @@ mod tests {
             .collect();
         assert!(schema_names.contains(&"traces".to_string()));
         assert!(schema_names.contains(&"logs".to_string()));
-        assert!(schema_names.contains(&"metrics_gauge".to_string()));
+        assert!(schema_names.contains(&"metrics".to_string()));
+        assert!(schema_names.contains(&"metric_exemplars".to_string()));
     }
 
     #[test]
@@ -583,9 +593,8 @@ mod tests {
         let schema_names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(schema_names.contains(&"traces".to_string()));
         assert!(schema_names.contains(&"logs".to_string()));
-        assert!(schema_names.contains(&"metrics_gauge".to_string()));
-        assert!(schema_names.contains(&"metrics_sum".to_string()));
-        assert!(schema_names.contains(&"metrics_histogram".to_string()));
+        assert!(schema_names.contains(&"metrics".to_string()));
+        assert!(schema_names.contains(&"metric_exemplars".to_string()));
     }
 
     #[tokio::test]

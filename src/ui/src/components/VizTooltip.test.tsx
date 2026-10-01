@@ -72,6 +72,40 @@ describe("VizTooltip", () => {
     );
   });
 
+  it("clamps to the host's top edge when there is no room above or below", () => {
+    // A short host (e.g. a histogram sitting over a signal tab strip): the
+    // anchor near the top leaves no room above for the tooltip, and it also
+    // overflows below — flipping up would paint past the host's top edge and
+    // over whatever sits behind the host.
+    render(
+      <VizTooltip
+        anchor={{ x: 100, y: 30 }}
+        host={{ width: 1200, height: 64 }}
+        title="t"
+        rows={ROWS}
+      />,
+    );
+    const tip = screen.getByRole("tooltip");
+    expect(tip.style.top).toBe("0px");
+    expect(tip.style.transform).toBe("translate(14px, 0px)");
+  });
+
+  it("still flips above the anchor when the host has room for it there", () => {
+    // Same tooltip height as above, but the anchor sits far enough from the
+    // host's top that flipping up stays inside it.
+    render(
+      <VizTooltip
+        anchor={{ x: 100, y: 100 }}
+        host={{ width: 1200, height: 110 }}
+        title="t"
+        rows={ROWS}
+      />,
+    );
+    const tip = screen.getByRole("tooltip");
+    expect(tip.style.top).toBe("100px");
+    expect(tip.style.transform).toBe("translate(14px, calc(-100% - 12px))");
+  });
+
   it("reserves a stable value column width when asked", () => {
     render(
       <VizTooltip

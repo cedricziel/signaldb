@@ -1,7 +1,7 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { TraceVolumeAreaChart } from "./TraceVolumeAreaChart";
-import type { VolumeSeries } from "../explore/SignalHistogram";
+import type { VolumeSeries } from "../../components/SignalHistogram";
 import { formatTimeBucket } from "../../lib/vizFormat";
 
 const SERIES: VolumeSeries[] = [
@@ -77,11 +77,40 @@ describe("TraceVolumeAreaChart tooltip", () => {
 
   it("reaches the same detail from the keyboard", () => {
     renderChart();
-    const bucket = screen.getAllByTestId("trace-area-bucket")[1]!;
-    expect(bucket).toHaveAttribute("tabindex", "0");
+    const buckets = screen.getAllByTestId("trace-area-bucket");
+    const bucket = buckets[1]!;
+    // Only the first bucket is a native tab stop; ArrowRight moves the
+    // roving one over to it (see the roving-focus suite below).
+    buckets[0]!.focus();
+    fireEvent.keyDown(buckets[0]!, { key: "ArrowRight" });
+    expect(bucket).toHaveFocus();
     fireEvent.focus(bucket);
     expect(screen.getByRole("tooltip")).toHaveTextContent("5 spans");
     fireEvent.blur(bucket);
     expect(screen.queryByRole("tooltip")).toBeNull();
+  });
+});
+
+describe("TraceVolumeAreaChart roving focus", () => {
+  it("gives the first bucket the only tab stop and moves it with ArrowRight", () => {
+    renderChart();
+    const buckets = screen.getAllByTestId("trace-area-bucket");
+    expect(buckets[0]).toHaveAttribute("tabindex", "0");
+    expect(buckets[1]).toHaveAttribute("tabindex", "-1");
+    buckets[0]!.focus();
+    fireEvent.keyDown(buckets[0]!, { key: "ArrowRight" });
+    expect(buckets[1]).toHaveFocus();
+    expect(buckets[1]).toHaveAttribute("tabindex", "0");
+  });
+
+  // Tab should land wherever the pointer last showed detail for, matching
+  // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+  // wherever an arrow key left it.
+  it("moves the tab stop to the bucket the pointer moves over", () => {
+    renderChart();
+    const buckets = screen.getAllByTestId("trace-area-bucket");
+    fireEvent.pointerMove(buckets[1]!, { clientX: 200, clientY: 20 });
+    expect(buckets[1]).toHaveAttribute("tabindex", "0");
+    expect(buckets[0]).toHaveAttribute("tabindex", "-1");
   });
 });

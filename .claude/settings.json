@@ -45,7 +45,27 @@
             "statusMessage": "Loading simplify/squash workflow rule"
           }
         ]
+      },
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "$CLAUDE_PROJECT_DIR/.claude/hooks/install-claude-plugins.sh"
+          }
+        ]
       }
     ]
+  },
+  "enabledPlugins": {
+    "oss@cedricziel": true,
+    "common@cedricziel": true
+  },
+  "extraKnownMarketplaces": {
+    "cedricziel": {
+      "source": {
+        "source": "github",
+        "repo": "cedricziel/claude-plugins"
+      }
+    }
   }
 }

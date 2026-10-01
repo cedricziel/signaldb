@@ -3,7 +3,6 @@ import {
   DEFAULT_KIND_FILTERS,
   FACET_FIELDS,
   KIND_VALUES,
-  compileTraceQL,
   facetField,
   filterStages,
   removeTraceFilter,
@@ -14,86 +13,6 @@ import {
   withDefaultTraceFilters,
   type TraceFilter,
 } from "./traceFilters";
-
-describe("compileTraceQL", () => {
-  it("compiles nothing for an empty filter set", () => {
-    expect(compileTraceQL([])).toBe("");
-  });
-
-  it("scopes a resource attribute", () => {
-    expect(compileTraceQL([{ field: "service.name", value: "checkout" }])).toBe(
-      '{ resource.service.name = "checkout" }',
-    );
-  });
-
-  it("scopes a span attribute, not a resource attribute", () => {
-    // db.namespace and messaging.destination.name are set on the span by
-    // the calling instrumentation, not on the resource — a `resource.`
-    // selector would silently match nothing.
-    expect(compileTraceQL([{ field: "db.namespace", value: "orders" }])).toBe(
-      '{ span.db.namespace = "orders" }',
-    );
-    expect(
-      compileTraceQL([
-        { field: "messaging.destination.name", value: "orders.v2" },
-      ]),
-    ).toBe('{ span.messaging.destination.name = "orders.v2" }');
-  });
-
-  it("scopes host/k8s/container/process identity as resource attributes", () => {
-    // Unlike db.namespace/messaging.*, these describe the process emitting
-    // telemetry, not an individual operation — OTel models them as resource
-    // attributes.
-    for (const [field, selector] of [
-      ["host.name", "resource.host.name"],
-      ["k8s.pod.name", "resource.k8s.pod.name"],
-      ["k8s.namespace.name", "resource.k8s.namespace.name"],
-      ["k8s.node.name", "resource.k8s.node.name"],
-      ["container.name", "resource.container.name"],
-      ["process.pid", "resource.process.pid"],
-    ] as const) {
-      expect(compileTraceQL([{ field, value: "x" }])).toBe(
-        `{ ${selector} = "x" }`,
-      );
-    }
-  });
-
-  it("leaves intrinsics unscoped", () => {
-    expect(compileTraceQL([{ field: "name", value: "GET /pay" }])).toBe(
-      '{ name = "GET /pay" }',
-    );
-    expect(compileTraceQL([{ field: "status", value: "error" }])).toBe(
-      "{ status = error }",
-    );
-    expect(compileTraceQL([{ field: "kind", value: "server" }])).toBe(
-      "{ kind = server }",
-    );
-  });
-
-  it("combines several filters with &&", () => {
-    expect(
-      compileTraceQL([
-        { field: "service.name", value: "checkout" },
-        { field: "status", value: "error" },
-      ]),
-    ).toBe('{ resource.service.name = "checkout" && status = error }');
-  });
-
-  it("escapes quotes and backslashes in values", () => {
-    expect(compileTraceQL([{ field: "name", value: 'say "hi"\\now' }])).toBe(
-      '{ name = "say \\"hi\\"\\\\now" }',
-    );
-  });
-
-  it("drops filters on fields that are not facetable", () => {
-    expect(
-      compileTraceQL([
-        { field: "nonsense", value: "x" },
-        { field: "service.name", value: "api" },
-      ]),
-    ).toBe('{ resource.service.name = "api" }');
-  });
-});
 
 describe("FACET_FIELDS", () => {
   it("offers the curated fields with a defined UI treatment", () => {
@@ -136,6 +55,12 @@ describe("trace filter URL params", () => {
   it("rejects a malformed or unknown-field param", () => {
     expect(traceFilterFromParam("garbage")).toBeNull();
     expect(traceFilterFromParam("nonsense|x")).toBeNull();
+  });
+
+  it("round-trips an absent-value filter", () => {
+    const f: TraceFilter = { field: "service.name", value: "", op: "absent" };
+    expect(traceFilterToParam(f)).toBe("service.name|absent");
+    expect(traceFilterFromParam("service.name|absent")).toEqual(f);
   });
 });
 
@@ -257,16 +182,24 @@ describe("multi-value facets (kind)", () => {
       ),
     ).toEqual([{ where: { field: "service.name", op: "eq", value: "api" } }]);
   });
+});
 
-  it("compiles several values of one field as an OR group in TraceQL", () => {
+describe('absent-value filters (op: "absent")', () => {
+  it('compiles to a `where not exists` stage, not `eq ""`', () => {
     expect(
-      compileTraceQL([
-        { field: "service.name", value: "api" },
-        { field: "kind", value: "server" },
-        { field: "kind", value: "client" },
+      filterStages([{ field: "service.name", value: "", op: "absent" }]),
+    ).toEqual([{ where: { not: { field: "service.name", op: "exists" } } }]);
+  });
+
+  it("leaves the rest of the group's stages untouched", () => {
+    expect(
+      filterStages([
+        { field: "host.name", value: "", op: "absent" },
+        { field: "kind", value: "Server" },
       ]),
-    ).toBe(
-      '{ resource.service.name = "api" && (kind = server || kind = client) }',
-    );
+    ).toEqual([
+      { where: { not: { field: "host.name", op: "exists" } } },
+      { where: { field: "span_kind", op: "eq", value: "Server" } },
+    ]);
   });
 });

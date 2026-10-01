@@ -15,10 +15,18 @@ pub struct Args {
     #[command(subcommand)]
     pub command: Option<AcceptorCommands>,
 
-    #[arg(long, help = "OTLP gRPC server port", default_value = "4317")]
+    #[arg(
+        long,
+        help = "OTLP gRPC server port",
+        default_value_t = common::endpoints::DEFAULT_OTLP_GRPC_PORT
+    )]
     pub grpc_port: u16,
 
-    #[arg(long, help = "OTLP HTTP server port", default_value = "4318")]
+    #[arg(
+        long,
+        help = "OTLP HTTP server port",
+        default_value_t = common::endpoints::DEFAULT_OTLP_HTTP_PORT
+    )]
     pub http_port: u16,
 
     #[arg(long, help = "Bind address for servers", default_value = "0.0.0.0")]
@@ -95,17 +103,13 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     let grpc_addr = SocketAddr::new(bind_ip, args.grpc_port);
     let http_addr = SocketAddr::new(bind_ip, args.http_port);
 
-    // Initialize shared resources for both gRPC and HTTP servers
-    let advertise_addr =
-        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
-
     // WAL directory: --wal-dir / ACCEPTOR_WAL_DIR override wins, otherwise
     // [wal].wal_dir from the configuration with the service suffix appended.
     let wal_dir = config
         .wal
         .wal_dir_for_service("acceptor", args.wal_dir.clone());
 
-    let resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
+    let resources = init_acceptor_resources(config.clone(), grpc_addr, wal_dir)
         .await
         .context("Failed to initialize acceptor resources")?;
 
@@ -147,12 +151,10 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
         authenticator: http_resources.authenticator,
         rate_limiter: http_resources.rate_limiter,
         storage_usage: http_resources.storage_usage,
-        cors_allowed_origins: config
-            .self_monitoring
-            .frontend
-            .enabled
-            .then(|| config.self_monitoring.frontend.allowed_origins.clone()),
+        processor_registry: http_resources.processor_registry,
+        retry_dedup: http_resources.retry_dedup,
         max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
+        type_snapshots: http_resources.type_snapshots,
     };
     let http_handle = tokio::spawn(async move {
         if let Err(e) =

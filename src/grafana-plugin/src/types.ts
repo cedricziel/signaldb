@@ -61,11 +61,6 @@ export interface SignalDBDataSourceOptions extends DataSourceJsonData {
   routerUrl?: string;
 
   /**
-   * Connection protocol
-   */
-  protocol?: 'http' | 'flight';
-
-  /**
    * Timeout for queries in seconds
    */
   timeout?: number;

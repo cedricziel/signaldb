@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .schema-explorer-page {
   padding: 24px;
@@ -6,31 +6,22 @@
   margin: 0 auto;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .schema-explorer-page {
     padding: 12px;
   }
-}
-
-.schema-explorer-title {
-  font-size: 18px;
-  font-weight: 600;
-  margin: 0 0 8px;
 }
 
 .schema-explorer-subtitle {
   color: var(--dim);
   font-size: 13px;
   margin-bottom: 24px;
+  overflow-wrap: anywhere;
 }
 
 .schema-explorer-note {
   color: var(--dim);
   font-size: 13px;
-}
-
-.schema-explorer-error {
-  color: var(--err);
 }
 
 .schema-explorer-section {
@@ -80,7 +71,9 @@
   list-style: none;
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 8px;
+  overflow-wrap: anywhere;
 }
 
 .schema-source-card summary::-webkit-details-marker {
@@ -103,7 +96,7 @@
   font-weight: 650;
   text-transform: uppercase;
   letter-spacing: 0.05em;
-  color: var(--accent);
+  color: var(--accent-text);
   border: 1px solid var(--accent);
   border-radius: 4px;
   padding: 1px 5px;
@@ -113,17 +106,6 @@
 .schema-explorer-table {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
-}
-
-.schema-explorer-table th {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
-  color: var(--faint);
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 650;
 }
 
 .schema-explorer-table td {

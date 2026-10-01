@@ -85,7 +85,9 @@ describe("fetchAllSourceFields", () => {
     vi.mocked(runIrQuery).mockImplementation(
       async (doc) =>
         fieldsResponse(
-          doc.from === "metrics" ? ["process.pid"] : ["service.name"],
+          "from" in doc && doc.from === "metrics"
+            ? ["process.pid"]
+            : ["service.name"],
         ) as never,
     );
 

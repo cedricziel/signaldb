@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .metricsview {
   display: flex;
   flex-direction: column;
@@ -10,7 +10,7 @@
 .promql-form {
   display: flex;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
 }
 
@@ -24,19 +24,11 @@
   font-family: var(--mono);
 }
 
-.promql-form button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 14px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
 /* --- editor mode toggle --- */
 .metrics-modes {
   display: flex;
   gap: 4px;
-  padding: 8px 16px 0;
+  padding: 8px var(--gutter) 0;
 }
 
 .metrics-modes button {
@@ -45,7 +37,7 @@
   border-radius: 6px 6px 0 0;
   padding: 4px 14px;
   font-size: 12px;
-  color: var(--faint);
+  color: var(--dim);
   background: transparent;
 }
 
@@ -57,7 +49,7 @@
 /* --- visual builder --- */
 .metrics-builder {
   border-bottom: 1px solid var(--border);
-  padding: 10px 16px 12px;
+  padding: 10px var(--gutter) 12px;
 }
 
 .qrow {
@@ -77,7 +69,7 @@
 }
 
 .qrow-kw {
-  color: var(--faint);
+  color: var(--dim);
 }
 
 .qrow input,
@@ -89,9 +81,64 @@
   font-size: 12px;
 }
 
+.builder-query > .qrow {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
 .qrow-metric,
 .qrow-groupby {
   font-family: var(--mono);
+}
+
+/* Grow with typed content up to the row's own width instead of clipping a
+   long group-by list inside a fixed-width box with no ellipsis; `.qrow`'s
+   own `flex-wrap: wrap` lets the row itself wrap once it no longer fits. */
+.qrow-groupby {
+  flex: 1 1 168px;
+  min-width: 168px;
+}
+
+/* Anchors the metric-name suggestion list (`.chip-suggest`, shared with
+   `AttributeKeyInput`) below the input. The input's `size` tracks the
+   metric name, so the box fits it without stretching across the row. */
+.qrow-metric-combobox {
+  position: relative;
+  display: inline-flex;
+  flex: 0 1 auto;
+  min-width: 168px;
+  max-width: min(100%, 560px);
+}
+
+.qrow-metric-combobox .qrow-metric {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+/* A histogram-only metric name: suggested (so a search for it isn't a dead
+   end) but not selectable, since the builder always queries `metrics`. */
+.chip-suggest-item-disabled {
+  cursor: default;
+  color: var(--faint);
+}
+
+.chip-suggest-item-disabled:hover {
+  background: none;
+}
+
+.chip-suggest-histogram {
+  font-size: 10px;
+  color: var(--faint);
+}
+
+.chip-suggest-empty {
+  cursor: default;
+  color: var(--faint);
+  font-style: italic;
+}
+
+.chip-suggest-empty:hover {
+  background: none;
 }
 
 .qrow-filters {
@@ -116,7 +163,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
-  color: var(--faint);
+  color: var(--dim);
   padding: 3px 8px;
   font-size: 11px;
 }
@@ -136,7 +183,7 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: transparent;
-  color: var(--faint);
+  color: var(--dim);
   padding: 3px 8px;
   font-size: 11px;
   margin-top: 2px;
@@ -167,8 +214,7 @@
 
 .qrow-warn {
   font-size: 11px;
-  color: var(--warn);
-  white-space: nowrap;
+  color: var(--warn-banner-text);
 }
 
 .builder-run {
@@ -191,32 +237,35 @@
   white-space: nowrap;
 }
 
-.builder-run button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 14px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
-.builder-run button:disabled {
-  opacity: 0.5;
-}
-
 .mchart-wrap {
-  padding: 14px 18px 4px;
+  padding: 14px var(--gutter) 4px;
+}
+
+/* uPlot's own cursor crosshair defaults to a hard-coded color that ignores
+   the app's theme. */
+.u-cursor-x,
+.u-cursor-y {
+  border-color: var(--dim);
+}
+
+.mlegend-wrap {
+  display: flex;
+  align-items: flex-start;
+  gap: 16px;
+  padding: 8px var(--gutter) 14px;
 }
 
 .mlegend {
   list-style: none;
   margin: 0;
+  padding: 0;
+  flex: 1 1 auto;
+  min-width: 0;
   display: flex;
   flex-wrap: wrap;
   gap: 6px 16px;
-  padding: 8px 18px 14px;
   font-size: 11.5px;
   color: var(--dim);
-  font-family: var(--mono);
 }
 
 .mlegend li {
@@ -227,18 +276,32 @@
   max-width: 100%;
 }
 
+.mlegend-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mlegend i {
+  flex: none;
   width: 14px;
   height: 3px;
   border-radius: 2px;
   display: inline-block;
 }
 
-@media (max-width: 600px) {
-  /* Ref badge, keyword, metric picker, filters, group-by all stack full
-     width rather than squeeze onto one line. */
-  .qrow > * {
+@container app-main (max-width: 600px) {
+  /* The ref badge, metric picker and "from" share the first line; filters,
+     aggregation and function each take a full line below. */
+  .qrow > :not(.qrow-ref, .qrow-kw, .qrow-metric-combobox) {
     flex: 1 1 100%;
+  }
+
+  .qrow > .qrow-metric-combobox {
+    flex: 1 1 0;
+    min-width: 0;
+    max-width: none;
   }
 
   /* The formula input and query preview otherwise clip their content at
@@ -255,5 +318,13 @@
   .builder-preview {
     white-space: normal;
     overflow-wrap: anywhere;
+  }
+
+  /* A flex item's default `min-width: auto` floors it at its content's
+     intrinsic width — for a text input, wide enough that `flex: 1` alone
+     can't shrink it to fit a phone screen next to the run button. */
+  .promql-input {
+    min-width: 0;
+    width: 100%;
   }
 }

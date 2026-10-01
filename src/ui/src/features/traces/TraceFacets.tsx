@@ -5,6 +5,7 @@ import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
 import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
+import { toggleInSet } from "../../lib/collections";
 import type { ResolvedRange } from "../../lib/time";
 import {
   FACET_FIELDS,
@@ -29,6 +30,12 @@ interface Props {
   filters: TraceFilter[];
   onAddFilter: (filter: TraceFilter) => void;
   onRemoveFilter: (filter: TraceFilter) => void;
+  /** TanStack Query's `refetchInterval` (see `lib/live.ts`'s
+   * `liveRefetchInterval`) for every facet's value-count query — so the
+   * sidebar keeps pace with the group list, volume chart, and member list
+   * it sits beside in live mode instead of freezing at the values seen when
+   * the tab loaded. */
+  refetchInterval?: number | false;
 }
 
 /**
@@ -44,6 +51,7 @@ export function TraceFacets({
   filters,
   onAddFilter,
   onRemoveFilter,
+  refetchInterval = false,
 }: Props) {
   // Facets with a filter set sit at the top and start expanded; the user can
   // still collapse one (`collapsed`) or expand an inactive one (`opened`).
@@ -55,12 +63,7 @@ export function TraceFacets({
     isActive(field) ? !collapsed.has(field) : opened.has(field);
   const toggle = (field: string) => {
     const set = isActive(field) ? setCollapsed : setOpened;
-    set((prev) => {
-      const next = new Set(prev);
-      if (next.has(field)) next.delete(field);
-      else next.add(field);
-      return next;
-    });
+    set((prev) => toggleInSet(prev, field));
   };
   const ordered = [
     ...FACET_FIELDS.filter((f) => isActive(f.field)),
@@ -101,7 +104,7 @@ export function TraceFacets({
                 >
                   <span>{facet.label}</span>
                   {active.length > 0 && (
-                    <span className="facet-active">{active.length}</span>
+                    <span className="facet-active chip">{active.length}</span>
                   )}
                 </button>
                 <SemanticInfo
@@ -117,6 +120,7 @@ export function TraceFacets({
                   filters={filters}
                   onAddFilter={onAddFilter}
                   onRemoveFilter={onRemoveFilter}
+                  refetchInterval={refetchInterval}
                 />
               )}
             </div>
@@ -134,6 +138,7 @@ function FacetValues({
   filters,
   onAddFilter,
   onRemoveFilter,
+  refetchInterval,
 }: {
   facet: FacetField;
   range: ResolvedRange;
@@ -141,6 +146,7 @@ function FacetValues({
   filters: TraceFilter[];
   onAddFilter: (filter: TraceFilter) => void;
   onRemoveFilter: (filter: TraceFilter) => void;
+  refetchInterval: number | false;
 }) {
   // Other facets' filters narrow the counts; this facet's own do not, so its
   // alternatives stay visible and switchable.
@@ -154,6 +160,7 @@ function FacetValues({
     ],
     queryFn: () => fetchFacet(facet.irField, range, narrowing),
     staleTime: 30_000,
+    refetchInterval,
   });
 
   const isActive = (v: FacetValue) =>
@@ -162,8 +169,10 @@ function FacetValues({
 
   // A multi facet with a fixed value set always offers every value — as
   // checkboxes, so several can be on at once — with the counts the data
-  // has for them (0 while absent, blank while loading).
+  // has for them. A failed query shows "–", never 0, so it can't read as
+  // an empty window.
   if (facet.multi && facet.values) {
+    const placeholder = result.isPending ? "…" : result.isError ? "–" : null;
     const counts = new Map(
       (result.data?.values ?? []).map((v) => [v.value, v.count]),
     );
@@ -193,11 +202,14 @@ function FacetValues({
               />
               <span className="facet-val-name">{value}</span>
               <span className="facet-val-count">
-                {result.isPending ? "…" : NUM.format(count ?? 0)}
+                {placeholder ?? NUM.format(count ?? 0)}
               </span>
             </label>
           );
         })}
+        {result.isError && (
+          <div className="fieldvals-note">Could not load counts</div>
+        )}
       </div>
     );
   }

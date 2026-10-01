@@ -28,7 +28,6 @@ use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion::arrow::array::{Array, TimestampMicrosecondArray};
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
-use object_store::memory::InMemory;
 use tests_integration::compaction_helpers::trace_sort_keys;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity, SequentialLayout};
 use tests_integration::generators::{
@@ -60,11 +59,9 @@ async fn seed_traces_catalog() -> (Arc<CatalogManager>, i64) {
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await.expect("catalog manager"));
-    let object_store = Arc::new(InMemory::new());
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),

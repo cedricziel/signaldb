@@ -1,17 +1,22 @@
-//! JSON error responses for the query HTTP surfaces.
+//! The router-wide JSON error envelope, [`ApiError`].
 //!
-//! Loki- and Prometheus-style clients expect failures as
+//! Every first-party endpoint, and the Loki- and Prometheus-style query
+//! surfaces, answer failures as
 //! `{"status":"error","errorType":"...","error":"..."}`; a bare status code
-//! with an empty body leaves UIs nothing to display. Rate-limit rejections
-//! carry the same envelope plus `retryAfterMs` and the `Retry-After` /
-//! `X-RateLimit-*` header trio, computed from the token bucket's actual
-//! state (see [`common::ratelimit`]).
+//! with an empty body leaves clients nothing to display. Rate-limit
+//! rejections carry the same envelope plus `retryAfterMs` and the
+//! `Retry-After` / `X-RateLimit-*` header trio, computed from the token
+//! bucket's actual state (see [`common::ratelimit`]). [`ApiJson`] parses
+//! request bodies into the same envelope on failure.
 
 use axum::Json;
+use axum::body::Bytes;
+use axum::extract::{FromRequest, Request};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use common::ratelimit::RateLimitExceeded;
 use serde::Serialize;
+use serde::de::DeserializeOwned;
 use utoipa::ToSchema;
 
 /// An HTTP error with a client-visible message.
@@ -25,6 +30,12 @@ pub struct ApiError {
     /// [`common::ratelimit::retry_headers`] — the same helper the acceptor
     /// uses, so every SignalDB 429 answers identically.
     rate_limit: Option<RateLimitExceeded>,
+    /// Rendered as `details`; set with [`Self::with_details`].
+    details: Option<Vec<ApiErrorDetail>>,
+    /// Set by [`Self::from_flight`] for a querier resource bound: a `422`
+    /// whose `errorType` is `resource_limit` rather than `invalid`. A flag,
+    /// not a free-form override, to keep `ApiError` small.
+    resource_limit: bool,
 }
 
 impl ApiError {
@@ -33,11 +44,28 @@ impl ApiError {
             status,
             message: message.into(),
             rate_limit: None,
+            details: None,
+            resource_limit: false,
         }
+    }
+
+    /// Attach the individual problems behind this error (e.g. the invalid
+    /// rows of an uploaded file), rendered as the body's `details`.
+    pub fn with_details(mut self, details: Vec<ApiErrorDetail>) -> Self {
+        self.details = Some(details);
+        self
     }
 
     pub fn bad_request(message: impl Into<String>) -> Self {
         Self::new(StatusCode::BAD_REQUEST, message)
+    }
+
+    /// A `422` with `errorType` `resource_limit`: a server bound the request
+    /// would exceed again unchanged.
+    pub fn resource_limit(message: impl Into<String>) -> Self {
+        let mut err = Self::new(StatusCode::UNPROCESSABLE_ENTITY, message);
+        err.resource_limit = true;
+        err
     }
 
     /// Build a `429` from a rejected [`RateLimitExceeded`]: status,
@@ -49,6 +77,8 @@ impl ApiError {
             status: StatusCode::TOO_MANY_REQUESTS,
             message: err.to_string(),
             rate_limit: Some(err.clone()),
+            details: None,
+            resource_limit: false,
         }
     }
 
@@ -70,6 +100,14 @@ impl ApiError {
             tonic::Code::DeadlineExceeded => StatusCode::GATEWAY_TIMEOUT,
             tonic::Code::PermissionDenied => StatusCode::FORBIDDEN,
             tonic::Code::Unimplemented => StatusCode::NOT_IMPLEMENTED,
+            // The querier's resource bounds (e.g. a correlate source over
+            // `[querier].correlate_max_source_rows`): the same query fails
+            // again on retry, so it must not read as a retryable 429.
+            tonic::Code::FailedPrecondition => {
+                let mut err = Self::new(StatusCode::UNPROCESSABLE_ENTITY, status.message());
+                err.resource_limit = true;
+                return err;
+            }
             _ => {
                 tracing::error!(error = %status, query_kind = what, "Flight query failed");
                 StatusCode::INTERNAL_SERVER_ERROR
@@ -79,9 +117,18 @@ impl ApiError {
     }
 
     fn error_type(&self) -> &'static str {
+        if self.resource_limit {
+            return "resource_limit";
+        }
         match self.status {
             StatusCode::BAD_REQUEST => "bad_data",
+            StatusCode::UNAUTHORIZED => "unauthorized",
+            StatusCode::FORBIDDEN => "forbidden",
             StatusCode::NOT_FOUND => "not_found",
+            StatusCode::CONFLICT => "conflict",
+            StatusCode::GONE => "gone",
+            StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
+            StatusCode::UNPROCESSABLE_ENTITY => "invalid",
             StatusCode::TOO_MANY_REQUESTS => "rate_limited",
             StatusCode::GATEWAY_TIMEOUT => "timeout",
             StatusCode::SERVICE_UNAVAILABLE => "unavailable",
@@ -103,11 +150,13 @@ impl From<StatusCode> for ApiError {
             status,
             message,
             rate_limit: None,
+            details: None,
+            resource_limit: false,
         }
     }
 }
 
-/// The JSON envelope every query-surface error responds with: `status` is
+/// The JSON envelope every [`ApiError`] responds with: `status` is
 /// always `"error"`, `errorType` a stable low-cardinality code, `error` a
 /// human-readable message, and `retryAfterMs` present only on rate-limit
 /// rejections. Exists as a real (rather than `serde_json::json!`-built)
@@ -124,6 +173,24 @@ pub struct ApiErrorBody {
     /// `errorType` is `"rate_limited"`.
     #[serde(rename = "retryAfterMs", skip_serializing_if = "Option::is_none")]
     pub retry_after_ms: Option<u64>,
+    /// The individual problems behind the error, when the endpoint reports
+    /// them one by one (e.g. the invalid rows of an uploaded results file).
+    /// Absent otherwise.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub details: Option<Vec<ApiErrorDetail>>,
+}
+
+/// One problem behind an [`ApiErrorBody`]: where it is and why.
+#[derive(Debug, Clone, Serialize, ToSchema)]
+pub struct ApiErrorDetail {
+    /// 1-based line of the request body the problem starts on; absent for
+    /// a problem with the body as a whole.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub row: Option<u64>,
+    /// The column or field at fault, when there is one.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub column: Option<String>,
+    pub reason: String,
 }
 
 /// Shared OpenAPI `429` response for every rate-limited query operation:
@@ -195,6 +262,7 @@ impl IntoResponse for ApiError {
                 .rate_limit
                 .as_ref()
                 .map(|err| err.retry_after_secs().saturating_mul(1_000)),
+            details: self.details,
         };
         let mut response = (self.status, Json(body)).into_response();
         if let Some(err) = &self.rate_limit {
@@ -204,6 +272,36 @@ impl IntoResponse for ApiError {
             }
         }
         response
+    }
+}
+
+/// A JSON request body whose rejections use the [`ApiError`] envelope. An
+/// unreadable or oversized body keeps its own status (e.g. `413`),
+/// malformed JSON is `400`, and well-formed JSON of the wrong shape is
+/// `422`: the same split axum's `Json` extractor makes.
+///
+/// Takes the body, so it goes last in a handler's arguments, after any
+/// privilege-checking extractor.
+pub struct ApiJson<T>(pub T);
+
+impl<T, S> FromRequest<S> for ApiJson<T>
+where
+    T: DeserializeOwned,
+    S: Send + Sync,
+{
+    type Rejection = ApiError;
+
+    async fn from_request(req: Request, state: &S) -> Result<Self, Self::Rejection> {
+        let body = Bytes::from_request(req, state)
+            .await
+            .map_err(|rejection| ApiError::new(rejection.status(), rejection.body_text()))?;
+        serde_json::from_slice(&body).map(ApiJson).map_err(|e| {
+            let status = match e.classify() {
+                serde_json::error::Category::Data => StatusCode::UNPROCESSABLE_ENTITY,
+                _ => StatusCode::BAD_REQUEST,
+            };
+            ApiError::new(status, format!("invalid request body: {e}"))
+        })
     }
 }
 
@@ -222,11 +320,35 @@ mod tests {
     }
 
     #[test]
+    fn client_error_statuses_have_their_own_error_types() {
+        for (status, error_type) in [
+            (StatusCode::UNAUTHORIZED, "unauthorized"),
+            (StatusCode::FORBIDDEN, "forbidden"),
+            (StatusCode::CONFLICT, "conflict"),
+            (StatusCode::PAYLOAD_TOO_LARGE, "payload_too_large"),
+            (StatusCode::UNPROCESSABLE_ENTITY, "invalid"),
+        ] {
+            assert_eq!(ApiError::new(status, "x").error_type(), error_type);
+        }
+    }
+
+    #[test]
     fn from_flight_preserves_the_querier_message() {
         let status = tonic::Status::invalid_argument("unknown label foo");
         let err = ApiError::from_flight(&status, "logs");
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert_eq!(err.message, "unknown label foo");
+    }
+
+    /// A query over a server-side resource bound fails the same way on
+    /// retry, so it must not look like a retryable `429`.
+    #[test]
+    fn from_flight_maps_a_query_resource_bound_to_422_resource_limit() {
+        let status = tonic::Status::failed_precondition("source has more than 10 rows");
+        let err = ApiError::from_flight(&status, "query_ir");
+        assert_eq!(err.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(err.error_type(), "resource_limit");
+        assert_eq!(err.message, "source has more than 10 rows");
     }
 
     #[test]

@@ -7,8 +7,9 @@
 // same panel with no code change.
 import { useQuery } from "@tanstack/react-query";
 import { fetchEntityMetricSeries } from "../../api/entityMetricSeries";
-import { irSeriesToPromSeries } from "../../api/metricsIr";
+import { irSeriesToPromSeries } from "../../api/ir/metrics";
 import { pinsKey, type EntityPin } from "../../api/catalog";
+import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
 import {
   durationToSeconds,
@@ -49,6 +50,14 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   } = useEntityMetrics(entity, range, rangeKey);
   const names = metrics.map((m) => m.name).join(",");
 
+  // `api/entityMetricSeries.ts` compiles every pin as a plain equality
+  // match; it has no "not exists" case for a null pin the way
+  // `buildEntitySourceDoc` does (see `EntityPin` in api/catalog.ts). Dropping
+  // a null pin instead of compiling it would widen the series to every value
+  // of that dimension while the KPIs above stay scoped to the absent value,
+  // so the panel is hidden rather than shown scoped wrong.
+  const hasUnsetPin = pinned.some((p) => p.value === null);
+
   const series = useQuery({
     queryKey: [
       "entity-metric-series",
@@ -66,7 +75,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
         // the same metric bucket identically.
         durationToSeconds(stepForRange(range, TILE_POINTS)) ?? 60,
       ),
-    enabled: metrics.length > 0,
+    enabled: metrics.length > 0 && !hasUnsetPin,
   });
 
   // Failing to ask which metrics describe this entity is not the same answer
@@ -87,6 +96,14 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
   // panel to draw, rather than an empty one to explain.
   if (metrics.length === 0) return null;
 
+  if (hasUnsetPin) {
+    return (
+      <div className="view-note">
+        Metrics are not shown for an unset identity dimension.
+      </div>
+    );
+  }
+
   const observed = metrics.filter((m) => series.data?.has(m.name));
   const shown = observed.slice(0, METRIC_TILE_CAP);
 
@@ -99,9 +116,7 @@ export function EntityMetricsPanel({ entity, pinned, range, rangeKey }: Props) {
     body = series.isPending ? (
       <SkeletonLines lines={4} />
     ) : (
-      <div className="view-note">
-        No metric data for this {entity.singular} in this window.
-      </div>
+      <EmptyState title={`No metrics for this ${entity.singular} in this range`} />
     );
   } else {
     body = (
@@ -148,10 +163,15 @@ function MetricTile({
   return (
     <figure className="metric-tile">
       <figcaption>
-        <span className="metric-tile-name">{metric.name}</span>
+        <span className="metric-tile-name" title={metric.name}>
+          {metric.name}
+        </span>
         {/* The instrument is not decoration: a cumulative counter charted as
             a level would otherwise read as a rate. */}
-        <span className="metric-tile-meta">
+        <span
+          className="metric-tile-meta"
+          title={`${metric.instrument} · ${metric.unit}`}
+        >
           {metric.instrument} · {metric.unit}
         </span>
       </figcaption>

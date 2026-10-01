@@ -29,7 +29,7 @@ use tracing::Instrument;
 
 use crate::query::ir_planner::IrService;
 use crate::query::logs::LogsService;
-use crate::query::metrics::MetricsService;
+use crate::query::metric_metadata::MetricMetadataService;
 use crate::query::profile::{
     FindProfileByIdParams, ProfileDiffParams, ProfileDiscoveryParams, ProfileSearchParams,
     ProfileService,
@@ -37,15 +37,29 @@ use crate::query::profile::{
 use crate::query::trace::TraceService;
 use crate::query::{
     DetectedFieldsParams, FindTraceByIdParams, IrQueryParams, LogQueryParams, LogSeriesParams,
-    MetricQueryParams, MetricSeriesParams, PromQlQueryParams, SearchQueryParams,
-    TraceTagValuesParams, TraceTagsParams,
+    MetricQueryParams, MetricSeriesParams, SearchQueryParams, TraceTagValuesParams,
+    TraceTagsParams,
 };
+
+/// Translates `[querier.warm_index]` into the gate
+/// `crate::query::warm_index::WarmIndexTable::maybe_wrap` probes with.
+fn warm_index_gate(
+    cfg: &common::config::WarmIndexQuerierConfig,
+) -> crate::query::warm_index::WarmIndexGate {
+    crate::query::warm_index::WarmIndexGate {
+        min_files: cfg.min_files,
+        sample_files: cfg.sample_files,
+        max_keep_ratio: cfg.max_keep_ratio,
+        probe_concurrency: cfg.probe_concurrency,
+    }
+}
 
 /// Queries the Iceberg catalog directly, bypassing `datafusion_iceberg`'s
 /// stale `Mirror` cache so newly-created tables are immediately visible.
 struct LiveIcebergSchema {
     namespace: iceberg_rust::catalog::namespace::Namespace,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
+    warm_index: common::config::WarmIndexQuerierConfig,
 }
 
 impl std::fmt::Debug for LiveIcebergSchema {
@@ -78,6 +92,16 @@ impl SchemaProvider for LiveIcebergSchema {
 
         match self.catalog.clone().load_tabular(&ident).await {
             Ok(tabular) => {
+                // Captured (when enabled at all) before `tabular` is moved
+                // into `DataFusionTable::new` below, since that's the only
+                // place the warm-index property check can happen once the
+                // table itself is wrapped. Skipped entirely when disabled,
+                // so a deployment that doesn't use the warm index never
+                // pays for cloning every table's properties on every scan.
+                let properties = self.warm_index.enabled.then(|| match &tabular {
+                    Tabular::Table(t) => t.metadata().properties.clone(),
+                    _ => std::collections::HashMap::new(),
+                });
                 let table = match tabular {
                     Tabular::Table(t) => Arc::new(datafusion_iceberg::DataFusionTable::new(
                         Tabular::Table(t),
@@ -90,6 +114,14 @@ impl SchemaProvider for LiveIcebergSchema {
                         other, None, None, None,
                     ))
                         as Arc<dyn datafusion::datasource::TableProvider>,
+                };
+                let table = match properties {
+                    Some(properties) => crate::query::warm_index::WarmIndexTable::maybe_wrap(
+                        table,
+                        &properties,
+                        warm_index_gate(&self.warm_index),
+                    ),
+                    None => table,
                 };
                 Ok(Some(table))
             }
@@ -108,6 +140,7 @@ impl SchemaProvider for LiveIcebergSchema {
 struct TenantCatalog {
     tenant_slug: String,
     catalog: Arc<dyn iceberg_rust::catalog::Catalog>,
+    warm_index: common::config::WarmIndexQuerierConfig,
 }
 
 impl std::fmt::Debug for TenantCatalog {
@@ -133,6 +166,7 @@ impl CatalogProvider for TenantCatalog {
         Some(Arc::new(LiveIcebergSchema {
             namespace,
             catalog: self.catalog.clone(),
+            warm_index: self.warm_index.clone(),
         }))
     }
 
@@ -258,11 +292,6 @@ enum TicketRequest {
         dataset_slug: String,
         params: MetricQueryParams,
     },
-    QueryPromql {
-        tenant_slug: String,
-        dataset_slug: String,
-        params: PromQlQueryParams,
-    },
     QueryMetricLabels {
         tenant_slug: String,
         dataset_slug: String,
@@ -323,7 +352,6 @@ impl TicketRequest {
             | TicketRequest::QueryLogsSeries { tenant_slug, .. }
             | TicketRequest::QueryLogsDetectedFields { tenant_slug, .. }
             | TicketRequest::QueryMetric { tenant_slug, .. }
-            | TicketRequest::QueryPromql { tenant_slug, .. }
             | TicketRequest::QueryMetricLabels { tenant_slug, .. }
             | TicketRequest::QueryMetricLabelValues { tenant_slug, .. }
             | TicketRequest::QueryMetricSeries { tenant_slug, .. }
@@ -355,7 +383,6 @@ impl TicketRequest {
             TicketRequest::QueryLogsSeries { .. } => "query_logs_series",
             TicketRequest::QueryLogsDetectedFields { .. } => "query_logs_detected_fields",
             TicketRequest::QueryMetric { .. } => "query_metric",
-            TicketRequest::QueryPromql { .. } => "query_promql",
             TicketRequest::QueryMetricLabels { .. } => "query_metric_labels",
             TicketRequest::QueryMetricLabelValues { .. } => "query_metric_label_values",
             TicketRequest::QueryMetricSeries { .. } => "query_metric_series",
@@ -373,7 +400,7 @@ pub struct QuerierFlightService {
     trace_service: TraceService,
     profile_service: ProfileService,
     logs_service: LogsService,
-    metrics_service: MetricsService,
+    metric_metadata: MetricMetadataService,
     ir_service: IrService,
     #[allow(dead_code)]
     iceberg_catalog: Option<Arc<dyn iceberg_rust::catalog::Catalog>>,
@@ -401,11 +428,15 @@ pub struct QuerierFlightService {
 }
 
 /// Build the querier's SessionConfig with DataFusion scan/pushdown options
-/// from `[querier.datafusion]` applied. Only mutates `SessionConfig` options;
-/// it deliberately leaves `create_default_catalog_and_schema` untouched — the
-/// per-request session builder (`session_for_request`) relies on the default
-/// catalog behavior of the shared context and disables it itself when
-/// cloning state.
+/// from `[querier.datafusion]` applied, plus the shared
+/// [`common::datafusion_runtime::ScanShape`] (batch size, partition fan-out,
+/// sort-spill reservation) that keeps the querier's `ExternalSorter`
+/// reservations inside its memory pool — the same shape the compactor
+/// applies, so the two cannot drift apart on it (#1359). Only mutates
+/// `SessionConfig` options; it deliberately leaves
+/// `create_default_catalog_and_schema` untouched — the per-request session
+/// builder (`session_for_request`) relies on the default catalog behavior of
+/// the shared context and disables it itself when cloning state.
 ///
 /// Public so ordering tests can plan against the querier's real session
 /// options rather than DataFusion's defaults: whether a scan's declared
@@ -419,7 +450,12 @@ pub fn session_config_from(limits: &QuerierConfig) -> SessionConfig {
         limits.datafusion.split_file_groups_by_statistics;
     options.execution.parquet.pushdown_filters = limits.datafusion.pushdown_filters;
     options.execution.parquet.reorder_filters = limits.datafusion.reorder_filters;
-    config
+    let shape = common::datafusion_runtime::ScanShape::from_mb(
+        limits.datafusion.batch_size,
+        limits.datafusion.target_partitions,
+        limits.datafusion.sort_spill_reservation_mb,
+    );
+    shape.apply(config)
 }
 
 /// Build a SessionContext whose RuntimeEnv enforces the configured memory
@@ -441,20 +477,22 @@ pub fn session_context_with_limits(limits: &QuerierConfig) -> SessionContext {
             .with_metadata_cache_limit((limits.parquet_metadata_cache_mb as usize) * 1024 * 1024),
     );
     match limits.memory_limit_mb {
-        Some(mb) => {
+        Some(mb) if mb > 0 => {
             builder = builder.with_memory_pool(common::datafusion_runtime::bounded_memory_pool(
                 (mb as usize) * 1024 * 1024,
                 limits.memory_pool_fraction,
             ));
             tracing::info!(
-                memory_limit_mb = mb,
-                memory_pool_fraction = limits.memory_pool_fraction,
+                signaldb.querier.memory_limit_mb = mb as i64,
+                signaldb.querier.memory_pool_fraction = limits.memory_pool_fraction,
                 "Querier memory pool configured"
             );
         }
-        None => {
+        // `Some(0)` is an explicit unbounded opt-out, same as `None` — see
+        // the `memory_limit_mb` doc comment for the three cases.
+        Some(_) | None => {
             tracing::warn!(
-                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is not set); \
+                "Querier memory is UNBOUNDED ([querier].memory_limit_mb is unset or 0); \
                  a single heavy query can exhaust process memory"
             );
         }
@@ -509,9 +547,9 @@ fn register_dataset_object_store(
         }
         Err(e) => {
             tracing::warn!(
-                dsn = %url_str,
-                tenant_id = %tenant_id,
-                dataset_id = %dataset_id,
+                url.full = %url_str,
+                signaldb.tenant.id = %tenant_id,
+                signaldb.dataset.id = %dataset_id,
                 error = %e,
                 "Skipping invalid storage DSN"
             );
@@ -556,8 +594,13 @@ impl QuerierFlightService {
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
-        let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
-        let ir_service = IrService::new(session_ctx.as_ref().clone());
+        let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
+        let ir_service = IrService::new(session_ctx.as_ref().clone())
+            .with_correlate_max_rows(limits.correlate_max_rows)
+            .with_correlate_max_source_rows(limits.correlate_max_source_rows)
+            .with_match_limits(limits.match_max_trace_spans, limits.match_max_trace_bytes)
+            .with_page_limits(limits.page_max_tie_rows, limits.page_max_bytes)
+            .with_graph_max_nodes(limits.graph_max_nodes);
 
         Self {
             _flight_transport: flight_transport,
@@ -565,7 +608,7 @@ impl QuerierFlightService {
             trace_service,
             profile_service,
             logs_service,
-            metrics_service,
+            metric_metadata,
             ir_service,
             iceberg_catalog: None,
             limits,
@@ -622,13 +665,14 @@ impl QuerierFlightService {
             let tenant_catalog = TenantCatalog {
                 tenant_slug: tenant.slug.clone(),
                 catalog: iceberg_catalog.clone(),
+                warm_index: limits.warm_index.clone(),
             };
 
             session_ctx.register_catalog(&tenant.slug, Arc::new(tenant_catalog));
             registered_tenants.insert(tenant.slug.clone());
             tracing::info!(
-                catalog = %tenant.slug,
-                tenant_id = %tenant.id,
+                signaldb.catalog.name = %tenant.slug,
+                signaldb.tenant.id = %tenant.id,
                 "Registered DataFusion catalog"
             );
         }
@@ -639,8 +683,24 @@ impl QuerierFlightService {
         let profile_service = ProfileService::new(session_ctx.as_ref().clone())
             .with_max_search_limit(limits.max_search_limit);
         let logs_service = LogsService::new(session_ctx.as_ref().clone());
-        let metrics_service = MetricsService::new(session_ctx.as_ref().clone());
-        let ir_service = IrService::new(session_ctx.as_ref().clone());
+        let metric_metadata = MetricMetadataService::new(session_ctx.as_ref().clone());
+        let mut ir_service = IrService::new(session_ctx.as_ref().clone())
+            .with_correlate_max_rows(limits.correlate_max_rows)
+            .with_correlate_max_source_rows(limits.correlate_max_source_rows)
+            .with_match_limits(limits.match_max_trace_spans, limits.match_max_trace_bytes)
+            .with_page_limits(limits.page_max_tie_rows, limits.page_max_bytes)
+            .with_graph_max_nodes(limits.graph_max_nodes);
+        // Only meaningful with a database tenant source attached — without
+        // one, a typed-layout table's query fails loudly instead of
+        // silently misreading its columns (see `resolve_attribute_reads`).
+        if let Some(tenant_source) = catalog_manager.tenant_source() {
+            ir_service = ir_service.with_canonical_types(Arc::new(
+                crate::query::typed_attrs::CatalogCanonicalTypes {
+                    catalog_manager: catalog_manager.clone(),
+                    catalog: tenant_source.clone(),
+                },
+            ));
+        }
 
         Ok(Self {
             _flight_transport: flight_transport,
@@ -648,7 +708,7 @@ impl QuerierFlightService {
             trace_service,
             profile_service,
             logs_service,
-            metrics_service,
+            metric_metadata,
             ir_service,
             iceberg_catalog: Some(iceberg_catalog),
             limits,
@@ -720,13 +780,14 @@ impl QuerierFlightService {
         let tenant_catalog = TenantCatalog {
             tenant_slug: tenant.slug.clone(),
             catalog: iceberg_catalog,
+            warm_index: self.limits.warm_index.clone(),
         };
         self.session_ctx
             .register_catalog(&tenant.slug, Arc::new(tenant_catalog));
         self.registered_tenants.insert(tenant.slug.clone());
         tracing::info!(
-            catalog = %tenant.slug,
-            tenant_id = %tenant.id,
+            signaldb.catalog.name = %tenant.slug,
+            signaldb.tenant.id = %tenant.id,
             "Registered DataFusion catalog on demand"
         );
         Ok(())
@@ -752,8 +813,8 @@ impl QuerierFlightService {
             Ok(permit) => Ok(Some(permit)),
             Err(_) => {
                 tracing::warn!(
-                    tenant_id = %tenant,
-                    limit = cap,
+                    signaldb.tenant.id = %tenant,
+                    signaldb.querier.max_concurrent_queries = cap as i64,
                     "Rejecting query: tenant is at its concurrent-query limit"
                 );
                 Err(Status::resource_exhausted(format!(
@@ -1114,24 +1175,6 @@ impl QuerierFlightService {
             ));
         }
 
-        // PromQL query: query_promql:{tenant}:{dataset}:{json PromQlQueryParams}
-        if let Some(remainder) = ticket_content.strip_prefix("query_promql:") {
-            let parts: Vec<&str> = remainder.splitn(3, ':').collect();
-            if parts.len() == 3 {
-                let params: PromQlQueryParams = serde_json::from_str(parts[2]).map_err(|e| {
-                    Status::invalid_argument(format!("Invalid query_promql parameters: {e}"))
-                })?;
-                return Ok(TicketRequest::QueryPromql {
-                    tenant_slug: parts[0].to_string(),
-                    dataset_slug: parts[1].to_string(),
-                    params,
-                });
-            }
-            return Err(Status::invalid_argument(
-                "Invalid query_promql ticket format. Expected: query_promql:tenant:dataset:{json}",
-            ));
-        }
-
         // Metric label names: query_metric_labels:{tenant}:{dataset}:{start}:{end}
         if let Some(remainder) = ticket_content.strip_prefix("query_metric_labels:") {
             let parts: Vec<&str> = remainder.splitn(4, ':').collect();
@@ -1449,13 +1492,21 @@ impl QuerierFlightService {
     /// `caller_tenant` and `metadata` are needed by the raw-SQL arm alone:
     /// tenant-scoped callers are pinned to their authenticated tenant, and
     /// only internal or unauthenticated callers may scope via headers.
+    ///
+    /// Returns the result batches alongside a [`common::flight::CorrelateReport`]
+    /// of what a `correlate` stage's join did — only the `QueryIr` arm ever
+    /// sets it; every other ticket type leaves it at its default (empty).
+    /// `do_get` carries it into a Flight `app_metadata` trailer (see
+    /// [`Self::do_get`]) since it's only known once the query has actually
+    /// streamed to completion, too late for the schema message.
     async fn execute_ticket(
         &self,
         ticket_request: TicketRequest,
         caller_tenant: Option<&common::auth::TenantContext>,
         metadata: &tonic::metadata::MetadataMap,
-    ) -> Result<Vec<RecordBatch>, Status> {
-        Ok(match ticket_request {
+    ) -> Result<(Vec<RecordBatch>, common::flight::CorrelateReport), Status> {
+        let mut correlate_report = common::flight::CorrelateReport::default();
+        let batches = match ticket_request {
             TicketRequest::FindTrace {
                 tenant_slug,
                 dataset_slug,
@@ -1694,11 +1745,12 @@ impl QuerierFlightService {
                     dataset_slug = %dataset_slug,
                     "Executing query_ir"
                 );
-                let (batches, _window) = self
+                let (batches, _window, report) = self
                     .ir_service
                     .query(&params, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_QUERY_IR))?;
+                correlate_report = report;
                 batches
             }
             TicketRequest::QueryLogsLabels {
@@ -1774,29 +1826,6 @@ impl QuerierFlightService {
                     .await
                     .map_err(querier_error_to_status(SIGNAL_LOGS))?
             }
-            TicketRequest::QueryPromql {
-                tenant_slug,
-                dataset_slug,
-                params,
-            } => {
-                tracing::info!(
-                    tenant_slug = %tenant_slug,
-                    dataset_slug = %dataset_slug,
-                    query = %params.query,
-                    "Executing query_promql"
-                );
-                self.metrics_service
-                    .query_range(
-                        &params.query,
-                        params.start,
-                        params.end,
-                        params.step,
-                        &tenant_slug,
-                        &dataset_slug,
-                    )
-                    .await
-                    .map_err(querier_error_to_status(SIGNAL_METRICS))?
-            }
             TicketRequest::QueryMetricLabels {
                 tenant_slug,
                 dataset_slug,
@@ -1804,7 +1833,7 @@ impl QuerierFlightService {
                 end,
             } => {
                 let labels = self
-                    .metrics_service
+                    .metric_metadata
                     .get_labels(start, end, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_METRICS))?;
@@ -1818,7 +1847,7 @@ impl QuerierFlightService {
                 end,
             } => {
                 let values = self
-                    .metrics_service
+                    .metric_metadata
                     .get_label_values(&label, start, end, &tenant_slug, &dataset_slug)
                     .await
                     .map_err(querier_error_to_status(SIGNAL_METRICS))?;
@@ -1830,7 +1859,7 @@ impl QuerierFlightService {
                 params,
             } => {
                 let series = self
-                    .metrics_service
+                    .metric_metadata
                     .get_series(
                         &params.selector,
                         params.start,
@@ -1924,7 +1953,8 @@ impl QuerierFlightService {
                     .await
                     .map_err(|e| Status::internal(format!("Query execution failed: {e}")))?
             }
-        })
+        };
+        Ok((batches, correlate_report))
     }
 }
 
@@ -2161,16 +2191,18 @@ impl FlightService for QuerierFlightService {
                             self.execute_ticket(ticket_request, caller_tenant.as_ref(), &metadata);
                         // Bound every query's wall-clock time so a heavy scan cannot
                         // occupy the querier indefinitely.
-                        let batches_result: Result<Vec<_>, Status> =
-                            match tokio::time::timeout(self.limits.query_timeout, query_future)
-                                .await
-                            {
-                                Ok(result) => result,
-                                Err(_) => Err(Status::deadline_exceeded(format!(
-                                    "query exceeded the configured timeout of {:?}",
-                                    self.limits.query_timeout
-                                ))),
-                            };
+                        let batches_result: Result<
+                            (Vec<_>, common::flight::CorrelateReport),
+                            Status,
+                        > = match tokio::time::timeout(self.limits.query_timeout, query_future)
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(_) => Err(Status::deadline_exceeded(format!(
+                                "query exceeded the configured timeout of {:?}",
+                                self.limits.query_timeout
+                            ))),
+                        };
 
                         let app_metrics = common::self_monitoring::app_metrics();
                         let query_attrs = [opentelemetry::KeyValue::new("query_type", query_type)];
@@ -2181,8 +2213,8 @@ impl FlightService for QuerierFlightService {
                             query_start.elapsed().as_secs_f64(),
                             &[opentelemetry::KeyValue::new("rpc.method", "do_get")],
                         );
-                        let batches = match batches_result {
-                            Ok(batches) => batches,
+                        let (batches, correlate_report) = match batches_result {
+                            Ok(result) => result,
                             Err(status) => {
                                 app_metrics.query_errors.add(1, &query_attrs);
                                 return Err(status);
@@ -2193,17 +2225,23 @@ impl FlightService for QuerierFlightService {
                             .query_rows_returned
                             .record(rows_returned, &query_attrs);
 
+                        let trailer = common::flight::correlate_report_trailer(&correlate_report);
                         if batches.is_empty() {
-                            let out = stream::empty().boxed();
+                            let out = stream::iter(trailer.into_iter().map(Ok)).boxed();
                             return Ok(Response::new(out));
                         }
 
                         // Convert results to Flight data
                         let schema = batches[0].schema();
-                        let flight_data = batches_to_compressed_flight_data(&schema, batches)
+                        let mut flight_data = batches_to_compressed_flight_data(&schema, batches)
                             .map_err(|e| {
-                                Status::internal(format!("Failed to convert results: {e}"))
-                            })?;
+                            Status::internal(format!("Failed to convert results: {e}"))
+                        })?;
+                        // Trailing, data-free message: the correlate report is
+                        // only known once the query above has fully streamed, too
+                        // late for the schema message already sent above (see
+                        // `common::flight::correlate_report_trailer`).
+                        flight_data.extend(trailer);
 
                         let out = stream::iter(flight_data.into_iter().map(Ok)).boxed();
                         Ok(Response::new(out))
@@ -2331,6 +2369,9 @@ pub(crate) fn common_error_status(
     match err {
         crate::query::error::QuerierError::InvalidInput(msg) => Ok(Status::invalid_argument(msg)),
         crate::query::error::QuerierError::Unsupported(msg) => Ok(Status::unimplemented(msg)),
+        crate::query::error::QuerierError::ResourceExhausted(msg) => {
+            Ok(Status::failed_precondition(msg))
+        }
         other => Err(other),
     }
 }
@@ -2342,12 +2383,8 @@ fn querier_error_to_status(
     signal: &'static str,
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
     move |e| {
-        common_error_status(e).unwrap_or_else(|e| match e {
-            too_many @ crate::query::error::QuerierError::TooManyGroups { .. } => {
-                Status::invalid_argument(too_many.to_string())
-            }
-            other => Status::internal(format!("{signal} query failed: {other:?}")),
-        })
+        common_error_status(e)
+            .unwrap_or_else(|other| Status::internal(format!("{signal} query failed: {other}")))
     }
 }
 
@@ -2359,7 +2396,7 @@ fn trace_error_to_status(
 ) -> impl Fn(crate::query::error::QuerierError) -> Status {
     move |e| {
         common_error_status(e)
-            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other:?}")))
+            .unwrap_or_else(|other| Status::internal(format!("{context} failed: {other}")))
     }
 }
 
@@ -2630,6 +2667,245 @@ mod tests {
         assert_eq!(rows, 10, "raw SQL results must be capped at max_sql_rows");
     }
 
+    /// Register `acme.prod.traces` with two parent/child span pairs
+    /// (trace `t0`: root `r0` -> child `c0`; trace `t1`: root `r1` -> child
+    /// `c1`), for the `correlate_max_rows` config-threading test below.
+    /// Shared by every `traces` catalog test fixture below: the columns
+    /// `correlate`'s span self-join reads and produces.
+    fn traces_schema() -> datafusion::arrow::datatypes::SchemaRef {
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, false),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, false),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("start_time_unix_nano", DataType::Int64, false),
+            Field::new("duration_nanos", DataType::Int64, false),
+            Field::new("status_code", DataType::Utf8, true),
+        ]))
+    }
+
+    fn register_traces_catalog(service: &QuerierFlightService, tenant: &str, dataset: &str) {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::catalog::MemoryCatalogProvider;
+        use datafusion::catalog::MemorySchemaProvider;
+        use datafusion::datasource::MemTable;
+
+        let schema = traces_schema();
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0", "t0", "t1", "t1"])),
+                Arc::new(StringArray::from(vec!["r0", "c0", "r1", "c1"])),
+                Arc::new(StringArray::from(vec![None, Some("r0"), None, Some("r1")])),
+                Arc::new(StringArray::from(vec!["a", "b", "c", "d"])),
+                Arc::new(StringArray::from(vec!["web", "api", "web", "api"])),
+                Arc::new(Int64Array::from(vec![10_i64, 20, 10, 20])),
+                Arc::new(Int64Array::from(vec![100_i64, 50, 100, 50])),
+                Arc::new(StringArray::from(vec![
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                    Some("OK"),
+                ])),
+            ],
+        )
+        .unwrap();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = MemorySchemaProvider::new();
+        schema_provider
+            .register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = MemoryCatalogProvider::new();
+        catalog
+            .register_schema(dataset, Arc::new(schema_provider))
+            .unwrap();
+        service
+            .session_ctx
+            .register_catalog(tenant, Arc::new(catalog));
+    }
+
+    fn correlate_ir_params() -> IrQueryParams {
+        IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "rows",
+                "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+            }),
+            now_ns: 0,
+            page: None,
+        }
+    }
+
+    /// Task 3 — `QuerierFlightService::new_with_limits` must actually wire
+    /// `config.querier.correlate_max_rows` into the `IrService` it builds,
+    /// not just accept the config and drop it (`with_correlate_max_rows`
+    /// exists precisely so every production construction site can do this).
+    #[tokio::test]
+    async fn correlate_max_rows_config_takes_effect_in_the_ir_service() {
+        let capped = make_service_with_limits(QuerierConfig {
+            correlate_max_rows: 1,
+            ..QuerierConfig::default()
+        })
+        .await;
+        register_traces_catalog(&capped, "acme", "prod");
+        let (batches, _, _) = capped
+            .ir_service
+            .query(&correlate_ir_params(), "acme", "prod")
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 1,
+            "correlate_max_rows: 1 from config must bound the join, not the compiled-in default"
+        );
+
+        let uncapped = make_service_with_limits(QuerierConfig::default()).await;
+        register_traces_catalog(&uncapped, "acme", "prod");
+        let (batches, _, _) = uncapped
+            .ir_service
+            .query(&correlate_ir_params(), "acme", "prod")
+            .await
+            .unwrap();
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(
+            rows, 2,
+            "the default cap is far above 2 rows, so both pairs join"
+        );
+    }
+
+    /// Register `acme.prod.traces` with one root span (`r0`, trace `t0`)
+    /// and `n_children` children all parented to it, split across many
+    /// small `RecordBatch`es — a 1:N self-join fan-out that lets a `correlate`
+    /// join's *probe* side (the children) vastly outgrow one batch while its
+    /// *build* side (the single root) stays tiny, isolating what
+    /// `correlate_row_cap_streams_without_buffering_the_whole_join` proves:
+    /// `CorrelateCapExec` itself never buffers beyond the batch it is
+    /// currently forwarding, regardless of how large the join's total
+    /// output is.
+    fn register_fanout_traces_catalog(
+        service: &QuerierFlightService,
+        tenant: &str,
+        dataset: &str,
+        n_children: usize,
+    ) {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::catalog::MemoryCatalogProvider;
+        use datafusion::catalog::MemorySchemaProvider;
+        use datafusion::datasource::MemTable;
+
+        let schema = traces_schema();
+        const ROWS_PER_BATCH: usize = 2_000;
+        let root_batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![
+                Arc::new(StringArray::from(vec!["t0"])),
+                Arc::new(StringArray::from(vec!["r0"])),
+                Arc::new(StringArray::from(vec![None::<&str>])),
+                Arc::new(StringArray::from(vec!["root"])),
+                Arc::new(StringArray::from(vec!["web"])),
+                Arc::new(Int64Array::from(vec![0_i64])),
+                Arc::new(Int64Array::from(vec![100_i64])),
+                Arc::new(StringArray::from(vec![Some("OK")])),
+            ],
+        )
+        .unwrap();
+        let mut batches = vec![root_batch];
+        let mut remaining = n_children;
+        let mut next_id = 0usize;
+        while remaining > 0 {
+            let n = remaining.min(ROWS_PER_BATCH);
+            let ids: Vec<String> = (0..n).map(|i| format!("c{}", next_id + i)).collect();
+            let batch = RecordBatch::try_new(
+                schema.clone(),
+                vec![
+                    Arc::new(StringArray::from(vec!["t0"; n])),
+                    Arc::new(StringArray::from(ids)),
+                    Arc::new(StringArray::from(vec![Some("r0"); n])),
+                    Arc::new(StringArray::from(vec!["child"; n])),
+                    Arc::new(StringArray::from(vec!["api"; n])),
+                    Arc::new(Int64Array::from(vec![10_i64; n])),
+                    Arc::new(Int64Array::from(vec![5_i64; n])),
+                    Arc::new(StringArray::from(vec![Some("OK"); n])),
+                ],
+            )
+            .unwrap();
+            batches.push(batch);
+            next_id += n;
+            remaining -= n;
+        }
+        let table = MemTable::try_new(schema, vec![batches]).unwrap();
+        let schema_provider = MemorySchemaProvider::new();
+        schema_provider
+            .register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = MemoryCatalogProvider::new();
+        catalog
+            .register_schema(dataset, Arc::new(schema_provider))
+            .unwrap();
+        service
+            .session_ctx
+            .register_catalog(tenant, Arc::new(catalog));
+    }
+
+    /// Round 4 of `query-ir-span-join`: `lower_correlate` must enforce
+    /// `correlate_max_rows` *streaming*, not by eagerly `.collect()`-ing
+    /// the join before a following stage runs. Proof: a join whose output
+    /// (100,000 rows, `ROWS_PER_BATCH = 2,000` each) is far larger than the
+    /// [`common::datafusion_runtime::bounded_memory_pool`] budget below,
+    /// followed by an `aggregate` — `aggregate`'s own state is O(groups),
+    /// not O(rows), so if the row cap in between is enforced by an
+    /// `ExecutionPlan` that only ever holds the one batch currently in
+    /// flight (see `query::correlate_cap`), the whole pipeline's peak
+    /// memory stays near one batch's size; the eager
+    /// `.limit(cap + 1).collect()` this replaced would instead have tried
+    /// to materialize the entire 100,000-row join first and blown the
+    /// budget.
+    #[tokio::test]
+    async fn correlate_row_cap_streams_without_buffering_the_whole_join() {
+        const N_CHILDREN: usize = 100_000;
+        const MEMORY_LIMIT_MB: u64 = 16;
+
+        let service = make_service_with_limits(QuerierConfig {
+            memory_limit_mb: Some(MEMORY_LIMIT_MB),
+            ..QuerierConfig::default()
+        })
+        .await;
+        register_fanout_traces_catalog(&service, "acme", "prod", N_CHILDREN);
+
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 8, "from": "traces", "range": { "from": 0, "to": 1000 },
+                "result": "table",
+                "pipeline": [
+                    { "correlate": { "to": "parent", "kind": "inner" } },
+                    { "aggregate": { "by": ["parent.service.name"],
+                                      "aggs": [{ "fn": "count", "as": "n" }] } }
+                ]
+            }),
+            now_ns: 0,
+            page: None,
+        };
+        let (batches, _, report) = service
+            .ir_service
+            .query(&params, "acme", "prod")
+            .await
+            .unwrap_or_else(|e| {
+                panic!(
+                    "correlate + aggregate over {N_CHILDREN} joined rows must fit \
+                     the {MEMORY_LIMIT_MB} MiB budget by streaming through the cap, \
+                     not buffering the whole join first: {e}"
+                )
+            });
+        assert!(
+            !report.row_limit,
+            "correlate_max_rows default is far above 100,000"
+        );
+        let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
+        assert_eq!(rows, 1, "one group: every child shares parent 'r0'");
+    }
+
     #[tokio::test]
     async fn concurrent_query_cap_is_enforced_per_tenant() {
         let service = make_service_with_limits(QuerierConfig {
@@ -2710,6 +2986,7 @@ mod tests {
                 split_file_groups_by_statistics: false,
                 pushdown_filters: false,
                 reorder_filters: false,
+                ..common::config::QuerierDataFusionConfig::default()
             },
             ..QuerierConfig::default()
         };
@@ -2718,6 +2995,31 @@ mod tests {
         assert!(!options.execution.split_file_groups_by_statistics);
         assert!(!options.execution.parquet.pushdown_filters);
         assert!(!options.execution.parquet.reorder_filters);
+    }
+
+    /// `session_config_from` must wire `[querier.datafusion]`'s scan-shape
+    /// knobs onto the resulting `SessionConfig` — the semantics of each knob
+    /// (defaulting behavior of `0`, the memory reasoning) are the shared
+    /// `ScanShape`'s own responsibility and are covered by its unit tests in
+    /// `common::datafusion_runtime`.
+    #[test]
+    fn session_wires_scan_shape_from_config() {
+        let limits = QuerierConfig {
+            datafusion: common::config::QuerierDataFusionConfig {
+                batch_size: 256,
+                target_partitions: 3,
+                sort_spill_reservation_mb: 32,
+                ..common::config::QuerierDataFusionConfig::default()
+            },
+            ..QuerierConfig::default()
+        };
+        let ctx = session_config_from(&limits);
+        assert_eq!(ctx.batch_size(), 256);
+        assert_eq!(ctx.target_partitions(), 3);
+        assert_eq!(
+            ctx.options().execution.sort_spill_reservation_bytes,
+            32 * 1024 * 1024
+        );
     }
 
     #[test]
@@ -2739,6 +3041,18 @@ mod tests {
         let ctx = session_context_with_limits(&QuerierConfig::default());
         let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
         assert!(reservation.try_grow(10 * 1024 * 1024).is_ok());
+
+        // `Some(0)` is an explicit unbounded opt-out, same as `None`.
+        let ctx = session_context_with_limits(&QuerierConfig {
+            memory_limit_mb: Some(0),
+            memory_pool_fraction: 1.0,
+            ..QuerierConfig::default()
+        });
+        let reservation = MemoryConsumer::new("test").register(&ctx.runtime_env().memory_pool);
+        assert!(
+            reservation.try_grow(10 * 1024 * 1024).is_ok(),
+            "memory_limit_mb = Some(0) must mean unbounded, not a zero-size pool"
+        );
     }
 
     /// A shared querier must not let one heavy sort take the whole pool
@@ -2950,31 +3264,6 @@ mod tests {
             }
             other => panic!("expected QueryLogsDetectedFields, got {other:?}"),
         }
-    }
-
-    #[tokio::test]
-    async fn parse_query_promql_ticket() {
-        let service = make_service().await;
-        let ticket =
-            r#"query_promql:acme:prod:{"query":"sum(rate(up[5m]))","start":10,"end":20,"step":15}"#;
-        match service.parse_ticket(ticket).unwrap() {
-            TicketRequest::QueryPromql {
-                tenant_slug,
-                dataset_slug,
-                params,
-            } => {
-                assert_eq!(tenant_slug, "acme");
-                assert_eq!(dataset_slug, "prod");
-                assert_eq!(params.query, "sum(rate(up[5m]))");
-                assert_eq!((params.start, params.end, params.step), (10, 20, 15));
-            }
-            other => panic!("expected QueryPromql, got {other:?}"),
-        }
-        assert!(
-            service
-                .parse_ticket("query_promql:acme:prod:not-json")
-                .is_err()
-        );
     }
 
     #[tokio::test]
@@ -3476,5 +3765,10 @@ mod tests {
         let status =
             querier_error_to_status(SIGNAL_LOGS)(QuerierError::Unsupported("nope".to_string()));
         assert_eq!(status.code(), tonic::Code::Unimplemented);
+
+        let status = querier_error_to_status(SIGNAL_QUERY_IR)(QuerierError::ResourceExhausted(
+            "too big".to_string(),
+        ));
+        assert_eq!(status.code(), tonic::Code::FailedPrecondition);
     }
 }

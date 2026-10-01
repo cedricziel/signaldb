@@ -7,17 +7,20 @@
  * entry at all, which is what lets the cell stay empty instead of drawing a
  * flat line through zero next to columns that are real measurements.
  */
-import type { QueryIrRequest } from "./gen";
+import type { IrStage, QueryIrRequest } from "./gen";
 import type { MetricHit } from "../features/schema/api";
 import type { EntityTypeDef } from "../features/catalog/entityTypes";
+import { toLokiLabel } from "../lib/labelSuggestions";
 import { compositeKey } from "../lib/traceGroups";
 import {
   aggFor,
   HISTOGRAM_QUANTILE,
   isHistogram,
-  METRIC_SOURCES,
+  HISTOGRAM_ROWS,
+  METRICS_SOURCE,
   type IrSeries,
 } from "./entityMetrics";
+import { spanKindWhere } from "./catalog";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -35,9 +38,7 @@ export function headlineMetric(metrics: MetricHit[]): MetricHit | undefined {
 }
 
 /** The `metric_name`-style label the querier returns for a logical field. */
-function labelFor(field: string): string {
-  return field.replace(/\./g, "_");
-}
+const labelFor = toLokiLabel;
 
 /** One query for the whole column, grouped by the identity of each row. */
 export function buildSparklineDoc(
@@ -51,16 +52,17 @@ export function buildSparklineDoc(
     result: "series" as const,
     pipeline: [
       { where: { field: "metric.name", op: "eq", value: metric.name } },
-    ],
+    ] satisfies IrStage[],
   };
 
   if (isHistogram(metric.instrument)) {
     return {
       irVersion: 3,
-      from: METRIC_SOURCES.histogram,
+      from: METRICS_SOURCE,
       ...head,
       pipeline: [
         ...head.pipeline,
+        HISTOGRAM_ROWS,
         {
           histogram_quantile: {
             q: HISTOGRAM_QUANTILE,
@@ -75,7 +77,7 @@ export function buildSparklineDoc(
 
   return {
     irVersion: 1,
-    from: METRIC_SOURCES.scalar,
+    from: METRICS_SOURCE,
     ...head,
     pipeline: [
       ...head.pipeline,
@@ -119,7 +121,6 @@ export function buildActivityDoc(
   // Traces where the entity has them — that is what the Rate column counts —
   // otherwise whichever signal discovered it.
   const source = sources.includes("traces") ? "traces" : sources[0]!;
-  const scoped = source === "traces" && entity.spanKindScope !== undefined;
 
   return {
     irVersion: 1,
@@ -127,17 +128,7 @@ export function buildActivityDoc(
     range: { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) },
     result: "series",
     pipeline: [
-      ...(scoped
-        ? [
-            {
-              where: {
-                field: "span_kind",
-                op: "eq",
-                value: entity.spanKindScope!,
-              },
-            },
-          ]
-        : []),
+      ...spanKindWhere(source === "traces" ? entity.spanKindScope : undefined),
       {
         aggregate: {
           by: entity.identity,
@@ -176,7 +167,10 @@ export async function fetchEntityActivity(
 }
 
 /** Series keyed the way the table keys its rows, so a cell is one lookup. */
-function indexByRow(series: IrSeries, identity: string[]): Map<string, IrSeries> {
+function indexByRow(
+  series: IrSeries,
+  identity: string[],
+): Map<string, IrSeries> {
   const byRow = new Map<string, IrSeries>();
   for (const s of series) {
     const key = compositeKey(

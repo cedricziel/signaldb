@@ -142,13 +142,13 @@ async fn setup_profiles_test() -> (axum::Router, Arc<WalManager>, TempDir) {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {
@@ -169,6 +169,7 @@ async fn setup_profiles_test() -> (axum::Router, Arc<WalManager>, TempDir) {
             schema_config: None,
             limits: None,
         }],
+        dataset_restriction_rollout_complete: false,
     };
 
     let service_bootstrap = ServiceBootstrap::new(

@@ -25,14 +25,15 @@ export function MobileFiltersToggle({
 }: {
   open: boolean;
   onToggle: () => void;
-  /** Button text; "Filters" for the facet/field drawers, "Details" for the
+  /** Button text; "Filters" for the facet drawers, "Fields" for the logs
+   * field list (the query bar already has a "+ filter" chip), "Details" for the
    * trace waterfall's span-detail drawer. */
   label?: string;
 }) {
   return (
     <button
       type="button"
-      className="mobile-filters-toggle"
+      className="mobile-filters-toggle btn"
       aria-expanded={open}
       onClick={onToggle}
     >
@@ -45,7 +46,7 @@ export function MobileFiltersToggle({
  * Wraps a facet/field `<aside className="sidebar">` (FieldSidebar,
  * TraceFacets, ErrorFacets) or the trace waterfall's `<aside
  * className="span-detail">` so the same markup can also serve as a
- * dismissible mobile drawer below the tablet breakpoint — see
+ * dismissible drawer once the main column is 720px or narrower — see
  * `useMobileSidebar` for the open state and explore.css's
  * `.mobile-sidebar-*` rules for the styling. Dismissible via the close
  * button, a backdrop click, or Escape (the latter from the hook itself).
@@ -77,7 +78,7 @@ export function MobileSidebarDrawer({
         {open && (
           <button
             type="button"
-            className="mobile-sidebar-close"
+            className="mobile-sidebar-close btn"
             onClick={onClose}
           >
             Close ×

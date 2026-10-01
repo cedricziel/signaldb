@@ -10,14 +10,12 @@ use common::catalog_manager::CatalogManager;
 use compactor::executor::{CompactionExecutor, ExecutorConfig};
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use datafusion::arrow::array::RecordBatch;
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::compaction_helpers::{
     aligned_hour_start, attested_sort_order_ids, context_for, load_table, trace_sort_keys,
 };
 use tests_integration::generators;
 use tests_integration::ordering::append_unattested;
-use writer::IcebergTableWriter;
 
 const TENANT: &str = "converge-tenant";
 const DATASET: &str = "converge-dataset";
@@ -53,9 +51,8 @@ async fn compaction_makes_a_partition_of_legacy_files_fully_attested() -> Result
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        Arc::new(InMemory::new()),
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),

@@ -3,6 +3,8 @@
  * off any chart tooltip or axis looks the same everywhere.
  */
 
+import { formatDate } from "./time";
+
 const NUM = new Intl.NumberFormat();
 const FRACTION = new Intl.NumberFormat(undefined, {
   maximumSignificantDigits: 3,
@@ -11,30 +13,89 @@ const FRACTION_LARGE = new Intl.NumberFormat(undefined, {
   maximumFractionDigits: 2,
 });
 
+const BYTE_UNIT_ALIASES = new Set(["by", "byte", "bytes"]);
+const KIB = 1024;
+const MIB = KIB * 1024;
+const GIB = MIB * 1024;
+
+/** One decimal below ten of a unit (`1.5`), none above it (`512`). */
+function roundToOneDecimalBelowTen(v: number): number {
+  return Math.abs(v) < 10 ? Math.round(v * 10) / 10 : Math.round(v);
+}
+
+/**
+ * Binary-scaled size (`512 MB`), for a byte-valued axis — a byte count run
+ * through the decimal K/M/B scaling below reads as a plain count (`537M`,
+ * indistinguishable from half a billion of something) rather than a size.
+ * Matches the scaling `lib/flamebearer.ts`'s `formatTicks` already uses for
+ * memory profiles, minus its `i` (`MiB`): shorter, and this is axis-label
+ * space, not a value people will hand off elsewhere.
+ */
+function compactBytes(n: number): string {
+  const abs = Math.abs(n);
+  if (abs >= GIB) return `${roundToOneDecimalBelowTen(n / GIB)} GB`;
+  if (abs >= MIB) return `${roundToOneDecimalBelowTen(n / MIB)} MB`;
+  if (abs >= KIB) return `${roundToOneDecimalBelowTen(n / KIB)} KB`;
+  return `${Math.round(n)} B`;
+}
+
+/**
+ * How many decimal places a tick step needs to keep consecutive ticks
+ * distinct, e.g. a step of `0.2` needs 1, a step of `1` needs 0. Capped so a
+ * near-integer step (floating-point noise from a subtraction) doesn't chase
+ * six decimals of nothing.
+ */
+function decimalsForStep(step: number): number {
+  if (!Number.isFinite(step) || step <= 0) return 0;
+  const abs = Math.abs(step);
+  for (let decimals = 0; decimals <= 6; decimals++) {
+    const scaled = abs * 10 ** decimals;
+    if (Math.abs(scaled - Math.round(scaled)) < 1e-9) return decimals;
+  }
+  return 6;
+}
+
 /**
  * Abbreviate a count for an axis gridline, where width is scarce.
  *
  * Deliberately not `Intl`'s `notation: "compact"`: that is locale-dependent
  * and in some locales (`de`, for one) does not abbreviate at all, which both
  * overflows the axis and makes the result untestable. One decimal below ten of
- * a unit (`1.5K`), none above it (`373K`).
+ * a unit (`1.5K`), none above it (`373K`) — except a byte unit (`unit`, an
+ * OTel/UCUM code such as `"By"`), which binary-scales via {@link compactBytes}
+ * instead.
+ *
+ * `step` is the spacing between adjacent ticks on the same axis (unscaled,
+ * pre-K/M/B). Below the smallest scale it sets how many decimals the label
+ * carries, so a sub-1 series (say `http.server.active_requests`, ticks
+ * `0, 0.2, 0.4, …`) doesn't round every tick to the same integer.
  */
-export function compactCount(n: number): string {
+export function compactCount(n: number, unit = "", step?: number): string {
+  if (BYTE_UNIT_ALIASES.has(unit.toLowerCase())) return compactBytes(n);
+  const sign = n < 0 ? "-" : "";
+  const abs = Math.abs(n);
   const units: [number, string][] = [
     [1e9, "B"],
     [1e6, "M"],
     [1e3, "K"],
   ];
   for (const [scale, suffix] of units) {
-    if (n >= scale) {
-      const v = n / scale;
-      return `${v < 10 ? Math.round(v * 10) / 10 : Math.round(v)}${suffix}`;
+    if (abs >= scale) {
+      return `${sign}${roundToOneDecimalBelowTen(abs / scale)}${suffix}`;
     }
   }
-  return String(Math.round(n));
+  const decimals = step === undefined ? 0 : decimalsForStep(step);
+  return decimals > 0 && !Number.isInteger(n)
+    ? n.toFixed(decimals)
+    : String(Math.round(n));
 }
 
 const pad = (n: number, w = 2) => String(n).padStart(w, "0");
+
+/** `1 span` / `1,200 spans`. */
+export function pluralCount(n: number, noun: string): string {
+  return `${n.toLocaleString("en-US")} ${noun}${n === 1 ? "" : "s"}`;
+}
 
 /**
  * An absolute timestamp at the panel's resolution: always date and time to
@@ -43,7 +104,7 @@ const pad = (n: number, w = 2) => String(n).padStart(w, "0");
  */
 export function formatTimestamp(ms: number, resolutionMs: number): string {
   const d = new Date(ms);
-  let out = `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  let out = `${formatDate(ms)} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   if (resolutionMs < 60_000) out += `:${pad(d.getSeconds())}`;
   if (resolutionMs < 1000) out += `.${pad(d.getMilliseconds(), 3)}`;
   return out;
@@ -89,4 +150,40 @@ export function formatRange(
 export function formatShare(part: number, total: number): string {
   if (total <= 0) return "0%";
   return `${((part / total) * 100).toFixed(1)}%`;
+}
+
+export type ErrorSeverity = "ok" | "warn" | "critical";
+
+/** How alarming an error-rate fraction (0-1) is: `warn` from 0.5% (the
+ * point where {@link formatErrorRate} stops reading `<1%`), `critical` from
+ * 2%. The one threshold rule for every error-rate colour in the UI. */
+export function errorRateSeverity(rate: number): ErrorSeverity {
+  if (rate >= 0.02) return "critical";
+  if (rate >= 0.005) return "warn";
+  return "ok";
+}
+
+/** The shared `err-rate-*` class (global.css) for a measured error rate. */
+export function errorRateClass(rate: number): string {
+  return `err-rate-${errorRateSeverity(rate)}`;
+}
+
+/**
+ * A rate meant to flag trouble (an error rate, say) as a whole-percent
+ * string. Unlike {@link formatShare}, a rate that rounds to zero but isn't
+ * exactly zero renders `<1%` rather than a misleadingly clean `0%` — the bug
+ * this exists to fix: a nonzero error count among enough traces (1 in 500,
+ * say) rounded to "0%" while still carrying the "this had errors" red
+ * styling, reading as a contradiction. No measurement at all (`total <= 0`)
+ * and a genuinely clean `0` both render as a dash: neither is "0%", they're
+ * "nothing to measure" and "measured, and it was zero" respectively, and a
+ * dash — not a number — is how this codebase already says "no measurement"
+ * elsewhere (see `EntityRed`'s own doc comment).
+ */
+export function formatErrorRate(part: number, total: number): string {
+  if (total <= 0) return "–";
+  const rate = part / total;
+  if (rate === 0) return "–";
+  if (rate < 0.005) return "<1%";
+  return `${Math.round(rate * 100)}%`;
 }

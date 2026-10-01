@@ -1,0 +1,1116 @@
+/* Real users page (`/rum`): page chrome, tab strip, app switcher, vitals,
+ * sessions chart and setup layout. Classes through `.rum-kv` below are the
+ * design prototype's own (Claude Design project 85b1fe47-…, Real User
+ * Monitoring.html / rum/overview.jsx), reused verbatim on the app's own
+ * tokens; everything after is this page's own supporting layout, using the
+ * same tokens/scale. */
+
+.rum-body {
+  padding: var(--gutter);
+  max-width: 1480px;
+  margin: 0 auto;
+}
+/* Text utilities the prototype's own stylesheet defines globally
+ * (`.mono`/`.dim`/`.faint`/`.ell`) — scoped under `.rum-body` rather than
+ * added app-wide, since no other page uses this shorthand convention. */
+.rum-body .mono {
+  font-family: var(--mono);
+}
+.rum-body .dim {
+  color: var(--dim);
+}
+.rum-body .faint {
+  color: var(--faint);
+}
+.rum-body .ell {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.rum-stack {
+  display: flex;
+  flex-direction: column;
+  gap: var(--gutter);
+  min-width: 0;
+}
+.rum-kpis {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+  gap: var(--gutter-sm);
+}
+.rum-grid-2-1 {
+  display: grid;
+  grid-template-columns: minmax(0, 1.7fr) minmax(0, 1fr);
+  gap: var(--gutter);
+}
+.rum-grid-3 {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: var(--gutter);
+}
+@container (max-width: 1000px) {
+  .rum-grid-2-1,
+  .rum-grid-3 {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+}
+.rum-main {
+  container-type: inline-size;
+}
+.rum-panel {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  min-width: 0;
+}
+.rum-panel-h {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-height: 40px;
+  padding: 4px var(--gutter-sm);
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+}
+.rum-panel-h h3 {
+  margin: 0;
+  font-size: var(--text-section);
+  font-weight: 600;
+}
+.rum-panel-body {
+  padding: 12px var(--gutter-sm);
+}
+.rum-meta {
+  font-size: 12px;
+  color: var(--dim);
+}
+.rum-panel-actions {
+  margin-left: auto;
+}
+.rum-vitals {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 18px 20px;
+}
+.rum-vital {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.rum-vital-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+.rum-vital-key {
+  font: 600 12px var(--mono);
+}
+.rum-vital-name {
+  font-size: 12px;
+}
+.rum-vital-value {
+  font: 600 22px var(--mono);
+  letter-spacing: -0.01em;
+}
+.rum-vital-rating {
+  font-size: 12px;
+  font-weight: 600;
+}
+.rum-vital-dist-wrap {
+  margin-top: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.rum-vital-dist {
+  position: relative;
+  padding: 4px 0;
+  margin: -4px 0;
+  cursor: default;
+  outline: none;
+}
+.rum-vital-goodpct {
+  font-size: 11px;
+}
+.rum-distbar {
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 2px;
+  overflow: hidden;
+}
+.rum-row {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  padding: 9px var(--gutter-sm);
+  border-bottom: 1px solid var(--border);
+  color: var(--text);
+}
+button.rum-row {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+a.rum-row:hover,
+button.rum-row:hover {
+  background: var(--surface2);
+  text-decoration: none;
+}
+.rum-row:last-child {
+  border-bottom: 0;
+}
+.rum-key {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.rum-key i {
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  display: inline-block;
+}
+.rum-pill {
+  display: inline-flex;
+  align-items: center;
+  font: 600 10.5px/16px var(--mono);
+  padding: 0 5px;
+  border-radius: 4px;
+  white-space: nowrap;
+  border: 1px solid;
+}
+.rum-pill.warn {
+  color: var(--warn-banner-text);
+  border-color: color-mix(in oklab, var(--warn) 50%, transparent);
+  background: color-mix(in oklab, var(--warn) 10%, transparent);
+}
+.rum-pill.err {
+  color: var(--err-text);
+  border-color: color-mix(in oklab, var(--err) 50%, transparent);
+  background: color-mix(in oklab, var(--err) 10%, transparent);
+}
+.rum-pill.accent {
+  color: var(--accent-text);
+  border-color: color-mix(in oklab, var(--accent) 50%, transparent);
+  background: color-mix(in oklab, var(--accent) 10%, transparent);
+}
+.rum-eyebrow {
+  display: block;
+  font-size: 10.5px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--faint);
+}
+.rum-tabs {
+  display: flex;
+  gap: 2px;
+  overflow-x: auto;
+  border-bottom: 1px solid var(--border);
+}
+.rum-tabs button {
+  border: 0;
+  background: transparent;
+  color: var(--dim);
+  font: inherit;
+  padding: 8px 10px 9px;
+  cursor: pointer;
+  border-bottom: 2px solid transparent;
+  white-space: nowrap;
+}
+.rum-tabs button:hover {
+  color: var(--text);
+}
+.rum-tabs button.on {
+  color: var(--text);
+  font-weight: 600;
+  border-bottom-color: var(--accent);
+}
+.rum-appsel {
+  position: relative;
+}
+.rum-appbtn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 30px;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--text);
+  font: 600 12px var(--mono);
+  cursor: pointer;
+}
+.rum-appbtn:hover {
+  border-color: var(--dim);
+}
+.rum-appbtn-platform {
+  font: 12px var(--mono);
+  font-weight: 400;
+}
+.rum-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 20;
+  width: 300px;
+  padding: 6px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  box-shadow: 0 8px 24px color-mix(in oklab, var(--text) 14%, transparent);
+}
+.rum-menu-eyebrow {
+  padding: 6px 8px 4px;
+}
+.rum-menu button {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  padding: 7px 8px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.rum-menu button:hover {
+  background: var(--surface2);
+}
+.rum-menu-item-text {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+.rum-menu-item-label {
+  font-size: 12px;
+  font-weight: 600;
+}
+.rum-menu-item-platform {
+  font-size: 11px;
+}
+.rum-snippet {
+  margin: 0;
+  padding: 10px 12px;
+  padding-right: 70px;
+  background: var(--bg-inset);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font: 12px/1.55 var(--mono);
+  overflow-x: auto;
+  white-space: pre;
+  color: var(--text);
+}
+.rum-steps {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+.rum-steps li {
+  display: flex;
+  gap: 12px;
+}
+.rum-stepn {
+  width: 22px;
+  height: 22px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  font: 600 11px var(--mono);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  background: var(--surface2);
+}
+.rum-split {
+  display: grid;
+  grid-template-columns: minmax(0, 1.6fr) minmax(260px, 0.8fr);
+  gap: var(--gutter);
+  align-items: start;
+}
+@container app-main (max-width: 720px) {
+  .rum-split {
+    grid-template-columns: minmax(0, 1fr);
+  }
+}
+.rum-kv {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 6px 16px;
+  font-size: 12px;
+  margin: 0;
+}
+
+/* ---- Supporting layout not in the prototype excerpt (page header, empty
+ * state, sessions chart internals, setup step body, checklist marks) —
+ * same tokens/scale, no new colour or spacing system. ---- */
+
+.rum-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--gutter-sm);
+  flex-wrap: wrap;
+  margin-bottom: var(--gutter-sm);
+}
+.rum-header-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-width: 0;
+}
+.rum-header-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.rum-env-version {
+  font-size: 12px;
+}
+.rum-platform-icon {
+  flex: none;
+}
+
+.rum-error-list {
+  display: flex;
+  flex-direction: column;
+}
+.rum-row-main {
+  min-width: 0;
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rum-row-title {
+  font-weight: 600;
+}
+.rum-row-message {
+  font-weight: 400;
+}
+.rum-row-count {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.rum-device-eyebrow {
+  margin: 16px 0 8px;
+}
+.rum-minibars {
+  display: grid;
+  grid-template-columns: minmax(0, auto) minmax(0, 1fr) auto;
+  gap: 6px 10px;
+  align-items: center;
+}
+.rum-minibars-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+  align-items: center;
+}
+.rum-minibars-label {
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.rum-minibars-track {
+  height: 6px;
+  background: var(--surface3);
+  border-radius: 2px;
+}
+.rum-minibars-fill {
+  display: block;
+  height: 100%;
+  background: var(--dim);
+  border-radius: 2px;
+}
+.rum-minibars-value {
+  font-size: 12px;
+  text-align: right;
+}
+
+.rum-placeholder {
+  font-size: 12px;
+  color: var(--dim);
+  padding: 8px 0;
+}
+.rum-empty-setup-link {
+  appearance: none;
+  background: none;
+  border: none;
+  padding: 0;
+  color: var(--accent-text);
+  cursor: pointer;
+  text-decoration: underline;
+  font-size: inherit;
+}
+.rum-setup-note {
+  font-size: 12px;
+  color: var(--dim);
+  margin: 0 0 8px;
+}
+
+.rum-stacked-sessions {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rum-stacked-legend {
+  display: flex;
+  gap: 14px;
+  font-size: 12px;
+  flex-wrap: wrap;
+}
+.rum-stacked-bars {
+  position: relative;
+  height: 120px;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+}
+.rum-stacked-bar {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.rum-stacked-bar-ok {
+  background: var(--dim);
+  border-radius: 2px 2px 0 0;
+}
+.rum-stacked-bar-err {
+  background: var(--err-bar);
+}
+.rum-stacked-axis {
+  display: flex;
+  justify-content: space-between;
+  font-size: 10.5px;
+}
+
+.rum-step-title {
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.rum-step-body {
+  min-width: 0;
+  flex: 1;
+}
+.rum-snippet-wrap {
+  position: relative;
+}
+.rum-snippet-copy {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  background: var(--bg-inset);
+}
+
+.rum-checklist {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.rum-checklist-item {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+}
+.rum-check {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  color: var(--surface);
+}
+.rum-check-done {
+  background: var(--ok);
+  border-color: var(--ok);
+}
+.rum-checklist-text {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}
+.rum-checklist-text b {
+  font-size: 13px;
+}
+.rum-checklist-detail {
+  font-size: 11px;
+}
+
+.rum-callout {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px;
+  border: 1px solid color-mix(in oklab, var(--warn) 50%, transparent);
+  background: color-mix(in oklab, var(--warn) 8%, transparent);
+  border-radius: 6px;
+  font-size: 12px;
+}
+.rum-callout > span {
+  flex: 1;
+}
+
+.rum-network-table,
+.rum-resources-table {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-network-head,
+.rum-network-row {
+  min-width: 780px;
+}
+.rum-resources-head,
+.rum-resources-row {
+  min-width: 480px;
+}
+.rum-network-head {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1.5fr) minmax(100px, 1fr) 64px minmax(120px, 1.6fr) 64px
+    56px 64px minmax(100px, 0.8fr);
+  gap: 10px;
+  padding: 6px var(--gutter-sm);
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.rum-network-row {
+  display: grid;
+  grid-template-columns:
+    minmax(160px, 1.5fr) minmax(100px, 1fr) 64px minmax(120px, 1.6fr) 64px
+    56px 64px minmax(100px, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 8px var(--gutter-sm);
+  border-bottom: 1px solid var(--border);
+}
+.rum-network-row:last-child {
+  border-bottom: 0;
+}
+.rum-network-row .num,
+.rum-network-head .num {
+  text-align: right;
+}
+.rum-resources-head,
+.rum-resources-row {
+  grid-template-columns: 110px 70px 90px 70px minmax(0, 1fr);
+}
+.rum-interactions-head,
+.rum-interactions-row {
+  grid-template-columns:
+    minmax(140px, 1.6fr) minmax(100px, 1fr) 64px minmax(120px, 1.2fr)
+    70px;
+}
+
+.rum-splitbar-wrap {
+  position: relative;
+  display: flex;
+  align-items: center;
+  height: 10px;
+  outline: none;
+  cursor: default;
+}
+.rum-splitbar-track {
+  display: flex;
+  height: 6px;
+  border-radius: 2px;
+  overflow: hidden;
+  background: var(--surface3);
+  min-width: 4px;
+}
+.rum-splitbar-client {
+  background: var(--accent);
+}
+.rum-splitbar-backend {
+  background: var(--dim);
+}
+
+.rum-fe-be-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rum-fe-be-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.3fr) minmax(60px, 1fr) 56px;
+  gap: 10px;
+  align-items: center;
+}
+.rum-fe-be-name {
+  font-size: 12px;
+}
+
+.rum-slowest-page-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(60px, 0.8fr) 70px;
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+.rum-slowest-page-row:last-child {
+  border-bottom: 0;
+}
+.rum-slowest-page-row:hover {
+  background: var(--surface2);
+}
+
+.rum-pages-table {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-pages-head,
+.rum-pages-row {
+  display: grid;
+  grid-template-columns: minmax(140px, 1.6fr) 70px repeat(4, 64px) 74px;
+  gap: 10px;
+  align-items: center;
+  min-width: 620px;
+}
+.rum-pages-head {
+  padding: 6px var(--gutter-sm);
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.rum-pages-row {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 8px var(--gutter-sm);
+}
+.rum-pages-row:last-child {
+  border-bottom: 0;
+}
+.rum-pages-row:hover,
+.rum-pages-row.on {
+  background: var(--surface2);
+}
+.rum-pages-row .num,
+.rum-pages-head .num {
+  text-align: right;
+}
+
+.rum-load-wrap {
+  position: relative;
+}
+
+.rum-session-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+}
+.rum-session-filter-input {
+  min-width: 220px;
+  padding: 5px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  color: var(--text);
+  font: 12px/1.4 var(--mono);
+}
+.rum-quick-filter {
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--dim);
+  border-radius: 6px;
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.rum-quick-filter:hover {
+  color: var(--text);
+}
+.rum-quick-filter.on {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: color-mix(in oklab, var(--accent) 12%, transparent);
+}
+
+.rum-sessions-table {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-sessions-head,
+.rum-sessions-row {
+  display: grid;
+  grid-template-columns:
+    minmax(120px, 1.2fr) minmax(90px, 0.9fr) 84px 76px minmax(120px, 0.9fr)
+    76px 56px minmax(160px, 1.6fr) minmax(90px, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  min-width: 900px;
+}
+.rum-sessions-head {
+  padding: 6px var(--gutter-sm);
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.rum-sessions-row {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 8px var(--gutter-sm);
+}
+.rum-sessions-row:last-child {
+  border-bottom: 0;
+}
+.rum-sessions-row:hover,
+.rum-sessions-row.on {
+  background: var(--surface2);
+}
+.rum-sessions-row .num,
+.rum-sessions-head .num {
+  text-align: right;
+}
+.rum-errors-table {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-errors-head,
+.rum-errors-row {
+  display: grid;
+  grid-template-columns: minmax(220px, 1.6fr) 160px minmax(140px, 0.9fr) 90px;
+  gap: 10px;
+  align-items: center;
+  min-width: 700px;
+}
+.rum-errors-head {
+  padding: 6px var(--gutter-sm);
+  font-size: 11px;
+  color: var(--dim);
+  border-bottom: 1px solid var(--border);
+}
+.rum-errors-row {
+  width: 100%;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 8px var(--gutter-sm);
+}
+.rum-errors-row:last-child {
+  border-bottom: 0;
+}
+.rum-errors-row:hover,
+.rum-errors-row.on {
+  background: var(--surface2);
+}
+.rum-errors-row .num,
+.rum-errors-head .num {
+  text-align: right;
+}
+.rum-session-signals {
+  display: flex;
+  gap: 4px;
+  flex-wrap: wrap;
+}
+
+.rum-session-timeline {
+  /* Not scrolling itself (see .rum-session-timeline-scroll below): the
+     shared hover VizTooltip is positioned relative to this element, and
+     `overflow-x: auto` here would also clip the y axis (per the CSS
+     spec's "the other axis defaults to auto when one is non-visible"
+     rule), cutting off tooltips on the lower lanes and adding a spurious
+     vertical scrollbar on hover. */
+  position: relative;
+}
+.rum-session-timeline-scroll {
+  /* The min-width lives on .rum-session-timeline-content (the scrolled
+     content), not here: putting it on the overflow element itself would
+     stop it from ever shrinking below 480px, overflowing this element's
+     own parent on narrow viewports instead of scrolling internally. */
+  max-width: 100%;
+  overflow-x: auto;
+}
+.rum-session-timeline-content {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 480px;
+}
+.rum-session-lane {
+  display: grid;
+  grid-template-columns: 64px 1fr;
+  align-items: center;
+  gap: 8px;
+}
+.rum-session-lane-label {
+  font-size: 11px;
+  color: var(--dim);
+  text-align: right;
+}
+.rum-session-lane-track {
+  position: relative;
+  height: 18px;
+  border-radius: 4px;
+  background: var(--surface3);
+}
+.rum-session-mark {
+  position: absolute;
+  top: 2px;
+  width: 6px;
+  height: 14px;
+  border-radius: 2px;
+  border: 0;
+  padding: 0;
+  background: var(--accent);
+  cursor: pointer;
+  transform: translateX(-50%);
+}
+.rum-session-mark.on {
+  background: var(--warn);
+  outline: 2px solid var(--text);
+}
+.rum-session-mark.segment {
+  /* A view segment spans its own [start, end) — left-aligned at its start,
+     not centred on a point like a plain mark. */
+  min-width: 3px;
+  transform: none;
+}
+
+.rum-session-cap-notice {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 8px 10px;
+  margin-top: 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface2);
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.rum-session-events {
+  display: flex;
+  flex-direction: column;
+  overflow-x: auto;
+}
+.rum-session-event-row {
+  display: grid;
+  grid-template-columns: 140px 70px minmax(0, 1fr) 70px;
+  gap: 10px;
+  align-items: center;
+  width: 100%;
+  min-width: 560px;
+  border: none;
+  border-bottom: 1px solid var(--border);
+  background: none;
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+  padding: 6px var(--gutter-sm);
+}
+.rum-session-event-row:last-child {
+  border-bottom: 0;
+}
+.rum-session-event-row:hover,
+.rum-session-event-row.on {
+  background: var(--surface2);
+}
+.rum-session-event-lane {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dim);
+}
+.rum-session-event-lane.err {
+  color: var(--err-text);
+}
+
+.rum-session-detail-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.rum-session-detail-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.rum-session-detail-links {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.rum-mini-waterfall {
+  max-width: 100%;
+  overflow-x: auto;
+}
+.rum-mini-waterfall-content {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 480px;
+}
+.rum-mini-waterfall-ruler {
+  height: 16px;
+  font-size: 10px;
+  color: var(--dim);
+}
+.rum-mini-waterfall-ruler .rum-mini-waterfall-track > span {
+  position: absolute;
+}
+.rum-mini-waterfall-row {
+  display: grid;
+  grid-template-columns: 220px 1fr;
+  gap: 8px;
+  align-items: center;
+}
+.rum-mini-waterfall-label {
+  font-size: 11px;
+}
+.rum-mini-waterfall-track {
+  position: relative;
+  height: 14px;
+}
+.rum-mini-waterfall-bar {
+  position: absolute;
+  top: 2px;
+  height: 10px;
+  min-width: 2px;
+  border-radius: 2px;
+  background: var(--accent);
+}
+.rum-mini-waterfall-bar.err {
+  background: var(--err);
+}
+
+.rum-load-bar {
+  display: flex;
+  height: 22px;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.rum-load-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+  margin-top: 8px;
+  font-size: 11px;
+  color: var(--dim);
+}
+.rum-load-legend i {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  margin-right: 4px;
+}
+
+.rum-backend-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.rum-backend-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 70px 64px minmax(80px, 0.8fr);
+  gap: 10px;
+  align-items: center;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border);
+}
+.rum-backend-row:last-child {
+  border-bottom: 0;
+}
+
+.rum-kv-row {
+  display: grid;
+  grid-column: 1 / -1;
+  grid-template-columns: subgrid;
+}
+.rum-kv-term {
+  font-size: 12px;
+  white-space: nowrap;
+}
+.rum-kv-desc {
+  margin: 0;
+  min-width: 0;
+  color: var(--text);
+  overflow-wrap: anywhere;
+}
+
+.rum-error-detail-stats {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 20px;
+  margin: 0 0 14px;
+}
+.rum-error-detail-stat {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.rum-error-detail-columns {
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) minmax(0, 1fr);
+  gap: 20px;
+  margin-top: 14px;
+}
+.rum-error-detail-frames,
+.rum-error-detail-side {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+@media (max-width: 768px) {
+  .rum-error-detail-columns {
+    grid-template-columns: 1fr;
+  }
+}

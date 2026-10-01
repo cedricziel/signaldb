@@ -26,7 +26,6 @@ use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionPlanner, PlannerConfig};
 use datafusion::arrow::util::pretty::pretty_format_batches;
 use datafusion::prelude::SessionContext;
-use object_store::memory::InMemory;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity, SequentialLayout};
 use tests_integration::generators;
 use tests_integration::ordering::{SequentialTraces, scan_report};
@@ -47,11 +46,9 @@ async fn seed() -> (Arc<CatalogManager>, i64) {
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await.expect("catalog manager"));
-    let object_store = Arc::new(InMemory::new());
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),

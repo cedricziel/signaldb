@@ -1,6 +1,6 @@
 [package]
 name = "signaldb-bin"
-version = "0.3.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 
@@ -26,14 +26,21 @@ axum.workspace = true
 clap.workspace = true
 tokio.workspace = true
 tonic.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [dev-dependencies]
 cargo-husky.workspace = true
+datafusion.workspace = true
+tempfile.workspace = true
 
 [package.metadata.cargo-machete]
 # cargo-husky is used for git hooks configuration
-ignored = ["cargo-husky"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["cargo-husky", "workspace-hack"]
 
 [features]
 jemalloc = ["dep:tikv-jemallocator"]
 jemalloc-profiling = ["jemalloc", "tikv-jemallocator/profiling", "common/jemalloc-profiling"]
+
+[lints]
+workspace = true

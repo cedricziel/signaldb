@@ -19,6 +19,7 @@ pub mod cli;
 pub mod handler;
 pub mod middleware;
 pub mod services;
+pub mod type_warning;
 
 use std::{net::SocketAddr, sync::Arc};
 
@@ -65,22 +66,35 @@ pub struct AcceptorResources {
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
+    pub processor_registry: Arc<common::processors::ProcessorRegistry>,
+    /// Resend-dedup cache shared by every ingest handler on both servers
+    pub retry_dedup: Arc<handler::RetryDedup>,
+    /// Read-only cache of each (tenant, dataset, signal)'s canonical
+    /// attribute types, established by the writer. Used only to warn
+    /// senders of off-type values via `partial_success`; the acceptor
+    /// never places values or writes `attribute_types` itself.
+    pub type_snapshots: Arc<common::schema::type_authority::TypeSnapshots>,
 }
 
 /// Initialize shared resources for acceptor services
 pub async fn init_acceptor_resources(
     config: Configuration,
-    advertise_addr: String,
+    grpc_addr: std::net::SocketAddr,
     wal_dir: std::path::PathBuf,
 ) -> Result<AcceptorResources, anyhow::Error> {
     // Keep a copy for the storage usage refresher, which needs the full
     // configuration to open the Iceberg catalog.
     let full_config = config.clone();
+    let processors_config = full_config.processors.clone();
+    let retry_dedup = Arc::new(handler::RetryDedup::new(
+        full_config.acceptor.retry_dedup_window,
+    ));
 
     // Initialize service bootstrap for catalog-based discovery
-    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {e}"))?;
+    let service_bootstrap =
+        ServiceBootstrap::from_bind_addr(config, ServiceType::Acceptor, grpc_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {e}"))?;
 
     // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
     let catalog = Arc::new(service_bootstrap.catalog().clone());
@@ -119,11 +133,12 @@ pub async fn init_acceptor_resources(
             // profiles - large payloads, lower entry count
             wal_config(&wal_dir, 256, 500, 60),
         )
-        .with_max_instances(wal_settings.max_instances),
+        .with_max_instances(wal_settings.max_instances)
+        .with_role("acceptor"),
     );
 
     tracing::info!(
-        wal_dir = %wal_dir.display(),
+        signaldb.wal.dir = %wal_dir.display(),
         "Initialized WalManager for multi-tenant WAL isolation"
     );
 
@@ -183,6 +198,21 @@ pub async fn init_acceptor_resources(
         );
     }
 
+    // Tenant OTTL processors (change: tenant-ottl-processors): compiled and
+    // cached per tenant, refreshed on the configured TTL.
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &processors_config,
+    ));
+
+    // Read-only cache of canonical attribute types (change:
+    // otel-native-schema): the acceptor only looks these up to warn
+    // senders of off-type values, never establishes or writes them.
+    let type_snapshots = Arc::new(common::schema::type_authority::TypeSnapshots::new(
+        (*catalog).clone(),
+        std::time::Duration::from_secs(30),
+    ));
+
     // Create Authenticator for multi-tenant authentication
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
@@ -194,6 +224,9 @@ pub async fn init_acceptor_resources(
         authenticator,
         rate_limiter,
         storage_usage,
+        processor_registry,
+        retry_dedup,
+        type_snapshots,
     })
 }
 
@@ -213,7 +246,7 @@ pub async fn serve_otlp_grpc(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    tracing::info!(address = %config.addr, "Starting OTLP/gRPC acceptor");
+    tracing::info!(signaldb.service.address = %config.addr, "Starting OTLP/gRPC acceptor");
 
     let max_decoding_message_size = config.max_decoding_message_size;
 
@@ -223,43 +256,72 @@ pub async fn serve_otlp_grpc(
         authenticator,
         rate_limiter,
         storage_usage,
+        processor_registry,
+        retry_dedup,
+        type_snapshots,
     } = config.resources;
 
     // Set up OTLP/gRPC services with handler pattern and WAL Manager
     // integration. Authentication is a single tower layer applied once
     // around the whole server below (crate::middleware::GrpcAuthLayer),
     // not a per-service interceptor.
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let log_service = LogAcceptorService::new(log_handler)
+    let log_handler = Arc::new(
+        LogHandler::new(
+            flight_transport.clone(),
+            wal_manager.clone(),
+            processor_registry.clone(),
+        )
+        .with_retry_dedup(retry_dedup.clone()),
+    );
+    let log_service = LogAcceptorService::new(log_handler.clone())
         .with_rate_limiter(rate_limiter.clone())
-        .with_storage_quota(storage_usage.clone());
+        .with_storage_quota(storage_usage.clone())
+        .with_type_snapshots(type_snapshots.clone());
     let log_server = LogsServiceServer::new(log_service)
         .accept_compressed(CompressionEncoding::Gzip)
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    // Shares `log_handler` so a `gen_ai.evaluation.result` span event is
+    // written through the same log ingest path (WAL, forward, dedup) as an
+    // ordinary OTLP log export.
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    )
+    .with_retry_dedup(retry_dedup.clone())
+    .with_evaluation_logs(log_handler.clone());
     let trace_service = TraceAcceptorService::new(trace_handler)
         .with_rate_limiter(rate_limiter.clone())
-        .with_storage_quota(storage_usage.clone());
+        .with_storage_quota(storage_usage.clone())
+        .with_type_snapshots(type_snapshots.clone());
     let trace_server = TraceServiceServer::new(trace_service)
         .accept_compressed(CompressionEncoding::Gzip)
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager.clone());
+    let metrics_handler = MetricsHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    )
+    .with_retry_dedup(retry_dedup.clone());
     let metrics_service = MetricsAcceptorService::new(metrics_handler)
         .with_rate_limiter(rate_limiter.clone())
-        .with_storage_quota(storage_usage.clone());
+        .with_storage_quota(storage_usage.clone())
+        .with_type_snapshots(type_snapshots.clone());
     let metric_server = MetricsServiceServer::new(metrics_service)
         .accept_compressed(CompressionEncoding::Gzip)
         .accept_compressed(CompressionEncoding::Zstd)
         .max_decoding_message_size(max_decoding_message_size);
 
-    let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone());
+    let profile_handler = ProfileHandler::new(flight_transport.clone(), wal_manager.clone())
+        .with_retry_dedup(retry_dedup.clone());
     let profile_service = ProfileAcceptorService::new(profile_handler)
         .with_rate_limiter(rate_limiter.clone())
-        .with_storage_quota(storage_usage.clone());
+        .with_storage_quota(storage_usage.clone())
+        .with_type_snapshots(type_snapshots.clone());
     let profile_server = ProfilesServiceServer::new(profile_service)
         .accept_compressed(CompressionEncoding::Gzip)
         .accept_compressed(CompressionEncoding::Zstd)
@@ -341,7 +403,10 @@ pub fn prometheus_router(
 
     // Use Extension instead of State for simpler type handling
     Router::new()
-        .route("/api/v1/write", post(handle_prometheus_write_with_ext))
+        .route(
+            common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH,
+            post(handle_prometheus_write_with_ext),
+        )
         .layer(Extension(state))
         .layer(middleware::from_fn(move |req, next| {
             let auth = authenticator.clone();
@@ -385,47 +450,47 @@ pub type ProfilesHandlerState = OtlpHttpState<ProfileHandler>;
 
 /// Mount a single OTLP/HTTP export route behind the shared auth middleware
 /// and HTTP self-monitoring metrics.
-/// Build the CORS layer that lets the browser export telemetry cross-origin
-/// to the OTLP/HTTP endpoints.
+/// Build the CORS layer that answers a browser's preflight before auth runs.
 ///
 /// The browser sends `Authorization` + `X-Tenant-ID` / `X-Dataset-ID`, which
 /// make the export a non-simple request; the browser first issues an
-/// unauthenticated `OPTIONS` preflight. This layer sits outermost so it answers
-/// the preflight before the auth middleware can reject it for missing
-/// credentials. An empty origin list allows any origin (trusted-network
-/// homelab default); a non-empty list restricts to those exact origins.
-fn otlp_cors_layer(allowed_origins: &[String]) -> tower_http::cors::CorsLayer {
+/// unauthenticated `OPTIONS` preflight. This layer sits outermost so it
+/// answers that preflight before the auth middleware can reject it for
+/// missing credentials.
+///
+/// Preflight grants no authority by itself — the browser still can't read a
+/// response without a matching `Access-Control-Allow-Origin` on the *actual*
+/// request — so this layer permissively mirrors whatever `Origin` the
+/// preflight carries, for every request, always mounted (not gated on
+/// `self_monitoring.frontend.enabled`). Real per-key origin enforcement, and
+/// the `Access-Control-Allow-Origin`/`Vary` headers on the actual response,
+/// happen post-auth in [`crate::middleware::auth_middleware`] — this layer's
+/// `allow_origin` predicate only ever fires for `OPTIONS`, so it never adds a
+/// CORS header to an actual (non-preflight) response, and can't accidentally
+/// paper over that middleware's 403.
+fn otlp_cors_layer() -> tower_http::cors::CorsLayer {
     use axum::http::{HeaderName, Method, header};
-    use tower_http::cors::{Any, CorsLayer};
+    use tower_http::cors::{AllowOrigin, CorsLayer};
 
-    let cors = CorsLayer::new()
+    CorsLayer::new()
         .allow_methods([Method::POST, Method::OPTIONS])
         .allow_headers([
             header::AUTHORIZATION,
             header::CONTENT_TYPE,
             HeaderName::from_static("x-tenant-id"),
             HeaderName::from_static("x-dataset-id"),
-        ]);
-
-    if allowed_origins.is_empty() {
-        cors.allow_origin(Any)
-    } else {
-        let origins: Vec<axum::http::HeaderValue> = allowed_origins
-            .iter()
-            .filter_map(|o| match o.parse() {
-                Ok(value) => Some(value),
-                Err(e) => {
-                    tracing::warn!(
-                        origin = %o,
-                        error = %e,
-                        "Dropping unparseable entry from self_monitoring.frontend.allowed_origins"
-                    );
-                    None
-                }
-            })
-            .collect();
-        cors.allow_origin(origins)
-    }
+        ])
+        .allow_origin(AllowOrigin::predicate(|_origin, parts| {
+            parts.method == Method::OPTIONS
+        }))
+        // tower_http would otherwise add `Vary: Origin` to every response
+        // (preflight or not) since `allow_origin` varies with the request.
+        // That's this layer's only other footprint on an actual response;
+        // suppressing it keeps the "never touches an actual response"
+        // guarantee (and its own test) literally true — `auth_middleware`
+        // sets `Vary: Origin` itself, once, only when it also sets
+        // `Access-Control-Allow-Origin`.
+        .vary(Vec::<HeaderName>::new())
 }
 
 fn otlp_signal_router<H: Send + Sync + 'static>(
@@ -465,7 +530,7 @@ pub fn traces_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/traces",
+        common::endpoints::OTLP_HTTP_TRACES_PATH,
         post(handle_http_traces),
         authenticator,
         OtlpHttpState {
@@ -489,7 +554,7 @@ pub fn logs_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/logs",
+        common::endpoints::OTLP_HTTP_LOGS_PATH,
         post(handle_http_logs),
         authenticator,
         OtlpHttpState {
@@ -513,7 +578,7 @@ pub fn metrics_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1/metrics",
+        common::endpoints::OTLP_HTTP_METRICS_PATH,
         post(handle_http_metrics),
         authenticator,
         OtlpHttpState {
@@ -540,7 +605,7 @@ pub fn profiles_http_router(
     storage_quota: Arc<common::storage_usage::StorageUsageTracker>,
 ) -> Router {
     otlp_signal_router(
-        "/v1development/profiles",
+        common::endpoints::OTLP_HTTP_PROFILES_PATH,
         post(handle_http_profiles),
         authenticator,
         OtlpHttpState {
@@ -554,19 +619,30 @@ pub fn profiles_http_router(
 /// Shared OTLP/HTTP export plumbing: enforce per-tenant rate limits and
 /// storage quotas, decode the body by content type (protobuf or protojson),
 /// dispatch to the per-signal handler (WAL durability + Flight forward), and
-/// answer with an empty `Export*ServiceResponse` in the request's encoding.
+/// answer with the `Export*ServiceResponse` in the request's encoding —
+/// exactly `{}` / an empty protobuf message when nothing was off-type
+/// (existing clients see byte-identical responses), or a hand-built
+/// protojson object / a `partial_success`-carrying protobuf message
+/// otherwise. `type_snapshots` is `None` when the caller (a test, or a
+/// route that never had the extension layered onto it) has none — the
+/// off-type check then never fires, matching "no warning".
+#[allow(clippy::too_many_arguments)]
 async fn handle_otlp_http_export<Req, Resp, F, Fut>(
     signal: &'static str,
     rate_limiter: &common::ratelimit::TenantRateLimiter,
     storage_quota: &common::storage_usage::StorageUsageTracker,
     tenant_context: &common::auth::TenantContext,
+    type_snapshots: Option<&Arc<common::schema::type_authority::TypeSnapshots>>,
     headers: &axum::http::HeaderMap,
     body: axum::body::Bytes,
     dispatch: F,
 ) -> axum::response::Response<axum::body::Body>
 where
-    Req: prost::Message + Default + serde::de::DeserializeOwned,
-    Resp: prost::Message + Default,
+    Req: prost::Message
+        + Default
+        + serde::de::DeserializeOwned
+        + crate::type_warning::OffTypeAttributes,
+    Resp: crate::type_warning::WithOffTypeWarning,
     F: FnOnce(Req) -> Fut,
     Fut: std::future::Future<Output = Result<(), crate::handler::IngestError>>,
 {
@@ -605,19 +681,35 @@ where
         }
     };
 
+    // Read-only off-type check against the writer's established canonical
+    // types, computed before `request` is moved into `dispatch` and
+    // surfaced via `partial_success` only if the export succeeds.
+    let warning =
+        crate::type_warning::off_type_warning(type_snapshots, tenant_context, signal, &request);
+
     match dispatch(request).await {
         Ok(()) => {
-            // Per OTLP/HTTP spec the response body is a full
-            // Export*ServiceResponse in the same encoding as the request.
             let builder = axum::response::Response::builder().status(axum::http::StatusCode::OK);
             let response = if is_json {
+                // Existing clients must see the exact same body as before
+                // this feature existed: a literal `{}` when nothing was
+                // off-type. `rejected_*` is the proto3 default (0) and is
+                // omitted from protojson, so only `errorMessage` appears.
+                let body = match &warning {
+                    None => "{}".to_string(),
+                    Some(message) => {
+                        serde_json::json!({ "partialSuccess": { "errorMessage": message } })
+                            .to_string()
+                    }
+                };
                 builder
                     .header(axum::http::header::CONTENT_TYPE, "application/json")
-                    .body(axum::body::Body::from("{}"))
+                    .body(axum::body::Body::from(body))
             } else {
+                let response_body = Resp::with_off_type_warning(warning);
                 builder
                     .header(axum::http::header::CONTENT_TYPE, "application/x-protobuf")
-                    .body(axum::body::Body::from(Resp::default().encode_to_vec()))
+                    .body(axum::body::Body::from(response_body.encode_to_vec()))
             };
             match response {
                 Ok(response) => response,
@@ -651,6 +743,14 @@ where
     }
 }
 
+/// The read-only canonical-type snapshot cache, extracted as an axum
+/// extension when the production HTTP app layers one on
+/// ([`serve_otlp_http`]); `None` for any router built without that layer
+/// (every test in this crate), so off-type warnings are simply never
+/// computed there — no test needs to know this feature exists to compile.
+type TypeSnapshotsExtension =
+    Option<axum::Extension<Arc<common::schema::type_authority::TypeSnapshots>>>;
+
 /// OTLP/HTTP traces export: decode by content type, hand off to the
 /// trace handler (WAL durability + Flight forward), and answer with an
 /// `ExportTraceServiceResponse` in the request's encoding.
@@ -665,6 +765,7 @@ async fn handle_http_traces(
     Extension(state): Extension<TracesHandlerState>,
     headers: axum::http::HeaderMap,
     crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    type_snapshots: TypeSnapshotsExtension,
     body: axum::body::Bytes,
 ) -> axum::response::Response<axum::body::Body> {
     use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceResponse;
@@ -674,6 +775,7 @@ async fn handle_http_traces(
         &state.rate_limiter,
         &state.storage_quota,
         &tenant_context,
+        type_snapshots.as_deref(),
         &headers,
         body,
         |request| {
@@ -699,6 +801,7 @@ async fn handle_http_logs(
     Extension(state): Extension<LogsHandlerState>,
     headers: axum::http::HeaderMap,
     crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    type_snapshots: TypeSnapshotsExtension,
     body: axum::body::Bytes,
 ) -> axum::response::Response<axum::body::Body> {
     use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceResponse;
@@ -708,6 +811,7 @@ async fn handle_http_logs(
         &state.rate_limiter,
         &state.storage_quota,
         &tenant_context,
+        type_snapshots.as_deref(),
         &headers,
         body,
         |request| {
@@ -733,6 +837,7 @@ async fn handle_http_metrics(
     Extension(state): Extension<MetricsHandlerState>,
     headers: axum::http::HeaderMap,
     crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    type_snapshots: TypeSnapshotsExtension,
     body: axum::body::Bytes,
 ) -> axum::response::Response<axum::body::Body> {
     use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceResponse;
@@ -742,6 +847,7 @@ async fn handle_http_metrics(
         &state.rate_limiter,
         &state.storage_quota,
         &tenant_context,
+        type_snapshots.as_deref(),
         &headers,
         body,
         |request| {
@@ -782,6 +888,7 @@ async fn handle_http_profiles(
     Extension(state): Extension<ProfilesHandlerState>,
     headers: axum::http::HeaderMap,
     crate::middleware::TenantContextExtractor(tenant_context): crate::middleware::TenantContextExtractor,
+    type_snapshots: TypeSnapshotsExtension,
     body: axum::body::Bytes,
 ) -> axum::response::Response<axum::body::Body> {
     use opentelemetry_proto::tonic::collector::profiles::v1development::ExportProfilesServiceResponse;
@@ -791,6 +898,7 @@ async fn handle_http_profiles(
         &state.rate_limiter,
         &state.storage_quota,
         &tenant_context,
+        type_snapshots.as_deref(),
         &headers,
         body,
         |request| {
@@ -867,14 +975,16 @@ pub struct HttpAcceptorConfig {
     pub authenticator: Arc<Authenticator>,
     pub rate_limiter: Arc<common::ratelimit::TenantRateLimiter>,
     pub storage_usage: Arc<common::storage_usage::StorageUsageTracker>,
-    /// Origins the browser may export telemetry from (CORS). `None` disables
-    /// cross-origin access entirely; `Some(empty)` allows any origin. Set from
-    /// `[self_monitoring.frontend]` when browser telemetry export is enabled.
-    pub cors_allowed_origins: Option<Vec<String>>,
+    pub processor_registry: Arc<common::processors::ProcessorRegistry>,
+    /// Resend-dedup cache, shared with the gRPC server's handlers
+    pub retry_dedup: Arc<handler::RetryDedup>,
     /// Maximum decoded request body size, in bytes, for every OTLP/HTTP and
     /// Prometheus remote_write route. From `[acceptor].max_request_body_bytes`,
     /// shared with the gRPC side's `max_decoding_message_size`.
     pub max_request_body_bytes: usize,
+    /// Read-only canonical-type snapshot cache, shared with the gRPC
+    /// server's services.
+    pub type_snapshots: Arc<common::schema::type_authority::TypeSnapshots>,
 }
 
 /// Apply the acceptor's OTLP/HTTP transport limits to a router: accept
@@ -906,38 +1016,55 @@ pub async fn serve_otlp_http(
     shutdown_rx: oneshot::Receiver<()>,
     stopped_tx: oneshot::Sender<()>,
 ) -> Result<(), anyhow::Error> {
-    tracing::info!(address = %config.addr, "Starting OTLP/HTTP acceptor");
+    tracing::info!(signaldb.service.address = %config.addr, "Starting OTLP/HTTP acceptor");
 
     // Create Prometheus handler with shared resources
     let prometheus_handler = Arc::new(
         PrometheusHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
+            .with_retry_dedup(config.retry_dedup.clone())
             .with_rate_limiter(config.rate_limiter.clone())
             .with_storage_quota(config.storage_usage.clone()),
     );
 
     // Create profiles handler with shared resources
-    let profile_handler = Arc::new(ProfileHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-    ));
-
-    // Create trace handler with shared resources (same WAL + Flight path as gRPC)
-    let trace_handler = Arc::new(TraceHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-    ));
+    let profile_handler = Arc::new(
+        ProfileHandler::new(config.flight_transport.clone(), config.wal_manager.clone())
+            .with_retry_dedup(config.retry_dedup.clone()),
+    );
 
     // Create log handler with shared resources (same WAL + Flight path as gRPC)
-    let log_handler = Arc::new(LogHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-    ));
+    let log_handler = Arc::new(
+        LogHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone()),
+    );
+
+    // Create trace handler with shared resources (same WAL + Flight path as
+    // gRPC), sharing `log_handler` so a `gen_ai.evaluation.result` span
+    // event is written through the same log ingest path as an ordinary
+    // OTLP log export.
+    let trace_handler = Arc::new(
+        TraceHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone())
+        .with_evaluation_logs(log_handler.clone()),
+    );
 
     // Create metrics handler with shared resources (same WAL + Flight path as gRPC)
-    let metrics_handler = Arc::new(MetricsHandler::new(
-        config.flight_transport.clone(),
-        config.wal_manager.clone(),
-    ));
+    let metrics_handler = Arc::new(
+        MetricsHandler::new(
+            config.flight_transport.clone(),
+            config.wal_manager.clone(),
+            config.processor_registry.clone(),
+        )
+        .with_retry_dedup(config.retry_dedup.clone()),
+    );
 
     // Build combined router with health, traces, logs, metrics, Prometheus,
     // and profiles endpoints
@@ -969,23 +1096,20 @@ pub async fn serve_otlp_http(
             profile_handler,
             config.rate_limiter.clone(),
             config.storage_usage.clone(),
-        ));
+        ))
+        // Layered once here (not threaded through the router-builder
+        // signatures): every OTLP/HTTP handler reads it as an optional
+        // `Extension`, so a router built without this layer (every test in
+        // this crate) simply never sees one.
+        .layer(Extension(config.type_snapshots.clone()));
 
     let app = with_http_transport_limits(app, config.max_request_body_bytes);
 
     // Browser telemetry export is cross-origin (UI on the router, ingest on
-    // the acceptor), so add CORS outermost when it is enabled — it must answer
-    // the preflight before auth runs.
-    let app = match &config.cors_allowed_origins {
-        Some(origins) => {
-            tracing::info!(
-                allowed_origins = ?origins,
-                "CORS enabled for browser telemetry export"
-            );
-            app.layer(otlp_cors_layer(origins))
-        }
-        None => app,
-    };
+    // the acceptor), so CORS is mounted outermost, unconditionally — it must
+    // answer the preflight before auth runs. It only ever answers OPTIONS;
+    // real per-key origin enforcement lives in the auth middleware.
+    let app = app.layer(otlp_cors_layer());
 
     tracing::info!("OTLP traces endpoint enabled at POST /v1/traces");
     tracing::info!("OTLP logs endpoint enabled at POST /v1/logs");
@@ -1027,16 +1151,18 @@ mod cors_tests {
     use axum::{Router, response::IntoResponse};
     use tower::ServiceExt;
 
-    fn app_with_cors(allowed: &[String]) -> Router {
+    fn app_with_cors() -> Router {
         // A stand-in for the auth-gated /v1/traces route: it 401s without
-        // credentials, exactly like the real endpoint, so the test proves the
-        // CORS layer answers the preflight *before* auth would reject it.
+        // credentials, exactly like the real endpoint, so the tests prove the
+        // CORS layer answers the preflight *before* auth would reject it, and
+        // never decorates an *actual* request's response itself (that's the
+        // auth middleware's job — see `middleware::auth::origin_tests`).
         async fn guarded() -> impl IntoResponse {
             (StatusCode::UNAUTHORIZED, "missing auth")
         }
         Router::new()
             .route("/v1/traces", post(guarded))
-            .layer(otlp_cors_layer(allowed))
+            .layer(otlp_cors_layer())
     }
 
     fn preflight(origin: &str) -> Request<Body> {
@@ -1053,70 +1179,53 @@ mod cors_tests {
             .unwrap()
     }
 
+    /// Preflight grants no authority by itself, so it's answered permissively
+    /// for any origin — including one no API key will ever be restricted to
+    /// — without ever reaching the auth-gated route.
     #[tokio::test]
-    async fn preflight_allowed_for_any_origin_when_unrestricted() {
-        let app = app_with_cors(&[]);
-        let res = app
-            .oneshot(preflight("http://ui.example:3000"))
-            .await
-            .unwrap();
-        // Preflight is answered by the CORS layer, never reaching the 401 route.
-        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
-        assert_eq!(
-            res.headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .map(|v| v.to_str().unwrap().to_string()),
-            Some("*".to_string())
-        );
+    async fn preflight_is_answered_for_any_origin_without_reaching_auth() {
+        for origin in ["http://ui.example:3000", "http://evil.example"] {
+            let res = app_with_cors().oneshot(preflight(origin)).await.unwrap();
+            assert_ne!(
+                res.status(),
+                StatusCode::UNAUTHORIZED,
+                "preflight for {origin} must be answered by CORS, not forwarded to auth"
+            );
+            assert_eq!(
+                res.headers()
+                    .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                    .map(|v| v.to_str().unwrap().to_string()),
+                Some(origin.to_string()),
+                "preflight must mirror whatever origin it carries"
+            );
+        }
     }
 
+    /// An actual (non-preflight) request gets no CORS decoration from this
+    /// layer at all, allowed or not — `Access-Control-Allow-Origin` on the
+    /// real response (or its absence on a rejection) is entirely the auth
+    /// middleware's responsibility, so this layer can never accidentally
+    /// paper over a per-key origin rejection.
     #[tokio::test]
-    async fn preflight_echoes_listed_origin_and_omits_others() {
-        let allowed = vec!["http://ui.example:3000".to_string()];
-
-        let res = app_with_cors(&allowed)
-            .oneshot(preflight("http://ui.example:3000"))
-            .await
+    async fn actual_request_gets_no_cors_header_from_this_layer() {
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/traces")
+            .header(header::ORIGIN, "http://ui.example:3000")
+            .body(Body::empty())
             .unwrap();
-        assert_eq!(
-            res.headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .map(|v| v.to_str().unwrap().to_string()),
-            Some("http://ui.example:3000".to_string())
-        );
-
-        let res = app_with_cors(&allowed)
-            .oneshot(preflight("http://evil.example"))
-            .await
-            .unwrap();
+        let res = app_with_cors().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
         assert!(
             res.headers()
                 .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
                 .is_none(),
-            "unlisted origin must not be granted CORS access"
+            "the outer CORS layer must never decorate an actual response"
         );
-    }
-
-    /// Finding L3: an unparseable entry in `allowed_origins` must not take
-    /// down CORS for the *valid* entries alongside it — it's dropped (with
-    /// a warning, not exercised by this test) and the rest still work.
-    #[tokio::test]
-    async fn preflight_still_allows_valid_origins_alongside_an_unparseable_one() {
-        let allowed = vec![
-            "not a valid header value\n".to_string(),
-            "http://ui.example:3000".to_string(),
-        ];
-
-        let res = app_with_cors(&allowed)
-            .oneshot(preflight("http://ui.example:3000"))
-            .await
-            .unwrap();
-        assert_eq!(
-            res.headers()
-                .get(header::ACCESS_CONTROL_ALLOW_ORIGIN)
-                .map(|v| v.to_str().unwrap().to_string()),
-            Some("http://ui.example:3000".to_string()),
-            "the valid origin must still be allowed despite the unparseable entry"
+        assert!(
+            res.headers().get(header::VARY).is_none(),
+            "the outer CORS layer must not add its own Vary header either — \
+             auth_middleware owns Vary: Origin entirely"
         );
     }
 }
@@ -1126,6 +1235,8 @@ mod cors_tests {
 /// flatten every handler failure into 503.
 #[cfg(test)]
 mod otlp_http_export_classification_tests {
+    use std::sync::Arc;
+
     use super::handle_otlp_http_export;
     use crate::handler::IngestError;
     use common::config::AuthConfig;
@@ -1144,7 +1255,9 @@ mod otlp_http_export_classification_tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -1153,56 +1266,171 @@ mod otlp_http_export_classification_tests {
         }
     }
 
-    #[tokio::test]
-    async fn invalid_payload_maps_to_400() {
+    /// Runs `handle_otlp_http_export` for a trace export with default rate
+    /// limits and quotas.
+    async fn export<F, Fut>(
+        type_snapshots: Option<&Arc<common::schema::type_authority::TypeSnapshots>>,
+        headers: axum::http::HeaderMap,
+        body: axum::body::Bytes,
+        dispatch: F,
+    ) -> axum::response::Response<axum::body::Body>
+    where
+        F: FnOnce(ExportTraceServiceRequest) -> Fut,
+        Fut: std::future::Future<Output = Result<(), IngestError>>,
+    {
         let rate_limiter = TenantRateLimiter::from_auth_config(&AuthConfig::default());
         let storage_quota = StorageUsageTracker::from_auth_config(&AuthConfig::default());
-        let tenant_context = test_tenant_context();
-        let headers = axum::http::HeaderMap::new();
-        let body = axum::body::Bytes::from(ExportTraceServiceRequest::default().encode_to_vec());
+        handle_otlp_http_export::<ExportTraceServiceRequest, ExportTraceServiceResponse, _, _>(
+            "traces",
+            &rate_limiter,
+            &storage_quota,
+            &test_tenant_context(),
+            type_snapshots,
+            &headers,
+            body,
+            dispatch,
+        )
+        .await
+    }
 
-        let response =
-            handle_otlp_http_export::<ExportTraceServiceRequest, ExportTraceServiceResponse, _, _>(
-                "traces",
-                &rate_limiter,
-                &storage_quota,
-                &tenant_context,
-                &headers,
-                body,
-                |_req| async {
-                    Err(IngestError::Invalid(anyhow::anyhow!(
-                        "OTLP to Arrow conversion failed"
-                    )))
-                },
-            )
-            .await;
+    fn default_request_body() -> axum::body::Bytes {
+        axum::body::Bytes::from(ExportTraceServiceRequest::default().encode_to_vec())
+    }
+
+    #[tokio::test]
+    async fn invalid_payload_maps_to_400() {
+        let response = export(
+            None,
+            Default::default(),
+            default_request_body(),
+            |_req| async {
+                Err(IngestError::Invalid(anyhow::anyhow!(
+                    "OTLP to Arrow conversion failed"
+                )))
+            },
+        )
+        .await;
 
         assert_eq!(response.status(), axum::http::StatusCode::BAD_REQUEST);
     }
 
     #[tokio::test]
     async fn unavailable_backend_maps_to_503() {
-        let rate_limiter = TenantRateLimiter::from_auth_config(&AuthConfig::default());
-        let storage_quota = StorageUsageTracker::from_auth_config(&AuthConfig::default());
-        let tenant_context = test_tenant_context();
-        let headers = axum::http::HeaderMap::new();
-        let body = axum::body::Bytes::from(ExportTraceServiceRequest::default().encode_to_vec());
-
-        let response =
-            handle_otlp_http_export::<ExportTraceServiceRequest, ExportTraceServiceResponse, _, _>(
-                "traces",
-                &rate_limiter,
-                &storage_quota,
-                &tenant_context,
-                &headers,
-                body,
-                |_req| async { Err(IngestError::Unavailable(anyhow::anyhow!("WAL unavailable"))) },
-            )
-            .await;
+        let response = export(
+            None,
+            Default::default(),
+            default_request_body(),
+            |_req| async { Err(IngestError::Unavailable(anyhow::anyhow!("WAL unavailable"))) },
+        )
+        .await;
 
         assert_eq!(
             response.status(),
             axum::http::StatusCode::SERVICE_UNAVAILABLE
         );
+    }
+
+    /// A clean export answers exactly as before: `{}` for JSON (serializing
+    /// the response struct would emit `{"partialSuccess":null}`) and an
+    /// empty protobuf message.
+    #[tokio::test]
+    async fn clean_export_keeps_the_pre_feature_body_in_both_encodings() {
+        let mut json_headers = axum::http::HeaderMap::new();
+        json_headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        let response = export(
+            None,
+            json_headers,
+            axum::body::Bytes::from("{}"),
+            |_req| async { Ok(()) },
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(&bytes[..], b"{}");
+
+        let response = export(
+            None,
+            Default::default(),
+            default_request_body(),
+            |_req| async { Ok(()) },
+        )
+        .await;
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert!(bytes.is_empty());
+    }
+
+    #[tokio::test]
+    async fn off_type_json_export_answers_with_a_partial_success_warning() {
+        use common::schema::logical::{AttributeLevel, LogicalFieldId};
+        use common::schema::type_authority::{
+            CanonicalType, Resolution, TypeSnapshots, TypeSource,
+        };
+
+        let tenant_context = test_tenant_context();
+        let catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+        catalog
+            .establish_attribute_type(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                &LogicalFieldId {
+                    source: "traces".to_string(),
+                    level: Some(AttributeLevel::Record),
+                    name: "http.status_code".to_string(),
+                },
+                Resolution {
+                    canonical: CanonicalType::Int64,
+                    source: TypeSource::Observed,
+                    hint_schema_url: None,
+                },
+            )
+            .await
+            .unwrap();
+        let snapshots = Arc::new(TypeSnapshots::new(
+            catalog,
+            std::time::Duration::from_secs(30),
+        ));
+        snapshots
+            .refresh(
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                "traces",
+            )
+            .await;
+
+        let mut headers = axum::http::HeaderMap::new();
+        headers.insert(
+            axum::http::header::CONTENT_TYPE,
+            "application/json".parse().unwrap(),
+        );
+        let body = serde_json::json!({"resourceSpans": [{"scopeSpans": [{"spans": [{
+            "traceId": "0102030405060708090a0b0c0d0e0f10",
+            "spanId": "0102030405060708",
+            "name": "s",
+            "attributes": [{"key": "http.status_code", "value": {"stringValue": "404"}}]
+        }]}]}]});
+        let response = export(
+            Some(&snapshots),
+            headers,
+            axum::body::Bytes::from(body.to_string()),
+            |_req| async { Ok(()) },
+        )
+        .await;
+
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let message = json["partialSuccess"]["errorMessage"].as_str().unwrap();
+        assert!(message.contains("http.status_code"), "{message}");
+        assert!(json["partialSuccess"].get("rejectedSpans").is_none());
     }
 }

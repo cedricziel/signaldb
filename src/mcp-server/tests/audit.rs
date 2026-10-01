@@ -173,6 +173,10 @@ async fn whoami() -> Response {
         "user_id": "user-a",
         "tenant": {"id": "acme", "slug": "acme", "name": "Acme"},
         "dataset": "production",
+        "memberships": [],
+        "datasets": [],
+        "default_dataset": null,
+        "granted_tenants": [{"tenant_id": "acme"}],
     }))
     .into_response()
 }
@@ -187,7 +191,13 @@ async fn behaviour(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("production");
     match dataset {
-        "deny" => (StatusCode::FORBIDDEN, "forbidden").into_response(),
+        "deny" => (
+            StatusCode::FORBIDDEN,
+            axum::Json(
+                serde_json::json!({"error": "forbidden", "errorType": "forbidden", "status": "error"}),
+            ),
+        )
+            .into_response(),
         "boom" => (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response(),
         "throttle" => (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response(),
         "throttle-once" => {
@@ -228,6 +238,15 @@ async fn behaviour(
 fn ok_body(path: &str, big: bool) -> Response {
     let body = if path.starts_with("/tempo/api/search") {
         serde_json::json!({"metrics": {}, "traces": []})
+    } else if path == "/api/v1/query" {
+        serde_json::json!({
+            "result": "metadata",
+            "window": {"start_ns": 0, "end_ns": 1},
+            "metadata": {
+                "kind": "values", "values": [], "truncated": false,
+                "cost": {"mode": "none", "window_scoped": false, "sampled": false, "approximate": false}
+            }
+        })
     } else if big {
         // Well past the 256 KiB tool-result cap.
         serde_json::json!({"status": "success", "data": {"resultType": "streams", "result": [{"stream": {}, "values": [["1", "x".repeat(300 * 1024)]]}]}})

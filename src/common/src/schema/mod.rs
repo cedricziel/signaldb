@@ -2,12 +2,17 @@ use crate::config::Configuration;
 use crate::iceberg::{create_object_store_builder_from_config, create_sql_catalog_with_builder};
 use anyhow::Result;
 use iceberg_rust::catalog::Catalog as IcebergCatalog;
+use iceberg_rust::spec::schema::Schema as IcebergSchema;
 use once_cell::sync::Lazy;
 use std::collections::HashMap;
 use std::sync::Arc;
 
 pub mod logical;
+pub mod resource_identity;
 pub mod schema_parser;
+pub mod series_id;
+pub mod type_authority;
+pub mod typed_attributes;
 
 // Re-export iceberg modules for backward compatibility
 pub use crate::iceberg::schemas as iceberg_schemas;
@@ -34,34 +39,183 @@ pub fn materialized_column_name(label: &str) -> String {
     out
 }
 
-/// The derived `key=value` token column on logs tables. Each row carries
-/// one token per attribute across resource, scope, and record scopes, so a
-/// single bloom-filtered column can answer "does this file contain
-/// `key=value` for *any* attribute" without one column per key.
-pub const ATTR_TOKENS_COLUMN: &str = "attr_tokens";
-
-/// The bloom-filter table property for the derived [`ATTR_TOKENS_COLUMN`].
-///
-/// Parquet addresses the tokens through the List leaf column: arrow-rs
-/// writes a `List<Utf8>` with the 3-level encoding
-/// `attr_tokens (LIST) > list (repeated group) > item`, and the
-/// Iceberg-to-Arrow conversion names the element field `item`, so the leaf
-/// path is `attr_tokens.list.item`. The pinned iceberg-rust writer splits
-/// the property's column suffix on dots into exactly those path parts.
-pub fn bloom_filter_property_for_attr_tokens() -> (String, String) {
-    use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
-    (
-        format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{ATTR_TOKENS_COLUMN}.list.item"),
-        "true".to_string(),
+/// The column name a per-level promoted attribute (`otel-native-schema`
+/// layer 6) is stored under: `attr_<level>_<key>`. Unlike
+/// [`materialized_column_name`], this is reversible for the common case — a
+/// "clean" key (`^[a-z0-9]+([._][a-z0-9]+)*$`, ASCII lowercase/digits with
+/// single `.`/`_` separators) round-trips through `.` → `_` and `_` → `__`,
+/// so two clean keys never collide (a clean name never contains `___`, the
+/// hashed form's separator). Anything else — mixed case, other punctuation,
+/// or a clean name that would exceed 120 characters — falls back to a
+/// lowercased, sanitized stem plus an 8-hex-digit FNV-1a hash of the exact
+/// key bytes, so distinct keys stay distinct even when their stems collide.
+pub fn promoted_attr_column(level: crate::schema::logical::AttributeLevel, key: &str) -> String {
+    let prefix = format!("attr_{}_", level.as_str());
+    if is_clean_attr_key(key) {
+        let mut cleaned = String::with_capacity(key.len() * 2);
+        for ch in key.chars() {
+            match ch {
+                '.' => cleaned.push('_'),
+                '_' => cleaned.push_str("__"),
+                other => cleaned.push(other),
+            }
+        }
+        let name = format!("{prefix}{cleaned}");
+        if name.len() <= 120 {
+            return name;
+        }
+    }
+    format!(
+        "{prefix}{}___{}",
+        attr_key_stem(key),
+        fnv1a32_hex(key.as_bytes())
     )
+}
+
+/// Whether `key` matches `^[a-z0-9]+([._][a-z0-9]+)*$`: one or more
+/// lowercase-ASCII-alphanumeric segments joined by single `.` or `_`
+/// separators, with no leading/trailing/doubled separator.
+fn is_clean_attr_key(key: &str) -> bool {
+    !key.is_empty()
+        && key.split(['.', '_']).all(|segment| {
+            !segment.is_empty()
+                && segment
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        })
+}
+
+/// The hashed fallback's human-readable stem: `key` lowercased, every
+/// non-`[a-z0-9]` byte mapped to `_`, runs of `_` collapsed to one,
+/// leading/trailing `_` trimmed, truncated to 64 bytes (then re-trimmed).
+fn attr_key_stem(key: &str) -> String {
+    let mut collapsed = String::with_capacity(key.len());
+    let mut last_was_underscore = false;
+    for ch in key.to_lowercase().chars() {
+        let is_alnum = ch.is_ascii_lowercase() || ch.is_ascii_digit();
+        last_was_underscore = match (is_alnum, last_was_underscore) {
+            (true, _) => {
+                collapsed.push(ch);
+                false
+            }
+            (false, false) => {
+                collapsed.push('_');
+                true
+            }
+            (false, true) => true,
+        };
+    }
+    collapsed
+        .trim_matches('_')
+        .chars()
+        .take(64)
+        .collect::<String>()
+        .trim_end_matches('_')
+        .to_string()
+}
+
+/// FNV-1a, 32-bit, as 8 lowercase hex digits — implemented inline (not
+/// pulled from a crate) so [`promoted_attr_column`]'s hashed fallback stays
+/// stable across platforms and dependency versions.
+fn fnv1a32_hex(bytes: &[u8]) -> String {
+    let mut hash: u32 = 0x811c_9dc5;
+    for &b in bytes {
+        hash ^= u32::from(b);
+        hash = hash.wrapping_mul(0x0100_0193);
+    }
+    format!("{hash:08x}")
+}
+
+/// Stopgap for #1533: two distinct label keys can sanitize to the same
+/// [`materialized_column_name`] (e.g. `http.method` and `http_method` both
+/// map to `label_http_method`); the writer resolves the collision by
+/// suffixing the later key's column (`label_http_method_2`). A resolver
+/// that blindly matches `base` against the scanned schema would then
+/// silently read the first key's column for the second key's queries.
+/// Callers that pick a materialized column by name must check this first:
+/// if a suffixed variant (`<base>_<n>`, `n` a positive integer) also exists
+/// in the scanned schema, treat `base` as ambiguous and fall back to the
+/// JSON/attribute-map extraction path instead of trusting the materialized
+/// column.
+pub fn has_colliding_materialized_variant<'a>(
+    base: &str,
+    columns: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let prefix = format!("{base}_");
+    columns.into_iter().any(|column| {
+        column
+            .strip_prefix(prefix.as_str())
+            .is_some_and(|suffix| !suffix.is_empty() && suffix.bytes().all(|b| b.is_ascii_digit()))
+    })
+}
+
+/// Convenience wrapper around [`has_colliding_materialized_variant`] for the
+/// common case: `columns` is the full set of materialized column names
+/// found on the scanned table, and the caller only needs a yes/no "is
+/// `base` present and safe to use" answer.
+pub fn is_materialized_and_unambiguous(
+    base: &str,
+    columns: &std::collections::HashSet<String>,
+) -> bool {
+    columns.contains(base)
+        && !has_colliding_materialized_variant(base, columns.iter().map(String::as_str))
+}
+
+/// Table property recording the warm index's token-encoding version, so a
+/// reader can tell how to decode `attr_index` bytes without inferring it
+/// from the column type alone.
+pub const WARM_INDEX_ENCODING_PROPERTY: &str = "signaldb.warm-index.encoding";
+
+/// The current [`WARM_INDEX_ENCODING_PROPERTY`] value.
+pub const WARM_INDEX_ENCODING_VERSION: &str = "1";
+
+/// Parquet bloom-filter and encoding table properties for the derived
+/// [`crate::attrs::warm_index::WARM_INDEX_COLUMN`], sized from `cfg`.
+///
+/// NDV is derived, never measured: `spike/results.md` found the bloom filter
+/// must be sized explicitly from `rows_per_row_group * attrs_per_row` (a
+/// row group's expected count of distinct `key=value` tokens), capped at
+/// `max_bloom_ndv` so a misconfigured row-group size cannot blow the filter
+/// past a sane byte budget.
+pub fn warm_index_properties(cfg: &crate::config::WarmIndexConfig) -> Vec<(String, String)> {
+    use crate::attrs::warm_index::WARM_INDEX_COLUMN;
+    use iceberg_rust::spec::table_metadata::{
+        WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX,
+        WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX, WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX,
+    };
+
+    let ndv = cfg
+        .rows_per_row_group
+        .saturating_mul(cfg.attrs_per_row)
+        .min(cfg.max_bloom_ndv);
+    let leaf = format!("{WARM_INDEX_COLUMN}.list.item");
+
+    vec![
+        (
+            format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{leaf}"),
+            "true".to_string(),
+        ),
+        (
+            format!("{WRITE_PARQUET_BLOOM_FILTER_FPP_COLUMN_PREFIX}{leaf}"),
+            cfg.fpp.to_string(),
+        ),
+        (
+            format!("{WRITE_PARQUET_BLOOM_FILTER_NDV_COLUMN_PREFIX}{leaf}"),
+            ndv.to_string(),
+        ),
+        (
+            WARM_INDEX_ENCODING_PROPERTY.to_string(),
+            WARM_INDEX_ENCODING_VERSION.to_string(),
+        ),
+    ]
 }
 
 /// The built-in traces columns that carry a Parquet bloom filter.
 ///
 /// Both are flat top-level `Utf8` columns (`schemas.toml` traces.v1/v2), so
-/// the property's column suffix is the bare column name — no `.list.item`
-/// leaf path like [`bloom_filter_property_for_attr_tokens`]. `trace_id` is
-/// the high-cardinality column single-trace lookups
+/// the property's column suffix is the bare column name rather than a
+/// `.list.item` leaf path. `trace_id` is the high-cardinality column
+/// single-trace lookups
 /// (`GET /api/traces/{traceID}`) filter on, for which manifest / row-group
 /// min/max statistics never prune (every time-ordered file spans the full
 /// random id range); a bloom filter is the only structure that can skip row
@@ -134,24 +288,19 @@ pub fn bloom_filter_properties_for_trace_columns() -> Vec<(String, String)> {
 }
 
 /// Assembles every Parquet bloom-filter table property for a table's
-/// columns, dispatching by table type and its materialized labels.
+/// columns, dispatching by table type and its already-built `schema`.
 ///
-/// [`schemas::TableSchema::Logs`] gets a filter over the derived
-/// `attr_tokens` column (for `key=value` containment checks) in addition to
-/// every materialized label; both `Logs` and `Traces` get the `trace_id`/
-/// `span_id` point-lookup filters ([`bloom_filter_properties_for_trace_columns`])
-/// since `logs.v1` carries those same columns (optional, but named
-/// identically) for logs-for-a-trace correlation. Other table types get
-/// only the materialized-label filters.
+/// Every table type gets a filter for each materialized label; `Logs` and
+/// `Traces` additionally get the `trace_id`/`span_id` point-lookup filters
+/// ([`bloom_filter_properties_for_trace_columns`]) since `logs.v1` carries
+/// those same columns (optional, but named identically) for
+/// logs-for-a-trace correlation.
 pub fn bloom_filter_properties_for_table(
     table_schema: &crate::iceberg::schemas::TableSchema,
-    materialized_labels: &[String],
+    schema: &IcebergSchema,
 ) -> Vec<(String, String)> {
-    let mut properties = bloom_filter_properties_for_labels(materialized_labels);
+    let mut properties = bloom_filter_properties_for_labels(schema);
 
-    if matches!(table_schema, crate::iceberg::schemas::TableSchema::Logs) {
-        properties.push(bloom_filter_property_for_attr_tokens());
-    }
     if matches!(
         table_schema,
         crate::iceberg::schemas::TableSchema::Traces | crate::iceberg::schemas::TableSchema::Logs
@@ -185,32 +334,44 @@ pub fn compression_properties() -> Vec<(String, String)> {
     ]
 }
 
-/// Per-column Parquet bloom-filter table properties for a set of
-/// materialized attribute labels.
+/// Per-column Parquet bloom-filter table properties for `schema`'s
+/// materialized label columns.
 ///
-/// For each label key this yields
+/// For each column carrying a materialized-label `doc` (see
+/// [`crate::iceberg::evolution::origin_key_of`]) this yields
 /// `write.parquet.bloom-filter-enabled.column.label_<key> = "true"`, the
 /// standard Iceberg property the pinned iceberg-rust Parquet writer honors
-/// per column. Column names come from [`materialized_column_name`], so the
-/// properties always target the promoted `label_<key>` columns. Duplicate
-/// labels (after sanitization) collapse to a single property.
+/// per column.
 ///
-/// Shared by table creation and the compactor's attribute-promotion path,
-/// so both set identical properties for a promoted label.
-pub fn bloom_filter_properties_for_labels(labels: &[String]) -> Vec<(String, String)> {
+/// Reads the columns back from `schema` itself rather than independently
+/// re-resolving them from a raw key list: `schema` is built by
+/// [`crate::schema_parser::ResolvedSchema::build_iceberg_schema`], which
+/// seeds its resolution from the table's own base fields (so a label
+/// colliding with a base column is suffixed, not dropped). A caller with
+/// only the key list, not the schema `build_iceberg_schema` actually
+/// produced from it, cannot always reproduce that seeding and would risk
+/// targeting a bloom filter at the wrong column under a base-column
+/// collision (#1448) -- reading the columns back removes that divergence
+/// entirely rather than keeping two resolutions in sync by convention.
+///
+/// Called at table creation only today (the compactor's attribute-promotion
+/// path does not yet set bloom-filter properties for the columns it
+/// evolves, tracked as #731).
+pub fn bloom_filter_properties_for_labels(schema: &IcebergSchema) -> Vec<(String, String)> {
     use iceberg_rust::spec::table_metadata::WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX;
 
-    let mut seen = std::collections::HashSet::new();
-    labels
+    schema
+        .fields()
         .iter()
-        .filter_map(|label| {
-            let column = materialized_column_name(label);
-            seen.insert(column.clone()).then(|| {
-                (
-                    format!("{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{column}"),
-                    "true".to_string(),
-                )
-            })
+        .filter(|field| crate::iceberg::evolution::origin_key_of(field.doc.as_deref()).is_some())
+        .map(|field| {
+            (
+                format!(
+                    "{WRITE_PARQUET_BLOOM_FILTER_ENABLED_COLUMN_PREFIX}{}",
+                    field.name
+                ),
+                "true".to_string(),
+            )
         })
         .collect()
 }
@@ -220,12 +381,12 @@ pub fn bloom_filter_properties_for_labels(labels: &[String]) -> Vec<(String, Str
 /// Iceberg stores a column's bounds inline in the manifest entry of every data
 /// file, so a bound is a permanent per-file cost paid on every query plan. For
 /// these columns nothing ever pays it back: no query compares them by range.
-/// `body` and `status_message` are matched by substring or regex, and
-/// `exemplars` is a JSON blob read whole or not at all.
+/// `body` (logs) and `status_message` (traces) are matched by substring or
+/// regex.
 ///
 /// The columns are listed per signal because the schemas do not share names;
 /// a column absent from a table simply has no effect there.
-pub const UNBOUNDED_FREE_TEXT_COLUMNS: [&str; 3] = ["body", "status_message", "exemplars"];
+pub const UNBOUNDED_FREE_TEXT_COLUMNS: [&str; 2] = ["body", "status_message"];
 
 /// Metrics-mode table properties for the free-text columns of a signal.
 ///
@@ -267,6 +428,9 @@ pub struct TenantSchemaRegistry {
     /// Optional database catalog used as an additional tenant source, so
     /// admin-API tenants resolve alongside config-defined ones.
     tenant_source: Option<Arc<crate::catalog::Catalog>>,
+    /// A long-lived manager to reuse instead of building one (and its
+    /// connection pool) per call.
+    catalog_manager: Option<Arc<crate::CatalogManager>>,
 }
 
 impl TenantSchemaRegistry {
@@ -276,12 +440,20 @@ impl TenantSchemaRegistry {
             config,
             catalogs: HashMap::new(),
             tenant_source: None,
+            catalog_manager: None,
         }
     }
 
     /// Attach a database catalog as an additional tenant source.
     pub fn with_tenant_source(mut self, tenant_source: Arc<crate::catalog::Catalog>) -> Self {
         self.tenant_source = Some(tenant_source);
+        self
+    }
+
+    /// Reuse a shared `CatalogManager` rather than building one per call.
+    /// It must already carry the tenant source, if any.
+    pub fn with_catalog_manager(mut self, manager: Arc<crate::CatalogManager>) -> Self {
+        self.catalog_manager = Some(manager);
         self
     }
 
@@ -476,12 +648,15 @@ impl TenantSchemaRegistry {
     /// Build a `CatalogManager` over this registry's configuration, carrying
     /// the tenant source when one is attached so database-created tenants
     /// resolve alongside config-defined ones.
-    async fn catalog_manager(&self) -> Result<crate::CatalogManager> {
+    async fn catalog_manager(&self) -> Result<Arc<crate::CatalogManager>> {
+        if let Some(manager) = &self.catalog_manager {
+            return Ok(manager.clone());
+        }
         let manager = crate::CatalogManager::new(self.config.clone()).await?;
-        Ok(match &self.tenant_source {
+        Ok(Arc::new(match &self.tenant_source {
             Some(source) => manager.with_tenant_source(source.clone()),
             None => manager,
-        })
+        }))
     }
 
     /// List every table actually provisioned for a tenant, across all of its
@@ -543,7 +718,8 @@ impl TenantSchemaRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{DefaultSchemas, SchemaConfig, TenantSchemaConfig, TenantsConfig};
+    use crate::config::{SchemaConfig, TenantSchemaConfig, TenantSchemaOverride, TenantsConfig};
+    use crate::schema::logical::AttributeLevel;
     use std::collections::HashMap;
 
     /// A point-lookup filter must be sized for point lookups: Parquet's default
@@ -601,13 +777,15 @@ mod tests {
 
     /// `logs.v1` carries `trace_id`/`span_id` for logs-for-a-trace
     /// correlation, the same point-lookup problem traces has, so logs must
-    /// get the same filters. It must also keep its `attr_tokens` filter.
-    /// Traces has no `attr_tokens` column and must not get one.
+    /// get the same filters.
     #[test]
-    fn logs_and_traces_get_trace_columns_but_only_logs_gets_attr_tokens() {
+    fn logs_and_traces_get_trace_columns() {
         use crate::iceberg::schemas::TableSchema;
 
-        let logs = bloom_filter_properties_for_table(&TableSchema::Logs, &[]);
+        let logs = bloom_filter_properties_for_table(
+            &TableSchema::Logs,
+            &TableSchema::Logs.schema().unwrap(),
+        );
         for column in BLOOM_FILTER_TRACE_COLUMNS {
             assert!(
                 logs.contains(&(
@@ -617,13 +795,11 @@ mod tests {
                 "logs must have a bloom filter on {column}"
             );
         }
-        let (attr_tokens_key, attr_tokens_value) = bloom_filter_property_for_attr_tokens();
-        assert!(
-            logs.contains(&(attr_tokens_key, attr_tokens_value)),
-            "logs must keep its attr_tokens filter"
-        );
 
-        let traces = bloom_filter_properties_for_table(&TableSchema::Traces, &[]);
+        let traces = bloom_filter_properties_for_table(
+            &TableSchema::Traces,
+            &TableSchema::Traces.schema().unwrap(),
+        );
         for column in BLOOM_FILTER_TRACE_COLUMNS {
             assert!(
                 traces.contains(&(
@@ -633,10 +809,6 @@ mod tests {
                 "traces must have a bloom filter on {column}"
             );
         }
-        assert!(
-            !traces.iter().any(|(key, _)| key.contains("attr_tokens")),
-            "traces has no attr_tokens column and must not get a filter for one"
-        );
     }
 
     /// A table type with no point-lookup id columns and no materialized
@@ -645,7 +817,13 @@ mod tests {
     fn a_metrics_table_gets_no_bloom_filter_properties() {
         use crate::iceberg::schemas::TableSchema;
 
-        assert!(bloom_filter_properties_for_table(&TableSchema::MetricsGauge, &[]).is_empty());
+        assert!(
+            bloom_filter_properties_for_table(
+                &TableSchema::Metrics,
+                &TableSchema::Metrics.schema().unwrap()
+            )
+            .is_empty()
+        );
     }
 
     /// The writer wrote zstd level 1 while table metadata claimed level 3. Now
@@ -715,6 +893,49 @@ mod tests {
         assert!(metrics_properties_for_free_text_columns(&columns).is_empty());
     }
 
+    /// An entry no built-in table has is dead config that reads as if it did
+    /// something.
+    #[test]
+    fn every_free_text_column_exists_in_some_signal_table() {
+        use crate::iceberg::schemas::TableSchema;
+
+        let mut columns = Vec::new();
+        for table in TableSchema::all() {
+            let schema = table.schema().unwrap_or_else(|e| panic!("{table:?}: {e}"));
+            columns.extend(schema.fields().iter().map(|field| field.name.clone()));
+        }
+        for free_text in UNBOUNDED_FREE_TEXT_COLUMNS {
+            assert!(
+                columns.iter().any(|column| column == free_text),
+                "{free_text} is in no built-in table"
+            );
+        }
+    }
+
+    #[test]
+    fn colliding_materialized_variant_detected() {
+        let columns = ["label_http_method", "label_http_method_2"];
+        assert!(has_colliding_materialized_variant(
+            "label_http_method",
+            columns
+        ));
+    }
+
+    #[test]
+    fn no_colliding_materialized_variant_without_suffix() {
+        let columns = ["label_http_method"];
+        assert!(!has_colliding_materialized_variant(
+            "label_http_method",
+            columns
+        ));
+        // A different base sharing the prefix isn't a numeric suffix collision.
+        let columns = ["label_http_method_status"];
+        assert!(!has_colliding_materialized_variant(
+            "label_http_method",
+            columns
+        ));
+    }
+
     #[test]
     fn materialized_column_name_sanitizes_and_prefixes() {
         assert_eq!(materialized_column_name("namespace"), "label_namespace");
@@ -727,14 +948,196 @@ mod tests {
     }
 
     #[test]
-    fn attr_tokens_bloom_property_targets_the_list_leaf() {
+    fn promoted_attr_column_encodes_clean_keys_reversibly() {
         assert_eq!(
-            bloom_filter_property_for_attr_tokens(),
-            (
-                "write.parquet.bloom-filter-enabled.column.attr_tokens.list.item".to_string(),
-                "true".to_string()
-            )
+            promoted_attr_column(AttributeLevel::Record, "http.request.method"),
+            "attr_record_http_request_method"
         );
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "http.response.status_code"),
+            "attr_record_http_response_status__code"
+        );
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "http_method"),
+            "attr_record_http__method"
+        );
+    }
+
+    #[test]
+    fn promoted_attr_column_distinguishes_dot_and_underscore_spellings() {
+        assert_ne!(
+            promoted_attr_column(AttributeLevel::Record, "http.method"),
+            promoted_attr_column(AttributeLevel::Record, "http_method")
+        );
+        // Neither is clean (an empty segment from the adjacent separators),
+        // so both fall back to the hashed form — still distinct.
+        assert_ne!(
+            promoted_attr_column(AttributeLevel::Record, "a._b"),
+            promoted_attr_column(AttributeLevel::Record, "a_.b")
+        );
+    }
+
+    #[test]
+    fn promoted_attr_column_hash_is_pinned() {
+        assert_eq!(
+            promoted_attr_column(AttributeLevel::Record, "MyApp-Version"),
+            "attr_record_myapp_version___8241949b"
+        );
+    }
+
+    #[test]
+    fn promoted_attr_column_prefixes_by_level() {
+        for (level, prefix) in [
+            (AttributeLevel::Resource, "attr_resource_"),
+            (AttributeLevel::Scope, "attr_scope_"),
+            (AttributeLevel::Record, "attr_record_"),
+        ] {
+            assert!(
+                promoted_attr_column(level, "k").starts_with(prefix),
+                "level {level:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn promoted_attr_column_falls_back_when_the_clean_name_exceeds_120_chars() {
+        let key = "a".repeat(130);
+        let name = promoted_attr_column(AttributeLevel::Resource, &key);
+        assert!(name.len() <= 120, "{name} ({} chars)", name.len());
+        assert!(name.contains("___"), "{name}");
+        assert!(name.starts_with("attr_resource_"), "{name}");
+    }
+
+    /// Builds the `Schema` [`bloom_filter_properties_for_labels`] reads back
+    /// from -- a minimal base schema with `labels` appended the same way
+    /// [`crate::schema_parser::ResolvedSchema::build_iceberg_schema`] does,
+    /// so these tests exercise the real doc-tagging, not a hand-rolled
+    /// stand-in for it.
+    fn schema_with_labels(labels: &[String]) -> IcebergSchema {
+        use crate::schema::schema_parser::{ResolvedField, ResolvedSchema};
+
+        let base = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+        base.to_iceberg_schema_with_labels(labels).unwrap()
+    }
+
+    #[test]
+    fn bloom_filter_properties_target_the_schemas_actual_suffixed_column_under_a_base_collision() {
+        // A label whose candidate name collides with a base column gets
+        // suffixed at schema creation (#1448). The bloom filter must follow
+        // that suffixed column -- reading it back from the schema itself,
+        // rather than independently re-resolving from the raw key list
+        // against an empty (base-blind) schema, is what guarantees this: an
+        // empty-seeded resolution has no way to know the base collision
+        // happened at all, and would target the wrong (unsuffixed) name.
+        use crate::schema::schema_parser::{ResolvedField, ResolvedSchema};
+
+        let base = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture".to_string(),
+            fields: vec![ResolvedField {
+                name: "label_namespace".to_string(),
+                field_type: "string".to_string(),
+                required: false,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+        let labels = vec!["namespace".to_string()];
+        let schema = base.to_iceberg_schema_with_labels(&labels).unwrap();
+
+        assert_eq!(
+            bloom_filter_properties_for_labels(&schema),
+            vec![(
+                "write.parquet.bloom-filter-enabled.column.label_namespace_2".to_string(),
+                "true".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn bloom_filter_properties_for_labels_gives_colliding_keys_distinct_properties() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must get their own bloom-filter property, not
+        // just the first (#1448).
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let properties = bloom_filter_properties_for_labels(&schema_with_labels(&labels));
+        assert_eq!(
+            properties,
+            vec![
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method_2".to_string(),
+                    "true".to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn warm_index_properties_are_sized_and_carry_the_encoding_property() {
+        let cfg = crate::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.02,
+            rows_per_row_group: 10_000,
+            attrs_per_row: 16,
+            max_bloom_ndv: 2_000_000,
+        };
+        assert_eq!(
+            warm_index_properties(&cfg),
+            vec![
+                (
+                    "write.parquet.bloom-filter-enabled.column.attr_index.list.item".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-fpp.column.attr_index.list.item".to_string(),
+                    "0.02".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-ndv.column.attr_index.list.item".to_string(),
+                    "160000".to_string()
+                ),
+                (
+                    WARM_INDEX_ENCODING_PROPERTY.to_string(),
+                    WARM_INDEX_ENCODING_VERSION.to_string()
+                ),
+            ]
+        );
+    }
+
+    #[test]
+    fn warm_index_ndv_is_capped_by_max_bloom_ndv() {
+        let cfg = crate::config::WarmIndexConfig {
+            signals: vec![],
+            datasets: None,
+            fpp: 0.01,
+            rows_per_row_group: 1_000_000,
+            attrs_per_row: 1_000,
+            max_bloom_ndv: 2_000_000,
+        };
+        let (_, ndv) = warm_index_properties(&cfg)
+            .into_iter()
+            .find(|(k, _)| k.contains("bloom-filter-ndv"))
+            .expect("ndv property present");
+        assert_eq!(ndv, "2000000");
     }
 
     #[test]
@@ -771,23 +1174,28 @@ mod tests {
         let labels = vec![
             "namespace".to_string(),
             "http.method".to_string(),
-            // Sanitizes to the same column as `http.method` → collapsed.
+            // Sanitizes to the same candidate name as `http.method` — gets
+            // its own suffixed column and property, not collapsed (#1448).
             "http_method".to_string(),
         ];
         assert_eq!(
-            bloom_filter_properties_for_labels(&labels),
+            bloom_filter_properties_for_labels(&schema_with_labels(&labels)),
             vec![
-                (
-                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
-                    "true".to_string()
-                ),
                 (
                     "write.parquet.bloom-filter-enabled.column.label_http_method".to_string(),
                     "true".to_string()
                 ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_http_method_2".to_string(),
+                    "true".to_string()
+                ),
+                (
+                    "write.parquet.bloom-filter-enabled.column.label_namespace".to_string(),
+                    "true".to_string()
+                ),
             ]
         );
-        assert!(bloom_filter_properties_for_labels(&[]).is_empty());
+        assert!(bloom_filter_properties_for_labels(&schema_with_labels(&[])).is_empty());
     }
 
     #[test]
@@ -808,6 +1216,101 @@ traces = ["http.method"]
         assert_eq!(parsed.materialized_labels.logs, vec!["namespace", "pod"]);
         assert_eq!(parsed.materialized_labels.traces, vec!["http.method"]);
         assert!(parsed.materialized_labels.metrics.is_empty());
+    }
+
+    #[test]
+    fn warm_index_config_default_is_off_and_parses_from_toml() {
+        let cfg = SchemaConfig::default();
+        assert!(cfg.warm_index.signals.is_empty());
+        assert_eq!(cfg.warm_index.fpp, 0.01);
+        assert_eq!(cfg.warm_index.rows_per_row_group, 10_000);
+        assert_eq!(cfg.warm_index.attrs_per_row, 16);
+        assert_eq!(cfg.warm_index.max_bloom_ndv, 2_000_000);
+
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[warm_index]
+signals = ["logs", "traces"]
+datasets = ["prod"]
+fpp = 0.02
+rows_per_row_group = 5000
+attrs_per_row = 8
+max_bloom_ndv = 1000000
+"#;
+        let parsed: SchemaConfig = toml::from_str(toml).expect("parse schema config");
+        assert_eq!(
+            parsed.warm_index.signals,
+            vec![
+                crate::config::AttributeTypeSignal::Logs,
+                crate::config::AttributeTypeSignal::Traces
+            ]
+        );
+        assert_eq!(parsed.warm_index.datasets, Some(vec!["prod".to_string()]));
+        assert_eq!(parsed.warm_index.fpp, 0.02);
+        assert_eq!(parsed.warm_index.rows_per_row_group, 5000);
+        assert_eq!(parsed.warm_index.attrs_per_row, 8);
+        assert_eq!(parsed.warm_index.max_bloom_ndv, 1_000_000);
+    }
+
+    #[test]
+    fn attribute_type_overrides_default_is_empty_and_parses_from_toml() {
+        use crate::schema::logical::{AttributeLevel, LogicalFieldId};
+        use crate::schema::type_authority::CanonicalType;
+
+        let cfg = SchemaConfig::default();
+        assert!(cfg.attribute_types.is_empty());
+
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[[attribute_types]]
+signal = "logs"
+level = "record"
+key = "retry.count"
+type = "int64"
+
+[[attribute_types]]
+signal = "logs"
+level = "record"
+key = "retry.count"
+type = "string"
+dataset = "prod"
+"#;
+        let parsed: SchemaConfig = toml::from_str(toml).expect("parse schema config");
+        assert_eq!(parsed.attribute_types.len(), 2);
+
+        let field = LogicalFieldId {
+            source: "logs".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "retry.count".to_string(),
+        };
+
+        // No dataset given: falls back to the global (no-dataset) entry.
+        assert_eq!(
+            parsed.attribute_type_override("staging", &field),
+            Some(CanonicalType::Int64)
+        );
+
+        // A dataset-specific entry beats the entry with no dataset.
+        assert_eq!(
+            parsed.attribute_type_override("prod", &field),
+            Some(CanonicalType::String)
+        );
+    }
+
+    #[test]
+    fn attribute_type_override_rejects_unknown_signal() {
+        let toml = r#"
+catalog_type = "sql"
+catalog_uri = "sqlite::memory:"
+[[attribute_types]]
+signal = "spans"
+level = "record"
+key = "retry.count"
+type = "int64"
+"#;
+        assert!(toml::from_str::<SchemaConfig>(toml).is_err());
     }
 
     #[tokio::test]
@@ -838,11 +1341,10 @@ traces = ["http.method"]
     #[tokio::test]
     async fn test_tenant_schema_registry_with_custom_tenant() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://".to_string()),
+                ..Default::default()
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();
@@ -897,11 +1399,10 @@ traces = ["http.method"]
     #[tokio::test]
     async fn test_tenant_schema_registry_invalidation() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://".to_string()),
+                ..Default::default()
             }),
             ..Default::default()
         };
@@ -946,9 +1447,8 @@ traces = ["http.method"]
         // Verify specific schemas exist
         assert!(schemas.contains_key("traces"));
         assert!(schemas.contains_key("logs"));
-        assert!(schemas.contains_key("metrics_gauge"));
-        assert!(schemas.contains_key("metrics_sum"));
-        assert!(schemas.contains_key("metrics_histogram"));
+        assert!(schemas.contains_key("metrics"));
+        assert!(schemas.contains_key("metric_exemplars"));
     }
 
     #[test]
@@ -963,9 +1463,8 @@ traces = ["http.method"]
         // Verify specific partition specs exist
         assert!(partition_specs.contains_key("traces"));
         assert!(partition_specs.contains_key("logs"));
-        assert!(partition_specs.contains_key("metrics_gauge"));
-        assert!(partition_specs.contains_key("metrics_sum"));
-        assert!(partition_specs.contains_key("metrics_histogram"));
+        assert!(partition_specs.contains_key("metrics"));
+        assert!(partition_specs.contains_key("metric_exemplars"));
     }
 
     #[test]
@@ -1018,7 +1517,11 @@ traces = ["http.method"]
         // "Would create table ...".
         let namespace = manager.build_namespace("acme", "production").unwrap();
         let tables = manager.catalog().list_tabulars(&namespace).await.unwrap();
-        assert_eq!(tables.len(), 8, "{tables:?}");
+        assert_eq!(
+            tables.len(),
+            crate::iceberg::schemas::TableSchema::all().len(),
+            "{tables:?}"
+        );
     }
 
     /// Tenant isolation: `resolve_tenant_by_slug` matches config tenants

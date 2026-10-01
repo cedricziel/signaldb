@@ -275,8 +275,7 @@ impl ProfileService {
             return Ok(Vec::new());
         };
         let df = Self::apply_time_window(df, params.start, params.end)?;
-        let df = df
-            .select_columns(&["profile_attributes"])
+        let df = common::attrs::expr::select_attr_columns(df, &["profile_attributes"])
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let df = if df.schema().fields().iter().any(|f| {
@@ -341,8 +340,7 @@ impl ProfileService {
             return distinct_non_empty(&batches, "service_name");
         }
 
-        let df = df
-            .select_columns(&["profile_attributes"])
+        let df = common::attrs::expr::select_attr_columns(df, &["profile_attributes"])
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns; skip the dedup there.
         let df = if df.schema().fields().iter().any(|f| {
@@ -505,6 +503,16 @@ impl ProfileService {
     }
 }
 
+/// Read an attribute container column's per-row documents as
+/// [`serde_json::Value`] objects; see [`common::attrs::json_documents`] for
+/// the storage-form detection.
+fn attribute_json_rows(batch: &RecordBatch, name: &str) -> Vec<Option<serde_json::Value>> {
+    common::attrs::json_documents(batch, name)
+        .into_iter()
+        .map(|row| row.map(serde_json::Value::Object))
+        .collect()
+}
+
 /// Decode storage-format profile rows into model profiles. Rows with
 /// unparseable payload columns are skipped with a warning rather than
 /// failing the whole aggregation.
@@ -543,9 +551,9 @@ pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
     let samples_col = get_string("samples_json");
     let trace_ids = get_string("trace_id");
     let span_ids = get_string("span_id");
-    let profile_attrs = get_string("profile_attributes");
-    let resource_attrs = get_string("resource_attributes");
-    let scope_attrs = get_string("scope_attributes");
+    let mut profile_attrs = attribute_json_rows(batch, "profile_attributes");
+    let mut resource_attrs = attribute_json_rows(batch, "resource_attributes");
+    let mut scope_attrs = attribute_json_rows(batch, "scope_attributes");
 
     let opt_str = |col: Option<&StringArray>, i: usize| -> Option<String> {
         col.and_then(|c| {
@@ -622,10 +630,9 @@ pub(crate) fn batch_to_models(batch: &RecordBatch) -> Vec<Profile> {
             stacktraces,
             samples,
             links,
-            resource_attributes: opt_str(resource_attrs, i)
-                .and_then(|s| serde_json::from_str(&s).ok()),
-            scope_attributes: opt_str(scope_attrs, i).and_then(|s| serde_json::from_str(&s).ok()),
-            attributes: opt_str(profile_attrs, i).and_then(|s| serde_json::from_str(&s).ok()),
+            resource_attributes: resource_attrs.get_mut(i).and_then(std::mem::take),
+            scope_attributes: scope_attrs.get_mut(i).and_then(std::mem::take),
+            attributes: profile_attrs.get_mut(i).and_then(std::mem::take),
             dropped_attributes_count: 0,
         });
     }
@@ -672,7 +679,7 @@ mod tests {
     /// full query surface against it.
     async fn context_with_profiles() -> SessionContext {
         use datafusion::arrow::array::{
-            Date32Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
+            ArrayRef, Date32Array, Int32Array, Int64Array, StringArray, TimestampNanosecondArray,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use datafusion::catalog::{
@@ -680,7 +687,7 @@ mod tests {
         };
         use datafusion::datasource::MemTable;
 
-        let schema = Arc::new(Schema::new(vec![
+        let mut fields = vec![
             Field::new("profile_id", DataType::Utf8, false),
             Field::new(
                 "timestamp",
@@ -696,52 +703,69 @@ mod tests {
             Field::new("service_name", DataType::Utf8, false),
             Field::new("stacktraces_json", DataType::Utf8, false),
             Field::new("samples_json", DataType::Utf8, false),
-            Field::new("resource_attributes", DataType::Utf8, true),
-            Field::new("scope_attributes", DataType::Utf8, true),
-            Field::new("profile_attributes", DataType::Utf8, true),
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
             Field::new("date_day", DataType::Date32, false),
             Field::new("hour", DataType::Int32, false),
-        ]));
+        ];
 
         let base_nanos: i64 = 1_700_000_000_000_000_000;
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["aa".repeat(16), "bb".repeat(16)])),
-                Arc::new(TimestampNanosecondArray::from(vec![
-                    base_nanos,
-                    base_nanos + 60_000_000_000,
-                ])),
-                Arc::new(Int64Array::from(vec![10_000_000_000, 10_000_000_000])),
-                Arc::new(StringArray::from(vec!["cpu", "alloc_space"])),
-                Arc::new(StringArray::from(vec!["nanoseconds", "bytes"])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(Int64Array::from(vec![None::<i64>, None])),
-                Arc::new(StringArray::from(vec!["checkout", "billing"])),
-                Arc::new(StringArray::from(vec![
-                    r#"[{"frames":[{"function_name":"work"},{"function_name":"main"}]}]"#,
-                    r#"[{"frames":[{"function_name":"alloc"},{"function_name":"main"}]}]"#,
-                ])),
-                Arc::new(StringArray::from(vec![
-                    r#"[{"stacktrace_index":0,"values":[100]}]"#,
-                    r#"[{"stacktrace_index":0,"values":[40]}]"#,
-                ])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec![None::<&str>, None])),
-                Arc::new(StringArray::from(vec![
-                    Some(r#"{"host":"web-1"}"#),
-                    Some(r#"{"host":"web-2","region":"eu"}"#),
-                ])),
-                Arc::new(StringArray::from(vec![Some("11".repeat(16)), None])),
-                Arc::new(StringArray::from(vec![Some("22".repeat(8)), None])),
-                Arc::new(Date32Array::from(vec![19676, 19676])),
-                Arc::new(Int32Array::from(vec![8, 8])),
-            ],
-        )
-        .expect("valid batch");
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["aa".repeat(16), "bb".repeat(16)])),
+            Arc::new(TimestampNanosecondArray::from(vec![
+                base_nanos,
+                base_nanos + 60_000_000_000,
+            ])),
+            Arc::new(Int64Array::from(vec![10_000_000_000, 10_000_000_000])),
+            Arc::new(StringArray::from(vec!["cpu", "alloc_space"])),
+            Arc::new(StringArray::from(vec!["nanoseconds", "bytes"])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(StringArray::from(vec![None::<&str>, None])),
+            Arc::new(Int64Array::from(vec![None::<i64>, None])),
+            Arc::new(StringArray::from(vec!["checkout", "billing"])),
+            Arc::new(StringArray::from(vec![
+                r#"[{"frames":[{"function_name":"work"},{"function_name":"main"}]}]"#,
+                r#"[{"frames":[{"function_name":"alloc"},{"function_name":"main"}]}]"#,
+            ])),
+            Arc::new(StringArray::from(vec![
+                r#"[{"stacktrace_index":0,"values":[100]}]"#,
+                r#"[{"stacktrace_index":0,"values":[40]}]"#,
+            ])),
+            Arc::new(StringArray::from(vec![Some("11".repeat(16)), None])),
+            Arc::new(StringArray::from(vec![Some("22".repeat(8)), None])),
+            Arc::new(Date32Array::from(vec![19676, 19676])),
+            Arc::new(Int32Array::from(vec![8, 8])),
+        ];
+
+        let resource_rows = [Some(serde_json::Map::new()), Some(serde_json::Map::new())];
+        let scope_rows = [Some(serde_json::Map::new()), Some(serde_json::Map::new())];
+        let profile_rows = [
+            Some(serde_json::Map::from_iter([(
+                "host".to_string(),
+                serde_json::json!("web-1"),
+            )])),
+            Some(serde_json::Map::from_iter([
+                ("host".to_string(), serde_json::json!("web-2")),
+                ("region".to_string(), serde_json::json!("eu")),
+            ])),
+        ];
+        for (name, rows) in [
+            ("resource_attributes", &resource_rows),
+            ("scope_attributes", &scope_rows),
+            ("profile_attributes", &profile_rows),
+        ] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                "profiles",
+                "physical-v3",
+                name,
+                rows,
+            );
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).expect("valid batch");
 
         let ctx = SessionContext::new();
         let catalog = Arc::new(MemoryCatalogProvider::new());
@@ -838,6 +862,75 @@ mod tests {
             .await
             .expect("windowed search");
         assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+    }
+
+    /// [`context_with_profiles`], with `profile_attributes` rewritten onto
+    /// the typed attribute layout.
+    async fn context_with_typed_profiles() -> SessionContext {
+        use datafusion::catalog::{
+            CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
+        };
+        use datafusion::datasource::MemTable;
+
+        let ctx = context_with_profiles().await;
+        let batch = ctx
+            .table("acme.prod.profiles")
+            .await
+            .expect("scan the registered table")
+            .collect()
+            .await
+            .expect("collect")
+            .into_iter()
+            .next()
+            .expect("one batch");
+        let typed_batch = common::testing::to_typed_layout(
+            "profiles",
+            "physical-v3",
+            &batch,
+            &["profile_attributes"],
+        );
+
+        let new_ctx = SessionContext::new();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table(
+                "profiles".to_string(),
+                Arc::new(
+                    MemTable::try_new(typed_batch.schema(), vec![vec![typed_batch]])
+                        .expect("memtable"),
+                ),
+            )
+            .expect("register table");
+        catalog
+            .register_schema("prod", schema_provider)
+            .expect("register schema");
+        new_ctx.register_catalog("acme", catalog);
+        new_ctx
+    }
+
+    #[tokio::test]
+    async fn label_discovery_reads_typed_attribute_layout() {
+        let service = ProfileService::new(context_with_typed_profiles().await);
+
+        let names = service
+            .label_names_with_tenant(ProfileDiscoveryParams::default(), "acme", "prod")
+            .await
+            .expect("names");
+        assert_eq!(
+            names,
+            vec![
+                "host".to_string(),
+                "region".to_string(),
+                "service_name".to_string()
+            ]
+        );
+
+        let values = service
+            .label_values_with_tenant("host", ProfileDiscoveryParams::default(), "acme", "prod")
+            .await
+            .expect("values");
+        assert_eq!(values, vec!["web-1".to_string(), "web-2".to_string()]);
     }
 
     #[tokio::test]

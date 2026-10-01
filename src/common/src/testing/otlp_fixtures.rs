@@ -203,6 +203,54 @@ pub fn sample_metrics_request(num_points: usize) -> ExportMetricsServiceRequest 
     }
 }
 
+/// One gauge `Metric` per element of `values`, all named `metric_name` and
+/// attributed to `service_name`, with strictly increasing timestamps.
+/// Shared by callers that need a values-controlled OTLP metrics fixture to
+/// convert with [`crate::flight::conversion::otlp_metrics_to_arrow`] (e.g. a
+/// WAL-append test that wants a batch of gauge rows with known values).
+pub fn gauge_metrics_request_with_values(
+    metric_name: &str,
+    service_name: &str,
+    values: &[f64],
+) -> ExportMetricsServiceRequest {
+    let metrics: Vec<Metric> = values
+        .iter()
+        .enumerate()
+        .map(|(i, value)| Metric {
+            name: metric_name.to_string(),
+            description: String::new(),
+            unit: String::new(),
+            data: Some(Data::Gauge(Gauge {
+                data_points: vec![NumberDataPoint {
+                    attributes: vec![],
+                    start_time_unix_nano: BASE_TIME_UNIX_NANO,
+                    time_unix_nano: BASE_TIME_UNIX_NANO + i as u64 * 1_000_000,
+                    value: Some(number_data_point::Value::AsDouble(*value)),
+                    exemplars: vec![],
+                    flags: 0,
+                }],
+            })),
+            metadata: vec![],
+        })
+        .collect();
+
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![string_attr("service.name", service_name)],
+                dropped_attributes_count: 0,
+                entity_refs: vec![],
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics,
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

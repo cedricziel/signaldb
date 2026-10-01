@@ -14,7 +14,10 @@ dsn = "sqlite://.data/signaldb.db"
 # internal Flight ports are controlled separately by
 # internal_service_key below.
 
-# Admin API key for the /api/v1/admin/* management endpoints
+# Break-glass admin API key: authenticates /api/v1/ops/* (operational
+# control) and, with no tenant, /api/v1/* (instance-admin
+# tenant/user management) and the tenant-scoped API-key/dataset admin
+# surface under /api/v1/tenants/{id}/api-keys and /datasets.
 # Generate a strong random key for production use
 # admin_api_key = "sk-admin-your-secret-key-here"
 
@@ -27,6 +30,52 @@ dsn = "sqlite://.data/signaldb.db"
 # trusted network.
 # All SignalDB services must share the same value.
 # internal_service_key = "sk-internal-your-secret-key-here"
+
+# --- SSO / OIDC login (optional) --------------------------------------------
+# Let humans sign in to the Explore UI with an external OIDC identity provider
+# (Authentik, Keycloak, Dex, Pocket ID, a hosted IdP) instead of a SignalDB
+# password. Absent by default: no SSO surface is exposed and password login is
+# the only door. Endpoints are resolved from the issuer's
+# .well-known/openid-configuration; you never configure them by hand.
+# Full setup guide: docs/operations/oidc-sso.md
+# Env overrides use the double-underscore form, e.g.
+# SIGNALDB__AUTH__OIDC__CLIENT_SECRET (keep the secret out of this file in prod).
+# [auth.oidc]
+# issuer_url = "https://idp.example.com/application/o/signaldb/"  # required; discovery base
+# client_id = "signaldb"                                          # required; OAuth client ID
+# client_secret = "sk-oidc-client-secret"                         # required; confidential client secret
+#
+# The callback is https://<host>/ui/session/oidc/callback. When unset, SignalDB
+# derives it from [public].api_url (never from request headers) — set
+# [public].api_url for internet-facing deployments, or set redirect_url below
+# to pin the callback explicitly (it wins over [public].api_url when set).
+# redirect_url = "https://signaldb.example.com/ui/session/oidc/callback"
+#
+# display_name = "Example SSO"        # label on the login button; defaults to the issuer host
+#
+# Just-in-time provisioning allowlist: a verified email whose domain is not
+# listed is refused rather than creating a user. NOTE: this gates NEW-account
+# creation only — an already-existing user whose email is outside the list can
+# still link and sign in via verified email. Unset = any verified identity may
+# self-provision.
+# allowed_email_domains = ["example.com"]
+#
+# Map IdP groups to tenant memberships, re-applied at every login. group_claim
+# names the ID-token/userinfo claim carrying the user's groups and is REQUIRED
+# for group_mappings to have any effect. Mapped memberships coexist with
+# locally-granted ones (effective role = higher); a lost group revokes only the
+# mapped row; mapping never grants instance-admin; a rule naming a nonexistent
+# tenant is skipped with a warning rather than blocking login.
+# group_claim = "groups"
+# [[auth.oidc.group_mappings]]
+# group = "observability-admins"
+# tenant = "acme"
+# role = "admin"                      # one of: admin | member | viewer
+#
+# Make SSO the only door. Only honoured when a provider is configured above
+# (setting it without one is a startup error, so you can't lock everyone out by
+# typo). Does NOT disable API keys, admin_api_key, or the CLI bootstrap path.
+# disable_password_login = false
 
 # Default per-tenant rate limits and quotas, applied to every tenant without
 # an explicit [auth.tenants.limits] override. Unset fields mean unlimited.
@@ -151,19 +200,52 @@ logs_enabled = true
 metrics_enabled = true
 profiles_enabled = true
 
-# Attribute keys to promote from the *_attributes JSON into dedicated,
-# queryable columns per signal type. Materialized labels are matched
-# exactly (and support regex / ordered comparisons) instead of the
-# substring-in-JSON approximation. Keep the lists short and low-cardinality
-# — every entry adds a column. Applies to tables created after the change;
-# pre-existing tables fall back to JSON matching for these keys.
-# Per-tenant override: a tenant schema block replaces the global set
-# wholesale ([[auth.tenants]] -> [auth.tenants.schema.materialized_labels]).
+# Attribute keys to copy, as strings, into dedicated `label_<key>` columns per
+# signal type. The value also stays in its typed attribute map; the Query IR
+# reads the typed home, and only non-IR fallback paths read the label column
+# directly. Keep the lists short and low-cardinality — every entry adds a
+# column. Applies to tables created after the change; older tables read the
+# key's typed home for these keys.
+# Per-tenant override: a list set in a tenant's
+# [tenants.tenants.<id>.schema.materialized_labels] replaces that signal's
+# global list (`[]` clears it); signals the tenant leaves unset keep the
+# global list.
 # [schema.materialized_labels]
 # logs = ["namespace", "pod", "container"]
 # traces = ["http.method", "http.status_code"]
 # metrics = []
 # profiles = []
+
+# Pin the canonical type of an attribute key instead of leaving it to the
+# first-observed value or a semantic-convention hint. Values of another type
+# keep arriving losslessly but are not typed-queryable. Per-tenant override:
+# a tenant's [[tenants.tenants.<id>.schema.attribute_types]] entry replaces
+# the global entries on the same (signal, level, key) it covers: all of them
+# without `dataset`, only that dataset's with one. Other global entries still
+# apply to the tenant.
+# [[schema.attribute_types]]
+# signal = "logs"       # logs | traces | metrics | profiles
+# level = "record"      # resource | scope | record
+# key = "retry.count"
+# type = "int64"        # string | int64 | float64 | bool
+# dataset = "prod"      # optional; omitted applies to every dataset of the tenant
+
+# Opt-in warm derived containment index: a bloom-filtered List<Binary>
+# `attr_index` column over the typed attribute layout's home columns, for
+# "does this file contain key=value" checks without one bloom filter per
+# key (see openspec/changes/archive/2026-09-30-otel-native-schema
+# task 4.3). Off by default
+# (empty `signals`); only takes effect on a table whose resolved schema
+# version is the typed attribute layout. Per-tenant override merges per
+# field: a tenant's [tenants.tenants.<id>.schema.warm_index] changes only the
+# fields it sets.
+# [schema.warm_index]
+# signals = ["logs"]              # logs | traces | metrics | profiles
+# datasets = ["prod"]             # optional; omitted applies to every dataset
+# fpp = 0.01                      # bloom filter false-positive probability
+# rows_per_row_group = 10000      # Parquet rows per row group
+# attrs_per_row = 16              # typed attributes carried per row
+# max_bloom_ndv = 2000000         # cap on the computed bloom filter NDV
 
 # Custom schema definitions (optional)
 # [schema.default_schemas.custom_schemas]
@@ -232,9 +314,15 @@ max_instances = 256
 # Querier resource limits — bound what a single query (or tenant) can do
 # to the shared querier process.
 #
-# Maximum memory for query execution, in MiB. When unset the memory pool
-# is UNBOUNDED (a startup warning is logged) and one heavy query can OOM
-# the process. Strongly recommended in production.
+# Maximum memory for query execution, in MiB. Three cases:
+#   - a positive value: bounded to that many MiB.
+#   - 0: explicitly UNBOUNDED (an opt-out), in either deployment mode.
+#   - unset: the standalone querier binary stays UNBOUNDED (a startup
+#     warning is logged), same as 0. The monolith (`signaldb` with no
+#     subcommand) instead resolves an unset value to a bounded default
+#     (min(50% of host RAM, 4096) MiB) before starting the querier, because
+#     an unbounded query pool there can OOM ingest running in the same
+#     process, not just itself.
 # memory_limit_mb = 4096
 #
 # Fraction of memory_limit_mb usable by query operators before they
@@ -261,6 +349,41 @@ max_search_limit = 1000
 # Maximum queries a single tenant may run concurrently; excess queries
 # are rejected with RESOURCE_EXHAUSTED (retryable). Unset = unlimited.
 # max_concurrent_queries_per_tenant = 8
+#
+# Row cap on a Query IR `correlate` stage's joined output (the
+# span-to-parent join, irVersion 8). A span has at most one parent, so
+# the join itself can't fan out beyond the child side except for
+# duplicate span_ids; this bounds that pathological case. Reaching the
+# cap truncates the result rather than failing the query.
+correlate_max_rows = 5000000
+#
+# Row cap on the source relation a cross-signal `correlate` stage
+# (irVersion 11) materializes before scanning its target signal. A larger
+# source fails the query with HTTP 422 (`resource_limit`); narrow the source
+# with topk/limit/where instead. Must be greater than zero.
+correlate_max_source_rows = 10000
+#
+# Bounds on one trace a Query IR `match` stage (irVersion 12) evaluates:
+# its span count and the bytes of its buffered rows. A trace over either
+# bound fails the query with HTTP 422 (`resource_limit`) naming the trace;
+# it is never truncated. Both must be greater than zero.
+match_max_trace_spans = 100000
+match_max_trace_bytes = 67108864
+#
+# Node cap on a Query IR `graph` result (the service map). Past it the
+# graph keeps the focus node, then the nodes with the most call traffic,
+# and warns how many nodes it dropped.
+graph_max_nodes = 200
+#
+# Query IR pagination (`page`, irVersion 14): default and largest page size,
+# page byte budget (ends at a sort-key boundary), rows that may tie on one
+# sort key, rows one cursor chain may walk, and cursor lifetime (then 410).
+page_default_size = 1000
+page_max_size = 10000
+page_max_bytes = 16777216
+page_max_tie_rows = 10000
+page_max_walk_rows = 1000000
+page_cursor_ttl = "15m"
 
 [querier.datafusion]
 # DataFusion scan/pushdown tuning. All three default to true (DataFusion's
@@ -280,6 +403,50 @@ pushdown_filters = true
 # Evaluate cheap, selective predicates first; only meaningful when
 # pushdown_filters is enabled.
 reorder_filters = true
+#
+# Row count of the batches a query scan feeds downstream (e.g. into a
+# sort). The querier sorts over the same wide-row tables the compactor
+# compacts: DataFusion's ExternalSorter reserves ~2x an incoming batch's
+# bytes the instant it arrives, and that reservation cannot spill, so
+# DataFusion's own 8192-row default is only safe for narrow rows (#1359,
+# the querier analogue of #1064). 0 restores DataFusion's default.
+batch_size = 1024
+#
+# DataFusion partition fan-out for the query scan. Unlike the compactor,
+# queries are latency-sensitive, so this defaults to DataFusion's own
+# fan-out (available parallelism) rather than trading it away for a
+# smaller memory ceiling. Lower it to bound how many concurrent
+# ExternalSorters divide a query's share of memory_limit_mb. 0 restores
+# DataFusion's default.
+target_partitions = 0
+#
+# Memory in MB each spilling sort holds back so its spill merge can run
+# (datafusion.execution.sort_spill_reservation_bytes). Headroom taken out
+# of memory_limit_mb, not added to it. 0 means no headroom, which
+# DataFusion permits.
+sort_spill_reservation_mb = 10
+
+# [querier.warm_index]
+# Tuning for the warm containment-index scan prefilter. Only has an effect
+# on a table the writer actually built with the warm index ([schema].
+# warm_index); every other table is scanned unchanged regardless of these
+# settings.
+#
+# Whether the querier probes the warm index at all.
+# enabled = true
+#
+# Fewer candidate files than this and probing isn't worth the I/O.
+# min_files = 4
+#
+# Files to sample before committing to a full probe.
+# sample_files = 16
+#
+# Sample keep ratio above which the predicate isn't selective enough to be
+# worth a full probe (e.g. a value present in nearly every file).
+# max_keep_ratio = 0.5
+#
+# Bound on in-flight per-file bloom-filter probes.
+# probe_concurrency = 16
 
 [writer]
 # Writer commit-coalescing policy — how the writer batches ingested data
@@ -348,6 +515,35 @@ max_drain_bytes_per_cycle = 268435456 # 256 MiB
 # treated as a transient commit failure: the group's entries stay pending
 # and retry next cycle, never dead-lettered.
 group_commit_timeout = "120s"
+#
+# How long an ingest id (the batch content fingerprint carried in do_put's
+# app_metadata) is remembered, so a copy of a batch that reaches this writer
+# again -- an acceptor retry, or a client's resend through any acceptor
+# replica -- is deduped instead of re-inserted. In-memory only: rebuilt at
+# startup from ingest ids still present in this writer's own WAL entries
+# within the window. Size for roughly one writer restart plus the clients'
+# and acceptor's retry horizon, not long-term storage.
+ingest_dedup_window = "1h"
+
+[processors]
+# Tenant OTTL processors (change: tenant-ottl-processors) — per-tenant
+# ingest-time transform rules, compiled and cached by a per-tenant
+# `ProcessorRegistry`.
+#
+# How often a stale cache entry is refreshed from the catalog. Also the
+# cross-process propagation bound for a write to /api/v1/processors,
+# surfaced to API callers as `applies_within_seconds`.
+reload_interval = "30s"
+#
+# Maximum request body accepted by POST /api/v1/processors:test.
+test_payload_max_bytes = 1048576 # 1 MiB
+#
+# Maximum number of OTTL statements a single processor may carry.
+max_statements = 200
+#
+# Maximum length of a regex literal in an OTTL statement, enforced at
+# compile time.
+max_regex_len = 2048
 
 [acceptor]
 # Acceptor transport limits. One value drives both the OTLP/HTTP request
@@ -358,6 +554,13 @@ group_commit_timeout = "120s"
 # size: gzip/zstd request bodies are decompressed before this limit is
 # applied. 64MB comfortably covers the [wal] segment tuning below.
 max_request_body_bytes = 67108864     # 64MB
+# How long this acceptor remembers a durably accepted batch, so an exporter
+# that timed out and resends the identical export to it is acknowledged
+# without forwarding it again. A cheap first line: the writer's
+# ingest_dedup_window catches resends across acceptor replicas and restarts.
+# Covers the OpenTelemetry Collector's default retry horizon. "0s" disables
+# this cache only.
+retry_dedup_window = "5m"
 
 [compactor]
 # Compactor Service Configuration
@@ -484,6 +687,7 @@ profiles = "30d"                      # Profile data retention (default: 30 days
 # min_query_hits = 1            # Minimum accumulated query demand
 # promote_streak = 3            # Consecutive over-threshold cycles before promotion
 # max_promotions_per_cycle = 4  # Promotion cap per rewrite cycle
+# demote_after_idle = "7d"      # Fold a promoted column back into the typed map once this long unqueried; "0s" disables idle demotion
 
 [compactor.orphan_cleanup]
 enabled = true                        # Enable orphan cleanup (default: true)
@@ -606,12 +810,15 @@ rate_limit_delay_ms = 0               # Delay between batches in milliseconds (d
 # Multi-tenant configuration (always active)
 default_tenant = "default"
 
-# Example tenant configuration
+# Example tenant configuration. A tenant's schema block is merged over the
+# global [schema] field by field: it overrides only what it sets (see the
+# per-field notes under [schema] above).
 # [tenants.tenants.tenant1]
 # enabled = true
 # [tenants.tenants.tenant1.schema]
-# catalog_type = "sql"
-# catalog_uri = "sqlite://.data/tenant1_catalog.db"
+# catalog_uri = "sqlite://.data/tenant1_catalog.db"   # catalog_type stays global
+# [tenants.tenants.tenant1.schema.materialized_labels]
+# logs = ["team"]                                       # traces/metrics/profiles stay global
 # [tenants.tenants.tenant1.custom_schemas]
 # traces = "custom_traces_schema_definition"
 # logs = "custom_logs_schema_definition"
@@ -626,6 +833,7 @@ default_tenant = "default"
 #                                       # A non-loopback bind forwards live bearer
 #                                       # credentials and must sit behind TLS.
 # router_url = "http://localhost:3000"  # router HTTP API to forward to
+# ui_base_url = "https://signaldb.example.com"  # UI origin; unlocks _links.ui on tool results (unset by default)
 # router_timeout = 30                   # seconds per forwarded request
 # max_concurrent_tool_calls = 8         # tool calls in flight per MCP session; an
 #                                       # excess call waits 2s for a permit, then fails
@@ -643,6 +851,57 @@ default_tenant = "default"
 # access_token_ttl = "1h"                            # issued access-token lifetime
 # refresh_token_ttl = "30d"                          # issued refresh-token lifetime
 # authorization_code_ttl = "60s"                     # authorization-code lifetime (kept short)
+
+# Public-facing endpoints for this deployment, as reached from outside (e.g.
+# through a load balancer or reverse proxy). Distinct from the bind addresses
+# above, which describe what a service listens on locally. All fields are
+# optional; unset ones fall back to localhost defaults suitable only for local
+# development. Answers `GET /api/v1/connection` and the MCP `connection_info`
+# tool so agents and humans can self-serve connection details.
+# [public]
+# otlp_grpc_url = "https://otlp.example.com:4317"    # public OTLP/gRPC endpoint
+# otlp_http_url = "https://otlp.example.com:4318"    # public OTLP/HTTP base (signal paths appended)
+# api_url = "https://signaldb.example.com"           # public router HTTP API base
+# mcp_url = "https://signaldb.example.com/mcp"       # public MCP endpoint; falls back to
+#                                                     # [mcp.oauth].resource_url when unset
+
+# --- GitHub App integration (optional) --------------------------------------
+# Lets a tenant admin connect SignalDB's GitHub App to the repositories that
+# produce their telemetry (Explore UI → user menu → "GitHub", or
+# `signaldb-cli tenant github link`). One App identity serves the whole
+# deployment; each tenant links its own installations, which stay isolated
+# per tenant. SignalDB mints short-lived installation tokens from the private
+# key on demand and never stores a GitHub access token. Absent by default:
+# no GitHub surface is exposed. Full setup guide, including the App
+# registration (read-only `contents` + `metadata` permissions, "Request user
+# authorization (OAuth) during installation" enabled, callback URL
+# `https://<host>/ui/github/callback`): docs/operations/github-app.md
+# Env overrides use the double-underscore form, e.g.
+# SIGNALDB__GITHUB__CLIENT_SECRET (keep the secrets out of this file in prod).
+# [github]
+# app_id = 12345                          # required; the App's numeric id
+# app_slug = "signaldb"                   # required; github.com/apps/<slug>
+# private_key_path = "/run/secrets/github-app.pem"  # or inline `private_key = "-----BEGIN ..."`
+# client_id = "Iv1.0123456789abcdef"      # required; the App's OAuth client id
+# client_secret = "..."                   # required; the App's OAuth client secret
+# api_url = "https://api.github.com"      # GitHub Enterprise Server: https://ghe.example.com/api/v3
+# web_url = "https://github.com"          # GitHub Enterprise Server: https://ghe.example.com
+# link_state_ttl = "10m"                  # how long "Connect" waits for GitHub's redirect back
+# snippet_cache_ttl = "10m"                # how long a fetched source-context snippet is cached
+# snippet_cache_capacity = 1000            # max distinct cached files, <=512 KiB each (LRU-evicted)
+
+# Public read-only demo account (change: demo-mode): docs/operations/demo-mode.md
+# Disabled by default. When enabled, the router provisions (and reconciles on
+# every restart) a local user signed in as `username`/`password` with exactly
+# a Viewer membership on `tenant_id` — never more, even if an admin elevates
+# it by hand. An HTTP middleware additionally refuses every non-read request
+# from that session as defense in depth.
+# [demo]
+# enabled = true
+# tenant_id = "demo"          # required when enabled; must already exist (see [[auth.tenants]])
+# dataset_id = "otel-demo"    # optional; the dataset the Explore UI pre-selects
+# username = "demo@example.com" # login email; default shown
+# password = "demo"           # default shown — change for anything but a throwaway demo
 
 # Environment variable examples:
 # SIGNALDB__MCP__ENABLED=true

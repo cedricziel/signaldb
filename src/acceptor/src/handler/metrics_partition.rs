@@ -11,7 +11,9 @@ use opentelemetry_proto::tonic::metrics::v1::{
     Metric, ResourceMetrics, ScopeMetrics, metric::Data,
 };
 
-/// Partition metrics by type to avoid schema conflicts.
+/// Partition metrics by type to avoid schema conflicts. Splits by wire type
+/// (each type becomes its own `ExportMetricsServiceRequest`), but every
+/// partition targets the single wide `metrics` table.
 /// Returns: HashMap<metric_type, (table_name, partitioned_request)>
 pub(crate) fn partition_metrics_by_type(
     request: &ExportMetricsServiceRequest,
@@ -70,23 +72,7 @@ pub(crate) fn partition_metrics_by_type(
     let mut result = HashMap::new();
 
     for (metric_type, by_resource) in by_type {
-        let table_name = match metric_type {
-            "gauge" => "metrics_gauge",
-            "sum" => "metrics_sum",
-            "histogram" => "metrics_histogram",
-            "exponential_histogram" => "metrics_exponential_histogram",
-            "summary" => "metrics_summary",
-            other => {
-                // Defensive fallback, not expected to be reachable: every
-                // value pushed into `by_type` above came from one of the
-                // five match arms in the first pass.
-                tracing::warn!(
-                    metric_type = %other,
-                    "Unknown metric type, falling back to metrics_gauge table"
-                );
-                "metrics_gauge"
-            }
-        };
+        let table_name = "metrics";
 
         let mut partitioned_resource_metrics = Vec::new();
         for (res_idx, resource_metrics) in request.resource_metrics.iter().enumerate() {
@@ -328,5 +314,29 @@ mod tests {
             1,
             "sum partition must not include the gauge-only scope"
         );
+    }
+
+    /// Every type still gets its own wire
+    /// partition (the per-type split is unchanged), but every partition's
+    /// target table is the single `metrics` table.
+    #[test]
+    fn wide_layout_targets_the_single_metrics_table_for_every_type() {
+        let request = ExportMetricsServiceRequest {
+            resource_metrics: vec![ResourceMetrics {
+                resource: Some(resource("svc")),
+                scope_metrics: vec![ScopeMetrics {
+                    scope: None,
+                    metrics: vec![gauge("g", 1.0), sum("s", 1)],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let partitions = partition_metrics_by_type(&request);
+        assert_eq!(partitions.len(), 2, "still one wire partition per type");
+        for (table_name, _) in partitions.values() {
+            assert_eq!(table_name, "metrics");
+        }
     }
 }

@@ -11,7 +11,7 @@ use common::model::{
 };
 use datafusion::{
     arrow::{
-        array::{Array, BooleanArray, Int64Array, MapArray, RecordBatch, StringArray},
+        array::{Array, BooleanArray, Int64Array, RecordBatch, StringArray},
         datatypes::{DataType, TimeUnit},
     },
     logical_expr::{Expr, col, lit},
@@ -203,7 +203,7 @@ impl TraceService {
         // Projection pushdown: only read the columns needed to reconstruct the
         // trace, so the scan skips the fat `events` / `links` / `scope_*`
         // columns entirely.
-        df = df.select_columns(&TRACE_LOOKUP_COLUMNS).map_err(|e| {
+        df = common::attrs::expr::select_attr_columns(df, &TRACE_LOOKUP_COLUMNS).map_err(|e| {
             tracing::error!(
                 "Failed to project trace lookup columns for trace_id={}: {e}",
                 params.trace_id
@@ -253,8 +253,8 @@ impl TraceService {
             let span_kinds = string_column(&batch, "span_kind")?;
             let start_times = required_i64_column(&batch, "start_time_unix_nano")?;
             let durations = required_i64_column(&batch, "duration_nanos")?;
-            let span_attrs = resolve_attribute_column(&batch, "span_attributes");
-            let resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
+            let mut span_attrs = resolve_attribute_column(&batch, "span_attributes");
+            let mut resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
             let events_col = resolve_events_column(&batch);
 
             for row_index in 0..batch.num_rows() {
@@ -265,8 +265,8 @@ impl TraceService {
 
                 let span_id = span_ids.value(row_index).to_string();
                 let parent_span_id = parent_span_ids.value(row_index).to_string();
-                let attributes = attribute_map_from(&span_attrs, row_index);
-                let resource = attribute_map_from(&resource_attrs, row_index);
+                let attributes = attribute_map_from(&mut span_attrs, row_index);
+                let resource = attribute_map_from(&mut resource_attrs, row_index);
                 let events = span_events_from(events_col, row_index);
 
                 let span = Span {
@@ -354,15 +354,15 @@ impl TraceService {
             let span_kinds = string_column(&batch, "span_kind")?;
             let start_times = required_i64_column(&batch, "start_time_unix_nano")?;
             let durations = required_i64_column(&batch, "duration_nanos")?;
-            let span_attrs = resolve_attribute_column(&batch, "span_attributes");
-            let resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
+            let mut span_attrs = resolve_attribute_column(&batch, "span_attributes");
+            let mut resource_attrs = resolve_attribute_column(&batch, "resource_attributes");
 
             for row_index in 0..batch.num_rows() {
                 let current_trace_id = trace_ids.value(row_index).to_string();
                 let span_id = span_ids.value(row_index).to_string();
                 let parent_span_id = parent_span_ids.value(row_index).to_string();
-                let attributes = attribute_map_from(&span_attrs, row_index);
-                let resource = attribute_map_from(&resource_attrs, row_index);
+                let attributes = attribute_map_from(&mut span_attrs, row_index);
+                let resource = attribute_map_from(&mut resource_attrs, row_index);
 
                 let span = Span {
                     span_id: span_id.clone(),
@@ -533,14 +533,20 @@ impl TraceService {
                     .collect(),
             ),
             pipeline,
+            focus: None,
+            depth: None,
+            trace_id: None,
+            baseline: None,
+            step: None,
+            constant: None,
+            page: None,
+            tail: None,
         };
 
-        let Some((df, _window)) = super::ir_planner::plan_document(
+        let Some((df, _window, _correlate_truncated)) = super::ir_planner::plan_document(
             &self.session_context,
             &doc,
-            tenant_slug,
-            dataset_slug,
-            0,
+            super::ir_planner::PlanRequest::new(tenant_slug, dataset_slug, 0),
         )
         .await?
         else {
@@ -594,12 +600,13 @@ impl TraceService {
             cols.push("span_attributes");
         }
 
-        let scan = time_window(df, params.start, params.end)?
-            .select_columns(&cols)
+        let windowed = time_window(df, params.start, params.end)?;
+        let scan = common::attrs::expr::select_attr_columns(windowed, &cols)
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns, so the JSON-era
-        // `distinct()` dedup is skipped for map-typed attribute tables.
-        let map_typed = cols.iter().any(|c| is_map_column(&scan, c));
+        // `distinct()` dedup is skipped for map-typed attribute tables —
+        // the typed layout's homes are Map columns too.
+        let map_typed = has_typed_attribute_column(&scan, &cols);
         let scan = if map_typed {
             scan
         } else {
@@ -708,10 +715,9 @@ impl TraceService {
         // documents — covers map-stored attributes and unknown tags alike
         // (an unknown key simply is never present, so the result is empty).
         let cols = ["resource_attributes", "span_attributes"];
-        let scan = df
-            .select_columns(&cols)
+        let scan = common::attrs::expr::select_attr_columns(df, &cols)
             .map_err(QuerierError::QueryFailed)?;
-        let map_typed = cols.iter().any(|c| is_map_column(&scan, c));
+        let map_typed = has_typed_attribute_column(&scan, &cols);
         let scan = if map_typed {
             scan
         } else {
@@ -754,14 +760,15 @@ fn dedicated_tag_column(tag: &str) -> Option<(&'static str, bool)> {
     }
 }
 
-/// Whether `column` is a typed `Map` column in `df`'s schema — Arrow's row
-/// format cannot sort Map columns, so callers must skip `distinct()` on
-/// them (see [`TraceService::get_tags`]).
-fn is_map_column(df: &DataFrame, column: &str) -> bool {
-    df.schema()
-        .fields()
+/// Whether any of `containers` is on the typed attribute layout in `df`'s
+/// schema — its homes are `Map` columns, which Arrow's row format cannot
+/// sort, so callers must skip `distinct()` on such a scan (see
+/// [`TraceService::get_tags`]).
+fn has_typed_attribute_column(df: &DataFrame, containers: &[&str]) -> bool {
+    let schema = df.schema().as_arrow();
+    containers
         .iter()
-        .any(|f| f.name() == column && matches!(f.data_type(), DataType::Map(_, _)))
+        .any(|&c| common::attrs::expr::is_typed_layout(schema, c))
 }
 
 /// Columns required to reconstruct a trace in [`TraceService::find_by_id_with_tenant`].
@@ -914,7 +921,7 @@ fn unix_seconds_to_nanos(name: &str, seconds: i64) -> Result<i64, QuerierError> 
     })
 }
 
-fn timestamp_bound_scalar(
+pub(super) fn timestamp_bound_scalar(
     nanos: i64,
     col_type: &DataType,
     round_up: bool,
@@ -1036,75 +1043,26 @@ fn required_i64_column<'a>(
         .ok_or_else(|| QuerierError::InvalidInput(format!("Column '{name}' has wrong type")))
 }
 
-/// A trace attribute column resolved once per batch (outside the row loop),
-/// mirroring the two storage forms [`attribute_map_from`] reads: a typed
-/// `Map<Utf8, Utf8>` column (current tables, written by the writer's schema
-/// coercion) and a legacy `Utf8` column holding a flat JSON object.
-enum AttributeColumn<'a> {
-    Map(&'a MapArray),
-    Json(&'a StringArray),
-    Absent,
+/// Resolve a trace attribute column once per batch (outside the row loop);
+/// see [`common::attrs::json_documents`] for the storage-form detection.
+fn resolve_attribute_column(
+    batch: &RecordBatch,
+    name: &str,
+) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
+    common::attrs::json_documents(batch, name)
 }
 
-/// Resolve the attribute column named `name` for a batch once; see
-/// [`AttributeColumn`].
-fn resolve_attribute_column<'a>(batch: &'a RecordBatch, name: &str) -> AttributeColumn<'a> {
-    let Some(column) = batch.column_by_name(name) else {
-        return AttributeColumn::Absent;
-    };
-    if let Some(map) = column.as_any().downcast_ref::<MapArray>() {
-        return AttributeColumn::Map(map);
-    }
-    if let Some(arr) = column.as_any().downcast_ref::<StringArray>() {
-        return AttributeColumn::Json(arr);
-    }
-    AttributeColumn::Absent
-}
-
-/// Read one row of an [`AttributeColumn`] resolved by
-/// [`resolve_attribute_column`] into a `serde_json` map. An absent column, a
-/// null row, or unparseable content yields an empty map.
-///
-/// The map form stores every value as a string, so its values come back as
-/// `Value::String`; the legacy JSON form preserves the original scalar type.
+/// Take one row's document out of a [`resolve_attribute_column`] result,
+/// leaving `None` behind, and turn it into a `serde_json` map. An absent
+/// column, a null row, or unparseable content yields an empty map.
 fn attribute_map_from(
-    column: &AttributeColumn<'_>,
+    rows: &mut [Option<serde_json::Map<String, serde_json::Value>>],
     row: usize,
 ) -> HashMap<String, serde_json::Value> {
-    match column {
-        AttributeColumn::Map(map) => {
-            if map.is_null(row) {
-                return HashMap::new();
-            }
-            let entries = map.value(row);
-            let (Some(keys), Some(values)) = (
-                entries.column(0).as_any().downcast_ref::<StringArray>(),
-                entries.column(1).as_any().downcast_ref::<StringArray>(),
-            ) else {
-                return HashMap::new();
-            };
-            let mut out = HashMap::with_capacity(entries.len());
-            for j in 0..entries.len() {
-                if !keys.is_null(j) && !values.is_null(j) {
-                    out.insert(
-                        keys.value(j).to_string(),
-                        serde_json::Value::String(values.value(j).to_string()),
-                    );
-                }
-            }
-            out
-        }
-        AttributeColumn::Json(arr) => {
-            if arr.is_null(row) {
-                return HashMap::new();
-            }
-            match serde_json::from_str::<serde_json::Value>(arr.value(row)) {
-                Ok(serde_json::Value::Object(map)) => map.into_iter().collect(),
-                _ => HashMap::new(),
-            }
-        }
-        AttributeColumn::Absent => HashMap::new(),
-    }
+    rows.get_mut(row)
+        .and_then(std::mem::take)
+        .map(|m| m.into_iter().collect())
+        .unwrap_or_default()
 }
 
 /// Resolve the `events` JSON-string column for a batch once; see
@@ -1740,34 +1698,7 @@ mod tests {
     }
 
     #[test]
-    fn attribute_map_reads_typed_map_columns() {
-        use datafusion::arrow::array::{ArrayRef, MapBuilder, StringBuilder};
-        use datafusion::arrow::record_batch::RecordBatch;
-
-        // Build a Map<Utf8, Utf8> column, the form the writer stores today.
-        let mut builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
-        builder.keys().append_value("http.method");
-        builder.values().append_value("POST");
-        builder.keys().append_value("http.status_code");
-        builder.values().append_value("200");
-        builder.append(true).unwrap();
-        let column: ArrayRef = Arc::new(builder.finish());
-        let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
-
-        let resolved = resolve_attribute_column(&batch, "span_attributes");
-        let attrs = attribute_map_from(&resolved, 0);
-        assert_eq!(
-            attrs.get("http.method"),
-            Some(&serde_json::Value::String("POST".to_string()))
-        );
-        assert_eq!(
-            attrs.get("http.status_code"),
-            Some(&serde_json::Value::String("200".to_string()))
-        );
-    }
-
-    #[test]
-    fn attribute_map_reads_legacy_json_columns() {
+    fn attribute_map_reads_wire_format_json_columns() {
         use datafusion::arrow::record_batch::RecordBatch;
 
         let column: datafusion::arrow::array::ArrayRef = Arc::new(StringArray::from(vec![Some(
@@ -1775,8 +1706,30 @@ mod tests {
         )]));
         let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
 
-        let resolved = resolve_attribute_column(&batch, "span_attributes");
-        let attrs = attribute_map_from(&resolved, 0);
+        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
+        let attrs = attribute_map_from(&mut resolved, 0);
+        assert_eq!(
+            attrs.get("db.system"),
+            Some(&serde_json::Value::String("postgresql".to_string()))
+        );
+    }
+
+    #[test]
+    fn attribute_map_reads_typed_layout_columns() {
+        use datafusion::arrow::datatypes::Schema;
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let row = serde_json::Map::from_iter([(
+            "db.system".to_string(),
+            serde_json::Value::String("postgresql".to_string()),
+        )]);
+        let (fields, arrays) =
+            common::testing::typed_attribute_columns("span_attributes", &[Some(row)]);
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema, arrays.to_vec()).unwrap();
+
+        let mut resolved = resolve_attribute_column(&batch, "span_attributes");
+        let attrs = attribute_map_from(&mut resolved, 0);
         assert_eq!(
             attrs.get("db.system"),
             Some(&serde_json::Value::String("postgresql".to_string()))
@@ -1791,11 +1744,15 @@ mod tests {
         let column: ArrayRef = Arc::new(StringArray::from(vec![Option::<&str>::None]));
         let batch = RecordBatch::try_from_iter([("span_attributes", column)]).unwrap();
         assert!(
-            attribute_map_from(&resolve_attribute_column(&batch, "span_attributes"), 0).is_empty()
+            attribute_map_from(&mut resolve_attribute_column(&batch, "span_attributes"), 0)
+                .is_empty()
         );
         assert!(
-            attribute_map_from(&resolve_attribute_column(&batch, "resource_attributes"), 0)
-                .is_empty()
+            attribute_map_from(
+                &mut resolve_attribute_column(&batch, "resource_attributes"),
+                0
+            )
+            .is_empty()
         );
     }
 
@@ -2041,6 +1998,61 @@ mod tests {
         TraceService::new(ctx, "traces".to_string())
     }
 
+    /// [`search_session`]'s traces table, rewritten onto the typed
+    /// attribute layout.
+    async fn search_session_typed() -> SessionContext {
+        use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
+        use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
+
+        let ctx = search_session();
+        let batch = ctx
+            .table("t.d.traces")
+            .await
+            .unwrap()
+            .collect()
+            .await
+            .unwrap()
+            .into_iter()
+            .next()
+            .unwrap();
+        let typed_batch = common::testing::to_typed_layout(
+            "traces",
+            "physical-v5",
+            &batch,
+            &["span_attributes", "resource_attributes"],
+        );
+
+        let new_ctx = SessionContext::new();
+        let table = MemTable::try_new(typed_batch.schema(), vec![vec![typed_batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("traces".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        new_ctx.register_catalog("t", cat);
+        new_ctx
+    }
+
+    #[tokio::test]
+    async fn find_by_id_reads_typed_attribute_layout() {
+        let service = TraceService::new(search_session_typed().await, "traces".to_string());
+        let trace = service
+            .find_by_id_with_tenant(
+                FindTraceByIdParams {
+                    trace_id: "t-old".to_string(),
+                    start: None,
+                    end: None,
+                },
+                "t",
+                "d",
+            )
+            .await
+            .expect("typed-layout trace lookup must not error")
+            .expect("trace must be found");
+        assert_eq!(trace.trace_id, "t-old");
+        assert_eq!(trace.spans.len(), 1);
+    }
+
     #[tokio::test]
     async fn find_by_id_on_absent_table_is_not_found() {
         let service = service_without_traces_table();
@@ -2134,50 +2146,18 @@ mod tests {
 
     // ---- Tag discovery (#1073) ----
 
-    /// Register a `t.d.traces` table with map-typed attribute columns and
+    /// Register a `t.d.traces` table with typed-layout attribute columns and
     /// three spans: one outside the `[1_000, 3_000]` test window carrying
     /// attribute keys unique to it (to prove window exclusion), and two
     /// inside it with distinct resource/span attribute keys and values, one
     /// root and one not (to prove `is_root`-filtered intrinsics).
     fn tags_session() -> SessionContext {
-        use datafusion::arrow::array::{
-            ArrayRef, BooleanArray, MapBuilder, MapFieldNames, StringBuilder,
-            TimestampNanosecondArray,
-        };
-        use datafusion::arrow::datatypes::{Field, Fields, Schema};
+        use datafusion::arrow::array::{ArrayRef, BooleanArray, TimestampNanosecondArray};
+        use datafusion::arrow::datatypes::{Field, Schema};
         use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
         use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
 
-        fn map_field(name: &str) -> Field {
-            let entries = Field::new(
-                "entries",
-                DataType::Struct(Fields::from(vec![
-                    Field::new("keys", DataType::Utf8, false),
-                    Field::new("values", DataType::Utf8, true),
-                ])),
-                false,
-            );
-            Field::new(name, DataType::Map(Arc::new(entries), false), true)
-        }
-
-        fn maps(rows: &[&[(&str, &str)]]) -> ArrayRef {
-            let names = MapFieldNames {
-                entry: "entries".to_string(),
-                key: "keys".to_string(),
-                value: "values".to_string(),
-            };
-            let mut b = MapBuilder::new(Some(names), StringBuilder::new(), StringBuilder::new());
-            for row in rows {
-                for (k, v) in *row {
-                    b.keys().append_value(k);
-                    b.values().append_value(v);
-                }
-                b.append(true).unwrap();
-            }
-            Arc::new(b.finish())
-        }
-
-        let schema = Arc::new(Schema::new(vec![
+        let mut fields = vec![
             Field::new("trace_id", DataType::Utf8, false),
             Field::new("span_id", DataType::Utf8, false),
             Field::new("parent_span_id", DataType::Utf8, true),
@@ -2193,50 +2173,59 @@ mod tests {
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
                 false,
             ),
-            map_field("span_attributes"),
-            map_field("resource_attributes"),
-        ]));
+        ];
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(StringArray::from(vec!["t-old", "t-mid", "t-new"])),
+            Arc::new(StringArray::from(vec!["s0", "s1", "s2"])),
+            Arc::new(StringArray::from(vec![Some(""), Some(""), Some("")])),
+            Arc::new(StringArray::from(vec![
+                "LEGACY",
+                "GET /orders",
+                "ProcessQueue",
+            ])),
+            Arc::new(StringArray::from(vec![
+                "legacy-svc",
+                "checkout",
+                "checkout-worker",
+            ])),
+            Arc::new(StringArray::from(vec!["Internal", "Server", "Internal"])),
+            Arc::new(StringArray::from(vec![
+                Some("Ok"),
+                Some("Ok"),
+                Some("Error"),
+            ])),
+            Arc::new(BooleanArray::from(vec![true, true, false])),
+            Arc::new(Int64Array::from(vec![100_i64, 1_000, 2_000])),
+            Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
+            Arc::new(TimestampNanosecondArray::from(vec![100_i64, 1_000, 2_000])),
+        ];
 
-        let starts: Vec<i64> = vec![100, 1_000, 2_000];
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["t-old", "t-mid", "t-new"])) as ArrayRef,
-                Arc::new(StringArray::from(vec!["s0", "s1", "s2"])),
-                Arc::new(StringArray::from(vec![Some(""), Some(""), Some("")])),
-                Arc::new(StringArray::from(vec![
-                    "LEGACY",
-                    "GET /orders",
-                    "ProcessQueue",
-                ])),
-                Arc::new(StringArray::from(vec![
-                    "legacy-svc",
-                    "checkout",
-                    "checkout-worker",
-                ])),
-                Arc::new(StringArray::from(vec!["Internal", "Server", "Internal"])),
-                Arc::new(StringArray::from(vec![
-                    Some("Ok"),
-                    Some("Ok"),
-                    Some("Error"),
-                ])),
-                Arc::new(BooleanArray::from(vec![true, true, false])),
-                Arc::new(Int64Array::from(starts.clone())),
-                Arc::new(Int64Array::from(vec![100_i64, 200, 300])),
-                Arc::new(TimestampNanosecondArray::from(starts)),
-                maps(&[
-                    &[("legacy.route", "/old")],
-                    &[("http.route", "/api/orders")],
-                    &[("http.route", "/api/users")],
-                ]),
-                maps(&[
-                    &[("legacy.only", "x")],
-                    &[("deployment.environment.name", "prod")],
-                    &[("deployment.environment.name", "staging")],
-                ]),
-            ],
-        )
-        .unwrap();
+        let json_row = |pairs: &[(&str, &str)]| {
+            Some(serde_json::Map::from_iter(pairs.iter().map(|(k, v)| {
+                (k.to_string(), serde_json::Value::String(v.to_string()))
+            })))
+        };
+        let span_rows = [
+            json_row(&[("legacy.route", "/old")]),
+            json_row(&[("http.route", "/api/orders")]),
+            json_row(&[("http.route", "/api/users")]),
+        ];
+        let resource_rows = [
+            json_row(&[("legacy.only", "x")]),
+            json_row(&[("deployment.environment.name", "prod")]),
+            json_row(&[("deployment.environment.name", "staging")]),
+        ];
+        for (name, rows) in [
+            ("span_attributes", &span_rows),
+            ("resource_attributes", &resource_rows),
+        ] {
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns(name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();

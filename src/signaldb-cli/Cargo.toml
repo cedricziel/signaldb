@@ -1,11 +1,16 @@
 [package]
 name = "signaldb-cli"
-version = "0.3.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
 signaldb-sdk.workspace = true
+# The eval run/compare model and its Query IR reads, shared with the MCP
+# server (via `common::evals`, which re-exports this crate) so `evals
+# runs|compare` and its tools agree. A leaf crate, so the CLI does not
+# depend on `common` or build it.
+eval-model.workspace = true
 clap.workspace = true
 clap_complete.workspace = true
 tokio.workspace = true
@@ -21,6 +26,9 @@ crossterm.workspace = true
 tui-tree-widget.workspace = true
 thiserror.workspace = true
 chrono.workspace = true
+url.workspace = true
+uuid.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 [lib]
 name = "signaldb_cli"
@@ -31,9 +39,14 @@ name = "signaldb-cli"
 path = "src/main.rs"
 
 [dev-dependencies]
+eval-model = { workspace = true, features = ["testing"] }
 insta = "1.46"
 mockito = "1.7"
 tokio = { workspace = true, features = ["test-util"] }
 
 [package.metadata.cargo-machete]
-ignored = ["ratatui", "crossterm", "tui-tree-widget", "insta", "mockito"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["ratatui", "crossterm", "tui-tree-widget", "insta", "mockito", "workspace-hack"]
+
+[lints]
+workspace = true

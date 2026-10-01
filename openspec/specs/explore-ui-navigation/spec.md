@@ -6,7 +6,9 @@ Defines how the explore UI's client-side URLs map to on-screen views, so
 every reachable screen — a signal view, the tenant management panel, the
 OAuth consent screen — has a distinct, bookmarkable, shareable address and
 participates correctly in browser back/forward history.
+
 ## Requirements
+
 ### Requirement: Signal selection via URL path
 
 The explore UI SHALL expose each signal view at its own path — `/logs`,
@@ -36,12 +38,19 @@ to `/logs`, preserving any query string from the original URL.
 
 ### Requirement: Root path redirects to the logs view
 
-Navigating to the site root SHALL redirect to `/logs`.
+Navigating to the site root SHALL redirect to `/logs`, preserving any query
+string from the original URL.
 
 #### Scenario: Root redirects to logs
 
 - **WHEN** a user opens `/`
 - **THEN** the browser URL becomes `/logs` and the logs view renders
+
+#### Scenario: Root redirect preserving query params
+
+- **WHEN** a user opens `/?tenant=acme&dataset=prod`
+- **THEN** the browser URL becomes `/logs?tenant=acme&dataset=prod` and the
+  logs view renders
 
 ### Requirement: Tenant management is reachable via a dedicated URL
 
@@ -142,3 +151,75 @@ parameters as on every other view.
 
 - **WHEN** a user opens `/catalog?entity=service&primary=x`
 - **THEN** the default entity list renders (the query parameters are ignored)
+
+### Requirement: Login screen is a standalone route
+
+`/login` SHALL render the sign-in page on its own, outside the explore
+shell (no top bar, no signal tabs) and without a modal dialog. It SHALL
+accept an optional `?redirect=<path>` honoured only for a same-app relative
+path (anything else falls back to `/logs`), and an optional `?error=<code>`
+reported once as a generic alert. An already-authenticated visitor SHALL be
+forwarded to the target without seeing the form. Signing out SHALL land
+here.
+
+#### Scenario: Login page renders standalone
+
+- **WHEN** an unauthenticated visitor opens `/login`
+- **THEN** the sign-in page renders without the explore shell's top bar or
+  signal tabs and without a dialog
+
+#### Scenario: Redirect target is honoured
+
+- **WHEN** a visitor signs in from `/login?redirect=%2Ftraces%3Frange%3D15m`
+- **THEN** the browser lands on `/traces?range=15m` with the resolved
+  tenant and dataset appended
+
+#### Scenario: Unsafe redirect falls back
+
+- **WHEN** `redirect` is `//evil.com`, an absolute URL, or `/\evil.com`
+- **THEN** the browser lands on `/logs`
+
+#### Scenario: Already authenticated
+
+- **WHEN** a visitor holding a valid session opens `/login?redirect=%2Ftraces`
+- **THEN** they are forwarded to `/traces` without the form being shown
+
+### Requirement: Evaluate navigation group
+
+The navigation sidebar, mobile drawer and command palette SHALL include an
+Evaluate group, placed between Investigate and Configure, with the pages
+Agents & scores (`/evals`), Compare (`/evals/compare`), Runs
+(`/evals/runs`) and Evaluators (`/evals/evaluators`); Eval sets
+(`/evals/sets`) joins the group with the `agent-eval-sets` capability. The current page SHALL be the item
+with the longest path prefix of the location, so nested Evaluate pages
+keep their own item current. Evaluate links SHALL carry the time range and
+tenant/dataset context.
+
+#### Scenario: Nested paths highlight their own item
+
+- **WHEN** a user opens `/evals/runs`
+- **THEN** "Runs" is the current page in the sidebar, not "Agents & scores"
+
+#### Scenario: The case drilldown belongs to Compare
+
+- **WHEN** a user opens `/evals/compare/case?case=case-117`
+- **THEN** "Compare" is the current page in the sidebar
+
+### Requirement: Real users page is reachable from the sidebar
+
+The sidebar's Monitor group SHALL list "Real users" after Catalog, linking
+to `/rum` with the explore context (tenant, dataset, range) carried over.
+Any `/rum/...` path SHALL highlight it and title the breadcrumb
+"Monitor / Real users". An unknown tab segment SHALL resolve to
+`/rum/overview`, preserving the query string.
+
+#### Scenario: Sidebar link
+
+- **WHEN** a user on `/logs?tenant=acme&dataset=prod` clicks "Real users"
+- **THEN** the browser navigates to `/rum?tenant=acme&dataset=prod` (plus the
+  current range) and the entry is highlighted
+
+#### Scenario: Unknown tab
+
+- **WHEN** a user opens `/rum/nope?app=storefront-web`
+- **THEN** the URL becomes `/rum/overview?app=storefront-web`

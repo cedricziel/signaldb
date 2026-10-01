@@ -749,6 +749,7 @@
         ? "— (root)" : esc(span.parentSpanID)) + "</b></span>" +
       (span.serviceName ? "<span>service <b>" + esc(span.serviceName) + "</b></span>" : "") +
       "<span>status <b>" + esc(span.status) + "</b></span>" +
+      (span.raw.kind ? "<span>kind <b>" + esc(span.raw.kind) + "</b></span>" : "") +
       "</div></div>" +
       '<dl class="timing">' +
       '<div><dt class="lbl">Duration</dt><dd>' + fmtDur(span.dur) + "</dd></div>" +

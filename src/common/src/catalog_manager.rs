@@ -63,6 +63,15 @@ pub struct DatasetProvisioningReport {
     pub failed: Vec<(String, String)>,
 }
 
+/// Outcome of one [`CatalogManager::purge_legacy_metric_tables`] call.
+#[derive(Debug, Default, Clone)]
+pub struct LegacyMetricPurgeReport {
+    /// Legacy tables this call dropped.
+    pub dropped: Vec<String>,
+    /// Legacy tables that could not be dropped, with the reason.
+    pub failed: Vec<(String, String)>,
+}
+
 /// Global catalog manager holding the shared Iceberg catalog instance.
 ///
 /// This ensures all SignalDB components use the same catalog for:
@@ -106,6 +115,13 @@ impl CatalogManager {
     pub fn with_tenant_source(mut self, tenant_source: Arc<Catalog>) -> Self {
         self.tenant_source = Some(tenant_source);
         self
+    }
+
+    /// The attached database tenant source, if any — e.g. so a caller can
+    /// query catalog tables (like `attribute_types`) scoped to the same
+    /// database the tenant registry itself reads.
+    pub fn tenant_source(&self) -> Option<&Arc<Catalog>> {
+        self.tenant_source.as_ref()
     }
 
     /// Create an in-memory catalog manager for fast tests.
@@ -216,14 +232,21 @@ impl CatalogManager {
         table_name: &str,
     ) -> Result<iceberg_rust::table::Table> {
         let (tenant_slug, dataset_slug) = self.slugs(tenant_id, dataset_id);
-        // Per-tenant materialized-label allowlists: a tenant schema
-        // override replaces the global set wholesale.
-        let labels = self
-            .config
-            .get_tenant_schema_config(tenant_id)
-            .materialized_labels;
+        // Per-tenant materialized-label allowlists (and warm-index config): a
+        // tenant's schema block is merged over the global one.
+        let schema_config = self.config.get_tenant_schema_config(tenant_id);
+        let warm_index = crate::iceberg::schemas::TableSchema::from_table_name(table_name)
+            .and_then(|table| table.attribute_type_signal())
+            .filter(|signal| schema_config.warm_index.applies_to(*signal, dataset_id))
+            .map(|_| schema_config.warm_index.clone());
         self.table_manager
-            .ensure_table(&tenant_slug, &dataset_slug, table_name, &labels)
+            .ensure_table_with_warm_index(
+                &tenant_slug,
+                &dataset_slug,
+                table_name,
+                &schema_config.materialized_labels,
+                warm_index,
+            )
             .await
     }
 
@@ -308,22 +331,76 @@ impl CatalogManager {
                 }
                 Ok(_) => {
                     tracing::info!(
-                        tenant_id = %tenant_id,
-                        dataset = %dataset_id,
-                        table = %table,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table,
                         "Provisioned signal table"
                     );
                     report.created.push((*table).to_string());
                 }
                 Err(e) => {
                     tracing::warn!(
-                        tenant_id = %tenant_id,
-                        dataset = %dataset_id,
-                        table = %table,
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table,
                         error = %e,
                         "Failed to provision signal table; will retry on the next pass"
                     );
                     report.failed.push(((*table).to_string(), e.to_string()));
+                }
+            }
+        }
+        report
+    }
+
+    /// Drops the five legacy per-type metric tables
+    /// ([`crate::iceberg::schemas::LEGACY_METRIC_TABLE_NAMES`]) for
+    /// `tenant_id`/`dataset_id`.
+    ///
+    /// Idempotent: a legacy table already absent (dropped by an earlier pass,
+    /// or never created) is skipped without error, same as
+    /// [`crate::iceberg::table_manager::IcebergTableManager::ensure_table`]'s
+    /// own recreate-as-typed cutover.
+    pub async fn purge_legacy_metric_tables(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+    ) -> LegacyMetricPurgeReport {
+        let mut report = LegacyMetricPurgeReport::default();
+
+        for table_name in crate::iceberg::schemas::LEGACY_METRIC_TABLE_NAMES {
+            let identifier = self.build_table_identifier(tenant_id, dataset_id, table_name);
+            if self
+                .catalog
+                .clone()
+                .load_tabular(&identifier)
+                .await
+                .is_err()
+            {
+                continue;
+            }
+
+            match self.catalog.drop_table(&identifier).await {
+                Ok(()) => {
+                    tracing::info!(
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
+                        "Dropped legacy per-type metric table superseded by the wide metrics table"
+                    );
+                    report.dropped.push((*table_name).to_string());
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        signaldb.tenant.id = %tenant_id,
+                        signaldb.dataset.id = %dataset_id,
+                        signaldb.table = %table_name,
+                        error = %e,
+                        "Failed to drop legacy metric table; will retry on the next pass"
+                    );
+                    report
+                        .failed
+                        .push(((*table_name).to_string(), e.to_string()));
                 }
             }
         }
@@ -1120,9 +1197,14 @@ mod tests {
     #[tokio::test]
     async fn tenant_override_narrows_the_set_for_that_tenant_only() {
         let narrowed = provisioning_tenant("narrow");
-        let mut schema = crate::config::SchemaConfig::default();
-        schema.default_schemas.metrics_enabled = false;
-        schema.default_schemas.profiles_enabled = false;
+        let schema = crate::config::TenantSchemaOverride {
+            default_schemas: crate::config::DefaultSchemasOverride {
+                metrics_enabled: Some(false),
+                profiles_enabled: Some(false),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
 
         let mut config = Configuration::default();
         config.schema.catalog_uri = format!(
@@ -1282,5 +1364,43 @@ mod tests {
             tables_in(&manager, "acme", "production").await,
             vec!["logs".to_string(), "profiles".to_string()]
         );
+    }
+
+    async fn manager_with_legacy_metric_tables() -> CatalogManager {
+        let manager = provisioning_manager(vec![provisioning_tenant("acme")]).await;
+        for table in crate::iceberg::schemas::LEGACY_METRIC_TABLE_NAMES {
+            crate::testing::create_legacy_metric_table(&manager, "acme", "production", table)
+                .await
+                .unwrap();
+        }
+        manager
+    }
+
+    #[tokio::test]
+    async fn purge_legacy_metric_tables_drops_pre_existing_legacy_tables_and_is_idempotent() {
+        let manager = manager_with_legacy_metric_tables().await;
+
+        let mut dropped = manager
+            .purge_legacy_metric_tables("acme", "production")
+            .await
+            .dropped;
+        dropped.sort();
+        assert_eq!(
+            dropped,
+            vec![
+                "metrics_exponential_histogram".to_string(),
+                "metrics_gauge".to_string(),
+                "metrics_histogram".to_string(),
+                "metrics_sum".to_string(),
+                "metrics_summary".to_string(),
+            ]
+        );
+        assert!(tables_in(&manager, "acme", "production").await.is_empty());
+
+        let dropped_again = manager
+            .purge_legacy_metric_tables("acme", "production")
+            .await
+            .dropped;
+        assert!(dropped_again.is_empty(), "nothing left to drop");
     }
 }

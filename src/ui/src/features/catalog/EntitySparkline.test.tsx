@@ -56,8 +56,10 @@ describe("EntitySparkline", () => {
     // the line and the whole cell with it.
     render(<EntitySparkline series={series([1, 5, 3])} label="x" />);
 
+    // Structural: the hit bands now come from the shared `Sparkline`, whose
+    // class is `sparkline-hit` rather than the old component-local name.
     for (const rect of document.querySelectorAll("rect")) {
-      expect(rect).toHaveClass("entity-sparkline-hit");
+      expect(rect).toHaveClass("sparkline-hit");
       expect(rect.getAttribute("fill")).toBeNull();
     }
     expect(screen.getByRole("img")).toBeInTheDocument();

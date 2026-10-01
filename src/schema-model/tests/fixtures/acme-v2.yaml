@@ -1,0 +1,74 @@
+# acme.yaml in the Weaver `file_format: definition/2` layout, as a tenant
+# would upload it. Must resolve to the same definitions as acme.yaml.
+file_format: definition/2
+name: acme
+version: 1.0.0
+schema_url: https://acme.example/schemas/1.0.0
+description: Acme Corp conventions layered on OpenTelemetry semconv.
+dependencies:
+  - name: otel
+    registry_path: https://github.com/open-telemetry/semantic-conventions@v1.43.0[model]
+attributes:
+  - key: acme.order.id
+    type: string
+    stability: development
+    brief: Internal order identifier (see the order-service runbook).
+    examples: ["ord_8f21a"]
+  - key: acme.order.total
+    type: double
+    stability: development
+    brief: Order total in the tenant's billing currency.
+    examples: [12.5, 199.0]
+  - key: acme.order.channel
+    type:
+      members:
+        - id: web
+          value: "web"
+          brief: Placed through the web storefront.
+          stability: development
+        - id: pos
+          value: "pos"
+          brief: Placed at a point-of-sale terminal.
+          stability: development
+    stability: development
+    brief: Sales channel the order came through.
+  - key: acme.rack.id
+    type: string
+    stability: development
+    brief: Rack the pod's node is mounted in.
+    examples: ["dc1-r07"]
+  - key: service.name
+    type: string
+    stability: development
+    brief: "Our service naming: <team>-<system>, see naming ADR-12."
+    examples: ["payments-checkout"]
+entities:
+  - name: acme.order
+    stability: development
+    brief: A customer order flowing through Acme's checkout.
+    attributes:
+      - ref: acme.order.id
+        role: identifying
+        requirement_level: required
+      - ref: acme.order.total
+        role: descriptive
+      - ref: acme.order.channel
+        role: descriptive
+  - name: acme.k8s.pod
+    extends: entity.k8s.pod
+    stability: development
+    brief: A Kubernetes Pod annotated with Acme's rack placement.
+    attributes:
+      - ref: acme.rack.id
+        role: descriptive
+metrics:
+  - name: acme.checkout.latency
+    stability: development
+    brief: End-to-end checkout latency per order.
+    instrument: histogram
+    unit: "s"
+    entity_associations:
+      - acme.order
+    attributes:
+      - ref: acme.order.channel
+        requirement_level: recommended

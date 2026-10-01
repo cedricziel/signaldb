@@ -74,7 +74,6 @@ impl Tab {
 pub enum ConnectionStatus {
     Connected,
     Disconnected,
-    Connecting,
 }
 
 /// Time range for data filtering.
@@ -204,12 +203,8 @@ pub struct AppState {
     pub last_error: Option<String>,
     /// Timestamp of last error
     pub last_error_at: Option<SystemTime>,
-    /// Refresh rate for data updates
-    pub refresh_rate: Duration,
     /// SignalDB HTTP URL
     pub url: String,
-    /// SignalDB Flight URL
-    pub flight_url: String,
     /// Whether data is currently being fetched
     pub loading: bool,
     /// Frame counter for spinner animation (advances on each render)
@@ -222,8 +217,12 @@ pub struct AppState {
 }
 
 impl AppState {
-    /// Create a new AppState with default values
-    pub fn new(url: String, flight_url: String, refresh_rate: Duration) -> Self {
+    /// Create a new AppState with default values.
+    ///
+    /// `flight_url` and `refresh_rate` are accepted for call-site symmetry
+    /// with [`super::app::App::new`] (which owns its own copies for the
+    /// Flight client and event loop) but aren't otherwise read here.
+    pub fn new(url: String, _flight_url: String, _refresh_rate: Duration) -> Self {
         Self {
             permission: Permission::Unknown,
             active_tab: Tab::Dashboard,
@@ -231,9 +230,7 @@ impl AppState {
             connection_status: ConnectionStatus::Disconnected,
             last_error: None,
             last_error_at: None,
-            refresh_rate,
             url,
-            flight_url,
             loading: false,
             spinner_frame: 0,
             active_tenant: None,
@@ -338,47 +335,6 @@ impl AppState {
     }
 }
 
-/// Detect permission level by attempting authentication
-pub async fn detect_permission(
-    url: &str,
-    admin_key: Option<&str>,
-    api_key: Option<&str>,
-    tenant_id: Option<&str>,
-    dataset_id: Option<&str>,
-) -> Permission {
-    if let Some(admin_key) = admin_key
-        && try_admin_auth(url, admin_key).await
-    {
-        return Permission::Admin {
-            admin_key: admin_key.to_string(),
-        };
-    }
-
-    if let Some(api_key) = api_key
-        && let Some(tenant_id) = tenant_id
-    {
-        return Permission::Tenant {
-            api_key: api_key.to_string(),
-            tenant_id: tenant_id.to_string(),
-            dataset_id: dataset_id.map(|s| s.to_string()),
-        };
-    }
-
-    Permission::Unknown
-}
-
-/// Try admin authentication by calling the admin API
-async fn try_admin_auth(url: &str, admin_key: &str) -> bool {
-    let Ok(client) = crate::retry::client_builder(url)
-        .bearer(admin_key)
-        .timeout(Duration::from_secs(5))
-        .build()
-    else {
-        return false;
-    };
-    client.list_tenants().send().await.is_ok()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -397,9 +353,7 @@ mod tests {
         assert_eq!(state.connection_status, ConnectionStatus::Disconnected);
         assert_eq!(state.last_error, None);
         assert_eq!(state.last_error_at, None);
-        assert_eq!(state.refresh_rate, Duration::from_secs(5));
         assert_eq!(state.url, "http://localhost:3000");
-        assert_eq!(state.flight_url, "http://localhost:50053");
     }
 
     #[test]
@@ -548,61 +502,6 @@ mod tests {
         state.clear_error();
         assert!(state.last_error.is_none());
         assert!(state.last_error_at.is_none());
-    }
-
-    #[tokio::test]
-    async fn test_detect_permission_unknown() {
-        let permission = detect_permission("http://localhost:3000", None, None, None, None).await;
-
-        assert_eq!(permission, Permission::Unknown);
-    }
-
-    #[tokio::test]
-    async fn test_detect_permission_tenant() {
-        let permission = detect_permission(
-            "http://localhost:3000",
-            None,
-            Some("test-api-key"),
-            Some("acme"),
-            Some("production"),
-        )
-        .await;
-
-        assert!(matches!(permission, Permission::Tenant { .. }));
-        if let Permission::Tenant {
-            api_key,
-            tenant_id,
-            dataset_id,
-        } = permission
-        {
-            assert_eq!(api_key, "test-api-key");
-            assert_eq!(tenant_id, "acme");
-            assert_eq!(dataset_id, Some("production".to_string()));
-        }
-    }
-
-    #[tokio::test]
-    async fn test_detect_permission_tenant_without_dataset() {
-        let permission = detect_permission(
-            "http://localhost:3000",
-            None,
-            Some("test-api-key"),
-            Some("acme"),
-            None,
-        )
-        .await;
-
-        assert!(matches!(permission, Permission::Tenant { .. }));
-        if let Permission::Tenant {
-            api_key,
-            tenant_id,
-            dataset_id,
-        } = permission
-        {
-            assert_eq!(api_key, "test-api-key");
-            assert_eq!(tenant_id, "acme");
-            assert_eq!(dataset_id, None);
-        }
     }
 
     #[test]

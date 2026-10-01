@@ -26,7 +26,7 @@ pub enum DatasetAction {
     },
     Delete {
         tenant_id: String,
-        dataset_id: String,
+        dataset_name: String,
     },
 }
 
@@ -67,24 +67,17 @@ impl DatasetsPanel {
         })
     }
 
-    fn selected_dataset_id(&self) -> Option<String> {
-        self.datasets.get(self.selected).and_then(|d| {
-            d.get("id")
-                .or_else(|| d.get("name"))
-                .and_then(|v| v.as_str())
-                .map(|s| s.to_string())
-        })
-    }
-
     pub fn request_delete(&self) -> Option<String> {
         self.selected_dataset_name()
     }
 
     pub fn confirm_delete(&mut self) {
-        if let (Some(tenant_id), Some(dataset_id)) = (&self.tenant_id, self.selected_dataset_id()) {
+        if let (Some(tenant_id), Some(dataset_name)) =
+            (&self.tenant_id, self.selected_dataset_name())
+        {
             self.pending_action = Some(DatasetAction::Delete {
                 tenant_id: tenant_id.clone(),
-                dataset_id,
+                dataset_name,
             });
         }
     }

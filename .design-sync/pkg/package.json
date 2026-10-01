@@ -1,0 +1,8 @@
+{
+  "name": "signaldb-ui",
+  "version": "0.2.2",
+  "private": true,
+  "type": "module",
+  "module": "dist/index.js",
+  "types": "dist/index.d.ts"
+}

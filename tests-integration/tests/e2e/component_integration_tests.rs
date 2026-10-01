@@ -26,7 +26,6 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::{Instant, sleep, timeout};
 use tonic::transport::{Channel, Server};
-use writer::IcebergWriterFlightService;
 
 /// Build a WalConfig with an immediate-flush buffer (size 1) so tests don't
 /// need to wait out the time-based flush interval, plus an isolated Iceberg
@@ -41,7 +40,9 @@ fn test_tenant_context() -> common::auth::TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -104,8 +105,10 @@ fn test_configuration(temp_dir: &TempDir) -> Configuration {
         }],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
     config
 }
@@ -252,12 +255,13 @@ async fn test_acceptor_writer_flow() {
             .expect("Failed to create CatalogManager for writer"),
     );
     precreate_namespace(&writer_catalog_manager).await;
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         writer_catalog_manager,
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(common::flight::flight_service_server(writer_service))
@@ -294,7 +298,19 @@ async fn test_acceptor_writer_flow() {
         wal_config.clone(),
         wal_config,
     ));
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(
+            common::catalog::Catalog::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Start acceptor service on a random port
@@ -518,10 +534,13 @@ async fn test_acceptor_grpc_accepts_gzip_compressed_requests() {
     let config = test_configuration(&temp_dir);
     let wal_dir = temp_dir.path().join("wal");
 
-    let resources =
-        acceptor::init_acceptor_resources(config.clone(), "127.0.0.1:4317".to_string(), wal_dir)
-            .await
-            .expect("Failed to init acceptor resources");
+    let resources = acceptor::init_acceptor_resources(
+        config.clone(),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 4317)),
+        wal_dir,
+    )
+    .await
+    .expect("Failed to init acceptor resources");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -619,12 +638,13 @@ async fn test_direct_acceptor_writer_flight() {
             .expect("Failed to create CatalogManager for writer"),
     );
     precreate_namespace(&writer_catalog_manager).await;
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         writer_catalog_manager,
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _bg = writer_service.start_background_processing();
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();

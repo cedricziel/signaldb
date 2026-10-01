@@ -37,7 +37,7 @@
 use crate::planner::CompactionCandidate;
 use anyhow::{Context, Result, anyhow};
 use chrono::{DateTime, Utc};
-use common::catalog::{Catalog, CompactorLease};
+use common::catalog::{Catalog, CompactorLease, FailureStreak};
 use std::sync::Arc;
 use std::time::Duration;
 use uuid::Uuid;
@@ -225,10 +225,14 @@ impl LeaseManager {
     /// its lease mid-run and a second instance started a duplicate
     /// full-table rewrite (issue #560).
     ///
-    /// A failed renewal (lease stolen, catalog unreachable) is logged
-    /// loudly but does not abort the job: the Iceberg CAS commit plus
-    /// post-commit verification still guarantee only one commit wins —
-    /// the lease exists to avoid wasted duplicate work, not correctness.
+    /// A failed renewal (lease stolen, catalog unreachable) does not abort
+    /// the job: the Iceberg CAS commit plus post-commit verification still
+    /// guarantee only one commit wins — the lease exists to avoid wasted
+    /// duplicate work, not correctness. It is logged at WARN — under
+    /// ordinary SQLite contention a renewal misses a tick and catches up on
+    /// the next one, well inside the lease TTL — and escalated to ERROR
+    /// only once it has been failing continuously for the full TTL, which
+    /// is when a concurrent instance can actually steal the lease.
     pub fn spawn_renewal(&self, lease: Lease) -> LeaseRenewalGuard {
         let manager = self.clone();
         let ttl = self.default_ttl;
@@ -238,10 +242,12 @@ impl LeaseManager {
             // The first tick fires immediately; the lease was just
             // acquired, so skip it.
             ticker.tick().await;
+            let mut failures = FailureStreak::new();
             loop {
                 ticker.tick().await;
                 match manager.renew(&lease, ttl).await {
                     Ok(()) => {
+                        failures.record_success();
                         tracing::debug!(
                             tenant_id = %lease.tenant_id,
                             table_name = %lease.table_name,
@@ -250,15 +256,26 @@ impl LeaseManager {
                         );
                     }
                     Err(e) => {
-                        tracing::error!(
-                            tenant_id = %lease.tenant_id,
-                            table_name = %lease.table_name,
-                            partition_id = %lease.partition_id,
-                            error = %e,
-                            "Failed to renew compaction lease; a concurrent \
-                             instance may start duplicate work (the Iceberg \
-                             CAS commit still protects correctness)"
-                        );
+                        if failures.record_failure(ttl) {
+                            tracing::error!(
+                                tenant_id = %lease.tenant_id,
+                                table_name = %lease.table_name,
+                                partition_id = %lease.partition_id,
+                                error = %e,
+                                "Failed to renew compaction lease; failing past \
+                                 the lease TTL, a concurrent instance may start \
+                                 duplicate work (the Iceberg CAS commit still \
+                                 protects correctness)"
+                            );
+                        } else {
+                            tracing::warn!(
+                                tenant_id = %lease.tenant_id,
+                                table_name = %lease.table_name,
+                                partition_id = %lease.partition_id,
+                                error = %e,
+                                "Failed to renew compaction lease"
+                            );
+                        }
                     }
                 }
             }

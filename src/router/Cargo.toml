@@ -1,6 +1,6 @@
 [package]
 name = "router"
-version = "0.3.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 
@@ -11,8 +11,11 @@ signaldb-api.workspace = true
 logql.workspace = true
 loki-api.workspace = true
 prometheus-api.workspace = true
+ql-ir.workspace = true
 pyroscope-api.workspace = true
 tempo-api.workspace = true
+ottl.workspace = true
+opentelemetry-proto.workspace = true
 arrow-flight.workspace = true
 datafusion.workspace = true
 
@@ -34,6 +37,21 @@ serde_json.workspace = true
 url.workspace = true
 utoipa.workspace = true
 
+# OIDC relying-party flow (change: oidc-login): discovery, PKCE, JWKS,
+# ID-token validation.
+openidconnect.workspace = true
+# HMAC-signs the pending-login cookie (state/nonce/PKCE-verifier).
+hmac.workspace = true
+sha2.workspace = true
+thiserror.workspace = true
+# GitHub App JWT signing/minting client (change: github-app-source-context).
+jsonwebtoken.workspace = true
+reqwest.workspace = true
+# Bounded, LRU-evicting source-context snippet cache (change:
+# github-app-source-context).
+lru.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
 [dev-dependencies]
 tokio-test.workspace = true
 tower.workspace = true
@@ -41,6 +59,22 @@ tempfile.workspace = true
 # `common::testing::TempCatalog` — provisioning tests need a catalog that
 # outlives the pool the handler under test creates and drops.
 common = { workspace = true, features = ["testing"] }
+# Fake IdP for the OIDC RP-flow tests (discovery, JWKS, token endpoint).
+wiremock.workspace = true
+# Derives the test public key from the GitHub App test PEM to verify the
+# minted JWT (change: github-app-source-context).
+rsa.workspace = true
+# Captures the `signaldb.discovery` boundary span emitted by the discovery
+# endpoints, the same scoped-subscriber pattern `span_factories_semconv.rs`
+# uses in `common`.
+opentelemetry.workspace = true
+opentelemetry_sdk.workspace = true
+tracing-opentelemetry.workspace = true
+tracing-subscriber.workspace = true
 
 [package.metadata.cargo-machete]
-ignored = ["tokio-test"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["tokio-test", "workspace-hack"]
+
+[lints]
+workspace = true

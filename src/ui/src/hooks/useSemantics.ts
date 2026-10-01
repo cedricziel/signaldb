@@ -143,7 +143,11 @@ export function useSemantics(keys: readonly string[]): SemanticsMap {
 
   useEffect(() => {
     request(tenant, keyList ? keyList.split(SEP) : []);
-  }, [tenant, keyList]);
+    // `seen` re-runs this after `invalidateSemantics` drops cached entries
+    // (or any other batch lands) so a freshly-uncached key is re-requested
+    // without needing the key list itself to change; `request` is a no-op
+    // for keys still cached or in flight.
+  }, [tenant, keyList, seen]);
 
   return useMemo(
     () => snapshot(tenant, keyList ? keyList.split(SEP) : []),
@@ -162,6 +166,19 @@ const searchInflight = new Set<string>();
 const searchKey = (tenant: string, prefix: string) => `${tenant}${SEP}${prefix}`;
 
 /**
+ * Bumped by `invalidateSemantics` per tenant so a search already in flight
+ * when invalidation lands can tell it's stale: it still clears its own
+ * `searchInflight` entry and notifies (so a re-run isn't stuck waiting on
+ * it forever), but skips writing its answer into `searchCache` — otherwise
+ * that write would silently resurrect the entry invalidation just dropped.
+ */
+const searchGeneration = new Map<string, number>();
+
+function currentSearchGeneration(tenant: string): number {
+  return searchGeneration.get(tenant) ?? 0;
+}
+
+/**
  * Registry prefix search for autocomplete: `[]` until the hits arrive (or
  * forever, on error), cached per tenant and prefix for the session.
  */
@@ -176,18 +193,25 @@ export function useAttributeSearch(prefix: string, limit = 20): AttributeHit[] {
       return;
     }
     searchInflight.add(cacheKey);
+    const generation = currentSearchGeneration(tenant);
     let fired = false;
     const timer = setTimeout(() => {
       fired = true;
       void (async () => {
+        let hits: AttributeHit[];
         try {
-          searchCache.set(cacheKey, await searchAttributes(trimmed, limit));
+          hits = await searchAttributes(trimmed, limit);
         } catch {
-          searchCache.set(cacheKey, NO_HITS);
-        } finally {
-          searchInflight.delete(cacheKey);
-          notify();
+          hits = NO_HITS;
         }
+        // A generation bump means `invalidateSemantics` ran while this was
+        // in flight: the tenant's cache was meant to come back empty, not
+        // get this (now possibly stale) answer written into it.
+        if (currentSearchGeneration(tenant) === generation) {
+          searchCache.set(cacheKey, hits);
+        }
+        searchInflight.delete(cacheKey);
+        notify();
       })();
     }, SEMANTICS_DEBOUNCE_MS);
     return () => {
@@ -197,7 +221,11 @@ export function useAttributeSearch(prefix: string, limit = 20): AttributeHit[] {
         searchInflight.delete(cacheKey);
       }
     };
-  }, [cacheKey, trimmed, limit]);
+    // `seen` re-runs this after `invalidateSemantics` drops a cached prefix
+    // so it re-requests without needing the prefix itself to change; `if
+    // (!trimmed || searchCache.has(cacheKey) || ...)` above stays the no-op
+    // guard for a prefix that's still cached or in flight.
+  }, [cacheKey, trimmed, limit, seen]);
 
   return useMemo(
     () => (trimmed ? (searchCache.get(cacheKey) ?? NO_HITS) : NO_HITS),
@@ -213,5 +241,28 @@ export function resetSemanticsCache(): void {
   tenants.clear();
   searchCache.clear();
   searchInflight.clear();
+  searchGeneration.clear();
+  notify();
+}
+
+/**
+ * Forget cached semantics for `tenant` (defaulting to the active one) so the
+ * next render re-resolves every key instead of replaying stale "unknown"
+ * answers — call after a registry save/replace/delete, the same events that
+ * already invalidate the schema hub's own react-query caches. Also clears
+ * the prefix-search cache for that tenant, since a renamed/removed attribute
+ * can change what the combobox should suggest.
+ */
+export function invalidateSemantics(tenant: string = getTenantContext().tenant): void {
+  searchGeneration.set(tenant, currentSearchGeneration(tenant) + 1);
+  const state = tenants.get(tenant);
+  if (state) {
+    if (state.timer !== null) clearTimeout(state.timer);
+    tenants.delete(tenant);
+  }
+  const prefix = `${tenant}${SEP}`;
+  for (const key of searchCache.keys()) {
+    if (key.startsWith(prefix)) searchCache.delete(key);
+  }
   notify();
 }

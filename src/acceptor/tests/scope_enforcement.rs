@@ -70,8 +70,7 @@ async fn setup_scoped_app() -> (axum::Router, TempDir) {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
     // No config.auth.tenants: the scoped key only exists in the catalog
     // (config-based keys have no scopes — see common::config::ApiKeyConfig),
@@ -106,6 +105,7 @@ async fn setup_scoped_app() -> (axum::Router, TempDir) {
             &key_hash,
             Some("scoped-test-key"),
             None,
+            None,
             Some(&["traces:write".to_string()]),
             None,
         )
@@ -128,19 +128,26 @@ async fn setup_scoped_app() -> (axum::Router, TempDir) {
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
 
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
     let trace_handler = Arc::new(TraceHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
+        processor_registry.clone(),
     ));
     let log_handler = Arc::new(LogHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
+        processor_registry.clone(),
     ));
     let metrics_handler = Arc::new(MetricsHandler::new(
         flight_transport.clone(),
         wal_manager.clone(),
+        processor_registry,
     ));
     let profile_handler = Arc::new(ProfileHandler::new(
         flight_transport.clone(),
@@ -239,6 +246,7 @@ async fn scoped_key_resolves_to_the_expected_tenant_context() {
             TEST_TENANT,
             &key_hash,
             Some("scoped-test-key"),
+            None,
             None,
             Some(&["traces:write".to_string()]),
             None,

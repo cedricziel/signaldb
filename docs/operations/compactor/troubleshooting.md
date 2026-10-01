@@ -335,7 +335,7 @@ it does not classify is invisible to every lifecycle job.
 Compare per-table snapshot counts to spot the outlier:
 
 ```bash
-for t in traces logs metrics_gauge profiles; do
+for t in traces logs metrics metric_exemplars profiles; do
   echo -n "$t: "
   jq '.snapshots | length' \
     .data/storage/<tenant>/<dataset>/$t/metadata/*.metadata.json 2>/dev/null | tail -1
@@ -1155,13 +1155,18 @@ in a single pass — at `INFO` that flooded the log at startup. The per-batch
 
 ## Attribute Promotion
 
-**A `label_<key>` column appeared that is not in `[schema.materialized_labels]`:** attribute auto-promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor promotes frequently queried attribute keys to columns at rewrite (see the [operations guide](operations.md#attribute-promotion)).
+**An `attr_<level>_<key>` column appeared:** attribute promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor copies frequently queried attributes into typed columns at rewrite (see the [operations guide](operations.md#attribute-promotion)). The column's `doc` names its origin level and key. New `label_<key>` columns come only from `[schema.materialized_labels]`.
 
-**How to tell a promotion happened:** look for `Added materialized label columns via schema evolution` in the compactor logs (table, schema id, columns), or compare the table's current schema against your pinned config. The preceding `Attribute promotion decision` line shows why the key qualified.
+**How to tell a promotion happened:** look for `Added typed promoted attribute columns via schema evolution` in the compactor logs (table, schema id, columns). The preceding `Typed attribute promotion decision` line shows what qualified and what is still building its streak.
+
+**A promotion was skipped:** two warnings mean the compactor left an existing column alone:
+
+- `Skipping promoted attribute column: name already taken by a field of a different origin` — another column already holds that name. It is never retyped or reused; the key stays in its typed map.
+- `Promoted attribute column already exists with a different type; left unchanged` — the key was repinned to a new canonical type after promotion. The rewrite leaves the column null and the querier ignores it; demotion removes it once it goes idle.
 
 **How to stop promotions:** set `[compactor.attr_promotion].dry_run = true` (decisions are still logged, nothing changes) or `enabled = false` (no decision pass at all). Columns already added stay in place; they are nullable and harmless to queries.
 
-**Removing a promoted column:** demotion is acted on at rewrite: unpinned promoted columns with no recorded query demand are dropped from the schema at the next compaction cycle (the data remains queryable through the attributes map). To force-keep a column, pin it in `[schema.materialized_labels]`.
+**Removing a promoted column:** a promoted column not queried within `demote_after_idle` (default `7d`) is dropped at the next rewrite, and the least recently queried ones are dropped while the table is over `max_labels_per_table`. Dropping loses no data: the typed map still holds every value. Unpinned `label_<key>` columns with no query hits are dropped the same way; pin a key in `[schema.materialized_labels]` to keep its label column.
 
 ## Sort Order and Ordering Attestation
 

@@ -10,18 +10,14 @@
 //! that adopts the caller's `traceparent` as its parent
 //! (`common::self_monitoring::http_trace_context_middleware`). Chained
 //! together: `POST /mcp` (root) -> `tools/call get_trace` (child) ->
-//! `GET /tempo/api/traces/{trace_id}` (child of the tool span) all share one
-//! trace id.
+//! `POST /api/v1/query` (child of the tool span) all share one trace id.
 //!
 //! This drives a real `router::create_router` and a real `mcp_http_router`
 //! in-process, connected over a real TCP socket (so the SDK's HTTP client
 //! actually round-trips), with an in-memory OTel exporter capturing both
-//! sides' spans. No querier is registered, so the router's trace lookup
-//! answers `503` — irrelevant here: the assertion is about the server span
-//! the router's own middleware opens for the route, not the query outcome
-//! (mirrored by `router::endpoints::tempo::tests::error_bodies::
-//! trace_lookup_without_a_querier_explains_itself`, which asserts the same
-//! setup yields `503` without a querier).
+//! sides' spans. No querier is registered, so the router's query fails —
+//! irrelevant here: the assertion is about the server span the router's own
+//! middleware opens for the route, not the query outcome.
 //!
 //! Lives in its own integration-test binary: it installs process-global
 //! OTel/tracing state (subscriber + propagator) that must not leak into
@@ -33,11 +29,11 @@ use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use common::catalog::Catalog;
 use common::config::{ApiKeyConfig, AuthConfig, Configuration, TenantConfig};
-use futures::StreamExt;
 use mcp_server::{McpAppState, mcp_http_router};
 use opentelemetry::trace::{SpanKind, TracerProvider as _};
 use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider, SpanData};
 use router::RouterAppState;
+use tests_integration::mcp_test_helpers::read_jsonrpc_response;
 use tokio::net::TcpListener;
 use tracing_subscriber::layer::SubscriberExt;
 
@@ -67,7 +63,7 @@ fn attr(span: &SpanData, key: &str) -> Option<String> {
         .map(|kv| kv.value.as_str().to_string())
 }
 
-/// Spin up a real router (no querier registered — trace lookups 503, which is
+/// Spin up a real router (no querier registered — queries fail, which is
 /// fine, see module docs) and return its base URL.
 async fn spawn_real_router() -> String {
     let catalog = Catalog::new("sqlite::memory:").await.expect("catalog");
@@ -122,32 +118,6 @@ fn mcp_request(session_id: Option<&str>, body: serde_json::Value) -> Request<Bod
     builder
         .body(Body::from(body.to_string()))
         .expect("build MCP request")
-}
-
-/// Read a Streamable HTTP response (JSON or SSE) until the JSON-RPC message
-/// with `id` arrives.
-async fn read_jsonrpc_response(response: axum::response::Response, id: u64) -> serde_json::Value {
-    let mut stream = response.into_body().into_data_stream();
-    let mut buffered = String::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let chunk = tokio::time::timeout_at(deadline, stream.next())
-            .await
-            .expect("response arrives before the deadline");
-        let Some(chunk) = chunk else {
-            panic!("response stream ended without a reply for id {id}: {buffered}");
-        };
-        let chunk = chunk.expect("read response chunk");
-        buffered.push_str(&String::from_utf8_lossy(&chunk));
-        for line in buffered.lines() {
-            let candidate = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
-                && value.get("id").and_then(|v| v.as_u64()) == Some(id)
-            {
-                return value;
-            }
-        }
-    }
 }
 
 /// Open an MCP session and call `get_trace`, returning the JSON-RPC reply.
@@ -206,7 +176,7 @@ async fn call_get_trace(app: axum::Router, trace_id: &str) -> serde_json::Value 
 /// one span with its router calls beneath it" — an MCP `get_trace` call opens
 /// one `tools/call get_trace` INTERNAL span, the outbound request to the
 /// router carries that span's W3C trace context, and the router's
-/// `GET /tempo/api/traces/{trace_id}` SERVER span is its descendant (same
+/// `POST /api/v1/query` SERVER span is its descendant (same
 /// trace id, parented directly to the tool span).
 #[tokio::test(flavor = "multi_thread")]
 async fn mcp_tool_span_parents_the_router_server_span() {
@@ -217,7 +187,7 @@ async fn mcp_tool_span_parents_the_router_server_span() {
     let mcp_app = mcp_http_router(mcp_state, &[]);
 
     let reply = call_get_trace(mcp_app, TRACE_ID).await;
-    // No querier is registered, so the router answers 503 — the tool call
+    // No querier is registered, so the router's query fails — the tool call
     // itself is expected to surface that as an error; what this test cares
     // about is the span hierarchy the call produced along the way.
     assert!(
@@ -228,10 +198,7 @@ async fn mcp_tool_span_parents_the_router_server_span() {
     provider.force_flush().unwrap();
     let mut spans = exporter.get_finished_spans().unwrap();
     for _ in 0..50 {
-        if spans
-            .iter()
-            .any(|s| s.name == "GET /tempo/api/traces/{trace_id}")
-        {
+        if spans.iter().any(|s| s.name == "POST /api/v1/query") {
             break;
         }
         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -264,10 +231,10 @@ async fn mcp_tool_span_parents_the_router_server_span() {
 
     let router_span = spans
         .iter()
-        .find(|s| s.name == "GET /tempo/api/traces/{trace_id}")
+        .find(|s| s.name == "POST /api/v1/query")
         .unwrap_or_else(|| {
             panic!(
-                "no router `GET /tempo/api/traces/{{trace_id}}` server span; got {:?}",
+                "no router `POST /api/v1/query` server span; got {:?}",
                 spans.iter().map(|s| &s.name).collect::<Vec<_>>()
             )
         });
@@ -276,13 +243,13 @@ async fn mcp_tool_span_parents_the_router_server_span() {
     assert_eq!(
         router_span.span_context.trace_id(),
         tool_span.span_context.trace_id(),
-        "the router's trace-lookup server span must join the MCP tool span's trace, \
+        "the router's query server span must join the MCP tool span's trace, \
          not start a detached one"
     );
     assert_eq!(
         router_span.parent_span_id,
         tool_span.span_context.span_id(),
-        "the router's trace-lookup server span must be a direct child of the tool span, \
+        "the router's query server span must be a direct child of the tool span, \
          proving the SDK propagated the tool span's W3C trace context on the outbound call"
     );
 }

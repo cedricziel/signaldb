@@ -47,8 +47,13 @@ not on which attributes happen to be promoted today. That makes a parser usable
 in a CI check, an editor, a WASM build in the browser, or a downstream project —
 none of which can run a query engine.
 
-PromQL has no crate of ours; the third-party `promql-parser` supplies the
-grammar and the querier lowers it.
+PromQL has no parser crate of ours; the third-party `promql-parser` supplies
+the grammar. `ql-ir` lowers the parsed expression onto a `query-ir` document
+(`ql_ir::promql_to_ir`), the same way it lowers LogQL and TraceQL. The
+Prometheus `query` and `query_range` endpoints run on that lowering through the
+Query IR; there is no second metric evaluator. Constructs the IR can't
+express come back as `LowerError::Inexpressible`, naming the construct; a query
+that doesn't parse, or bad range parameters, as `LowerError::InvalidPromql`.
 
 ### How the rule is enforced
 
@@ -56,8 +61,10 @@ Not by review. Two CI checks in `Check & Lint`:
 
 - **`./scripts/check-leaf-purity.sh`** reads `cargo metadata` and fails if a
   leaf crate depends on a workspace member, a `path`/`git` source, or the FDAP
-  stack. It covers `logql-parser`, `traceql-parser`, and `query-ir` — the same
-  invariant for all three, whether or not the crate is published.
+  stack. It covers `logql-parser`, `traceql-parser`, `query-ir`, and
+  `eval-model` — the same invariant for all four, whether or not the crate is
+  published, except that an unpublished one may depend on another of them
+  (`eval-model` builds its documents with `query-ir`).
 - **`cargo publish --dry-run`** fails on missing metadata or packaging problems.
 
 Both are needed. The dry-run is _not_ a purity check — it accepts

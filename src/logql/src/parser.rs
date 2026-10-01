@@ -1220,6 +1220,21 @@ mod tests {
         assert_eq!(parse_selector(r#"{job="api",}"#).unwrap().matchers.len(), 1);
     }
 
+    /// A matcher name may spell a real dotted OTel attribute key directly,
+    /// alongside a plain (well-known) label name in the same selector.
+    #[test]
+    fn dotted_matcher_name_parses() {
+        assert_eq!(
+            parse_selector(r#"{k8s.pod.name="x", level="error"}"#)
+                .unwrap()
+                .matchers,
+            vec![
+                matcher("k8s.pod.name", MatchOp::Eq, "x"),
+                matcher("level", MatchOp::Eq, "error"),
+            ]
+        );
+    }
+
     #[test]
     fn keywords_are_valid_label_names() {
         assert_eq!(
@@ -1527,6 +1542,21 @@ mod tests {
         );
     }
 
+    /// A label filter predicate name may also be a dotted attribute key.
+    #[test]
+    fn parses_dotted_label_filter_name() {
+        assert_eq!(
+            pipeline(r#"{a="b"} | http.response.status_code >= 500"#),
+            vec![PipelineStage::LabelFilter(LabelFilterExpr::Pred(
+                LabelFilterPred {
+                    name: "http.response.status_code".into(),
+                    op: FilterOp::Gte,
+                    value: FilterValue::Number(500.0),
+                }
+            ))]
+        );
+    }
+
     #[test]
     fn label_filter_and_or_precedence() {
         // `a and b or c` parses as `(a and b) or c`.
@@ -1749,6 +1779,22 @@ mod tests {
             })
         );
         assert!(matches!(v.inner, MetricQuery::Range(_)));
+    }
+
+    /// `by (...)` grouping labels go through the same ident path as matcher
+    /// and label-filter names, so a dotted attribute key groups too.
+    #[test]
+    fn parses_dotted_grouping_label() {
+        let q = metric(r#"sum by (k8s.pod.name) (count_over_time({level="error"}[5m]))"#);
+        let v = as_vector(&q);
+        assert_eq!(v.function, AggregationFunction::Sum);
+        assert_eq!(
+            v.grouping,
+            Some(Grouping {
+                without: false,
+                labels: vec!["k8s.pod.name".into()],
+            })
+        );
     }
 
     #[test]

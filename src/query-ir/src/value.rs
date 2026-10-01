@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 /// attribute registry. Literal coercion always targets a field's canonical
 /// type — see [`coerce`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrValueType))]
 #[serde(rename_all = "snake_case")]
 pub enum ValueType {
     String,
@@ -36,6 +37,7 @@ pub enum ValueType {
     /// Raw bytes, encoded as base64 on the wire.
     Bytes,
     /// A homogeneous array of a single element type.
+    #[cfg_attr(feature = "openapi", schema(no_recursion))]
     Array(Box<ValueType>),
 }
 
@@ -108,27 +110,6 @@ pub enum Literal {
     Duration(i64),
     Bytes(Vec<u8>),
     Array(Vec<Literal>),
-}
-
-impl Literal {
-    /// The [`ValueType`] this literal inhabits.
-    pub fn value_type(&self) -> ValueType {
-        match self {
-            Literal::String(_) => ValueType::String,
-            Literal::Int64(_) => ValueType::Int64,
-            Literal::Float64(_) => ValueType::Float64,
-            Literal::Bool(_) => ValueType::Bool,
-            Literal::Timestamp(_) => ValueType::TimestampNs,
-            Literal::Duration(_) => ValueType::DurationNs,
-            Literal::Bytes(_) => ValueType::Bytes,
-            Literal::Array(items) => ValueType::Array(Box::new(
-                items
-                    .first()
-                    .map(Literal::value_type)
-                    .unwrap_or(ValueType::String),
-            )),
-        }
-    }
 }
 
 /// Error returned when a literal cannot be coerced to a target [`ValueType`].

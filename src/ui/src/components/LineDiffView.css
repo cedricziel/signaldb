@@ -1,0 +1,19 @@
+.line-diff-view {
+  overflow: auto;
+  font-family: var(--mono);
+  font-size: 0.85rem;
+  padding: 0.5rem;
+  border: 1px solid var(--border);
+}
+
+.line-diff-view-line {
+  white-space: pre-wrap;
+}
+
+.line-diff-view-removed {
+  background: color-mix(in srgb, var(--err-bar) 15%, transparent);
+}
+
+.line-diff-view-added {
+  background: color-mix(in srgb, var(--ok) 15%, transparent);
+}

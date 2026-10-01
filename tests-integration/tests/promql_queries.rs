@@ -20,17 +20,20 @@ use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
+use datafusion::assert_batches_eq;
+use datafusion::prelude::SessionContext;
+use datafusion_iceberg::DataFusionTable;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
     metrics::v1::{
-        Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint, ResourceMetrics,
-        ScopeMetrics, metric::Data, number_data_point,
+        AggregationTemporality, Gauge, Histogram, HistogramDataPoint, Metric, NumberDataPoint,
+        ResourceMetrics, ScopeMetrics, Sum, metric::Data, number_data_point,
     },
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterState, discovery::ServiceRegistry, endpoints::promql};
+use router::{RouterAppState, endpoints::promql};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -39,7 +42,6 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 const BASE_NS: u64 = 1_700_000_000_000_000_000;
 
@@ -47,6 +49,7 @@ struct TestServices {
     object_store: Arc<dyn object_store::ObjectStore>,
     flight_transport: Arc<InMemoryFlightTransport>,
     metrics_handler: MetricsHandler,
+    catalog_manager: Arc<CatalogManager>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -59,7 +62,9 @@ fn test_tenant_context() -> TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -135,17 +140,26 @@ async fn setup() -> TestServices {
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog mgr"),
-    );
-    let writer_service = IcebergWriterFlightService::new(
-        catalog_manager.clone(),
-        object_store.clone(),
-        writer_wal.clone(),
-        &common::config::WriterConfig::default(),
-    );
+    // One SQL catalog behind both the writer's type authority and the
+    // catalog manager's tenant source, so the querier's IR path resolves the
+    // canonical attribute types the writer commits.
+    let type_authority_catalog = Catalog::new(&config.discovery.as_ref().unwrap().dsn)
+        .await
+        .expect("type authority catalog");
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("catalog mgr");
+    let writer_service =
+        tests_integration::test_support::writer_service_with_type_authority_and_catalog(
+            catalog_manager.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+            type_authority_catalog,
+        );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -171,7 +185,7 @@ async fn setup() -> TestServices {
 
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
-        catalog_manager,
+        catalog_manager.clone(),
         common::config::QuerierConfig::default(),
     )
     .await
@@ -199,7 +213,17 @@ async fn setup() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager);
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let metrics_handler =
+        MetricsHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     for attempt in 0..50 {
         let has_query = !flight_transport
@@ -221,6 +245,7 @@ async fn setup() -> TestServices {
         object_store,
         flight_transport,
         metrics_handler,
+        catalog_manager,
         config,
         _temp_dir: temp_dir,
     }
@@ -232,8 +257,43 @@ fn string_value(s: &str) -> AnyValue {
     }
 }
 
-/// One gauge metric `requests` for a service, with a `code` attribute.
+/// One gauge metric `requests` for a service, with a `code` attribute, at
+/// `BASE_NS`.
 fn gauge_metrics(service: &str, value: f64, code: &str) -> ExportMetricsServiceRequest {
+    gauge_metrics_at(service, value, code, BASE_NS)
+}
+
+/// Like [`gauge_metrics`], with an explicit sample timestamp — used to
+/// ingest several samples of the same series across a window (#1499).
+fn gauge_metrics_at(
+    service: &str,
+    value: f64,
+    code: &str,
+    ts_ns: u64,
+) -> ExportMetricsServiceRequest {
+    gauge_metrics_named_at("requests", service, value, code, ts_ns)
+}
+
+/// Like [`gauge_metrics`], with an explicit metric name — used to ingest a
+/// second, differently-named series (#1502).
+fn gauge_metrics_named(
+    metric_name: &str,
+    service: &str,
+    value: f64,
+    code: &str,
+) -> ExportMetricsServiceRequest {
+    gauge_metrics_named_at(metric_name, service, value, code, BASE_NS)
+}
+
+/// One gauge metric with an explicit name and sample timestamp for a
+/// service, with a `code` attribute.
+fn gauge_metrics_named_at(
+    metric_name: &str,
+    service: &str,
+    value: f64,
+    code: &str,
+    ts_ns: u64,
+) -> ExportMetricsServiceRequest {
     ExportMetricsServiceRequest {
         resource_metrics: vec![ResourceMetrics {
             resource: Some(Resource {
@@ -248,7 +308,7 @@ fn gauge_metrics(service: &str, value: f64, code: &str) -> ExportMetricsServiceR
             scope_metrics: vec![ScopeMetrics {
                 scope: None,
                 metrics: vec![Metric {
-                    name: "requests".to_string(),
+                    name: metric_name.to_string(),
                     description: String::new(),
                     unit: "1".to_string(),
                     data: Some(Data::Gauge(Gauge {
@@ -258,12 +318,54 @@ fn gauge_metrics(service: &str, value: f64, code: &str) -> ExportMetricsServiceR
                                 value: Some(string_value(code)),
                                 ..Default::default()
                             }],
+                            start_time_unix_nano: ts_ns,
+                            time_unix_nano: ts_ns,
+                            value: Some(number_data_point::Value::AsDouble(value)),
+                            exemplars: vec![],
+                            flags: 0,
+                        }],
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
+/// A single counter (`Sum`) metric data point, mirroring how
+/// `otelcol_exporter_send_failed_spans` is shaped in production.
+fn sum_metrics(service: &str, name: &str, value: f64) -> ExportMetricsServiceRequest {
+    use opentelemetry_proto::tonic::metrics::v1::{AggregationTemporality, Sum};
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(service)),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: name.to_string(),
+                    description: String::new(),
+                    unit: "1".to_string(),
+                    data: Some(Data::Sum(Sum {
+                        data_points: vec![NumberDataPoint {
+                            attributes: vec![],
                             start_time_unix_nano: BASE_NS,
                             time_unix_nano: BASE_NS,
                             value: Some(number_data_point::Value::AsDouble(value)),
                             exemplars: vec![],
                             flags: 0,
                         }],
+                        aggregation_temporality: AggregationTemporality::Cumulative.into(),
+                        is_monotonic: true,
                     })),
                     metadata: vec![],
                 }],
@@ -320,52 +422,117 @@ fn histogram_metrics(service: &str) -> ExportMetricsServiceRequest {
     }
 }
 
+/// A cumulative `commit_duration` histogram from one service with two series
+/// that differ only in the `op` attribute (the hive NaN shape): `a` sampled at
+/// `BASE_NS` +0/30/60s, `b` at +15/45/75s with a different distribution.
+/// Each series differenced against itself gives a = [2,3,2,0] and
+/// b = [0,2,5,0], merged [2,5,7,0] with median 2.0; `a` alone gives 1.5, `b`
+/// alone 2.6, and differencing across the two series 2.83 (or NaN).
+fn two_series_cumulative_histogram(service: &str) -> ExportMetricsServiceRequest {
+    let series: [(&str, u64, [[u64; 4]; 3]); 2] = [
+        ("a", 0, [[1, 1, 0, 0], [2, 2, 1, 0], [3, 4, 2, 0]]),
+        ("b", 15, [[0, 0, 1, 0], [0, 1, 3, 0], [0, 2, 6, 0]]),
+    ];
+    let data_points = series
+        .iter()
+        .flat_map(|(op, first_s, samples)| {
+            samples
+                .iter()
+                .enumerate()
+                .map(move |(i, counts)| HistogramDataPoint {
+                    attributes: vec![KeyValue {
+                        key: "op".to_string(),
+                        value: Some(string_value(op)),
+                        ..Default::default()
+                    }],
+                    start_time_unix_nano: BASE_NS - 600_000_000_000,
+                    time_unix_nano: BASE_NS + (first_s + i as u64 * 30) * 1_000_000_000,
+                    count: counts.iter().sum(),
+                    sum: None,
+                    bucket_counts: counts.to_vec(),
+                    explicit_bounds: vec![1.0, 2.0, 4.0],
+                    exemplars: vec![],
+                    flags: 0,
+                    min: None,
+                    max: None,
+                })
+        })
+        .collect();
+    let mut request = histogram_metrics(service);
+    let metric = &mut request.resource_metrics[0].scope_metrics[0].metrics[0];
+    metric.name = "commit_duration".to_string();
+    metric.data = Some(Data::Histogram(Histogram {
+        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+        data_points,
+    }));
+    request
+}
+
+/// A monotonic counter `requests_total` sampled every 10s as
+/// `[10, 20, 5, 15]` — the 20 -> 5 drop is a counter reset (a process
+/// restart), which OTLP marks with a new `start_time`. The counter started
+/// an hour before, so its first point is the baseline; the restarted one
+/// starts inside the range and counts from zero: (20-10) + 5 + (15-5) = 25.
+fn counter_with_reset_metrics(service: &str) -> ExportMetricsServiceRequest {
+    let started = BASE_NS - 3_600_000_000_000;
+    let restart = BASE_NS + 15_000_000_000;
+    let points: [(u64, u64, f64); 4] = [
+        (started, BASE_NS, 10.0),
+        (started, BASE_NS + 10_000_000_000, 20.0),
+        (restart, BASE_NS + 20_000_000_000, 5.0),
+        (restart, BASE_NS + 30_000_000_000, 15.0),
+    ];
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value(service)),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![Metric {
+                    name: "requests_total".to_string(),
+                    description: String::new(),
+                    unit: "1".to_string(),
+                    data: Some(Data::Sum(Sum {
+                        data_points: points
+                            .iter()
+                            .map(|(start, ts, value)| NumberDataPoint {
+                                attributes: vec![],
+                                start_time_unix_nano: *start,
+                                time_unix_nano: *ts,
+                                value: Some(number_data_point::Value::AsDouble(*value)),
+                                exemplars: vec![],
+                                flags: 0,
+                            })
+                            .collect(),
+                        aggregation_temporality: AggregationTemporality::Cumulative as i32,
+                        is_monotonic: true,
+                    })),
+                    metadata: vec![],
+                }],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
 async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
         (*services.flight_transport).clone(),
     );
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    #[derive(Clone)]
-    struct State {
-        catalog: Catalog,
-        service_registry: ServiceRegistry,
-        config: Configuration,
-        authenticator: Arc<common::auth::Authenticator>,
-    }
-    impl std::fmt::Debug for State {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("State")
-        }
-    }
-    impl RouterState for State {
-        fn catalog(&self) -> &Catalog {
-            &self.catalog
-        }
-        fn service_registry(&self) -> &ServiceRegistry {
-            &self.service_registry
-        }
-        fn config(&self) -> &Configuration {
-            &self.config
-        }
-        fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-            &self.authenticator
-        }
-    }
-
-    let state = State {
-        catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator: authenticator.clone(),
-    };
+    let authenticator = state.authenticator().clone();
     Router::new()
         .nest("/prometheus", promql::router().with_state(state))
         .layer(middleware::from_fn(move |req, next| {
@@ -397,12 +564,54 @@ async fn get(app: &Router, uri: &str) -> (StatusCode, serde_json::Value) {
     )
 }
 
-/// The window bracketing the ingested metrics.
+/// Percent-encode a PromQL expression for use as a URL query-string value —
+/// braces, quotes, and spaces in a label matcher aren't valid raw URI bytes.
+fn encode_query(promql: &str) -> String {
+    url::form_urlencoded::byte_serialize(promql.as_bytes()).collect()
+}
+
+/// Run an instant PromQL query and return its status plus the parsed
+/// `value` of every vector entry in the result.
+async fn instant_query_values(app: &Router, promql: &str, at: u64) -> (StatusCode, Vec<f64>) {
+    let query = encode_query(promql);
+    let (status, body) = get(
+        app,
+        &format!("/prometheus/api/v1/query?query={query}&time={at}"),
+    )
+    .await;
+    let values = body["data"]["result"]
+        .as_array()
+        .cloned()
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|s| s["value"][1].as_str().and_then(|v| v.parse::<f64>().ok()))
+        .collect();
+    (status, values)
+}
+
+/// The window bracketing the ingested metrics, for the metadata endpoints.
 fn window() -> String {
     // Prometheus params are unix seconds; step 1h covers the point.
     let start = (BASE_NS / 1_000_000_000) as i64 - 60;
     let end = (BASE_NS / 1_000_000_000) as i64 + 60;
     format!("start={start}&end={end}&step=1h")
+}
+
+/// A range with one evaluation instant, a minute after the ingested points:
+/// a selector reads its 5-minute lookback ending there, and `[5m]` its
+/// range, as in Prometheus. (Prometheus params are unix seconds; with step
+/// 1h, `start` is the only instant.)
+fn eval_window() -> String {
+    let start = (BASE_NS / 1_000_000_000) as i64 + 60;
+    let end = start + 60;
+    format!("start={start}&end={end}&step=1h")
+}
+
+/// A window whose first evaluation instant is the ingested point: histogram
+/// functions evaluate at `start + k·step`, reading `(t - step, t]`.
+fn instant_window() -> String {
+    let start = (BASE_NS / 1_000_000_000) as i64;
+    format!("start={start}&end={}&step=1h", start + 60)
 }
 
 /// The ingested metrics' timestamp, in unix seconds (Prometheus param units).
@@ -464,10 +673,230 @@ async fn setup_with_ingested_metrics() -> (TestServices, Router) {
     (services, app)
 }
 
+/// Ingest three samples of `requests{service="churner"}` sixty seconds apart
+/// (a gauge scraped every minute — the exact shape of #1499) plus a single
+/// sample of `requests{service="steady"}`, then force-flush. Every
+/// aggregation exercised against this fixture must take each series'
+/// *latest* sample in the lookback before folding across series, never every
+/// raw row in the bucket.
+async fn setup_with_repeated_gauge_samples() -> (TestServices, Router) {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    for (offset_s, value) in [(0u64, 100.0), (60, 200.0), (120, 300.0)] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(
+                &ctx,
+                gauge_metrics_at("churner", value, "200", BASE_NS + offset_s * 1_000_000_000),
+            )
+            .await
+            .expect("ingest churner gauge sample");
+    }
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(
+            &ctx,
+            gauge_metrics_at("steady", 50.0, "200", BASE_NS + 60 * 1_000_000_000),
+        )
+        .await
+        .expect("ingest steady gauge sample");
+
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let app = build_router(&services).await;
+    (services, app)
+}
+
+/// A range whose first evaluation instant follows every sample in
+/// [`setup_with_repeated_gauge_samples`], so its lookback sees them all.
+fn repeated_samples_window(step_seconds: i64) -> String {
+    let start = (BASE_NS / 1_000_000_000) as i64 + 120;
+    let end = start + 60;
+    format!("start={start}&end={end}&step={step_seconds}")
+}
+
+/// A timestamp after every sample in [`setup_with_repeated_gauge_samples`]
+/// (unix seconds, within the instant query's lookback).
+fn repeated_samples_at() -> u64 {
+    BASE_NS / 1_000_000_000 + 120
+}
+
+#[tokio::test]
+async fn promql_count_of_a_multi_sample_series_is_one_not_the_sample_count() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    let at = repeated_samples_at();
+
+    let (status, values) =
+        instant_query_values(&app, r#"count(requests{service="churner"})"#, at).await;
+
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        values,
+        vec![1.0],
+        "count() of a single series must be 1, not its sample count"
+    );
+}
+
+#[tokio::test]
+async fn promql_sum_avg_max_min_of_repeated_samples_use_the_latest_value() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    let at = repeated_samples_at();
+
+    // `churner`'s three samples are 100, 200, 300; every one of these
+    // aggregates over a single series must equal its latest sample (300),
+    // not a fold of the raw rows (e.g. sum = 600).
+    for op in ["sum", "avg", "max", "min"] {
+        let (status, values) =
+            instant_query_values(&app, &format!(r#"{op}(requests{{service="churner"}})"#), at)
+                .await;
+        assert_eq!(status, StatusCode::OK, "{op}(...) instant");
+        assert_eq!(values.len(), 1, "{op}: {values:?}");
+        assert!(
+            (values[0] - 300.0).abs() < 1e-9,
+            "{op}(...) must equal the series' latest sample (300), got {values:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn promql_range_count_is_one_per_step_despite_several_raw_samples_in_the_bucket() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    // A 5-minute step buckets all three `churner` samples (0/60/120s) into
+    // one window; count() must report one series per step, not the three
+    // raw samples that landed in it.
+    let w = repeated_samples_window(300);
+    let query = encode_query(r#"count(requests{service="churner"})"#);
+
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query={query}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "count(...) range: {body}");
+    assert!(
+        matrix_all_values_near(&body, 1.0, 1e-9),
+        "every step must report exactly one series: {body}"
+    );
+}
+
+#[tokio::test]
+async fn promql_sum_by_service_sums_the_latest_sample_of_each_member_series() {
+    let (_services, app) = setup_with_repeated_gauge_samples().await;
+    let at = repeated_samples_at();
+
+    // `churner`'s latest sample is 300, `steady`'s only sample is 50 — the
+    // total must be their latest values (350), not a fold of every raw row
+    // ingested for `churner` (100+200+300+50 = 650).
+    let (status, values) = instant_query_values(&app, "sum by (service_name) (requests)", at).await;
+
+    assert_eq!(status, StatusCode::OK);
+    let total: f64 = values.iter().sum();
+    assert!(
+        (total - 350.0).abs() < 1e-9,
+        "sum by (service_name) must total the latest per-series values (350), got {total}"
+    );
+}
+
+/// Ingest two counters for one service: `failed` = 13847 and `failed_logs`
+/// = 42, the shape behind #1501. The services own the temp storage, so the
+/// caller keeps them alive for as long as it queries.
+async fn setup_with_two_counters() -> (TestServices, Router) {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    for (name, value) in [("failed", 13847.0), ("failed_logs", 42.0)] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(&ctx, sum_metrics("otelcol", name, value))
+            .await
+            .expect("ingest counter");
+    }
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+    let app = build_router(&services).await;
+    (services, app)
+}
+
+/// Run an instant query and return each series' (labels, value).
+async fn instant_series(app: &Router, query: &str) -> Vec<(serde_json::Value, f64)> {
+    let params = url::form_urlencoded::Serializer::new(String::new())
+        .append_pair("query", query)
+        .append_pair("time", &at_timestamp().to_string())
+        .finish();
+    let (status, body) = get(app, &format!("/prometheus/api/v1/query?{params}")).await;
+    assert_eq!(status, StatusCode::OK, "{query}: {body}");
+    assert_eq!(body["data"]["resultType"], "vector", "{query}: {body}");
+    body["data"]["result"]
+        .as_array()
+        .unwrap_or_else(|| panic!("{query}: {body}"))
+        .iter()
+        .map(|s| {
+            let v = s["value"][1].as_str().unwrap().parse::<f64>().unwrap();
+            (s["metric"].clone(), v)
+        })
+        .collect()
+}
+
+#[tokio::test]
+async fn promql_scalar_arithmetic_applies_the_op_and_drops_name() {
+    let (_services, app) = setup_with_two_counters().await;
+    for (query, expected) in [
+        ("failed * 2", 27694.0),
+        ("2 * failed", 27694.0),
+        ("failed + 0", 13847.0),
+        ("sum(failed) * 2", 27694.0),
+    ] {
+        let series = instant_series(&app, query).await;
+        assert_eq!(series.len(), 1, "{query}: {series:?}");
+        let (labels, value) = &series[0];
+        assert!((value - expected).abs() < 1e-9, "{query}: {series:?}");
+        assert!(
+            labels.get("__name__").is_none(),
+            "{query} must drop __name__: {labels}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn promql_vector_arithmetic_matches_series_and_nests() {
+    let (_services, app) = setup_with_two_counters().await;
+    for (query, expected) in [
+        ("failed + failed_logs", 13889.0),
+        ("failed + failed_logs + failed", 27736.0),
+        ("failed / failed_logs * 100", 13847.0 / 42.0 * 100.0),
+    ] {
+        let series = instant_series(&app, query).await;
+        assert_eq!(series.len(), 1, "{query}: {series:?}");
+        let (labels, value) = &series[0];
+        assert!((value - expected).abs() < 1e-6, "{query}: {series:?}");
+        assert_eq!(labels["service_name"], "otelcol", "{query}: {labels}");
+        assert!(
+            labels.get("__name__").is_none(),
+            "{query} must drop __name__: {labels}"
+        );
+    }
+
+    let w = eval_window();
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=failed%2Bfailed_logs&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "range failed+failed_logs: {body}");
+    assert!(
+        (matrix_value_sum(&body) - 13889.0).abs() < 1e-9,
+        "range failed+failed_logs: {body}"
+    );
+}
+
 #[tokio::test]
 async fn promql_range_query_returns_matrix_with_all_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     let (status, body) = get(
         &app,
@@ -487,7 +916,7 @@ async fn promql_range_query_returns_matrix_with_all_series() {
 #[tokio::test]
 async fn promql_range_query_sum_aggregates_across_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     let (status, body) = get(
         &app,
@@ -504,6 +933,51 @@ async fn promql_range_query_sum_aggregates_across_series() {
     assert!(
         (matrix_value_sum(&body) - 30.0).abs() < 1e-9,
         "sum(requests) should total 30: {body}"
+    );
+}
+
+#[tokio::test]
+async fn promql_rate_and_increase_are_reset_aware_across_a_counter_restart() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, counter_with_reset_metrics("restart-svc"))
+        .await
+        .expect("ingest counter with reset");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let app = build_router(&services).await;
+    let w = eval_window();
+
+    // increase() recognizes the reset from the new start_time: the drop
+    // from 20 to 5 is counted from zero, giving 10 + 5 + 10 = 25 —
+    // never the naive last-minus-first.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=increase(requests_total[5m])&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "increase query_range: {body}");
+    assert!(
+        matrix_all_values_near(&body, 25.0, 1e-6),
+        "increase must be reset-corrected to 25, not last-first: {body}"
+    );
+
+    // rate() is the reset-corrected increase divided by the window and must
+    // never go negative across the restart.
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query_range?query=rate(requests_total[5m])&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "rate query_range: {body}");
+    assert!(
+        matrix_all_values_near(&body, 25.0 / 300.0, 1e-6),
+        "rate must equal the reset-corrected increase over the 300s window: {body}"
     );
 }
 
@@ -604,10 +1078,72 @@ async fn promql_series_endpoint_returns_matching_series() {
     assert_eq!(series.len(), 2, "one series per job: {body}");
 }
 
+/// Percent-encode a raw selector for use as a query-string value.
+fn urlenc(s: &str) -> String {
+    url::form_urlencoded::byte_serialize(s.as_bytes()).collect()
+}
+
+#[tokio::test]
+async fn promql_series_endpoint_name_regex_matches_prefix() {
+    let (_services, app) = setup_with_ingested_metrics().await;
+    let w = window();
+
+    let selector = urlenc(r#"{__name__=~"req.*"}"#);
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/series?match%5B%5D={selector}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "series: {body}");
+    let series = body["data"].as_array().cloned().unwrap_or_default();
+    assert!(
+        series.iter().all(|s| s["__name__"] == "requests"),
+        "series should all be requests: {body}"
+    );
+    assert_eq!(series.len(), 2, "one series per job: {body}");
+}
+
+#[tokio::test]
+async fn promql_series_endpoint_negated_name_regex_excludes_matches() {
+    let (services, app) = setup_with_ingested_metrics().await;
+    let ctx = test_tenant_context();
+
+    // A second, differently-named gauge metric so a wrongly-collapsed exact
+    // match (which would filter out everything) is distinguishable from a
+    // real negated regex (which keeps the non-matching metric).
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(&ctx, gauge_metrics_named("errors", "api", 1.0, "200"))
+        .await
+        .expect("ingest errors gauge");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let w = window();
+    // A lone `!~` matcher also matches the empty name, so PromQL requires
+    // another matcher to keep the selector non-trivial.
+    let selector = urlenc(r#"{__name__!~"req.*", job="api"}"#);
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/series?match%5B%5D={selector}&{w}"),
+    )
+    .await;
+
+    assert_eq!(status, StatusCode::OK, "series: {body}");
+    let series = body["data"].as_array().cloned().unwrap_or_default();
+    let names: Vec<&str> = series
+        .iter()
+        .map(|s| s["__name__"].as_str().unwrap_or(""))
+        .collect();
+    assert_eq!(names, vec!["errors"], "{body}");
+}
+
 #[tokio::test]
 async fn promql_histogram_quantile_interpolates_median() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = instant_window();
 
     // histogram_quantile over the stored latency histogram: the median
     // interpolates to 3.333… within the (2,4] bucket.
@@ -626,6 +1162,110 @@ async fn promql_histogram_quantile_interpolates_median() {
     );
 }
 
+/// Regression (hive NaN): `histogram_quantile(q, rate(m[r]))` over one
+/// service's several cumulative series of a metric differences each series
+/// against itself (see [`two_series_cumulative_histogram`]): merged under
+/// `sum` exactly 2.0, and without it one quantile per series, 1.5 for `a`
+/// and 2.6 for `b`.
+#[tokio::test]
+async fn promql_histogram_quantile_over_rate_keeps_attribute_series_apart() {
+    let (services, app) = setup_with_ingested_metrics().await;
+    services
+        .metrics_handler
+        .handle_grpc_otlp_metrics(
+            &test_tenant_context(),
+            two_series_cumulative_histogram("writer"),
+        )
+        .await
+        .expect("ingest two-series histogram");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    // One instant after the last point, whose 2m window holds every point
+    // of both series.
+    let start = BASE_NS / 1_000_000_000 + 80;
+    let end = start + 60;
+    let range = |promql: &str| {
+        let query = encode_query(promql);
+        format!("/prometheus/api/v1/query_range?query={query}&start={start}&end={end}&step=100")
+    };
+    let values = |series: &serde_json::Value| -> Vec<f64> {
+        series["values"]
+            .as_array()
+            .into_iter()
+            .flatten()
+            .filter_map(|v| v[1].as_str()?.parse().ok())
+            .collect()
+    };
+
+    let (status, body) = get(
+        &app,
+        &range("histogram_quantile(0.5, sum(rate(commit_duration[2m])))"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(values(&body["data"]["result"][0]), vec![2.0], "{body}");
+
+    let per_op_query = "histogram_quantile(0.5, rate(commit_duration[2m]))";
+    let (status, body) = get(&app, &range(per_op_query)).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    let mut per_op: Vec<(String, serde_json::Value, Vec<f64>)> = body["data"]["result"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            (
+                s["metric"]["op"].as_str().unwrap_or("").to_string(),
+                s["metric"].clone(),
+                values(s),
+            )
+        })
+        .collect();
+    per_op.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(per_op.len(), 2, "{body}");
+    for ((op, metric, samples), (want_op, want)) in per_op.iter().zip([("a", 1.5), ("b", 2.6)]) {
+        assert_eq!(op, want_op, "{body}");
+        assert_eq!(samples.len(), 1, "series {op} needs one sample: {body}");
+        assert!((samples[0] - want).abs() < 1e-9, "series {op}: {body}");
+        // Prometheus drops the metric name from a histogram_quantile result.
+        assert!(metric.get("__name__").is_none(), "series {op}: {body}");
+    }
+
+    // The same instant through `/api/v1/query`, at the instant after the
+    // last point.
+    let query = encode_query(per_op_query);
+    let (status, body) = get(
+        &app,
+        &format!("/prometheus/api/v1/query?query={query}&time={start}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+    assert_eq!(body["data"]["resultType"], "vector", "{body}");
+    let mut instant: Vec<(String, f64, bool)> = body["data"]["result"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|s| {
+            (
+                s["metric"]["op"].as_str().unwrap_or("").to_string(),
+                s["value"][1]
+                    .as_str()
+                    .and_then(|v| v.parse().ok())
+                    .unwrap_or(f64::NAN),
+                s["metric"].get("__name__").is_none(),
+            )
+        })
+        .collect();
+    instant.sort_by(|x, y| x.0.cmp(&y.0));
+    assert_eq!(instant.len(), 2, "{body}");
+    for ((op, value, nameless), (want_op, want)) in instant.iter().zip([("a", 1.5), ("b", 2.6)]) {
+        assert_eq!(op, want_op, "{body}");
+        assert!((value - want).abs() < 1e-9, "series {op}: {body}");
+        assert!(nameless, "series {op} kept __name__: {body}");
+    }
+}
+
 // The remaining tests exercise newer function families end-to-end through
 // the router to confirm the query→lowering→execution wiring (the math
 // itself is covered by the querier unit tests). `>` is percent-encoded
@@ -634,7 +1274,7 @@ async fn promql_histogram_quantile_interpolates_median() {
 #[tokio::test]
 async fn promql_vector_division_yields_one_per_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // Vector-to-vector arithmetic: requests / requests = 1 per series.
     let (status, body) = get(
@@ -654,7 +1294,7 @@ async fn promql_vector_division_yields_one_per_series() {
 #[tokio::test]
 async fn promql_comparison_filter_keeps_matching_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // Scalar comparison filters to the matching series (web=20 > 15).
     let (status, body) = get(
@@ -673,7 +1313,7 @@ async fn promql_comparison_filter_keeps_matching_series() {
 #[tokio::test]
 async fn promql_histogram_fraction_computes_bucket_ratio() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = instant_window();
 
     // histogram_fraction over the latency histogram: (0, 2] = 3/10 = 0.3.
     let (status, body) = get(
@@ -692,7 +1332,7 @@ async fn promql_histogram_fraction_computes_bucket_ratio() {
 #[tokio::test]
 async fn promql_vector_function_produces_constant_series() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // vector(42): a synthetic constant series.
     let (status, body) = get(
@@ -711,7 +1351,7 @@ async fn promql_vector_function_produces_constant_series() {
 #[tokio::test]
 async fn promql_absent_function_reports_missing_metric() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // absent() of a missing metric yields 1.
     let (status, body) = get(
@@ -730,7 +1370,7 @@ async fn promql_absent_function_reports_missing_metric() {
 #[tokio::test]
 async fn promql_subquery_avg_over_time_executes() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // Subquery under an over_time reducer lowers and executes cleanly.
     let (status, body) = get(
@@ -746,7 +1386,7 @@ async fn promql_subquery_avg_over_time_executes() {
 #[tokio::test]
 async fn promql_at_modifier_pins_evaluation_time() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
     let at = at_timestamp();
 
     // The @ modifier lowers and executes cleanly over the router.
@@ -763,7 +1403,7 @@ async fn promql_at_modifier_pins_evaluation_time() {
 #[tokio::test]
 async fn promql_time_function_executes() {
     let (_services, app) = setup_with_ingested_metrics().await;
-    let w = window();
+    let w = eval_window();
 
     // time() lowers and executes cleanly over the router.
     let (status, body) = get(
@@ -809,4 +1449,232 @@ fn matrix_all_values_near(body: &serde_json::Value, expected: f64, epsilon: f64)
                 .and_then(|v| v.parse::<f64>().ok())
                 .is_some_and(|v| (v - expected).abs() < epsilon)
         })
+}
+
+/// Exponential histogram + summary in one resource -- the two OTel metric
+/// types [`gauge_metrics_named`]/[`sum_metrics`]/[`histogram_metrics`] don't
+/// cover -- for the cutover test below.
+fn exp_histogram_and_summary_metrics() -> ExportMetricsServiceRequest {
+    use opentelemetry_proto::tonic::metrics::v1::{
+        AggregationTemporality, ExponentialHistogram, ExponentialHistogramDataPoint, Summary,
+        SummaryDataPoint, exponential_histogram_data_point::Buckets,
+        summary_data_point::ValueAtQuantile,
+    };
+
+    let exp_histogram_metric = Metric {
+        name: "cutover_exphist".to_string(),
+        description: String::new(),
+        unit: "s".to_string(),
+        data: Some(Data::ExponentialHistogram(ExponentialHistogram {
+            aggregation_temporality: AggregationTemporality::Cumulative.into(),
+            data_points: vec![ExponentialHistogramDataPoint {
+                attributes: vec![],
+                start_time_unix_nano: BASE_NS,
+                time_unix_nano: BASE_NS,
+                count: 6,
+                sum: Some(12.0),
+                scale: 2,
+                zero_count: 1,
+                positive: Some(Buckets {
+                    offset: 0,
+                    bucket_counts: vec![1, 2],
+                }),
+                negative: None,
+                flags: 0,
+                exemplars: vec![],
+                min: Some(0.1),
+                max: Some(5.0),
+                zero_threshold: 0.0,
+            }],
+        })),
+        metadata: vec![],
+    };
+
+    let summary_metric = Metric {
+        name: "cutover_summary".to_string(),
+        description: String::new(),
+        unit: "ms".to_string(),
+        data: Some(Data::Summary(Summary {
+            data_points: vec![SummaryDataPoint {
+                attributes: vec![],
+                start_time_unix_nano: BASE_NS,
+                time_unix_nano: BASE_NS,
+                count: 5,
+                sum: 10.0,
+                quantile_values: vec![ValueAtQuantile {
+                    quantile: 0.5,
+                    value: 2.0,
+                }],
+                flags: 0,
+            }],
+        })),
+        metadata: vec![],
+    };
+
+    ExportMetricsServiceRequest {
+        resource_metrics: vec![ResourceMetrics {
+            resource: Some(Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(string_value("cutover")),
+                    ..Default::default()
+                }],
+                dropped_attributes_count: 0,
+                ..Default::default()
+            }),
+            scope_metrics: vec![ScopeMetrics {
+                scope: None,
+                metrics: vec![exp_histogram_metric, summary_metric],
+                schema_url: String::new(),
+            }],
+            schema_url: String::new(),
+        }],
+    }
+}
+
+/// otel-native-schema layer 7 (D10) cutover: every OTel metric type lands
+/// as typed rows in the wide tables, and PromQL agrees with them.
+#[tokio::test]
+async fn cutover_ingests_every_metric_type_into_the_wide_tables() {
+    use opentelemetry_proto::tonic::metrics::v1::{Exemplar, exemplar};
+
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    // A histogram with one exemplar carrying trace/span correlation,
+    // reusing the shared `histogram_metrics` fixture (name "latency").
+    let mut histogram_request = histogram_metrics("cutover");
+    let Data::Histogram(histogram) = histogram_request.resource_metrics[0].scope_metrics[0].metrics
+        [0]
+    .data
+    .as_mut()
+    .unwrap() else {
+        unreachable!()
+    };
+    histogram.data_points[0].exemplars.push(Exemplar {
+        filtered_attributes: vec![],
+        time_unix_nano: BASE_NS,
+        span_id: vec![1, 2, 3, 4, 5, 6, 7, 8],
+        trace_id: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+        value: Some(exemplar::Value::AsDouble(3.0)),
+    });
+
+    for request in [
+        gauge_metrics_named("cutover_gauge", "cutover", 42.0, "200"),
+        sum_metrics("cutover", "cutover_sum", 7.0),
+        histogram_request,
+        exp_histogram_and_summary_metrics(),
+    ] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(&ctx, request)
+            .await
+            .expect("ingest metric");
+    }
+
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let metrics_table = tests_integration::compaction_helpers::load_table(
+        &services.catalog_manager,
+        "test-tenant",
+        "test-dataset",
+        "metrics",
+    )
+    .await
+    .expect("metrics table");
+    let exemplars_table = tests_integration::compaction_helpers::load_table(
+        &services.catalog_manager,
+        "test-tenant",
+        "test-dataset",
+        "metric_exemplars",
+    )
+    .await
+    .expect("metric_exemplars table");
+
+    let ctx_sql = SessionContext::new();
+    ctx_sql
+        .register_table("m", Arc::new(DataFusionTable::from(metrics_table)))
+        .unwrap();
+    ctx_sql
+        .register_table("e", Arc::new(DataFusionTable::from(exemplars_table)))
+        .unwrap();
+
+    // One typed row per ingested metric, discriminated by `metric_type`,
+    // with each shape's own columns populated and the rest null.
+    let metrics_rows = ctx_sql
+        .sql(
+            "SELECT metric_name, metric_type, value, count, sum, \
+             aggregation_temporality, is_monotonic, \
+             bucket_counts IS NOT NULL AS has_bucket_counts, \
+             positive_bucket_counts IS NOT NULL AS has_positive_buckets, \
+             quantile_values IS NOT NULL AS has_quantiles \
+             FROM m ORDER BY metric_name",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_batches_eq!(
+        [
+            "+-----------------+-----------------------+-------+-------+------+-------------------------+--------------+-------------------+----------------------+---------------+",
+            "| metric_name     | metric_type           | value | count | sum  | aggregation_temporality | is_monotonic | has_bucket_counts | has_positive_buckets | has_quantiles |",
+            "+-----------------+-----------------------+-------+-------+------+-------------------------+--------------+-------------------+----------------------+---------------+",
+            "| cutover_exphist | exponential_histogram |       | 6     | 12.0 | 2                       |              | false             | true                 | false         |",
+            "| cutover_gauge   | gauge                 | 42.0  |       |      |                         |              | false             | false                | false         |",
+            "| cutover_sum     | sum                   | 7.0   |       |      | 2                       | true         | false             | false                | false         |",
+            "| cutover_summary | summary               |       | 5     | 10.0 |                         |              | false             | false                | true          |",
+            "| latency         | histogram             |       | 10    | 20.0 | 1                       |              | true              | false                | false         |",
+            "+-----------------+-----------------------+-------+-------+------+-------------------------+--------------+-------------------+----------------------+---------------+",
+        ],
+        &metrics_rows
+    );
+
+    // The histogram exemplar lands in `metric_exemplars`, correlated back to
+    // its owning `metrics` row by `series_id` via the join, with its
+    // trace/span ids intact.
+    let exemplar_rows = ctx_sql
+        .sql(
+            "SELECT e.metric_name, e.trace_id, e.span_id \
+             FROM e JOIN m ON e.series_id = m.series_id \
+             WHERE m.metric_type = 'histogram'",
+        )
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    assert_batches_eq!(
+        [
+            "+-------------+----------------------------------+------------------+",
+            "| metric_name | trace_id                         | span_id          |",
+            "+-------------+----------------------------------+------------------+",
+            "| latency     | 0102030405060708090a0b0c0d0e0f10 | 0102030405060708 |",
+            "+-------------+----------------------------------+------------------+",
+        ],
+        &exemplar_rows
+    );
+
+    // The Query IR (via the PromQL compat surface) agrees with the tables.
+    let app = build_router(&services).await;
+    let at = at_timestamp();
+
+    let (status, values) = instant_query_values(&app, "cutover_gauge", at).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(values, vec![42.0], "gauge instant query");
+
+    let (status, values) = instant_query_values(&app, "cutover_sum", at).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(values, vec![7.0], "sum instant query");
+
+    let (status, values) = instant_query_values(&app, "histogram_quantile(0.5,latency)", at).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(values.len(), 1, "histogram_quantile instant query");
+    assert!(
+        (values[0] - 10.0 / 3.0).abs() < 1e-6,
+        "expected the 0.5-quantile to interpolate to 10/3, got {:?}",
+        values[0]
+    );
 }

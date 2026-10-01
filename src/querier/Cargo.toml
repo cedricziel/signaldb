@@ -1,8 +1,12 @@
 [package]
 name = "querier"
-version = "0.3.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
+
+[features]
+# Builds the `structural_ancestry` bench under benches/ and the hook it calls.
+benchmarks = []
 
 [dependencies]
 common = { path = "../common" }
@@ -36,11 +40,22 @@ datafusion_iceberg.workspace = true
 
 thiserror.workspace = true
 promql-parser.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
-# PromQL support
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
 
 [dev-dependencies]
 common = { path = "../common", features = ["testing"] }
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+
+[[bench]]
+name = "structural_ancestry"
+harness = false
+required-features = ["benchmarks"]
+
+[lints]
+workspace = true

@@ -1,32 +1,41 @@
 import { useEffect, useRef } from "react";
-import { Outlet } from "react-router";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
+import { Outlet, useLocation, useNavigate } from "react-router";
+import { whoami } from "./api/session";
 import {
+  isAuthError,
   loadPersistedTenantContext,
   persistTenantContext,
   setTenantContext,
 } from "./api/http";
-import { LoginGate } from "./features/shell/LoginPanel";
-import { ThrottleBanner } from "./features/shell/ThrottleBanner";
-import { TopBar } from "./features/shell/TopBar";
-import { useExploreState } from "./lib/urlState";
+import { AppShell } from "./features/shell/AppShell";
+import { maybeAutoApplyUpdate } from "./lib/pwaUpdate";
+import { loginRedirectPath, safeRedirectTarget } from "./lib/redirectTarget";
+import { useExploreState, type ExploreState } from "./lib/urlState";
+import { recentQueryText, recordRecentQuery } from "./lib/recentQueries";
+import { useCurrentSession, useIsDemo, useWhoami } from "./lib/useWhoami";
 
 /**
- * The persistent shell (top bar + login gate) around whichever route is
- * active — the explore view for a signal, or the management panel. Renders
- * state/update via outlet context so route children share the one
- * URL-backed ExploreState instead of re-deriving it.
+ * The persistent shell around whichever route is active: the signed-in
+ * identity and tenant context for {@link AppShell}, and the 401-to-`/login`
+ * redirect. The active route (the explore view for a signal, or the
+ * management panel) gets state/update via outlet context, so route
+ * children share the one URL-backed ExploreState instead of re-deriving it.
  */
 export function App() {
   const [state, update] = useExploreState();
+  const navigate = useNavigate();
+  const location = useLocation();
+  const queryClient = useQueryClient();
 
   // The tenant/dataset context lives in the URL (`?tenant=&dataset=`), but
   // plain links (user menu → Schema, /manage, deep links inside the schema
   // hub, …) drop the search string, and a bookmark or new tab starts with
   // none at all. A session-authenticated request without `X-Tenant-ID` is a
-  // 401, which the login gate would misread as "logged out". So the last
-  // non-empty context is sticky — within this tab via a ref, across tabs via
-  // localStorage — it keeps feeding the API clients and is written back into
-  // the URL so subsequent links carry it.
+  // 401, which the redirect effect below would misread as "logged out". So
+  // the last non-empty context is sticky — within this tab via a ref, across
+  // tabs via localStorage — it keeps feeding the API clients and is written
+  // back into the URL so subsequent links carry it.
   const remembered = useRef(
     state.tenant
       ? { tenant: state.tenant, dataset: state.dataset }
@@ -47,16 +56,158 @@ export function App() {
     }
   }, [state.tenant, update]);
 
-  return (
-    <div className="app-frame">
-      <TopBar state={effective} update={update} />
-      <ThrottleBanner />
-      <main className="app-main">
-        <Outlet context={{ state: effective, update }} />
-      </main>
-      <LoginGate
-        onLoggedIn={({ tenant, dataset }) => update({ tenant, dataset })}
-      />
-    </div>
+  // Nothing in the URL or remembered locally (a fresh browser, or a bookmark
+  // predating any visit) — the only way left to place the visitor is a
+  // session cookie, e.g. one an SSO callback just set landing on the return
+  // target (not `/login`, so `LoginRoute`'s own resolution never runs). A
+  // sole membership (or an SSO/session response that already names one)
+  // goes straight into the URL; anything else — several memberships, or
+  // none — defers to `/select-tenant`, which owns rendering a picker or the
+  // no-access explanation.
+  const needsTenantResolution = !state.tenant && !remembered.current.tenant;
+  const sessionQuery = useCurrentSession(needsTenantResolution);
+  useEffect(() => {
+    if (!needsTenantResolution || !sessionQuery.isSuccess) return;
+    const session = sessionQuery.data;
+    if (session.tenant) {
+      update({ tenant: session.tenant, dataset: session.dataset ?? "" });
+      return;
+    }
+    if (location.pathname === "/select-tenant") return;
+    const target = safeRedirectTarget(
+      `${location.pathname}${location.search}${location.hash}`,
+    );
+    navigate(`/select-tenant?redirect=${encodeURIComponent(target)}`, {
+      replace: true,
+    });
+  }, [
+    needsTenantResolution,
+    sessionQuery.isSuccess,
+    sessionQuery.data,
+    location.pathname,
+    location.search,
+    location.hash,
+    navigate,
+    update,
+  ]);
+
+  // Until the probe answers there is no tenant to query for, and a visitor
+  // without a session would only collect a 401 per widget before the redirect
+  // below, so the routes stay unmounted. The probe only knows cookies: with
+  // API-key auth (the Vite dev proxy injects the key and tenant) it is always
+  // a 401, so one `whoami` decides — it succeeds for a key, 401s for a
+  // logged-out visitor, who then goes straight to the login page.
+  const probeRejected =
+    needsTenantResolution && isAuthError(sessionQuery.error);
+  const identityQuery = useQuery({
+    queryKey: ["whoami", "session-fallback"],
+    queryFn: () => whoami(),
+    enabled: probeRejected,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!probeRejected || !identityQuery.isSuccess) return;
+    update({
+      tenant: identityQuery.data.tenant.id,
+      dataset: identityQuery.data.default_dataset ?? "",
+    });
+  }, [probeRejected, identityQuery.isSuccess, identityQuery.data, update]);
+  const holdRoutes =
+    needsTenantResolution &&
+    (sessionQuery.isPending || (probeRejected && identityQuery.isPending));
+  const sessionRejected = probeRejected && isAuthError(identityQuery.error);
+  useEffect(() => {
+    if (!sessionRejected) return;
+    navigate(
+      loginRedirectPath(
+        `${location.pathname}${location.search}${location.hash}`,
+      ),
+      { replace: true },
+    );
+  }, [
+    sessionRejected,
+    location.pathname,
+    location.search,
+    location.hash,
+    navigate,
+  ]);
+
+  // A pending PWA update (see lib/pwaUpdate.ts) applies itself the next time
+  // the visitor navigates, as long as no form is dirty — never on the
+  // landing render, only on an actual route change thereafter.
+  const isFirstLocation = useRef(true);
+  useEffect(() => {
+    if (isFirstLocation.current) {
+      isFirstLocation.current = false;
+      return;
+    }
+    maybeAutoApplyUpdate();
+  }, [location.pathname, location.search, location.hash]);
+
+  // A 401 anywhere in the app (session expiry, a request that outran the
+  // cookie) sends the visitor to the dedicated login page rather than
+  // popping a dialog over the current one — `LoginRoute` lands them back
+  // here via `?redirect=` once signed in. The cookie-session probe is
+  // exempt: its 401 only means "no cookie", and API-key auth (the Vite dev
+  // proxy) has none while every data request still succeeds.
+  useEffect(
+    () =>
+      queryClient.getQueryCache().subscribe((event) => {
+        if (
+          event.type === "updated" &&
+          event.action.type === "error" &&
+          isAuthError(event.action.error) &&
+          event.query.queryKey[0] !== "current-session"
+        ) {
+          navigate(
+            loginRedirectPath(
+              `${location.pathname}${location.search}${location.hash}`,
+            ),
+            { replace: true },
+          );
+        }
+      }),
+    [queryClient, location.pathname, location.search, location.hash, navigate],
   );
+
+  const { data: who, canManage } = useWhoami(effective);
+  const isDemo = useIsDemo();
+  useRecordRecentQueries(effective);
+
+  return (
+    <AppShell
+      who={who}
+      canManage={canManage}
+      isDemo={isDemo}
+      state={effective}
+      update={update}
+    >
+      {holdRoutes || sessionRejected ? null : (
+        <Outlet context={{ state: effective, update }} />
+      )}
+    </AppShell>
+  );
+}
+
+/**
+ * Feeds the command palette's "Recent queries": a logs search or traces
+ * query that stays put for a couple of seconds counts as run — the views
+ * run on every committed change, so a debounce is what separates a query
+ * from the keystrokes on the way to it.
+ */
+function useRecordRecentQueries(state: ExploreState) {
+  const location = useLocation();
+  const signal = state.signal;
+  const text = recentQueryText(state);
+  const onExplorePath = location.pathname === `/${signal}`;
+  const href = `${location.pathname}${location.search}`;
+  useEffect(() => {
+    if (!onExplorePath || text.trim() === "") return;
+    if (signal !== "logs" && signal !== "traces") return;
+    const timer = window.setTimeout(
+      () => recordRecentQuery({ text, signal, href }),
+      2000,
+    );
+    return () => window.clearTimeout(timer);
+  }, [onExplorePath, signal, text, href]);
 }

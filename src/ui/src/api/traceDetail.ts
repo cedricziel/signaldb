@@ -3,27 +3,28 @@
 // during it — the data the waterfall and span panel render. Replaces the
 // Tempo-compat `tempoGetTrace` (which lacks span kind and flattens scopes)
 // and the separate span-kinds enrichment.
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
-import { runIrQuery } from "./queryIr";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
+import { namedRows, runIrQuery, type IrRow } from "./queryIr";
+import { ROOT_SPAN_SENTINEL } from "./traceGroups";
 import type {
   AttrValue,
   ProfileSummaryView,
   SpanEventView,
   TempoSpan,
   TempoTrace,
-} from "./tempo";
+} from "./traceTypes";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
 /** Lookback for the retry when the trace is outside the viewer's range: a
  * trace opened by pasting its ID may be much older than the explore window. */
-const WIDE_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
+export const WIDE_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 
 /** The trace-id filter. The traces source names the join key `trace_id`;
  * the profiles source calls it `trace.id`. */
 function whereTrace(
   traceId: string,
   field: "trace_id" | "trace.id" = "trace_id",
-): Record<string, unknown> {
+): IrStage {
   return { where: { field, op: "eq", value: traceId } };
 }
 
@@ -53,8 +54,9 @@ const SPAN_FIELDS = [
   "span_events",
 ] as const;
 
+/** Every span of one trace, or of several (`in`) at once. */
 export function buildTraceSpansDoc(
-  traceId: string,
+  traceId: string | string[],
   range: ResolvedRange,
 ): QueryIrRequest {
   return {
@@ -63,7 +65,12 @@ export function buildTraceSpansDoc(
     range: irRange(range),
     result: "rows",
     fields: [...SPAN_FIELDS],
-    pipeline: [whereTrace(traceId)],
+    pipeline: Array.isArray(traceId)
+      ? [
+          { where: { field: "trace_id", op: "in", value: traceId } },
+          { limit: 100_000 },
+        ]
+      : [whereTrace(traceId)],
   };
 }
 
@@ -83,20 +90,7 @@ export function buildTraceProfilesDoc(
   };
 }
 
-type Row = Record<string, unknown>;
-
-/** Rows as objects keyed by the response's column names. */
-function namedRows(res: QueryIrResponse): Row[] {
-  const names = (res.columns ?? []).map((c) => c.name);
-  return (res.rows ?? []).map((row) => {
-    const cells = row as unknown[];
-    const out: Row = {};
-    names.forEach((n, i) => {
-      out[n] = cells[i];
-    });
-    return out;
-  });
-}
+type Row = IrRow;
 
 const str = (v: unknown): string => (v == null ? "" : String(v));
 
@@ -164,7 +158,8 @@ function toSpan(row: Row): TempoSpan {
   const statusMessage = row.status_message;
   return {
     spanId: str(row.span_id),
-    parentSpanId: parent == null || parent === "" ? null : String(parent),
+    parentSpanId:
+      !parent || parent === ROOT_SPAN_SENTINEL ? null : String(parent),
     name: str(row.span_name),
     serviceName: str(row.service_name),
     // The Tempo path used lower-case status words; keep the contract.

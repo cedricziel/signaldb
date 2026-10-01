@@ -8,7 +8,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Row, Table};
 
 use crate::tui::action::Action;
 use crate::tui::components::Component;
-use crate::tui::state::{AppState, Permission};
+use crate::tui::state::AppState;
 
 #[derive(Debug, Clone)]
 enum PanelData {
@@ -50,12 +50,6 @@ impl TenantOverviewPanel {
     /// Set an error on the panel.
     pub fn set_error(&mut self, msg: String) {
         self.data = PanelData::Error(msg);
-    }
-
-    /// Whether this panel should be visible for the given permission.
-    #[allow(dead_code)] // Used by targeted panel tests and future app-level gating
-    pub fn is_visible(state: &AppState) -> bool {
-        matches!(state.permission, Permission::Admin { .. })
     }
 }
 
@@ -148,7 +142,7 @@ mod tests {
     use ratatui::backend::TestBackend;
 
     use super::*;
-    use crate::tui::state::AppState;
+    use crate::tui::state::{AppState, Permission};
     use crate::tui::test_helpers::assert_buffer_contains;
 
     fn make_state() -> AppState {
@@ -206,18 +200,6 @@ mod tests {
         assert_buffer_contains(&terminal, "acme");
         assert_buffer_contains(&terminal, "Acme Corp");
         assert_buffer_contains(&terminal, "globex");
-    }
-
-    #[test]
-    fn is_visible_for_admin() {
-        let state = make_admin_state();
-        assert!(TenantOverviewPanel::is_visible(&state));
-    }
-
-    #[test]
-    fn is_hidden_for_non_admin() {
-        let state = make_state();
-        assert!(!TenantOverviewPanel::is_visible(&state));
     }
 
     #[test]

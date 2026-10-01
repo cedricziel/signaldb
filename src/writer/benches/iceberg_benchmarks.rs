@@ -22,21 +22,19 @@
 //! throughput.
 
 use std::hint::black_box;
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use common::CatalogManager;
-use common::config::{Configuration, DefaultSchemas, SchemaConfig, StorageConfig};
+use common::config::{Configuration, SchemaConfig, StorageConfig};
+use common::flight::conversion::otlp_metrics_to_arrow;
 use common::iceberg::sort::{canonical_sort_columns, sort_batch_by};
+use common::testing::sample_metrics_request;
 use criterion::{BenchmarkId, Criterion, Throughput, criterion_group, criterion_main};
-use datafusion::arrow::array::{
-    Date32Array, Float64Array, Int32Array, RecordBatch, StringArray, TimestampNanosecondArray,
-    UInt32Array,
-};
+use datafusion::arrow::array::{RecordBatch, UInt32Array};
 use datafusion::arrow::compute::take_record_batch;
 use tokio::runtime::Runtime;
 use writer::IcebergTableWriter;
-use writer::schema_transform::create_metrics_gauge_arrow_schema;
+use writer::schema_transform::transform_metrics_to_wide;
 
 /// Fresh-per-iteration setup is expensive (catalog + table create), so keep
 /// samples low and warm-up short; Criterion still runs enough iterations per
@@ -50,14 +48,7 @@ fn create_benchmark_config() -> Configuration {
         schema: SchemaConfig {
             catalog_type: "memory".to_string(),
             catalog_uri: "memory://".to_string(),
-            default_schemas: DefaultSchemas {
-                traces_enabled: true,
-                logs_enabled: true,
-                metrics_enabled: true,
-                profiles_enabled: true,
-                custom_schemas: Default::default(),
-            },
-            materialized_labels: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -66,80 +57,31 @@ fn create_benchmark_config() -> Configuration {
     }
 }
 
-/// A fresh catalog + `metrics_gauge` writer under a unique tenant, so no two
-/// iterations share table state.
+/// A fresh catalog + `metrics` (wide layout) writer under a unique tenant,
+/// so no two iterations share table state.
 async fn create_writer(config: &Configuration) -> IcebergTableWriter {
     let catalog_manager = CatalogManager::new(config.clone())
         .await
         .expect("Failed to create catalog manager");
-    let object_store = Arc::new(object_store::memory::InMemory::new());
     IcebergTableWriter::new(
         &catalog_manager,
-        object_store,
         format!("bench_tenant_{}", uuid::Uuid::new_v4().simple()),
         "bench_dataset".to_string(),
-        "metrics_gauge".to_string(),
+        "metrics".to_string(),
     )
     .await
     .expect("Failed to create writer")
 }
 
-/// A `metrics_gauge` batch in the STORED schema (so no v1->v2 transform runs
-/// inside the timed append) with `num_rows` rows and ~100 distinct metric
-/// names — realistic cardinality for a gauge table.
+/// A `metrics` batch already in the wide STORED schema (so no wire->wide
+/// transform runs inside the timed append) with `num_rows` rows and ~100
+/// distinct metric names — realistic cardinality for a metrics table. Built
+/// via the real wire conversion + wide transform, both run once here rather
+/// than per benchmark iteration.
 fn create_benchmark_data(num_rows: usize) -> RecordBatch {
-    let timestamps: Vec<i64> = (0..num_rows)
-        .map(|i| 1_700_000_000_000_000_000 + (i as i64 * 1_000_000_000))
-        .collect();
-    let service_names: Vec<&str> = (0..num_rows).map(|_| "benchmark-service").collect();
-    let metric_names: Vec<String> = (0..num_rows)
-        .map(|i| format!("benchmark.metric.{}", i % 100))
-        .collect();
-    let values: Vec<f64> = (0..num_rows).map(|i| (i as f64) * 1.5 + 10.0).collect();
-    let hours: Vec<i32> = (0..num_rows).map(|i| (i % 24) as i32).collect();
-
-    RecordBatch::try_new(
-        create_metrics_gauge_arrow_schema(),
-        vec![
-            Arc::new(TimestampNanosecondArray::from(timestamps)),
-            Arc::new(TimestampNanosecondArray::from(vec![None; num_rows])),
-            Arc::new(StringArray::from(service_names)),
-            Arc::new(StringArray::from(
-                metric_names.iter().map(|s| s.as_str()).collect::<Vec<_>>(),
-            )),
-            Arc::new(StringArray::from(vec![
-                Some(
-                    "Benchmark metric for performance testing"
-                );
-                num_rows
-            ])),
-            Arc::new(StringArray::from(vec![Some("count"); num_rows])),
-            Arc::new(Float64Array::from(values)),
-            Arc::new(Int32Array::from(vec![None; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![
-                Some(
-                    "{\"service.version\":\"1.0\",\"host\":\"benchmark-host\"}"
-                );
-                num_rows
-            ])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(Int32Array::from(vec![None; num_rows])),
-            Arc::new(StringArray::from(vec![
-                Some(
-                    "{\"metric.type\":\"gauge\",\"benchmark\":\"true\"}"
-                );
-                num_rows
-            ])),
-            Arc::new(StringArray::from(vec![None::<&str>; num_rows])),
-            Arc::new(Date32Array::from(vec![19700; num_rows])),
-            Arc::new(Int32Array::from(hours)),
-        ],
-    )
-    .expect("Failed to create benchmark data")
+    let request = sample_metrics_request(num_rows);
+    let wire_batch = otlp_metrics_to_arrow(&request).expect("otlp -> wire batch");
+    transform_metrics_to_wide(wire_batch, &[]).expect("wire -> wide batch")
 }
 
 /// Time only `append_batches_with_marker` of `batches`, giving each of the
@@ -330,8 +272,8 @@ fn shuffle_rows(batch: &RecordBatch) -> RecordBatch {
 
 /// The columnar sort ingest runs on a commit group before writing it.
 fn bench_ingest_sort(c: &mut Criterion) {
-    let key = canonical_sort_columns("metrics_gauge");
-    assert!(!key.is_empty(), "metrics_gauge declares a sort key");
+    let key = canonical_sort_columns("metrics");
+    assert!(!key.is_empty(), "metrics declares a sort key");
 
     let mut group = c.benchmark_group("ingest_sort");
     for size in [1_000, 10_000, 100_000] {

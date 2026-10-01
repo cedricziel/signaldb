@@ -11,25 +11,21 @@
 //! reimplements a piece of it.
 
 use common::auth::validation::{self, ValidationError};
-use common::iceberg::schemas::TableSchema;
+use common::iceberg::schemas::LEGACY_METRIC_TABLE_NAMES;
 use common::wal::WalOperation;
 
-/// The table a metrics batch goes to when its metadata names none.
-const DEFAULT_METRICS_TABLE: &str = "metrics_gauge";
+/// The table every metrics batch commits to.
+const METRICS_TABLE: &str = "metrics";
 
-/// Whether `table_name` is one of the metrics signal tables — the only
-/// tables a `WriteMetrics` batch may target.
+/// Whether `table_name` is one of the metrics signal tables a `WriteMetrics`
+/// batch may target.
+///
+/// This also accepts the five legacy per-type names: a WAL entry can still
+/// carry one of them in flight across the upgrade (written before the flip,
+/// committed after), and its wire format is identical to a `metrics` batch,
+/// so [`route`] redirects it to the wide table rather than rejecting it.
 fn is_known_metrics_table(table_name: &str) -> bool {
-    matches!(
-        TableSchema::from_table_name(table_name),
-        Some(
-            TableSchema::MetricsGauge
-                | TableSchema::MetricsSum
-                | TableSchema::MetricsHistogram
-                | TableSchema::MetricsExponentialHistogram
-                | TableSchema::MetricsSummary
-        )
-    )
+    table_name == METRICS_TABLE || LEGACY_METRIC_TABLE_NAMES.contains(&table_name)
 }
 
 /// A batch's destination.
@@ -48,9 +44,9 @@ pub struct RouteTarget {
 pub struct RouteMetadata<'a> {
     pub tenant_id: Option<&'a str>,
     pub dataset_id: Option<&'a str>,
-    /// Honoured for metrics only, which fan out across several tables
-    /// (`metrics_gauge`, `metrics_sum`, ...). Every other signal has exactly
-    /// one table, so a `target_table` there is ignored.
+    /// Honoured for metrics only: `metrics` or one of the five legacy
+    /// per-type names, all of which route to `metrics`. Every other signal has
+    /// exactly one table, so a `target_table` there is ignored.
     pub target_table: Option<&'a str>,
 }
 
@@ -95,11 +91,11 @@ pub fn route(
         WalOperation::WriteLogs => "logs".to_string(),
         WalOperation::WriteProfiles => "profiles".to_string(),
         WalOperation::WriteMetrics => {
-            let table = present(metadata.target_table).unwrap_or(DEFAULT_METRICS_TABLE);
+            let table = present(metadata.target_table).unwrap_or(METRICS_TABLE);
             if !is_known_metrics_table(table) {
                 return Err(RoutingError::UnknownTable(table.to_string()));
             }
-            table.to_string()
+            METRICS_TABLE.to_string()
         }
         // A `Flush` marker carries no data; the processor force-commits its
         // scope and marks it processed without ever routing it.
@@ -202,7 +198,7 @@ mod tests {
             (WalOperation::WriteTraces, "traces"),
             (WalOperation::WriteLogs, "logs"),
             (WalOperation::WriteProfiles, "profiles"),
-            (WalOperation::WriteMetrics, DEFAULT_METRICS_TABLE),
+            (WalOperation::WriteMetrics, METRICS_TABLE),
         ] {
             let target = on_ingest(&operation, RouteMetadata::default());
             assert_eq!(target.table_name, table);
@@ -210,7 +206,7 @@ mod tests {
     }
 
     #[test]
-    fn metrics_honour_target_table_and_fall_back_to_gauge() {
+    fn metrics_honour_target_table_and_fall_back_to_the_wide_table() {
         let with_table = on_ingest(
             &WalOperation::WriteMetrics,
             RouteMetadata {
@@ -218,7 +214,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        assert_eq!(with_table.table_name, "metrics_exponential_histogram");
+        assert_eq!(with_table.table_name, METRICS_TABLE);
 
         // Absent or blank falls back rather than routing to a nameless table.
         for target_table in [None, Some(""), Some("  ")] {
@@ -229,7 +225,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            assert_eq!(target.table_name, DEFAULT_METRICS_TABLE);
+            assert_eq!(target.table_name, METRICS_TABLE);
         }
     }
 
@@ -282,6 +278,39 @@ mod tests {
             matches!(err, RoutingError::InvalidId { kind: "tenant", .. }),
             "unexpected error: {err}"
         );
+    }
+
+    /// Every shape of `target_table` --
+    /// absent (the default), the wide name itself, or a WAL entry still
+    /// naming a legacy per-type table (written before the flip, committed
+    /// after) -- must route to `metrics`. The legacy-named case is never
+    /// rejected: its wire format is identical to a `metrics` batch.
+    #[test]
+    fn routes_every_shape_of_target_table_to_metrics() {
+        for target_table in [
+            None,
+            Some("metrics"),
+            Some("metrics_gauge"),
+            Some("metrics_sum"),
+            Some("metrics_histogram"),
+            Some("metrics_exponential_histogram"),
+            Some("metrics_summary"),
+        ] {
+            let target = route(
+                &WalOperation::WriteMetrics,
+                RouteMetadata {
+                    target_table,
+                    ..Default::default()
+                },
+                DEFAULT_TENANT_ID,
+                DEFAULT_DATASET_ID,
+            )
+            .unwrap();
+            assert_eq!(
+                target.table_name, "metrics",
+                "{target_table:?} must route to metrics"
+            );
+        }
     }
 
     #[test]

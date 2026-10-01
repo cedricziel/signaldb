@@ -92,6 +92,16 @@ export interface EntityTypeDef {
    * dots-to-underscores mapping has no safe inverse.
    */
   registryEntity?: string;
+  /**
+   * This type's identity, narrowed per source to the attributes that source
+   * actually carries — set by `observedEntityTypes` alongside `sources`.
+   * A source can carry the primary identity attribute while missing a
+   * secondary one, and the tier-2 listing query must group that source by
+   * what it has, not by the full tuple (see `buildEntitySourceDoc` in
+   * `api/catalog.ts`). Absent on a type that has not gone through
+   * `observedEntityTypes` — those fall back to the full `identity`.
+   */
+  identityBySource?: Record<string, string[]>;
 }
 
 /**
@@ -111,10 +121,6 @@ export interface EntityTypeDef {
  * absence was not cosmetic: `process.pid` and `container.name` appear on
  * metrics and on no other signal in a typical deployment, so the Processes
  * and Containers pages rendered empty over data that was already stored.
- *
- * `metrics_histogram` is its own Query IR source but the same OTel signal as
- * `metrics`; both are listed because an entity reporting only histograms
- * would otherwise go undiscovered.
  */
 export const RESOURCE_SOURCES = CATALOG_SOURCES;
 

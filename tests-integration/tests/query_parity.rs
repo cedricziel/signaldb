@@ -28,8 +28,92 @@ const EXCLUDED: &[(&str, &str)] = &[
         "browser OAuth 2.1 consent flow, authenticated by the session cookie — no CLI or MCP surface makes sense",
     ),
     (
-        "manage_create_tenant",
-        "human self-serve tenant creation by a signed-in instance administrator (`TenantContext::is_instance_admin`); API-key clients create tenants through the admin API's `create_tenant` (`admin tenant create` / MCP `create_tenant`), so no `tenant`-group surface is owed (management-api-key-scope, design D5)",
+        "login_config",
+        "the browser login page's credential probe (which sign-in methods to offer) — the CLI and MCP have no login page (dedicated-login-page)",
+    ),
+    (
+        "current_session",
+        "browser session introspection authenticated by the session cookie alone — no CLI or MCP surface makes sense (dedicated-login-page)",
+    ),
+    (
+        "create_session",
+        "browser password login that mints the UI session cookie — the CLI and MCP authenticate with API keys, not sessions",
+    ),
+    (
+        "delete_session",
+        "browser logout that revokes the UI session cookie — the CLI and MCP hold no session to end",
+    ),
+    (
+        "session_oidc_start",
+        "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
+    ),
+    (
+        "session_oidc_callback",
+        "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
+    ),
+    (
+        "github_callback",
+        "browser redirect completing the GitHub App install flow, bound to the admin's session cookie (change: github-app-source-context) — no CLI command or MCP tool makes sense",
+    ),
+    (
+        "source_context_availability",
+        "the Explore UI's read-level probe for whether to offer \"View source\" (change: github-app-source-context); the lookup itself already answers not_configured/no_installation, so no CLI or MCP surface is owed",
+    ),
+    (
+        "search_tags",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "search_tag_values",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "search_tags_v2",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "search_tag_values_v2",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "logql_labels",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "logql_label_values",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "promql_labels",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "promql_label_values",
+        "compat metadata endpoint for external clients; first parties use query_ir describe",
+    ),
+    (
+        "pyroscope_label_names",
+        "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
+    ),
+    (
+        "pyroscope_render",
+        "compat profile endpoint for external clients; the CLI `profiles render` still calls it, while the MCP `search_profiles` reads the query_ir flamegraph envelope",
+    ),
+    (
+        "pyroscope_render_diff",
+        "compat profile endpoint for external clients; the CLI `profiles diff` still calls it, while the MCP `compare_profiles` reads the query_ir flamegraph envelope with a baseline",
+    ),
+    (
+        "pyroscope_profile_types",
+        "compat profile endpoint for external clients; the CLI `profiles types` still calls it, while the MCP `discover_profile_types` groups the query_ir profiles source",
+    ),
+    (
+        "profiles_by_trace",
+        "the CLI `profiles by-trace` still calls it, while the MCP `profiles_for_trace` reads query_ir profile rows filtered on trace.id",
+    ),
+    (
+        "pyroscope_label_values",
+        "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
     ),
 ];
 
@@ -74,6 +158,11 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "delete_tenant",
     ),
     (
+        "list_users",
+        CliSurface::Path(&["user", "list"]),
+        "list_users",
+    ),
+    (
         "create_user",
         CliSurface::Path(&["user", "create"]),
         "create_user",
@@ -113,76 +202,33 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["admin", "api-key", "revoke"]),
         "revoke_api_key",
     ),
-    // ---- Tenant self-management (management API; an API key carrying
-    // `tenant:manage`, or a tenant-admin session) ----
+    // ---- Tenant-scoped resources (issue #1561: `list_datasets`,
+    // `create_dataset`, `list_api_keys`, etc. no longer split into a
+    // separate `manage_`-prefixed operation for the tenant's own view —
+    // every caller (instance admin, break-glass admin key, or a
+    // `tenant:manage` credential for that tenant) hits the one operation
+    // above; the CLI's `tenant ...` subtree and `admin ...` subtree both
+    // call it, differing only in which credential they authenticate with)
+    // ----
     (
-        "manage_list_datasets",
-        CliSurface::Path(&["tenant", "dataset", "list"]),
-        "tenant_list_datasets",
-    ),
-    (
-        "manage_create_dataset",
-        CliSurface::Path(&["tenant", "dataset", "create"]),
-        "tenant_create_dataset",
-    ),
-    (
-        "manage_delete_dataset",
-        CliSurface::Path(&["tenant", "dataset", "delete"]),
-        "tenant_delete_dataset",
-    ),
-    (
-        "manage_list_api_keys",
-        CliSurface::Path(&["tenant", "api-key", "list"]),
-        "tenant_list_api_keys",
-    ),
-    (
-        "manage_create_api_key",
-        CliSurface::Path(&["tenant", "api-key", "create"]),
-        "tenant_create_api_key",
-    ),
-    (
-        "manage_update_api_key",
-        CliSurface::Path(&["tenant", "api-key", "update"]),
-        "tenant_update_api_key",
-    ),
-    (
-        "manage_revoke_api_key",
-        CliSurface::Path(&["tenant", "api-key", "revoke"]),
-        "tenant_revoke_api_key",
-    ),
-    (
-        "manage_list_memberships",
+        "list_memberships",
         CliSurface::Path(&["tenant", "membership", "list"]),
         "tenant_list_memberships",
     ),
     (
-        "manage_upsert_membership",
+        "upsert_membership",
         CliSurface::Path(&["tenant", "membership", "set"]),
         "tenant_upsert_membership",
     ),
     (
-        "manage_remove_membership",
+        "remove_membership",
         CliSurface::Path(&["tenant", "membership", "remove"]),
         "tenant_remove_membership",
     ),
     (
-        "manage_get_schema",
+        "get_schema",
         CliSurface::Path(&["tenant", "schema", "get"]),
         "tenant_get_schema",
-    ),
-    // ---- Tenant self view (tenant self-service API; any valid key of the
-    // tenant). `list_tenants_self` is the caller's own tenant as a
-    // single-item list, so it shares `tenant show` / `tenant_info` with
-    // `get_tenant_self` (design D4). ----
-    (
-        "list_tenants_self",
-        CliSurface::Path(&["tenant", "show"]),
-        "tenant_info",
-    ),
-    (
-        "get_tenant_self",
-        CliSurface::Path(&["tenant", "show"]),
-        "tenant_info",
     ),
     // ---- Tenant signal tables (tenant self-service API) ----
     (
@@ -204,6 +250,34 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "list_available_schemas",
         CliSurface::Path(&["tenant", "table", "available-schemas"]),
         "list_available_table_schemas",
+    ),
+    // ---- Tenant GitHub App installations (management API) ----
+    (
+        "start_github_link",
+        CliSurface::Path(&["tenant", "github", "link"]),
+        "tenant_start_github_link",
+    ),
+    (
+        "list_github_installations",
+        CliSurface::Path(&["tenant", "github", "list"]),
+        "tenant_list_github_installations",
+    ),
+    (
+        "remove_github_installation",
+        CliSurface::Path(&["tenant", "github", "remove"]),
+        "tenant_remove_github_installation",
+    ),
+    (
+        "attach_github_installation",
+        CliSurface::Path(&["tenant", "github", "attach"]),
+        "tenant_attach_github_installation",
+    ),
+    // ---- Source context (tenant self-service API; any valid key of the
+    // tenant that can read a signal, not `tenant:manage`) ----
+    (
+        "source_context",
+        CliSurface::Path(&["tenant", "source-context"]),
+        "get_source_context",
     ),
     // ---- Operational control ----
     (
@@ -282,6 +356,83 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::Path(&["schema", "metric", "search"]),
         "search_schema",
     ),
+    // ---- Telemetry processors ----
+    (
+        "processors_list",
+        CliSurface::Path(&["processors", "list"]),
+        "list_processors",
+    ),
+    (
+        "processors_get",
+        CliSurface::Path(&["processors", "get"]),
+        "get_processor",
+    ),
+    (
+        "processors_validate",
+        CliSurface::Path(&["processors", "validate"]),
+        "validate_processor",
+    ),
+    (
+        "processors_test",
+        CliSurface::Path(&["processors", "test"]),
+        "test_processor",
+    ),
+    (
+        "processors_create",
+        CliSurface::Path(&["admin", "processors", "create"]),
+        "create_processor",
+    ),
+    (
+        "processors_replace",
+        CliSurface::Path(&["admin", "processors", "replace"]),
+        "replace_processor",
+    ),
+    (
+        "processors_delete",
+        CliSurface::Path(&["admin", "processors", "delete"]),
+        "delete_processor",
+    ),
+    // ---- Eval sets ----
+    (
+        "list_eval_sets",
+        CliSurface::Path(&["eval-sets", "list"]),
+        "list_eval_sets",
+    ),
+    (
+        "get_eval_set",
+        CliSurface::Path(&["eval-sets", "get"]),
+        "get_eval_set",
+    ),
+    (
+        "create_eval_set",
+        CliSurface::Path(&["admin", "eval-sets", "create"]),
+        "create_eval_set",
+    ),
+    (
+        "replace_eval_set",
+        CliSurface::Path(&["admin", "eval-sets", "replace"]),
+        "replace_eval_set",
+    ),
+    (
+        "delete_eval_set",
+        CliSurface::Path(&["admin", "eval-sets", "delete"]),
+        "delete_eval_set",
+    ),
+    (
+        "append_eval_cases",
+        CliSurface::Path(&["admin", "eval-sets", "append"]),
+        "append_eval_cases",
+    ),
+    (
+        "append_eval_cases_from_traces",
+        CliSurface::Path(&["admin", "eval-sets", "add-traces"]),
+        "append_eval_cases_from_traces",
+    ),
+    (
+        "upload_eval_results",
+        CliSurface::Path(&["evals", "upload"]),
+        "upload_eval_results",
+    ),
     // ---- Query languages (also covered by the language-specific assertions
     // below) ----
     ("search", CliSurface::QueryFlag("traceql"), "search_traces"),
@@ -318,80 +469,12 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         CliSurface::QueryFlag("trace_id"),
         "get_trace",
     ),
-    // ---- Discovery auxiliaries (label/tag names and values) — all reachable
-    // through `discover attributes` / `discover_attributes`, signal-selected ----
-    (
-        "search_tags",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "search_tag_values",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "search_tags_v2",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "search_tag_values_v2",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "logql_labels",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "logql_label_values",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "promql_labels",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
-    (
-        "promql_label_values",
-        CliSurface::Path(&["discover", "attributes"]),
-        "discover_attributes",
-    ),
     // ---- Identity ----
     ("whoami", CliSurface::Path(&["whoami"]), "server_info"),
-    // ---- Pyroscope-compatible profile query (change: pyroscope-openapi-parity) ----
     (
-        "pyroscope_render",
-        CliSurface::Path(&["profiles", "render"]),
-        "search_profiles",
-    ),
-    (
-        "pyroscope_render_diff",
-        CliSurface::Path(&["profiles", "diff"]),
-        "compare_profiles",
-    ),
-    (
-        "pyroscope_label_names",
-        CliSurface::Path(&["profiles", "labels"]),
-        "discover_attributes",
-    ),
-    (
-        "pyroscope_label_values",
-        CliSurface::Path(&["profiles", "label-values"]),
-        "discover_attributes",
-    ),
-    (
-        "pyroscope_profile_types",
-        CliSurface::Path(&["profiles", "types"]),
-        "discover_profile_types",
-    ),
-    (
-        "profiles_by_trace",
-        CliSurface::Path(&["profiles", "by-trace"]),
-        "profiles_for_trace",
+        "connection_info",
+        CliSurface::Path(&["connection"]),
+        "connection_info",
     ),
 ];
 
@@ -545,5 +628,19 @@ fn http_languages_have_mcp_tools() {
             McpServer::has_tool(tool),
             "MCP tool `{tool}` is missing for an HTTP query language"
         );
+    }
+}
+
+/// The profile operations sit in `EXCLUDED` because the MCP tools read the
+/// Query IR rather than calling them; the tools themselves must stay.
+#[test]
+fn profile_tools_still_exist() {
+    for tool in [
+        "discover_profile_types",
+        "search_profiles",
+        "compare_profiles",
+        "profiles_for_trace",
+    ] {
+        assert!(McpServer::has_tool(tool), "MCP tool `{tool}` is missing");
     }
 }

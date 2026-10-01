@@ -1,12 +1,16 @@
 [package]
 name = "common"
-version = "0.3.0"
+version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 
 [features]
 default = []
 testing = ["dep:tempfile"]
+# Docker-backed test helpers (`testing::start_container_with_retry`). Split
+# from `testing` so crates that only want `TempCatalog` do not compile the
+# Docker client stack.
+testing-containers = ["testing", "dep:testcontainers-modules"]
 # Enables the Criterion ingest/WAL benchmarks under benches/. They build
 # their inputs from `common::testing`, hence the `testing` dependency.
 benchmarks = ["dep:criterion", "testing"]
@@ -22,16 +26,22 @@ jemalloc-profiling = [
 [dependencies]
 # Optional: only pulled in by the `testing` feature, for `TempCatalog`.
 tempfile = { workspace = true, optional = true }
+# Optional: only pulled in by the `testing-containers` feature.
+testcontainers-modules = { workspace = true, optional = true }
 anyhow.workspace = true
 schema-model = { path = "../schema-model" }
-query-ir = { path = "../query-ir" }
+query-ir = { path = "../query-ir", features = ["openapi"] }
+eval-model = { path = "../eval-model" }
+ottl.workspace = true
 
 datafusion.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+ciborium.workspace = true
 bincode.workspace = true
 crc32fast.workspace = true
 hex.workspace = true
+csv.workspace = true
 base64.workspace = true
 argon2.workspace = true
 rand.workspace = true
@@ -53,6 +63,7 @@ humantime-serde.workspace = true
 
 sqlx.workspace = true
 uuid.workspace = true
+twox-hash.workspace = true
 dashmap.workspace = true
 rustc-hash.workspace = true
 futures.workspace = true
@@ -72,6 +83,10 @@ url.workspace = true
 toml.workspace = true
 utoipa.workspace = true
 sha2 = "0.11"
+# Parses the `[github].private_key` PEM at config-validation time (change:
+# github-app-source-context) so a bad key fails startup rather than the
+# first token-mint attempt.
+rsa.workspace = true
 
 # Self-monitoring (OTLP dogfooding)
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs"] }
@@ -82,6 +97,7 @@ sysinfo.workspace = true
 # Prometheus remote write support
 snap.workspace = true
 prost.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
 # Continuous profiling: the Pyroscope agent's pprof-rs/jemalloc backends are
 # only supported on Linux/macOS (they bind to pthreads and pprof-rs), so the
@@ -142,14 +158,53 @@ required-features = ["testing"]
 name = "wal_manager_active_cardinality_not_evicted"
 required-features = ["testing"]
 
+# Same reasoning: both reach `Wal::reset_pending_seed_claims_for_test`.
+[[test]]
+name = "wal_pending_gauge_seed_attribution"
+required-features = ["testing"]
+
+[[test]]
+name = "wal_pending_gauge_reconciliation"
+required-features = ["testing"]
+
+# Same reasoning again: `catalog_integration` starts Postgres through
+# `testing::start_container_with_retry`, gated on `testing-containers`.
+[[test]]
+name = "catalog_integration"
+required-features = ["testing-containers"]
+
+# Same reasoning again: `processors_store_postgres` starts Postgres through
+# `testing::start_container_with_retry`, gated on `testing-containers`.
+[[test]]
+name = "processors_store_postgres"
+required-features = ["testing-containers"]
+
+# Same reasoning again: `eval_sets_store_postgres` starts Postgres through
+# `testing::start_container_with_retry`, gated on `testing-containers`.
+[[test]]
+name = "eval_sets_store_postgres"
+required-features = ["testing-containers"]
+
+# Reaches `common::testing::install_global_tracing_fallback`, gated on the
+# `testing` feature.
+[[test]]
+name = "tracing_interest_fallback"
+required-features = ["testing"]
+
+# Same reasoning: `config_pin_retypes_an_already_established_field_and_warns` reaches
+# `common::testing::WarnCapture`.
+[[test]]
+name = "type_authority"
+required-features = ["testing"]
+
 [dev-dependencies]
 tokio = { workspace = true, features = ["test-util"] }
 tokio-stream = { workspace = true, features = ["net"] }
-testcontainers-modules.workspace = true
-testcontainers.workspace = true
-# Also a dev-dependency: `testing` compiles under plain `cfg(test)` too,
-# where the feature (and so `dep:tempfile`) is not enabled.
+# Also dev-dependencies, mirrored above as optional normal dependencies:
+# `testing` compiles under plain `cfg(test)` too, where the features (and so
+# `dep:tempfile`/`dep:testcontainers-modules`) are not enabled.
 tempfile.workspace = true
+testcontainers-modules.workspace = true
 figment = { workspace = true, features = ["test"] }
 opentelemetry_sdk = { workspace = true, features = ["trace", "metrics", "logs", "testing"] }
 sha2 = "0.11"
@@ -157,8 +212,12 @@ sha2 = "0.11"
 [package.metadata.cargo-machete]
 # async-trait is used by discovery backends
 # opentelemetry-semantic-conventions is used in self_monitoring module
-ignored = ["async-trait", "humantime-serde", "testcontainers", "opentelemetry-semantic-conventions"]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["async-trait", "humantime-serde", "opentelemetry-semantic-conventions", "workspace-hack"]
 
 [build-dependencies]
 schema-model = { path = "../schema-model" }
 serde_json.workspace = true
+
+[lints]
+workspace = true

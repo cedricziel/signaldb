@@ -1,18 +1,33 @@
 use anyhow::{Result, anyhow};
 use chrono::{DateTime, Datelike, Timelike};
 use common::flight::conversion::UNKNOWN_SERVICE_NAME;
+use common::iceberg::schemas::TYPED_METRIC_VERSION;
+use common::schema::SCHEMA_DEFINITIONS;
+use common::schema::resource_identity::resource_identity_from_json;
 use common::schema::schema_parser::ResolvedSchema;
-use common::schema::{ATTR_TOKENS_COLUMN, SCHEMA_DEFINITIONS, materialized_column_name};
+use common::schema::series_id::{SeriesKey, metric_series_id};
 use datafusion::arrow::{
     array::{
         Array, ArrayRef, BinaryArray, BooleanArray, Date32Array, Float64Array, Int32Array,
         Int64Array, ListArray, StringArray, StructArray, TimestampNanosecondArray, UInt32Array,
         UInt64Array,
     },
-    datatypes::{DataType, Field, Schema, TimeUnit},
+    datatypes::{ArrowPrimitiveType, DataType, Field, Float64Type, Int64Type, Schema, TimeUnit},
     record_batch::RecordBatch,
 };
+use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Arrow field metadata key stamped on every materialized `label_<key>`
+/// column with the attribute key it was built from -- the WAL-batch
+/// counterpart of [`common::iceberg::evolution::label_doc`], which records
+/// the same origin key on the committed Iceberg column's `doc`.
+/// `LabelColumnReconciliation::apply` (writer/src/storage/iceberg.rs)
+/// resolves a batch's label columns by this key rather than by name, so a
+/// name collision between config generations cannot misroute a value (see
+/// #1534). A batch with no such metadata predates this change and falls
+/// back to the old name-based guard.
+pub(crate) const LABEL_ORIGIN_KEY_METADATA: &str = "signaldb.origin_key";
 
 /// Struct to hold all extracted metadata from Flight messages
 #[derive(Debug, Clone)]
@@ -25,6 +40,12 @@ pub struct FlightMetadata {
     /// W3C trace context of the sending service, for distributed tracing
     pub traceparent: Option<String>,
     pub tracestate: Option<String>,
+    /// The content fingerprint of the batch this `do_put` carries (issue
+    /// #1734), shared by every copy of it however many acceptor WAL entries
+    /// hold one. Used to dedup a copy that reaches this writer again; absent
+    /// for acceptors that predate this field, which get non-deduped
+    /// behavior.
+    pub ingest_id: Option<uuid::Uuid>,
 }
 
 /// Extract all metadata from Flight metadata bytes
@@ -72,6 +93,23 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         .and_then(|v| v.as_str())
         .map(|s| s.to_string());
 
+    // A present-but-unparseable ingest_id is the sender's fault and recurs
+    // identically on every retry (same rationale as the other metadata
+    // fields here) -- reject rather than silently treat it as absent, which
+    // would revert to non-deduped behavior without telling anyone.
+    let ingest_id = match metadata_json.get("ingest_id") {
+        None | Some(serde_json::Value::Null) => None,
+        Some(v) => {
+            let s = v
+                .as_str()
+                .ok_or_else(|| anyhow!("ingest_id must be a string"))?;
+            Some(
+                uuid::Uuid::parse_str(s)
+                    .map_err(|e| anyhow!("Invalid ingest_id in metadata: {}", e))?,
+            )
+        }
+    };
+
     Ok(FlightMetadata {
         schema_version,
         signal_type,
@@ -80,6 +118,7 @@ pub fn extract_flight_metadata(metadata: &[u8]) -> Result<FlightMetadata> {
         dataset_id,
         traceparent,
         tracestate,
+        ingest_id,
     })
 }
 
@@ -228,10 +267,18 @@ fn hour_from_start_time_extractor() -> Extractor {
     })
 }
 
-/// Resolves the compiled plan for the current traces schema version.
+/// Resolves the compiled plan against `physical-v4` -- the last version
+/// with `span_attributes`/`resource_attributes`/`scope_attributes` as
+/// JSON-string columns, not `SCHEMA_DEFINITIONS.current_trace_version()`.
+/// This plan's job is only to bridge the wire's v1 shape to that stable
+/// intermediate shape; [`IcebergTableWriter::append_batches_with_marker`]'s
+/// typed-container splitting handles the v4 -> v5 (typed layout) hop
+/// afterward, generically, from whatever table schema is actually current
+/// -- it does not need (and, for a `map<string,long>` typed column,
+/// [`create_arrow_schema_from_resolved`] cannot build) this plan to track
+/// the typed layout itself.
 fn build_trace_v1_to_v2_plan() -> Result<TraceV1ToV2Plan> {
-    let v2_schema =
-        SCHEMA_DEFINITIONS.resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())?;
+    let v2_schema = SCHEMA_DEFINITIONS.resolve_trace_schema("physical-v4")?;
     build_trace_v1_to_v2_plan_for(&v2_schema)
 }
 
@@ -281,6 +328,10 @@ fn build_trace_v1_to_v2_plan_for(v2_schema: &ResolvedSchema) -> Result<TraceV1To
             "timestamp" => timestamp_from_start_time_extractor(),
             "date_day" => date_day_from_start_time_extractor(),
             "hour" => hour_from_start_time_extractor(),
+
+            // #1340: digest of the resource's attribute set, derived from
+            // the same `resource_json` column `resource_attributes` reads.
+            "resource_identity" => Box::new(resource_identity_from_resource_json_column),
 
             // Scope and resource metadata fields - present in v1 schema
             "trace_state"
@@ -372,6 +423,29 @@ fn get_column_by_name_or_null(
     }
 }
 
+/// Builds the `resource_identity` column from a batch's `resource_json`
+/// string column: `resource_identity_from_json` of each row, null when the
+/// source row is null or its JSON is not an object. Shared by every
+/// transform (traces, logs, and metrics/profiles) that derives
+/// `resource_identity` from a `resource_json` column.
+fn resource_identity_from_resource_json_column(batch: &RecordBatch) -> Result<ArrayRef> {
+    let col = get_column_by_name(batch, "resource_json")?;
+    let str_array = col
+        .as_any()
+        .downcast_ref::<StringArray>()
+        .ok_or_else(|| anyhow!("resource_json is not StringArray"))?;
+    let values: Vec<Option<String>> = (0..str_array.len())
+        .map(|i| {
+            if str_array.is_null(i) {
+                None
+            } else {
+                resource_identity_from_json(str_array.value(i))
+            }
+        })
+        .collect();
+    Ok(Arc::new(StringArray::from(values)))
+}
+
 /// Serialize a ListArray (containing StructArrays) to JSON string arrays
 /// Each row's list of structs becomes a JSON array string like '[{"name":"event1",...},...]'
 fn serialize_list_array_to_json_strings(
@@ -449,6 +523,12 @@ fn create_arrow_schema_from_resolved(resolved: &ResolvedSchema) -> Result<Arc<Sc
                 // For now, treat as string (will be handled properly later)
                 DataType::Utf8
             }
+            // Element field name/nullability ("item"/nullable) mirrors
+            // iceberg-rust-spec's Iceberg->Arrow list conversion
+            // (iceberg-rust-spec/src/arrow/schema.rs), so batches built here
+            // stay schema-compatible with a table created from this type.
+            "list<int64>" => DataType::List(Arc::new(Field::new("item", DataType::Int64, true))),
+            "list<double>" => DataType::List(Arc::new(Field::new("item", DataType::Float64, true))),
             _ => return Err(anyhow!("Unsupported field type: {}", field.field_type)),
         };
 
@@ -553,7 +633,21 @@ fn materialized_label_columns_from_json(
 
 /// Build one `label_<key>` column per label from per-row attribute maps,
 /// taking each value from resource, then scope, then record (first
-/// non-null). Duplicate labels collapse to a single column.
+/// non-null). An exact-duplicate label collapses to a single column; two
+/// distinct labels that sanitize to the same candidate name (#1448) get
+/// distinct columns via
+/// [`resolve_label_columns_fresh`](common::iceberg::evolution::resolve_label_columns_fresh),
+/// the same canonical-order resolution the table-creation path
+/// (`ResolvedSchema::build_iceberg_schema`) uses, so both agree on the
+/// column for a given configured list regardless of the order its keys
+/// happen to be iterated in.
+///
+/// This ingest path resolves before a batch is even written to WAL,
+/// deliberately decoupled from any catalog round trip (see
+/// `flight_iceberg.rs`'s module doc), so unlike
+/// `common::iceberg::evolution::add_label_columns` it cannot consult a
+/// table's actual committed schema -- see `resolve_label_columns_fresh`'s
+/// doc for what that leaves unprotected.
 fn label_columns_from_maps(
     resource: &[Option<AttrMap>],
     scope: &[Option<AttrMap>],
@@ -563,17 +657,12 @@ fn label_columns_from_maps(
 ) -> (Vec<Field>, Vec<ArrayRef>) {
     let mut fields = Vec::new();
     let mut columns: Vec<ArrayRef> = Vec::new();
-    let mut seen = std::collections::HashSet::new();
-    for label in labels {
-        let name = materialized_column_name(label);
-        if !seen.insert(name.clone()) {
-            continue; // duplicate label → single column
-        }
+    for (label, name) in common::iceberg::evolution::resolve_label_columns_fresh(labels) {
         let values: Vec<Option<String>> = (0..num_rows)
             .map(|i| {
                 for src in [resource.get(i), scope.get(i), record.get(i)] {
                     if let Some(Some(map)) = src
-                        && let Some(v) = map.get(label)
+                        && let Some(v) = map.get(&label)
                         && let Some(s) = attr_value_to_string(v)
                     {
                         return Some(s);
@@ -582,79 +671,14 @@ fn label_columns_from_maps(
                 None
             })
             .collect();
-        fields.push(Field::new(&name, DataType::Utf8, true));
+        let field = Field::new(&name, DataType::Utf8, true).with_metadata(HashMap::from([(
+            LABEL_ORIGIN_KEY_METADATA.to_string(),
+            label,
+        )]));
+        fields.push(field);
         columns.push(Arc::new(StringArray::from(values)));
     }
     (fields, columns)
-}
-
-/// Parse a JSON-string column into per-row attribute objects the way the
-/// attribute *columns* are extracted: prefer the nested `attributes` object
-/// when present, else treat the root object as the attributes (matching the
-/// `resource_attributes` column's fallback).
-fn parse_attr_objects_with_root_fallback(
-    batch: &RecordBatch,
-    column: &str,
-) -> Result<Vec<Option<AttrMap>>> {
-    let col = get_column_by_name(batch, column)?;
-    let arr = col
-        .as_any()
-        .downcast_ref::<StringArray>()
-        .ok_or_else(|| anyhow!("{column} is not StringArray"))?;
-    Ok((0..arr.len())
-        .map(|i| {
-            if arr.is_null(i) {
-                return None;
-            }
-            let root: serde_json::Value = serde_json::from_str(arr.value(i)).ok()?;
-            match root.get("attributes") {
-                Some(serde_json::Value::Object(m)) => Some(m.clone()),
-                _ => match root {
-                    serde_json::Value::Object(m) => Some(m),
-                    _ => None,
-                },
-            }
-        })
-        .collect())
-}
-
-/// Build the derived `attr_tokens` `List<Utf8>` column: one `key=value`
-/// token per attribute across resource, scope, and record scopes,
-/// deduplicated per row. Rows always get a (possibly empty) list, never
-/// null, so an ANDed containment predicate cannot null out rows the
-/// attribute-column predicate matched.
-///
-/// The sources mirror the attribute-column extractions exactly — the
-/// querier ANDs `array_has(attr_tokens, 'key=value')` onto predicates over
-/// `log_attributes`/`resource_attributes`, so the tokens must cover at
-/// least everything those columns contain.
-fn attr_tokens_column(batch: &RecordBatch, num_rows: usize) -> Result<(Field, ArrayRef)> {
-    use datafusion::arrow::array::{ListBuilder, StringBuilder};
-
-    let resource = parse_attr_objects_with_root_fallback(batch, "resource_json")?;
-    let scope = parse_attr_objects(batch, "scope_json", Some("attributes"))?;
-    let record = parse_attr_objects(batch, "attributes_json", None)?;
-
-    let mut builder = ListBuilder::new(StringBuilder::new());
-    for i in 0..num_rows {
-        let mut seen = std::collections::HashSet::new();
-        for src in [resource.get(i), scope.get(i), record.get(i)] {
-            let Some(Some(map)) = src else { continue };
-            for (key, value) in map {
-                if let Some(s) = attr_value_to_string(value) {
-                    let token = format!("{key}={s}");
-                    if !seen.contains(token.as_str()) {
-                        builder.values().append_value(&token);
-                        seen.insert(token);
-                    }
-                }
-            }
-        }
-        builder.append(true);
-    }
-    let array = builder.finish();
-    let field = Field::new(ATTR_TOKENS_COLUMN, array.data_type().clone(), true);
-    Ok((field, Arc::new(array)))
 }
 
 /// Append materialized-label fields/columns to a base batch schema. Returns
@@ -675,7 +699,7 @@ fn extend_schema_with_labels(
 }
 
 pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
-    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v1")?;
+    let v1_schema = SCHEMA_DEFINITIONS.resolve_log_schema("physical-v3")?;
     let arrow_schema = create_arrow_schema_from_resolved(&v1_schema)?;
 
     let num_rows = batch.num_rows();
@@ -931,6 +955,25 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Re
                 Arc::new(StringArray::from(values))
             }
             "log_attributes" => get_column_by_name(&batch, "attributes_json")?,
+            "resource_identity" => resource_identity_from_resource_json_column(&batch)?,
+            "event_name" => get_column_by_name_or_null(&batch, "event_name", &DataType::Utf8)?,
+            "dropped_attributes_count" => {
+                let col = get_column_by_name_or_null(
+                    &batch,
+                    "dropped_attributes_count",
+                    &DataType::UInt32,
+                )?;
+                let uint_array = col
+                    .as_any()
+                    .downcast_ref::<UInt32Array>()
+                    .ok_or_else(|| anyhow!("dropped_attributes_count is not UInt32Array"))?;
+                Arc::new(
+                    uint_array
+                        .iter()
+                        .map(|v| v.map(i64::from))
+                        .collect::<Int64Array>(),
+                )
+            }
             "date_day" => {
                 let dates: Vec<Option<i32>> = effective_nanos
                     .iter()
@@ -965,16 +1008,6 @@ pub fn transform_logs_v1_to_iceberg(batch: RecordBatch, labels: &[String]) -> Re
     let out_schema =
         extend_schema_with_labels(arrow_schema, label_fields, &mut new_columns, label_columns);
 
-    // Derived `key=value` token column for bloom-filtered containment
-    // checks; also dropped by coercion on tables that predate it.
-    let (token_field, token_column) = attr_tokens_column(&batch, num_rows)?;
-    let out_schema = extend_schema_with_labels(
-        out_schema,
-        vec![token_field],
-        &mut new_columns,
-        vec![token_column],
-    );
-
     let result = RecordBatch::try_new(out_schema, new_columns)
         .map_err(|e| anyhow!("Failed to create transformed log RecordBatch: {}", e))?;
 
@@ -992,6 +1025,7 @@ struct ResourceContext {
     service_name: Option<String>,
     resource_schema_url: Option<String>,
     resource_attributes: Option<String>,
+    resource_identity: Option<String>,
 }
 
 #[derive(Clone, Default)]
@@ -1001,110 +1035,6 @@ struct ScopeContext {
     scope_schema_url: Option<String>,
     scope_attributes: Option<String>,
     scope_dropped_attr_count: i32,
-}
-
-pub fn create_metrics_gauge_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]))
-}
-
-fn create_metrics_sum_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("aggregation_temporality", DataType::Int32, false),
-        Field::new("is_monotonic", DataType::Boolean, false),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]))
-}
-
-fn create_metrics_histogram_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("count", DataType::Int64, false),
-        Field::new("sum", DataType::Float64, true),
-        Field::new("min", DataType::Float64, true),
-        Field::new("max", DataType::Float64, true),
-        Field::new("bucket_counts", DataType::Utf8, true),
-        Field::new("explicit_bounds", DataType::Utf8, true),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("aggregation_temporality", DataType::Int32, false),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]))
 }
 
 fn get_typed_column<'a, T>(batch: &'a RecordBatch, name: &str) -> Result<&'a T>
@@ -1192,11 +1122,10 @@ fn json_to_f64(value: Option<&serde_json::Value>) -> Option<f64> {
     value.and_then(common::flight::conversion::json_to_f64)
 }
 
-/// The `value` column of `metrics_gauge` / `metrics_sum` is non-nullable. A
-/// point with no value (absent or `null`) is stored as NaN — the honest "no
-/// number here" that Float64 can express — instead of leaving a null that
-/// makes the whole batch fail `RecordBatch::try_new` and pins the WAL entry
-/// forever (#1061).
+/// A gauge/sum point with no value (absent or `null`) is stored as NaN — the
+/// honest "no number here" that Float64 can express — instead of leaving a
+/// null that makes the whole batch fail `RecordBatch::try_new` and pins the
+/// WAL entry forever (#1061).
 fn point_value(point: &serde_json::Value) -> f64 {
     json_to_f64(point.get("value")).unwrap_or(f64::NAN)
 }
@@ -1207,16 +1136,6 @@ fn serialize_json(value: Option<&serde_json::Value>) -> Option<String> {
             None
         } else {
             serde_json::to_string(v).ok()
-        }
-    })
-}
-
-fn serialize_json_array(value: Option<&serde_json::Value>) -> Option<String> {
-    value.and_then(|v| {
-        if v.is_array() {
-            serde_json::to_string(v).ok()
-        } else {
-            None
         }
     })
 }
@@ -1276,6 +1195,7 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             service_name: unknown(),
             resource_schema_url: None,
             resource_attributes: Some(resource_json.to_string()),
+            resource_identity: None,
         };
     };
 
@@ -1284,6 +1204,7 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             service_name: unknown(),
             resource_schema_url: None,
             resource_attributes: Some(resource_json.to_string()),
+            resource_identity: None,
         };
     };
 
@@ -1302,6 +1223,14 @@ fn extract_resource_context(resource_json: Option<&str>) -> ResourceContext {
             .and_then(|value| value.as_str())
             .map(ToString::to_string),
         resource_attributes,
+        // Delegates to the shared envelope classifier rather than
+        // re-deriving it here: an `attributes` key alone doesn't mean
+        // envelope-shaped (a flat resource may legitimately carry its own
+        // `attributes` attribute), and duplicating that disambiguation
+        // risked drifting from `resource_identity_from_json`'s rule -- as it
+        // already had, once that rule went from "has an `attributes` key" to
+        // "every key is an envelope key" (see its doc comment).
+        resource_identity: resource_identity_from_json(resource_json),
     }
 }
 
@@ -1345,118 +1274,240 @@ fn extract_scope_context(scope_json: Option<&str>) -> ScopeContext {
     }
 }
 
-pub fn transform_metrics_gauge_v1_to_iceberg(
-    batch: RecordBatch,
-    labels: &[String],
-) -> Result<RecordBatch> {
-    let output_schema = create_metrics_gauge_arrow_schema();
+/// The Arrow schema a transform emits for `resolved`, with each typed
+/// attribute container collapsed back to one JSON-string column: placement
+/// in `storage/iceberg.rs` splits it into the typed columns at commit.
+fn create_wide_transform_schema(resolved: ResolvedSchema) -> Result<Arc<Schema>> {
+    use common::schema::schema_parser::ResolvedField;
+    use common::schema::typed_attributes;
 
-    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
-    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
-    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
-    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
-    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
-    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
-
-    let mut timestamps: Vec<Option<i64>> = Vec::new();
-    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
-    let mut service_names: Vec<Option<String>> = Vec::new();
-    let mut metric_names: Vec<Option<String>> = Vec::new();
-    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
-    let mut metric_units: Vec<Option<String>> = Vec::new();
-    let mut values: Vec<Option<f64>> = Vec::new();
-    let mut flags: Vec<Option<i32>> = Vec::new();
-    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut resource_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_names: Vec<Option<String>> = Vec::new();
-    let mut scope_versions: Vec<Option<String>> = Vec::new();
-    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut scope_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
-    let mut attributes: Vec<Option<String>> = Vec::new();
-    let mut exemplars: Vec<Option<String>> = Vec::new();
-    let mut date_days: Vec<Option<i32>> = Vec::new();
-    let mut hours: Vec<Option<i32>> = Vec::new();
-
-    for row in 0..batch.num_rows() {
-        let metric_name = string_value(name_array, row);
-        let metric_description = string_value(description_array, row);
-        let metric_unit = string_value(unit_array, row);
-
-        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
-        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
-        let data_points = parse_data_points(string_value_ref(data_json_array, row));
-
-        for point in data_points {
-            let (timestamp, date_day, hour) =
-                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
-            let (start_timestamp, _, _) =
-                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
-
-            timestamps.push(timestamp);
-            start_timestamps.push(start_timestamp);
-            service_names.push(resource_context.service_name.clone());
-            metric_names.push(metric_name.clone());
-            metric_descriptions.push(metric_description.clone());
-            metric_units.push(metric_unit.clone());
-            values.push(Some(point_value(&point)));
-            flags.push(json_to_i32(point.get("flags")));
-            resource_schema_urls.push(resource_context.resource_schema_url.clone());
-            resource_attributes.push(resource_context.resource_attributes.clone());
-            scope_names.push(scope_context.scope_name.clone());
-            scope_versions.push(scope_context.scope_version.clone());
-            scope_schema_urls.push(scope_context.scope_schema_url.clone());
-            scope_attributes.push(scope_context.scope_attributes.clone());
-            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
-            attributes.push(serialize_json(point.get("attributes")));
-            exemplars.push(serialize_json(point.get("exemplars")));
-            date_days.push(date_day);
-            hours.push(hour);
+    let mut collapsed: Vec<ResolvedField> = Vec::new();
+    let mut containers_seen: Vec<&str> = Vec::new();
+    for field in &resolved.fields {
+        let container = field
+            .name
+            .strip_suffix("_residue")
+            .or_else(|| typed_attributes::canonical_of_home_column(&field.name).map(|(c, _)| c));
+        let Some(container) = container else {
+            collapsed.push(field.clone());
+            continue;
+        };
+        if containers_seen.contains(&container) {
+            continue;
         }
+        containers_seen.push(container);
+        collapsed.push(ResolvedField {
+            name: container.to_string(),
+            field_type: "string".to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: field.field_id,
+        });
     }
 
-    let (label_fields, label_columns) = materialized_label_columns_from_json(
-        &resource_attributes,
-        &scope_attributes,
-        &attributes,
-        labels,
-    );
-    let mut columns: Vec<ArrayRef> = vec![
-        Arc::new(TimestampNanosecondArray::from(timestamps)),
-        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-        Arc::new(StringArray::from(service_names)),
-        Arc::new(StringArray::from(metric_names)),
-        Arc::new(StringArray::from(metric_descriptions)),
-        Arc::new(StringArray::from(metric_units)),
-        Arc::new(Float64Array::from(values)),
-        Arc::new(Int32Array::from(flags)),
-        Arc::new(StringArray::from(resource_schema_urls)),
-        Arc::new(StringArray::from(resource_attributes)),
-        Arc::new(StringArray::from(scope_names)),
-        Arc::new(StringArray::from(scope_versions)),
-        Arc::new(StringArray::from(scope_schema_urls)),
-        Arc::new(StringArray::from(scope_attributes)),
-        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-        Arc::new(StringArray::from(attributes)),
-        Arc::new(StringArray::from(exemplars)),
-        Arc::new(Date32Array::from(date_days)),
-        Arc::new(Int32Array::from(hours)),
-    ];
-    let out_schema =
-        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
-    RecordBatch::try_new(out_schema, columns).map_err(|e| {
-        anyhow!(
-            "Failed to create transformed metrics_gauge RecordBatch: {}",
-            e
-        )
+    create_arrow_schema_from_resolved(&ResolvedSchema {
+        fields: collapsed,
+        ..resolved
     })
 }
 
-pub fn transform_metrics_sum_v1_to_iceberg(
-    batch: RecordBatch,
-    labels: &[String],
-) -> Result<RecordBatch> {
-    let output_schema = create_metrics_sum_arrow_schema();
+fn json_array_of<T>(
+    value: Option<&serde_json::Value>,
+    decode: impl Fn(Option<&serde_json::Value>) -> Option<T>,
+) -> Option<Vec<Option<T>>> {
+    let array = value?.as_array()?;
+    Some(array.iter().map(|v| decode(Some(v))).collect())
+}
+
+type OptionalF64List = Option<Vec<Option<f64>>>;
+
+fn summary_quantile_lists(value: Option<&serde_json::Value>) -> (OptionalF64List, OptionalF64List) {
+    let Some(entries) = value.and_then(|v| v.as_array()).filter(|a| !a.is_empty()) else {
+        return (None, None);
+    };
+    let mut quantiles = Vec::with_capacity(entries.len());
+    let mut values = Vec::with_capacity(entries.len());
+    for entry in entries {
+        quantiles.push(json_to_f64(entry.get("quantile")));
+        values.push(json_to_f64(entry.get("value")));
+    }
+    (Some(quantiles), Some(values))
+}
+
+#[derive(Default)]
+struct WidePointFields {
+    value: Option<f64>,
+    count: Option<i64>,
+    sum: Option<f64>,
+    min: Option<f64>,
+    max: Option<f64>,
+    explicit_bounds: Option<Vec<Option<f64>>>,
+    bucket_counts: Option<Vec<Option<i64>>>,
+    scale: Option<i32>,
+    zero_count: Option<i64>,
+    zero_threshold: Option<f64>,
+    positive_offset: Option<i32>,
+    positive_bucket_counts: Option<Vec<Option<i64>>>,
+    negative_offset: Option<i32>,
+    negative_bucket_counts: Option<Vec<Option<i64>>>,
+    quantiles: Option<Vec<Option<f64>>>,
+    quantile_values: Option<Vec<Option<f64>>>,
+    aggregation_temporality: Option<i32>,
+    is_monotonic: Option<bool>,
+}
+
+fn bucket_side(side: Option<&serde_json::Value>) -> (Option<i32>, Option<Vec<Option<i64>>>) {
+    (
+        side.and_then(|s| json_to_i32(s.get("offset"))),
+        side.and_then(|s| json_array_of(s.get("bucket_counts"), json_to_i64)),
+    )
+}
+
+/// The wire carries temporality and monotonicity on every row; only the
+/// types OTLP defines them for keep them (temporality: sum and both
+/// histograms, monotonicity: sum).
+fn wide_point_fields(
+    metric_type: &str,
+    point: &serde_json::Value,
+    aggregation_temporality: Option<i32>,
+    is_monotonic: Option<bool>,
+) -> WidePointFields {
+    match metric_type {
+        "gauge" => WidePointFields {
+            value: Some(point_value(point)),
+            ..Default::default()
+        },
+        "sum" => WidePointFields {
+            value: Some(point_value(point)),
+            aggregation_temporality,
+            is_monotonic,
+            ..Default::default()
+        },
+        "histogram" => WidePointFields {
+            count: json_to_i64(point.get("count")),
+            sum: json_to_f64(point.get("sum")),
+            min: json_to_f64(point.get("min")),
+            max: json_to_f64(point.get("max")),
+            explicit_bounds: json_array_of(point.get("explicit_bounds"), json_to_f64),
+            bucket_counts: json_array_of(point.get("bucket_counts"), json_to_i64),
+            aggregation_temporality,
+            ..Default::default()
+        },
+        "exponential_histogram" => {
+            let (positive_offset, positive_bucket_counts) = bucket_side(point.get("positive"));
+            let (negative_offset, negative_bucket_counts) = bucket_side(point.get("negative"));
+            WidePointFields {
+                count: json_to_i64(point.get("count")),
+                sum: json_to_f64(point.get("sum")),
+                min: json_to_f64(point.get("min")),
+                max: json_to_f64(point.get("max")),
+                scale: json_to_i32(point.get("scale")),
+                zero_count: json_to_i64(point.get("zero_count")),
+                zero_threshold: json_to_f64(point.get("zero_threshold")),
+                positive_offset,
+                positive_bucket_counts,
+                negative_offset,
+                negative_bucket_counts,
+                aggregation_temporality,
+                ..Default::default()
+            }
+        }
+        "summary" => {
+            let (quantiles, quantile_values) = summary_quantile_lists(point.get("quantile_values"));
+            WidePointFields {
+                count: json_to_i64(point.get("count")),
+                sum: json_to_f64(point.get("sum")),
+                quantiles,
+                quantile_values,
+                ..Default::default()
+            }
+        }
+        _ => WidePointFields {
+            value: json_to_f64(point.get("value")),
+            ..Default::default()
+        },
+    }
+}
+
+fn primitive_list_column<'a, T: ArrowPrimitiveType>(
+    values: impl Iterator<Item = &'a Option<Vec<Option<T::Native>>>>,
+) -> ArrayRef {
+    use datafusion::arrow::array::{ListBuilder, PrimitiveBuilder};
+    let mut builder = ListBuilder::new(PrimitiveBuilder::<T>::new());
+    for value in values {
+        match value {
+            Some(list) => {
+                builder.values().extend(list.iter().copied());
+                builder.append(true);
+            }
+            None => builder.append(false),
+        }
+    }
+    Arc::new(builder.finish())
+}
+
+fn str_column<'a, T>(items: &'a [T], f: impl Fn(&'a T) -> Option<&'a str>) -> ArrayRef {
+    Arc::new(items.iter().map(f).collect::<StringArray>())
+}
+
+fn point_series_id(key: &SeriesKey<'_>, point: &serde_json::Value) -> String {
+    static EMPTY_ATTRS: std::sync::LazyLock<serde_json::Map<String, serde_json::Value>> =
+        std::sync::LazyLock::new(serde_json::Map::new);
+    let attrs = point
+        .get("attributes")
+        .and_then(|v| v.as_object())
+        .unwrap_or(&EMPTY_ATTRS);
+    metric_series_id(key, attrs)
+}
+
+struct WideMetric {
+    name: String,
+    description: Option<String>,
+    unit: Option<String>,
+    metric_type: String,
+    resource: ResourceContext,
+    scope: ScopeContext,
+}
+
+impl WideMetric {
+    fn series_key(&self) -> SeriesKey<'_> {
+        SeriesKey {
+            metric_name: &self.name,
+            metric_type: &self.metric_type,
+            resource_identity: self.resource.resource_identity.as_deref(),
+            scope_name: self.scope.scope_name.as_deref(),
+            scope_version: self.scope.scope_version.as_deref(),
+        }
+    }
+}
+
+struct WidePoint {
+    metric: usize,
+    timestamp: Option<i64>,
+    start_timestamp: Option<i64>,
+    date_day: Option<i32>,
+    hour: Option<i32>,
+    series_id: String,
+    flags: Option<i32>,
+    attributes: Option<String>,
+    fields: WidePointFields,
+}
+
+static METRICS_WIDE_SCHEMA: std::sync::LazyLock<Result<Arc<Schema>, String>> =
+    std::sync::LazyLock::new(|| {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics, TYPED_METRIC_VERSION)
+            .map_err(|e| e.to_string())?;
+        create_wide_transform_schema(resolved).map_err(|e| e.to_string())
+    });
+
+/// A wire metrics batch of any mix of metric types -> one `metrics` row per
+/// data point.
+pub fn transform_metrics_to_wide(batch: RecordBatch, labels: &[String]) -> Result<RecordBatch> {
+    let output_schema = METRICS_WIDE_SCHEMA
+        .clone()
+        .map_err(|e| anyhow!("failed to build the metrics wide schema: {e}"))?;
 
     let name_array = get_typed_column::<StringArray>(&batch, "name")?;
     let description_array = get_typed_column::<StringArray>(&batch, "description")?;
@@ -1464,72 +1515,70 @@ pub fn transform_metrics_sum_v1_to_iceberg(
     let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
     let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
     let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
+    let metric_type_array = get_typed_column::<StringArray>(&batch, "metric_type")?;
     let aggregation_temporality_array =
         get_typed_column::<Int32Array>(&batch, "aggregation_temporality")?;
     let is_monotonic_array = get_typed_column::<BooleanArray>(&batch, "is_monotonic")?;
 
-    let mut timestamps: Vec<Option<i64>> = Vec::new();
-    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
-    let mut service_names: Vec<Option<String>> = Vec::new();
-    let mut metric_names: Vec<Option<String>> = Vec::new();
-    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
-    let mut metric_units: Vec<Option<String>> = Vec::new();
-    let mut values: Vec<Option<f64>> = Vec::new();
-    let mut flags: Vec<Option<i32>> = Vec::new();
-    let mut aggregation_temporalities: Vec<Option<i32>> = Vec::new();
-    let mut is_monotonics: Vec<Option<bool>> = Vec::new();
-    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut resource_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_names: Vec<Option<String>> = Vec::new();
-    let mut scope_versions: Vec<Option<String>> = Vec::new();
-    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut scope_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
-    let mut attributes: Vec<Option<String>> = Vec::new();
-    let mut exemplars: Vec<Option<String>> = Vec::new();
-    let mut date_days: Vec<Option<i32>> = Vec::new();
-    let mut hours: Vec<Option<i32>> = Vec::new();
-
+    let mut metrics: Vec<WideMetric> = Vec::with_capacity(batch.num_rows());
+    let mut points: Vec<WidePoint> = Vec::new();
     for row in 0..batch.num_rows() {
-        let metric_name = string_value(name_array, row);
-        let metric_description = string_value(description_array, row);
-        let metric_unit = string_value(unit_array, row);
+        let metric = WideMetric {
+            name: string_value(name_array, row).unwrap_or_default(),
+            description: string_value(description_array, row),
+            unit: string_value(unit_array, row),
+            metric_type: string_value(metric_type_array, row).unwrap_or_default(),
+            resource: extract_resource_context(string_value_ref(resource_json_array, row)),
+            scope: extract_scope_context(string_value_ref(scope_json_array, row)),
+        };
         let aggregation_temporality = int32_value(aggregation_temporality_array, row);
         let is_monotonic = bool_value(is_monotonic_array, row);
 
-        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
-        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
-        let data_points = parse_data_points(string_value_ref(data_json_array, row));
-
-        for point in data_points {
+        for point in parse_data_points(string_value_ref(data_json_array, row)) {
             let (timestamp, date_day, hour) =
                 temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
             let (start_timestamp, _, _) =
                 temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
-
-            timestamps.push(timestamp);
-            start_timestamps.push(start_timestamp);
-            service_names.push(resource_context.service_name.clone());
-            metric_names.push(metric_name.clone());
-            metric_descriptions.push(metric_description.clone());
-            metric_units.push(metric_unit.clone());
-            values.push(Some(point_value(&point)));
-            flags.push(json_to_i32(point.get("flags")));
-            aggregation_temporalities.push(aggregation_temporality);
-            is_monotonics.push(is_monotonic);
-            resource_schema_urls.push(resource_context.resource_schema_url.clone());
-            resource_attributes.push(resource_context.resource_attributes.clone());
-            scope_names.push(scope_context.scope_name.clone());
-            scope_versions.push(scope_context.scope_version.clone());
-            scope_schema_urls.push(scope_context.scope_schema_url.clone());
-            scope_attributes.push(scope_context.scope_attributes.clone());
-            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
-            attributes.push(serialize_json(point.get("attributes")));
-            exemplars.push(serialize_json(point.get("exemplars")));
-            date_days.push(date_day);
-            hours.push(hour);
+            points.push(WidePoint {
+                metric: metrics.len(),
+                timestamp,
+                start_timestamp,
+                date_day,
+                hour,
+                series_id: point_series_id(&metric.series_key(), &point),
+                flags: json_to_i32(point.get("flags")),
+                attributes: serialize_json(point.get("attributes")),
+                fields: wide_point_fields(
+                    &metric.metric_type,
+                    &point,
+                    aggregation_temporality,
+                    is_monotonic,
+                ),
+            });
         }
+        metrics.push(metric);
     }
+
+    let f64s = |f: fn(&WidePointFields) -> Option<f64>| -> ArrayRef {
+        Arc::new(
+            points
+                .iter()
+                .map(|p| f(&p.fields))
+                .collect::<Float64Array>(),
+        )
+    };
+    let i64s = |f: fn(&WidePointFields) -> Option<i64>| -> ArrayRef {
+        Arc::new(points.iter().map(|p| f(&p.fields)).collect::<Int64Array>())
+    };
+    let i32s = |f: &dyn Fn(&WidePoint) -> Option<i32>| -> ArrayRef {
+        Arc::new(points.iter().map(f).collect::<Int32Array>())
+    };
+    let owned = |f: &dyn Fn(&WidePoint) -> Option<String>| -> Vec<Option<String>> {
+        points.iter().map(f).collect()
+    };
+    let resource_attributes = owned(&|p| metrics[p.metric].resource.resource_attributes.clone());
+    let scope_attributes = owned(&|p| metrics[p.metric].scope.scope_attributes.clone());
+    let attributes = owned(&|p| p.attributes.clone());
 
     let (label_fields, label_columns) = materialized_label_columns_from_json(
         &resource_attributes,
@@ -1538,501 +1587,194 @@ pub fn transform_metrics_sum_v1_to_iceberg(
         labels,
     );
     let mut columns: Vec<ArrayRef> = vec![
-        Arc::new(TimestampNanosecondArray::from(timestamps)),
-        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-        Arc::new(StringArray::from(service_names)),
-        Arc::new(StringArray::from(metric_names)),
-        Arc::new(StringArray::from(metric_descriptions)),
-        Arc::new(StringArray::from(metric_units)),
-        Arc::new(Float64Array::from(values)),
-        Arc::new(Int32Array::from(flags)),
-        Arc::new(Int32Array::from(aggregation_temporalities)),
-        Arc::new(BooleanArray::from(is_monotonics)),
-        Arc::new(StringArray::from(resource_schema_urls)),
+        Arc::new(
+            points
+                .iter()
+                .map(|p| p.timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        Arc::new(
+            points
+                .iter()
+                .map(|p| p.start_timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        str_column(&points, |p| {
+            metrics[p.metric].resource.service_name.as_deref()
+        }),
+        str_column(&points, |p| Some(metrics[p.metric].name.as_str())),
+        str_column(&points, |p| metrics[p.metric].description.as_deref()),
+        str_column(&points, |p| metrics[p.metric].unit.as_deref()),
+        str_column(&points, |p| Some(metrics[p.metric].metric_type.as_str())),
+        str_column(&points, |p| Some(p.series_id.as_str())),
+        f64s(|f| f.value),
+        i64s(|f| f.count),
+        f64s(|f| f.sum),
+        f64s(|f| f.min),
+        f64s(|f| f.max),
+        primitive_list_column::<Float64Type>(points.iter().map(|p| &p.fields.explicit_bounds)),
+        primitive_list_column::<Int64Type>(points.iter().map(|p| &p.fields.bucket_counts)),
+        i32s(&|p| p.fields.scale),
+        i64s(|f| f.zero_count),
+        f64s(|f| f.zero_threshold),
+        i32s(&|p| p.fields.positive_offset),
+        primitive_list_column::<Int64Type>(points.iter().map(|p| &p.fields.positive_bucket_counts)),
+        i32s(&|p| p.fields.negative_offset),
+        primitive_list_column::<Int64Type>(points.iter().map(|p| &p.fields.negative_bucket_counts)),
+        primitive_list_column::<Float64Type>(points.iter().map(|p| &p.fields.quantiles)),
+        primitive_list_column::<Float64Type>(points.iter().map(|p| &p.fields.quantile_values)),
+        i32s(&|p| p.flags),
+        i32s(&|p| p.fields.aggregation_temporality),
+        Arc::new(
+            points
+                .iter()
+                .map(|p| p.fields.is_monotonic)
+                .collect::<BooleanArray>(),
+        ),
+        str_column(&points, |p| {
+            metrics[p.metric].resource.resource_schema_url.as_deref()
+        }),
         Arc::new(StringArray::from(resource_attributes)),
-        Arc::new(StringArray::from(scope_names)),
-        Arc::new(StringArray::from(scope_versions)),
-        Arc::new(StringArray::from(scope_schema_urls)),
+        str_column(&points, |p| metrics[p.metric].scope.scope_name.as_deref()),
+        str_column(&points, |p| {
+            metrics[p.metric].scope.scope_version.as_deref()
+        }),
+        str_column(&points, |p| {
+            metrics[p.metric].scope.scope_schema_url.as_deref()
+        }),
         Arc::new(StringArray::from(scope_attributes)),
-        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
+        i32s(&|p| Some(metrics[p.metric].scope.scope_dropped_attr_count)),
         Arc::new(StringArray::from(attributes)),
-        Arc::new(StringArray::from(exemplars)),
-        Arc::new(Date32Array::from(date_days)),
-        Arc::new(Int32Array::from(hours)),
+        str_column(&points, |p| {
+            metrics[p.metric].resource.resource_identity.as_deref()
+        }),
+        Arc::new(points.iter().map(|p| p.date_day).collect::<Date32Array>()),
+        i32s(&|p| p.hour),
     ];
     let out_schema =
         extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
-    RecordBatch::try_new(out_schema, columns).map_err(|e| {
-        anyhow!(
-            "Failed to create transformed metrics_sum RecordBatch: {}",
-            e
-        )
-    })
+    RecordBatch::try_new(out_schema, columns)
+        .map_err(|e| anyhow!("Failed to create transformed metrics RecordBatch: {}", e))
 }
 
-pub fn transform_metrics_histogram_v1_to_iceberg(
-    batch: RecordBatch,
-    labels: &[String],
-) -> Result<RecordBatch> {
-    let output_schema = create_metrics_histogram_arrow_schema();
+/// The `metric_exemplars` transform schema, resolved once rather than per batch.
+static METRIC_EXEMPLARS_SCHEMA: std::sync::LazyLock<Result<Arc<Schema>, String>> =
+    std::sync::LazyLock::new(|| {
+        let resolved = SCHEMA_DEFINITIONS
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.metric_exemplars, TYPED_METRIC_VERSION)
+            .map_err(|e| e.to_string())?;
+        create_wide_transform_schema(resolved).map_err(|e| e.to_string())
+    });
+
+struct WideExemplar {
+    metric: usize,
+    timestamp: Option<i64>,
+    point_timestamp: Option<i64>,
+    date_day: Option<i32>,
+    hour: Option<i32>,
+    series_id: String,
+    value: Option<f64>,
+    trace_id: Option<String>,
+    span_id: Option<String>,
+    filtered_attributes: Option<String>,
+}
+
+/// A wire metrics batch -> one `metric_exemplars` row per exemplar across
+/// every point. No exemplars is a zero-row batch, not an error.
+pub fn transform_metric_exemplars(batch: RecordBatch) -> Result<RecordBatch> {
+    let output_schema = METRIC_EXEMPLARS_SCHEMA
+        .clone()
+        .map_err(|e| anyhow!("failed to build the metric_exemplars schema: {e}"))?;
 
     let name_array = get_typed_column::<StringArray>(&batch, "name")?;
-    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
-    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
     let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
     let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
     let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
-    let aggregation_temporality_array =
-        get_typed_column::<Int32Array>(&batch, "aggregation_temporality")?;
+    let metric_type_array = get_typed_column::<StringArray>(&batch, "metric_type")?;
 
-    let mut timestamps: Vec<Option<i64>> = Vec::new();
-    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
-    let mut service_names: Vec<Option<String>> = Vec::new();
-    let mut metric_names: Vec<Option<String>> = Vec::new();
-    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
-    let mut metric_units: Vec<Option<String>> = Vec::new();
-    let mut counts: Vec<Option<i64>> = Vec::new();
-    let mut sums: Vec<Option<f64>> = Vec::new();
-    let mut mins: Vec<Option<f64>> = Vec::new();
-    let mut maxes: Vec<Option<f64>> = Vec::new();
-    let mut bucket_counts: Vec<Option<String>> = Vec::new();
-    let mut explicit_bounds: Vec<Option<String>> = Vec::new();
-    let mut flags: Vec<Option<i32>> = Vec::new();
-    let mut aggregation_temporalities: Vec<Option<i32>> = Vec::new();
-    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut resource_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_names: Vec<Option<String>> = Vec::new();
-    let mut scope_versions: Vec<Option<String>> = Vec::new();
-    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut scope_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
-    let mut attributes: Vec<Option<String>> = Vec::new();
-    let mut exemplars: Vec<Option<String>> = Vec::new();
-    let mut date_days: Vec<Option<i32>> = Vec::new();
-    let mut hours: Vec<Option<i32>> = Vec::new();
-
+    let mut metrics: Vec<WideMetric> = Vec::with_capacity(batch.num_rows());
+    let mut exemplars: Vec<WideExemplar> = Vec::new();
     for row in 0..batch.num_rows() {
-        let metric_name = string_value(name_array, row);
-        let metric_description = string_value(description_array, row);
-        let metric_unit = string_value(unit_array, row);
-        let aggregation_temporality = int32_value(aggregation_temporality_array, row);
+        let metric = WideMetric {
+            name: string_value(name_array, row).unwrap_or_default(),
+            description: None,
+            unit: None,
+            metric_type: string_value(metric_type_array, row).unwrap_or_default(),
+            resource: extract_resource_context(string_value_ref(resource_json_array, row)),
+            scope: extract_scope_context(string_value_ref(scope_json_array, row)),
+        };
 
-        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
-        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
-        let data_points = parse_data_points(string_value_ref(data_json_array, row));
-
-        for point in data_points {
-            let (timestamp, date_day, hour) =
+        for point in parse_data_points(string_value_ref(data_json_array, row)) {
+            let (point_timestamp, _, _) =
                 temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
-            let (start_timestamp, _, _) =
-                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
+            let Some(point_exemplars) = point.get("exemplars").and_then(|v| v.as_array()) else {
+                continue;
+            };
+            let series_id = point_series_id(&metric.series_key(), &point);
 
-            timestamps.push(timestamp);
-            start_timestamps.push(start_timestamp);
-            service_names.push(resource_context.service_name.clone());
-            metric_names.push(metric_name.clone());
-            metric_descriptions.push(metric_description.clone());
-            metric_units.push(metric_unit.clone());
-            counts.push(json_to_i64(point.get("count")));
-            sums.push(json_to_f64(point.get("sum")));
-            mins.push(json_to_f64(point.get("min")));
-            maxes.push(json_to_f64(point.get("max")));
-            bucket_counts.push(serialize_json_array(point.get("bucket_counts")));
-            explicit_bounds.push(serialize_json_array(point.get("explicit_bounds")));
-            flags.push(json_to_i32(point.get("flags")));
-            aggregation_temporalities.push(aggregation_temporality);
-            resource_schema_urls.push(resource_context.resource_schema_url.clone());
-            resource_attributes.push(resource_context.resource_attributes.clone());
-            scope_names.push(scope_context.scope_name.clone());
-            scope_versions.push(scope_context.scope_version.clone());
-            scope_schema_urls.push(scope_context.scope_schema_url.clone());
-            scope_attributes.push(scope_context.scope_attributes.clone());
-            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
-            attributes.push(serialize_json(point.get("attributes")));
-            exemplars.push(serialize_json(point.get("exemplars")));
-            date_days.push(date_day);
-            hours.push(hour);
+            for exemplar in point_exemplars {
+                let (timestamp, date_day, hour) =
+                    temporal_from_nanos(json_to_u64(exemplar.get("time_unix_nano")));
+                exemplars.push(WideExemplar {
+                    metric: metrics.len(),
+                    timestamp,
+                    point_timestamp,
+                    date_day,
+                    hour,
+                    series_id: series_id.clone(),
+                    value: json_to_f64(exemplar.get("value")),
+                    trace_id: exemplar
+                        .get("trace_id")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                    span_id: exemplar
+                        .get("span_id")
+                        .and_then(|v| v.as_str())
+                        .map(ToString::to_string),
+                    filtered_attributes: serialize_json(exemplar.get("filtered_attributes")),
+                });
+            }
         }
+        metrics.push(metric);
     }
 
-    let (label_fields, label_columns) = materialized_label_columns_from_json(
-        &resource_attributes,
-        &scope_attributes,
-        &attributes,
-        labels,
-    );
-    let mut columns: Vec<ArrayRef> = vec![
-        Arc::new(TimestampNanosecondArray::from(timestamps)),
-        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-        Arc::new(StringArray::from(service_names)),
-        Arc::new(StringArray::from(metric_names)),
-        Arc::new(StringArray::from(metric_descriptions)),
-        Arc::new(StringArray::from(metric_units)),
-        Arc::new(Int64Array::from(counts)),
-        Arc::new(Float64Array::from(sums)),
-        Arc::new(Float64Array::from(mins)),
-        Arc::new(Float64Array::from(maxes)),
-        Arc::new(StringArray::from(bucket_counts)),
-        Arc::new(StringArray::from(explicit_bounds)),
-        Arc::new(Int32Array::from(flags)),
-        Arc::new(Int32Array::from(aggregation_temporalities)),
-        Arc::new(StringArray::from(resource_schema_urls)),
-        Arc::new(StringArray::from(resource_attributes)),
-        Arc::new(StringArray::from(scope_names)),
-        Arc::new(StringArray::from(scope_versions)),
-        Arc::new(StringArray::from(scope_schema_urls)),
-        Arc::new(StringArray::from(scope_attributes)),
-        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-        Arc::new(StringArray::from(attributes)),
-        Arc::new(StringArray::from(exemplars)),
-        Arc::new(Date32Array::from(date_days)),
-        Arc::new(Int32Array::from(hours)),
+    let columns: Vec<ArrayRef> = vec![
+        Arc::new(
+            exemplars
+                .iter()
+                .map(|e| e.timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        Arc::new(
+            exemplars
+                .iter()
+                .map(|e| e.point_timestamp)
+                .collect::<TimestampNanosecondArray>(),
+        ),
+        str_column(&exemplars, |e| {
+            metrics[e.metric].resource.service_name.as_deref()
+        }),
+        str_column(&exemplars, |e| Some(metrics[e.metric].name.as_str())),
+        str_column(&exemplars, |e| Some(metrics[e.metric].metric_type.as_str())),
+        str_column(&exemplars, |e| Some(e.series_id.as_str())),
+        Arc::new(exemplars.iter().map(|e| e.value).collect::<Float64Array>()),
+        str_column(&exemplars, |e| e.trace_id.as_deref()),
+        str_column(&exemplars, |e| e.span_id.as_deref()),
+        str_column(&exemplars, |e| e.filtered_attributes.as_deref()),
+        str_column(&exemplars, |e| {
+            metrics[e.metric].resource.resource_identity.as_deref()
+        }),
+        Arc::new(
+            exemplars
+                .iter()
+                .map(|e| e.date_day)
+                .collect::<Date32Array>(),
+        ),
+        Arc::new(exemplars.iter().map(|e| e.hour).collect::<Int32Array>()),
     ];
-    let out_schema =
-        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
-    RecordBatch::try_new(out_schema, columns).map_err(|e| {
+    RecordBatch::try_new(output_schema, columns).map_err(|e| {
         anyhow!(
-            "Failed to create transformed metrics_histogram RecordBatch: {}",
-            e
-        )
-    })
-}
-
-fn create_metrics_exponential_histogram_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("count", DataType::Int64, false),
-        Field::new("sum", DataType::Float64, true),
-        Field::new("min", DataType::Float64, true),
-        Field::new("max", DataType::Float64, true),
-        Field::new("scale", DataType::Int32, true),
-        Field::new("zero_count", DataType::Int64, true),
-        Field::new("positive_offset", DataType::Int32, true),
-        Field::new("positive_bucket_counts", DataType::Utf8, true), // JSON array string
-        Field::new("negative_offset", DataType::Int32, true),
-        Field::new("negative_bucket_counts", DataType::Utf8, true), // JSON array string
-        Field::new("flags", DataType::Int32, true),
-        Field::new("aggregation_temporality", DataType::Int32, false),
-        Field::new("zero_threshold", DataType::Float64, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]))
-}
-
-fn create_metrics_summary_arrow_schema() -> Arc<Schema> {
-    Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("count", DataType::Int64, false),
-        Field::new("sum", DataType::Float64, false),
-        Field::new("quantile_values", DataType::Utf8, true), // JSON array of {quantile, value}
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]))
-}
-
-pub fn transform_metrics_exponential_histogram_v1_to_iceberg(
-    batch: RecordBatch,
-    labels: &[String],
-) -> Result<RecordBatch> {
-    let output_schema = create_metrics_exponential_histogram_arrow_schema();
-
-    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
-    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
-    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
-    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
-    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
-    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
-    let aggregation_temporality_array =
-        get_typed_column::<Int32Array>(&batch, "aggregation_temporality")?;
-
-    let mut timestamps: Vec<Option<i64>> = Vec::new();
-    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
-    let mut service_names: Vec<Option<String>> = Vec::new();
-    let mut metric_names: Vec<Option<String>> = Vec::new();
-    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
-    let mut metric_units: Vec<Option<String>> = Vec::new();
-    let mut counts: Vec<Option<i64>> = Vec::new();
-    let mut sums: Vec<Option<f64>> = Vec::new();
-    let mut mins: Vec<Option<f64>> = Vec::new();
-    let mut maxes: Vec<Option<f64>> = Vec::new();
-    let mut scales: Vec<Option<i32>> = Vec::new();
-    let mut zero_counts: Vec<Option<i64>> = Vec::new();
-    let mut positive_offsets: Vec<Option<i32>> = Vec::new();
-    let mut positive_bucket_counts: Vec<Option<String>> = Vec::new();
-    let mut negative_offsets: Vec<Option<i32>> = Vec::new();
-    let mut negative_bucket_counts: Vec<Option<String>> = Vec::new();
-    let mut flags: Vec<Option<i32>> = Vec::new();
-    let mut aggregation_temporalities: Vec<Option<i32>> = Vec::new();
-    let mut zero_thresholds: Vec<Option<f64>> = Vec::new();
-    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut resource_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_names: Vec<Option<String>> = Vec::new();
-    let mut scope_versions: Vec<Option<String>> = Vec::new();
-    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut scope_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
-    let mut attributes: Vec<Option<String>> = Vec::new();
-    let mut exemplars: Vec<Option<String>> = Vec::new();
-    let mut date_days: Vec<Option<i32>> = Vec::new();
-    let mut hours: Vec<Option<i32>> = Vec::new();
-
-    for row in 0..batch.num_rows() {
-        let metric_name = string_value(name_array, row);
-        let metric_description = string_value(description_array, row);
-        let metric_unit = string_value(unit_array, row);
-        let aggregation_temporality = int32_value(aggregation_temporality_array, row);
-
-        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
-        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
-        let data_points = parse_data_points(string_value_ref(data_json_array, row));
-
-        for point in data_points {
-            let (timestamp, date_day, hour) =
-                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
-            let (start_timestamp, _, _) =
-                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
-
-            timestamps.push(timestamp);
-            start_timestamps.push(start_timestamp);
-            service_names.push(resource_context.service_name.clone());
-            metric_names.push(metric_name.clone());
-            metric_descriptions.push(metric_description.clone());
-            metric_units.push(metric_unit.clone());
-            counts.push(json_to_i64(point.get("count")));
-            sums.push(json_to_f64(point.get("sum")));
-            mins.push(json_to_f64(point.get("min")));
-            maxes.push(json_to_f64(point.get("max")));
-            scales.push(json_to_i32(point.get("scale")));
-            zero_counts.push(json_to_i64(point.get("zero_count")));
-
-            let positive = point.get("positive");
-            positive_offsets.push(positive.and_then(|p| json_to_i32(p.get("offset"))));
-            positive_bucket_counts
-                .push(positive.and_then(|p| serialize_json_array(p.get("bucket_counts"))));
-
-            let negative = point.get("negative");
-            negative_offsets.push(negative.and_then(|p| json_to_i32(p.get("offset"))));
-            negative_bucket_counts
-                .push(negative.and_then(|p| serialize_json_array(p.get("bucket_counts"))));
-
-            flags.push(json_to_i32(point.get("flags")));
-            aggregation_temporalities.push(aggregation_temporality);
-            zero_thresholds.push(json_to_f64(point.get("zero_threshold")));
-            resource_schema_urls.push(resource_context.resource_schema_url.clone());
-            resource_attributes.push(resource_context.resource_attributes.clone());
-            scope_names.push(scope_context.scope_name.clone());
-            scope_versions.push(scope_context.scope_version.clone());
-            scope_schema_urls.push(scope_context.scope_schema_url.clone());
-            scope_attributes.push(scope_context.scope_attributes.clone());
-            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
-            attributes.push(serialize_json(point.get("attributes")));
-            exemplars.push(serialize_json(point.get("exemplars")));
-            date_days.push(date_day);
-            hours.push(hour);
-        }
-    }
-
-    let (label_fields, label_columns) = materialized_label_columns_from_json(
-        &resource_attributes,
-        &scope_attributes,
-        &attributes,
-        labels,
-    );
-    let mut columns: Vec<ArrayRef> = vec![
-        Arc::new(TimestampNanosecondArray::from(timestamps)),
-        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-        Arc::new(StringArray::from(service_names)),
-        Arc::new(StringArray::from(metric_names)),
-        Arc::new(StringArray::from(metric_descriptions)),
-        Arc::new(StringArray::from(metric_units)),
-        Arc::new(Int64Array::from(counts)),
-        Arc::new(Float64Array::from(sums)),
-        Arc::new(Float64Array::from(mins)),
-        Arc::new(Float64Array::from(maxes)),
-        Arc::new(Int32Array::from(scales)),
-        Arc::new(Int64Array::from(zero_counts)),
-        Arc::new(Int32Array::from(positive_offsets)),
-        Arc::new(StringArray::from(positive_bucket_counts)),
-        Arc::new(Int32Array::from(negative_offsets)),
-        Arc::new(StringArray::from(negative_bucket_counts)),
-        Arc::new(Int32Array::from(flags)),
-        Arc::new(Int32Array::from(aggregation_temporalities)),
-        Arc::new(Float64Array::from(zero_thresholds)),
-        Arc::new(StringArray::from(resource_schema_urls)),
-        Arc::new(StringArray::from(resource_attributes)),
-        Arc::new(StringArray::from(scope_names)),
-        Arc::new(StringArray::from(scope_versions)),
-        Arc::new(StringArray::from(scope_schema_urls)),
-        Arc::new(StringArray::from(scope_attributes)),
-        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-        Arc::new(StringArray::from(attributes)),
-        Arc::new(StringArray::from(exemplars)),
-        Arc::new(Date32Array::from(date_days)),
-        Arc::new(Int32Array::from(hours)),
-    ];
-    let out_schema =
-        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
-    RecordBatch::try_new(out_schema, columns).map_err(|e| {
-        anyhow!(
-            "Failed to create transformed metrics_exponential_histogram RecordBatch: {}",
-            e
-        )
-    })
-}
-
-pub fn transform_metrics_summary_v1_to_iceberg(
-    batch: RecordBatch,
-    labels: &[String],
-) -> Result<RecordBatch> {
-    let output_schema = create_metrics_summary_arrow_schema();
-
-    let name_array = get_typed_column::<StringArray>(&batch, "name")?;
-    let description_array = get_typed_column::<StringArray>(&batch, "description")?;
-    let unit_array = get_typed_column::<StringArray>(&batch, "unit")?;
-    let resource_json_array = get_typed_column::<StringArray>(&batch, "resource_json")?;
-    let scope_json_array = get_typed_column::<StringArray>(&batch, "scope_json")?;
-    let data_json_array = get_typed_column::<StringArray>(&batch, "data_json")?;
-
-    let mut timestamps: Vec<Option<i64>> = Vec::new();
-    let mut start_timestamps: Vec<Option<i64>> = Vec::new();
-    let mut service_names: Vec<Option<String>> = Vec::new();
-    let mut metric_names: Vec<Option<String>> = Vec::new();
-    let mut metric_descriptions: Vec<Option<String>> = Vec::new();
-    let mut metric_units: Vec<Option<String>> = Vec::new();
-    let mut counts: Vec<Option<i64>> = Vec::new();
-    let mut sums: Vec<Option<f64>> = Vec::new();
-    let mut quantile_values: Vec<Option<String>> = Vec::new();
-    let mut flags: Vec<Option<i32>> = Vec::new();
-    let mut resource_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut resource_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_names: Vec<Option<String>> = Vec::new();
-    let mut scope_versions: Vec<Option<String>> = Vec::new();
-    let mut scope_schema_urls: Vec<Option<String>> = Vec::new();
-    let mut scope_attributes: Vec<Option<String>> = Vec::new();
-    let mut scope_dropped_attr_counts: Vec<Option<i32>> = Vec::new();
-    let mut attributes: Vec<Option<String>> = Vec::new();
-    let mut exemplars: Vec<Option<String>> = Vec::new();
-    let mut date_days: Vec<Option<i32>> = Vec::new();
-    let mut hours: Vec<Option<i32>> = Vec::new();
-
-    for row in 0..batch.num_rows() {
-        let metric_name = string_value(name_array, row);
-        let metric_description = string_value(description_array, row);
-        let metric_unit = string_value(unit_array, row);
-
-        let resource_context = extract_resource_context(string_value_ref(resource_json_array, row));
-        let scope_context = extract_scope_context(string_value_ref(scope_json_array, row));
-        let data_points = parse_data_points(string_value_ref(data_json_array, row));
-
-        for point in data_points {
-            let (timestamp, date_day, hour) =
-                temporal_from_nanos(json_to_u64(point.get("time_unix_nano")));
-            let (start_timestamp, _, _) =
-                temporal_from_nanos(json_to_u64(point.get("start_time_unix_nano")));
-
-            timestamps.push(timestamp);
-            start_timestamps.push(start_timestamp);
-            service_names.push(resource_context.service_name.clone());
-            metric_names.push(metric_name.clone());
-            metric_descriptions.push(metric_description.clone());
-            metric_units.push(metric_unit.clone());
-            counts.push(json_to_i64(point.get("count")));
-            sums.push(json_to_f64(point.get("sum")));
-            quantile_values.push(serialize_json_array(point.get("quantile_values")));
-            flags.push(json_to_i32(point.get("flags")));
-            resource_schema_urls.push(resource_context.resource_schema_url.clone());
-            resource_attributes.push(resource_context.resource_attributes.clone());
-            scope_names.push(scope_context.scope_name.clone());
-            scope_versions.push(scope_context.scope_version.clone());
-            scope_schema_urls.push(scope_context.scope_schema_url.clone());
-            scope_attributes.push(scope_context.scope_attributes.clone());
-            scope_dropped_attr_counts.push(Some(scope_context.scope_dropped_attr_count));
-            attributes.push(serialize_json(point.get("attributes")));
-            exemplars.push(serialize_json(point.get("exemplars")));
-            date_days.push(date_day);
-            hours.push(hour);
-        }
-    }
-
-    let (label_fields, label_columns) = materialized_label_columns_from_json(
-        &resource_attributes,
-        &scope_attributes,
-        &attributes,
-        labels,
-    );
-    let mut columns: Vec<ArrayRef> = vec![
-        Arc::new(TimestampNanosecondArray::from(timestamps)),
-        Arc::new(TimestampNanosecondArray::from(start_timestamps)),
-        Arc::new(StringArray::from(service_names)),
-        Arc::new(StringArray::from(metric_names)),
-        Arc::new(StringArray::from(metric_descriptions)),
-        Arc::new(StringArray::from(metric_units)),
-        Arc::new(Int64Array::from(counts)),
-        Arc::new(Float64Array::from(sums)),
-        Arc::new(StringArray::from(quantile_values)),
-        Arc::new(Int32Array::from(flags)),
-        Arc::new(StringArray::from(resource_schema_urls)),
-        Arc::new(StringArray::from(resource_attributes)),
-        Arc::new(StringArray::from(scope_names)),
-        Arc::new(StringArray::from(scope_versions)),
-        Arc::new(StringArray::from(scope_schema_urls)),
-        Arc::new(StringArray::from(scope_attributes)),
-        Arc::new(Int32Array::from(scope_dropped_attr_counts)),
-        Arc::new(StringArray::from(attributes)),
-        Arc::new(StringArray::from(exemplars)),
-        Arc::new(Date32Array::from(date_days)),
-        Arc::new(Int32Array::from(hours)),
-    ];
-    let out_schema =
-        extend_schema_with_labels(output_schema, label_fields, &mut columns, label_columns);
-    RecordBatch::try_new(out_schema, columns).map_err(|e| {
-        anyhow!(
-            "Failed to create transformed metrics_summary RecordBatch: {}",
+            "Failed to create transformed metric_exemplars RecordBatch: {}",
             e
         )
     })
@@ -2063,6 +1805,7 @@ pub fn create_profiles_arrow_schema() -> Arc<Schema> {
         Field::new("span_id", DataType::Utf8, true),
         Field::new("date_day", DataType::Date32, false),
         Field::new("hour", DataType::Int32, false),
+        Field::new("resource_identity", DataType::Utf8, true),
     ]))
 }
 
@@ -2193,6 +1936,7 @@ pub fn transform_profiles_v1_to_iceberg(
                     .collect();
                 Arc::new(Int32Array::from(hours))
             }
+            "resource_identity" => resource_identity_from_resource_json_column(&batch)?,
             other => return Err(anyhow!("Unknown field in profiles schema: {other}")),
         };
         new_columns.push(column);
@@ -2217,21 +1961,9 @@ pub fn transform_for_signal(
         (Some("traces"), _) => transform_trace_v1_to_v2(batch, &m.traces),
         (Some("logs"), _) => transform_logs_v1_to_iceberg(batch, &m.logs),
         (Some("profiles"), _) => transform_profiles_v1_to_iceberg(batch, &m.profiles),
-        (Some("metrics"), Some("metrics_gauge")) => {
-            transform_metrics_gauge_v1_to_iceberg(batch, &m.metrics)
-        }
-        (Some("metrics"), Some("metrics_sum")) => {
-            transform_metrics_sum_v1_to_iceberg(batch, &m.metrics)
-        }
-        (Some("metrics"), Some("metrics_histogram")) => {
-            transform_metrics_histogram_v1_to_iceberg(batch, &m.metrics)
-        }
-        (Some("metrics"), Some("metrics_exponential_histogram")) => {
-            transform_metrics_exponential_histogram_v1_to_iceberg(batch, &m.metrics)
-        }
-        (Some("metrics"), Some("metrics_summary")) => {
-            transform_metrics_summary_v1_to_iceberg(batch, &m.metrics)
-        }
+        // A metrics batch's `target_table` is always "metrics" or
+        // "metric_exemplars" under the wide layout, and both are shaped by
+        // `storage::iceberg`'s own dispatch on commit, not here.
         // An unknown metrics `target_table` is rejected by `routing::route`
         // before `do_put` reaches this transform (W4), so this arm is
         // unreachable from the ingest path. No other caller exists.
@@ -2242,6 +1974,83 @@ pub fn transform_for_signal(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arrow_schema_from_resolved_maps_typed_lists_to_arrow_list_columns() {
+        use common::schema::schema_parser::ResolvedField;
+
+        let field = |name: &str, field_type: &str| ResolvedField {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: 0,
+        };
+        let resolved = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("bucket_counts", "list<int64>"),
+                field("explicit_bounds", "list<double>"),
+            ],
+            partition_by: vec![],
+        };
+        let arrow_schema = create_arrow_schema_from_resolved(&resolved).unwrap();
+
+        let counts = arrow_schema.field_with_name("bucket_counts").unwrap();
+        let DataType::List(element) = counts.data_type() else {
+            panic!(
+                "bucket_counts should be a List, got {:?}",
+                counts.data_type()
+            );
+        };
+        assert_eq!(*element.data_type(), DataType::Int64);
+        assert!(element.is_nullable());
+
+        let bounds = arrow_schema.field_with_name("explicit_bounds").unwrap();
+        let DataType::List(element) = bounds.data_type() else {
+            panic!(
+                "explicit_bounds should be a List, got {:?}",
+                bounds.data_type()
+            );
+        };
+        assert_eq!(*element.data_type(), DataType::Float64);
+    }
+
+    #[test]
+    fn materialized_label_column_carries_its_origin_key_and_survives_an_ipc_round_trip() {
+        let (fields, columns) = materialized_label_columns_from_json(
+            &[Some(r#"{"http.method":"GET"}"#.to_string())],
+            &[None],
+            &[None],
+            &["http.method".to_string()],
+        );
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            fields[0].metadata().get(LABEL_ORIGIN_KEY_METADATA),
+            Some(&"http.method".to_string()),
+            "materialized label field must carry its origin key in metadata"
+        );
+
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(fields.clone())),
+            columns.into_iter().map(|c| c as ArrayRef).collect(),
+        )
+        .unwrap();
+
+        // WAL persists batches through this same IPC path.
+        let bytes = common::wal::record_batch_to_bytes(&batch).unwrap();
+        let round_tripped = common::wal::bytes_to_record_batch(&bytes).unwrap();
+        let round_tripped_field = round_tripped.schema().field(0).clone();
+        assert_eq!(
+            round_tripped_field
+                .metadata()
+                .get(LABEL_ORIGIN_KEY_METADATA),
+            Some(&"http.method".to_string()),
+            "origin key metadata must survive an Arrow IPC write/read round trip"
+        );
+    }
 
     #[test]
     fn transform_trace_v1_to_v2_carries_the_1208_columns_through() {
@@ -2429,7 +2238,7 @@ mod tests {
     }
 
     #[test]
-    fn transform_trace_v1_to_v2_produces_the_complete_expected_physical_v3_batch() {
+    fn transform_trace_v1_to_v2_produces_the_complete_expected_physical_v4_batch() {
         // Full-batch golden check (CodeRabbit review, PR #1230): schema
         // field names/order/types/nullability, not just a hand-picked
         // values/types/nullability subset for a few fields -- a plan bug
@@ -2532,6 +2341,7 @@ mod tests {
             ("dropped_attributes_count", DataType::Int64, true),
             ("dropped_events_count", DataType::Int64, true),
             ("dropped_links_count", DataType::Int64, true),
+            ("resource_identity", DataType::Utf8, true),
         ];
 
         let batch_schema = v2_batch.schema();
@@ -2546,7 +2356,7 @@ mod tests {
                 .iter()
                 .map(|(n, t, nu)| (n.to_string(), t.clone(), *nu))
                 .collect::<Vec<_>>(),
-            "full physical-v3 schema (names, order, types, nullability) must match exactly"
+            "full physical-v4 schema (names, order, types, nullability) must match exactly"
         );
 
         assert_eq!(v2_batch.num_rows(), 1);
@@ -2566,6 +2376,141 @@ mod tests {
             get_str("span_attributes").contains("http.method"),
             "renamed from v1's `attributes_json`"
         );
+        assert_eq!(
+            get_str("resource_identity"),
+            resource_identity_from_json(r#"{"service.name":"checkout-svc"}"#).unwrap(),
+            "digest of the span's resource attribute set"
+        );
+    }
+
+    #[test]
+    fn transform_trace_v1_to_v2_resource_identity_groups_spans_by_resource() {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan};
+
+        fn resource(service_name: &str) -> Resource {
+            Resource {
+                attributes: vec![KeyValue {
+                    key: "service.name".to_string(),
+                    value: Some(AnyValue {
+                        value: Some(Value::StringValue(service_name.to_string())),
+                    }),
+                    ..Default::default()
+                }],
+                ..Default::default()
+            }
+        }
+
+        fn span(name: &str) -> OtelSpan {
+            OtelSpan {
+                trace_id: vec![0xab; 16],
+                span_id: vec![0xcd; 8],
+                name: name.to_string(),
+                kind: 2,
+                start_time_unix_nano: 1,
+                end_time_unix_nano: 2,
+                ..Default::default()
+            }
+        }
+
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![
+                ResourceSpans {
+                    resource: Some(resource("checkout")),
+                    scope_spans: vec![ScopeSpans {
+                        scope: None,
+                        spans: vec![span("first"), span("second")],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                },
+                ResourceSpans {
+                    resource: Some(resource("billing")),
+                    scope_spans: vec![ScopeSpans {
+                        scope: None,
+                        spans: vec![span("third")],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                },
+            ],
+        };
+
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).expect("transform should succeed");
+
+        let identities = v2_batch
+            .column(v2_batch.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities.value(0),
+            identities.value(1),
+            "first two spans share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third span has a different resource"
+        );
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn transform_trace_v1_to_v2_null_resource_json_yields_null_resource_identity() {
+        use common::flight::conversion::otlp_traces_to_arrow;
+        use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+        use opentelemetry_proto::tonic::trace::v1::{ResourceSpans, ScopeSpans, Span as OtelSpan};
+
+        let span = OtelSpan {
+            trace_id: vec![0xab; 16],
+            span_id: vec![0xcd; 8],
+            name: "checkout".to_string(),
+            kind: 2,
+            start_time_unix_nano: 1,
+            end_time_unix_nano: 2,
+            ..Default::default()
+        };
+        let request = ExportTraceServiceRequest {
+            resource_spans: vec![ResourceSpans {
+                resource: None,
+                scope_spans: vec![ScopeSpans {
+                    scope: None,
+                    spans: vec![span],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+        let wire_batch = otlp_traces_to_arrow(&request).expect("conversion should succeed");
+
+        // `otlp_traces_to_arrow` always produces a resource_json string (an
+        // empty-resource span still gets "{}"); force an actual null to
+        // exercise the extractor's null-source path, which a hand-built v1
+        // batch (or an older wire producer) can still send.
+        let resource_json_idx = wire_batch
+            .schema()
+            .index_of("resource_json")
+            .expect("resource_json column must exist");
+        let mut columns: Vec<ArrayRef> = wire_batch.columns().to_vec();
+        columns[resource_json_idx] = Arc::new(StringArray::from(vec![None::<&str>]));
+        let wire_batch = RecordBatch::try_new(wire_batch.schema(), columns).unwrap();
+
+        let v2_batch = transform_trace_v1_to_v2(wire_batch, &[]).expect("transform should succeed");
+        let identities = v2_batch
+            .column(v2_batch.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
     }
 
     #[test]
@@ -2639,6 +2584,82 @@ mod tests {
         // Storage batches pass through unchanged (idempotent transform guard
         // keys on the wire-only time_unix_nano column).
         assert!(schema.index_of("time_unix_nano").is_err());
+    }
+
+    /// A minimal profile carrying the given resource attributes (`None`
+    /// leaves the resource unset, as an OTLP profile without a resource
+    /// processor would).
+    fn profile_with_resource(
+        resource_attributes: Option<serde_json::Value>,
+    ) -> common::model::profile::Profile {
+        use common::model::profile::{Frame, Profile, Sample, Stacktrace, ValueType};
+        Profile {
+            profile_id: [0xab; 16],
+            time_unix_nano: 1_700_000_000_000_000_000,
+            duration_nano: 1,
+            sample_type: ValueType {
+                type_: "cpu".to_string(),
+                unit: "nanoseconds".to_string(),
+            },
+            service_name: "checkout".to_string(),
+            stacktraces: vec![Stacktrace {
+                frames: vec![Frame {
+                    function_name: "work".to_string(),
+                    ..Frame::default()
+                }],
+            }],
+            samples: vec![Sample {
+                stacktrace_index: 0,
+                values: vec![1],
+                ..Sample::default()
+            }],
+            resource_attributes,
+            ..Profile::default()
+        }
+    }
+
+    #[test]
+    fn profiles_transform_resource_identity_groups_by_resource() {
+        let profiles = vec![
+            profile_with_resource(Some(serde_json::json!({"service.name": "checkout"}))),
+            profile_with_resource(Some(serde_json::json!({"service.name": "checkout"}))),
+            profile_with_resource(Some(serde_json::json!({"service.name": "billing"}))),
+        ];
+        let wire_batch = common::flight::conversion::profiles_to_arrow(&profiles);
+        let result = transform_profiles_v1_to_iceberg(wire_batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(identities.len(), 3);
+        assert_eq!(
+            identities.value(0),
+            identities.value(1),
+            "first two profiles share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third profile has a different resource"
+        );
+        assert_eq!(
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
+        );
+    }
+
+    #[test]
+    fn profiles_transform_null_resource_json_yields_null_resource_identity() {
+        let wire_batch =
+            common::flight::conversion::profiles_to_arrow(&[profile_with_resource(None)]);
+        let result = transform_profiles_v1_to_iceberg(wire_batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
     }
 
     #[test]
@@ -2730,115 +2751,6 @@ mod tests {
             ],
         )
         .unwrap()
-    }
-
-    /// The v1 wire format spells NaN/±Inf out as strings (see
-    /// `common::flight::conversion::f64_to_json`); the transforms must read
-    /// them back into the non-nullable Float64 columns instead of leaving a
-    /// null that makes `RecordBatch::try_new` reject the whole batch — the
-    /// failure that pinned hive's metrics WAL (#1061). A point with no value
-    /// at all is stored as NaN for the same reason: one bad point must never
-    /// discard the batch.
-    #[test]
-    fn non_finite_and_missing_metric_values_do_not_poison_the_batch() {
-        use datafusion::arrow::array::Float64Array;
-        fn values_of(batch: &RecordBatch, col: &str) -> Vec<f64> {
-            batch
-                .column_by_name(col)
-                .unwrap()
-                .as_any()
-                .downcast_ref::<Float64Array>()
-                .unwrap()
-                .iter()
-                .map(|v| v.expect("no nulls in a non-nullable value column"))
-                .collect()
-        }
-        let points = r#"[
-            {"time_unix_nano":1700000001000000000,"start_time_unix_nano":1700000000000000000,"value":"NaN","attributes":{}},
-            {"time_unix_nano":1700000002000000000,"start_time_unix_nano":1700000000000000000,"value":"+Inf","attributes":{}},
-            {"time_unix_nano":1700000003000000000,"start_time_unix_nano":1700000000000000000,"value":"-Inf","attributes":{}},
-            {"time_unix_nano":1700000004000000000,"start_time_unix_nano":1700000000000000000,"value":null,"attributes":{}},
-            {"time_unix_nano":1700000005000000000,"start_time_unix_nano":1700000000000000000,"attributes":{}},
-            {"time_unix_nano":1700000006000000000,"start_time_unix_nano":1700000000000000000,"value":2.5,"attributes":{}}
-        ]"#;
-        let batch = metrics_v1_batch_with_points(Some(r#"{"service.name":"x"}"#), points);
-        let gauge = transform_metrics_gauge_v1_to_iceberg(batch.clone(), &[]).expect("gauge");
-        let v = values_of(&gauge, "value");
-        assert_eq!(v.len(), 6);
-        assert!(v[0].is_nan());
-        assert_eq!(v[1], f64::INFINITY);
-        assert_eq!(v[2], f64::NEG_INFINITY);
-        assert!(v[3].is_nan(), "null value → NaN, not a rejected batch");
-        assert!(v[4].is_nan(), "absent value → NaN, not a rejected batch");
-        assert_eq!(v[5], 2.5);
-        let sum = transform_metrics_sum_v1_to_iceberg(batch, &[]).expect("sum");
-        let v = values_of(&sum, "value");
-        assert!(v[0].is_nan() && v[3].is_nan() && v[4].is_nan());
-        assert_eq!(v[1], f64::INFINITY);
-    }
-
-    /// OTLP allows a resource without `service.name` (an OTel Collector
-    /// hostmetrics pipeline without a resource processor is the classic
-    /// case), and the traces path already stores such producers as
-    /// `unknown`. Metrics must not be dead-lettered for it: the transform
-    /// fills the non-nullable `service_name` column with the same fallback.
-    #[test]
-    fn metrics_without_service_name_get_the_unknown_service_fallback() {
-        for resource_json in [
-            Some(r#"{"host.name":"hive","os.type":"linux"}"#),
-            Some(
-                r#"{"attributes":{"host.name":"hive"},"schema_url":"https://opentelemetry.io/schemas/1.43.0"}"#,
-            ),
-            Some("{}"),
-            None,
-        ] {
-            let gauge = transform_metrics_gauge_v1_to_iceberg(metrics_v1_batch(resource_json), &[])
-                .unwrap_or_else(|e| panic!("gauge with resource {resource_json:?}: {e}"));
-            let names = gauge
-                .column_by_name("service_name")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            assert_eq!(
-                names.value(0),
-                common::flight::conversion::UNKNOWN_SERVICE_NAME
-            );
-            assert!(
-                !gauge
-                    .schema()
-                    .field_with_name("service_name")
-                    .unwrap()
-                    .is_nullable()
-            );
-
-            let sum = transform_metrics_sum_v1_to_iceberg(metrics_v1_batch(resource_json), &[])
-                .unwrap_or_else(|e| panic!("sum with resource {resource_json:?}: {e}"));
-            let names = sum
-                .column_by_name("service_name")
-                .unwrap()
-                .as_any()
-                .downcast_ref::<StringArray>()
-                .unwrap();
-            assert_eq!(
-                names.value(0),
-                common::flight::conversion::UNKNOWN_SERVICE_NAME
-            );
-        }
-
-        // A present service.name still wins.
-        let gauge = transform_metrics_gauge_v1_to_iceberg(
-            metrics_v1_batch(Some(r#"{"service.name":"checkout"}"#)),
-            &[],
-        )
-        .unwrap();
-        let names = gauge
-            .column_by_name("service_name")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(names.value(0), "checkout");
     }
 
     fn make_log_flight_batch_with_attrs(
@@ -2940,15 +2852,18 @@ mod tests {
         let (fields, cols) = materialized_label_columns(&batch, 2, &labels).unwrap();
 
         assert_eq!(fields.len(), 3);
-        assert_eq!(fields[0].name(), "label_namespace");
         assert!(
             fields
                 .iter()
                 .all(|f| f.is_nullable() && *f.data_type() == DataType::Utf8)
         );
 
-        let val = |c: &ArrayRef, i: usize| {
-            let a = c.as_any().downcast_ref::<StringArray>().unwrap();
+        // Columns are looked up by name rather than position: resolution
+        // order is the labels' canonical (sorted) order, not their
+        // configured order (#1448), which this test must not assume.
+        let val = |name: &str, i: usize| {
+            let idx = fields.iter().position(|f| f.name() == name).unwrap();
+            let a = cols[idx].as_any().downcast_ref::<StringArray>().unwrap();
             if a.is_null(i) {
                 None
             } else {
@@ -2956,86 +2871,222 @@ mod tests {
             }
         };
         // namespace: resource on both rows.
-        assert_eq!(val(&cols[0], 0).as_deref(), Some("prod"));
-        assert_eq!(val(&cols[0], 1).as_deref(), Some("staging"));
+        assert_eq!(val("label_namespace", 0).as_deref(), Some("prod"));
+        assert_eq!(val("label_namespace", 1).as_deref(), Some("staging"));
         // http.method: row 0 only in record (GET); row 1 resource wins over record (PUT).
-        assert_eq!(val(&cols[1], 0).as_deref(), Some("GET"));
-        assert_eq!(val(&cols[1], 1).as_deref(), Some("PUT"));
+        assert_eq!(val("label_http_method", 0).as_deref(), Some("GET"));
+        assert_eq!(val("label_http_method", 1).as_deref(), Some("PUT"));
         // scopekey: row 0 from scope; row 1 absent.
-        assert_eq!(val(&cols[2], 0).as_deref(), Some("sv"));
-        assert_eq!(val(&cols[2], 1), None);
+        assert_eq!(val("label_scopekey", 0).as_deref(), Some("sv"));
+        assert_eq!(val("label_scopekey", 1), None);
 
         // No configured labels → no extra columns.
         let (f, c) = materialized_label_columns(&batch, 2, &[]).unwrap();
         assert!(f.is_empty() && c.is_empty());
     }
 
-    /// One row's tokens, sorted for stable comparison.
-    fn tokens_of(batch: &RecordBatch, row: usize) -> Vec<String> {
-        let list = batch
-            .column_by_name("attr_tokens")
-            .expect("attr_tokens column present")
-            .as_any()
-            .downcast_ref::<ListArray>()
-            .expect("attr_tokens is a ListArray");
-        assert!(!list.is_null(row), "attr_tokens must never be null");
-        let values = list.value(row);
-        let strings = values.as_any().downcast_ref::<StringArray>().unwrap();
-        let mut out: Vec<String> = (0..strings.len())
-            .map(|i| strings.value(i).to_string())
+    #[test]
+    fn materialized_label_columns_gives_colliding_keys_distinct_columns() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must be materialized in distinct columns, and
+        // neither key's values may be dropped (#1448).
+        let batch = attr_batch(
+            vec![None],
+            vec![None],
+            vec![Some(r#"{"http.method":"GET","http_method":"POST"}"#)],
+        );
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let (fields, cols) = materialized_label_columns(&batch, 1, &labels).unwrap();
+
+        let names: Vec<String> = fields.iter().map(|f| f.name().clone()).collect();
+        assert_eq!(names.len(), 2, "expected one column per key, got {names:?}");
+        assert!(names.contains(&"label_http_method".to_string()));
+        assert!(names.contains(&"label_http_method_2".to_string()));
+
+        let val = |name: &str| {
+            let idx = names.iter().position(|n| n == name).unwrap();
+            cols[idx]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0)
+                .to_string()
+        };
+        assert_eq!(val("label_http_method"), "GET");
+        assert_eq!(val("label_http_method_2"), "POST");
+    }
+
+    #[test]
+    fn materialized_label_columns_handles_a_three_way_collision() {
+        // Three distinct keys sanitizing to the same candidate name each
+        // get their own column; none of their values are dropped (#1448).
+        let batch = attr_batch(
+            vec![None],
+            vec![None],
+            vec![Some(
+                r#"{"http.method":"a","http_method":"b","http-method":"c"}"#,
+            )],
+        );
+        let labels = vec![
+            "http_method".to_string(),
+            "http.method".to_string(),
+            "http-method".to_string(),
+        ];
+        let (fields, cols) = materialized_label_columns(&batch, 1, &labels).unwrap();
+
+        let names: Vec<String> = fields.iter().map(|f| f.name().clone()).collect();
+        assert_eq!(names.len(), 3, "expected one column per key, got {names:?}");
+        let val = |name: &str| {
+            let idx = names.iter().position(|n| n == name).unwrap();
+            cols[idx]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0)
+                .to_string()
+        };
+        // Canonical order is sorted by key string ('-' < '.' < '_' in
+        // ASCII), so `http-method` claims the unsuffixed candidate.
+        assert_eq!(val("label_http_method"), "c");
+        assert_eq!(val("label_http_method_2"), "a");
+        assert_eq!(val("label_http_method_3"), "b");
+    }
+
+    #[test]
+    fn schema_creation_and_writer_resolution_agree_on_the_same_configured_list() {
+        // The literal #1448 acceptance criterion: schema creation
+        // (`ResolvedSchema::to_iceberg_schema_with_labels`, backing table
+        // creation) and the write path's resolver
+        // (`resolve_label_columns_fresh`, which `materialized_label_columns`
+        // calls) must assign the same physical column to the same
+        // configured *key* for the same list -- not merely the same *set*
+        // of column names to some permutation of keys, which a
+        // same-columns-different-keys bug would also pass.
+        //
+        // The writer side is fed the list in reversed order: agreement must
+        // hold regardless of which order each call site happens to see the
+        // same configured set in, not just when both sort it identically.
+        use common::iceberg::evolution::{origin_key_of, resolve_label_columns_fresh};
+        use common::schema::schema_parser::ResolvedField;
+
+        let labels = vec![
+            "namespace".to_string(),
+            "http.method".to_string(),
+            "http_method".to_string(),
+        ];
+        let reversed: Vec<String> = labels.iter().rev().cloned().collect();
+
+        let base = ResolvedSchema {
+            version: "test-only".to_string(),
+            description: "fixture".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+        let schema = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let schema_mapping: std::collections::HashMap<String, String> = schema
+            .fields()
+            .iter()
+            .filter_map(|f| {
+                origin_key_of(f.doc.as_deref()).map(|key| (key.to_string(), f.name.clone()))
+            })
             .collect();
-        out.sort();
-        out
+
+        let writer_mapping: std::collections::HashMap<String, String> =
+            resolve_label_columns_fresh(&reversed).into_iter().collect();
+
+        assert_eq!(
+            schema_mapping, writer_mapping,
+            "schema creation and the writer must resolve the same configured key to \
+             the same physical column, regardless of each side's input order"
+        );
+
+        // And `materialized_label_columns` -- the writer's actual call
+        // site -- really does use this mapping, not a different one that
+        // happens to produce the same column *names*.
+        let batch = attr_batch(
+            vec![None],
+            vec![None],
+            vec![Some(
+                r#"{"namespace":"n","http.method":"a","http_method":"b"}"#,
+            )],
+        );
+        let (fields, cols) = materialized_label_columns(&batch, 1, &reversed).unwrap();
+        for (key, expected_value) in [
+            ("namespace", "n"),
+            ("http.method", "a"),
+            ("http_method", "b"),
+        ] {
+            let column = &writer_mapping[key];
+            let idx = fields.iter().position(|f| f.name() == column).unwrap();
+            let value = cols[idx]
+                .as_any()
+                .downcast_ref::<StringArray>()
+                .unwrap()
+                .value(0);
+            assert_eq!(
+                value, expected_value,
+                "key {key} routed to the wrong column"
+            );
+        }
     }
 
     #[test]
-    fn log_transform_emits_attr_tokens_from_all_scopes() {
+    fn log_transform_resource_identity_groups_records_by_resource() {
         let ts: u64 = 1_700_000_000_000_000_000;
         let batch = make_log_flight_batch_with_attrs(
-            &[ts, ts],
-            &[ts, ts],
+            &[ts, ts, ts],
+            &[ts, ts, ts],
             vec![
-                // Flat root object (legacy shape).
-                Some(r#"{"namespace":"prod"}"#),
-                // Nested shape: tokens must come from `attributes`, not the
-                // envelope keys — mirroring the resource_attributes column.
-                Some(r#"{"attributes":{"env":"staging"},"schema_url":"http://x"}"#),
+                Some(r#"{"service.name":"checkout"}"#),
+                Some(r#"{"service.name":"checkout"}"#),
+                Some(r#"{"service.name":"billing"}"#),
             ],
-            vec![Some(r#"{"attributes":{"lib":"otel"}}"#), None],
-            vec![
-                // Non-string values serialize like the attribute columns do.
-                Some(r#"{"http.method":"GET","retries":2}"#),
-                Some(r#"{"http.method":"POST"}"#),
-            ],
+            vec![None, None, None],
+            vec![None, None, None],
         );
 
         let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
         assert_eq!(
-            tokens_of(&result, 0),
-            vec!["http.method=GET", "lib=otel", "namespace=prod", "retries=2"],
+            identities.value(0),
+            identities.value(1),
+            "first two records share the checkout resource"
+        );
+        assert_ne!(
+            identities.value(0),
+            identities.value(2),
+            "third record has a different resource"
         );
         assert_eq!(
-            tokens_of(&result, 1),
-            vec!["env=staging", "http.method=POST"]
+            identities.value(0),
+            resource_identity_from_json(r#"{"service.name":"checkout"}"#).unwrap()
         );
     }
 
     #[test]
-    fn log_transform_attr_tokens_dedupes_and_defaults_to_empty() {
+    fn log_transform_null_resource_json_yields_null_resource_identity() {
         let ts: u64 = 1_700_000_000_000_000_000;
-        let batch = make_log_flight_batch_with_attrs(
-            &[ts, ts],
-            &[ts, ts],
-            vec![Some(r#"{"env":"prod"}"#), None],
-            vec![None, None],
-            // Row 0 repeats env=prod in the record scope → single token.
-            vec![Some(r#"{"env":"prod"}"#), None],
-        );
+        let batch =
+            make_log_flight_batch_with_attrs(&[ts], &[ts], vec![None], vec![None], vec![None]);
 
         let result = transform_logs_v1_to_iceberg(batch, &[]).unwrap();
-        assert_eq!(tokens_of(&result, 0), vec!["env=prod"]);
-        // No attributes anywhere → empty list, not null.
-        assert_eq!(tokens_of(&result, 1), Vec::<String>::new());
+        let identities = result
+            .column(result.schema().index_of("resource_identity").unwrap())
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert!(identities.is_null(0));
     }
 
     #[test]
@@ -3122,6 +3173,297 @@ mod tests {
         );
         assert_eq!(ts_col.value(2), real_ts as i64, "row 2: use time_unix_nano");
     }
+
+    #[test]
+    fn log_transform_preserves_event_name_and_dropped_attributes_count() {
+        use common::flight::conversion::otlp_logs_to_arrow;
+        use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+        use opentelemetry_proto::tonic::logs::v1::{LogRecord, ResourceLogs, ScopeLogs};
+        use opentelemetry_proto::tonic::resource::v1::Resource;
+
+        let record = LogRecord {
+            time_unix_nano: 1_700_000_000_000_000_000,
+            event_name: "x".to_string(),
+            dropped_attributes_count: 3,
+            ..Default::default()
+        };
+        let request = ExportLogsServiceRequest {
+            resource_logs: vec![ResourceLogs {
+                resource: Some(Resource::default()),
+                scope_logs: vec![ScopeLogs {
+                    scope: None,
+                    log_records: vec![record],
+                    schema_url: String::new(),
+                }],
+                schema_url: String::new(),
+            }],
+        };
+
+        let wire_batch = otlp_logs_to_arrow(&request).expect("conversion should succeed");
+        let result =
+            transform_logs_v1_to_iceberg(wire_batch, &[]).expect("transform should succeed");
+
+        let event_name = result
+            .column_by_name("event_name")
+            .expect("event_name column should be present")
+            .as_any()
+            .downcast_ref::<StringArray>()
+            .unwrap();
+        assert_eq!(event_name.value(0), "x");
+
+        let dropped_attributes_count = result
+            .column_by_name("dropped_attributes_count")
+            .expect("dropped_attributes_count column should be present")
+            .as_any()
+            .downcast_ref::<Int64Array>()
+            .unwrap();
+        assert_eq!(dropped_attributes_count.value(0), 3);
+    }
+
+    fn metrics_v1_batch_mixed_types() -> RecordBatch {
+        use datafusion::arrow::array::{BooleanArray, Int32Array};
+
+        // (name, metric_type, data_json, description, unit)
+        let rows: [(&str, &str, &str, &str, &str); 5] = [
+            (
+                "requests.gauge",
+                "gauge",
+                r#"[{"time_unix_nano":1,"value":1.5,"attributes":{"host":"a"}},{"time_unix_nano":2,"value":1.7,"attributes":{"host":"a"}}]"#,
+                "gauge desc",
+                "1",
+            ),
+            (
+                "requests.sum",
+                "sum",
+                r#"[{"time_unix_nano":1,"value":2.5,"attributes":{"host":"a"}}]"#,
+                "sum desc",
+                "ms",
+            ),
+            (
+                "requests.duration",
+                "histogram",
+                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"min":1.0,"max":3.0,"bucket_counts":[1,2,0],"explicit_bounds":[1.0,"+Inf"],"attributes":{"host":"a"},"exemplars":[{"time_unix_nano":15,"value":2.0,"trace_id":"0102030405060708090a0b0c0d0e0f10","span_id":"0102030405060708","filtered_attributes":{"scope":"dbg"}}]}]"#,
+                "histogram desc",
+                "ms",
+            ),
+            (
+                "requests.duration.exp",
+                "exponential_histogram",
+                r#"[{"time_unix_nano":1,"count":3,"sum":6.0,"scale":2,"zero_count":1,"positive":{"offset":0,"bucket_counts":[1,2]},"negative":{"offset":1,"bucket_counts":[0,1]},"attributes":{"host":"a"}}]"#,
+                "exp desc",
+                "ms",
+            ),
+            (
+                "requests.summary",
+                "summary",
+                r#"[{"time_unix_nano":1,"count":5,"sum":10.0,"quantile_values":[{"quantile":0.5,"value":2.0},{"quantile":0.9,"value":4.0}],"attributes":{"host":"a"}}]"#,
+                "summary desc",
+                "1",
+            ),
+        ];
+        let n = rows.len();
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("name", DataType::Utf8, false),
+            Field::new("description", DataType::Utf8, true),
+            Field::new("unit", DataType::Utf8, true),
+            Field::new("start_time_unix_nano", DataType::UInt64, true),
+            Field::new("time_unix_nano", DataType::UInt64, false),
+            Field::new("attributes_json", DataType::Utf8, true),
+            Field::new("resource_json", DataType::Utf8, true),
+            Field::new("scope_json", DataType::Utf8, true),
+            Field::new("metric_type", DataType::Utf8, false),
+            Field::new("data_json", DataType::Utf8, false),
+            Field::new("aggregation_temporality", DataType::Int32, true),
+            Field::new("is_monotonic", DataType::Boolean, true),
+        ]));
+        RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.0).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.3).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.4).collect::<Vec<_>>(),
+                )),
+                Arc::new(UInt64Array::from(vec![Some(0u64); n])),
+                Arc::new(UInt64Array::from(vec![0u64; n])),
+                Arc::new(StringArray::from(vec![Some("{}"); n])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"service.name":"svc"}"#);
+                    n
+                ])),
+                Arc::new(StringArray::from(vec![
+                    Some(r#"{"name":"hostmetrics"}"#);
+                    n
+                ])),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.1).collect::<Vec<_>>(),
+                )),
+                Arc::new(StringArray::from(
+                    rows.iter().map(|r| r.2).collect::<Vec<_>>(),
+                )),
+                Arc::new(Int32Array::from(vec![Some(2); n])),
+                Arc::new(BooleanArray::from(vec![Some(true); n])),
+            ],
+        )
+        .unwrap()
+    }
+
+    /// Every row of `batch` whose `metric_type` column equals `want`.
+    fn wide_rows(batch: &RecordBatch, want: &str) -> Vec<usize> {
+        let types = get_typed_column::<StringArray>(batch, "metric_type").unwrap();
+        (0..batch.num_rows())
+            .filter(|&row| types.value(row) == want)
+            .collect()
+    }
+
+    fn wide_row(batch: &RecordBatch, want: &str) -> usize {
+        *wide_rows(batch, want)
+            .first()
+            .unwrap_or_else(|| panic!("no row for metric_type {want}"))
+    }
+
+    /// `batch`'s `name` list column at `row`, as a native `Vec`.
+    fn list_at<T: ArrowPrimitiveType>(
+        batch: &RecordBatch,
+        name: &str,
+        row: usize,
+    ) -> Vec<T::Native> {
+        let list = get_typed_column::<ListArray>(batch, name)
+            .unwrap()
+            .value(row);
+        list.as_any()
+            .downcast_ref::<datafusion::arrow::array::PrimitiveArray<T>>()
+            .unwrap()
+            .values()
+            .to_vec()
+    }
+
+    #[test]
+    fn transform_metrics_to_wide_fans_mixed_types_into_one_row_each() {
+        let batch = metrics_v1_batch_mixed_types();
+        let wide = transform_metrics_to_wide(batch, &[]).expect("transform");
+        assert_eq!(
+            wide.num_rows(),
+            6,
+            "2 gauge points + 1 each of 4 other types"
+        );
+
+        let gauge_rows = wide_rows(&wide, "gauge");
+        assert_eq!(gauge_rows.len(), 2);
+        let series_ids = get_typed_column::<StringArray>(&wide, "series_id").unwrap();
+        assert_eq!(
+            series_ids.value(gauge_rows[0]),
+            series_ids.value(gauge_rows[1])
+        );
+
+        let temporality = get_typed_column::<Int32Array>(&wide, "aggregation_temporality").unwrap();
+        let monotonic = get_typed_column::<BooleanArray>(&wide, "is_monotonic").unwrap();
+        for (metric_type, want_temporality, want_monotonic) in [
+            ("gauge", None, None),
+            ("sum", Some(2), Some(true)),
+            ("histogram", Some(2), None),
+            ("exponential_histogram", Some(2), None),
+            ("summary", None, None),
+        ] {
+            let row = wide_row(&wide, metric_type);
+            assert_eq!(
+                int32_value(temporality, row),
+                want_temporality,
+                "{metric_type} temporality"
+            );
+            assert_eq!(
+                bool_value(monotonic, row),
+                want_monotonic,
+                "{metric_type} monotonic"
+            );
+        }
+
+        let values = get_typed_column::<Float64Array>(&wide, "value").unwrap();
+        assert_eq!(values.value(wide_row(&wide, "gauge")), 1.5);
+        assert_eq!(values.value(wide_row(&wide, "sum")), 2.5);
+
+        let descriptions = get_typed_column::<StringArray>(&wide, "metric_description").unwrap();
+        let units = get_typed_column::<StringArray>(&wide, "metric_unit").unwrap();
+        let sum_row = wide_row(&wide, "sum");
+        assert_eq!(descriptions.value(sum_row), "sum desc");
+        assert_eq!(units.value(sum_row), "ms");
+
+        let row = wide_row(&wide, "histogram");
+        assert_eq!(
+            list_at::<Float64Type>(&wide, "explicit_bounds", row),
+            [1.0, f64::INFINITY]
+        );
+        assert_eq!(list_at::<Int64Type>(&wide, "bucket_counts", row), [1, 2, 0]);
+
+        // exponential_histogram: scale plus positive/negative bucket lists.
+        let row = wide_row(&wide, "exponential_histogram");
+        assert_eq!(
+            get_typed_column::<Int32Array>(&wide, "scale")
+                .unwrap()
+                .value(row),
+            2
+        );
+        assert_eq!(
+            list_at::<Int64Type>(&wide, "positive_bucket_counts", row),
+            [1, 2]
+        );
+
+        // summary: count/sum plus parallel quantile lists.
+        let row = wide_row(&wide, "summary");
+        assert_eq!(
+            get_typed_column::<Int64Array>(&wide, "count")
+                .unwrap()
+                .value(row),
+            5
+        );
+        assert_eq!(list_at::<Float64Type>(&wide, "quantiles", row), [0.5, 0.9]);
+        assert_eq!(
+            list_at::<Float64Type>(&wide, "quantile_values", row),
+            [2.0, 4.0]
+        );
+    }
+
+    #[test]
+    fn transform_metric_exemplars_extracts_one_row_per_exemplar_with_the_owning_series_id() {
+        let batch = metrics_v1_batch_mixed_types();
+        let wide = transform_metrics_to_wide(batch.clone(), &[]).expect("wide transform");
+        let exemplars = transform_metric_exemplars(batch).expect("exemplars transform");
+        assert_eq!(exemplars.num_rows(), 1);
+
+        assert_eq!(
+            get_typed_column::<StringArray>(&exemplars, "trace_id")
+                .unwrap()
+                .value(0),
+            "0102030405060708090a0b0c0d0e0f10"
+        );
+        assert_eq!(
+            get_typed_column::<StringArray>(&exemplars, "span_id")
+                .unwrap()
+                .value(0),
+            "0102030405060708"
+        );
+
+        let histogram_row = wide_row(&wide, "histogram");
+        assert_eq!(
+            get_typed_column::<StringArray>(&exemplars, "series_id")
+                .unwrap()
+                .value(0),
+            get_typed_column::<StringArray>(&wide, "series_id")
+                .unwrap()
+                .value(histogram_row)
+        );
+    }
+
+    #[test]
+    fn transform_metric_exemplars_with_no_exemplars_is_zero_rows() {
+        let batch = metrics_v1_batch(Some(r#"{"service.name":"x"}"#));
+        let exemplars = transform_metric_exemplars(batch).expect("transform");
+        assert_eq!(exemplars.num_rows(), 0);
+    }
 }
 
 /// Every non-computed field `schemas.toml` declares for a table must have a
@@ -3137,14 +3479,7 @@ mod tests {
 /// (an unhandled field hits an `Unknown field in ... schema` error, since
 /// each iterates its schema's own field list) -- these tests give that
 /// property a fast, explicit, named failure instead of relying on it
-/// surfacing through some other test. The five metrics tables have no such
-/// runtime check: `transform_metrics_*_v1_to_iceberg` builds its output
-/// columns positionally against its own hand-written
-/// `create_metrics_*_arrow_schema()`, entirely independent of
-/// `SCHEMA_DEFINITIONS` -- a field added to `schemas.toml` there would
-/// silently never be populated until the resulting Iceberg write bounced
-/// off a missing-required-column error, or worse, went unnoticed if the
-/// new field was nullable. These tests catch that at PR/CI time instead.
+/// surfacing through some other test.
 #[cfg(test)]
 mod schema_consistency {
     use super::*;
@@ -3167,25 +3502,10 @@ mod schema_consistency {
         );
     }
 
-    /// The "touched" set for a metrics transform, straight from its own
-    /// `create_metrics_*_arrow_schema()` rather than a hand-typed list --
-    /// the schema literal and the test can no longer drift apart. `date_day`
-    /// and `hour` are computed (see the module doc comment above), so they
-    /// carry no `schemas.toml` entry and are excluded here the same way the
-    /// traces/logs/profiles lists already exclude their computed fields.
-    fn metrics_arrow_touched_fields(schema: &Schema) -> Vec<&str> {
-        schema
-            .fields()
-            .iter()
-            .map(|f| f.name().as_str())
-            .filter(|name| *name != "date_day" && *name != "hour")
-            .collect()
-    }
-
     #[test]
-    fn traces_transform_covers_every_non_computed_physical_v3_field() {
+    fn traces_transform_covers_every_non_computed_physical_v4_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_trace_schema(SCHEMA_DEFINITIONS.current_trace_version())
+            .resolve_trace_schema("physical-v4")
             .unwrap();
         assert_covers_non_computed_fields(
             "traces",
@@ -3212,6 +3532,7 @@ mod schema_consistency {
                 "duration_nanos",
                 "span_attributes",
                 "resource_attributes",
+                "resource_identity",
                 "trace_state",
                 "resource_schema_url",
                 "scope_name",
@@ -3223,9 +3544,9 @@ mod schema_consistency {
     }
 
     #[test]
-    fn logs_transform_covers_every_non_computed_physical_v1_field() {
+    fn logs_transform_covers_every_non_computed_physical_v3_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_log_schema(&SCHEMA_DEFINITIONS.metadata.current_log_version)
+            .resolve_log_schema("physical-v3")
             .unwrap();
         assert_covers_non_computed_fields(
             "logs",
@@ -3242,19 +3563,22 @@ mod schema_consistency {
                 "body",
                 "resource_schema_url",
                 "resource_attributes",
+                "resource_identity",
                 "scope_schema_url",
                 "scope_name",
                 "scope_version",
                 "scope_attributes",
                 "log_attributes",
+                "event_name",
+                "dropped_attributes_count",
             ],
         );
     }
 
     #[test]
-    fn profiles_transform_covers_every_non_computed_physical_v1_field() {
+    fn profiles_transform_covers_every_non_computed_physical_v2_field() {
         let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v1")
+            .resolve_table_schema(&SCHEMA_DEFINITIONS.profiles, "physical-v2")
             .unwrap();
         assert_covers_non_computed_fields(
             "profiles",
@@ -3276,80 +3600,8 @@ mod schema_consistency {
                 "profile_attributes",
                 "trace_id",
                 "span_id",
+                "resource_identity",
             ],
         );
-    }
-
-    #[test]
-    fn metrics_gauge_transform_covers_every_non_computed_physical_v1_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
-            .unwrap();
-        let schema = create_metrics_gauge_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_sum_transform_covers_every_non_computed_physical_v1_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_sum, "physical-v1")
-            .unwrap();
-        let schema = create_metrics_sum_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_sum", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_histogram_transform_covers_every_non_computed_physical_v1_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_histogram, "physical-v1")
-            .unwrap();
-        let schema = create_metrics_histogram_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_histogram", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_exponential_histogram_transform_covers_every_non_computed_physical_v1_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(
-                &SCHEMA_DEFINITIONS.metrics_exponential_histogram,
-                "physical-v1",
-            )
-            .unwrap();
-        let schema = create_metrics_exponential_histogram_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_exponential_histogram", &resolved, &touched);
-    }
-
-    #[test]
-    fn metrics_summary_transform_covers_every_non_computed_physical_v1_field() {
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_summary, "physical-v1")
-            .unwrap();
-        let schema = create_metrics_summary_arrow_schema();
-        let touched = metrics_arrow_touched_fields(&schema);
-        assert_covers_non_computed_fields("metrics_summary", &resolved, &touched);
-    }
-
-    #[test]
-    #[should_panic(expected = "diverged")]
-    fn metrics_gauge_transform_flags_an_arrow_field_missing_from_schemas_toml() {
-        // Simulate a column added to create_metrics_gauge_arrow_schema()
-        // without a matching schemas.toml entry -- the scenario this
-        // derivation exists to catch.
-        let resolved = SCHEMA_DEFINITIONS
-            .resolve_table_schema(&SCHEMA_DEFINITIONS.metrics_gauge, "physical-v1")
-            .unwrap();
-        let mut fields: Vec<Field> = create_metrics_gauge_arrow_schema()
-            .fields()
-            .iter()
-            .map(|f| f.as_ref().clone())
-            .collect();
-        fields.push(Field::new("undeclared_field", DataType::Utf8, true));
-        let drifted = Schema::new(fields);
-        let touched = metrics_arrow_touched_fields(&drifted);
-        assert_covers_non_computed_fields("metrics_gauge", &resolved, &touched);
     }
 }

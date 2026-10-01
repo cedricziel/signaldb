@@ -2,25 +2,133 @@ pub mod api_key;
 pub mod completions;
 pub mod dataset;
 pub mod discover;
+pub mod eval_sets;
+pub mod evals;
 pub mod ops;
+pub mod processors;
 pub mod profiles;
 pub mod query;
 pub mod schema;
+pub mod services;
 pub mod tenant;
 pub mod tenant_self;
 pub mod user;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use clap::{Parser, Subcommand};
+use anyhow::Context;
+use clap::{Args, Parser, Subcommand};
 use clap_complete::engine::ArgValueCompleter;
 use signaldb_sdk::Client;
+
+#[derive(Args)]
+pub struct OutputArgs {
+    #[command(flatten)]
+    pub(crate) connect: discover::ConnectArgs,
+    /// Print raw JSON instead of the human-readable output
+    #[arg(long)]
+    pub(crate) json: bool,
+}
+
+/// Read a YAML or JSON file as JSON: `.json` is parsed as JSON, any other
+/// extension as YAML (a superset of JSON).
+pub(crate) fn read_json_value(path: &Path) -> anyhow::Result<serde_json::Value> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let is_json = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("json"));
+    if is_json {
+        serde_json::from_str(&text).with_context(|| format!("{} is not valid JSON", path.display()))
+    } else {
+        serde_norway::from_str(&text)
+            .with_context(|| format!("{} is not valid YAML", path.display()))
+    }
+}
+
+/// [`read_json_value`] for a file that must hold one object, `what` naming
+/// it in the error (e.g. "registry document").
+pub(crate) fn read_json_object(
+    path: &Path,
+    what: &str,
+) -> anyhow::Result<serde_json::Map<String, serde_json::Value>> {
+    match read_json_value(path)? {
+        serde_json::Value::Object(map) => Ok(map),
+        _ => anyhow::bail!("{} must contain a {what} object", path.display()),
+    }
+}
 
 /// Pretty-print a JSON-serializable value to stdout.
 pub(crate) fn print_json<T: serde::Serialize>(value: &T) -> anyhow::Result<()> {
     println!("{}", serde_json::to_string_pretty(value)?);
     Ok(())
+}
+
+/// Render an API key's dataset or allowed-origins restriction for human
+/// display: the comma-joined set, or `unrestricted` when there is none.
+pub(crate) fn format_dataset_restriction(ids: Option<&[String]>) -> String {
+    match ids {
+        Some(ids) if !ids.is_empty() => ids.join(", "),
+        _ => "unrestricted".to_string(),
+    }
+}
+
+/// Render five-column rows under `headers`, the first four columns padded
+/// to their widest value and the last left ragged; `empty` when there are no
+/// rows. Shared by the api-key and GitHub-installation list outputs.
+pub(crate) fn format_table(
+    headers: [&str; 5],
+    rows: &[(String, String, String, String, String)],
+    empty: &str,
+) -> String {
+    if rows.is_empty() {
+        return empty.to_string();
+    }
+
+    let mut widths = [
+        headers[0].len(),
+        headers[1].len(),
+        headers[2].len(),
+        headers[3].len(),
+    ];
+    for (a, b, c, d, _) in rows {
+        widths[0] = widths[0].max(a.len());
+        widths[1] = widths[1].max(b.len());
+        widths[2] = widths[2].max(c.len());
+        widths[3] = widths[3].max(d.len());
+    }
+
+    let mut out = String::new();
+    for (a, b, c, d, e) in std::iter::once((
+        headers[0].to_string(),
+        headers[1].to_string(),
+        headers[2].to_string(),
+        headers[3].to_string(),
+        headers[4].to_string(),
+    ))
+    .chain(rows.iter().cloned())
+    {
+        out.push_str(&format!(
+            "{a:w0$}  {b:w1$}  {c:w2$}  {d:w3$}  {e}\n",
+            w0 = widths[0],
+            w1 = widths[1],
+            w2 = widths[2],
+            w3 = widths[3]
+        ));
+    }
+    out.trim_end().to_string()
+}
+
+/// Render `ID  NAME  SCOPES  DATASETS  ORIGINS` rows, shared by the admin and
+/// tenant `api-key list` human-readable output.
+pub(crate) fn format_api_key_table(rows: &[(String, String, String, String, String)]) -> String {
+    format_table(
+        ["ID", "NAME", "SCOPES", "DATASETS", "ORIGINS"],
+        rows,
+        "No API keys.",
+    )
 }
 
 /// SignalDB CLI — manage tenants, API keys, and datasets
@@ -63,11 +171,32 @@ enum Commands {
         #[command(subcommand)]
         action: schema::SchemaAction,
     },
+    /// Service dependency graph (`map`)
+    Services {
+        #[command(subcommand)]
+        action: services::ServicesAction,
+    },
     /// Pyroscope-compatible profile query surface (types, labels,
     /// label-values, render, diff, by-trace)
     Profiles {
         #[command(subcommand)]
         action: profiles::ProfilesAction,
+    },
+    /// Tenant OTTL processors: list, get, validate, and dry-run test
+    Processors {
+        #[command(subcommand)]
+        action: processors::ProcessorsAction,
+    },
+    /// Agent eval sets: list, get, and export cases as JSONL
+    EvalSets {
+        #[command(subcommand)]
+        action: eval_sets::EvalSetsAction,
+    },
+    /// Agent eval results: upload a JSONL/CSV results file as a run, with
+    /// `--fail-if` gates for CI; list runs and compare two of them
+    Evals {
+        #[command(subcommand)]
+        action: evals::EvalsAction,
     },
     /// Administrative operations (tenants, API keys, datasets, schema registries)
     Admin {
@@ -93,6 +222,10 @@ enum Commands {
     /// Report the authenticated identity (tenant, dataset, user) for the
     /// given credential
     Whoami(discover::ConnectArgs),
+    /// Print this deployment's connection details (ingest/query/mcp
+    /// endpoints, headers, scopes, ready-to-paste OTel env vars) for the
+    /// given credential's tenant — meant to be pasted or consumed by tooling
+    Connection(discover::ConnectArgs),
     /// Generate a shell completion script on stdout
     ///
     /// Install it with your shell's completion mechanism, e.g.:
@@ -178,6 +311,16 @@ enum AdminAction {
         #[command(subcommand)]
         action: schema::AdminSchemaAction,
     },
+    /// Manage tenant OTTL processors (tenant API key with `processors:write`)
+    Processors {
+        #[command(subcommand)]
+        action: processors::AdminProcessorsAction,
+    },
+    /// Manage agent eval sets (tenant API key with `evals:write`)
+    EvalSets {
+        #[command(subcommand)]
+        action: eval_sets::AdminEvalSetsAction,
+    },
 }
 
 impl Cli {
@@ -203,7 +346,23 @@ impl Cli {
             return action.run().await;
         }
 
+        if let Commands::Services { action } = self.command {
+            return action.run().await;
+        }
+
         if let Commands::Profiles { action } = self.command {
+            return action.run().await;
+        }
+
+        if let Commands::Processors { action } = self.command {
+            return action.run().await;
+        }
+
+        if let Commands::EvalSets { action } = self.command {
+            return action.run().await;
+        }
+
+        if let Commands::Evals { action } = self.command {
             return action.run().await;
         }
 
@@ -219,11 +378,34 @@ impl Cli {
             return query::print_json_response(v.map(|r| r.into_inner()), "whoami");
         }
 
+        if let Commands::Connection(connect) = self.command {
+            let v = connect.build_client()?.connection_info().send().await;
+            return query::print_json_response(v.map(|r| r.into_inner()), "connection");
+        }
+
         // Custom-registry management authenticates with a tenant API key
         // carrying `schema:write` (the schema API is tenant-scoped), not the
         // instance admin key the other `admin` nouns use.
         if let Commands::Admin {
             action: AdminAction::Schema { action },
+        } = self.command
+        {
+            return action.run().await;
+        }
+
+        // Processor management authenticates with a tenant API key carrying
+        // `processors:write`, not the instance admin key.
+        if let Commands::Admin {
+            action: AdminAction::Processors { action },
+        } = self.command
+        {
+            return action.run().await;
+        }
+
+        // Eval set management authenticates with a tenant API key carrying
+        // `evals:write`, not the instance admin key.
+        if let Commands::Admin {
+            action: AdminAction::EvalSets { action },
         } = self.command
         {
             return action.run().await;
@@ -262,8 +444,8 @@ impl Cli {
         }
 
         // Both admin-authenticated dispatches (Ops and Admin/User below) carry
-        // absolute paths (e.g. `/api/v1/ops/...`, `/api/v1/admin/tenants`), so
-        // the SDK client base is the router root in both cases, not
+        // absolute paths (e.g. `/api/v1/ops/...`, `/api/v1/tenants`),
+        // so the SDK client base is the router root in both cases, not
         // `{url}/api/v1/...`, which would double-prefix.
         if matches!(self.command, Commands::Ops { .. }) {
             let admin_key = self.resolve_admin_key()?;
@@ -283,17 +465,24 @@ impl Cli {
                 AdminAction::ApiKey { action } => action.run(&client).await,
                 AdminAction::Dataset { action } => action.run(&client).await,
                 AdminAction::Schema { .. } => unreachable!(),
+                AdminAction::Processors { .. } => unreachable!(),
+                AdminAction::EvalSets { .. } => unreachable!(),
             },
             Commands::User { action } => action.run(&client).await,
             Commands::Ops { .. } => unreachable!(),
             Commands::Query(_) => unreachable!(),
             Commands::Discover { .. } => unreachable!(),
             Commands::Schema { .. } => unreachable!(),
+            Commands::Services { .. } => unreachable!(),
             Commands::Profiles { .. } => unreachable!(),
+            Commands::Processors { .. } => unreachable!(),
+            Commands::EvalSets { .. } => unreachable!(),
+            Commands::Evals { .. } => unreachable!(),
             Commands::Completions { .. } => unreachable!(),
             Commands::Tui { .. } => unreachable!(),
             Commands::Tenant { .. } => unreachable!(),
             Commands::Whoami(_) => unreachable!(),
+            Commands::Connection(_) => unreachable!(),
         }
     }
 
@@ -374,6 +563,51 @@ fn parse_duration(s: &str) -> anyhow::Result<Duration> {
 }
 
 #[cfg(test)]
+pub(crate) mod test_support {
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use super::discover::ConnectArgs;
+
+    /// Tenant-key connection args for tenant `acme`, dataset `production`.
+    pub(crate) fn connect(url: &str) -> ConnectArgs {
+        ConnectArgs {
+            url: url.to_string(),
+            api_key: Some("sk-test".to_string()),
+            tenant_id: Some("acme".to_string()),
+            dataset_id: Some("production".to_string()),
+        }
+    }
+
+    /// A fixture file, removed on drop.
+    pub(crate) struct TempFile(PathBuf);
+
+    impl TempFile {
+        pub(crate) fn path(&self) -> &Path {
+            &self.0
+        }
+    }
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    /// Write `contents` to a fresh temp file named `<pid>-<n>-<name>`, so
+    /// parallel tests never share one; `name` keeps the extension that picks
+    /// the parser.
+    pub(crate) fn write_temp(name: &str, contents: &str) -> TempFile {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, Ordering::Relaxed);
+        let path =
+            std::env::temp_dir().join(format!("signaldb-cli-{}-{n}-{name}", std::process::id()));
+        std::fs::write(&path, contents).expect("write fixture");
+        TempFile(path)
+    }
+}
+
+#[cfg(test)]
 mod parse_tests {
     use super::*;
 
@@ -406,6 +640,49 @@ mod parse_tests {
         // --ir reads from --file or stdin, so the positional is optional.
         assert!(parse(&["signaldb-cli", "query", "--ir", "--file", "q.json"]).is_ok());
         assert!(parse(&["signaldb-cli", "query", "--ir"]).is_ok());
+    }
+
+    #[test]
+    fn evals_upload_takes_a_version_flag_of_its_own() {
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "evals",
+                "upload",
+                "r.csv",
+                "--agent",
+                "a",
+                "--version",
+                "v1",
+                "--set",
+                "golden",
+                "--fail-if",
+                "C.mean < 1",
+                "--fail-if",
+                "C.pass_rate < 1",
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "evals", "upload", "r.csv", "--agent", "a"]).is_err());
+    }
+
+    #[test]
+    fn evals_runs_and_compare_parse() {
+        assert!(parse(&["signaldb-cli", "evals", "runs", "--version", "v1", "--json"]).is_ok());
+        assert!(
+            parse(&[
+                "signaldb-cli",
+                "evals",
+                "compare",
+                "latest:v1",
+                "run-2",
+                "--tools",
+                "--limit",
+                "10"
+            ])
+            .is_ok()
+        );
+        assert!(parse(&["signaldb-cli", "evals", "compare", "run-1"]).is_err());
     }
 
     #[test]
@@ -509,13 +786,13 @@ mod parse_tests {
     }
 
     // Regression: the admin client base URL is the router root, so the generated
-    // methods' absolute paths hit `/api/v1/admin/...` — not a double-prefixed
-    // `/api/v1/admin/api/v1/admin/...`.
+    // methods' absolute paths hit `/api/v1/tenants` — not a
+    // double-prefixed `/api/v1/tenants/api/v1/tenants`.
     #[tokio::test]
     async fn admin_client_uses_root_base_and_absolute_paths() {
         let mut server = mockito::Server::new_async().await;
         let mock = server
-            .mock("GET", "/api/v1/admin/tenants")
+            .mock("GET", "/api/v1/tenants")
             .with_status(200)
             .with_header("content-type", "application/json")
             .with_body(r#"{"tenants":[]}"#)
@@ -526,8 +803,8 @@ mod parse_tests {
         let client = signaldb_sdk::ClientBuilder::new(server.url())
             .build()
             .unwrap();
-        // The request must reach `/api/v1/admin/tenants`; a double-prefixed URL
-        // would miss the mock and fail the assertion below.
+        // The request must reach `/api/v1/tenants`; a
+        // double-prefixed URL would miss the mock and fail the assertion below.
         let _ = client.list_tenants().send().await;
         mock.assert_async().await;
     }

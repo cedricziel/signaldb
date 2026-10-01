@@ -8,11 +8,16 @@
  * sample. Bounded by a limit, newest first — consistent with the group
  * table's own budget.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
-import { ROOT_SPAN_SENTINEL, type GroupGrain } from "./traceGroups";
+import {
+  ROOT_SPAN_SENTINEL,
+  groupPinStages,
+  type GroupGrain,
+} from "./traceGroups";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { filterStages, type TraceFilter } from "../lib/traceFilters";
+import { spanKindWhere } from "./catalog";
 
 export interface TraceGroupMember {
   traceId: string;
@@ -32,6 +37,19 @@ export interface TraceGroupMember {
  * `exists`, not `eq null`, since the group's "(not set)" row means the field
  * is absent, not that it equals the literal value null.
  */
+/** What to order the members by — defaults to newest first
+ * (`start_time_unix_nano` desc), the group drill-in's own shape. The
+ * "Slowest traces" section instead sorts by the logical `duration` desc. */
+export interface MembersSort {
+  field: "start_time_unix_nano" | "duration";
+  dir: "asc" | "desc";
+}
+
+const DEFAULT_MEMBERS_SORT: MembersSort = {
+  field: "start_time_unix_nano",
+  dir: "desc",
+};
+
 export function buildMembersDoc(
   dims: string[],
   values: (string | null)[],
@@ -39,8 +57,10 @@ export function buildMembersDoc(
   filters: TraceFilter[],
   grain: GroupGrain,
   limit: number,
+  sort: MembersSort = DEFAULT_MEMBERS_SORT,
+  spanKind?: string,
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] =
+  const scope: IrStage[] =
     grain === "traces"
       ? [
           {
@@ -55,12 +75,7 @@ export function buildMembersDoc(
 
   const active = filterStages(filters);
 
-  const pinned = dims.map((dim, i) => ({
-    where:
-      values[i] == null
-        ? { not: { field: dim, op: "exists" } }
-        : { field: dim, op: "eq", value: values[i] },
-  }));
+  const pinned = groupPinStages(dims, values);
 
   return {
     irVersion: 1,
@@ -72,9 +87,10 @@ export function buildMembersDoc(
     result: "rows",
     pipeline: [
       ...scope,
+      ...spanKindWhere(spanKind),
       ...active,
       ...pinned,
-      { order: [{ of: "start_time_unix_nano", dir: "desc" }] },
+      { order: [{ of: sort.field, dir: sort.dir }] },
       { limit },
     ],
   };
@@ -117,10 +133,21 @@ export async function fetchTraceGroupMembers(
   filters: TraceFilter[],
   grain: GroupGrain,
   limit: number,
+  sort?: MembersSort,
+  spanKind?: string,
 ): Promise<TraceGroupMember[]> {
   return membersFromIrResponse(
     await runIrQuery(
-      buildMembersDoc(dims, values, range, filters, grain, limit),
+      buildMembersDoc(
+        dims,
+        values,
+        range,
+        filters,
+        grain,
+        limit,
+        sort,
+        spanKind,
+      ),
     ),
   );
 }

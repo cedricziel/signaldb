@@ -1,0 +1,25 @@
+{
+  "extends": "../../src/ui/tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "rootDir": "../../src/ui/src",
+    "outDir": "dist/types",
+    "types": []
+  },
+  "include": [
+    "../../src/ui/src/**/*.ts",
+    "../../src/ui/src/**/*.tsx"
+  ],
+  "exclude": [
+    "../../src/ui/src/**/*.test.ts",
+    "../../src/ui/src/**/*.test.tsx",
+    "../../src/ui/src/**/*.stories.tsx",
+    "../../src/ui/src/test/**",
+    "../../src/ui/src/stories/**",
+    "../../src/ui/src/**/testFixtures.ts",
+    "../../src/ui/src/**/testUtils.tsx",
+    "../../src/ui/src/**/*Stories.tsx"
+  ]
+}

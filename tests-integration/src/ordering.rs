@@ -29,7 +29,6 @@ use datafusion::prelude::SessionContext;
 use futures::stream;
 use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::table::Table;
-use object_store::memory::InMemory;
 use writer::IcebergTableWriter;
 
 use crate::compaction_helpers::{aligned_hour_start, load_table};
@@ -92,9 +91,8 @@ impl SequentialTraces {
             .with_tenant(tenant, DATASET)
             .build();
         let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-        let writer = IcebergTableWriter::new(
+        let writer = crate::test_support::writer_with_type_authority(
             &catalog_manager,
-            Arc::new(InMemory::new()),
             tenant.to_string(),
             DATASET.to_string(),
             TABLE.to_string(),

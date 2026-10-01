@@ -1,26 +1,20 @@
-import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router";
-import { whoami } from "../../api/session";
+import { useCurrentSession } from "../../lib/useWhoami";
+import { HOME_PATH } from "../shell/navModel";
 import { SelectTenant } from "./SelectTenant";
 
 /**
  * `/select-tenant` — route for selecting a tenant after authentication.
- * Requires authentication (whoami succeeds) but no admin role.
- * Redirects unauthenticated users to /logs.
+ * Requires only a session cookie (`GET /ui/session`, tenant-independent) —
+ * unlike the tenant-scoped `whoami()`, this resolves even before any tenant
+ * is known, which is exactly the state a fresh SSO landing with several (or
+ * zero) memberships lands in. Redirects unauthenticated visitors home.
  */
 export function SelectTenantRoute() {
-  const { data: who, isLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const sessionQuery = useCurrentSession();
 
-  if (isLoading) return null;
+  if (sessionQuery.isLoading) return null;
+  if (!sessionQuery.isSuccess) return <Navigate to={HOME_PATH} replace />;
 
-  if (!who) {
-    return <Navigate to="/logs" replace />;
-  }
-
-  return <SelectTenant />;
+  return <SelectTenant session={sessionQuery.data} />;
 }

@@ -104,3 +104,17 @@ it("keeps focus on the panel when the dialog has nothing focusable", async () =>
   await userEvent.tab({ shift: true });
   expect(panel).toHaveFocus();
 });
+
+it("skips tabindex=-1 elements when picking the first focus", () => {
+  render(
+    <Dialog label="Roving group">
+      <button type="button" tabIndex={-1}>
+        Inactive
+      </button>
+      <button type="button" tabIndex={0}>
+        Active
+      </button>
+    </Dialog>,
+  );
+  expect(screen.getByRole("button", { name: "Active" })).toHaveFocus();
+});

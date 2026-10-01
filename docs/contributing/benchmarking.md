@@ -54,7 +54,7 @@ building fails CI.
 | `writer`            | `schema_transform_benchmarks` | `transform_trace_v1_to_v2` — the wire→storage materialization plan                                                                                |
 | `writer`            | `iceberg_benchmarks`          | `IcebergTableWriter::append_batches_with_marker` across batch sizes, multi-batch commits, and concurrent tenants; writer creation cost separately; `ingest_sort` isolates the per-commit-group sort by the declared key on in-order and shuffled input |
 | `tests-integration` | `querier_read_paths`          | Trace lookup by id (unbounded, time-windowed, via a point index, and with/without the Parquet footer cache) and the trace-groups listing over a seeded Iceberg table; `recent_first_topk` times `ORDER BY timestamp DESC LIMIT n` over sequential files in every attestation state and prints what each scan opened and pruned (see [Declared sort orders](#declared-sort-orders-what-the-benchmark-shows)) |
-| `tests-integration` | `querier_service_read_paths` | The real querier (`QuerierFlightService::do_get` with router ticket formats): bloom-pruned `find_trace` with and without a time hint, `search_traces`, a PromQL range query and a LogQL line filter through the actual engines |
+| `tests-integration` | `querier_service_read_paths` | The real querier (`QuerierFlightService::do_get` with router ticket formats): bloom-pruned `find_trace` with and without a time hint, `search_traces`, a PromQL range query (lowered to the Query IR) and a LogQL line filter through the actual engines |
 | `tests-integration` | `compaction`                  | `CompactionExecutor::execute_candidate` rewriting a set of small files                                                                            |
 | `tests-integration` | `trace_index_scaling`         | Point lookup against a prefix-sharded, bloom-filtered Parquet index at 10k → 1M traces                                                            |
 
@@ -189,7 +189,7 @@ What the mechanism columns say:
 
 The write-path cost of the sort that makes attestation possible is
 `iceberg_benchmarks`'s `ingest_sort` group: the columnar sort of one commit
-group by the table's key, on the same `metrics_gauge` batches
+group by the table's key, on the same `metrics` batches
 `single_batch_writes` appends. Ingest's usual input arrives close to time
 order, which is the cheap case; a shuffled group is the expensive one.
 

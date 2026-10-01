@@ -1,7 +1,7 @@
 [package]
 name = "tempo-api"
 description = "Grafana Tempo API models"
-version = "0.1.2"
+version = "0.1.3"
 edition.workspace = true
 # Grafana Tempo is AGPL-3.0, and proto/tempo.proto is a copy of its tempopb
 # definitions, from which src/generated/tempopb.rs is built. See openspec D2.
@@ -21,10 +21,16 @@ prost.workspace = true
 
 tonic.workspace = true
 tonic-prost.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
 
 [features]
 default = []
 client = []
 server = []
 
+[lints]
+workspace = true

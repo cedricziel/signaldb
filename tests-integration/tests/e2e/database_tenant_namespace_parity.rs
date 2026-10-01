@@ -44,7 +44,6 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 const DB_TENANT: &str = "gamma-tenant";
 const DB_DATASET: &str = "production";
@@ -164,12 +163,13 @@ async fn setup_services() -> TestServices {
     let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
         tests_integration::test_helpers::writer_wal_config(&wal_config),
     ));
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal,
         &WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -217,7 +217,11 @@ async fn setup_services() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager);
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(Catalog::new("sqlite::memory:").await.unwrap()),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager, processor_registry);
     let log_acceptor_service = LogAcceptorService::new(log_handler);
     let acceptor_service_with_auth =
         LogsServiceServer::with_interceptor(log_acceptor_service, |mut req: tonic::Request<()>| {
@@ -228,7 +232,9 @@ async fn setup_services() -> TestServices {
                 dataset_slug: DB_DATASET.to_string(),
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,

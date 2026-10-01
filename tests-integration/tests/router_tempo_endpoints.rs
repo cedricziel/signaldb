@@ -21,7 +21,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterAppState, RouterState, discovery::ServiceRegistry, endpoints::tempo};
+use router::{RouterAppState, endpoints::tempo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +31,6 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 /// Test services configuration
 struct TestServices {
@@ -76,8 +75,7 @@ async fn setup_test_services() -> TestServices {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     // Configure storage to use filesystem
@@ -107,8 +105,10 @@ async fn setup_test_services() -> TestServices {
         }],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     let wal_config = WalConfig {
@@ -149,12 +149,13 @@ async fn setup_test_services() -> TestServices {
             .expect("Failed to create CatalogManager"),
     );
 
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
 
     // Start background WAL processing
     let _writer_bg_handle = writer_service.start_background_processing();
@@ -223,7 +224,20 @@ async fn setup_test_services() -> TestServices {
         wal_config.clone(), // metrics config
         wal_config.clone(), // profiles config
     ));
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
@@ -240,7 +254,9 @@ async fn setup_test_services() -> TestServices {
                 dataset_slug: "test-dataset".to_string(),
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,
@@ -297,67 +313,17 @@ async fn setup_test_services() -> TestServices {
     }
 }
 
-/// Custom router state implementation that uses the test flight transport
-#[derive(Clone)]
-struct TestRouterState {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-
-impl std::fmt::Debug for TestRouterState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestRouterState")
-            .field("catalog", &"Catalog")
-            .field("service_registry", &self.service_registry)
-            .field("config", &"Configuration")
-            .field("authenticator", &"Authenticator")
-            .finish()
-    }
-}
-
-impl router::RouterState for TestRouterState {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
-
 /// Create router state connected to the test services
-async fn create_router_state(services: &TestServices) -> TestRouterState {
+async fn create_router_state(services: &TestServices) -> RouterAppState {
     let catalog_dsn = services.config.discovery.as_ref().unwrap().dsn.clone();
     let catalog = Catalog::new(&catalog_dsn).await.unwrap();
 
-    // Create service registry that uses the same flight transport as the test services
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
-        (*services.flight_transport).clone(),
-    );
-
-    // Create authenticator for test
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    TestRouterState {
+    // Uses the same flight transport as the test services.
+    RouterAppState::new_with_flight_transport(
         catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator,
-    }
+        services.config.clone(),
+        (*services.flight_transport).clone(),
+    )
 }
 
 /// Send a test trace via OTLP
@@ -1074,8 +1040,10 @@ async fn test_tempo_v2_trace_endpoint() {
         }],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
     let state = RouterAppState::new(catalog, config);
 
@@ -1138,8 +1106,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn.clone(),
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     // Configure storage
@@ -1189,8 +1156,10 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         ],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     // Create WAL configs for both tenants
@@ -1247,12 +1216,13 @@ async fn setup_multi_tenant_test_services() -> TestServices {
             .expect("Failed to create CatalogManager"),
     );
 
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
 
     let _writer_bg_handle = writer_service.start_background_processing();
 
@@ -1321,7 +1291,20 @@ async fn setup_multi_tenant_test_services() -> TestServices {
 
     // Create acceptor with gRPC authentication interceptor
     // This injects tenant context from gRPC metadata into request extensions
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Add authentication interceptor that extracts tenant from gRPC metadata
@@ -1350,7 +1333,9 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                 dataset_slug: dataset_id,
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,

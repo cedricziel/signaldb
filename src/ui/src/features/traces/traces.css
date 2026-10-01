@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .traces-search {
   display: flex;
   flex-direction: column;
@@ -25,9 +25,16 @@
 }
 
 .trace-volume-mode button {
-  padding: 2px 7px;
-  color: var(--faint);
-  font-size: 10.5px;
+  min-height: 24px;
+  padding: 2px 9px;
+  color: var(--dim);
+  font-size: 11.5px;
+}
+
+/* `.trace-volume-mode`'s `overflow: hidden` (its rounded corners) otherwise
+   clips the default outline's outer half. */
+.trace-volume-mode button:focus-visible {
+  outline-offset: -2px;
 }
 
 .trace-volume-mode button + button {
@@ -35,7 +42,7 @@
 }
 
 .trace-volume-mode button[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
 }
 
@@ -74,7 +81,7 @@
 
 .trace-area-ylabel,
 .trace-area-xlabel {
-  fill: var(--faint);
+  fill: var(--dim);
   font-family: var(--mono);
   font-size: 10px;
 }
@@ -121,8 +128,11 @@
 .trace-heatmap svg {
   display: block;
   width: 100%;
-  height: auto;
-  aspect-ratio: 720 / 220;
+  /* The viewBox now tracks the container's real pixel width (see
+     TraceVolumeHeatmap.tsx), so a fixed height — not an aspect-ratio tied to
+     the old static viewBox — keeps rows their designed size instead of
+     scaling with panel width. */
+  height: 220px;
 }
 
 .trace-heatmap-cell {
@@ -138,7 +148,7 @@
 
 .trace-heatmap-ylabel,
 .trace-heatmap-xlabel {
-  fill: var(--faint);
+  fill: var(--dim);
   font-family: var(--mono);
   font-size: 10px;
 }
@@ -167,7 +177,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
   /* Both this row and .group-pickers wrap: the pickers otherwise push the
      page sideways below ~1100px. */
@@ -196,16 +206,12 @@
   white-space: nowrap;
 }
 
-.err-rate {
-  color: var(--err);
-  font-weight: 600;
-}
-
 /* Multi-select facet rows (span.kind): a checkbox in front of the value. */
 .facet-check {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 24px;
   cursor: pointer;
 }
 
@@ -213,24 +219,23 @@
   margin: 0;
 }
 
-/* Trace-level status in the list: the OTel status word, coloured. */
-.status-chip {
-  display: inline-block;
-  padding: 0 6px;
-  border-radius: 999px;
-  font-size: 10.5px;
+/* Trace-level status in the list: the OTel status word, coloured.
+   Compounded with .chip so this beats the global pill base's border-color
+   regardless of CSS import order. */
+.status-chip.chip {
+  border-color: transparent;
   font-weight: 600;
   line-height: 16px;
   text-transform: lowercase;
 }
 
 .status-chip.status-error {
-  color: var(--err);
+  color: var(--err-text);
   background: color-mix(in srgb, var(--err) 14%, transparent);
 }
 
 .status-chip.status-ok {
-  color: var(--ok);
+  color: var(--ok-text);
   background: color-mix(in srgb, var(--ok) 14%, transparent);
 }
 
@@ -270,28 +275,9 @@
   font-family: var(--mono);
 }
 
-.trace-id-form button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 12px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
 .trace-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
-}
-
-.trace-table th {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--faint);
-  padding: 8px 14px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 650;
 }
 
 .trace-table td {
@@ -323,13 +309,13 @@
 
 .trace-open {
   font-weight: 550;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .trace-id {
   font-family: var(--mono);
   font-size: 10.5px;
-  color: var(--faint);
+  color: var(--dim);
 }
 
 /* ---------- waterfall ---------- */
@@ -345,13 +331,15 @@
   display: flex;
   align-items: center;
   gap: 12px;
-  padding: 12px 16px 10px;
+  padding: 12px var(--gutter) 10px;
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
 
 .trace-head h3 {
   margin: 0;
+  min-width: 0;
+  overflow-wrap: anywhere;
   font-size: 13.5px;
   font-weight: 650;
   font-family: var(--mono);
@@ -373,7 +361,6 @@
 }
 
 .tmeta-err {
-  color: var(--err);
   font-style: normal;
   font-weight: 600;
 }
@@ -384,9 +371,9 @@
   min-height: 0;
 }
 
-@media (max-width: 900px) {
+@container app-main (max-width: 720px) {
   /* The resizer only makes sense for a permanently-visible pane; below the
-     tablet breakpoint the span detail moves into the drawer below instead. */
+     drawer breakpoint the span detail moves into the drawer below instead. */
   .trace-resizer {
     display: none;
   }
@@ -405,7 +392,7 @@
   }
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .traces-toolbar {
     gap: 6px;
     padding: 8px 10px;
@@ -414,6 +401,30 @@
   .trace-head {
     gap: 8px;
     padding: 10px 12px 8px;
+  }
+
+  /* The group table's Rate/P50/Last-seen columns are the least actionable
+     of the seven — Errors and P95 (the "is something wrong, how bad")
+     matter more for a phone-width glance, so those two stay and the rest
+     scroll off with the row instead of pushing them out of view. */
+  .trace-table .col-secondary {
+    display: none;
+  }
+
+  /* Long span names (`opentelemetry.proto…/Export`) would otherwise size the
+     first column past the viewport and push Errors/P95 back off-screen. */
+  .trace-table td:first-child {
+    max-width: none;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+
+  .trace-table td:first-child button {
+    text-align: left;
+  }
+
+  .trace-table td {
+    padding: 6px 8px;
   }
 }
 
@@ -427,6 +438,7 @@
 
 .trace-resizer {
   flex: 0 0 5px;
+  position: relative;
   cursor: col-resize;
   background: transparent;
   border-left: 1px solid var(--border);
@@ -436,6 +448,51 @@
 .trace-resizer:hover,
 .trace-resizer:active {
   background: var(--info-bar);
+}
+
+.wf-ruler {
+  display: flex;
+  align-items: flex-end;
+  padding: 0 16px 4px 12px;
+}
+
+.wf-ruler-track {
+  flex: 1;
+  min-width: 60px;
+  position: relative;
+  height: 16px;
+  border-bottom: 1px solid var(--border);
+}
+
+/* `--pct` is the tick's position (0–100). Shifting the label left by the
+   same share keeps 0 flush left, the total flush right, and the rest near
+   their mark. */
+.wf-tick {
+  position: absolute;
+  bottom: 3px;
+  left: calc(var(--pct) * 1%);
+  transform: translateX(calc(var(--pct) * -1%));
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--dim);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.wf-tick::after {
+  content: "";
+  position: absolute;
+  left: calc(var(--pct) * 1%);
+  bottom: -4px;
+  height: 4px;
+  border-left: 1px solid var(--border);
+}
+
+@media (max-width: 600px) {
+  /* The phone-width track only fits three labels: keep 0, ½ and the total. */
+  .wf-tick:nth-child(2n) {
+    visibility: hidden;
+  }
 }
 
 .span-row {
@@ -452,7 +509,8 @@
 }
 
 .span-label {
-  flex: 0 0 300px;
+  flex: 0 1 300px;
+  min-width: 120px;
   display: flex;
   align-items: baseline;
   gap: 7px;
@@ -461,12 +519,23 @@
   overflow: hidden;
 }
 
+@container app-main (max-width: 600px) {
+  /* At the fixed 300px basis, the label alone leaves the track (and its
+     duration bars) only a sliver of a ~390px viewport; shrink it to a share
+     of the row instead. */
+  .span-label {
+    flex-basis: 45%;
+  }
+}
+
 .span-svc {
-  color: var(--faint);
+  color: var(--dim);
   flex: 0 0 auto;
 }
 
 .span-name {
+  flex: 1 1 auto;
+  min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -474,6 +543,7 @@
 
 .span-track {
   flex: 1;
+  min-width: 60px;
   position: relative;
   height: 15px;
 }
@@ -524,6 +594,19 @@
   background: var(--err-bar);
   outline: 1.5px solid var(--err);
   outline-offset: 1px;
+}
+
+.trace-map {
+  padding: 0 16px 8px;
+}
+
+.trace-map-title {
+  margin: 0 0 6px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--dim);
 }
 
 .span-kind-legend {
@@ -596,17 +679,20 @@
 }
 
 .span-dur.error {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 /* ---------- span detail ---------- */
 
+/* The saved width applies up to 40% of the trace body, so the waterfall
+   keeps the larger share however wide the pane was dragged elsewhere. */
 .span-detail {
-  flex: 0 0 var(--span-detail-w, 300px);
-  width: var(--span-detail-w, 300px);
+  flex: 0 0 min(var(--span-detail-w, 300px), 40%);
+  width: min(var(--span-detail-w, 300px), 40%);
   padding: 12px 14px;
   overflow-y: auto;
   font-size: 12px;
+  container-type: inline-size;
 }
 
 .span-detail h4 {
@@ -620,54 +706,6 @@
   color: var(--faint);
   font-size: 11px;
   margin-bottom: 10px;
-}
-
-.span-detail-sec {
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.09em;
-  color: var(--faint);
-  font-weight: 650;
-  margin: 14px 0 6px;
-}
-
-.span-attrs {
-  margin: 0;
-  display: flex;
-  flex-direction: column;
-  gap: 3px;
-}
-
-.span-attrs > div {
-  display: grid;
-  grid-template-columns: minmax(110px, max-content) 1fr;
-  gap: 0 12px;
-  font-family: var(--mono);
-  font-size: 11px;
-}
-
-.span-attrs dt {
-  color: var(--dim);
-}
-
-/* A resolved key carries its brief; cap the column so a long brief cannot
-   push the value column off the panel. */
-.span-attrs dt:has(.semkey) {
-  max-width: 240px;
-}
-
-/* Semantic-title sub-heading inside a Span/Resource section. */
-.span-detail-subsec {
-  font-size: 10.5px;
-  color: var(--dim);
-  font-weight: 600;
-  margin: 8px 0 3px;
-}
-
-.span-attrs dd {
-  margin: 0;
-  min-width: 0;
-  overflow-wrap: anywhere;
 }
 
 .span-events {
@@ -691,10 +729,14 @@
   background: color-mix(in srgb, var(--err) 7%, transparent);
 }
 
+/* Wraps, and lets the exception type shrink to an ellipsis, so the
+   type and its Copy button never run past the pane's edge. */
 .span-event-head {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 8px;
+  gap: 2px 8px;
+  min-width: 0;
 }
 
 .span-event-name {
@@ -702,10 +744,12 @@
 }
 
 .span-event-err .span-event-name {
-  color: var(--err);
+  color: var(--err-text);
 }
 
 .span-event-type {
+  min-width: 0;
+  max-width: 100%;
   font-family: var(--mono);
   color: var(--dim);
 }
@@ -746,16 +790,53 @@
   color: var(--dim);
 }
 
+.span-event-trace-lines {
+  margin-top: 6px;
+  font-family: var(--mono);
+  font-size: 10px;
+}
+
+.span-event-trace-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 1px 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.span-event-trace-vendor {
+  color: var(--faint);
+}
+
+.span-event-trace-header {
+  color: var(--text);
+  font-weight: 650;
+}
+
+.span-code-location {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  margin: 4px 0 8px;
+  font-size: 12px;
+}
+
+.span-code-location-label {
+  color: var(--dim);
+}
+
 /* ---------- facet sidebar + filter chips ---------- */
 
-.facet-active {
+/* Compounded with .chip so this beats the global pill base's border-color
+   regardless of CSS import order. */
+.facet-active.chip {
   margin-left: auto;
   font-size: 10px;
   font-variant-numeric: tabular-nums;
-  color: var(--accent);
+  color: var(--accent-text);
   background: var(--accent-soft);
-  border-radius: 8px;
-  padding: 0 5px;
+  border-color: transparent;
 }
 
 .facet-val {
@@ -777,11 +858,11 @@
 .facet-val-count {
   font-variant-numeric: tabular-nums;
   font-size: 10.5px;
-  color: var(--faint);
+  color: var(--dim);
 }
 
 .facet-val[aria-pressed="true"] {
-  color: var(--accent);
+  color: var(--accent-text);
   border-left-color: var(--accent);
 }
 

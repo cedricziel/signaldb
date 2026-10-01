@@ -1,16 +1,9 @@
 import React, { ChangeEvent } from 'react';
-import { InlineField, Input, Select, SecretInput } from '@grafana/ui';
-import { DataSourcePluginOptionsEditorProps, SelectableValue } from '@grafana/data';
+import { InlineField, Input, SecretInput } from '@grafana/ui';
+import { DataSourcePluginOptionsEditorProps } from '@grafana/data';
 import { SignalDBDataSourceOptions, SignalDBSecureJsonData } from '../types';
 
 interface Props extends DataSourcePluginOptionsEditorProps<SignalDBDataSourceOptions, SignalDBSecureJsonData> {}
-
-type Protocol = 'http' | 'flight';
-
-const PROTOCOL_OPTIONS: Array<SelectableValue<Protocol>> = [
-  { label: 'HTTP', value: 'http', description: 'HTTP API (default port 3001)' },
-  { label: 'Flight', value: 'flight', description: 'Arrow Flight (default port 50053)' },
-];
 
 export function ConfigEditor(props: Props) {
   const { onOptionsChange, options } = props;
@@ -27,8 +20,6 @@ export function ConfigEditor(props: Props) {
   };
 
   const onRouterUrlChange = (event: ChangeEvent<HTMLInputElement>) => setJsonData('routerUrl', event.target.value);
-
-  const onProtocolChange = (value: SelectableValue<Protocol>) => setJsonData('protocol', value.value ?? 'http');
 
   const onTimeoutChange = (event: ChangeEvent<HTMLInputElement>) => {
     const timeout = parseInt(event.target.value, 10);
@@ -80,10 +71,6 @@ export function ConfigEditor(props: Props) {
           placeholder="http://localhost:3001"
           width={50}
         />
-      </InlineField>
-
-      <InlineField label="Protocol" labelWidth={20} interactive tooltip="Communication protocol">
-        <Select options={PROTOCOL_OPTIONS} value={jsonData.protocol || 'http'} onChange={onProtocolChange} width={30} />
       </InlineField>
 
       <InlineField label="Timeout (seconds)" labelWidth={20} interactive tooltip="Query timeout in seconds">

@@ -3,12 +3,76 @@
 use std::collections::{HashMap, HashSet};
 
 /// The level at which an attribute is attached to an OTel record.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, utoipa::ToSchema)]
+#[derive(
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Hash,
+    PartialOrd,
+    Ord,
+    serde::Serialize,
+    serde::Deserialize,
+    utoipa::ToSchema,
+)]
 #[serde(rename_all = "snake_case")]
 pub enum AttributeLevel {
     Resource,
     Scope,
     Record,
+}
+
+impl AttributeLevel {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttributeLevel::Resource => "resource",
+            AttributeLevel::Scope => "scope",
+            AttributeLevel::Record => "record",
+        }
+    }
+
+    /// The inverse of [`as_str`](Self::as_str), for decoding a stored level
+    /// column. `None` for anything else (callers map that to their own
+    /// corruption error).
+    pub fn parse(value: &str) -> Option<Self> {
+        match value {
+            "resource" => Some(AttributeLevel::Resource),
+            "scope" => Some(AttributeLevel::Scope),
+            "record" => Some(AttributeLevel::Record),
+            _ => None,
+        }
+    }
+}
+
+/// The prefix a query uses to address attributes of `level` on `source`, or
+/// `None` when the source has no such prefix. Mirrors the querier's
+/// `SourcePlan::attr_prefixes` (a test there asserts they agree): the record
+/// level carries the source's own qualifier (`log.`, `span.`, `profile.`,
+/// `point.`), scope and resource are `scope.`/`resource.`. The prefix is
+/// returned without its dot.
+pub fn attribute_qualifier(source: &str, level: AttributeLevel) -> Option<&'static str> {
+    let record = match source {
+        "logs" => Some("log"),
+        "traces" => Some("span"),
+        "profiles" => Some("profile"),
+        name if name == "metrics" || name.starts_with("metrics_") => Some("point"),
+        _ => None,
+    };
+    let has_scope = matches!(source, "logs" | "traces" | "profiles");
+    let has_resource = has_scope || source == "metrics" || source.starts_with("metrics_");
+    match level {
+        AttributeLevel::Record => record,
+        AttributeLevel::Scope => has_scope.then_some("scope"),
+        AttributeLevel::Resource => has_resource.then_some("resource"),
+    }
+}
+
+/// Whether a query can address attributes of `level` on `source` at all.
+/// Exemplars have one attribute container, read by its bare key.
+pub fn level_is_addressable(source: &str, level: AttributeLevel) -> bool {
+    attribute_qualifier(source, level).is_some()
+        || (source == "exemplars" && level == AttributeLevel::Record)
 }
 
 /// The client-visible type of a logical field.
@@ -160,6 +224,20 @@ impl LogicalSchema {
     }
 
     pub fn resolve(&self, source: &str, name: &str) -> Option<&LogicalField> {
+        // A SignalDB-defined field (e.g. `resource.identity`) is registered
+        // verbatim with `level: None`, including any dot it contains. Try
+        // that exact identity first so the prefix-stripping rules below
+        // never shadow it — those rules exist for OTel's own
+        // `resource.`/`scope.`/`record.` qualifiers, not for names SignalDB
+        // itself chose to dot.
+        if let Some(field) = self.fields.get(&LogicalFieldId {
+            source: source.to_string(),
+            level: None,
+            name: name.to_string(),
+        }) {
+            return Some(field);
+        }
+
         let (level, name) = match name {
             value if let Some(name) = value.strip_prefix("resource.") => {
                 (Some(AttributeLevel::Resource), name)
@@ -251,28 +329,45 @@ impl LogicalSchema {
             LogicalField::record_metadata("traces", "duration", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "duration_nano", LogicalType::DurationNs),
             LogicalField::record_metadata("traces", "status.code", LogicalType::String),
-            // Metrics: gauge/sum only (see ir_planner.rs's `metrics`
-            // SourcePlan) — a scalar numeric point per row, not an OTel
-            // record with resource/scope/record attribute levels the way
-            // logs/traces/profiles are, so it isn't part of the shared loop
-            // below. `metric.value`'s type must be registered (not left to
-            // the alias fallback's naive String default) or a `sum`/`avg`
-            // aggregate over it is rejected as non-numeric.
             LogicalField::record_metadata("metrics", "timestamp", LogicalType::TimestampNs),
             LogicalField::record_metadata("metrics", "metric.name", LogicalType::String),
             LogicalField::record_metadata("metrics", "metric.value", LogicalType::Float64),
-            // metrics_histogram: a whole bucketed histogram per row, not a
-            // scalar — only reachable via the `histogram_quantile` stage
-            // (ir_planner.rs), which reads bucket_counts/explicit_bounds by
-            // physical column name directly rather than through the
-            // resolver. Only the fields a `where`/`by` clause can reference
-            // need registering here.
+            LogicalField::record_metadata("metrics", "metric.type", LogicalType::String),
+            LogicalField::record_metadata("metrics", "metric.temporality", LogicalType::Int64),
+            LogicalField::record_metadata("metrics", "metric.monotonic", LogicalType::Bool),
+            LogicalField::record_metadata("metrics", "metric.count", LogicalType::Int64),
+            LogicalField::record_metadata("metrics", "metric.sum", LogicalType::Float64),
+            LogicalField::record_metadata("metrics", "metric.min", LogicalType::Float64),
+            LogicalField::record_metadata("metrics", "metric.max", LogicalType::Float64),
             LogicalField::record_metadata(
-                "metrics_histogram",
-                "timestamp",
-                LogicalType::TimestampNs,
-            ),
-            LogicalField::record_metadata("metrics_histogram", "metric.name", LogicalType::String),
+                "metrics",
+                "metric.explicit_bounds",
+                LogicalType::AnyValue,
+            )
+            .retrieval_only(),
+            LogicalField::record_metadata("metrics", "metric.bucket_counts", LogicalType::AnyValue)
+                .retrieval_only(),
+            LogicalField::record_metadata("metrics", "metric.quantiles", LogicalType::AnyValue)
+                .retrieval_only(),
+            LogicalField::record_metadata(
+                "metrics",
+                "metric.quantile_values",
+                LogicalType::AnyValue,
+            )
+            .retrieval_only(),
+            LogicalField::record_metadata("exemplars", "timestamp", LogicalType::TimestampNs),
+            LogicalField::join_key("exemplars", "trace.id"),
+            LogicalField::join_key("exemplars", "span.id"),
+            LogicalField::record_metadata("exemplars", "metric.name", LogicalType::String),
+            LogicalField::record_metadata("exemplars", "metric.type", LogicalType::String),
+            LogicalField::record_metadata("exemplars", "series.id", LogicalType::String),
+            LogicalField::record_metadata("exemplars", "exemplar.value", LogicalType::Float64),
+            LogicalField::record_metadata(
+                "exemplars",
+                "exemplar.filtered_attributes",
+                LogicalType::AnyValue,
+            )
+            .retrieval_only(),
             // Profiles: the summary row's own time column. Every scalar
             // source registers its primary timestamp (logs `timestamp`,
             // traces `start_time_unix_nano`) so a cross-signal "last seen"
@@ -287,8 +382,11 @@ impl LogicalSchema {
             "service.name",
             LogicalType::String,
         ));
+        fields.push(LogicalField::signaldb_resource_identity("metrics"));
+        fields.push(LogicalField::signaldb_resource_identity("profiles"));
+        fields.push(LogicalField::signaldb_resource_identity("exemplars"));
         fields.push(LogicalField::attribute(
-            "metrics_histogram",
+            "exemplars",
             AttributeLevel::Resource,
             "service.name",
             LogicalType::String,
@@ -355,10 +453,32 @@ impl LogicalSchema {
         }
         Self::new(fields)
     }
+
+    /// Version of the client-visible logical schema. Bump this and
+    /// `logical_schema_version` in `schemas.toml` together whenever
+    /// `core()`'s field set changes; `tests::FIELD_SET_FINGERPRINT` fails
+    /// until you do.
+    pub const VERSION: &'static str = "otel-2026-09";
 }
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn qualifiers_are_source_aware() {
+        use AttributeLevel::{Record, Resource, Scope};
+        assert_eq!(attribute_qualifier("logs", Record), Some("log"));
+        assert_eq!(attribute_qualifier("traces", Record), Some("span"));
+        assert_eq!(attribute_qualifier("profiles", Record), Some("profile"));
+        assert_eq!(attribute_qualifier("metrics", Record), Some("point"));
+        assert_eq!(attribute_qualifier("logs", Scope), Some("scope"));
+        assert_eq!(attribute_qualifier("metrics", Scope), None);
+        assert_eq!(attribute_qualifier("metrics", Resource), Some("resource"));
+        assert_eq!(attribute_qualifier("exemplars", Record), None);
+        assert!(level_is_addressable("exemplars", Record));
+        assert!(!level_is_addressable("exemplars", Resource));
+        assert!(!level_is_addressable("metrics", Scope));
+    }
     use super::*;
 
     #[test]
@@ -425,6 +545,38 @@ mod tests {
         assert!(field.non_native);
     }
 
+    /// #1340: `resource.identity` is declared with `level: None` and a dot
+    /// in its own name. The generic `resource.`/`scope.`/`record.`
+    /// prefix-stripping in `resolve` must not shadow that exact identity —
+    /// it used to strip `resource.` and look for a Resource-level attribute
+    /// named `identity`, which doesn't exist, so a field discovery
+    /// advertised could never actually be resolved.
+    #[test]
+    fn resource_identity_resolves_on_every_source_that_declares_it() {
+        let schema = LogicalSchema::core();
+
+        for source in ["logs", "traces", "metrics", "profiles"] {
+            let field = schema
+                .resolve(source, "resource.identity")
+                .unwrap_or_else(|| panic!("{source}.resource.identity should resolve"));
+            assert_eq!(field.kind, LogicalFieldKind::SignalDbDefined, "{source}");
+            assert_eq!(field.id.name, "resource.identity", "{source}");
+        }
+    }
+
+    #[test]
+    fn resource_service_name_still_resolves_after_resource_identity_fix() {
+        let schema = LogicalSchema::core();
+
+        for source in ["logs", "traces"] {
+            let field = schema
+                .resolve(source, "resource.service.name")
+                .unwrap_or_else(|| panic!("{source}.resource.service.name should resolve"));
+            assert_eq!(field.value_type, LogicalType::String, "{source}");
+            assert_eq!(field.kind, LogicalFieldKind::Attribute, "{source}");
+        }
+    }
+
     #[test]
     fn core_schema_exposes_log_metadata_and_trace_join_keys() {
         let schema = LogicalSchema::core();
@@ -483,7 +635,6 @@ mod tests {
             ("logs", "timestamp"),
             ("traces", "start_time_unix_nano"),
             ("metrics", "timestamp"),
-            ("metrics_histogram", "timestamp"),
             ("profiles", "timestamp"),
         ] {
             let field = schema
@@ -492,6 +643,68 @@ mod tests {
             assert_eq!(field.value_type, LogicalType::TimestampNs, "{source}");
             assert_eq!(field.kind, LogicalFieldKind::RecordMetadata, "{source}");
         }
+    }
+
+    #[test]
+    fn metrics_is_one_model_with_type_temporality_and_monotonicity_as_fields() {
+        let schema = LogicalSchema::core();
+        let expect = |name: &str, value_type, filterability| {
+            let field = schema
+                .resolve("metrics", name)
+                .unwrap_or_else(|| panic!("metrics.{name} is registered"));
+            assert_eq!(field.value_type, value_type, "{name}");
+            assert_eq!(field.filterability, filterability, "{name}");
+            assert_eq!(field.kind, LogicalFieldKind::RecordMetadata, "{name}");
+        };
+        for (name, value_type) in [
+            ("metric.type", LogicalType::String),
+            ("metric.temporality", LogicalType::Int64),
+            ("metric.monotonic", LogicalType::Bool),
+            ("metric.count", LogicalType::Int64),
+            ("metric.sum", LogicalType::Float64),
+            ("metric.min", LogicalType::Float64),
+            ("metric.max", LogicalType::Float64),
+        ] {
+            expect(name, value_type, Filterability::Filterable);
+        }
+        for name in [
+            "metric.explicit_bounds",
+            "metric.bucket_counts",
+            "metric.quantiles",
+            "metric.quantile_values",
+        ] {
+            expect(name, LogicalType::AnyValue, Filterability::RetrievalOnly);
+        }
+    }
+
+    #[test]
+    fn exemplars_expose_trace_correlation_keys_and_the_owning_metric() {
+        let schema = LogicalSchema::core();
+        let field = |name: &str| {
+            schema
+                .resolve("exemplars", name)
+                .unwrap_or_else(|| panic!("exemplars.{name} is registered"))
+        };
+        for name in ["trace.id", "span.id"] {
+            assert_eq!(field(name).kind, LogicalFieldKind::JoinKey, "{name}");
+        }
+        for (name, value_type) in [
+            ("timestamp", LogicalType::TimestampNs),
+            ("metric.name", LogicalType::String),
+            ("metric.type", LogicalType::String),
+            ("series.id", LogicalType::String),
+            ("exemplar.value", LogicalType::Float64),
+        ] {
+            assert_eq!(field(name).value_type, value_type, "{name}");
+        }
+        assert_eq!(
+            field("exemplar.filtered_attributes").filterability,
+            Filterability::RetrievalOnly
+        );
+        assert_eq!(
+            field("resource.identity").kind,
+            LogicalFieldKind::SignalDbDefined
+        );
     }
 
     #[test]
@@ -520,14 +733,55 @@ mod tests {
             let Some(level) = field.id.level else {
                 continue;
             };
-            let prefix = match level {
-                AttributeLevel::Resource => "resource",
-                AttributeLevel::Scope => "scope",
-                AttributeLevel::Record => "record",
-            };
-            let name = format!("{prefix}.{}", field.id.name);
+            let name = format!("{}.{}", level.as_str(), field.id.name);
             assert_eq!(schema.resolve(&field.id.source, &name), Some(field));
         }
+    }
+
+    const FIELD_SET_FINGERPRINT: &str =
+        "d8f33448a100d57db9cdff82e1e3fa6e3b4bb3b5840b48385bb7fe440f446e3f";
+
+    fn fingerprint() -> String {
+        use sha2::{Digest, Sha256};
+
+        let mut rendered: Vec<String> = LogicalSchema::core()
+            .fields
+            .values()
+            .map(|field| {
+                format!(
+                    "{}|{:?}|{}|{:?}|{:?}|{:?}",
+                    field.id.source,
+                    field.id.level,
+                    field.id.name,
+                    field.value_type,
+                    field.filterability,
+                    field.kind
+                )
+            })
+            .collect();
+        rendered.sort();
+        hex::encode(Sha256::digest(rendered.join("\n").as_bytes()))
+    }
+
+    #[test]
+    fn logical_schema_version_matches_schemas_toml() {
+        let defs = crate::schema::schema_parser::SchemaDefinitions::from_toml(
+            crate::schema::SCHEMA_DEFINITIONS_TOML,
+        )
+        .unwrap();
+
+        assert_eq!(LogicalSchema::VERSION, defs.logical_schema_version());
+    }
+
+    #[test]
+    fn logical_schema_fingerprint_is_pinned() {
+        assert_eq!(
+            fingerprint(),
+            FIELD_SET_FINGERPRINT,
+            "LogicalSchema::core()'s field set changed. Bump LogicalSchema::VERSION and \
+             logical_schema_version in schemas.toml, then update \
+             FIELD_SET_FINGERPRINT to the value this assertion reports."
+        );
     }
 
     #[test]
@@ -538,5 +792,60 @@ mod tests {
         assert!(schema.resolve("logs", "log_attributes").is_none());
         assert!(schema.is_physical_name("log_attributes"));
         assert!(schema.is_physical_name("label_service_name"));
+    }
+
+    /// The logical schema carries no physical encoding, so one join key means
+    /// the same kind, type and filterability on both sources.
+    #[test]
+    fn trace_id_and_span_id_are_the_same_join_key_across_traces_and_logs() {
+        let schema = LogicalSchema::core();
+
+        for name in ["trace_id", "span_id"] {
+            let traces_field = schema
+                .resolve("traces", name)
+                .unwrap_or_else(|| panic!("traces.{name} should resolve"));
+            let logs_field = schema
+                .resolve("logs", name)
+                .unwrap_or_else(|| panic!("logs.{name} should resolve"));
+            assert_eq!(
+                traces_field.kind,
+                LogicalFieldKind::JoinKey,
+                "traces.{name}"
+            );
+            assert_eq!(logs_field.kind, LogicalFieldKind::JoinKey, "logs.{name}");
+            assert_eq!(
+                traces_field.value_type, logs_field.value_type,
+                "{name} must carry the same logical type on both sources"
+            );
+            assert_eq!(
+                traces_field.filterability, logs_field.filterability,
+                "{name} must be equally filterable on both sources"
+            );
+        }
+    }
+
+    #[test]
+    fn otlp_record_metadata_is_registered_with_its_declared_type() {
+        let schema = LogicalSchema::core();
+
+        for (source, name, expected_type) in [
+            ("logs", "dropped_attributes_count", LogicalType::Int64),
+            ("traces", "dropped_attributes_count", LogicalType::Int64),
+            ("logs", "severity_number", LogicalType::Int64),
+            ("logs", "observed_timestamp", LogicalType::TimestampNs),
+            ("logs", "trace_flags", LogicalType::Int64),
+            ("logs", "event_name", LogicalType::String),
+            ("logs", "body", LogicalType::AnyValue),
+        ] {
+            let field = schema
+                .resolve(source, name)
+                .unwrap_or_else(|| panic!("{source}.{name} should be registered"));
+            assert_eq!(field.value_type, expected_type, "{source}.{name}");
+            assert_eq!(
+                field.kind,
+                LogicalFieldKind::RecordMetadata,
+                "{source}.{name}"
+            );
+        }
     }
 }

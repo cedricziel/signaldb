@@ -7,6 +7,12 @@ sources:
   - src/common/src/wal/**
   - src/common/src/catalog_manager.rs
   - src/common/src/iceberg/**
+  - schemas.toml
+  - src/common/src/attrs/warm_index.rs
+  - src/common/src/config/mod.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/writer/src/schema_transform.rs
+  - src/querier/src/query/warm_index/probe.rs
 ---
 
 # Storage Layout Design
@@ -75,13 +81,10 @@ With `dsn = "file:///.data/storage"`, tenant "acme" (slug `acme`), datasets "pro
       logs/
         metadata/
         data/
-      metrics_gauge/
+      metrics/
         metadata/
         data/
-      metrics_sum/
-        metadata/
-        data/
-      metrics_histogram/
+      metric_exemplars/
         metadata/
         data/
     archive/
@@ -149,18 +152,25 @@ The Querier registers per-dataset object stores with DataFusion's runtime enviro
 
 ### Catalog Configuration
 
-The Iceberg metadata catalog is a SQLite-backed `SqlCatalog` (from `iceberg-sql-catalog`) named `"signaldb"`. It is configured via:
+The Iceberg metadata catalog is a `SqlCatalog` (from `iceberg-sql-catalog`, built on sqlx's `Any` driver) named `"signaldb"`. It accepts either a SQLite or a PostgreSQL URI, configured via:
 
 ```toml
 [schema]
 catalog_type = "sql"
 catalog_uri = "sqlite::memory:"          # In-memory (default, for dev/testing)
-# catalog_uri = "sqlite:///.data/catalog.db"  # Persistent (recommended for production)
+# catalog_uri = "sqlite:///.data/catalog.db"        # Persistent, single-node
+# catalog_uri = "postgres://user:pass@host/dbname"  # Distributed: shared, CAS-capable catalog
 ```
 
-> **Limitation**: Only SQLite is supported for the Iceberg catalog. PostgreSQL URIs are rejected. This is distinct from the service discovery catalog which supports both SQLite and PostgreSQL.
+PostgreSQL is required, not merely preferred, once writer, querier, and compactor run as separate processes committing against the same catalog: the compare-and-swap that the catalog's commit path relies on (`swap_metadata_location`) needs a database that actually serializes concurrent writers, and a SQLite file on shared/network storage does not guarantee that -- it is a single-node and dev/test option only, not a supported multi-process backend. No extensions or manual schema setup are required on PostgreSQL -- the catalog creates its own `iceberg_tables` and `iceberg_namespace_properties` tables (`create table if not exists`) the first time it connects, the same as it does for SQLite.
 
-Every connection the Iceberg catalog's pool opens gets three pragmas, set in two places:
+That `create table if not exists` runs in the pool's `after_connect` hook on _every_ new pooled connection, not only on the very first one -- and PostgreSQL's `IF NOT EXISTS` is not itself a lock against a concurrent `CREATE TABLE` of the same name (two sessions can both pass the existence check before either commits, then one loses a unique-constraint race on `pg_class`). Against a fresh PostgreSQL catalog, writer, querier, and compactor cold-starting at once each open a first connection and race this DDL, so an occasional "relation already exists" (or similar) failure on a process's very first catalog call is expected and transient there, not a sign of a broken catalog -- but each process's actual recovery path differs, and only two of the three retry automatically in-process:
+
+- **Writer**: `CatalogManager::new` only builds the lazy pool, so a losing race there doesn't fail startup. `start_table_reconciler`'s later passes (`[writer].table_reconcile_interval`, disabled at `0`) retry the same catalog access and converge once the table exists.
+- **Compactor**: retries across its lifecycle cycles the same way.
+- **Querier**: `QuerierFlightService::new_with_catalog_manager` makes its first catalog call (`list_active_tenants`) as part of construction and propagates a failure with `?`, so a losing race here fails querier startup outright -- there is no in-process retry. Recovery is a process restart (the orchestrator's normal restart-on-failure policy) or a manual retry, not a retry loop internal to the querier.
+
+Every connection the Iceberg catalog's pool opens for a SQLite URI gets three pragmas, set in two places (none of these apply to PostgreSQL -- `journal_mode`/`busy_timeout`/`synchronous` are SQLite-only concepts, and PostgreSQL connections get no extra session statements):
 
 | Pragma                 | Set by                                                                        | Why                                                                                                                                                                                                                                                                                      |
 | ---------------------- | ----------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
@@ -168,9 +178,9 @@ Every connection the Iceberg catalog's pool opens gets three pragmas, set in two
 | `busy_timeout = 30000` | the catalog itself ([#381](https://github.com/JanKaul/iceberg-rust/pull/381)) | sqlx's 5s default is short enough that a commit contending with a compaction gives up while the lock is still moving.                                                                                                                                                                    |
 | `synchronous = normal` | SignalDB, via `sqlite_session_statements` (`src/common/src/iceberg/mod.rs`)   | Under WAL this skips an fsync per commit while staying crash-safe.                                                                                                                                                                                                                       |
 
-Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386), currently a fork pin). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
+Together these match what the service discovery catalog (`src/common/src/catalog.rs`) sets. Pragmas cannot be carried on the DSN — sqlx's SQLite URL parser rejects them as query parameters — so they have to be set on the connection; SignalDB reaches them through the catalog's session-statement support ([#386](https://github.com/JanKaul/iceberg-rust/pull/386)). Session statements run _after_ the catalog's own, so SignalDB could override a default if it ever needed to; today it only adds.
 
-The pool connects lazily, so the pragmas are applied on first use rather than at construction. Nothing touches the database in between.
+The pool connects lazily, so the pragmas (and, for PostgreSQL, the first real connection and table creation) are applied on first use rather than at construction. Nothing touches the database in between.
 
 ### Metadata retention
 
@@ -181,7 +191,7 @@ Every Iceberg commit writes a new `metadata.json`. To stop these accumulating wi
 
 The properties are applied at table creation, and `ensure_table` backfills any that are absent when it loads a pre-existing table (#959: tables created before the properties existed never pruned, so metadata accumulated forever). The backfill only adds missing keys — operator-set values are never overwritten — so it commits at most once per table; a commit lost to a concurrent-writer race is logged and retried on the next load. Note the backfill bounds growth going forward only: metadata files that already aged out of the metadata-log before the backfill are orphaned and need a one-time cleanup.
 
-These are honored by the SQL catalog's delete-after-commit support (contributed upstream as [JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382); SignalDB is temporarily pinned to a fork commit carrying it — see the note in `Cargo.toml`). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
+These are honored by the SQL catalog's delete-after-commit support ([JanKaul/iceberg-rust#382](https://github.com/JanKaul/iceberg-rust/pull/382)). This is safe because SignalDB queries only current snapshots (no metadata time-travel), and snapshot history is separately bounded by the compactor's snapshot expiration.
 
 ### Output file size
 
@@ -196,9 +206,9 @@ Left unset — on a table no compaction has touched yet — the writer falls bac
 Iceberg stores each column's value counts and min/max bounds inline in the **manifest entry of every data file**, so a bound is a per-file cost paid on every query plan, forever. Two controls keep that cost proportionate:
 
 - **`truncate(16)` by default.** Bounds are shortened to 16 characters rather than stored at full length. A lower bound truncates to a prefix; an upper bound truncates and is then incremented so it still covers every value it bounds — and is dropped outright if it cannot be incremented, since an understated upper bound would prune files that hold matching rows. This is the Iceberg default and needs no property; iceberg-rust previously stored untruncated bounds for every column.
-- **`counts` for free-text columns.** `body`, `status_message` and `exemplars` get `write.metadata.metrics.column.<col> = "counts"` at table creation (`common::schema::metrics_properties_for_free_text_columns`): counts are kept for the planner's cardinality estimates, bounds are dropped. No query compares these columns by range — `body` and `status_message` are matched by substring or regex, `exemplars` is a JSON blob read whole — so their bounds could never prune anything.
+- **`counts` for free-text columns.** `body` and `status_message` get `write.metadata.metrics.column.<col> = "counts"` at table creation (`common::schema::metrics_properties_for_free_text_columns`): counts are kept for the planner's cardinality estimates, bounds are dropped. No query compares these columns by range — they are matched by substring or regex — so their bounds could never prune anything.
 
-Attribute columns (`resource_attributes`, `scope_attributes`, `attributes`) are `map<string,string>`, and `attr_tokens` is a list, so neither carries bounds regardless. `trace_id`/`span_id` keep the truncated default; their bounds effectively never prune (a file's random-id range spans nearly the whole space) but the Parquet bloom filters described below do that work.
+Attribute columns are typed maps (`{container}_str`, `_int`, `_double`, `_bool`) plus a binary `{container}_residue`. Parquet keeps statistics per leaf, not per map key, so a map carries no per-key bounds or bloom filters: a predicate on an unpromoted attribute key cannot prune files by itself. That is why the warm index and attribute promotion exist (see [Attribute storage tiers](#attribute-storage-tiers)). `trace_id`/`span_id` keep the truncated default; their bounds effectively never prune (a file's random-id range spans nearly the whole space) but the Parquet bloom filters described below do that work.
 
 Honored by [JanKaul/iceberg-rust#385](https://github.com/JanKaul/iceberg-rust/pull/385).
 
@@ -214,11 +224,11 @@ Full:      Identifier([tenant_slug, dataset_slug], table_name)
 
 Examples:
 
-| Tenant | Dataset | Table         | Iceberg Identifier                                 |
-| ------ | ------- | ------------- | -------------------------------------------------- |
-| acme   | prod    | traces        | `Identifier(["acme", "prod"], "traces")`           |
-| acme   | archive | logs          | `Identifier(["acme", "archive"], "logs")`          |
-| beta   | staging | metrics_gauge | `Identifier(["beta", "staging"], "metrics_gauge")` |
+| Tenant | Dataset | Table   | Iceberg Identifier                           |
+| ------ | ------- | ------- | -------------------------------------------- |
+| acme   | prod    | traces  | `Identifier(["acme", "prod"], "traces")`     |
+| acme   | archive | logs    | `Identifier(["acme", "archive"], "logs")`    |
+| beta   | staging | metrics | `Identifier(["beta", "staging"], "metrics")` |
 
 Namespaces are created explicitly: `IcebergTableManager::ensure_table()` (`src/common/src/iceberg/table_manager.rs`) calls `create_namespace` before creating a table, treating "already exists" errors from concurrent creators as success.
 
@@ -274,7 +284,7 @@ At startup, the Querier registers a `TenantCatalog` per enabled tenant, named by
 
 ## Table Types
 
-SignalDB creates up to 8 table types per tenant-dataset combination, controlled by the `[schema.default_schemas]` config (resolved per tenant, so a tenant override narrows the set).
+SignalDB creates up to 5 table types per tenant-dataset combination, controlled by the `[schema.default_schemas]` config (resolved per tenant, so a tenant override narrows the set).
 
 Tables reach a dataset two ways, both through the same load-or-create `CatalogManager::ensure_table`:
 
@@ -285,18 +295,15 @@ Because both paths call the same constructor, a provisioned table is indistingui
 
 ### Signal Type to Table Mapping
 
-| Signal Type              | Table Name                      | WalOperation    | Schema Source                    |
-| ------------------------ | ------------------------------- | --------------- | -------------------------------- |
-| Traces                   | `traces`                        | `WriteTraces`   | `schemas.toml` (v2, inherits v1) |
-| Logs                     | `logs`                          | `WriteLogs`     | `schemas.toml` (v1)              |
-| Metrics (Gauge)          | `metrics_gauge`                 | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Sum)            | `metrics_sum`                   | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Histogram)      | `metrics_histogram`             | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Exp. Histogram) | `metrics_exponential_histogram` | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Metrics (Summary)        | `metrics_summary`               | `WriteMetrics`  | `schemas.toml` (v1)              |
-| Profiles                 | `profiles`                      | `WriteProfiles` | `schemas.toml` (v1)              |
+| Signal Type      | Table Name         | WalOperation    | Schema Source                    |
+| ---------------- | ------------------ | --------------- | -------------------------------- |
+| Traces           | `traces`           | `WriteTraces`   | `schemas.toml` (physical-v5)     |
+| Logs             | `logs`             | `WriteLogs`     | `schemas.toml` (physical-v4)     |
+| Metrics          | `metrics`          | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
+| Metric exemplars | `metric_exemplars` | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
+| Profiles         | `profiles`         | `WriteProfiles` | `schemas.toml` (physical-v3)     |
 
-For metrics, the target table name is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics_gauge`.
+`metrics` holds one row per data point across every metric type (`metric_type`: gauge, sum, histogram, exponential_histogram, summary), with typed columns for histogram buckets, exponential-histogram buckets, and summary quantiles rather than JSON strings. `metric_exemplars` holds one row per exemplar, linked to its owning point via `series_id` plus `point_timestamp` (a `series_id` alone identifies the series, not one point). A `WriteMetrics` batch's target table is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics`; the five legacy per-type tables (`metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary`) are dropped by the writer's table reconciler on upgrade and no longer created.
 
 ### Partitioning
 
@@ -325,7 +332,8 @@ most recent _n_":
 | ---------------------- | -------------------------------------------- |
 | `traces`               | `timestamp`, `trace_id`                      |
 | `logs`                 | `timestamp`, `service_name`, `severity_text` |
-| `metrics_*` (all five) | `timestamp`, `metric_name`, `service_name`   |
+| `metrics`              | `timestamp`, `metric_name`, `service_name`   |
+| `metric_exemplars`     | `timestamp`, `trace_id`                      |
 | `profiles`             | `timestamp`, `service_name`                  |
 
 All columns are ascending with nulls first. `TableSchema::sort_key_columns()`
@@ -386,8 +394,8 @@ plan, and how to switch the behavior off — see
 ### Table Schemas
 
 `schemas.toml` (compiled into the binary via `include_str!`) is the physical
-schema source of truth for all six built-in table types — traces, logs, and
-all five metrics representations plus profiles — resolved with versioning
+schema source of truth for all five built-in table types — traces, logs,
+metrics, metric_exemplars, and profiles — resolved with versioning
 and inheritance via `SchemaDefinitions`/`ResolvedSchema`
 (`src/common/src/schema/schema_parser.rs`). `src/common/src/iceberg/schemas.rs`'s
 `create_*_schema_with()` functions are thin wrappers around that resolution
@@ -396,82 +404,160 @@ lists — metrics/profiles only gained this in the same change that added
 their `schemas.toml` sections; before that, only traces/logs resolved from
 TOML and metrics/profiles were hand-written Rust.
 
-#### Traces Table (v2 -- current)
+#### Traces Table (v5 -- current)
 
-Defined in `schemas.toml` via v1 base + v2 inheritance with renames and additions.
+Defined in `schemas.toml` via v1 base plus v2 (renames, computed fields), v3 (#1208's numeric/dropped-count columns), v4 (#1340's `resource_identity`), and v5 (the typed attribute layout, `otel-native-schema` layer 4 -- see below) inheritance.
 
-| #   | Field                  | Iceberg Type | Required | Notes                                                |
-| --- | ---------------------- | ------------ | -------- | ---------------------------------------------------- |
-| 1   | `trace_id`             | String       | Yes      |                                                      |
-| 2   | `span_id`              | String       | Yes      |                                                      |
-| 3   | `parent_span_id`       | String       | No       |                                                      |
-| 4   | `span_name`            | String       | Yes      | Renamed from `name` in v2                            |
-| 5   | `service_name`         | String       | Yes      |                                                      |
-| 6   | `start_time_unix_nano` | Long         | Yes      | Nanoseconds since epoch                              |
-| 7   | `end_time_unix_nano`   | Long         | Yes      | Nanoseconds since epoch                              |
-| 8   | `duration_nanos`       | Long         | Yes      | Renamed from `duration_nano` in v2                   |
-| 9   | `span_kind`            | String       | Yes      |                                                      |
-| 10  | `status_code`          | String       | Yes      |                                                      |
-| 11  | `status_message`       | String       | No       |                                                      |
-| 12  | `is_root`              | Boolean      | Yes      |                                                      |
-| 13  | `span_attributes`      | String       | No       | JSON. Renamed from `attributes_json` in v2           |
-| 14  | `resource_attributes`  | String       | No       | JSON. Renamed from `resource_json` in v2             |
-| 15  | `events`               | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
-| 16  | `links`                | String       | No       | JSON serialized (nested List<Struct> in Flight)      |
-| 17  | `trace_state`          | String       | No       |                                                      |
-| 18  | `resource_schema_url`  | String       | No       |                                                      |
-| 19  | `scope_name`           | String       | No       |                                                      |
-| 20  | `scope_version`        | String       | No       |                                                      |
-| 21  | `scope_schema_url`     | String       | No       |                                                      |
-| 22  | `scope_attributes`     | String       | No       |                                                      |
-| 23  | `timestamp`            | Timestamp    | Yes      | Computed from `start_time_unix_nano`. Partition key. |
-| 24  | `date_day`             | Date         | Yes      | Computed from timestamp                              |
-| 25  | `hour`                 | Int          | Yes      | Computed from timestamp                              |
+| #   | Field                                                      | Iceberg Type           | Required | Notes                                                                                             |
+| --- | ---------------------------------------------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------- |
+| 1   | `trace_id`                                                 | String                 | Yes      |                                                                                                   |
+| 2   | `span_id`                                                  | String                 | Yes      |                                                                                                   |
+| 3   | `parent_span_id`                                           | String                 | No       |                                                                                                   |
+| 4   | `span_name`                                                | String                 | Yes      | Renamed from `name` in v2                                                                         |
+| 5   | `service_name`                                             | String                 | Yes      |                                                                                                   |
+| 6   | `start_time_unix_nano`                                     | Long                   | Yes      | Nanoseconds since epoch                                                                           |
+| 7   | `end_time_unix_nano`                                       | Long                   | Yes      | Nanoseconds since epoch                                                                           |
+| 8   | `duration_nanos`                                           | Long                   | Yes      | Renamed from `duration_nano` in v2                                                                |
+| 9   | `span_kind`                                                | String                 | Yes      | Derived from `span_kind_number`, never the reverse                                                |
+| 10  | `status_code`                                              | String                 | Yes      | Derived from `status_code_number`, never the reverse                                              |
+| 11  | `status_message`                                           | String                 | No       |                                                                                                   |
+| 12  | `is_root`                                                  | Boolean                | Yes      |                                                                                                   |
+| 13  | `span_attributes_str`                                      | Map<String,String>     | No       | v5: typed attribute layout -- one of five `span_attributes` columns, see below                    |
+| 13a | `span_attributes_int`                                      | Map<String,Long>       | No       | v5: as above                                                                                      |
+| 13b | `span_attributes_double`                                   | Map<String,Double>     | No       | v5: as above                                                                                      |
+| 13c | `span_attributes_bool`                                     | Map<String,Boolean>    | No       | v5: as above                                                                                      |
+| 13d | `span_attributes_residue`                                  | Binary                 | No       | v5: one CBOR document per row for off-type/array/kvlist/bytes values, see below                   |
+| 14  | `resource_attributes_str`                                  | Map<String,String>     | No       | v5: typed attribute layout, replaces v2's `resource_attributes` (renamed from `resource_json`)    |
+| 14a | `resource_attributes_int`                                  | Map<String,Long>       | No       | v5: as above                                                                                      |
+| 14b | `resource_attributes_double`                               | Map<String,Double>     | No       | v5: as above                                                                                      |
+| 14c | `resource_attributes_bool`                                 | Map<String,Boolean>    | No       | v5: as above                                                                                      |
+| 14d | `resource_attributes_residue`                              | Binary                 | No       | v5: as above                                                                                      |
+| 15  | `events`                                                   | String                 | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
+| 16  | `links`                                                    | String                 | No       | JSON serialized (nested List<Struct> in Flight)                                                   |
+| 17  | `trace_state`                                              | String                 | No       |                                                                                                   |
+| 18  | `resource_schema_url`                                      | String                 | No       |                                                                                                   |
+| 19  | `scope_name`                                               | String                 | No       |                                                                                                   |
+| 20  | `scope_version`                                            | String                 | No       |                                                                                                   |
+| 21  | `scope_schema_url`                                         | String                 | No       |                                                                                                   |
+| 22  | `scope_attributes_str`/`_int`/`_double`/`_bool`/`_residue` | Map/Map/Map/Map/Binary | No       | v5: typed attribute layout, same five-column shape as `span_attributes`/`resource_attributes`     |
+| 23  | `timestamp`                                                | Timestamp              | Yes      | Computed from `start_time_unix_nano`. Partition key.                                              |
+| 24  | `date_day`                                                 | Date                   | Yes      | Computed from timestamp                                                                           |
+| 25  | `hour`                                                     | Int                    | Yes      | Computed from timestamp                                                                           |
+| 26  | `span_kind_number`                                         | Int                    | No       | v3: numeric OTel source of truth for `span_kind` (#1208)                                          |
+| 27  | `status_code_number`                                       | Int                    | No       | v3: numeric OTel source of truth for `status_code` (#1208)                                        |
+| 28  | `dropped_attributes_count`                                 | Long                   | No       | v3: preserved verbatim from the OTel span (#1208)                                                 |
+| 29  | `dropped_events_count`                                     | Long                   | No       | v3: as above                                                                                      |
+| 30  | `dropped_links_count`                                      | Long                   | No       | v3: as above                                                                                      |
+| 31  | `resource_identity`                                        | String                 | No       | v4: digest of the span's resource attribute set, from `common::schema::resource_identity` (#1340) |
+
+All v3/v4/v5 additions are nullable; null on any row written before its column existed. See
+[Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) below for what the five
+columns per container mean and how the v4 -> v5 cutover was applied.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
-#### Logs Table (v1 -- current)
+##### Typed attribute layout (v5, one-shot cutover)
+
+Every attribute container on every signal (span/log/record, resource, scope)
+is five physical columns instead of one `Map<String,String>`: one typed map
+per canonical type (`{container}_str`, `_int`, `_double`, `_bool`) plus a
+`{container}_residue` `Binary` column holding one CBOR document per row for
+values that have no typed home -- a value whose sent type doesn't match the
+key's canonical type, an array or key-value list, or bytes. A key lives in
+exactly one typed home, chosen by the attribute type authority (precedence
+and scoping: [Canonical types](../users/schema-registry.md#canonical-types));
+a later value of another type goes to the residue rather than retyping the
+column.
+
+This landed as a **one-shot cutover**, not an evolution: a table still in the
+legacy single-map layout is dropped and recreated in the typed layout the
+next time it is loaded (`IcebergTableManager::ensure_table`), because Iceberg
+schema evolution cannot add or remove map-typed columns on a live table. Data
+in a table at cutover time is not migrated -- see
+`docs/operations/table-provisioning.md` for the operational impact.
+
+#### Logs Table (v4 -- current)
 
 Defined in `schemas.toml`.
 
-| #   | Field                 | Iceberg Type       | Required | Notes                                  |
-| --- | --------------------- | ------------------ | -------- | -------------------------------------- |
-| 1   | `timestamp`           | Timestamp          | Yes      | Partition key                          |
-| 2   | `observed_timestamp`  | Timestamp          | No       |                                        |
-| 3   | `trace_id`            | String             | No       | Correlation with traces                |
-| 4   | `span_id`             | String             | No       | Correlation with traces                |
-| 5   | `trace_flags`         | Int                | No       |                                        |
-| 6   | `severity_text`       | String             | No       |                                        |
-| 7   | `severity_number`     | Int                | No       |                                        |
-| 8   | `service_name`        | String             | Yes      |                                        |
-| 9   | `body`                | String             | No       |                                        |
-| 10  | `resource_schema_url` | String             | No       |                                        |
-| 11  | `resource_attributes` | Map<String,String> | No       | typed map (legacy tables: JSON string) |
-| 12  | `scope_schema_url`    | String             | No       |                                        |
-| 13  | `scope_name`          | String             | No       |                                        |
-| 14  | `scope_version`       | String             | No       |                                        |
-| 15  | `scope_attributes`    | Map<String,String> | No       | typed map (legacy tables: JSON string) |
-| 16  | `log_attributes`      | Map<String,String> | No       | typed map (legacy tables: JSON string) |
-| 17  | `date_day`            | Date               | Yes      | Computed from timestamp                |
-| 18  | `hour`                | Int                | Yes      | Computed from timestamp                |
+| #   | Field                                               | Iceberg Type           | Required | Notes                                                                                                         |
+| --- | --------------------------------------------------- | ---------------------- | -------- | ------------------------------------------------------------------------------------------------------------- |
+| 1   | `timestamp`                                         | Timestamp              | Yes      | Partition key                                                                                                 |
+| 2   | `observed_timestamp`                                | Timestamp              | No       |                                                                                                               |
+| 3   | `trace_id`                                          | String                 | No       | Correlation with traces                                                                                       |
+| 4   | `span_id`                                           | String                 | No       | Correlation with traces                                                                                       |
+| 5   | `trace_flags`                                       | Int                    | No       |                                                                                                               |
+| 6   | `severity_text`                                     | String                 | No       |                                                                                                               |
+| 7   | `severity_number`                                   | Int                    | No       |                                                                                                               |
+| 8   | `service_name`                                      | String                 | Yes      |                                                                                                               |
+| 9   | `body`                                              | String                 | No       |                                                                                                               |
+| 10  | `resource_schema_url`                               | String                 | No       |                                                                                                               |
+| 11  | `resource_attributes_{str,int,double,bool,residue}` | Map/Map/Map/Map/Binary | No       | v4: typed attribute layout -- see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) above |
+| 12  | `scope_schema_url`                                  | String                 | No       |                                                                                                               |
+| 13  | `scope_name`                                        | String                 | No       |                                                                                                               |
+| 14  | `scope_version`                                     | String                 | No       |                                                                                                               |
+| 15  | `scope_attributes_{str,int,double,bool,residue}`    | Map/Map/Map/Map/Binary | No       | v4: typed attribute layout, same shape as `resource_attributes`                                               |
+| 16  | `log_attributes_{str,int,double,bool,residue}`      | Map/Map/Map/Map/Binary | No       | v4: typed attribute layout, same shape as `resource_attributes`                                               |
+| 17  | `resource_identity`                                 | String                 | No       | v2: digest of the record's resource attribute set (#1340). Null on any row written before the column existed. |
+| 18  | `date_day`                                          | Date                   | Yes      | Computed from timestamp                                                                                       |
+| 19  | `hour`                                              | Int                    | Yes      | Computed from timestamp                                                                                       |
+| 20  | `event_name`                                        | String                 | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
+| 21  | `dropped_attributes_count`                          | Long                   | No       | v3: preserved verbatim from the OTel log record (#1743)                                                       |
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
+### Attribute storage tiers
+
+An attribute key is stored once, in its canonical typed home. Three tiers sit
+on top of that, from cheapest to fastest:
+
+- **Cold: typed home maps plus residue.** Every attribute container is five
+  columns (see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover)).
+  A predicate on a canonical-typed key compares the typed value directly: exact,
+  cast-free, and range-capable for numbers. The map has no per-key statistics,
+  so this tier reads every file in the time range.
+- **Warm: containment index (opt-in).** Enabled per signal and optionally per
+  dataset by `[schema.warm_index]` (`WarmIndexConfig`, `src/common/src/config/mod.rs`);
+  it only applies to tables on the typed layout. The table gains an `attr_index`
+  `List<Binary>` column holding one token per `(key, value)` pair written to a
+  typed home (never residue), with a Parquet bloom filter on the list leaf sized
+  from `rows_per_row_group * attrs_per_row`, capped at `max_bloom_ndv`. The
+  querier checks the bloom filters of candidate files for an equality predicate
+  on a typed home and skips files that cannot match; range and other predicates
+  fall back to the cold scan. `[querier.warm_index]` (`WarmIndexQuerierConfig`,
+  documented in `signaldb.dist.toml`) gates the probe so non-selective
+  predicates skip it. The index costs storage and write time, which is why it
+  is off by default.
+- **Hot: promoted columns.** The compactor copies a demanded `(level, key)` into
+  an `attr_<level>_<key>` column typed as the key's canonical type; the typed map
+  keeps the value. See [Typed promoted attribute columns](#typed-promoted-attribute-columns).
+
+None of this changes query results: promotion and the warm index only decide
+how much is read. Queries name the logical attribute, never the physical column.
+
 ### Materialized labels
 
-By default every attribute other than the promoted columns above lives in
-the `*_attributes` JSON and is queried by a substring match — inexact and
-limited to `=` / `!=`. Configuring `[schema.materialized_labels]` promotes
-chosen attribute keys into dedicated columns so they can be matched exactly,
-by regex, and with ordered comparisons.
+`label_<key>` columns predate the typed layout. They are a string copy of a
+chosen attribute key. The dialects that lower to the IR (LogQL's primary path,
+PromQL, Tempo search) follow the IR's rule: a `label_<key>` column stands in
+for a key only when its canonical type is String and it is recorded at exactly
+one level; otherwise the query reads the typed home (or the
+`attr_<level>_<key>` column). Only the non-IR paths read a label column
+directly: LogQL's fallback for queries the IR cannot express, and the metric
+metadata matchers. Configuring `[schema.materialized_labels]` adds these
+columns to tables created afterwards.
 
 ```toml
 [schema.materialized_labels]
 logs = ["namespace", "pod"]
 # traces = [...]   # metrics / profiles likewise
 
-# Per-tenant override: replaces the global set wholesale for that tenant
-[auth.tenants.schema.materialized_labels]
+# Per-tenant override: a tenant's schema block is merged over the global
+# [schema] field by field. This replaces acme's logs list only; its traces,
+# metrics and profiles lists stay the global ones.
+[tenants.tenants.acme]
+enabled = true
+[tenants.tenants.acme.schema.materialized_labels]
 logs = ["team", "region"]
 ```
 
@@ -479,41 +565,123 @@ logs = ["team", "region"]
   `label_<k>` with non-alphanumeric characters replaced by `_` (so
   `http.method` → `label_http_method`). This is the one mapping used by
   schema generation, the writer, and the querier.
+- **Collision-proof naming**: two configured keys that sanitize to the same
+  candidate name (e.g. `http.method` and `http_method` both →
+  `label_http_method`) never share a column or drop each other's values.
+  Resolution goes through
+  `common::iceberg::evolution::resolve_label_columns_canonical` /
+  `resolve_label_columns_fresh` — the same doc-stamping mechanism [the label
+  evolution path](#label-columns-can-be-added-to-existing-tables) uses
+  (`resolve_label_columns`), wrapped to sort the configured keys into a
+  canonical (alphabetical) order before resolving: the key that sorts first
+  claims the unsuffixed candidate, a later colliding key gets the next free
+  deterministic suffix (`label_http_method_2`). Table creation
+  (`ResolvedSchema::build_iceberg_schema`) seeds the resolution from the
+  table's own base columns (so a label colliding with a _base_ column name
+  is suffixed rather than dropped too) and stamps each label column's `doc`
+  the same way `add_label_columns` does, so the compactor's backfill
+  resolves a statically-configured column exactly as it would one added by
+  auto-promotion. Sorting first — rather than resolving in the configured
+  list's literal order — means reordering `[schema.materialized_labels]`
+  (a no-op edit under any reasonable reading of that config) can never
+  silently reassign an already-colliding key to a different physical
+  column.
+  The writer's Flight ingest path resolves labels _before_ a batch is
+  written to WAL, deliberately without a catalog round trip (see
+  `flight_iceberg.rs`'s module doc), so it cannot consult a table's actual
+  committed schema the way `add_label_columns` does — it uses
+  `resolve_label_columns_fresh`, which recomputes the canonical assignment
+  from the configured key _set_ alone. This agrees with what table creation
+  assigned as long as that set hasn't changed since the table was created.
+  When it has — an operator adds or removes a key from
+  `[schema.materialized_labels]` on a table that already exists — the two
+  resolutions diverge concretely: a table created with `logs =
+["http_method"]` gets `label_http_method`, doc-tagged for that key; the
+  config becomes `["http.method", "http_method"]`; the Flight path now
+  assigns `http.method` (which sorts first) to `label_http_method` and
+  `http_method` to `label_http_method_2` — backwards from what the table
+  actually has. Left uncorrected, `coerce_batch_to_schema`'s match-by-name
+  would silently write `http.method`'s values into the column the table's
+  `doc` says belongs to `http_method`, and drop `http_method`'s own values
+  outright (no `label_http_method_2` column exists yet) — silent wrong data
+  whose meaning depends on compaction timing, the same failure class the
+  collision-proof naming above fixes, just triggered by a set change
+  instead of a reorder.
+
+  `IcebergTableWriter::reconcile_label_columns` closes this for the write
+  path: immediately before a transformed batch is coerced to the table's
+  Arrow schema, it compares each configured key's fresh-resolved column
+  against the table's actual committed one (`column_for_key`, keyed off
+  `doc`) and renames the batch column when they differ — every rename is
+  computed from the batch's original schema and applied in one pass, so two
+  keys that need to swap names resolve correctly instead of one clobbering
+  the other mid-rename. A key with no promoted column yet whose fresh name
+  collides with a column that already belongs to a _different_ key has its
+  batch column dropped instead of written into that key's column — the
+  row's typed attribute columns still carry the value, so queries still find
+  it through the key's typed home, the same degrade as a table that simply
+  predates the label. Promoting that new key to a real column of its
+  own still requires schema evolution (`add_label_columns`), which nothing
+  triggers automatically for `[schema.materialized_labels]` (see below) —
+  reconciliation makes a config-set change _safe_, not a substitute for
+  actually promoting the new key. Matching is by provenance, not name: each
+  materialized `label_<key>` column carries its origin key in Arrow field
+  metadata (`LABEL_ORIGIN_KEY_METADATA`, `schema_transform.rs`), stamped
+  when the column is built and surviving the Arrow IPC round trip WAL
+  persistence uses, so `LabelColumnReconciliation::apply` resolves a
+  batch's columns by that stamped key rather than by name — immune to a
+  column-name collision between config generations (#1534). A WAL entry
+  written before this change carries no such metadata and falls back to
+  the original name-based guard described above.
+
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value
-  is also left in the attribute JSON, so label discovery is unaffected.
-- **Per-tenant resolution**: allowlists resolve per tenant — a tenant
-  schema override replaces the global set wholesale (no merging) — both
-  where tables are created (`CatalogManager::ensure_table`) and in the
-  writer's transforms.
+  is also left in its typed home, so label discovery is unaffected.
+- **Per-tenant resolution**: allowlists resolve per tenant — a signal's list
+  set in a tenant's schema block replaces that signal's global list, and an
+  unset one keeps it (`TenantSchemaOverride`) — both where tables are created
+  (`CatalogManager::ensure_table`) and in the writer's transforms.
 - **When it applies**: a table carries the columns from its configured set at
   creation time — whether provisioning or a first write created it; existing tables can gain further
   `label_<key>` columns post-creation through
   [schema evolution](#label-columns-can-be-added-to-existing-tables). A table
   that predates a label (and has not been evolved) keeps matching it through
-  the JSON substring path;
+  the key's typed home;
   the writer's schema coercion drops columns a table lacks and null-fills
   nullable columns it has but the current config no longer produces.
-- **Querying**: the querier routes a label to its `label_<key>` column when
-  the table has one, else to the JSON match (see the
-  [LogQL reference](../users/logql-reference.md#materialized-labels)).
+  **Known limitation**: nothing automatically promotes a _newly_ configured
+  key to a real column on a table that already exists — the writer's
+  signal-table reconciler (see the multi-tenancy skill) only walks
+  `schemas.toml` versions, and the compactor no longer adds `label_<key>`
+  columns.
+  `reconcile_label_columns` (above) keeps this safe rather than
+  corrupting: a new key's values stay on the typed-home path,
+  exactly as if the table simply predated the label, until the table is
+  recreated. Actually promoting it still needs a
+  dedicated reconciliation path; tracked as a follow-up to #1448.
+- **Querying**: the IR-lowered dialects follow the stand-in rule above; the
+  non-IR paths route a label to its `label_<key>` column when the table has one
+  (see the [LogQL reference](../users/logql-reference.md#materialized-labels)).
+  **Known limitation**: every querier resolution point
+  (`SchemaResolver::column_for`/`is_known` in `ir_planner.rs`, plus the
+  `logql`/`logs`/`metrics` lowerings) recomputes `materialized_column_name`
+  directly rather than consulting a column's `doc` or the tenant's
+  configured list — this predates #1448 and also affects auto-promoted
+  columns (#814). Under a collision, a query for the _second_ colliding key
+  still resolves to the first key's column instead of failing to resolve at
+  all: the query no longer errors, but it can silently read the wrong
+  key's values rather than its own. Closing this needs either the tenant's
+  resolved materialized-label list threaded into query planning (which
+  today runs in tenant-_slug_ space, while the config lookup is keyed by
+  tenant _id_ — bridging that safely is its own scoped change) or `doc`
+  propagated into the Arrow schema DataFusion scans so `SchemaResolver` can
+  resolve both mechanisms uniformly by origin key; tracked as a follow-up
+  to #1448, out of scope for the writer/schema-creation fix here.
 
-The same mechanism applies across all four signals:
-
-- **logs** — LogQL matches materialized labels exactly, with regex and
-  ordered comparisons;
-- **traces** — the Tempo search API (`tags` / TraceQL attribute selectors)
-  matches them exactly;
-- **metrics** — PromQL label matchers (`metric{key="v"}`) match exactly and
-  by regex on the column; `by (key)` / `without (key)` group on it, and the
-  label is part of each series' natural identity (bare selectors and
-  `rate()` emit one series per label combination);
-- **profiles** — the columns are populated for consistency; the Pyroscope
-  query surface filters only by `service_name` / sample type today.
-
-Each signal's writer transform extracts the label from that signal's
-attribute JSON (metrics per exploded data point); the querier routes to the
-column when the queried table has it, else the JSON substring match.
+The writer fills the columns for all four signals (metrics per exploded data
+point); how a query reads them is the rule above. Profiles populate them for
+consistency only; the Pyroscope query surface filters by `service_name` and
+sample type.
 
 ### Parquet bloom filters
 
@@ -534,9 +702,11 @@ columns:
   lookups on traces; logs-for-a-trace correlation on logs, where the columns
   are optional but named identically). Set via
   `common::schema::bloom_filter_properties_for_trace_columns`.
-- **logs** — additionally the derived `attr_tokens` list leaf (`key=value`
-  containment).
-- **all signals** — every materialized `label_<key>` column.
+- **all signals** — every materialized `label_<key>` column, read back from
+  the table's already-built schema by which fields carry a materialized-label
+  `doc` (`bloom_filter_properties_for_labels`), not independently re-resolved
+  from the configured key list — the two must never be able to target
+  different columns under a base-column collision (#1448).
 
 The `trace_id`/`span_id` columns additionally carry
 `write.parquet.bloom-filter-fpp.column.<col> = "0.01"`. A filter is sized from
@@ -578,96 +748,73 @@ DataFusion's physical filter-pushdown injects the query predicate into the
 defaulting on, a bloom-filtered file skips row groups that cannot contain the
 target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
 
-#### Metrics Gauge Table (v1 -- current)
+#### Metrics Table (physical-v4 -- current)
 
-Defined in `src/common/src/iceberg/schemas.rs`.
+Defined in `schemas.toml` (`[metrics.physical-v4]`). One wide table replacing
+the five legacy per-type tables (`metrics_gauge`, `metrics_sum`,
+`metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary`,
+dropped by the writer's table reconciler): one row per data point across
+every metric type, distinguished by `metric_type` (`gauge`, `sum`,
+`histogram`, `exponential_histogram`, `summary`). Histogram buckets, bounds,
+and summary quantiles are typed list columns instead of JSON strings.
 
-| #   | Field                      | Iceberg Type       | Required | Notes                           |
-| --- | -------------------------- | ------------------ | -------- | ------------------------------- |
-| 1   | `timestamp`                | Timestamp          | Yes      | Partition key                   |
-| 2   | `start_timestamp`          | Timestamp          | No       |                                 |
-| 3   | `service_name`             | String             | Yes      |                                 |
-| 4   | `metric_name`              | String             | Yes      |                                 |
-| 5   | `metric_description`       | String             | No       |                                 |
-| 6   | `metric_unit`              | String             | No       |                                 |
-| 7   | `value`                    | Double             | Yes      |                                 |
-| 8   | `flags`                    | Int                | No       |                                 |
-| 9   | `resource_schema_url`      | String             | No       |                                 |
-| 10  | `resource_attributes`      | String             | No       | JSON                            |
-| 11  | `scope_name`               | String             | No       |                                 |
-| 12  | `scope_version`            | String             | No       |                                 |
-| 13  | `scope_schema_url`         | String             | No       |                                 |
-| 14  | `scope_attributes`         | String             | No       | JSON                            |
-| 15  | `scope_dropped_attr_count` | Int                | No       |                                 |
-| 16  | `attributes`               | Map<String,String> | No       | typed map (legacy: JSON string) |
-| 17  | `exemplars`                | String             | No       | JSON                            |
-| 18  | `date_day`                 | Date               | Yes      | Computed                        |
-| 19  | `hour`                     | Int                | Yes      | Computed                        |
+| Field                                                                                             | Iceberg Type                  | Required | Notes                                                                                                                                     |
+| ------------------------------------------------------------------------------------------------- | ----------------------------- | -------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| `timestamp`                                                                                       | Timestamp                     | Yes      | Partition key                                                                                                                             |
+| `start_timestamp`                                                                                 | Timestamp                     | No       |                                                                                                                                           |
+| `service_name`                                                                                    | String                        | Yes      |                                                                                                                                           |
+| `metric_name`                                                                                     | String                        | Yes      |                                                                                                                                           |
+| `metric_description`                                                                              | String                        | No       |                                                                                                                                           |
+| `metric_unit`                                                                                     | String                        | No       |                                                                                                                                           |
+| `metric_type`                                                                                     | String                        | Yes      | `gauge`, `sum`, `histogram`, `exponential_histogram`, or `summary`                                                                        |
+| `series_id`                                                                                       | String                        | Yes      | Digest of metric name/type, resource identity, scope, and attributes; with `point_timestamp`, identifies the point an exemplar belongs to |
+| `value`                                                                                           | Double                        | No       | Gauge/sum                                                                                                                                 |
+| `count`, `sum`                                                                                    | Int64/Double                  | No       | Histogram/exponential_histogram/summary                                                                                                   |
+| `min`, `max`                                                                                      | Double/Double                 | No       | Histogram/exponential_histogram                                                                                                           |
+| `explicit_bounds`, `bucket_counts`                                                                | List\<Double\>/List\<Int64\>  | No       | Classic histogram                                                                                                                         |
+| `scale`, `zero_count`, `zero_threshold`                                                           | Int32/Int64/Double            | No       | Exponential histogram                                                                                                                     |
+| `positive_offset`, `positive_bucket_counts`                                                       | Int32/List\<Int64\>           | No       | Exponential histogram                                                                                                                     |
+| `negative_offset`, `negative_bucket_counts`                                                       | Int32/List\<Int64\>           | No       | Exponential histogram                                                                                                                     |
+| `quantiles`, `quantile_values`                                                                    | List\<Double\>/List\<Double\> | No       | Summary; parallel arrays                                                                                                                  |
+| `flags`                                                                                           | Int32                         | No       |                                                                                                                                           |
+| `aggregation_temporality`                                                                         | Int32                         | No       | Set only for sum/histogram/exponential_histogram                                                                                          |
+| `is_monotonic`                                                                                    | Boolean                       | No       | Set only for sum                                                                                                                          |
+| `resource_schema_url`, `resource_attributes`                                                      | String/typed attributes       | No       | See [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover)                                                                 |
+| `scope_name`, `scope_version`, `scope_schema_url`, `scope_attributes`, `scope_dropped_attr_count` |                               | No       |                                                                                                                                           |
+| `attributes`                                                                                      | typed attributes              | No       | The record-level container                                                                                                                |
+| `resource_identity`                                                                               | String                        | No       | Digest of the point's resource attribute set                                                                                              |
+| `date_day`, `hour`                                                                                | Date/Int32                    | Yes      | Computed                                                                                                                                  |
 
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
+**Partition**: `Hour(timestamp)`
 
-#### Metrics Sum Table (v1 -- current)
+#### Metric Exemplars Table (physical-v4 -- current)
 
-Extends Gauge with aggregation fields.
+Defined in `schemas.toml` (`[metric_exemplars.physical-v4]`). One row per
+exemplar; `series_id` plus `point_timestamp` together identify the `metrics`
+row it belongs to (`series_id` alone identifies only the series).
 
-| #     | Field                     | Iceberg Type | Required | Notes                                |
-| ----- | ------------------------- | ------------ | -------- | ------------------------------------ |
-| 1-8   | _(same as Gauge 1-8)_     |              |          |                                      |
-| 9     | `aggregation_temporality` | Int          | Yes      | 0=Unspecified, 1=Delta, 2=Cumulative |
-| 10    | `is_monotonic`            | Boolean      | Yes      |                                      |
-| 11-21 | _(same as Gauge 9-19)_    |              |          |                                      |
+| Field                                        | Iceberg Type     | Required | Notes                                       |
+| -------------------------------------------- | ---------------- | -------- | ------------------------------------------- |
+| `timestamp`                                  | Timestamp        | Yes      | Exemplar timestamp; partition key           |
+| `point_timestamp`                            | Timestamp        | Yes      | Timestamp of the metric point it belongs to |
+| `service_name`, `metric_name`, `metric_type` | String           | Yes      |                                             |
+| `series_id`                                  | String           | Yes      | Matches the `metrics` row's `series_id`     |
+| `value`                                      | Double           | No       |                                             |
+| `trace_id`, `span_id`                        | String           | No       | Hex-encoded, same convention as traces      |
+| `filtered_attributes`                        | typed attributes | No       |                                             |
+| `resource_identity`                          | String           | No       |                                             |
+| `date_day`, `hour`                           | Date/Int32       | Yes      | Computed                                    |
 
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
+**Partition**: `Hour(timestamp)`
 
-#### Metrics Histogram Table (v1 -- current)
+#### Profiles Table (v3 -- current)
 
-| #     | Field                                                 | Iceberg Type | Required | Notes       |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ----------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |             |
-| 7     | `count`                                               | Long         | Yes      | Total count |
-| 8     | `sum`                                                 | Double       | No       |             |
-| 9     | `min`                                                 | Double       | No       |             |
-| 10    | `max`                                                 | Double       | No       |             |
-| 11    | `bucket_counts`                                       | String       | No       | JSON array  |
-| 12    | `explicit_bounds`                                     | String       | No       | JSON array  |
-| 13    | `flags`                                               | Int          | No       |             |
-| 14    | `aggregation_temporality`                             | Int          | Yes      |             |
-| 15-25 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |             |
-
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
-
-#### Metrics Exponential Histogram Table (v1 -- current)
-
-| #     | Field                                                 | Iceberg Type | Required | Notes      |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ---------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |            |
-| 7     | `count`                                               | Long         | Yes      |            |
-| 8     | `sum`                                                 | Double       | No       |            |
-| 9     | `min`                                                 | Double       | No       |            |
-| 10    | `max`                                                 | Double       | No       |            |
-| 11    | `scale`                                               | Int          | No       |            |
-| 12    | `zero_count`                                          | Long         | No       |            |
-| 13    | `positive_offset`                                     | Int          | No       |            |
-| 14    | `positive_bucket_counts`                              | String       | No       | JSON array |
-| 15    | `negative_offset`                                     | Int          | No       |            |
-| 16    | `negative_bucket_counts`                              | String       | No       | JSON array |
-| 17    | `flags`                                               | Int          | No       |            |
-| 18    | `aggregation_temporality`                             | Int          | Yes      |            |
-| 19    | `zero_threshold`                                      | Double       | No       |            |
-| 20-30 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |            |
-
-**Partition**: `Hour(timestamp)` as `timestamp_hour`
-
-#### Metrics Summary Table (v1 -- current)
-
-| #     | Field                                                 | Iceberg Type | Required | Notes                                     |
-| ----- | ----------------------------------------------------- | ------------ | -------- | ----------------------------------------- |
-| 1-6   | _(same as Gauge 1-6)_                                 |              |          |                                           |
-| 7     | `count`                                               | Long         | Yes      |                                           |
-| 8     | `sum`                                                 | Double       | Yes      |                                           |
-| 9     | `quantile_values`                                     | String       | No       | JSON array of `{quantile, value}` objects |
-| 10    | `flags`                                               | Int          | No       |                                           |
-| 11-21 | _(resource/scope/attributes/exemplars/date_day/hour)_ |              |          |                                           |
+Defined in `schemas.toml` (see `[profiles.*]` for the full field list, not
+reproduced here). v2 (#1340) adds the same nullable `resource_identity`
+digest column the tables above gained, null on any row written before the
+column existed; v3 is the typed attribute layout (`profile_attributes`,
+`resource_attributes`, `scope_attributes` as their five typed columns each --
+see [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) above).
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -724,6 +871,15 @@ the same way on read (its record CRC fails), quarantined as
 its neighbours. See
 [WAL Persistence](../operations/wal-persistence.md#corrupted-entry-records-during-replay)
 for the full recovery behavior and the other `dead-letter/` artifact kinds.
+
+`dead-letter/` is not self-cleaning on its own: both services re-scan every
+WAL's directory each processing pass — including one whose live segments have
+already been fully drained and cleaned up, via
+`WalManager::scan_dead_letter_dirs` rather than the cached WAL set — report
+the true on-disk state on `signaldb.wal.dead_letter_entries`/`_bytes`, and
+delete marker+payload pairs older than `[wal].dead_letter_retention` (default
+30 days). See [WAL Persistence](../operations/wal-persistence.md) for the
+metric's attributes and the sweep's behavior.
 
 ### Concrete Example
 
@@ -928,8 +1084,8 @@ Schemas are defined in `schemas.toml` at the repository root and compiled into t
 
 | Feature             | Description                                                                                        |
 | ------------------- | -------------------------------------------------------------------------------------------------- |
-| **Versioning**      | Each signal type tracks a current version (e.g., `current_trace_version = "v2"`)                   |
-| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "v1"`                                  |
+| **Versioning**      | Each signal type tracks a current `physical-vN` (e.g., `current_trace_version = "physical-v5"`)    |
+| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "physical-v1"`                         |
 | **Field renames**   | Rename fields across versions: `{ from = "name", to = "span_name" }`                               |
 | **Field additions** | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }` |
 | **Computed fields** | Fields derived from other fields at write time                                                     |
@@ -943,35 +1099,58 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 3. Applying `field_renames` to inherited fields
 4. Appending `field_additions`
 
-### Flight Schema vs Iceberg Schema
+### Three version axes
 
-The Flight wire format (v1) and Iceberg storage format (v2) are intentionally different:
+"Version" means three independent things; do not read one as another. The
+`flight-schemas` skill summarises this page.
 
-| Aspect           | Flight Schema (v1)            | Iceberg Schema (v2)             |
+1. **Flight wire format** vs Iceberg storage: the `*_v1_to_*` transforms in
+   `src/writer/src/schema_transform.rs`. "v1"/"v2" in those names is historical
+   and only means wire to storage.
+2. **`physical-vN`**: the per-signal chain in `schemas.toml`, which moves when a
+   table's storage shape changes.
+3. **Logical schema version** (`logical_schema_version`, `LogicalSchema::VERSION`):
+   the client-visible OTel schema in `common::schema::logical`. A field change
+   there moves this axis only.
+
+### Flight wire vs Iceberg storage
+
+The two shapes differ intentionally. Traces, as the transform targets them
+(`physical-v4`, before the typed split):
+
+| Aspect           | Flight wire                   | Iceberg (`physical-v4`)         |
 | ---------------- | ----------------------------- | ------------------------------- |
 | Span name field  | `name`                        | `span_name`                     |
 | Duration field   | `duration_nano` (UInt64)      | `duration_nanos` (Long/Int64)   |
-| Attributes field | `attributes_json`             | `span_attributes`               |
+| Attributes field | `attributes_json`             | `span_attributes` (JSON string) |
 | Resource field   | `resource_json`               | `resource_attributes`           |
 | Time fields      | UInt64 (nanoseconds)          | Long/Int64 (nanoseconds)        |
 | Events/Links     | `List<Struct>` (nested Arrow) | `String` (JSON serialized)      |
 | Partition fields | None                          | `timestamp`, `date_day`, `hour` |
 
-### Write-Time Transformation
+### Write-time transformation
 
-The Writer applies `transform_trace_v1_to_v2()` (`src/writer/src/schema_transform.rs`) at ingestion time:
+Traces, logs and profiles are transformed in the writer's Flight `do_put`
+handler before the batch is written to the WAL, to their last pre-typed shape.
+For traces, `transform_trace_v1_to_v2()` targets a fixed `physical-v4` through
+a compiled plan: field renames, `UInt64` to `Int64` casts, `List<Struct>`
+events/links to JSON strings, and the computed `timestamp`/`date_day`/`hour`
+columns. Logs target `physical-v3` and profiles `physical-v2`.
 
-1. **Detection**: Checks if batch has `name` field (v1) or `span_name` field (v2)
-2. **Field renames**: Maps v1 field names to v2 names
-3. **Type conversions**: `UInt64` -> `Int64` for Iceberg compatibility
-4. **Complex type serialization**: `List<Struct>` events/links -> JSON strings
-5. **Computed fields**: Generates `timestamp`, `date_day`, `hour` from `start_time_unix_nano`
+Metrics are different: a metrics batch stays in wire format (`data_json`) in the
+WAL, and is shaped at commit by `transform_metrics_to_wide` and
+`transform_metric_exemplars` (`storage/iceberg.rs`) into the typed `metrics` and
+`metric_exemplars` tables.
 
-The transformation is applied in the Writer's Flight `do_put` handler before data is written to the WAL, ensuring all WAL data is in physical-v3 format (despite the function's name).
+The typed split also happens at commit, generically, in the table writer
+(`IcebergTableWriter`): it resolves each key's canonical type through the
+attribute type authority and splits every attribute container into the five
+typed columns. That is how a traces `physical-v4` batch reaches the table's
+`physical-v5` schema, and logs and profiles likewise.
 
 ### Label columns can be added to existing tables
 
-Existing tables can gain optional string `label_<key>` columns after creation via `add_label_columns()` (`src/common/src/iceberg/evolution.rs`). This is the evolution path used by attribute auto-promotion: the helper appends the columns to the current schema and commits `AddSchema` + `SetCurrentSchema` through `Catalog::update_table` — a metadata-only commit.
+Existing tables can gain optional string `label_<key>` columns after creation via `add_label_columns()` (`src/common/src/iceberg/evolution.rs`). The compactor no longer auto-promotes new label columns (it promotes to [typed per-level columns](#typed-promoted-attribute-columns) instead); the label path remains for pins and existing columns. The helper appends the columns to the current schema and commits `AddSchema` + `SetCurrentSchema` through `Catalog::update_table` — a metadata-only commit.
 
 - **No data rewrite**: Parquet files written before the flip are never rewritten for it; readers null-fill the new columns for old files. The rewrite-coupled promotion backfills values at the next compaction.
 - **Snapshot-pinned schemas remain reachable**: the previous schema stays in table metadata, so snapshots that pin it keep resolving.
@@ -982,9 +1161,20 @@ Existing tables can gain optional string `label_<key>` columns after creation vi
 
 Requires iceberg-rust rev >= 96f28c18; earlier revisions resolved `current_schema` through the current snapshot's pinned schema id, so the flip never took effect (JanKaul/iceberg-rust#378).
 
+### Typed promoted attribute columns
+
+Attribute promotion adds a redundant typed copy of one (attribute level, key) home: a nullable column `attr_<level>_<key>` for level `resource`, `scope`, or `record`, typed as the key's canonical type (`String` → string, `Int64` → long, `Float64` → double, `Bool` → boolean). The per-type map stays the key's only canonical home and keeps every value, so dropping the column (demotion) is a metadata-only commit that loses nothing. The writer never fills these columns; the compactor backfills them from the level's typed map at rewrite.
+
+- **Naming**: a key made of lowercase alphanumeric segments joined by single `.` or `_` gets a readable name, with `.` → `_` and `_` → `__` (`http.request.method` → `attr_record_http_request_method`, `http.response.status_code` → `attr_record_http_response_status__code`). Any other key gets `attr_<level>_<sanitized stem>___<8-hex FNV-1a hash>`.
+- **Origin in `doc`**: each column's field `doc` records its (level, key). A name already held by a column of another origin is never retyped; the promotion is skipped with a warning.
+- **Field ids** go past both the schema tree's maximum and `last_column_id`, and a dropped id is never reused.
+- **Querying**: the IR reads `coalesce(promoted, home)` per level and uses a promoted column only when it has the canonical Arrow type. The dialects that lower to the IR resolve attributes the same way; the non-IR fallback paths read `label_<key>` directly and never `attr_*`.
+
+The decision and demotion rules are operator-facing: see [Attribute Promotion](../operations/compactor/operations.md#attribute-promotion).
+
 ### An existing table's schema tracks and catches up to schemas.toml's version
 
-Beyond ad hoc label columns, `common::iceberg::evolution` also brings a **traces or logs** table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through.
+Beyond ad hoc label columns, `common::iceberg::evolution` also brings a table's whole schema forward to `schemas.toml`'s current version whenever `ensure_table` loads it (not just at creation) — the general-purpose counterpart to the label-specific helper above, and the mechanism issue #1208's `span_kind_number`/`status_code_number`/dropped-count columns ship through. Covers every `schemas.toml`-sourced signal: traces, logs, `metrics`, `metric_exemplars`, and profiles.
 
 - **Version tracked as a table property**, not a separate migrations store: `signaldb.schema.version` (e.g. `"physical-v3"`) is stamped in the same commit as any schema change (`SetProperties` alongside `AddSchema`/`SetCurrentSchema`). A table's version and its actual columns can never diverge independently of the table's own commit history the way an external tracking table could.
 - **Diffed by field name against the table's live schema**, never by regenerating `ResolvedSchema::to_iceberg_schema()` fresh — that function assigns field ids positionally on every call, safe only for a table created new; diffing a live table by position would shift every field after a removal and corrupt the id mapping already burned into its Parquet files. `diff_schema` instead reuses existing ids untouched and mints new ones (past both the schema tree's true maximum and the metadata's `last_column_id`) only for genuine additions.
@@ -992,7 +1182,6 @@ Beyond ad hoc label columns, `common::iceberg::evolution` also brings a **traces
 - **Straight to current, additions only, when the starting version is untrusted**: a table with no recorded property (pre-dates this mechanism), or one whose recorded property isn't actually found while walking `version_chain` back from the current version (a corrupted or retired version name), skips hop-walking and migrates directly to the current version in one step, never renaming or removing a field. Hop-by-hop removal assumes the starting shape is trusted; an inferred baseline isn't — a table already ahead of an early hop could otherwise lose fields the diff can't tell it legitimately has.
 - **Renames preserve the field id**: a hop's own `field_renames` (e.g. v1→v2's `name`→`span_name`) are resolved as a rename in place, not a removal plus a fresh-id addition — Iceberg readers map columns by id, so re-adding under a new id would orphan every historical value written under the old name's id.
 - **No backfill**: additions are always nullable and historical rows are never rewritten; `field_removals` only stops a column being read/written going forward, it never deletes the column's data from already-written Parquet files.
-- **Not yet covering metrics/profiles**: those five tables are hand-written in `iceberg_schemas.rs` with no `schemas.toml` definition to evolve against.
 
 ## Multi-Tenant Storage Isolation
 
@@ -1073,6 +1262,6 @@ metrics_enabled = true
 | `src/common/src/config/mod.rs`             | Configuration structs including tenant/dataset/storage                                                                                           |
 | `src/writer/src/storage/iceberg.rs`        | `IcebergTableWriter` -- table creation and data writes                                                                                           |
 | `src/writer/src/processor.rs`              | `WalProcessor` -- background WAL-to-Iceberg processing                                                                                           |
-| `src/writer/src/schema_transform.rs`       | Flight v1 -> Iceberg v2 schema transformation                                                                                                    |
+| `src/writer/src/schema_transform.rs`       | Flight wire -> physical schema transformation                                                                                                    |
 | `src/querier/src/flight.rs`                | `TenantCatalog` -- DataFusion/Iceberg namespace bridge                                                                                           |
 | `src/querier/src/query/table_ref.rs`       | Safe table reference construction with slug validation                                                                                           |

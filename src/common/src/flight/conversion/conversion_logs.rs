@@ -70,12 +70,22 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBa
                 let attributes_json =
                     serde_json::to_string(&attr_map).unwrap_or_else(|_| "{}".to_string());
 
-                // Extract body as JSON
-                let body_json = if let Some(body) = &log.body {
-                    serde_json::to_string(&extract_value(&Some(body.clone())))
-                        .unwrap_or_else(|_| "null".to_string())
-                } else {
-                    "null".to_string()
+                // Extract body as JSON. A string body goes through
+                // `encode_log_body` (issue #1433), the same function the
+                // querier calls to build an encoded `body` predicate
+                // literal, so the write side and that read site cannot
+                // drift apart; every other `AnyValue` shape serializes
+                // through its own `serde_json::Value` representation, which
+                // needs no extra wrapping (`decode_log_body`'s doc comment
+                // explains why only a string needs one).
+                let body_json = match &log.body {
+                    Some(body) => match extract_value(&Some(body.clone())) {
+                        serde_json::Value::String(s) => encode_log_body(&s),
+                        other => {
+                            serde_json::to_string(&other).unwrap_or_else(|_| "null".to_string())
+                        }
+                    },
+                    None => "null".to_string(),
                 };
 
                 // Extract severity - convert from SeverityNumber enum to i32
@@ -147,6 +157,24 @@ pub fn otlp_logs_to_arrow(request: &ExportLogsServiceRequest) -> Result<RecordBa
             event_name_array,
         ],
     )
+}
+
+/// The write-side half of `body`'s JSON-string encoding: wraps a plain
+/// string log body in a JSON string literal (quoted, with embedded
+/// quotes/backslashes/control characters escaped) exactly as
+/// `otlp_logs_to_arrow` does for a string `AnyValue` body, below. Kept next
+/// to [`decode_log_body`] and called directly by `otlp_logs_to_arrow`'s
+/// string branch so the two can't drift apart — and exported so a read site
+/// that needs to construct the *encoded* form of a body value, rather than
+/// decode a stored one, shares this implementation instead of reinventing
+/// it: `querier`'s `body` `eq`/`ne`/`in` predicate lowering compares against
+/// this encoding of the query literal rather than decoding every row
+/// (issue #1433).
+///
+/// `serde_json::to_string` over a `&str` cannot fail; the fallback exists
+/// only so this stays panic-free.
+pub fn encode_log_body(text: &str) -> String {
+    serde_json::to_string(text).unwrap_or_else(|_| text.to_string())
 }
 
 /// The read-side inverse of the body encoding above: `otlp_logs_to_arrow`
@@ -426,6 +454,29 @@ mod tests {
     use datafusion::arrow::record_batch::RecordBatch;
     use opentelemetry_proto::tonic::common::v1::any_value::Value;
     use std::sync::Arc;
+
+    #[test]
+    fn encode_log_body_round_trips_through_decode_log_body() {
+        let corpus = [
+            "",
+            "plain text",
+            "say \"hi\"",
+            "a\\b",
+            "line1\nline2",
+            "tab\there",
+            "café",               // non-ASCII, BMP
+            "rocket 🚀 emoji",    // non-BMP (outside the UTF-16 BMP)
+            "\u{0}control\u{1f}", // control characters
+        ];
+        for s in corpus {
+            let encoded = encode_log_body(s);
+            assert_eq!(
+                decode_log_body(&encoded),
+                s,
+                "round trip failed for {s:?} (encoded: {encoded:?})"
+            );
+        }
+    }
 
     #[test]
     fn decode_log_body_unwraps_a_plain_string() {

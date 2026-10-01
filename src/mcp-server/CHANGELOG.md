@@ -1,5 +1,50 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.1...mcp-server-v0.2.2) (2026-09-23)
+
+
+### Features
+
+* GitHub App integration for connecting a tenant's repositories ([#1600](https://github.com/cedricziel/signaldb/issues/1600)) ([6c9721e](https://github.com/cedricziel/signaldb/commit/6c9721ef0cf630df85e227a07be6ae30ee263191))
+* **mcp-server:** add skill:// resource for query_ir guidance ([#1549](https://github.com/cedricziel/signaldb/issues/1549)) ([ff173a2](https://github.com/cedricziel/signaldb/commit/ff173a24508ad01500e5182ebe1a5c73ffc91bfa))
+* **mcp:** add optional ui_base_url config for MCP server ([#1551](https://github.com/cedricziel/signaldb/issues/1551)) ([a90c8e0](https://github.com/cedricziel/signaldb/commit/a90c8e0cecbae181bcced4bc301ab619fc2a7352))
+* **mcp:** add search_trace_groups tool ([#1556](https://github.com/cedricziel/signaldb/issues/1556)) ([3575a73](https://github.com/cedricziel/signaldb/commit/3575a736724b4f27e2fc87b06d3fc41cc2351ec1))
+* **mcp:** deep-link enrichment for search_traces, get_trace, search_logs ([#1554](https://github.com/cedricziel/signaldb/issues/1554)) ([2bb94a7](https://github.com/cedricziel/signaldb/commit/2bb94a7c041277cd641f5c6635dfba68fb8bfba5))
+* **mcp:** serve skills as a discoverable catalog ([#1628](https://github.com/cedricziel/signaldb/issues/1628)) ([6462251](https://github.com/cedricziel/signaldb/commit/6462251b4e8437f6e70d1753144d440e7d1b4dc1))
+* multi-tenant MCP OAuth grants ([#1541](https://github.com/cedricziel/signaldb/issues/1541)) ([c5b49b0](https://github.com/cedricziel/signaldb/commit/c5b49b018f749a72b639366a18223081cecef7cc))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+* **router:** attach an existing GitHub App installation to a tenant ([#1618](https://github.com/cedricziel/signaldb/issues/1618)) ([0ab8e95](https://github.com/cedricziel/signaldb/commit/0ab8e95581f5213b02e8cded8af5b2b71c827516))
+* source context for stack frames from linked GitHub repositories ([#1601](https://github.com/cedricziel/signaldb/issues/1601)) ([acca49c](https://github.com/cedricziel/signaldb/commit/acca49ca770ab96464b12676211144bc20b5cc7c))
+
+
+### Bug Fixes
+
+* **mcp:** forward the selected tenant for multi-tenant credentials ([#1604](https://github.com/cedricziel/signaldb/issues/1604)) ([2bd6d81](https://github.com/cedricziel/signaldb/commit/2bd6d815b46d1aaffc46d6e442d04e24bdae3fab))
+
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.2.0...mcp-server-v0.2.1) (2026-09-12)
+
+
+### Features
+
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+* **mcp:** add dataset/tenant discovery tool and tenant confirmation scoping ([#1439](https://github.com/cedricziel/signaldb/issues/1439)) ([ab10083](https://github.com/cedricziel/signaldb/commit/ab1008366850918f8fcfe17b55576c16193eff7b))
+* **mcp:** let one session span multiple tenants and datasets ([#1441](https://github.com/cedricziel/signaldb/issues/1441)) ([bc9e6c2](https://github.com/cedricziel/signaldb/commit/bc9e6c2c255037be1de9a7c940f9f2ecba0aa750))
+* **querier:** accept bare dotted metric names in PromQL ([#1517](https://github.com/cedricziel/signaldb/issues/1517)) ([889224f](https://github.com/cedricziel/signaldb/commit/889224f6eafd5cab9a6344986ebe56adeb20f5c3))
+* **router:** serve query discovery from the registry and statistics ([#1312](https://github.com/cedricziel/signaldb/issues/1312)) ([41d2738](https://github.com/cedricziel/signaldb/commit/41d27384df6e90bd9e9731218e084dd27581e20b))
+* **schema-registry:** accept keys= batch resolution on GET /api/v1/schema/metrics ([#1508](https://github.com/cedricziel/signaldb/issues/1508)) ([6facbdc](https://github.com/cedricziel/signaldb/commit/6facbdcd182285bf54c1d2e922724d6bdeb6bae6))
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+
+
+### Bug Fixes
+
+* **mcp:** box the SDK error a completion lookup returns ([#1373](https://github.com/cedricziel/signaldb/issues/1373)) ([7df1288](https://github.com/cedricziel/signaldb/commit/7df12883a28c4d6af203c376f6efba70ee537820))
+
+
+### Code Refactoring
+
+* quality cleanups across writer, mcp-server, schema-model, and tests-integration ([#1330](https://github.com/cedricziel/signaldb/issues/1330)) ([cee4018](https://github.com/cedricziel/signaldb/commit/cee401872f96e2a6961edc1dd3714fa394a56c31))
+
 ## [0.2.0](https://github.com/cedricziel/signaldb/compare/mcp-server-v0.1.0...mcp-server-v0.2.0) (2026-08-17)
 
 

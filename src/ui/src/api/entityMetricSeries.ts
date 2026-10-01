@@ -10,14 +10,15 @@
  * *is* the observed-set filter — nothing here has to zero-fill, and nothing
  * downstream can mistake "not reported" for "reported as zero".
  */
-import type { QueryIrRequest } from "./gen";
+import type { IrStage, QueryIrRequest } from "./gen";
 import type { EntityPin } from "./catalog";
 import type { MetricHit } from "../features/schema/api";
 import {
   aggFor,
   HISTOGRAM_QUANTILE,
   isHistogram,
-  METRIC_SOURCES,
+  HISTOGRAM_ROWS,
+  METRICS_SOURCE,
   type IrSeries,
 } from "./entityMetrics";
 import { runIrQuery } from "./queryIr";
@@ -67,7 +68,7 @@ export function buildEntityMetricDocs(
   }
 
   /** Every document opens the same way: these names, this entity. */
-  const head = (batch: string[]) => [
+  const head = (batch: string[]): IrStage[] => [
     {
       where: {
         field: "metric.name",
@@ -75,7 +76,7 @@ export function buildEntityMetricDocs(
         value: `^(${batch.map(escapeName).join("|")})$`,
       },
     },
-    ...pinned.map((p) => ({
+    ...pinned.map((p): IrStage => ({
       where: { field: p.field, op: "eq", value: p.value },
     })),
   ];
@@ -89,7 +90,7 @@ export function buildEntityMetricDocs(
     for (const batch of chunk(names, METRIC_NAMES_PER_QUERY)) {
       docs.push({
         irVersion: 1,
-        from: METRIC_SOURCES.scalar,
+        from: METRICS_SOURCE,
         ...window,
         pipeline: [
           ...head(batch),
@@ -110,10 +111,11 @@ export function buildEntityMetricDocs(
       // and its default `rate` mode is the right reading of the cumulative
       // temporality most histogram instrumentation emits.
       irVersion: 3,
-      from: METRIC_SOURCES.histogram,
+      from: METRICS_SOURCE,
       ...window,
       pipeline: [
         ...head(batch),
+        HISTOGRAM_ROWS,
         {
           histogram_quantile: {
             q: HISTOGRAM_QUANTILE,

@@ -4,9 +4,12 @@ description: SignalDB Tempo API compatibility - implemented/stub endpoints, quer
 user-invocable: false
 sources:
   - src/router/src/endpoints/tempo.rs
-  - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/pyroscope.rs
   - src/querier/src/query/trace.rs
+  - src/querier/src/query/tags_to_ir.rs
+  - src/querier/src/query/ir_planner.rs
+  - src/ql-ir/**
   - src/querier/src/flight.rs
   - src/grafana-plugin/src/**
   - src/grafana-plugin/backend/src/**
@@ -18,9 +21,14 @@ sources:
 > _compatibility dialects_ for Grafana and existing clients. SignalDB also
 > exposes a first-party, structured **Query IR** at `POST /api/v1/query`
 > (`src/router/src/endpoints/query.rs`) — a versioned JSON query document over
-> `logs`/`traces` that the SignalDB UI and CLI build directly, without a dialect
-> string. It routes to the querier's `query_ir:` Flight ticket. See
-> `docs/users/querying-ir.md`. The dialects are unchanged and sit alongside it.
+> `logs`/`traces`/`profiles`/`metrics`/`exemplars` (`irVersion` 1 up to
+> `MAX_IR_VERSION` = 12, `src/query-ir/src/version.rs`) that the SignalDB UI and
+> CLI build directly, without a dialect string. It routes to the querier's
+> `query_ir:` Flight ticket. See `docs/users/querying-ir.md`. The dialects are
+> projections onto the same logical schema: `ql-ir` (`src/ql-ir/`) lowers TraceQL,
+> LogQL and PromQL to IR documents where the IR can express the query, and the
+> querier's `ir_planner` runs them (the PromQL evaluator is gone). LogQL keeps a
+> fallback path for the constructs `ql-ir` refuses.
 
 ## Implemented Endpoints (Router :3000)
 
@@ -33,7 +41,7 @@ sources:
 | `GET /tempo/api/search/tags`                     | Implemented         | Attribute keys observed in the window (resource + span, via the querier's `trace_tags` ticket) plus the fixed intrinsics (`name`, `status`, `kind`, `duration`, `rootServiceName`, `rootName`) — real discovery, not a hardcoded list (#1073)                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 | `GET /tempo/api/search/tag/{tag_name}/values`    | Implemented         | Real data for any tag via the querier's `trace_tag_values` ticket — dedicated columns, map-stored attributes, and the static `status`/`kind` enums alike; an unknown/unobserved tag is `200` with an empty list, never 501. Honors `start`/`end` (unix seconds), defaults to a 1h lookback when absent (matches the Loki metadata endpoints), 400 for millisecond-scale values (#929)                                                                                                                                                                                                                                                                                                                     |
 | `GET /tempo/api/v2/search/tags`                  | Implemented         | Same discovery, scoped (`resource`/`span`/`intrinsic`); `scope` query param narrows to one group                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                          |
-| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented         | Same backing as v1 tag values (including the `start`/`end` window semantics); scoped names (`resource.x`, `span.x`, `.x`) resolve to the same attribute                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
+| `GET /tempo/api/v2/search/tag/{tag_name}/values` | Implemented         | Same backing as v1 tag values (including the `start`/`end` window semantics); scoped names (`resource.x`, `span.x`, `.x`) resolve to the same attribute. Values come from decoding the whole resource/span attribute container (typed homes and residue) and are rendered as strings, so a typed value such as `200` or `true` appears as text; the same holds for v1 `/tag/{tag}/values`. The dedicated tags (`service.name`, `name`, `rootServiceName`, `rootName`) read columns instead                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | `GET /tempo/api/metrics/query`                   | 501 Not Implemented | TraceQL metrics not implemented (returns 501 since #552, no fabricated series)                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                            |
 | `GET /tempo/api/metrics/query_range`             | 501 Not Implemented | Same as above                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
 
@@ -49,7 +57,7 @@ format, mounted at `/pyroscope` and `/api/profiles`: `GET render`,
 and reachable through `signaldb-sdk`, `signaldb-cli profiles
 {types,labels,label-values,render,diff,by-trace}`, and the MCP server's
 `discover_profile_types`/`search_profiles`/`compare_profiles`/
-`profiles_for_trace` tools plus `discover_attributes(signal="profiles")` —
+`profiles_for_trace` tools plus `discover_attributes(signal="profiles")` (the latter via the Query IR) —
 not only raw HTTP. See `docs/users/profiles.md`.
 
 Spanset spans carry optional extras beyond Tempo's shape — `name`,
@@ -76,6 +84,7 @@ building happens in the router anymore.
 5. Ticket format: `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` (unix-second time hints, appended only when present) or `search_traces:{tenant_slug}:{dataset_slug}:{params}`
 6. Querier executes DataFusion SQL against Iceberg tables. Its session options come from `querier::session_config_from` (`[querier.datafusion]`: `split_file_groups_by_statistics`, `pushdown_filters`, `reorder_filters`, all defaulting to `true`). `split_file_groups_by_statistics` is what lets an ordered scan over attested files drop its sort — the options and optimizer rules in force decide whether a scan's declared ordering survives to the physical plan, so `session_config_from` is `pub` and `tests-integration/tests/querier/declared_order_correctness.rs` plans against it rather than a bare session
 7. Results stream back as Arrow RecordBatches (trace not found -> Flight `not_found` status -> HTTP 404; `deadline_exceeded` or `cancelled` -> HTTP 504, never 500)
+   Native IR and the dialects share a second route: `POST /api/v1/query` (and the Prometheus endpoints, which lower PromQL with `ql_ir::promql_to_ir` in the router) send a `query_ir:{tenant_slug}:{dataset_slug}:{json}` ticket; the querier's `IrService` validates the document and plans it with `ir_planner::plan_document`. Tempo search lowers `q` and `tags` (`tags_to_ir.rs`) to IR in the querier and plans them the same way, so a compat attribute filter compares the literal, coerced to the key's canonical type, with the key's typed home.
 8. Router formats as Tempo JSON response; errors carry the shared JSON envelope `{"status":"error","errorType":...,"error":<tonic Status message>}` (`ApiError` in `src/router/src/endpoints/api_error.rs`), never an empty body (#921). A `429` (per-tenant query rate limit) additionally carries `retryAfterMs` and the `Retry-After`/`X-RateLimit-Limit`/`X-RateLimit-Burst` headers, via `ApiError::rate_limited`; the SDK, CLI, MCP, and UI clients retry it automatically per `docs/users/client-retry.md`
 
 Responses carry the server span's trace context and stage timings
@@ -93,24 +102,30 @@ use SignalDB as a querier (`src/querier/src/services/tempo.rs`):
 - Tenant: authenticated `TenantContext` extension wins, else `X-Scope-OrgID`
   header (dataset `default`), else `default`/`default`
 - `SearchBlock`: `Unimplemented` (no Tempo block model in SignalDB)
-- Tag endpoints: still the old static three-name set (`service.name`,
-  `name`, `status`) and empty tag values — not yet upgraded to the
-  querier-backed discovery the HTTP API uses (#1073 only touched the HTTP
-  path); a follow-up could route `src/querier/src/services/tempo.rs`
-  through the same `TraceService::get_tags`/`get_tag_values`
+- `SearchTags`/`SearchTagsV2`: route through `TraceService::get_tags`, the
+  same discovery path the HTTP tag-name endpoints use (#1335); `SearchTags`
+  flattens all scopes, `SearchTagsV2` groups by scope and narrows to one
+  when the request's `scope` field is set
+- `SearchTagValues`/`SearchTagValuesV2`: still empty — value enumeration is
+  served by the HTTP API only (via `TraceService::get_tag_values`); a
+  follow-up could route these through the same discovery
 
 ## Admin API Endpoints
 
-Requires `admin_api_key` from config:
+The break-glass `admin_api_key` from config authenticates these with no
+`X-Tenant-ID` header; a tenant-admin session or `tenant:manage`-scoped key
+also reaches the `/api/v1/tenants/...` rows for its own tenant.
 
-| Endpoint                                           | Method         | Description            |
-| -------------------------------------------------- | -------------- | ---------------------- |
-| `/api/v1/admin/tenants`                            | GET/POST       | List/create tenants    |
-| `/api/v1/admin/tenants/{id}`                       | GET/PUT/DELETE | Manage tenant          |
-| `/api/v1/admin/tenants/{id}/api-keys`              | GET/POST       | List/create API keys   |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE/PATCH   | Revoke / update scopes |
-| `/api/v1/admin/tenants/{id}/datasets`              | GET/POST       | List/create datasets   |
-| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE         | Delete dataset         |
+| Endpoint                                              | Method         | Description                                                                                                                |
+| ----------------------------------------------------- | -------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `/api/v1/tenants`                        | GET            | List every tenant                                                                                                          |
+| `/api/v1/tenants/{id}`                   | GET/PUT/DELETE | Get/update/delete any tenant                                                                                               |
+| `/api/v1/tenants`                              | POST           | Create a tenant                                                                                                            |
+| `/api/v1/tenants/{id}/api-keys`                | GET/POST       | List/create API keys                                                                                                       |
+| `/api/v1/tenants/{id}/api-keys/{key_id}`       | DELETE/PATCH   | Revoke / update scopes                                                                                                     |
+| `/api/v1/tenants/{id}/datasets`                | GET/POST       | List/create datasets                                                                                                       |
+| `/api/v1/tenants/{id}/datasets/{dataset_name}` | DELETE         | Delete dataset                                                                                                             |
+| `/api/v1/users`                          | POST           | Create a user (`create_user`; `password_hash` optional — a passwordless user is SSO-only, change: oidc-login) |
 
 Every row above is also in the OpenAPI document, and reachable through
 `signaldb-sdk`, the `signaldb-cli admin` group, and the MCP server's
@@ -118,7 +133,7 @@ unprefixed platform-admin tools (`list_tenants`, `create_tenant`,
 `revoke_api_key`, ...) — not only raw HTTP.
 
 A separate tenant self-service API is mounted at `/api/v1`, and a
-management API at `/api/v1/manage` for tenant admins and `tenant:manage` keys (see the
+management API at `/api/v1` for tenant admins and `tenant:manage` keys (see the
 `multi-tenancy` skill for both, including which CLI/MCP surfaces reach
 each).
 
@@ -138,11 +153,11 @@ The Router's Tempo-compatible endpoints at `/tempo/api/...` work directly with G
 
 ## Key Files
 
-| File                                | Purpose                                                             |
-| ----------------------------------- | ------------------------------------------------------------------- |
-| `src/router/src/endpoints/tempo.rs` | Tempo API HTTP handlers                                             |
-| `src/router/src/endpoints/admin.rs` | Admin API handlers                                                  |
-| `src/tempo-api/`                    | Protobuf definitions and Tempo types                                |
-| `src/querier/src/query/trace.rs`    | Trace search/lookup and tag discovery (`get_tags`/`get_tag_values`) |
-| `src/querier/src/flight.rs`         | Query execution, ticket parsing                                     |
-| `src/grafana-plugin/`               | Native Grafana plugin                                               |
+| File                                       | Purpose                                                             |
+| ------------------------------------------ | ------------------------------------------------------------------- |
+| `src/router/src/endpoints/tempo.rs`        | Tempo API HTTP handlers                                             |
+| `src/router/src/endpoints/tenants.rs` | Instance-admin tenant/user handlers                                 |
+| `src/tempo-api/`                           | Protobuf definitions and Tempo types                                |
+| `src/querier/src/query/trace.rs`           | Trace search/lookup and tag discovery (`get_tags`/`get_tag_values`) |
+| `src/querier/src/flight.rs`                | Query execution, ticket parsing                                     |
+| `src/grafana-plugin/`                      | Native Grafana plugin                                               |

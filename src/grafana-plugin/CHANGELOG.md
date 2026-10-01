@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.3.1](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.3.0...grafana-plugin-v1.3.1) (2026-09-23)
+
+
+### Bug Fixes
+
+* **grafana-plugin:** apply the query Limit field and remove the unused Protocol selector ([#1636](https://github.com/cedricziel/signaldb/issues/1636)) ([fbcc5ed](https://github.com/cedricziel/signaldb/commit/fbcc5ed5855d12188f861633eab021e64ec8e658))
+
+
+### Code Refactoring
+
+* remove cross-crate dead code ([#1647](https://github.com/cedricziel/signaldb/issues/1647)) ([8b5b1d9](https://github.com/cedricziel/signaldb/commit/8b5b1d98f1150e75a8306beea29bb90465a4f921))
+
 ## [1.3.0](https://github.com/cedricziel/signaldb/compare/grafana-plugin-v1.2.0...grafana-plugin-v1.3.0) (2026-08-17)
 
 

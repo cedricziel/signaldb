@@ -4,8 +4,40 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="color-scheme" content="light dark" />
+    <meta
+      name="theme-color"
+      content="#f2f3f6"
+      media="(prefers-color-scheme: light)"
+    />
+    <meta name="theme-color" content="#14181e" />
     <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <!-- iOS Safari ignores the web app manifest for "Add to Home Screen"
+         and reads these instead. -->
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-title" content="SignalDB" />
     <title>SignalDB</title>
+    <!-- Applies the saved theme before first paint (no flash of the OS
+         theme). Mirrors initTheme()/syncThemeMeta() in src/lib/theme.ts,
+         which is the source of truth; keep the key and colours in sync. -->
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("signaldb-theme");
+          if (theme !== "light" && theme !== "dark") return;
+          document.documentElement.setAttribute("data-theme", theme);
+          var color = { light: "#f2f3f6", dark: "#14181e" }[theme];
+          document.querySelector('meta[name="color-scheme"]').content = theme;
+          document
+            .querySelectorAll('meta[name="theme-color"]')
+            .forEach(function (meta) {
+              meta.content = color;
+            });
+        } catch (e) {
+          // localStorage unavailable: fall back to prefers-color-scheme.
+        }
+      })();
+    </script>
     <!-- Runtime config served by the router from [self_monitoring.frontend].
          A classic (blocking) script with an absolute path so it runs before
          the deferred app module and resolves correctly on SPA deep links. -->

@@ -5,12 +5,24 @@ user-invocable: false
 sources:
   - src/common/src/auth/**
   - src/common/src/config/mod.rs
+  - src/common/src/catalog.rs
+  - src/acceptor/src/lib.rs
+  - src/common/src/schema/type_authority.rs
+  - src/common/src/schema/type_authority/**
+  - src/common/src/schema_registry/type_hints.rs
+  - src/router/src/endpoints/schema.rs
   - src/common/src/ratelimit.rs
-  - src/router/src/endpoints/admin.rs
+  - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
   - src/router/src/endpoints/oauth.rs
+  - src/router/src/endpoints/oidc.rs
+  - src/router/src/oidc.rs
+  - src/router/src/github.rs
+  - src/router/src/endpoints/github.rs
+  - src/router/src/source_context.rs
+  - src/router/src/endpoints/source_context.rs
   - src/router/src/read_scope.rs
   - src/signaldb-cli/src/commands/tenant_self.rs
   - src/mcp-server/src/server.rs
@@ -27,6 +39,7 @@ Tenant (e.g., "acme", slug: "acme")
   |   +-- "production" (slug: "prod", default)
   |   +-- "staging" (slug: "staging")
   +-- Schema Config (optional per-tenant overrides)
+  +-- Attribute types (one canonical type per dataset/signal/level/key, in the catalog)
 ```
 
 ## Authentication Flow
@@ -54,20 +67,132 @@ against the user's memberships on every request. The cookie is set by
 Login `tenant` is optional: the response always lists the user's
 memberships (`SessionMembership { tenant_id, name, role }`); a sole
 membership is auto-selected, several leave `tenant` null so the UI shows a
-picker, none is a 403.
+picker, none is a 403. `GET /ui/session` applies the same auto-select rule
+(shared `auto_select_tenant` helper) to an existing cookie and returns the
+user plus memberships — `200` with an empty list for no memberships — and
+`GET /ui/session/config` is the public login-configuration probe
+(`{password_enabled, oidc}`) the `/login` page renders its credentials from.
 
 ### OAuth 2.1 access tokens (MCP connectors)
 
 A third credential type, for Claude.ai / ChatGPT connectors (change:
-mcp-oauth-dcr; router serves the authorization server, see `docs/users/mcp.md`).
-An `Authorization: Bearer` whose value starts with `sdb_at_` is an **opaque
-OAuth access token**: `auth_middleware` routes it to
+mcp-oauth-dcr, generalized to multi-tenant grants by
+mcp-multi-tenant-oauth-grants; router serves the authorization server, see
+`docs/users/mcp.md`). An `Authorization: Bearer` whose value starts with
+`sdb_at_` is an **opaque OAuth access token**: `auth_middleware` routes it to
 `Authenticator::authenticate_oauth_token`, which looks the token up in the
-catalog and resolves `(user, tenant, scopes)` **from the token record** — not
-from `X-Tenant-ID`, which is ignored for this credential (an OAuth session
-cannot be pointed at a tenant it wasn't granted). Tokens are audience-bound to
-the configured `mcp.oauth.resource_url` (a token for another resource is
-rejected). Tenant is fixed at consent time; one connector per tenant.
+catalog and resolves `(user, tenant, scopes)` from the token's stored
+`tenant_grants` (`common::catalog::TenantGrant`, one or more
+`{tenant_id, dataset_ids}` entries chosen at consent). Tokens are
+audience-bound to the configured `mcp.oauth.resource_url` (a token for another
+resource is rejected).
+
+Resolution depends on the grant's size: a **single-tenant** grant behaves
+exactly as before this change — `X-Tenant-ID` is ignored, the token's one
+tenant always resolves. A **multi-tenant** grant requires an explicit
+`X-Tenant-ID` selector on every request (including `whoami`, no exception);
+a request with none, or naming a tenant outside the grant, is rejected —
+resolving on a match uses that entry's own `dataset_ids`, never another
+entry's. `POST /oauth/introspect` (RFC 7662, `src/router/src/endpoints/oauth.rs`)
+reports a token's full grant set without resolving or requiring any one
+tenant — outside the resource-API's `auth_middleware` entirely, since that
+pipeline always resolves to exactly one concrete tenant or rejects. The MCP
+server (`src/mcp-server/src/lib.rs`) calls introspect (not `whoami`) for every
+OAuth credential to learn the grant set upfront; a multi-tenant session binds
+by credential rather than a fixed tenant, and the MCP tool surface's `tenant`
+argument becomes the real per-call selector instead of a pure confirmation
+(see `docs/users/mcp.md`).
+
+### OIDC / SSO login (human sessions, change: oidc-login)
+
+An **alternative credential on the same `users` row**, not a new session
+mechanism. When `[auth.oidc]` is configured, the router runs an OIDC
+relying-party flow (`GET /ui/session/oidc/{start,callback}`,
+`src/router/src/endpoints/oidc.rs` + `src/router/src/oidc.rs`): a successful
+callback resolves or creates a user and issues the **same** `signaldb_session`
+cookie `POST /ui/session` does — so everything downstream (memberships, MCP
+OAuth consent riding the session) is unchanged. Identity resolution order:
+`(oidc_issuer, oidc_subject)` → verified-email link (`email_verified: true`
+required) → JIT create (allowlist permitting). JIT users have
+`password_hash = NULL`; the password endpoint short-circuits them with the
+generic 401 without calling the verifier. `disable_password_login` (honoured
+only with a configured provider) refuses the password door for every user; the
+`GET /ui/session/config` probe reports `password_enabled` + nullable
+`oidc: {name}` so the UI renders the right doors. Full behaviour:
+`docs/operations/oidc-sso.md`, `docs/users/authentication.md`.
+
+**Source-keyed memberships (`granted_by`).** `tenant_memberships` is keyed
+`(user_id, tenant_id, granted_by)` where `granted_by ∈ {'local',
+'oidc_mapping'}` (`GrantSource` in `src/common/src/catalog.rs`). Admin/CLI/MCP
+operations (`upsert_tenant_membership`/`remove_tenant_membership`) are pinned to
+`local` rows; the login-time `sync_oidc_memberships(user_id, desired)` only
+touches `oidc_mapping` rows. A local and a mapped row for the same user/tenant
+coexist; `get_tenant_membership` returns the **higher** role and reports its
+source; list operations expose `granted_by` so surfaces can show that a
+membership is mapping-managed. A lost group removes only the mapped row;
+mapping never writes `is_instance_admin`. (Before rolling back to a binary that
+keys on `(user_id, tenant_id)`, delete `granted_by = 'oidc_mapping'` rows —
+`docs/operations/oidc-sso.md#rollback`.)
+
+**Break-glass.** SSO and `disable_password_login` never touch the machine and
+bootstrap planes: API keys, `admin_api_key`, and the CLI/config
+`user create --instance-admin` bootstrap authenticate regardless of IdP
+availability. An unreachable issuer degrades SSO (background retry) rather than
+stopping the instance, so break-glass holds across restarts too.
+
+### GitHub App installations (tenant-scoped, read-only; change: github-app-source-context)
+
+A **tenant-scoped, read-only credential that is never stored**. One GitHub App
+identity per deployment (`[github]`: app id, PEM private key, OAuth client
+id/secret); what is per tenant is the _installation_ a tenant admin links
+(`github_installations` rows: installation id, org/user account, covered repo
+list, who linked it). `router::github::GitHubApp` signs an RS256 app JWT, mints
+an installation token on demand (process-local cache until ~5 minutes before
+GitHub's expiry) and never persists it. Linking (`POST
+/api/v1/tenants/{id}/github-installations/link` → install URL carrying a
+single-use, tenant+admin-bound state token whose SHA-256 sits in
+`github_link_states`; `GET /ui/github/callback` requires the browser's
+`signaldb_session` to be the starting user or an admin of the state's tenant,
+exchanges GitHub's `code` for a user token, verifies the `installation_id` is
+in that user's `GET /user/installations`, refuses write-capable permissions,
+then `Catalog::complete_github_link` consumes the state and upserts the row in
+one transaction). GitHub allows only one App installation per account, so a
+second tenant on the same account can't complete that flow — GitHub skips
+the consent screen and never redirects back. `POST
+.../github-installations/attach` (change:
+github-installation-direct-attach) is the escape hatch: it takes a raw
+`installation_id` and attaches it via `Catalog::attach_github_installation`
+(same upsert, no state token), re-verifying the installation and its
+permissions through the App's own JWT (`GitHubApp::installation`) rather
+than a user token. Unlike every other tenant-management endpoint, attach
+requires **instance-admin** (`ctx.is_instance_admin`), not just
+`tenant:manage` — with no user `code` to verify ownership, a tenant-level
+grant would let a tenant admin attach, and so read via source context, any
+other org's installation of this App. Resolution of a repo to an installation only ever looks
+at the caller's own tenant (`find_github_installation_for_repository`).
+Removal (`DELETE .../github-installations/{id}`) also drops the cached
+token, so it is immediate. `src/router/src/endpoints/github.rs`,
+`src/router/src/github.rs`; operator guide `docs/operations/github-app.md`.
+
+**Source context (the read side).** `POST /api/v1/tenants/{id}/source-context`
+(`src/router/src/endpoints/source_context.rs`, service in
+`src/router/src/source_context.rs`) fetches the lines around a stack frame
+from the tenant's linked repositories via the Contents API, always answering
+200 with `status: available|unavailable` + `reason`. Authorization: path
+tenant = context tenant and `can_read` on any signal (ingest-only keys 403).
+Resolution: explicit `repository` (`owner/name` or URL) → tenant-scoped
+`find_github_installation_for_repository`, or no repository → probe the
+tenant's covered repos; ref optional (default branch, reported as `null`).
+Fetched files and content-caused unavailability are cached per file (TTL +
+LRU from `[github].snippet_cache_*`; windows sliced locally);
+`remove_github_installation` evicts. `GET …/source-context` is the reader-
+level `{configured, linked}` probe the UI gates "View source" on. CLI:
+`signaldb-cli tenant source-context` (any tenant key, not `tenant:manage`).
+MCP: `get_source_context`, grouped with the query/discovery tools in
+`src/mcp-server/src/server.rs` rather than the `tenant_*` management family —
+it is a per-frame read any tenant reader may call. `source_context_availability`
+(the `GET` probe) has no CLI/MCP surface of its own; the parity guard's
+`EXCLUDED` list explains why (`tests-integration/tests/query_parity.rs`).
 
 **Read scopes.** OAuth scopes populate `TenantContext.api_key_scopes` and are
 enforced like API-key write scopes. `can_read(<signal>)` requires the matching
@@ -84,6 +209,23 @@ need tenant Admin / instance admin; not OAuth-grantable). `API_KEY_SCOPES` is
 the single vocabulary (`validate_scopes()`), used by key creation on every
 surface. Bundled registries answer `409` on mutation regardless of scope.
 
+**Telemetry processors** (change `tenant-ottl-processors`). Per-tenant,
+per-dataset, per-signal OTTL processors applied at ingest before durability —
+see `docs/users/processors.md`. `processors:read` (list/get/validate/test)
+joins `READ_SCOPES` (OAuth-grantable, mirrors `schema:read`);
+`processors:write` (create/replace/delete) requires tenant-admin rights via
+`can_write_processors()` and is never OAuth-grantable, mirroring
+`schema:write`. A processor's optional `dataset` field scopes it to one
+dataset (unset = every dataset of the tenant); dataset-scoped processors
+always run after tenant-wide ones, so they can override a tenant baseline.
+
+**Eval-set scopes** (change `agent-offline-evals`). `evals:read` (list/get
+eval sets) joins `READ_SCOPES` (OAuth-grantable, mirrors `processors:read`)
+and gates `/api/v1/eval-sets` reads via `can_read_evals()`; `evals:write`
+(create/replace/delete/append cases) requires tenant-admin rights via
+`can_write_evals()` and is never OAuth-grantable. Sets are scoped to the
+caller's tenant *and* dataset — see `docs/users/eval-sets.md`.
+
 **Management scope** (change `management-api-key-scope`). `tenant:manage`
 (`TENANT_MANAGE_SCOPE`, in `API_KEY_SCOPES`, never in `READ_SCOPES` so never
 OAuth-grantable) lets an API key call the management API for its own tenant.
@@ -93,6 +235,72 @@ whose **explicit** scopes contain it — deliberately not
 is NOT unrestricted (management is opt-in; widening pre-scope keys silently
 would be a security surprise). Human sessions never satisfy it; they go
 through membership roles.
+
+**Dataset restriction** (change `multi-dataset-key-restriction`). An API key
+or OAuth token may additionally be restricted to a _set_ of datasets within
+its tenant: `TenantContext.api_key_dataset_ids: Option<Vec<String>>`
+(renamed from the single-dataset `api_key_dataset_id`), checked by the shared
+`dataset_allowed`/resolution helper in `common::auth` from both
+`Authenticator::authenticate_from_database` (API keys) and
+`authenticate_oauth_token` (OAuth). `None` = unrestricted (every dataset in
+the tenant, unchanged from before this feature); a request naming no dataset
+resolves to the restriction's sole element when it has exactly one, or is
+rejected (never silently falls through to the tenant default) when it has
+two or more. `api_keys.dataset_ids`/`oauth_*.dataset_ids` are JSON-array-in-
+TEXT columns (same pattern as `scopes`) — the sole representation; the
+legacy single-value `api_keys.dataset_id` column and its dual-write (change
+`remove-dataset-id-legacy-shims`) are gone, so this schema change must ship
+as a full stop-and-restart, never a rolling upgrade (`DROP COLUMN` breaks a
+still-running older node's queries outright, unlike every prior `ADD COLUMN`
+migration). OAuth never had a legacy column, so any non-empty OAuth
+restriction (not just multi-element) is unsafe until every node runs the new
+code. `[auth].dataset_restriction_rollout_complete` (default `false`) gates
+the mixed-version-unsafe cases at the request boundary. A dataset-restricted
+credential is refused entirely by the management API (`can_manage`/
+`authorize_tenant`), regardless of `tenant:manage` or role, and
+`discover_datasets`/`tenant_list_tables`/`whoami` filter their dataset
+listing to the restriction so an unlisted dataset is never named.
+
+**Origin restriction (CORS)**. An API key may additionally be restricted to a
+set of browser origins allowed to use it directly from client-side JS:
+`api_keys.allowed_origins` (JSON-array-in-TEXT, same pattern as `scopes`/
+`dataset_ids`), decoded onto `TenantContext.api_key_allowed_origins:
+Option<Vec<String>>` in `Authenticator::authenticate_from_database`. `None`/
+empty = unrestricted (unchanged default; the vast majority of ingest traffic
+carries no `Origin` header at all and is entirely unaffected). OAuth grants
+carry no such restriction — there's no OAuth-side equivalent yet, so
+`with_api_key_restrictions` always passes `None` for that path.
+
+Enforcement is split across two layers on the acceptor's OTLP/HTTP ingest
+path (`src/acceptor/src/lib.rs`, `src/acceptor/src/middleware/auth.rs`),
+because a CORS preflight (`OPTIONS`) has no `Authorization` header and so
+can't know which key's restriction to check: `otlp_cors_layer()` mounts
+unconditionally (no longer gated by `self_monitoring.frontend.enabled`,
+which is untouched and governs the self-monitoring frontend's own OTLP
+export as a separate concern) and mirrors any preflight `Origin` — a
+preflight grants no authority by itself. The real check happens _after_ auth
+resolves the key, via `common::auth::origin_allowed(restriction,
+requested)`: a request with an `Origin` header is rejected `403` if the
+key's `allowed_origins` is non-empty and doesn't contain it; on success (or
+an unrestricted key) the response reflects `Access-Control-Allow-Origin:
+<origin>` and `Vary: Origin`. `otlp_cors_layer()` explicitly zeroes its own
+`Vary` computation (`.vary(Vec::new())`) so it never doubles up with that
+post-auth header on an actual (non-preflight) response.
+
+Validated the same way as `dataset_ids` (`validate_allowed_origins_set` /
+`validate_create_allowed_origins` in `common::catalog`): an explicit empty
+list is rejected on create, never meaning "unrestricted." Updates use the
+same tri-state shape as dataset restrictions —
+`OriginRestrictionUpdate::{Keep,Clear,Set}` via
+`OriginRestrictionUpdate::from_request(allowed_origins,
+clear_allowed_origins)` — surfaced identically on every API-key surface
+(admin API, management API, CLI `--allowed-origin`/
+`--clear-allowed-origins`, MCP `allowed_origins`/`clear_allowed_origins`,
+and the web UI's `OriginPicker` component). See
+[Sending OTLP data](../../docs/users/sending-otlp.md#browser-cors-ingestion)
+for the client-facing behavior and
+[Authentication](../../docs/users/authentication.md#api-key-scopes) for the
+API shape.
 
 ### Error Codes
 
@@ -109,8 +317,58 @@ through membership roles.
 | **Object Store**      | `{base}/{tenant_slug}/{dataset_slug}/{table}/`      |
 | **DataFusion**        | Per-tenant catalog in SessionContext                |
 | **Storage Backend**   | Per-dataset storage override                        |
+| **Type registry**     | `attribute_types` catalog rows keyed `(tenant_id, dataset_id, signal, level, key)` |
 
 Per-tenant WAL instances are cached and reopened on demand, but the cache is soft-capped (`[wal].max_instances`, default 256); see `docs/operations/wal-persistence.md#instance-cap`.
+
+The Query IR `correlate` stage (span-to-parent join, `irVersion` 8) never crosses this boundary: both sides of the join scan the same tenant/dataset the query is already scoped to, so a parent span stored under another tenant or dataset is always treated as missing, the same as a genuinely absent one.
+
+## Attribute Type Authority
+
+Attribute values are stored typed. The canonical type of a field is scoped to
+**tenant + dataset + signal + attribute level + key**, so two tenants (or two
+datasets) sending the same key with different types never affect each other
+(`src/common/src/schema/type_authority/`). Precedence, the semconv hint rules
+and off-type handling are described once, in
+[Canonical types](../../../docs/users/schema-registry.md#canonical-types).
+
+- **First write wins**: the writer establishes the type with an atomic
+  first-seen insert into the `attribute_types` catalog table
+  (`Catalog::establish_attribute_type`); an existing row is never updated by
+  data, which is what keeps one tenant's or dataset's values from retyping
+  another's. A scalar of another type goes to the `{container}_residue` column
+  and grows the field's `off_type_count`; an array, kvlist or bytes value goes
+  to the residue silently, with no count and no warning. Only an operator pin
+  changes an established type: building a scope applies the pin, logs a
+  warning and counts `reason=pin_conflict`, and stored values are not retyped.
+- **Pins** are per tenant and optionally per dataset; a dataset entry wins over
+  one without `dataset`. A tenant's own schema block
+  (`[tenants.tenants.<id>.schema]`, a `TenantSchemaOverride`) is merged over
+  the global `[schema]` field by field (`Configuration::get_tenant_schema_config`):
+  whatever it leaves unset is inherited. A tenant pin replaces the global pins
+  on the same (signal, level, key) it covers — all of them without `dataset`,
+  only that dataset's with one — and every other global pin still applies.
+- **Caching**: the writer caches one `SignalScope` per (tenant, dataset, signal)
+  and resolves each distinct key once per batch. A scope expires after
+  `DEFAULT_SCOPE_TTL` (30s); the first caller past expiry rebuilds it from the
+  catalog (`SchemaResolver::fresh_type_hints`) while others keep the old one,
+  and a failed rebuild keeps serving the old one. That is how schema-registry
+  writes, which go through the router's own resolver, reach ingest. A
+  schema-version bump or a changed pin takes effect on the next writer
+  process start. The acceptor
+  only reads (`TypeSnapshots`, refreshed in the background after a 30s TTL) to
+  warn the sender about off-type scalars in OTLP `partial_success`; it never
+  establishes or places anything.
+- **Discovery**: `GET /api/v1/schema/attributes/{key}` and the batch form
+  `GET /api/v1/schema/attributes?keys=a,b` (`schema:read`; MCP
+  `resolve_attribute`) return `canonical_types`, one entry per
+  dataset/signal/level where a type is established (by data or a config pin),
+  with `off_type_count`. The
+  field is omitted when nothing is established, and a dataset-restricted key
+  only sees its own datasets (`src/router/src/endpoints/schema.rs`).
+
+Tenant schema overrides therefore cover: materialized labels, attribute type
+pins, the warm index, and the default signal set.
 
 ## Slug-Based Naming
 
@@ -227,17 +485,27 @@ server asked to retry in N s` and a shell banner while retries are pending.
 
 ## Admin API (Router)
 
-Mounted at `/api/v1/admin`, requires `admin_api_key` (`src/router/src/lib.rs`):
+`/api/v1/tenants[/{id}]`, `/api/v1/users`, and the tenant-scoped
+API-key/dataset/membership rows under `/api/v1/tenants/{id}/...` accept the
+break-glass `admin_api_key` with no `X-Tenant-ID` header
+(`src/router/src/lib.rs`'s `is_admin_key_bypass_path`/`auth_layer`,
+`src/router/src/endpoints/tenants.rs`'s
+`require_instance_admin_or_admin_key`). `github-installations` is
+deliberately excluded from that bypass — its handlers take a
+`TenantContextExtractor`, which 500s with no tenant attached — so it stays
+tenant-credential-only. The tenant-scoped rows also accept a tenant-admin
+session or `tenant:manage`-scoped key for that tenant.
 
-| Endpoint                                           | Methods          | Description                                                                          |
-| -------------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------ |
-| `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                                  |
-| `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                                      |
-| `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                                 |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                           |
-| `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                                 |
-| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete dataset                                                                       |
-| `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (used by `signaldb-cli user create`) |
+| Endpoint                                       | Methods          | Description                                                                          |
+| ---------------------------------------------- | ---------------- | ------------------------------------------------------------------------------------ |
+| `/api/v1/tenants`                              | GET              | List every tenant                                                                    |
+| `/api/v1/tenants/{id}`                         | GET, PUT, DELETE | Get/update/delete any tenant                                                         |
+| `/api/v1/tenants`                              | POST             | Create a tenant (instance-admin session or the break-glass `admin_api_key`)          |
+| `/api/v1/tenants/{id}/api-keys`                | GET, POST        | List/create API keys                                                                 |
+| `/api/v1/tenants/{id}/api-keys/{key_id}`       | DELETE, PATCH    | Revoke API key / update its scopes and dataset restriction                           |
+| `/api/v1/tenants/{id}/datasets`                | GET, POST        | List/create datasets                                                                 |
+| `/api/v1/tenants/{id}/datasets/{dataset_name}` | DELETE           | Delete dataset                                                                       |
+| `/api/v1/users`                                | POST             | Create a human user + initial tenant membership (used by `signaldb-cli user create`) |
 
 ## Tenant Self-Service API (Router)
 
@@ -245,15 +513,16 @@ Mounted at `/api/v1` with tenant auth — a plain API key is enough
 (`src/router/src/endpoints/tenant.rs`, `can_manage_tenant()`-gated for the
 mutating one, which treats API-key possession as sufficient trust):
 
-| Endpoint                             | Methods | Description                                                                                                                                                   | SDK operation            |
-| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
-| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                   | `whoami`                 |
-| `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                              | `list_tenants_self`      |
-| `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                | `get_tenant_self`        |
-| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)  | `list_tenant_tables`     |
-| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval | `create_tenant_tables`   |
-| `/api/v1/tenants/{id}/schemas`       | GET     | List the tenant's configured table schema types                                                                                                               | `list_tenant_schemas`    |
-| `/api/v1/schemas/available`          | GET     | List every table schema type SignalDB can provision                                                                                                           | `list_available_schemas` |
+| Endpoint                             | Methods | Description                                                                                                                                                                           | SDK operation            |
+| ------------------------------------ | ------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------ |
+| `/api/v1/whoami`                     | GET     | Authenticated tenant (id, slug, name) + datasets + default dataset (`endpoints/session.rs`)                                                                                           | `whoami`                 |
+| `/api/v1/connection`                 | GET     | Public ingest/query endpoints (`[public]` config), headers with the caller's tenant/dataset filled in, required scopes, OTel env vars (`endpoints/session.rs`); MCP `connection_info` | `connection_info`        |
+| `/api/v1/tenants`                    | GET     | List tenants visible to the caller — single-entry view of the caller's own tenant; `tenant show` / `tenant_info`                                                                      | `list_tenants_self`      |
+| `/api/v1/tenants/{id}`               | GET     | Tenant details — `tenant show` / `tenant_info`                                                                                                                                        | `get_tenant_self`        |
+| `/api/v1/tenants/{id}/tables`        | GET     | List tenant tables from the Iceberg catalog, grouped by dataset (`dataset` on each `TableInfo`, plus a `datasets` grouping alongside the flat `tables` list)                          | `list_tenant_tables`     |
+| `/api/v1/tenants/{id}/tables/create` | POST    | Provision the tenant's enabled signal tables across its datasets, before returning `201`. Manual trigger for what the writer's reconciler does on an interval                         | `create_tenant_tables`   |
+| `/api/v1/tenants/{id}/schemas`       | GET     | List the tenant's configured table schema types                                                                                                                                       | `list_tenant_schemas`    |
+| `/api/v1/schemas/available`          | GET     | List every table schema type SignalDB can provision                                                                                                                                   | `list_available_schemas` |
 
 CLI: `signaldb-cli tenant show`, `signaldb-cli tenant table {list,provision,schemas,available-schemas}`.
 MCP: `tenant_info`, `tenant_list_tables`, `tenant_create_tables`,
@@ -261,7 +530,7 @@ MCP: `tenant_info`, `tenant_list_tables`, `tenant_create_tables`,
 
 ## Management API (Router) — tenant admin or `tenant:manage` key
 
-Mounted at `/api/v1/manage`, self-service for the caller's own tenant but
+Mounted at `/api/v1`, self-service for the caller's own tenant but
 **gated differently from the endpoints above**: every handler except
 `create_tenant` goes through `can_manage(ctx)` (`authorize_tenant` adds the
 path-tenant match): a human principal (`user_id.is_some()` — browser session
@@ -273,45 +542,60 @@ admin), **or** an API key with `can_manage_via_key()` (explicit
 `endpoints/session.rs` plus `key_scope_authorization_tests` in
 `endpoints/management.rs` — positive, legacy-unscoped, cross-tenant, and
 OAuth-consent cases). `get_schema` uses the same rule (it used to require
-`is_instance_admin`). `create_tenant` stays `is_instance_admin`-only; keys
-create tenants through the admin API.
+`is_instance_admin`). `create_tenant` stays instance-admin-only: an
+instance-admin session, or the break-glass `admin_api_key` with no tenant.
 
-| Endpoint                                        | Methods       | Description                                   | SDK operation                                         |
-| ----------------------------------------------- | ------------- | --------------------------------------------- | ----------------------------------------------------- |
-| `/api/v1/manage/tenants`                        | POST          | Create a tenant (instance-admin session only) | `manage_create_tenant`                                |
-| `/api/v1/manage/tenants/{id}/datasets`          | GET, POST     | List/create datasets                          | `manage_list_datasets`, `manage_create_dataset`       |
-| `/api/v1/manage/tenants/{id}/datasets/{name}`   | DELETE        | Delete a dataset by name                      | `manage_delete_dataset`                               |
-| `/api/v1/manage/tenants/{id}/api-keys`          | GET, POST     | List/create API keys                          | `manage_list_api_keys`, `manage_create_api_key`       |
-| `/api/v1/manage/tenants/{id}/api-keys/{key_id}` | DELETE, PATCH | Revoke / update an API key                    | `manage_revoke_api_key`, `manage_update_api_key`      |
-| `/api/v1/manage/tenants/{id}/memberships`       | GET, PUT      | List / upsert a member's role                 | `manage_list_memberships`, `manage_upsert_membership` |
-| `/api/v1/manage/tenants/{id}/memberships/{uid}` | DELETE        | Remove a member                               | `manage_remove_membership`                            |
-| `/api/v1/manage/schema`                         | GET           | Logical + physical schema                     | `manage_get_schema`                                   |
+| Endpoint                                           | Methods       | Description                                                                                       | SDK operation                           |
+| -------------------------------------------------- | ------------- | ------------------------------------------------------------------------------------------------- | --------------------------------------- |
+| `/api/v1/tenants`                                  | POST          | Create a tenant (instance-admin session only)                                                     | `create_tenant`                         |
+| `/api/v1/tenants/{id}/datasets`                    | GET, POST     | List/create datasets                                                                              | `list_datasets`, `create_dataset`       |
+| `/api/v1/tenants/{id}/datasets/{name}`             | DELETE        | Delete a dataset by name                                                                          | `delete_dataset`                        |
+| `/api/v1/tenants/{id}/api-keys`                    | GET, POST     | List/create API keys                                                                              | `list_api_keys`, `create_api_key`       |
+| `/api/v1/tenants/{id}/api-keys/{key_id}`           | DELETE, PATCH | Revoke / update an API key                                                                        | `revoke_api_key`, `update_api_key`      |
+| `/api/v1/tenants/{id}/memberships`                 | GET, PUT      | List / upsert a member's role                                                                     | `list_memberships`, `upsert_membership` |
+| `/api/v1/tenants/{id}/memberships/{uid}`           | DELETE        | Remove a member                                                                                   | `remove_membership`                     |
+| `/api/v1/schema`                                   | GET           | Logical + physical schema                                                                         | `get_schema`                            |
+| `/api/v1/tenants/{id}/github-installations/link`   | POST          | Start linking a GitHub App installation                                                           | `start_github_link`                     |
+| `/api/v1/tenants/{id}/github-installations`        | GET           | List linked GitHub App installations                                                              | `list_github_installations`             |
+| `/api/v1/tenants/{id}/github-installations/{iid}`  | DELETE        | Remove a linked GitHub App installation                                                           | `remove_github_installation`            |
+| `/api/v1/tenants/{id}/github-installations/attach` | POST          | Attach an installation that already exists (instance-admin only, not `tenant:manage` — see above) | `attach_github_installation`            |
 
-CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage`):
+CLI (`signaldb_cli::commands::tenant_self`, API key with `tenant:manage` —
+except `tenant github attach`, which needs instance-admin like its endpoint):
 `tenant dataset {list,create,delete}`, `tenant api-key {list,create,update,revoke}`,
-`tenant membership {list,set,remove}`, `tenant schema get`; destructive verbs
-take `--yes` or confirm on a TTY. MCP: `tenant_list_datasets`,
+`tenant membership {list,set,remove}`, `tenant schema get`,
+`tenant github {link,list,attach,remove}`; destructive
+verbs take `--yes` or confirm
+on a TTY. MCP: `tenant_list_datasets`,
 `tenant_create_dataset`, `tenant_delete_dataset`, `tenant_list_api_keys`,
 `tenant_create_api_key`, `tenant_update_api_key`, `tenant_revoke_api_key`,
 `tenant_list_memberships`, `tenant_upsert_membership`,
-`tenant_remove_membership`, `tenant_get_schema` (a 403 surfaces the router's
-reason via `map_manage_err`). The whole-SDK parity check
-(`tests-integration/tests/query_parity.rs`) maps all of them; only the two
-OAuth consent endpoints and `manage_create_tenant` stay excluded. E2E:
-`tests-integration/tests/tenant_manage_clients.rs`. See `docs/users/mcp.md`
-and `docs/users/authentication.md#tenant-management-api`.
+`tenant_remove_membership`, `tenant_get_schema`, `tenant_start_github_link`,
+`tenant_attach_github_installation`,
+`tenant_list_github_installations`, `tenant_remove_github_installation` (a
+403 surfaces the router's reason via `map_manage_err`). A multi-tenant OAuth
+credential has no default tenant, so every tenant-aware MCP tool takes the
+tenant (`tenant_id`/`tenant`) and forwards it as `X-Tenant-ID`;
+`connection_info` takes it as an optional `tenant` (required for a
+multi-tenant credential) plus an optional `dataset`. The whole-SDK parity
+check (`tests-integration/tests/query_parity.rs`) maps all of them; only the
+two OAuth consent endpoints, `create_tenant`, and the GitHub install
+callback stay excluded. E2E: `tests-integration/tests/tenant_manage_clients.rs`.
+See `docs/users/mcp.md` and `docs/users/authentication.md#tenant-management-api`.
 
 ## CLI Tool
 
 Subcommands: `query` (one required language flag —
 `--sql`/`--promql`/`--logql`/`--traceql`/`--ir`, plus `--trace-id` for a
 single trace by ID, and `--start`/`--end`/`--step` on `--promql`/`--logql`
-for a range query), `whoami`, `discover`, `schema`
+for a range query), `whoami`, `connection` (this deployment's public
+ingest/query/mcp endpoints, headers, scopes, and OTel env vars —
+`GET /api/v1/connection` / MCP `connection_info`), `discover`, `schema`
 (`registry`/`attribute`/`entity`/`metric` lookup with a tenant key holding
 `schema:read`), `admin` (`tenant`/`api-key`/`dataset`, plus `schema`
 create/replace/delete/validate with a tenant key holding `schema:write`),
-`tenant` (`show`, `table`, and — with a `tenant:manage` key — `dataset`,
-`api-key`, `membership`, `schema`), `user`, `tui`,
+`tenant` (`show`, `table`, `source-context`, and — with a `tenant:manage`
+key — `dataset`, `api-key`, `membership`, `schema`, `github`), `user`, `tui`,
 `completions` (static shell scripts; dynamic tenant-ID completion for
 tenant-taking args via `COMPLETE=<shell> signaldb-cli` — queries the admin
 API like `admin tenant list`, silently empty when the backend is
@@ -327,6 +611,7 @@ signaldb-cli admin schema create --file conventions.yaml --api-key <schema:write
 signaldb-cli schema attribute get k8s.pod.uid --api-key <schema:read key> --tenant-id acme
 signaldb-cli tenant table provision --api-key <any tenant key> --tenant-id acme
 signaldb-cli whoami --api-key <tenant key> --tenant-id acme
+signaldb-cli connection --api-key <tenant key> --tenant-id acme
 signaldb-cli query --sql "SELECT ..."   # also --promql/--logql/--traceql/--ir/--trace-id
 signaldb-cli tui                         # Interactive terminal UI
 ```
@@ -342,20 +627,20 @@ API keys keep the existing fast SHA-256 path — the split is entropy-based.
 
 ## Key Implementation Files
 
-| File                                           | Purpose                                                                            |
-| ---------------------------------------------- | ---------------------------------------------------------------------------------- |
-| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                                      |
-| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation                               |
-| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                                  |
-| `src/common/src/catalog_manager.rs`            | Slug resolution                                                                    |
-| `src/router/src/endpoints/admin.rs`            | Admin API endpoints (incl. quota checks)                                           |
-| `src/router/src/endpoints/management.rs`       | Management API endpoints (tenant admin or `tenant:manage` key; `authorize_tenant`) |
-| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)                               |
-| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                                         |
-| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                                          |
-| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                                               |
-| `src/signaldb-cli/`                            | CLI for tenant management                                                          |
-| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)                           |
-| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families                            |
+| File                                           | Purpose                                                                                                                                                        |
+| ---------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `src/common/src/config/mod.rs`                 | Tenant/dataset config structs                                                                                                                                  |
+| `src/common/src/auth/`                         | Authenticator, TenantContext, middleware, validation                                                                                                           |
+| `src/common/src/auth/password.rs`              | Argon2id password hashing + opaque session tokens                                                                                                              |
+| `src/common/src/catalog_manager.rs`            | Slug resolution                                                                                                                                                |
+| `src/router/src/endpoints/tenants.rs`          | Instance-admin tenant/user endpoints (session or break-glass admin key)                                                                                        |
+| `src/router/src/endpoints/management.rs`       | Management API endpoints (tenant admin, `tenant:manage` key, or break-glass admin key; `authorize_tenant`/`authorize_tenant_or_admin_key`; incl. quota checks) |
+| `src/router/src/endpoints/tenant.rs`           | Tenant self-service API endpoints (API-key-friendly)                                                                                                           |
+| `src/router/src/endpoints/session.rs`          | UI session login/logout + whoami endpoints                                                                                                                     |
+| `src/common/src/auth/session.rs`               | Session cookie codec (`signaldb_session`)                                                                                                                      |
+| `src/common/src/ratelimit.rs`                  | Per-tenant token-bucket rate limiter                                                                                                                           |
+| `src/signaldb-cli/`                            | CLI for tenant management                                                                                                                                      |
+| `src/signaldb-cli/src/commands/tenant_self.rs` | `tenant table` group (only the API-key-friendly surface)                                                                                                       |
+| `src/mcp-server/src/server.rs`                 | MCP tools, incl. platform-admin and `tenant_*` families                                                                                                        |
 
 Under `[compactor.attr_promotion]` (auto-promotion decision pass), a tenant's resolved materialized-label allowlist is the _pinned_ set: those keys are never demotion candidates.

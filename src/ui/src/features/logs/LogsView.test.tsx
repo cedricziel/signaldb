@@ -1,11 +1,19 @@
-import { fireEvent, screen, waitFor } from "@testing-library/react";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
+import {
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
 import {
-  emptyLabels,
-  emptyMatrix,
-  logsResponse,
+  describeFieldsResponse,
+  emptyDescribeFields,
+  emptyIrSeries,
+  irLogRowsResponse,
   renderWithClient,
   stubFetchRoutes,
 } from "../../test/render";
@@ -15,28 +23,39 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+const isRowsQuery = (b: unknown) =>
+  (b as { result?: string }).result === "rows";
+const isSeriesQuery = (b: unknown) =>
+  (b as { result?: string }).result === "series";
+const isFieldsQuery = (b: unknown) =>
+  (b as { pipeline?: { describe?: { target?: string } }[] }).pipeline?.[0]
+    ?.describe?.target === "fields";
+
 function routes() {
   return stubFetchRoutes([
-    // Histogram queries carry a step param; log queries a direction param.
     {
-      match: /query_range.*direction=backward/,
-      body: logsResponse([
+      match: "/api/v1/query",
+      bodyMatch: isRowsQuery,
+      body: irLogRowsResponse([
         {
           tsNs: "2000000000",
-          line: "charge failed: card_declined",
-          labels: { level: "error", service_name: "payments" },
+          body: "charge failed: card_declined",
+          serviceName: "payments",
+          severityText: "error",
         },
         {
           tsNs: "1000000000",
-          line: "checkout started",
-          labels: { level: "info", service_name: "checkout" },
+          body: "checkout started",
+          serviceName: "checkout",
+          severityText: "info",
         },
       ]),
     },
-    { match: /query_range.*step=/, body: emptyMatrix },
+    { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
     {
-      match: "/loki/api/v1/labels",
-      body: { status: "success", data: ["level", "service_name"] },
+      match: "/api/v1/query",
+      bodyMatch: isFieldsQuery,
+      body: describeFieldsResponse(["severity_text", "service.name"]),
     },
   ]);
 }
@@ -60,86 +79,67 @@ describe("LogsView", () => {
     expect(screen.getByText("2 rows")).toBeInTheDocument();
   });
 
-  it("issues a histogram query grouped by level", async () => {
+  it("issues a series query for the volume histogram", async () => {
     const fetchFn = routes();
     renderView();
     await waitFor(() => {
-      // URLSearchParams encodes spaces as "+". Calls through the generated
-      // client pass a `Request`; raw-fetch calls pass the URL directly.
-      const urls = fetchFn.mock.calls.map((c) => {
-        const raw = c[0] instanceof Request ? c[0].url : String(c[0]);
-        return decodeURIComponent(raw).replace(/\+/g, " ");
-      });
-      expect(
-        urls.some((u) => u.includes("sum by (level) (count_over_time(")),
-      ).toBe(true);
+      const bodies = fetchFn.mock.calls
+        .filter((c) => c[0] instanceof Request)
+        .map((c) => (c[0] as Request).clone().text());
+      expect(bodies.length).toBeGreaterThan(0);
     });
+    const bodies = await Promise.all(
+      fetchFn.mock.calls
+        .filter((c) => c[0] instanceof Request)
+        .map((c) => (c[0] as Request).clone().text()),
+    );
+    expect(bodies.some((b) => JSON.parse(b).result === "series")).toBe(true);
   });
 
-  it("adding a filter from a row updates state and clears raw mode", async () => {
+  it("adding a filter from a row updates state", async () => {
     routes();
     const { update } = renderView();
     await userEvent.click(
       await screen.findByText("charge failed: card_declined"),
     );
+    // The resource section (where `service_name` lives) is collapsed
+    // behind a summary by default — see LogList.tsx.
+    await userEvent.click(screen.getByRole("button", { name: /Resource/ }));
     await userEvent.click(
       screen.getByRole("button", {
-        name: "Filter for service_name = payments",
+        name: "Filter for service.name = payments",
       }),
     );
     expect(update).toHaveBeenCalledWith({
-      filters: [{ label: "service_name", op: "=", value: "payments" }],
-      raw: "",
+      filters: [{ label: "service.name", op: "=", value: "payments" }],
     });
-  });
-
-  it("switches to raw LogQL editing prefilled with the compiled query", async () => {
-    routes();
-    const { update } = renderView({
-      filters: [{ label: "level", op: "=", value: "error" }],
-    });
-    await userEvent.click(
-      screen.getByRole("button", { name: "{ } edit as text" }),
-    );
-    const textarea = screen.getByLabelText("LogQL query");
-    expect(textarea).toHaveValue('{level="error"}');
-    // fireEvent instead of userEvent.type: "{" is a userEvent escape char.
-    fireEvent.change(textarea, {
-      target: { value: '{service_name="api"}' },
-    });
-    await userEvent.click(screen.getByRole("button", { name: "Run" }));
-    expect(update).toHaveBeenCalledWith({ raw: '{service_name="api"}' });
-  });
-
-  it("skips the histogram for raw queries", async () => {
-    const fetchFn = routes();
-    renderView({ raw: '{service_name="api"}' });
-    await screen.findByText("charge failed: card_declined");
-    const urls = fetchFn.mock.calls.map((c) =>
-      decodeURIComponent(String(c[0])),
-    );
-    expect(urls.some((u) => u.includes("count_over_time"))).toBe(false);
   });
 
   it("surfaces query errors", async () => {
     stubFetchRoutes([
       {
-        match: /query_range/,
+        match: "/api/v1/query",
         body: { error: "parse error: unexpected token" },
         status: 400,
       },
-      { match: "/loki/api/v1/labels", body: emptyLabels },
+      {
+        match: "/api/v1/query",
+        bodyMatch: isFieldsQuery,
+        body: emptyDescribeFields,
+      },
     ]);
     renderView();
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      /Could not load logs:.*400/,
+      /Could not load logs:.*parse error/,
     );
   });
 
-  it("opens and closes the mobile filters drawer", async () => {
+  it("opens and closes the mobile fields drawer from the query bar", async () => {
     routes();
     renderView();
-    const toggleBtn = screen.getByRole("button", { name: "Filters" });
+    const toggleBtn = within(
+      document.querySelector(".querybar") as HTMLElement,
+    ).getByRole("button", { name: "Fields" });
     expect(toggleBtn).toHaveAttribute("aria-expanded", "false");
 
     await userEvent.click(toggleBtn);
@@ -156,26 +156,67 @@ describe("LogsView", () => {
   it("pivots to the trace view from a log row", async () => {
     stubFetchRoutes([
       {
-        match: /query_range.*direction=backward/,
-        body: logsResponse([
+        match: "/api/v1/query",
+        bodyMatch: isRowsQuery,
+        body: irLogRowsResponse([
           {
             tsNs: "2000000000",
-            line: "traced line",
-            labels: { level: "info", trace_id: "abcd1234" },
+            body: "traced line",
+            severityText: "info",
+            traceId: "abcd1234",
           },
         ]),
       },
-      { match: /query_range.*step=/, body: emptyMatrix },
-      { match: "/loki/api/v1/labels", body: emptyLabels },
+      { match: "/api/v1/query", bodyMatch: isSeriesQuery, body: emptyIrSeries },
+      {
+        match: "/api/v1/query",
+        bodyMatch: isFieldsQuery,
+        body: emptyDescribeFields,
+      },
     ]);
     const { update } = renderView();
     await userEvent.click(await screen.findByText("traced line"));
     await userEvent.click(
       screen.getByRole("button", { name: /View trace abcd1234/ }),
     );
-    expect(update).toHaveBeenCalledWith({
-      signal: "traces",
-      trace: "abcd1234",
+    expect(update).toHaveBeenCalledWith(
+      { signal: "traces", trace: "abcd1234" },
+      { push: true },
+    );
+  });
+
+  it("resyncs the search box when state.search changes externally", async () => {
+    routes();
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
     });
+    const { rerender } = render(
+      <QueryClientProvider client={client}>
+        <LogsView
+          state={{ ...DEFAULT_STATE, search: "checkout" }}
+          update={vi.fn()}
+        />
+      </QueryClientProvider>,
+    );
+    const input = await screen.findByLabelText("Search in log lines");
+    expect(input).toHaveValue("checkout");
+
+    // A re-click of the Logs tab (crossSignalSearch drops `q`) or Back/
+    // Forward changes state.search without remounting LogsView.
+    rerender(
+      <QueryClientProvider client={client}>
+        <LogsView state={{ ...DEFAULT_STATE, search: "" }} update={vi.fn()} />
+      </QueryClientProvider>,
+    );
+    expect(screen.getByLabelText("Search in log lines")).toHaveValue("");
+  });
+
+  it("clearing the native search box submits the empty query", async () => {
+    routes();
+    const { update } = renderView({ search: "checkout" });
+    const input = await screen.findByLabelText("Search in log lines");
+    expect(input).toHaveValue("checkout");
+    fireEvent.change(input, { target: { value: "" } });
+    expect(update).toHaveBeenCalledWith({ search: "" });
   });
 });

@@ -1,4 +1,4 @@
-/* breakpoints: tablet <=900px, mobile <=600px */
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 
 .query-ir {
   display: flex;
@@ -13,7 +13,7 @@
   flex-wrap: wrap;
   align-items: center;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
 }
 
@@ -34,21 +34,13 @@
   color: var(--text);
 }
 
-.query-ir-builder button {
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  padding: 4px 14px;
-  font-size: 12px;
-  color: var(--dim);
-}
-
 .query-ir-result {
-  padding: 14px 16px;
+  padding: 14px var(--gutter);
   overflow-x: auto;
 }
 
 .query-ir-warnings {
-  color: var(--warn);
+  color: var(--warn-text);
   font-size: 12px;
   margin: 0 0 10px;
 }
@@ -61,17 +53,6 @@
 .ir-topn {
   width: 100%;
   border-collapse: collapse;
-  font-size: 12px;
-}
-
-.ir-rows th,
-.ir-topn th {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  color: var(--faint);
-  font-size: 11px;
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
 }
 
 .ir-rows td,
@@ -87,7 +68,7 @@
   gap: 4px;
 }
 
-@media (max-width: 600px) {
+@container app-main (max-width: 600px) {
   .query-ir-builder {
     flex-direction: column;
     align-items: stretch;

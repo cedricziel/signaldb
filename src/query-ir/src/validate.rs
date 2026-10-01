@@ -30,15 +30,18 @@ use super::document::{Document, Range, ResultEnvelope};
 use super::predicate::{ComparisonOp, Leaf, Predicate};
 use super::relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
-    Series,
+    Scalar, Series,
 };
-use super::resolver::FieldResolver;
-use super::source::{SourceDef, SourceRegistry};
+use super::resolver::{FieldResolver, Resolved, SpanListField};
+use super::source::{SourceDef, SourceRegistry, is_pseudo_source};
 use super::stage::{
-    Agg, AggFn, Aggregate, Describe, DescribeTarget, Extract, Heatmap, HistogramQuantile, Order,
-    Rank, Stage, is_expression_string,
+    Absent, Agg, AggFn, Aggregate, Binop, BinopOperand, Correlate, CorrelateTarget, Describe,
+    DescribeTarget, Extract, Filter, GroupSide, Heatmap, HistogramFraction, HistogramMode,
+    HistogramQuantile, JoinKind, Labels, Map, Match, Order, OverTime, OverTimeFn, Rank, Reduce,
+    ReduceFn, Sample, SampleFn, Stage, SubDocument, is_expression_string,
 };
-use super::value::{ValueType, coerce, parse_duration_ns};
+use super::value::{Literal, TimestampLiteral, ValueType, coerce, parse_duration_ns};
+use super::version::{Feature, OperatorRegistry};
 
 /// Errors raised while validating an IR document.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -90,12 +93,18 @@ pub enum IrError {
     InvalidRankSize { n: i64 },
 
     #[error(
-        "`fields` projection is only valid for rows/table results, not series, heatmap, flamegraph, or metadata"
+        "`fields` projection is only valid for rows/table results, not series, scalar, heatmap, flamegraph, graph, or metadata"
     )]
     FieldsOnSeries,
 
     #[error("`fields` entry '{field}' is not present in the terminal relation")]
     FieldNotInTerminal { field: String },
+
+    #[error("page: {reason}")]
+    NotPaginatable { at: String, reason: String },
+
+    #[error("tail: {reason}")]
+    NotTailable { at: String, reason: String },
 
     #[error("invalid query: {0}")]
     Invalid(String),
@@ -107,48 +116,148 @@ pub struct Validated {
     pub terminal: RelationType,
 }
 
-/// Parse an IR document from JSON, mapping serde errors into [`IrError`].
-pub fn parse_document(json: &str) -> Result<Document, IrError> {
-    serde_json::from_str(json).map_err(|e| IrError::Invalid(e.to_string()))
-}
-
 /// Validate a document against a source registry and a field resolver.
 pub fn validate(
     doc: &Document,
     sources: &SourceRegistry,
     resolver: &dyn FieldResolver,
 ) -> Result<Validated, IrError> {
-    // 1. Version range.
-    check_version(doc.ir_version)?;
-    if doc.ir_version < 2
+    let ctx = infer(doc, sources, resolver)?;
+
+    // 4. Envelope + fields validation against the terminal relation.
+    validate_envelope(doc.result, &doc.from, &ctx.relation)?;
+    validate_fields(doc, &ctx)?;
+
+    Ok(Validated {
+        terminal: ctx.relation,
+    })
+}
+
+/// The rules that hold whatever tables exist, so a caller with no table to
+/// validate against (a dataset without the source) still rejects an illegal
+/// document. [`validate`] runs them too.
+pub fn check_structure(doc: &Document) -> Result<(), IrError> {
+    let registry = check_version(doc.ir_version)?;
+    check_match_placement(doc, &registry)?;
+    super::page::check(doc)
+}
+
+/// `match` is `traces`-only and the first stage, since a preceding filter
+/// would remove the intermediate spans a descendant relation walks through.
+fn check_match_placement(doc: &Document, registry: &OperatorRegistry) -> Result<(), IrError> {
+    let mut matches =
+        (doc.pipeline.iter().enumerate()).filter(|(_, s)| matches!(s, Stage::Match(_)));
+    let Some((first, _)) = matches.next() else {
+        return Ok(());
+    };
+    require_feature(registry, Feature::Match, "match stage")?;
+    if doc.from != "traces" {
+        return Err(illegal_match(&format!(
+            "source '{}' does not support match (traces only)",
+            doc.from
+        )));
+    }
+    if first != 0 {
+        return Err(illegal_match("match must be the first pipeline stage"));
+    }
+    if matches.next().is_some() {
+        return Err(illegal_match(
+            "a pipeline may contain at most one match stage",
+        ));
+    }
+    Ok(())
+}
+
+/// Steps 1–3 of [`validate`]: the relation `doc`'s pipeline produces. Also
+/// validates a `binop`'s right sub-document, which declares no envelope.
+fn infer<'a>(
+    doc: &'a Document,
+    sources: &'a SourceRegistry,
+    resolver: &'a dyn FieldResolver,
+) -> Result<InferCtx<'a>, IrError> {
+    // 1. Version range and the schema-free rules.
+    let registry = check_version(doc.ir_version)?;
+    check_structure(doc)?;
+    if !registry.supports_feature(Feature::Heatmap)
         && (doc.result == ResultEnvelope::Heatmap
             || doc
                 .pipeline
                 .iter()
                 .any(|stage| matches!(stage, Stage::Heatmap(_))))
     {
-        return Err(IrError::Invalid(
-            "heatmap stage and result envelope require irVersion 2".to_string(),
-        ));
+        return Err(IrError::Invalid(format!(
+            "heatmap stage and result envelope require irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::Heatmap)
+        )));
     }
-    if doc.ir_version < 3
+    if !registry.supports_feature(Feature::HistogramQuantile)
         && doc
             .pipeline
             .iter()
             .any(|stage| matches!(stage, Stage::HistogramQuantile(_)))
     {
-        return Err(IrError::Invalid(
-            "histogram_quantile stage requires irVersion 3".to_string(),
-        ));
+        return Err(IrError::Invalid(format!(
+            "histogram_quantile stage requires irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::HistogramQuantile)
+        )));
     }
+    if let Some(needed) = doc
+        .pipeline
+        .iter()
+        .filter(|stage| matches!(stage, Stage::Correlate(_)))
+        .filter_map(Stage::feature)
+        .filter(|feature| !registry.supports_feature(*feature))
+        .map(OperatorRegistry::feature_min_version)
+        .max()
+    {
+        return Err(IrError::Invalid(format!(
+            "correlate stage requires irVersion {needed}"
+        )));
+    }
+    if doc.result == ResultEnvelope::Graph && !registry.supports_feature(Feature::ServiceGraph) {
+        return Err(IrError::Invalid(format!(
+            "graph result envelope requires irVersion {}",
+            OperatorRegistry::feature_min_version(Feature::ServiceGraph)
+        )));
+    }
+    check_graph_scoping(doc)?;
+    check_flamegraph_baseline(doc, &registry)?;
     // 1b. Introspection documents (`describe` + `metadata`) never reach a plan:
     // they are answered from declared schema, the schema registries and
     // maintained statistics. Legality is checked here so this validator and the
     // router's schema-free path (`validate_describe`) share one rule set.
     let describe = check_describe(doc)?;
 
-    // 2. Source resolution — unknown source is a clear error, not a parse fail.
-    let source_def = resolve_source(doc, sources)?;
+    if doc.result == ResultEnvelope::Scalar {
+        require_feature(&registry, Feature::ScalarEnvelope, "scalar result envelope")?;
+    }
+    if doc.result == ResultEnvelope::Trace {
+        require_feature(&registry, Feature::TraceEnvelope, "trace result envelope")?;
+    }
+    let doc_step_ns = check_document_step(doc, &registry)?;
+
+    // 2. Source resolution — unknown source is a clear error, not a parse
+    // fail. A pseudo-source reads no signal and seeds a Scalar instead.
+    let (source_def, relation) = if is_pseudo_source(&doc.from) {
+        (None, seed_pseudo_source(doc, &registry, doc_step_ns)?)
+    } else {
+        if doc.constant.is_some() {
+            return Err(IrError::Invalid(
+                "`constant` is only valid with `from: \"constant\"`".to_string(),
+            ));
+        }
+        let def = resolve_source(doc, sources)?;
+        let seed = RelationType::RowSet(RowSet {
+            source: doc.from.clone(),
+            columns: Vec::new(),
+            grain: def.grain,
+            aggregated: false,
+            open: true,
+            correlated: false,
+            identity: def.grain == Grain::Point,
+        });
+        (Some(def), seed)
+    };
 
     // Range literals must be coercible to timestamps (relative anchors stay
     // symbolic; only well-formedness is checked here).
@@ -159,16 +268,15 @@ pub fn validate(
         source: &doc.from,
         source_def,
         resolver,
-        ir_version: doc.ir_version,
-        relation: RelationType::RowSet(RowSet {
-            source: doc.from.clone(),
-            columns: Vec::new(),
-            grain: source_def.grain,
-            aggregated: false,
-            open: true,
-        }),
+        registry,
+        relation,
         names: Vec::new(),
         declared_result: doc.result,
+        doc_step_ns,
+        doc,
+        sources,
+        correlate_seen: false,
+        target_scope: None,
     };
     match describe {
         // Introspection: no records flow through the pipeline, so there is
@@ -186,19 +294,13 @@ pub fn validate(
             }
         }
     }
-
-    // 4. Envelope + fields validation against the terminal relation.
-    validate_envelope(doc.result, &doc.from, &ctx.relation)?;
-    validate_fields(doc, &ctx)?;
-
-    Ok(Validated {
-        terminal: ctx.relation,
-    })
+    Ok(ctx)
 }
 
 struct InferCtx<'a> {
     source: &'a str,
-    source_def: &'a SourceDef,
+    /// `None` for a pseudo-source.
+    source_def: Option<&'a SourceDef>,
     resolver: &'a dyn FieldResolver,
     relation: RelationType,
     /// Names introduced by extract/aggregate — unique across the pipeline.
@@ -206,10 +308,27 @@ struct InferCtx<'a> {
     /// The document's declared result envelope, needed by stages whose
     /// legality depends on it (e.g. `flamegraph` only composes with `where`).
     declared_result: ResultEnvelope,
-    /// The document's declared `irVersion`. Operands nested inside a stage —
-    /// an aggregate function, a `divisor` — gate on it here rather than in the
+    /// The document's version registry. Operands nested inside a stage — an
+    /// aggregate function, a `divisor` — gate on it here rather than in the
     /// up-front scans, which only see stage kinds.
-    ir_version: i64,
+    registry: OperatorRegistry,
+    /// The document `step`, the default of the series-algebra stages.
+    doc_step_ns: Option<i64>,
+    /// The document itself and the registry, for a `binop` sub-document.
+    doc: &'a Document,
+    sources: &'a SourceRegistry,
+    /// Whether a `correlate` stage has already been applied.
+    correlate_seen: bool,
+    /// The `<target>.` field scope an inner/left signal `correlate` opened.
+    target_scope: Option<TargetScope>,
+}
+
+/// Target fields resolve under `<source>.` against the target source, like
+/// `parent.` against `traces`. A later `aggregate` closes the relation, so
+/// only its group outputs stay addressable (`open` goes false).
+struct TargetScope {
+    source: String,
+    open: bool,
 }
 
 impl InferCtx<'_> {
@@ -222,7 +341,18 @@ impl InferCtx<'_> {
                     .to_string(),
             });
         }
-        match stage {
+        if self.declared_result == ResultEnvelope::Graph && !matches!(stage, Stage::Where(_)) {
+            return Err(IrError::IllegalStage {
+                stage: stage.name().to_string(),
+                reason: "the graph envelope is assembled from fixed internal pipelines \
+                         and only composes with `from`/`where`"
+                    .to_string(),
+            });
+        }
+        if let Some(feature) = stage.feature() {
+            require_feature(&self.registry, feature, &format!("{} stage", stage.name()))?;
+        }
+        let applied = match stage {
             Stage::Where(pred) => self.apply_where(pred),
             Stage::Extract(extract) => self.apply_extract(extract),
             Stage::Aggregate(agg) => self.apply_aggregate(agg),
@@ -232,6 +362,33 @@ impl InferCtx<'_> {
             Stage::Limit(_) => Ok(()),
             Stage::Heatmap(heatmap) => self.apply_heatmap(heatmap),
             Stage::HistogramQuantile(hq) => self.apply_histogram_quantile(hq),
+            Stage::Correlate(correlate) => self.apply_correlate(correlate),
+            Stage::Sample(sample) => self.apply_sample(sample),
+            Stage::Reduce(reduce) => self.apply_reduce(reduce),
+            Stage::Map(map) => self.apply_map(map),
+            Stage::Labels(op) => self.apply_labels(op),
+            Stage::Filter(filter) => self.apply_filter(filter),
+            Stage::Sort(_) => self.require_numeric_series("sort").map(|_| ()),
+            Stage::Absent(absent) => self.apply_absent(absent),
+            Stage::OverTime(over) => self.apply_over_time(over),
+            Stage::Binop(binop) => self.apply_binop(binop),
+            Stage::HistogramFraction(hf) => self.apply_histogram_fraction(hf),
+            Stage::Match(m) => self.apply_match(m),
+            Stage::Scalar(_) => {
+                let step_ns = self.require_series("scalar")?.step_ns;
+                self.relation = RelationType::Scalar(Scalar { step_ns });
+                Ok(())
+            }
+            Stage::Vector(_) => {
+                let step_ns = self.require_scalar("vector")?.step_ns;
+                self.relation = RelationType::Series(Series {
+                    labels: Vec::new(),
+                    open_labels: false,
+                    value: ValueType::Float64,
+                    step_ns,
+                });
+                Ok(())
+            }
             // Unreachable in practice: an introspection document returns before
             // stage inference. Kept explicit so a future caller that skips
             // `check_describe` fails loudly instead of inferring nonsense.
@@ -241,6 +398,487 @@ impl InferCtx<'_> {
                          pipeline"
                     .to_string(),
             }),
+        };
+        // Only `where` keeps a point stream's identity.
+        if !matches!(stage, Stage::Where(_))
+            && let RelationType::RowSet(rs) = &mut self.relation
+        {
+            rs.identity = false;
+        }
+        applied
+    }
+
+    /// The input of an operator that reads a metric point stream: an
+    /// unbroken `metrics` scan, optionally narrowed by `where`.
+    fn require_point_stream(&self, stage: &str) -> Result<(), IrError> {
+        match &self.relation {
+            RelationType::RowSet(rs)
+                if rs.source == "metrics"
+                    && rs.grain == Grain::Point
+                    && !rs.aggregated
+                    && rs.identity =>
+            {
+                Ok(())
+            }
+            other => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "requires a metric point stream (a `metrics` scan, optionally narrowed by \
+                     `where`), but the input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    fn require_series(&self, stage: &str) -> Result<&Series, IrError> {
+        match &self.relation {
+            RelationType::Series(s) => Ok(s),
+            other => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "expects a series input, but the input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    fn require_numeric_series(&self, stage: &str) -> Result<&Series, IrError> {
+        let series = self.require_series(stage)?;
+        if !is_numeric(&series.value) {
+            return Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "expects a numeric series, but its values are {}",
+                    series.value
+                ),
+            });
+        }
+        Ok(series)
+    }
+
+    fn require_scalar(&self, stage: &str) -> Result<Scalar, IrError> {
+        match &self.relation {
+            RelationType::Scalar(s) => Ok(*s),
+            other => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: format!(
+                    "expects a scalar input, but the input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    /// A stage's own `step`, else the document's; one of them is required.
+    fn stage_step(&self, stage: &str, step: Option<&String>) -> Result<i64, IrError> {
+        match step {
+            Some(step) => positive_duration(&format!("{stage}.step"), step),
+            None => self.doc_step_ns.ok_or_else(|| {
+                IrError::Invalid(format!(
+                    "{stage} requires a `step`, on the stage or the document"
+                ))
+            }),
+        }
+    }
+
+    /// `sample`: evaluate a point stream into an open-labelled series.
+    fn apply_sample(&mut self, sample: &Sample) -> Result<(), IrError> {
+        self.require_point_stream("sample")?;
+        let is_latest = sample.func == SampleFn::Latest;
+        match (&sample.window, is_latest) {
+            (Some(_), true) => {
+                return Err(IrError::Invalid(
+                    "sample `latest` takes `lookback`, not `window`".to_string(),
+                ));
+            }
+            (None, false) => {
+                return Err(IrError::Invalid(
+                    "sample range functions require a `window`".to_string(),
+                ));
+            }
+            (Some(window), false) => {
+                positive_duration("sample.window", window)?;
+            }
+            (None, true) => {}
+        }
+        if let Some(lookback) = &sample.lookback {
+            if !is_latest {
+                return Err(IrError::Invalid(
+                    "sample `lookback` is only valid with `latest`".to_string(),
+                ));
+            }
+            positive_duration("sample.lookback", lookback)?;
+        }
+        check_quantile_arg(
+            "sample",
+            sample.arg,
+            sample.func == SampleFn::QuantileOverTime,
+        )?;
+        if let Some(offset) = &sample.offset {
+            non_negative_duration("sample.offset", offset)?;
+        }
+        if let Some(at) = &sample.at {
+            coerce_for("sample.at", at, &ValueType::TimestampNs)?;
+        }
+        let step_ns = self.stage_step("sample", sample.step.as_ref())?;
+        // As in Prometheus, only the functions that return a point's own
+        // value keep the metric name.
+        let keeps_name = matches!(sample.func, SampleFn::Latest | SampleFn::LastOverTime);
+        self.relation = RelationType::Series(Series {
+            labels: if keeps_name {
+                vec![METRIC_NAME.to_string()]
+            } else {
+                Vec::new()
+            },
+            open_labels: true,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// `reduce`: fold series into groups at every instant.
+    fn apply_reduce(&mut self, reduce: &Reduce) -> Result<(), IrError> {
+        let input = self.require_series("reduce")?.clone();
+        if reduce.by.is_some() && reduce.without.is_some() {
+            return Err(IrError::Invalid(
+                "reduce `by` and `without` are mutually exclusive".to_string(),
+            ));
+        }
+        for name in reduce.by.iter().chain(&reduce.without).flatten() {
+            check_label_name("reduce", name)?;
+        }
+        match reduce.func {
+            // As in Prometheus, k is truncated and below 1 selects nothing.
+            ReduceFn::Topk | ReduceFn::Bottomk => match reduce.arg {
+                Some(k) if k.is_finite() => {}
+                _ => {
+                    return Err(IrError::Invalid(
+                        "reduce topk/bottomk requires a numeric `arg` (k)".to_string(),
+                    ));
+                }
+            },
+            func => check_quantile_arg("reduce", reduce.arg, func == ReduceFn::Quantile)?,
+        }
+        let is_count_values = reduce.func == ReduceFn::CountValues;
+        match (&reduce.label, is_count_values) {
+            (Some(label), true) => check_label_name("reduce", label)?,
+            (None, false) => {}
+            (None, true) => {
+                return Err(IrError::Invalid(
+                    "reduce count_values requires a `label`".to_string(),
+                ));
+            }
+            (Some(_), false) => {
+                return Err(IrError::Invalid(
+                    "reduce `label` is only valid for count_values".to_string(),
+                ));
+            }
+        }
+        let (mut labels, open_labels) = match (&reduce.by, &reduce.without) {
+            _ if matches!(reduce.func, ReduceFn::Topk | ReduceFn::Bottomk) => {
+                (input.labels.clone(), input.open_labels)
+            }
+            (Some(by), _) => (by.clone(), false),
+            (None, Some(without)) => (
+                input
+                    .labels
+                    .iter()
+                    .filter(|l| *l != METRIC_NAME && !without.contains(l))
+                    .cloned()
+                    .collect(),
+                true,
+            ),
+            (None, None) => (Vec::new(), false),
+        };
+        if let Some(label) = &reduce.label {
+            push_label(&mut labels, label);
+        }
+        self.relation = RelationType::Series(Series {
+            labels,
+            open_labels,
+            value: ValueType::Float64,
+            step_ns: input.step_ns,
+        });
+        Ok(())
+    }
+
+    /// `map`: a per-value function, on a Series or (math only) a Scalar.
+    fn apply_map(&mut self, map: &Map) -> Result<(), IrError> {
+        let name = serde_json::to_value(map.func)
+            .ok()
+            .and_then(|v| v.as_str().map(str::to_string))
+            .unwrap_or_default();
+        let arity = map.func.arity();
+        if !arity.contains(&map.args.len()) {
+            return Err(IrError::Invalid(format!(
+                "map {name} takes {} to {} `args`, got {}",
+                arity.start(),
+                arity.end(),
+                map.args.len()
+            )));
+        }
+        match &mut self.relation {
+            RelationType::Series(s) => {
+                s.labels.retain(|l| l != METRIC_NAME);
+                s.value = ValueType::Float64;
+                Ok(())
+            }
+            RelationType::Scalar(_) if map.func.is_math() => Ok(()),
+            other => Err(IrError::IllegalStage {
+                stage: "map".to_string(),
+                reason: format!(
+                    "{name} expects a series (or, for a math function, a scalar), but the \
+                     input is {}",
+                    other.describe()
+                ),
+            }),
+        }
+    }
+
+    /// `labels`: rewrite one label of every series.
+    fn apply_labels(&mut self, op: &Labels) -> Result<(), IrError> {
+        self.require_series("labels")?;
+        let dst = match op {
+            // An empty `src` reads as "": Prometheus' constant-label idiom.
+            Labels::Replace(r) => {
+                regex::Regex::new(&r.regex).map_err(|e| {
+                    IrError::Invalid(format!("labels replace `regex` does not compile: {e}"))
+                })?;
+                &r.dst
+            }
+            Labels::Join(j) => {
+                for src in &j.src {
+                    check_label_name("labels", src)?;
+                }
+                &j.dst
+            }
+        };
+        check_label_name("labels", dst)?;
+        if let RelationType::Series(s) = &mut self.relation
+            && !s.open_labels
+        {
+            push_label(&mut s.labels, dst);
+        }
+        Ok(())
+    }
+
+    /// `filter`: compare every value with a number; `bool` yields 0/1 and
+    /// drops the metric name.
+    fn apply_filter(&mut self, filter: &Filter) -> Result<(), IrError> {
+        self.require_numeric_series("filter")?;
+        if !filter.value.is_finite() {
+            return Err(IrError::Invalid(
+                "filter `value` must be finite".to_string(),
+            ));
+        }
+        if filter.bool
+            && let RelationType::Series(s) = &mut self.relation
+        {
+            s.labels.retain(|l| l != METRIC_NAME);
+            s.value = ValueType::Float64;
+        }
+        Ok(())
+    }
+
+    /// `absent`: one series, labelled by `labels`, where the input has none.
+    fn apply_absent(&mut self, absent: &Absent) -> Result<(), IrError> {
+        let step_ns = self.require_series("absent")?.step_ns;
+        for name in absent.labels.keys() {
+            check_label_name("absent", name)?;
+        }
+        self.relation = RelationType::Series(Series {
+            labels: absent.labels.keys().cloned().collect(),
+            open_labels: false,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// `over_time`: re-window a Series evaluated at its own step.
+    fn apply_over_time(&mut self, over: &OverTime) -> Result<(), IrError> {
+        let input = self.require_numeric_series("over_time")?.clone();
+        positive_duration("over_time.window", &over.window)?;
+        check_quantile_arg("over_time", over.arg, over.func == OverTimeFn::Quantile)?;
+        let step_ns = self.stage_step("over_time", over.step.as_ref())?;
+        if step_ns < input.step_ns {
+            return Err(IrError::Invalid(
+                "over_time `step` must not be finer than its input series' step".to_string(),
+            ));
+        }
+        let mut labels = input.labels;
+        if over.func != OverTimeFn::Last {
+            labels.retain(|l| l != METRIC_NAME);
+        }
+        self.relation = RelationType::Series(Series {
+            labels,
+            value: ValueType::Float64,
+            step_ns,
+            ..input
+        });
+        Ok(())
+    }
+
+    /// `binop`: combine the pipeline (left) with a number or a sub-document.
+    fn apply_binop(&mut self, binop: &Binop) -> Result<(), IrError> {
+        let left = match &self.relation {
+            RelationType::Series(_) | RelationType::Scalar(_) => self.relation.clone(),
+            other => {
+                return Err(IrError::IllegalStage {
+                    stage: "binop".to_string(),
+                    reason: format!(
+                        "expects a series or scalar input, but the input is {}",
+                        other.describe()
+                    ),
+                });
+            }
+        };
+        let step_ns = relation_step(&left);
+        let right = match &binop.right {
+            BinopOperand::Number(_) => RelationType::Scalar(Scalar { step_ns }),
+            BinopOperand::Document(sub) => self.infer_operand(sub)?,
+        };
+        if relation_step(&right) != step_ns {
+            return Err(IrError::Invalid(
+                "binop `right` must have the same step as the pipeline".to_string(),
+            ));
+        }
+        let (left, right) = if binop.reverse {
+            (right, left)
+        } else {
+            (left, right)
+        };
+        let op = binop.op;
+        let both_series = matches!(
+            (&left, &right),
+            (RelationType::Series(_), RelationType::Series(_))
+        );
+        let rule = |ok: bool, msg: &str| {
+            if ok {
+                Ok(())
+            } else {
+                Err(IrError::Invalid(format!("binop {msg}")))
+            }
+        };
+        rule(
+            !(binop.on.is_some() && binop.ignoring.is_some()),
+            "`on` and `ignoring` are mutually exclusive",
+        )?;
+        rule(
+            both_series || (binop.on.is_none() && binop.ignoring.is_none()),
+            "`on`/`ignoring` need a series on both sides",
+        )?;
+        rule(
+            binop.group.is_none() || both_series,
+            "`group` needs a series on both sides",
+        )?;
+        rule(
+            !op.is_set() || both_series,
+            "`and`/`or`/`unless` need a series on both sides",
+        )?;
+        rule(
+            !op.is_set() || binop.group.is_none(),
+            "`group` is not valid for a set operation",
+        )?;
+        rule(
+            !binop.bool || op.is_comparison(),
+            "`bool` is only valid for a comparison",
+        )?;
+        let names = binop.on.iter().chain(&binop.ignoring).flatten();
+        let include = binop.group.iter().flat_map(|g| &g.include);
+        for name in names.chain(include) {
+            check_label_name("binop", name)?;
+        }
+
+        let as_series = |r: RelationType| match r {
+            RelationType::Series(s) => Some(s),
+            _ => None,
+        };
+        let (l, r) = match (as_series(left), as_series(right)) {
+            (None, None) => {
+                rule(
+                    !op.is_comparison() || binop.bool,
+                    "comparing two scalars needs `bool`",
+                )?;
+                self.relation = RelationType::Scalar(Scalar { step_ns });
+                return Ok(());
+            }
+            (Some(l), r) => (l, r),
+            (None, Some(s)) => (s, None),
+        };
+        let (mut labels, open_labels) = match (&r, &binop.group, &binop.on) {
+            (None, _, _) => (l.labels.clone(), l.open_labels),
+            (Some(_), _, _) if op.is_set() => (l.labels.clone(), l.open_labels),
+            (Some(r), Some(group), _) => {
+                let many = if group.side == GroupSide::Left { &l } else { r };
+                let mut labels = many.labels.clone();
+                for name in &group.include {
+                    push_label(&mut labels, name);
+                }
+                (labels, many.open_labels)
+            }
+            (Some(_), None, Some(on)) => (on.clone(), false),
+            (Some(r), None, None) => {
+                let ignoring = binop.ignoring.as_deref().unwrap_or_default();
+                let labels = l
+                    .labels
+                    .iter()
+                    .filter(|name| !ignoring.contains(name))
+                    .cloned()
+                    .collect();
+                (labels, l.open_labels || r.open_labels)
+            }
+        };
+        if !op.is_set() && (!op.is_comparison() || binop.bool) {
+            labels.retain(|name| name != METRIC_NAME);
+        }
+        self.relation = RelationType::Series(Series {
+            labels,
+            open_labels,
+            value: ValueType::Float64,
+            step_ns,
+        });
+        Ok(())
+    }
+
+    /// Validate a `binop`'s right sub-document: it inherits this document's
+    /// version, range and step, and resolves fields against the same
+    /// resolver — which serves one source, so it must read this document's
+    /// source or a pseudo-source.
+    fn infer_operand(&self, sub: &SubDocument) -> Result<RelationType, IrError> {
+        if sub.from != self.doc.from && !is_pseudo_source(&sub.from) {
+            return Err(IrError::Invalid(format!(
+                "binop `right.from` must be '{}' or a pseudo-source: fields resolve against \
+                     the document's own source",
+                self.doc.from
+            )));
+        }
+        let child = Document {
+            ir_version: self.doc.ir_version,
+            from: sub.from.clone(),
+            range: self.doc.range.clone(),
+            result: ResultEnvelope::Series,
+            fields: None,
+            pipeline: sub.pipeline.clone(),
+            focus: None,
+            depth: None,
+            trace_id: None,
+            baseline: None,
+            step: self.doc.step.clone(),
+            constant: sub.constant,
+            page: None,
+            tail: None,
+        };
+        let terminal = infer(&child, self.sources, self.resolver)?.relation;
+        match terminal {
+            RelationType::Series(_) | RelationType::Scalar(_) => Ok(terminal),
+            other => Err(IrError::Invalid(format!(
+                "binop `right` must yield a series or scalar, not {}",
+                other.describe()
+            ))),
         }
     }
 
@@ -250,6 +888,10 @@ impl InferCtx<'_> {
             RelationType::Series(_) | RelationType::Heatmap(_) => Err(IrError::IllegalStage {
                 stage: stage.to_string(),
                 reason: "expects a row-set input but the pipeline is a series".to_string(),
+            }),
+            RelationType::Scalar(_) => Err(IrError::IllegalStage {
+                stage: stage.to_string(),
+                reason: "expects a row-set input but the pipeline is a scalar".to_string(),
             }),
             RelationType::Metadata(_) => Err(IrError::IllegalStage {
                 stage: stage.to_string(),
@@ -274,35 +916,56 @@ impl InferCtx<'_> {
     /// or a closed aggregated schema's output) is never advisory — only a
     /// resolver-provided [`Resolved`] carries that judgment.
     fn ref_type_and_advisory(&self, name: &str) -> Result<(ValueType, bool), IrError> {
+        let r = self.ref_resolved(name)?;
+        if r.is_filter_only() {
+            return Err(IrError::Invalid(Resolved::filter_only_message(name)));
+        }
+        Ok((r.value_type().clone(), r.is_advisory_type()))
+    }
+
+    /// Resolve `name` once. A relation column reads back as
+    /// [`Resolved::Column`] (authoritative, never advisory).
+    fn ref_resolved(&self, name: &str) -> Result<Resolved, IrError> {
         if is_expression_string(name) {
             return Err(IrError::ExpressionString {
                 operand: name.to_string(),
             });
         }
         self.guard_logical_name(name)?;
+        // Under a correlate scope, resolution proceeds exactly as it would
+        // for the unprefixed name against the scope's source — the scope
+        // only relabels the outcome, it does not change how a field is found.
+        let scoped = self.scoped_field(name);
+        let (source, resolve_name) = scoped.unwrap_or((self.source, name));
         match &self.relation {
-            RelationType::Series(_) | RelationType::Heatmap(_) | RelationType::Metadata(_) => {
-                Err(IrError::UnknownReference {
-                    name: name.to_string(),
-                })
-            }
+            RelationType::Series(_)
+            | RelationType::Scalar(_)
+            | RelationType::Heatmap(_)
+            | RelationType::Metadata(_) => Err(IrError::UnknownReference {
+                name: name.to_string(),
+            }),
             RelationType::RowSet(rs) => {
                 if let Some(col) = rs.columns.iter().find(|c| c.name == name) {
-                    return Ok((col.value_type.clone(), false));
+                    return Ok(Resolved::Column {
+                        name: col.name.clone(),
+                        value_type: col.value_type.clone(),
+                    });
                 }
-                if rs.aggregated {
-                    // Closed schema: only the aggregate/group outputs exist.
+                // Closed schema: only the aggregate/group outputs exist — plus
+                // the target scope of a correlate that followed the aggregate.
+                let open_target =
+                    scoped.is_some() && self.target_scope.as_ref().is_some_and(|scope| scope.open);
+                if rs.aggregated && !open_target {
                     return Err(IrError::UnknownReference {
                         name: name.to_string(),
                     });
                 }
-                match self.resolver.resolve(self.source, name) {
-                    Some(r) => Ok((r.value_type().clone(), r.is_advisory_type())),
-                    // Defined rejection: a field with no canonical type (12.1a).
-                    None => Err(IrError::UnknownFieldType {
+                // Defined rejection: a field with no canonical type (12.1a).
+                self.resolver.resolve(source, resolve_name).ok_or_else(|| {
+                    IrError::UnknownFieldType {
                         field: name.to_string(),
-                    }),
-                }
+                    }
+                })
             }
         }
     }
@@ -321,7 +984,16 @@ impl InferCtx<'_> {
 
     fn check_leaf(&self, leaf: &Leaf) -> Result<(), IrError> {
         self.require_filterable(&leaf.field)?;
-        let ty = self.ref_type(&leaf.field)?;
+        let resolved = self.ref_resolved(&leaf.field)?;
+        if matches!(&resolved, Resolved::SpanList(_)) && !SpanListField::supports(leaf.op) {
+            return Err(IrError::Invalid(format!(
+                "operator '{}' is not supported on list field '{}': it matches when any element does; \
+                 use `not` with `eq` to require that no element equals a value",
+                leaf.op.as_str(),
+                leaf.field
+            )));
+        }
+        let (ty, advisory) = (resolved.value_type().clone(), resolved.is_advisory_type());
         match (leaf.op.takes_value(), &leaf.value) {
             (true, None) => {
                 return Err(IrError::Invalid(format!(
@@ -364,7 +1036,24 @@ impl InferCtx<'_> {
                 }
             }
             ComparisonOp::Contains | ComparisonOp::Regex => {
-                // Substring/regex operate on the string form.
+                // Substring/regex operate on the string form. An advisory
+                // type (an unpromoted/event-captured attribute, or a
+                // resolver's permissive unknown-name fallback) is let
+                // through — it commonly reports `String` without that being
+                // a real guarantee, the same "authoritative wins" carve-out
+                // `check_agg`'s numeric-operand check makes. An authoritative
+                // non-`String` type (a `TypedAttribute` off its committed
+                // canonical type, or an ordinary physical column) has no
+                // string form to match against and is rejected here, rather
+                // than reaching the engine as an unpredictable runtime cast
+                // error.
+                if !advisory && ty != ValueType::String {
+                    return Err(IrError::Invalid(format!(
+                        "operator '{}' needs a string field, but '{}' is typed {ty}",
+                        leaf.op.as_str(),
+                        leaf.field
+                    )));
+                }
                 let v = leaf.value.as_ref().unwrap();
                 coerce_for(&leaf.field, v, &ValueType::String)?;
             }
@@ -377,7 +1066,8 @@ impl InferCtx<'_> {
     }
 
     fn require_filterable(&self, field: &str) -> Result<(), IrError> {
-        if !self.resolver.is_filterable(self.source, field) {
+        let (source, effective) = self.scoped_field(field).unwrap_or((self.source, field));
+        if !self.resolver.is_filterable(source, effective) {
             return Err(IrError::UnfilterableField {
                 field: field.to_string(),
             });
@@ -386,7 +1076,7 @@ impl InferCtx<'_> {
     }
 
     fn apply_extract(&mut self, extract: &Extract) -> Result<(), IrError> {
-        if !self.source_def.allows_extract {
+        if !self.source_def.is_some_and(|def| def.allows_extract) {
             return Err(IrError::IllegalStage {
                 stage: "extract".to_string(),
                 reason: format!(
@@ -432,6 +1122,10 @@ impl InferCtx<'_> {
                 reason: "cannot aggregate an already-aggregated relation".to_string(),
             });
         }
+        let was_correlated = rs.correlated;
+        if self.source == "metrics" && agg.aggs.iter().any(|a| a.func.is_range_fn()) {
+            self.require_point_stream("aggregate")?;
+        }
         if agg.aggs.is_empty() {
             return Err(IrError::Invalid(
                 "aggregate requires at least one aggregate output".to_string(),
@@ -455,6 +1149,17 @@ impl InferCtx<'_> {
             out_cols.push(out);
         }
 
+        if agg.step.is_none() && agg.aggs.iter().any(|a| a.func.is_range_fn()) {
+            return Err(IrError::Invalid(
+                "a per-series range function ('rate'/'increase'/'irate'/'*_over_time') requires \
+                 `step`"
+                    .to_string(),
+            ));
+        }
+
+        if let Some(scope) = &mut self.target_scope {
+            scope.open = false;
+        }
         match &agg.step {
             Some(step) => {
                 let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
@@ -472,6 +1177,7 @@ impl InferCtx<'_> {
                 }
                 self.relation = RelationType::Series(Series {
                     labels: agg.by.clone(),
+                    open_labels: false,
                     value: out_cols[0].value_type.clone(),
                     step_ns,
                 });
@@ -485,6 +1191,8 @@ impl InferCtx<'_> {
                     grain: Grain::Group,
                     aggregated: true,
                     open: false,
+                    correlated: was_correlated,
+                    identity: false,
                 });
             }
         }
@@ -566,45 +1274,122 @@ impl InferCtx<'_> {
         Ok(())
     }
 
-    /// Quantile-over-histogram-buckets — legal only on `metrics_histogram`,
-    /// always produces a series (`metric.name` plus any extra `by` labels).
+    /// Quantile-over-histogram-buckets — legal only on `metrics`,
+    /// always produces a series labelled by its `by` labels.
     /// Distinct from `aggregate`'s `fn: "quantile"` (an approx-percentile over
     /// independent scalar values, `check_agg` below) — different algorithm,
     /// different source shape.
     fn apply_histogram_quantile(&mut self, hq: &HistogramQuantile) -> Result<(), IrError> {
-        if self.source != "metrics_histogram" {
-            return Err(IrError::IllegalStage {
-                stage: "histogram_quantile".into(),
-                reason: "is only supported on the metrics_histogram source".into(),
-            });
-        }
-        if self.require_rowset("histogram_quantile")?.aggregated {
-            return Err(IrError::IllegalStage {
-                stage: "histogram_quantile".into(),
-                reason: "cannot run on an already-aggregated relation".into(),
-            });
-        }
+        self.require_histogram_input("histogram_quantile")?;
         if !hq.q.is_finite() || !(0.0..=1.0).contains(&hq.q) {
             return Err(IrError::Invalid(
                 "histogram_quantile q must be within [0, 1]".to_string(),
             ));
         }
-        let step_ns = parse_duration_ns(&hq.step).ok_or_else(|| IrError::Coercion {
-            field: "histogram_quantile.step".into(),
-            value: hq.step.clone(),
+        self.apply_histogram(
+            "histogram_quantile",
+            HistogramShape {
+                by: &hq.by,
+                per_series: hq.per_series,
+                step: &hq.step,
+                window: hq.window.as_ref(),
+                lookback: hq.lookback.as_ref(),
+                mode: hq.mode,
+                as_name: &hq.as_name,
+            },
+        )
+    }
+
+    /// `histogram_fraction`: `histogram_quantile`'s sibling (`irVersion` 10).
+    fn apply_histogram_fraction(&mut self, hf: &HistogramFraction) -> Result<(), IrError> {
+        self.require_histogram_input("histogram_fraction")?;
+        if !hf.lower.is_finite() || !hf.upper.is_finite() || hf.lower > hf.upper {
+            return Err(IrError::Invalid(
+                "histogram_fraction needs finite bounds with `lower` <= `upper`".to_string(),
+            ));
+        }
+        self.apply_histogram(
+            "histogram_fraction",
+            HistogramShape {
+                by: &hf.by,
+                per_series: hf.per_series,
+                step: &hf.step,
+                window: hf.window.as_ref(),
+                lookback: hf.lookback.as_ref(),
+                mode: hf.mode,
+                as_name: &hf.as_name,
+            },
+        )
+    }
+
+    fn require_histogram_input(&self, stage: &str) -> Result<(), IrError> {
+        if self.source != "metrics" {
+            return Err(IrError::IllegalStage {
+                stage: stage.into(),
+                reason: "is only supported on the metrics source".into(),
+            });
+        }
+        self.require_point_stream(stage)
+    }
+
+    /// The shared operands of the histogram stages.
+    fn apply_histogram(&mut self, stage: &str, shape: HistogramShape<'_>) -> Result<(), IrError> {
+        let HistogramShape {
+            by,
+            per_series,
+            step,
+            window,
+            lookback,
+            mode,
+            as_name,
+        } = shape;
+        let step_ns = parse_duration_ns(step).ok_or_else(|| IrError::Coercion {
+            field: format!("{stage}.step"),
+            value: step.to_string(),
             target: ValueType::DurationNs.to_string(),
         })?;
         if step_ns <= 0 {
-            return Err(IrError::Invalid(
-                "histogram_quantile step must be > 0".into(),
-            ));
+            return Err(IrError::Invalid(format!("{stage} step must be > 0")));
         }
-        if hq.by.iter().any(|f| f == "metric.name") {
-            return Err(IrError::Invalid(
-                "histogram_quantile by may not include metric.name (already implicit)".to_string(),
-            ));
+        if let Some(window) = window {
+            require_feature(
+                &self.registry,
+                Feature::HistogramWindow,
+                &format!("{stage} `window`"),
+            )?;
+            positive_duration(&format!("{stage}.window"), window)?;
+            if mode == HistogramMode::Instant {
+                return Err(IrError::Invalid(format!(
+                    "{stage} `window` is the rate-mode lookback and is not valid with `mode: instant`"
+                )));
+            }
         }
-        for by in &hq.by {
+        if let Some(lookback) = lookback {
+            positive_duration(&format!("{stage}.lookback"), lookback)?;
+            if mode != HistogramMode::Instant {
+                return Err(IrError::Invalid(format!(
+                    "{stage} `lookback` is the instant-mode lookback and needs `mode: instant`"
+                )));
+            }
+        }
+        if per_series {
+            require_feature(
+                &self.registry,
+                Feature::HistogramPerSeries,
+                &format!("{stage} `per_series`"),
+            )?;
+            if !by.is_empty() {
+                return Err(IrError::Invalid(format!(
+                    "{stage} `per_series` keeps every series and cannot be combined with `by`"
+                )));
+            }
+        }
+        if by.iter().any(|f| f == "metric.name") {
+            return Err(IrError::Invalid(format!(
+                "{stage} by may not include metric.name (already implicit)"
+            )));
+        }
+        for by in by {
             self.require_filterable(by)?;
             let _ = self.ref_type(by)?;
         }
@@ -616,37 +1401,259 @@ impl InferCtx<'_> {
         // alias would produce an ambiguous or duplicate output column.
         let mut output_idents: std::collections::HashSet<String> =
             std::collections::HashSet::from(["bucket".to_string()]);
-        for by in &hq.by {
+        for by in by {
             let alias = super::alias::safe_ident(by);
             if !output_idents.insert(alias.clone()) {
                 return Err(IrError::Invalid(format!(
-                    "histogram_quantile by fields collide after normalization: '{alias}'"
+                    "{stage} by fields collide after normalization: '{alias}'"
                 )));
             }
         }
-        if output_idents.contains(&hq.as_name) {
+        if output_idents.contains(as_name) {
             return Err(IrError::DuplicateName {
-                name: hq.as_name.clone(),
+                name: as_name.to_string(),
             });
         }
-        self.guard_logical_name(&hq.as_name)?;
-        let collides = self.names.iter().any(|n| n == &hq.as_name)
-            || hq.by.iter().any(|b| b == &hq.as_name)
-            || self.resolver.is_known(self.source, &hq.as_name);
+        self.guard_logical_name(as_name)?;
+        let collides = self.names.iter().any(|n| n == as_name)
+            || by.iter().any(|b| b == as_name)
+            || self.resolver.is_known(self.source, as_name);
         if collides {
             return Err(IrError::DuplicateName {
-                name: hq.as_name.clone(),
+                name: as_name.to_string(),
             });
         }
-        self.names.push(hq.as_name.clone());
-        let mut labels = vec!["metric.name".to_string()];
-        labels.extend(hq.by.clone());
+        self.names.push(as_name.to_string());
+        // As in Prometheus, the output carries no metric name: the `by`
+        // labels when merging, each series' own labels when per series.
         self.relation = RelationType::Series(Series {
-            labels,
+            labels: by.to_vec(),
+            open_labels: per_series,
             value: ValueType::Float64,
             step_ns,
         });
         Ok(())
+    }
+
+    /// The `match` stage (`irVersion` 12); its placement is checked by
+    /// [`check_structure`]. Adds the `spansets` column.
+    fn apply_match(&mut self, stage: &Match) -> Result<(), IrError> {
+        if self.relation.column(Match::SPANSETS).is_some() {
+            return Err(illegal_match(
+                "the relation already has a `spansets` column",
+            ));
+        }
+        let sets = &stage.spansets.0;
+        if !(1..=Match::MAX_SPANSETS).contains(&sets.len()) {
+            return Err(illegal_match(&format!(
+                "`spansets` must declare 1..={} span-sets, got {}",
+                Match::MAX_SPANSETS,
+                sets.len()
+            )));
+        }
+        for (i, (name, pred)) in sets.iter().enumerate() {
+            if !is_span_set_name(name) {
+                return Err(illegal_match(&format!(
+                    "span-set name '{name}' must match ^[a-z_][a-z0-9_]{{0,31}}$"
+                )));
+            }
+            if sets[..i].iter().any(|(earlier, _)| earlier == name) {
+                return Err(illegal_match(&format!("duplicate span-set name '{name}'")));
+            }
+            self.apply_where(pred)?;
+        }
+        for side in stage.relations.iter().flat_map(|r| [&r.left, &r.right]) {
+            if !sets.iter().any(|(name, _)| name == side) {
+                return Err(illegal_match(&format!(
+                    "relation names undeclared span-set '{side}'"
+                )));
+            }
+        }
+        self.names.push(Match::SPANSETS.to_string());
+        if let RelationType::RowSet(rs) = &mut self.relation {
+            rs.columns
+                .push(Column::new(Match::SPANSETS, ValueType::String));
+        }
+        Ok(())
+    }
+
+    /// The `correlate` stage. Version gating happens in `apply_stage`; here
+    /// we check placement (at most one per pipeline) and the target's own
+    /// rules. Parent-side columns are not materialized as explicit relation
+    /// columns — they resolve dynamically through the `parent.` scope in
+    /// [`Self::ref_type_and_advisory`], the same way ordinary fields do on an
+    /// open relation.
+    fn apply_correlate(&mut self, correlate: &Correlate) -> Result<(), IrError> {
+        let aggregated = self.require_rowset("correlate")?.aggregated;
+        if self.correlate_seen {
+            return Err(illegal_correlate(
+                "a pipeline may contain at most one correlate stage",
+            ));
+        }
+        self.correlate_seen = true;
+        match &correlate.to {
+            CorrelateTarget::Parent => {
+                if self.source != "traces" {
+                    return Err(illegal_correlate(
+                        "span correlation requires the traces source",
+                    ));
+                }
+                if aggregated {
+                    return Err(illegal_correlate("correlate must precede aggregate"));
+                }
+                if correlate.on.is_some()
+                    || !correlate.pipeline.is_empty()
+                    || correlate.window.is_some()
+                    || correlate.fanout.is_some()
+                {
+                    return Err(illegal_correlate(
+                        "`on`, `pipeline`, `window` and `fanout` apply only to a signal target",
+                    ));
+                }
+                if matches!(correlate.kind, JoinKind::Semi | JoinKind::Anti) {
+                    return Err(illegal_correlate(&format!(
+                        "kind `{}` requires a signal target, not `parent`",
+                        correlate.kind.as_str()
+                    )));
+                }
+                if let RelationType::RowSet(rs) = &mut self.relation {
+                    rs.correlated = true;
+                }
+                Ok(())
+            }
+            CorrelateTarget::Signal(target) => {
+                self.check_signal_correlate(target, correlate)?;
+                if matches!(correlate.kind, JoinKind::Inner | JoinKind::Left) {
+                    self.target_scope = Some(TargetScope {
+                        source: target.clone(),
+                        open: true,
+                    });
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// A signal-target `correlate`: the output is the source relation
+    /// (semi/anti filter it; inner/left add the `<target>.` scope, see
+    /// [`TargetScope`]), so only the operands are checked here.
+    fn check_signal_correlate(&self, target: &str, correlate: &Correlate) -> Result<(), IrError> {
+        let def = self
+            .sources
+            .resolve(target)
+            .ok_or_else(|| IrError::UnknownSource {
+                name: target.to_string(),
+                available: self.sources.names().join(", "),
+            })?;
+        if def.name == self.source {
+            return Err(illegal_correlate("the target must differ from `from`"));
+        }
+        let key = correlate.on.ok_or_else(|| {
+            illegal_correlate("a signal target requires `on` (the logical join key)")
+        })?;
+        for side in [self.source, target] {
+            if key.fields(side).is_none() {
+                return Err(illegal_correlate(&format!(
+                    "source '{side}' has no correlate key '{}'",
+                    key.as_str()
+                )));
+            }
+        }
+        if let RelationType::RowSet(rs) = &self.relation
+            && rs.aggregated
+        {
+            let fields = key.fields(self.source).unwrap_or_default();
+            if !fields
+                .iter()
+                .all(|f| rs.columns.iter().any(|c| c.name == *f))
+            {
+                return Err(illegal_correlate(&format!(
+                    "correlate key '{}' was dropped by a preceding aggregate",
+                    key.as_str()
+                )));
+            }
+        }
+        if matches!(correlate.kind, JoinKind::Inner | JoinKind::Left)
+            && let RelationType::RowSet(rs) = &self.relation
+            && let Some(column) = rs.columns.iter().find(|c| {
+                c.name
+                    .strip_prefix(target)
+                    .is_some_and(|f| f.starts_with('.'))
+            })
+        {
+            return Err(illegal_correlate(&format!(
+                "column `{}` would collide with the `{target}.` fields the join adds; rename it",
+                column.name
+            )));
+        }
+        if let Some(window) = &correlate.window {
+            for (name, value) in [("before", &window.before), ("after", &window.after)] {
+                if let Some(value) = value {
+                    non_negative_duration(&format!("correlate.window.{name}"), value)?;
+                }
+            }
+        }
+        if let Some(fanout) = correlate.fanout {
+            if !(1..=10_000).contains(&fanout) {
+                return Err(illegal_correlate(&format!(
+                    "`fanout` must be within 1..=10000, got {fanout}"
+                )));
+            }
+            if matches!(correlate.kind, JoinKind::Semi | JoinKind::Anti) {
+                return Err(illegal_correlate(
+                    "`fanout` only applies to inner/left joins",
+                ));
+            }
+        }
+        if let Some(stage) = correlate
+            .pipeline
+            .iter()
+            .find(|stage| !matches!(stage, Stage::Where(_)))
+        {
+            return Err(illegal_correlate(&format!(
+                "the target pipeline takes only `where` stages, not `{}`",
+                stage.name()
+            )));
+        }
+        let child = Document {
+            ir_version: self.doc.ir_version,
+            from: target.to_string(),
+            range: self.doc.range.clone(),
+            result: ResultEnvelope::Rows,
+            fields: None,
+            pipeline: correlate.pipeline.clone(),
+            focus: None,
+            depth: None,
+            trace_id: None,
+            baseline: None,
+            step: None,
+            constant: None,
+            page: None,
+            tail: None,
+        };
+        infer(&child, self.sources, self.resolver).map(|_| ())
+    }
+
+    /// Whether the current relation has been joined to its parent span by a
+    /// `correlate` stage — gates the `parent.` field scope.
+    fn is_correlated(&self) -> bool {
+        matches!(&self.relation, RelationType::RowSet(rs) if rs.correlated)
+    }
+
+    /// Split a reference under a correlate scope into the source it
+    /// resolves against and its name there: `parent.<f>` against `from`
+    /// once joined to the parent span, `<target>.<f>` against the target
+    /// after an inner/left signal `correlate`. `None` for an unscoped name,
+    /// or before `correlate` has run. Once a scope exists it shadows any
+    /// source attribute whose key starts with its prefix.
+    fn scoped_field<'n>(&self, name: &'n str) -> Option<(&str, &'n str)> {
+        if self.is_correlated() {
+            return name.strip_prefix("parent.").map(|f| (self.source, f));
+        }
+        let target = self.target_scope.as_ref()?.source.as_str();
+        name.strip_prefix(target)?
+            .strip_prefix('.')
+            .map(|f| (target, f))
     }
 
     fn check_agg(&self, a: &Agg, group_cols: &[Column]) -> Result<Column, IrError> {
@@ -701,19 +1708,76 @@ impl InferCtx<'_> {
                 a.func.as_str()
             )));
         }
-        if a.func.min_ir_version() > self.ir_version {
+        if a.func.is_range_fn() && self.source != "metrics" {
+            return Err(IrError::IllegalStage {
+                stage: "aggregate".to_string(),
+                reason: format!(
+                    "'{}' is only valid on the metrics source, not '{}'",
+                    a.func.as_str(),
+                    self.source
+                ),
+            });
+        }
+        if let Some(across) = a.across {
+            if !a.func.is_range_fn() {
+                return Err(IrError::Invalid(format!(
+                    "`across` is only valid on a per-series range function, not '{}'",
+                    a.func.as_str()
+                )));
+            }
+            if !self.registry.supports_feature(Feature::AggregateAcross) {
+                return Err(IrError::Invalid(format!(
+                    "aggregate `across` requires irVersion {} (document declares {})",
+                    OperatorRegistry::feature_min_version(Feature::AggregateAcross),
+                    self.registry.version
+                )));
+            }
+            if !across.is_across_reducer() {
+                return Err(IrError::Invalid(format!(
+                    "`across` must be one of sum/avg/min/max/count, got '{}'",
+                    across.as_str()
+                )));
+            }
+        }
+        if let Some(window) = &a.window {
+            if !a.func.is_range_fn() {
+                return Err(IrError::Invalid(format!(
+                    "`window` is only valid on a per-series range function, not '{}'",
+                    a.func.as_str()
+                )));
+            }
+            if !self.registry.supports_feature(Feature::AggregateWindow) {
+                return Err(IrError::Invalid(format!(
+                    "aggregate `window` requires irVersion {} (document declares {})",
+                    OperatorRegistry::feature_min_version(Feature::AggregateWindow),
+                    self.registry.version
+                )));
+            }
+            let window_ns = parse_duration_ns(window).ok_or_else(|| IrError::Coercion {
+                field: "window".to_string(),
+                value: window.clone(),
+                target: ValueType::DurationNs.to_string(),
+            })?;
+            if window_ns <= 0 {
+                return Err(IrError::Invalid(
+                    "aggregate `window` must be > 0".to_string(),
+                ));
+            }
+        }
+        if !self.registry.supports_agg(a.func) {
             return Err(IrError::Invalid(format!(
                 "aggregate '{}' requires irVersion {} (document declares {})",
                 a.func.as_str(),
-                a.func.min_ir_version(),
-                self.ir_version
+                OperatorRegistry::agg_min_version(a.func),
+                self.registry.version
             )));
         }
         if let Some(divisor) = a.divisor {
-            if self.ir_version < 5 {
+            if !self.registry.supports_feature(Feature::AggregateDivisor) {
                 return Err(IrError::Invalid(format!(
-                    "aggregate `divisor` requires irVersion 5 (document declares {})",
-                    self.ir_version
+                    "aggregate `divisor` requires irVersion {} (document declares {})",
+                    OperatorRegistry::feature_min_version(Feature::AggregateDivisor),
+                    self.registry.version
                 )));
             }
             // Zero has no quotient and a negative window is not a window;
@@ -756,7 +1820,19 @@ impl InferCtx<'_> {
         // inherent lack of a declared type earns the pass.
         if matches!(
             a.func,
-            AggFn::Sum | AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar
+            AggFn::Sum
+                | AggFn::Avg
+                | AggFn::Quantile
+                | AggFn::Stddev
+                | AggFn::Stdvar
+                | AggFn::Rate
+                | AggFn::Increase
+                | AggFn::Irate
+                | AggFn::AvgOverTime
+                | AggFn::MinOverTime
+                | AggFn::MaxOverTime
+                | AggFn::SumOverTime
+                | AggFn::CountOverTime
         ) && let Some(t) = &of_type
             && !is_numeric(t)
             && !(*t == ValueType::String && of_advisory)
@@ -767,12 +1843,43 @@ impl InferCtx<'_> {
             )));
         }
 
+        // `count_distinct` lowers to DataFusion's `approx_distinct`, which
+        // rejects floating point — and equality over a float is rarely what
+        // a distinct count means anyway. `string`/`int64`/`bool`/`timestamp`
+        // are the only operand types accepted; anything else, `float64`
+        // included, is rejected by name and type rather than silently cast.
+        if a.func == AggFn::CountDistinct
+            && let Some(t) = &of_type
+            && !matches!(
+                t,
+                ValueType::String | ValueType::Int64 | ValueType::Bool | ValueType::TimestampNs
+            )
+        {
+            return Err(IrError::Invalid(format!(
+                "aggregate 'count_distinct' does not support field '{}' of type {t}",
+                a.of.as_deref().unwrap_or_default()
+            )));
+        }
+
         let out_ty = match a.func {
-            AggFn::Count => ValueType::Int64,
-            AggFn::Avg | AggFn::Quantile | AggFn::Stddev | AggFn::Stdvar => ValueType::Float64,
-            AggFn::Sum | AggFn::Min | AggFn::Max | AggFn::First | AggFn::Last => {
-                of_type.unwrap_or(ValueType::Float64)
-            }
+            AggFn::Count | AggFn::CountDistinct => ValueType::Int64,
+            AggFn::Avg
+            | AggFn::Quantile
+            | AggFn::Stddev
+            | AggFn::Stdvar
+            | AggFn::Rate
+            | AggFn::Increase
+            | AggFn::Irate
+            | AggFn::AvgOverTime
+            | AggFn::CountOverTime => ValueType::Float64,
+            AggFn::Sum
+            | AggFn::Min
+            | AggFn::Max
+            | AggFn::First
+            | AggFn::Last
+            | AggFn::MinOverTime
+            | AggFn::MaxOverTime
+            | AggFn::SumOverTime => of_type.unwrap_or(ValueType::Float64),
         };
         // A divided aggregate is fractional whatever it divided: a count per
         // 300 seconds is not an Int64.
@@ -811,14 +1918,38 @@ impl InferCtx<'_> {
     }
 
     fn guard_logical_name(&self, name: &str) -> Result<(), IrError> {
-        if self.resolver.is_physical_name(self.source, name)
-            && !self.resolver.is_known(self.source, name)
+        let (source, effective) = self.scoped_field(name).unwrap_or((self.source, name));
+        if self.resolver.is_physical_name(source, effective)
+            && !self.resolver.is_known(source, effective)
         {
             return Err(IrError::PhysicalAddressing {
                 field: name.to_string(),
             });
         }
         Ok(())
+    }
+}
+
+fn illegal_match(reason: &str) -> IrError {
+    IrError::IllegalStage {
+        stage: "match".to_string(),
+        reason: reason.to_string(),
+    }
+}
+
+fn is_span_set_name(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars
+        .next()
+        .is_some_and(|c| c.is_ascii_lowercase() || c == '_')
+        && name.len() <= 32
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+fn illegal_correlate(reason: &str) -> IrError {
+    IrError::IllegalStage {
+        stage: "correlate".to_string(),
+        reason: reason.to_string(),
     }
 }
 
@@ -833,9 +1964,185 @@ fn coerce_for(field: &str, value: &serde_json::Value, target: &ValueType) -> Res
 }
 
 fn check_range(range: &Range) -> Result<(), IrError> {
-    coerce_for("range.from", &range.from, &ValueType::TimestampNs)?;
-    coerce_for("range.to", &range.to, &ValueType::TimestampNs)?;
+    check_window("range", range)
+}
+
+/// Both bounds of a window must be timestamp literals, and when both are
+/// absolute (or both relative to the same `now`) `from` must not be after
+/// `to`. A mixed pair is checked once the router resolves it.
+fn check_window(name: &str, range: &Range) -> Result<(), IrError> {
+    let instant = |bound: &str, value| match coerce(value, &ValueType::TimestampNs) {
+        Ok(Literal::Timestamp(ts)) => Ok(ts),
+        _ => Err(IrError::Coercion {
+            field: format!("{name}.{bound}"),
+            value: value.to_string(),
+            target: ValueType::TimestampNs.to_string(),
+        }),
+    };
+    let from = instant("from", &range.from)?;
+    let to = instant("to", &range.to)?;
+    let comparable = matches!(
+        (&from, &to),
+        (TimestampLiteral::Absolute(_), TimestampLiteral::Absolute(_))
+            | (TimestampLiteral::Relative(_), TimestampLiteral::Relative(_))
+    );
+    if comparable && from.resolve(0) > to.resolve(0) {
+        return Err(IrError::Invalid(format!(
+            "{name}.from must not be after {name}.to"
+        )));
+    }
     Ok(())
+}
+
+/// A positive duration operand, in nanoseconds.
+fn positive_duration(field: &str, value: &str) -> Result<i64, IrError> {
+    match parse_duration_ns(value) {
+        Some(ns) if ns > 0 => Ok(ns),
+        Some(_) => Err(IrError::Invalid(format!("`{field}` must be > 0"))),
+        None => Err(IrError::Coercion {
+            field: field.to_string(),
+            value: value.to_string(),
+            target: ValueType::DurationNs.to_string(),
+        }),
+    }
+}
+
+/// A non-negative duration operand, in nanoseconds (a negative one does not
+/// parse).
+fn non_negative_duration(field: &str, value: &str) -> Result<i64, IrError> {
+    match parse_duration_ns(value) {
+        // A sign check, not `ns >= 0`: a tiny negative duration rounds to 0.
+        Some(ns) if !value.contains('-') => Ok(ns),
+        Some(_) => Err(IrError::Invalid(format!("`{field}` must be >= 0"))),
+        None => Err(IrError::Coercion {
+            field: field.to_string(),
+            value: value.to_string(),
+            target: ValueType::DurationNs.to_string(),
+        }),
+    }
+}
+
+/// A quantile `arg`: required in `[0, 1]` when `needed`, rejected otherwise.
+fn check_quantile_arg(stage: &str, arg: Option<f64>, needed: bool) -> Result<(), IrError> {
+    match (arg, needed) {
+        (Some(q), true) if (0.0..=1.0).contains(&q) => Ok(()),
+        (None, false) => Ok(()),
+        (_, true) => Err(IrError::Invalid(format!(
+            "{stage} quantile requires an `arg` within [0, 1]"
+        ))),
+        (Some(_), false) => Err(IrError::Invalid(format!(
+            "{stage} `arg` is only valid for a quantile"
+        ))),
+    }
+}
+
+/// The step of a Series or Scalar (0 for any other relation).
+fn relation_step(relation: &RelationType) -> i64 {
+    match relation {
+        RelationType::Series(s) => s.step_ns,
+        RelationType::Scalar(s) => s.step_ns,
+        _ => 0,
+    }
+}
+
+/// The label every metric series carries its metric name under.
+const METRIC_NAME: &str = "metric.name";
+
+/// A label name operand: non-empty.
+fn check_label_name(stage: &str, name: &str) -> Result<(), IrError> {
+    if name.trim().is_empty() {
+        return Err(IrError::Invalid(format!(
+            "{stage} label names must be non-empty"
+        )));
+    }
+    Ok(())
+}
+
+/// Add `name` to a known label set, once.
+fn push_label(labels: &mut Vec<String>, name: &str) {
+    if !labels.iter().any(|l| l == name) {
+        labels.push(name.to_string());
+    }
+}
+
+/// Gate a versioned feature on the document's registry.
+/// The operands the histogram stages share.
+struct HistogramShape<'a> {
+    by: &'a [String],
+    per_series: bool,
+    step: &'a str,
+    window: Option<&'a String>,
+    lookback: Option<&'a String>,
+    mode: HistogramMode,
+    as_name: &'a str,
+}
+
+pub(crate) fn require_feature(
+    registry: &OperatorRegistry,
+    feature: Feature,
+    what: &str,
+) -> Result<(), IrError> {
+    if registry.supports_feature(feature) {
+        return Ok(());
+    }
+    Err(IrError::Invalid(format!(
+        "{what} requires irVersion {} (document declares {})",
+        OperatorRegistry::feature_min_version(feature),
+        registry.version
+    )))
+}
+
+/// The document-level `step`/`constant` (`irVersion` 10): the `step`, if
+/// present, in nanoseconds.
+fn check_document_step(
+    doc: &Document,
+    registry: &OperatorRegistry,
+) -> Result<Option<i64>, IrError> {
+    if doc.step.is_some() || doc.constant.is_some() {
+        require_feature(
+            registry,
+            Feature::DocumentStep,
+            "document `step`/`constant`",
+        )?;
+    }
+    doc.step
+        .as_deref()
+        .map(|step| positive_duration("step", step))
+        .transpose()
+}
+
+/// The Scalar a `time`/`constant` pseudo-source seeds.
+fn seed_pseudo_source(
+    doc: &Document,
+    registry: &OperatorRegistry,
+    doc_step_ns: Option<i64>,
+) -> Result<RelationType, IrError> {
+    require_feature(
+        registry,
+        Feature::PseudoSource,
+        &format!("pseudo-source '{}'", doc.from),
+    )?;
+    let step_ns = doc_step_ns.ok_or_else(|| {
+        IrError::Invalid(format!(
+            "pseudo-source '{}' requires a document `step`",
+            doc.from
+        ))
+    })?;
+    match (doc.from == "constant", doc.constant) {
+        (true, Some(c)) if c.is_finite() => {}
+        (true, _) => {
+            return Err(IrError::Invalid(
+                "`from: \"constant\"` requires a finite document `constant`".to_string(),
+            ));
+        }
+        (false, Some(_)) => {
+            return Err(IrError::Invalid(
+                "`constant` is only valid with `from: \"constant\"`".to_string(),
+            ));
+        }
+        (false, None) => {}
+    }
+    Ok(RelationType::Scalar(Scalar { step_ns }))
 }
 
 fn is_numeric(t: &ValueType) -> bool {
@@ -844,10 +2151,6 @@ fn is_numeric(t: &ValueType) -> bool {
         ValueType::Int64 | ValueType::Float64 | ValueType::DurationNs | ValueType::TimestampNs
     )
 }
-
-/// The first IR version carrying the `describe` stage and the `metadata`
-/// result envelope.
-pub const DESCRIBE_MIN_VERSION: i64 = 4;
 
 /// What a client runs instead when it wants a predicate-scoped answer.
 const SCOPED_ANSWER_HINT: &str = "discovery is not predicate-scoped: it is answered from \
@@ -887,16 +2190,60 @@ pub fn validate_describe<'a>(
     Ok(describe)
 }
 
-/// Reject a document whose version this server does not understand.
-fn check_version(version: i64) -> Result<(), IrError> {
-    if super::version::is_supported(version) {
-        return Ok(());
-    }
-    Err(IrError::UnsupportedVersion {
+/// Reject a document whose version this server does not understand, and
+/// return the operator registry for the (now known-supported) version — the
+/// single source of truth every other gate below asks.
+fn check_version(version: i64) -> Result<OperatorRegistry, IrError> {
+    OperatorRegistry::for_version(version).ok_or(IrError::UnsupportedVersion {
         found: version,
         min: super::version::MIN_IR_VERSION,
         max: super::version::MAX_IR_VERSION,
     })
+}
+
+/// The `graph` envelope's scoping fields (`focus`/`depth`/`trace_id`) are
+/// siblings of `result`, so they parse regardless of the declared envelope;
+/// this checks the rules that make them legal.
+fn check_graph_scoping(doc: &Document) -> Result<(), IrError> {
+    if doc.result != ResultEnvelope::Graph {
+        if doc.focus.is_some() || doc.depth.is_some() || doc.trace_id.is_some() {
+            return Err(IrError::Invalid(
+                "focus/depth/trace_id are only valid with the graph result envelope".to_string(),
+            ));
+        }
+        return Ok(());
+    }
+    if doc.focus.is_some() && doc.trace_id.is_some() {
+        return Err(IrError::Invalid(
+            "focus and trace_id are mutually exclusive".to_string(),
+        ));
+    }
+    if let Some(depth) = doc.depth {
+        if doc.focus.is_none() {
+            return Err(IrError::Invalid("depth requires focus".to_string()));
+        }
+        if !(1..=3).contains(&depth) {
+            return Err(IrError::Invalid(
+                "depth must be between 1 and 3".to_string(),
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// `baseline` is a sibling of `result` like the graph scoping fields, so it
+/// parses on any envelope; it only means something to `flamegraph`.
+fn check_flamegraph_baseline(doc: &Document, registry: &OperatorRegistry) -> Result<(), IrError> {
+    let Some(baseline) = &doc.baseline else {
+        return Ok(());
+    };
+    if doc.result != ResultEnvelope::Flamegraph {
+        return Err(IrError::Invalid(
+            "baseline is only valid with the flamegraph result envelope".to_string(),
+        ));
+    }
+    require_feature(registry, Feature::FlamegraphBaseline, "flamegraph baseline")?;
+    check_window("baseline", baseline)
 }
 
 /// Resolve the document's source against the registry.
@@ -917,9 +2264,11 @@ fn envelope_rejects_projection(result: ResultEnvelope) -> bool {
     matches!(
         result,
         ResultEnvelope::Series
+            | ResultEnvelope::Scalar
             | ResultEnvelope::Heatmap
             | ResultEnvelope::Flamegraph
             | ResultEnvelope::Metadata
+            | ResultEnvelope::Graph
     )
 }
 
@@ -941,9 +2290,10 @@ fn check_describe(doc: &Document) -> Result<Option<&Describe>, IrError> {
     if found.is_none() && doc.result != ResultEnvelope::Metadata {
         return Ok(None);
     }
-    if doc.ir_version < DESCRIBE_MIN_VERSION {
+    let describe_min_version = OperatorRegistry::feature_min_version(Feature::Describe);
+    if doc.ir_version < describe_min_version {
         return Err(IrError::Invalid(format!(
-            "describe stage and metadata result envelope require irVersion {DESCRIBE_MIN_VERSION}"
+            "describe stage and metadata result envelope require irVersion {describe_min_version}"
         )));
     }
     // A `metadata` envelope with no `describe` terminal is an envelope
@@ -1006,9 +2356,13 @@ fn validate_envelope(
         (ResultEnvelope::Rows, RelationType::RowSet(rs)) => !rs.aggregated,
         (ResultEnvelope::Table, RelationType::RowSet(rs)) => rs.aggregated,
         (ResultEnvelope::Series, RelationType::Series(_)) => true,
+        (ResultEnvelope::Scalar, RelationType::Scalar(_)) => true,
         (ResultEnvelope::Heatmap, RelationType::Heatmap(_)) => true,
         (ResultEnvelope::Flamegraph, RelationType::RowSet(rs)) => {
             source == "profiles" && !rs.aggregated
+        }
+        (ResultEnvelope::Graph | ResultEnvelope::Trace, RelationType::RowSet(rs)) => {
+            source == "traces" && !rs.aggregated
         }
         (ResultEnvelope::Metadata, RelationType::Metadata(_)) => true,
         _ => false,
@@ -1018,6 +2372,13 @@ fn validate_envelope(
     } else {
         let terminal = if declared == ResultEnvelope::Flamegraph && source != "profiles" {
             format!("source '{source}' does not support the flamegraph envelope")
+        } else if matches!(declared, ResultEnvelope::Graph | ResultEnvelope::Trace)
+            && source != "traces"
+        {
+            format!(
+                "source '{source}' does not support the {} envelope",
+                declared.as_str()
+            )
         } else {
             terminal.describe()
         };
@@ -1035,6 +2396,11 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
     if envelope_rejects_projection(doc.result) {
         return Err(IrError::FieldsOnSeries);
     }
+    if doc.result == ResultEnvelope::Trace && !fields.iter().any(|f| f == "trace_id") {
+        return Err(IrError::Invalid(
+            "the trace envelope groups rows by trace_id, so `fields` must include it".to_string(),
+        ));
+    }
     for field in fields {
         // A field is valid iff it is present in the terminal relation — a
         // closed column when aggregated, or a resolvable logical field when not.
@@ -1051,7 +2417,8 @@ fn validate_fields(doc: &Document, ctx: &InferCtx<'_>) -> Result<(), IrError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::resolver::InMemoryResolver;
+    use crate::resolver::{InMemoryResolver, Resolved};
+    use crate::stage::MatchOp;
     use serde_json::json;
 
     fn logs_resolver() -> InMemoryResolver {
@@ -1064,7 +2431,6 @@ mod tests {
             )
             .with_column("logs", "service.name", "service_name", ValueType::String)
             .with_physical_name("logs", "attributes_json")
-            .with_physical_name("logs", "attr_tokens")
             .with_column("logs", "body", "body", ValueType::String)
             .with_attribute(
                 "logs",
@@ -1118,20 +2484,10 @@ mod tests {
             )
     }
 
-    fn metrics_histogram_resolver() -> InMemoryResolver {
+    fn histogram_resolver() -> InMemoryResolver {
         logs_resolver()
-            .with_column(
-                "metrics_histogram",
-                "metric.name",
-                "metric_name",
-                ValueType::String,
-            )
-            .with_column(
-                "metrics_histogram",
-                "service.name",
-                "service_name",
-                ValueType::String,
-            )
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+            .with_column("metrics", "service.name", "service_name", ValueType::String)
     }
 
     fn doc(v: serde_json::Value) -> Document {
@@ -1305,13 +2661,13 @@ mod tests {
     #[test]
     fn v3_histogram_quantile_infers_series_relation() {
         let v = validate_json_with(
-            histogram_quantile_doc(3, "metrics_histogram", 0.95),
-            &metrics_histogram_resolver(),
+            histogram_quantile_doc(3, "metrics", 0.95),
+            &histogram_resolver(),
         )
         .unwrap();
         match v.terminal {
             RelationType::Series(s) => {
-                assert_eq!(s.labels, vec!["metric.name", "service.name"]);
+                assert_eq!(s.labels, vec!["service.name"]);
                 assert_eq!(s.value, ValueType::Float64);
                 assert_eq!(s.step_ns, 60_000_000_000);
             }
@@ -1323,7 +2679,7 @@ mod tests {
     fn histogram_quantile_rejects_non_histogram_source() {
         let err = validate_json_with(
             histogram_quantile_doc(3, "logs", 0.95),
-            &metrics_histogram_resolver(),
+            &histogram_resolver(),
         )
         .unwrap_err();
         match err {
@@ -1336,8 +2692,8 @@ mod tests {
     fn histogram_quantile_rejects_q_outside_zero_one() {
         for q in [-0.1, 1.2] {
             let err = validate_json_with(
-                histogram_quantile_doc(3, "metrics_histogram", q),
-                &metrics_histogram_resolver(),
+                histogram_quantile_doc(3, "metrics", q),
+                &histogram_resolver(),
             )
             .unwrap_err();
             assert!(matches!(err, IrError::Invalid(_)), "q={q} got {err:?}");
@@ -1347,8 +2703,8 @@ mod tests {
     #[test]
     fn v2_rejects_histogram_quantile_stage_needing_v3() {
         let err = validate_json_with(
-            histogram_quantile_doc(2, "metrics_histogram", 0.95),
-            &metrics_histogram_resolver(),
+            histogram_quantile_doc(2, "metrics", 0.95),
+            &histogram_resolver(),
         )
         .unwrap_err();
         assert!(matches!(err, IrError::Invalid(message) if message.contains("irVersion 3")));
@@ -1356,32 +2712,32 @@ mod tests {
 
     #[test]
     fn histogram_quantile_rejects_metric_name_in_by() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["by"] = json!(["metric.name"]);
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_rejects_duplicate_as_name() {
         let mut document = json!({
-            "irVersion": 3, "from": "metrics_histogram", "range": { "from": "now-1h", "to": "now" },
+            "irVersion": 3, "from": "metrics", "range": { "from": "now-1h", "to": "now" },
             "result": "rows",
             "pipeline": [
                 { "histogram_quantile": { "q": 0.95, "step": "1m", "as": "service.name" } }
             ]
         });
         document["result"] = json!("series");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_rejects_duplicate_by_field() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["by"] =
             json!(["service.name", "service.name"]);
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
     }
 
@@ -1390,20 +2746,10 @@ mod tests {
         // Two independently-resolvable logical fields that normalize
         // (dots→underscores) to the same output identifier: the lowerer
         // would alias both `by` fields to the same output column.
-        let resolver = metrics_histogram_resolver()
-            .with_column(
-                "metrics_histogram",
-                "host.name",
-                "host_name_a",
-                ValueType::String,
-            )
-            .with_column(
-                "metrics_histogram",
-                "host_name",
-                "host_name_b",
-                ValueType::String,
-            );
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let resolver = histogram_resolver()
+            .with_column("metrics", "host.name", "host_name_a", ValueType::String)
+            .with_column("metrics", "host_name", "host_name_b", ValueType::String);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["by"] = json!(["host.name", "host_name"]);
         let err = validate_json_with(document, &resolver).unwrap_err();
         assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
@@ -1411,27 +2757,27 @@ mod tests {
 
     #[test]
     fn histogram_quantile_rejects_as_reserved_bucket_name() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["pipeline"][0]["histogram_quantile"]["as"] = json!("bucket");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_rejects_as_colliding_with_a_by_alias() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         // `by: ["service.name"]` aliases to "service_name"; `as` colliding
         // with that alias (not the logical name) is still ambiguous output.
         document["pipeline"][0]["histogram_quantile"]["as"] = json!("service_name");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(matches!(err, IrError::DuplicateName { .. }), "got {err:?}");
     }
 
     #[test]
     fn histogram_quantile_result_rows_is_envelope_mismatch() {
-        let mut document = histogram_quantile_doc(3, "metrics_histogram", 0.95);
+        let mut document = histogram_quantile_doc(3, "metrics", 0.95);
         document["result"] = json!("rows");
-        let err = validate_json_with(document, &metrics_histogram_resolver()).unwrap_err();
+        let err = validate_json_with(document, &histogram_resolver()).unwrap_err();
         assert!(
             matches!(err, IrError::EnvelopeMismatch { .. }),
             "got {err:?}"
@@ -1554,23 +2900,38 @@ mod tests {
     }
 
     #[test]
-    fn metrics_is_registered_as_an_event_grain_source() {
+    fn metrics_is_registered_as_a_point_grain_source() {
         let sources = SourceRegistry::core();
         let source = sources
             .resolve("metrics")
             .expect("metrics source is registered");
+        assert_eq!(source.grain, Grain::Point);
+        assert!(!source.allows_extract);
+    }
+
+    #[test]
+    fn exemplars_is_registered_as_an_event_grain_source() {
+        let sources = SourceRegistry::core();
+        let source = sources
+            .resolve("exemplars")
+            .expect("exemplars source is registered");
         assert_eq!(source.grain, Grain::Event);
         assert!(!source.allows_extract);
     }
 
     #[test]
-    fn metrics_histogram_is_registered_as_an_event_grain_source() {
-        let sources = SourceRegistry::core();
-        let source = sources
-            .resolve("metrics_histogram")
-            .expect("metrics_histogram source is registered");
-        assert_eq!(source.grain, Grain::Event);
-        assert!(!source.allows_extract);
+    fn metrics_histogram_is_not_a_source() {
+        assert!(
+            SourceRegistry::core()
+                .resolve("metrics_histogram")
+                .is_none()
+        );
+        let err = validate_json_with(
+            histogram_quantile_doc(3, "metrics_histogram", 0.95),
+            &histogram_resolver(),
+        )
+        .unwrap_err();
+        assert!(matches!(err, IrError::UnknownSource { .. }), "got {err:?}");
     }
 
     #[test]
@@ -1710,6 +3071,108 @@ mod tests {
         let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
         assert!(
             matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "extract"),
+            "got {err:?}"
+        );
+    }
+
+    fn baseline_flamegraph_doc(version: i64) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "profiles",
+            "range": { "from": "now-1h", "to": "now" },
+            "baseline": { "from": "now-2h", "to": "now-1h" },
+            "result": "flamegraph",
+            "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "checkout" } }]
+        })
+    }
+
+    #[test]
+    fn flamegraph_with_a_baseline_validates_at_v13() {
+        let document = doc(baseline_flamegraph_doc(13));
+        assert_eq!(document.minimum_ir_version(), 13);
+        validate(&document, &SourceRegistry::core(), &profiles_resolver())
+            .expect("a v13 flamegraph with a baseline validates");
+    }
+
+    #[test]
+    fn flamegraph_baseline_below_v13_names_the_version() {
+        let document = doc(baseline_flamegraph_doc(12));
+        let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("baseline") && m.contains("irVersion 13")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn baseline_is_rejected_on_a_non_flamegraph_envelope() {
+        let mut document = baseline_flamegraph_doc(13);
+        document["result"] = json!("rows");
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("baseline")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_inverted_absolute_range_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 1000, "to": 10 },
+            "result": "rows", "pipeline": []
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("range.from") && m.contains("after")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_inverted_relative_range_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now", "to": "now-1h" },
+            "result": "rows", "pipeline": []
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("range.from")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_inverted_relative_baseline_is_rejected() {
+        let mut document = baseline_flamegraph_doc(13);
+        document["baseline"] = json!({ "from": "now-1h", "to": "now-2h" });
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("baseline.from")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn baseline_bounds_must_be_timestamps() {
+        let mut document = baseline_flamegraph_doc(13);
+        document["baseline"]["from"] = json!("yesterday");
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Coercion { ref field, .. } if field == "baseline.from"),
             "got {err:?}"
         );
     }
@@ -1884,6 +3347,160 @@ mod tests {
         }))
         .unwrap_err();
         assert!(matches!(err, IrError::Coercion { .. }), "got {err:?}");
+    }
+
+    /// Wraps [`InMemoryResolver`] to resolve one field as a
+    /// [`Resolved::TypedAttribute`] — `InMemoryResolver` has no such entry
+    /// kind of its own, but `check_leaf`'s authoritative-non-string rejection
+    /// (`otel-native-schema` task 4.4) must cover it the same as an ordinary
+    /// physical column.
+    struct WithTypedAttribute {
+        inner: InMemoryResolver,
+        source: &'static str,
+        field: &'static str,
+        value_type: ValueType,
+    }
+
+    impl FieldResolver for WithTypedAttribute {
+        fn resolve(&self, source: &str, field: &str) -> Option<Resolved> {
+            if source == self.source && field == self.field {
+                return Some(Resolved::TypedAttribute {
+                    homes: vec!["log_attributes_int".to_string()],
+                    promoted: vec![None],
+                    key: field.to_string(),
+                    value_type: self.value_type.clone(),
+                });
+            }
+            self.inner.resolve(source, field)
+        }
+
+        fn is_filterable(&self, source: &str, field: &str) -> bool {
+            self.inner.is_filterable(source, field)
+        }
+    }
+
+    struct WithSpanLists(InMemoryResolver);
+
+    impl FieldResolver for WithSpanLists {
+        fn resolve(&self, source: &str, field: &str) -> Option<Resolved> {
+            match SpanListField::parse(field) {
+                Some(f) if source == "traces" => Some(Resolved::SpanList(f)),
+                _ => self.0.resolve(source, field),
+            }
+        }
+    }
+
+    fn validate_span_list(result: &str, stage: serde_json::Value) -> Result<(), IrError> {
+        validate(
+            &doc(json!({
+                "irVersion": 1, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+                "result": result, "pipeline": [stage]
+            })),
+            &SourceRegistry::core(),
+            &WithSpanLists(traces_resolver()),
+        )
+        .map(|_| ())
+    }
+
+    fn span_list_where(
+        field: &str,
+        op: &str,
+        value: Option<serde_json::Value>,
+    ) -> Result<(), IrError> {
+        let mut leaf = json!({ "field": field, "op": op });
+        if let Some(v) = value {
+            leaf["value"] = v;
+        }
+        validate_span_list("rows", json!({ "where": leaf }))
+    }
+
+    #[test]
+    fn span_list_fields_accept_existential_ops() {
+        for (field, op, value) in [
+            ("events.name", "eq", Some(json!("retry"))),
+            ("events.name", "in", Some(json!(["a", "b"]))),
+            ("events.attributes.reason", "contains", Some(json!("time"))),
+            ("links.trace_id", "regex", Some(json!("^ab"))),
+            ("links.attributes.kind", "exists", None),
+            ("events.attributes.attempt", "eq", Some(json!(3))),
+        ] {
+            span_list_where(field, op, value).unwrap_or_else(|e| panic!("{field} {op}: {e:?}"));
+        }
+    }
+
+    #[test]
+    fn span_list_fields_reject_ordered_and_negated_ops() {
+        for op in ["ne", "gt", "gte", "lt", "lte", "between"] {
+            let value = if op == "between" {
+                json!(["a", "b"])
+            } else {
+                json!("x")
+            };
+            let err = span_list_where("events.name", op, Some(value)).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("events.name") && m.contains("not")),
+                "{op}: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn span_list_fields_are_where_only() {
+        let err = validate_span_list(
+            "table",
+            json!({ "aggregate": { "by": ["events.name"], "aggs": [{ "fn": "count", "as": "n" }] } }),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("events.name")),
+            "{err:?}"
+        );
+    }
+
+    /// `contains`/`regex` need a `String` field: a non-`String`
+    /// `TypedAttribute` is a defined rejection naming the field and its
+    /// type, the same "authoritative wins" shape as `check_agg`'s
+    /// numeric-operand check — not an implicit cast to string.
+    #[test]
+    fn contains_on_non_string_typed_attribute_is_rejected() {
+        let resolver = WithTypedAttribute {
+            inner: logs_resolver(),
+            source: "logs",
+            field: "retry.count",
+            value_type: ValueType::Int64,
+        };
+        let err = validate(
+            &doc(json!({
+                "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+                "result": "rows",
+                "pipeline": [ { "where": { "field": "retry.count", "op": "contains", "value": "3" } } ]
+            })),
+            &SourceRegistry::core(),
+            &resolver,
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("retry.count") && message.contains("int64")),
+            "got {err:?}"
+        );
+    }
+
+    /// The same rejection applies to an ordinary physical (authoritative)
+    /// non-`String` column, not just a `TypedAttribute` — today that case
+    /// falls through validation and only fails as an unpredictable
+    /// DataFusion runtime error.
+    #[test]
+    fn contains_on_non_string_physical_column_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [ { "where": { "field": "severity_number", "op": "contains", "value": "1" } } ]
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref message) if message.contains("severity_number") && message.contains("int64")),
+            "got {err:?}"
+        );
     }
 
     // 12.1a — a field with no canonical registry type is a defined rejection.
@@ -2084,13 +3701,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(6, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(15, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 6,
-                    max: 5,
+                    found: 15,
+                    max: 14,
                     ..
                 }
             ),
@@ -2222,5 +3839,1135 @@ mod tests {
             validate_describe(&doc, &SourceRegistry::core()).is_err(),
             "only introspection documents take the discovery path"
         );
+    }
+
+    // Task 4.1 — counter rate (D4).
+
+    fn metrics_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+            .with_column("metrics", "metric.value", "value", ValueType::Float64)
+            .with_column("metrics", "service.name", "service_name", ValueType::String)
+    }
+
+    fn rate_doc(func: &str, source: &str, step: Option<&str>) -> serde_json::Value {
+        let mut agg = json!({
+            "by": ["metric.name"],
+            "aggs": [{ "fn": func, "of": "metric.value", "as": "r" }]
+        });
+        if let Some(step) = step {
+            agg["step"] = json!(step);
+        }
+        json!({
+            "irVersion": 6, "from": source, "range": { "from": "now-1h", "to": "now" },
+            "result": "series",
+            "pipeline": [{ "aggregate": agg }]
+        })
+    }
+
+    #[test]
+    fn rate_and_increase_over_metrics_with_step_infer_series() {
+        for func in ["rate", "increase"] {
+            let v = validate_json_with(rate_doc(func, "metrics", Some("30s")), &metrics_resolver())
+                .unwrap();
+            match v.terminal {
+                RelationType::Series(s) => {
+                    assert_eq!(s.value, ValueType::Float64);
+                    assert_eq!(s.step_ns, 30_000_000_000);
+                }
+                other => panic!("{func}: expected series, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn rate_requires_step() {
+        let err =
+            validate_json_with(rate_doc("rate", "metrics", None), &metrics_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("requires `step`")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn rate_rejects_non_metric_sources() {
+        let mut d = rate_doc("rate", "logs", Some("30s"));
+        // `logs_resolver` has no `metric.name`; use an existing numeric field
+        // so the source check, not field resolution, is what fires.
+        d["pipeline"][0]["aggregate"]["by"] = json!([]);
+        d["pipeline"][0]["aggregate"]["aggs"][0]["of"] = json!("severity_number");
+        let err = validate_json_with(d, &logs_resolver()).unwrap_err();
+        match &err {
+            IrError::IllegalStage { stage, .. } => assert_eq!(stage, "aggregate"),
+            other => panic!("got {other:?}"),
+        }
+        assert!(format!("{err}").contains("metrics"), "{err}");
+    }
+
+    #[test]
+    fn rate_requires_ir_version_6() {
+        let mut d = rate_doc("rate", "metrics", Some("30s"));
+        d["irVersion"] = json!(5);
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 6")),
+            "got {err:?}"
+        );
+    }
+
+    // v5: `divisor`, and the stddev/stdvar/first/last aggregate functions.
+
+    fn agg_doc(version: i64, agg: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [ { "aggregate": { "by": [], "aggs": [agg] } } ]
+        })
+    }
+
+    #[test]
+    fn divisor_requires_ir_version_5() {
+        let agg = json!({ "fn": "count", "as": "n", "divisor": 60.0 });
+        let v = validate_json(agg_doc(5, agg.clone())).unwrap();
+        assert!(matches!(v.terminal, RelationType::RowSet(_)));
+
+        let err = validate_json(agg_doc(4, agg)).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 5")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn stddev_stdvar_first_last_require_ir_version_5() {
+        for func in ["stddev", "stdvar", "first", "last"] {
+            let agg = json!({ "fn": func, "of": "severity_number", "as": "n" });
+            let v = validate_json(agg_doc(5, agg.clone())).unwrap();
+            assert!(
+                matches!(v.terminal, RelationType::RowSet(_)),
+                "{func}: expected rowset"
+            );
+
+            let err = validate_json(agg_doc(4, agg)).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 5")),
+                "{func}: got {err:?}"
+            );
+        }
+    }
+
+    // v7: irate / *_over_time, `across`, `window`.
+
+    fn v7_rate_doc(func: &str, source: &str, step: Option<&str>) -> serde_json::Value {
+        let mut d = rate_doc(func, source, step);
+        d["irVersion"] = json!(7);
+        d
+    }
+
+    #[test]
+    fn irate_and_over_time_fns_require_ir_version_7() {
+        for func in [
+            "irate",
+            "avg_over_time",
+            "min_over_time",
+            "max_over_time",
+            "sum_over_time",
+            "count_over_time",
+        ] {
+            let mut d = v7_rate_doc(func, "metrics", Some("30s"));
+            let v = validate_json_with(d.clone(), &metrics_resolver()).unwrap();
+            assert!(
+                matches!(v.terminal, RelationType::Series(_)),
+                "{func}: expected series"
+            );
+
+            d["irVersion"] = json!(6);
+            let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 7")),
+                "{func}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irate_and_over_time_fns_require_step() {
+        for func in ["irate", "avg_over_time"] {
+            let err = validate_json_with(v7_rate_doc(func, "metrics", None), &metrics_resolver())
+                .unwrap_err();
+            assert!(
+                matches!(err, IrError::Invalid(ref m) if m.contains("requires `step`")),
+                "{func}: got {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn irate_and_over_time_fns_reject_non_metric_sources() {
+        let d = json!({
+            "irVersion": 7, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "series",
+            "pipeline": [{ "aggregate": {
+                "by": [],
+                "aggs": [{ "fn": "irate", "of": "severity_number", "as": "r" }],
+                "step": "30s"
+            } }]
+        });
+        let err = validate_json_with(d, &logs_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "aggregate"));
+    }
+
+    #[test]
+    fn across_reducer_requires_ir_version_7_and_a_range_fn() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["across"] = json!("avg");
+        let v = validate_json_with(d, &metrics_resolver()).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+
+        // Below v7: rejected even though `rate` itself only needs v6.
+        let mut d6 = rate_doc("rate", "metrics", Some("30s"));
+        d6["pipeline"][0]["aggregate"]["aggs"][0]["across"] = json!("avg");
+        let err = validate_json_with(d6, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 7")));
+
+        // `across` on a non-range-fn aggregate is rejected.
+        let mut plain = json!({
+            "irVersion": 7, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [{ "aggregate": {
+                "by": [], "aggs": [{ "fn": "count", "as": "n", "across": "avg" }]
+            } }]
+        });
+        let err = validate_json(plain.clone()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("across")),
+            "got {err:?}"
+        );
+        plain["irVersion"] = json!(7);
+    }
+
+    #[test]
+    fn across_reducer_rejects_unknown_function() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["across"] = json!("quantile");
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(_)), "got {err:?}");
+    }
+
+    #[test]
+    fn window_requires_ir_version_7_and_a_range_fn() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("5m");
+        let v = validate_json_with(d, &metrics_resolver()).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+
+        let mut d6 = rate_doc("rate", "metrics", Some("30s"));
+        d6["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("5m");
+        let err = validate_json_with(d6, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 7")));
+
+        let mut plain = json!({
+            "irVersion": 7, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [{ "aggregate": {
+                "by": [], "aggs": [{ "fn": "count", "as": "n", "window": "5m" }]
+            } }]
+        });
+        let err = validate_json(plain.clone()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("window")),
+            "got {err:?}"
+        );
+        plain["irVersion"] = json!(7);
+    }
+
+    #[test]
+    fn window_rejects_bad_duration() {
+        let mut d = v7_rate_doc("rate", "metrics", Some("30s"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("not-a-duration");
+        let err = validate_json_with(d, &metrics_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::Coercion { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn window_less_than_step_is_allowed() {
+        let mut d = v7_rate_doc("avg_over_time", "metrics", Some("1m"));
+        d["pipeline"][0]["aggregate"]["aggs"][0]["window"] = json!("10s");
+        let v = validate_json_with(d, &metrics_resolver()).unwrap();
+        assert!(matches!(v.terminal, RelationType::Series(_)));
+    }
+
+    // Task 1.1 — span-to-parent `correlate` stage (irVersion 8).
+
+    fn traces_resolver() -> InMemoryResolver {
+        InMemoryResolver::new()
+            .with_column("traces", "trace_id", "trace_id", ValueType::String)
+            .with_column("traces", "span_id", "span_id", ValueType::String)
+            .with_column(
+                "traces",
+                "parent_span_id",
+                "parent_span_id",
+                ValueType::String,
+            )
+            .with_column("traces", "service.name", "service_name", ValueType::String)
+            .with_column(
+                "traces",
+                "duration_nano",
+                "duration_nano",
+                ValueType::DurationNs,
+            )
+            .with_attribute(
+                "traces",
+                "span.http.route",
+                "span_attributes",
+                ValueType::String,
+                None,
+            )
+    }
+
+    fn correlate_doc(
+        version: i64,
+        kind: &str,
+        extra_pipeline: Vec<serde_json::Value>,
+    ) -> serde_json::Value {
+        let mut pipeline = vec![json!({ "correlate": { "to": "parent", "kind": kind } })];
+        pipeline.extend(extra_pipeline);
+        json!({
+            "irVersion": version, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": pipeline
+        })
+    }
+
+    #[test]
+    fn correlate_inner_parses_and_infers_rowset() {
+        let v = validate_json_with(correlate_doc(8, "inner", vec![]), &traces_resolver()).unwrap();
+        match v.terminal {
+            RelationType::RowSet(rs) => {
+                assert!(rs.correlated);
+                assert!(!rs.aggregated);
+            }
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn correlate_below_v8_is_rejected() {
+        let err =
+            validate_json_with(correlate_doc(7, "inner", vec![]), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 8")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn correlate_on_logs_is_rejected() {
+        let doc = json!({
+            "irVersion": 8, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
+        });
+        let err = validate_json(doc).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn a_second_correlate_is_rejected() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![json!({ "correlate": { "to": "parent", "kind": "inner" } })],
+        );
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
+            "got {err:?}"
+        );
+    }
+
+    // service-map task 1.1 — `graph` result envelope (irVersion 8).
+
+    fn graph_doc(version: i64, extra: serde_json::Value) -> serde_json::Value {
+        let mut doc = json!({
+            "irVersion": version, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph", "pipeline": []
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            doc.as_object_mut()
+                .expect("object")
+                .insert(key.clone(), value.clone());
+        }
+        doc
+    }
+
+    #[test]
+    fn graph_over_traces_validates() {
+        let v = validate_json_with(graph_doc(8, json!({})), &traces_resolver())
+            .expect("graph over traces at v8 validates");
+        match v.terminal {
+            RelationType::RowSet(rs) => assert_eq!(rs.source, "traces"),
+            other => panic!("expected rows, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn graph_below_v8_is_rejected() {
+        let err = validate_json_with(graph_doc(7, json!({})), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 8")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_rejected_for_non_traces_source() {
+        let doc = json!({
+            "irVersion": 8, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph", "pipeline": []
+        });
+        let err = validate_json(doc).unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { ref terminal, .. } if terminal.contains("graph")),
+            "got {err:?}"
+        );
+    }
+
+    // layer 10 — `trace` result envelope (irVersion 12).
+
+    fn trace_doc(version: i64, from: &str, extra: serde_json::Value) -> serde_json::Value {
+        let mut doc = json!({
+            "irVersion": version, "from": from, "range": { "from": "now-1h", "to": "now" },
+            "result": "trace", "pipeline": []
+        });
+        for (key, value) in extra.as_object().into_iter().flatten() {
+            doc.as_object_mut()
+                .expect("object")
+                .insert(key.clone(), value.clone());
+        }
+        doc
+    }
+
+    #[test]
+    fn trace_envelope_over_traces_rows_validates() {
+        let v = validate_json_with(trace_doc(12, "traces", json!({})), &traces_resolver())
+            .expect("trace envelope over traces at v12 validates");
+        assert!(matches!(v.terminal, RelationType::RowSet(_)));
+        validate_json_with(
+            trace_doc(12, "traces", json!({ "fields": ["trace_id", "span_id"] })),
+            &traces_resolver(),
+        )
+        .expect("a projection that keeps trace_id validates");
+    }
+
+    #[test]
+    fn trace_envelope_requires_trace_id_in_fields() {
+        let err = validate_json_with(
+            trace_doc(12, "traces", json!({ "fields": ["span_id"] })),
+            &traces_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("trace_id")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trace_envelope_rejected_for_non_traces_source() {
+        let err = validate_json(trace_doc(12, "logs", json!({}))).unwrap_err();
+        assert!(
+            matches!(err, IrError::EnvelopeMismatch { ref terminal, .. } if terminal.contains("trace envelope")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trace_envelope_rejected_after_aggregate() {
+        let doc = trace_doc(
+            12,
+            "traces",
+            json!({ "pipeline": [{ "aggregate": {
+                "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }]
+            } }] }),
+        );
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(
+                err,
+                IrError::EnvelopeMismatch {
+                    declared: "trace",
+                    ..
+                }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn trace_envelope_below_v12_is_rejected() {
+        let err =
+            validate_json_with(trace_doc(11, "traces", json!({})), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("irVersion 12")),
+            "got {err:?}"
+        );
+        let doc: Document = serde_json::from_value(trace_doc(12, "traces", json!({}))).unwrap();
+        assert_eq!(doc.minimum_ir_version(), 12);
+    }
+
+    #[test]
+    fn graph_rejects_non_where_pipeline_stages() {
+        let doc = json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph",
+            "pipeline": [{ "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }]
+        });
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "aggregate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_focus_and_trace_id_are_mutually_exclusive() {
+        let doc = graph_doc(8, json!({ "focus": "orders", "trace_id": "abc123" }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("mutually exclusive")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_depth_out_of_range_is_rejected() {
+        let doc = graph_doc(8, json!({ "focus": "orders", "depth": 4 }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("depth must be between 1 and 3")),
+            "got {err:?}"
+        );
+
+        let doc = graph_doc(8, json!({ "focus": "orders", "depth": 0 }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("depth must be between 1 and 3")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_depth_without_focus_is_rejected() {
+        let doc = graph_doc(8, json!({ "depth": 2 }));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("depth requires focus")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_focus_with_default_depth_validates() {
+        validate_json_with(
+            graph_doc(8, json!({ "focus": "orders" })),
+            &traces_resolver(),
+        )
+        .expect("focus without depth validates");
+    }
+
+    #[test]
+    fn graph_trace_id_validates() {
+        validate_json_with(
+            graph_doc(8, json!({ "trace_id": "abc123" })),
+            &traces_resolver(),
+        )
+        .expect("trace_id scoping validates");
+    }
+
+    #[test]
+    fn graph_scoping_fields_rejected_outside_graph_envelope() {
+        let doc = json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [], "focus": "orders"
+        });
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("graph result envelope")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn graph_rejects_fields_projection() {
+        let mut doc = graph_doc(8, json!({}));
+        doc.as_object_mut()
+            .expect("object")
+            .insert("fields".to_string(), json!(["service.name"]));
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(matches!(err, IrError::FieldsOnSeries), "got {err:?}");
+    }
+
+    #[test]
+    fn correlate_after_aggregate_is_rejected() {
+        let doc = json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "correlate": { "to": "parent", "kind": "inner" } }
+            ]
+        });
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "correlate"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn parent_scope_resolves_columns_and_attributes() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![
+                json!({ "where": { "field": "parent.service.name", "op": "exists" } }),
+                json!({ "where": { "field": "parent.span.http.route", "op": "exists" } }),
+            ],
+        );
+        assert!(validate_json_with(doc, &traces_resolver()).is_ok());
+    }
+
+    #[test]
+    fn group_by_caller_and_callee_service() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![json!({ "aggregate": {
+                "by": ["parent.service.name", "service.name"],
+                "aggs": [{ "fn": "count", "as": "n" }]
+            } })],
+        );
+        let mut doc = doc;
+        doc["result"] = json!("table");
+        let v = validate_json_with(doc, &traces_resolver()).unwrap();
+        match v.terminal {
+            RelationType::RowSet(rs) => {
+                assert!(rs.aggregated);
+                assert!(rs.columns.iter().any(|c| c.name == "parent.service.name"));
+                assert!(rs.columns.iter().any(|c| c.name == "service.name"));
+            }
+            other => panic!("expected table, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn unknown_parent_field_is_rejected() {
+        let doc = correlate_doc(
+            8,
+            "inner",
+            vec![json!({ "where": { "field": "parent.no_such_field", "op": "exists" } })],
+        );
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::UnknownFieldType { ref field } if field == "parent.no_such_field"),
+            "got {err:?}"
+        );
+    }
+
+    // otel-native-schema layer 9 — cross-signal `correlate` (irVersion 11).
+
+    fn signal_resolver() -> InMemoryResolver {
+        traces_resolver()
+            .with_column("logs", "trace_id", "trace_id", ValueType::String)
+            .with_column(
+                "logs",
+                "severity_number",
+                "severity_number",
+                ValueType::Int64,
+            )
+            .with_column("logs", "service.name", "service_name", ValueType::String)
+            .with_column("logs", "body", "body", ValueType::String)
+            .with_column("metrics", "metric.name", "metric_name", ValueType::String)
+    }
+
+    fn signal_doc(from: &str, correlate: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": 11, "from": from, "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": [{ "correlate": correlate }]
+        })
+    }
+
+    fn assert_correlate_rejected(doc: serde_json::Value, needle: &str) {
+        let err = validate_json_with(doc, &signal_resolver()).unwrap_err();
+        assert!(err.to_string().contains(needle), "got {err}");
+    }
+
+    #[test]
+    fn signal_correlate_semi_and_anti_validate_to_the_source_relation() {
+        for kind in ["semi", "anti"] {
+            let d = signal_doc(
+                "traces",
+                json!({
+                    "to": "logs", "on": "trace_id", "kind": kind,
+                    "pipeline": [{ "where": { "field": "severity_number", "op": "gte", "value": 17 } }],
+                    "window": { "before": "5m", "after": "10m" }
+                }),
+            );
+            let v = validate_json_with(d.clone(), &signal_resolver()).unwrap();
+            match v.terminal {
+                RelationType::RowSet(rs) => {
+                    assert_eq!(rs.source, "traces");
+                    assert!(!rs.correlated, "no `parent.` scope for a signal target");
+                }
+                other => panic!("expected rows, got {other:?}"),
+            }
+            assert_eq!(doc(d).minimum_ir_version(), 11);
+        }
+    }
+
+    #[test]
+    fn signal_correlate_below_v11_is_rejected() {
+        let mut doc = signal_doc(
+            "traces",
+            json!({ "to": "logs", "on": "trace_id", "kind": "semi" }),
+        );
+        doc["irVersion"] = json!(10);
+        assert_correlate_rejected(doc, "irVersion 11");
+    }
+
+    #[test]
+    fn signal_correlate_below_v8_names_v11() {
+        let mut doc = signal_doc(
+            "traces",
+            json!({ "to": "logs", "on": "trace_id", "kind": "semi" }),
+        );
+        doc["irVersion"] = json!(7);
+        assert_correlate_rejected(doc, "irVersion 11");
+    }
+
+    #[test]
+    fn parent_correlate_still_needs_only_v8() {
+        let d = doc(correlate_doc(8, "inner", vec![]));
+        assert_eq!(d.minimum_ir_version(), 8);
+    }
+
+    #[test]
+    fn a_key_absent_on_either_side_is_rejected() {
+        assert_correlate_rejected(
+            signal_doc(
+                "metrics",
+                json!({ "to": "traces", "on": "trace_id", "kind": "semi" }),
+            ),
+            "trace_id",
+        );
+        assert_correlate_rejected(
+            signal_doc(
+                "logs",
+                json!({ "to": "metrics", "on": "span_id", "kind": "anti" }),
+            ),
+            "span_id",
+        );
+    }
+
+    #[test]
+    fn a_key_dropped_by_a_preceding_aggregate_is_rejected() {
+        let doc = json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["service.name"], "aggs": [{ "fn": "count", "as": "n" }] } },
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }
+            ]
+        });
+        assert_correlate_rejected(
+            doc,
+            "correlate key 'trace_id' was dropped by a preceding aggregate",
+        );
+    }
+
+    #[test]
+    fn a_key_kept_by_the_aggregate_survives_topk() {
+        let doc = json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration_nano", "as": "slowest" }] } },
+                { "topk": { "n": 10, "of": "slowest" } },
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }
+            ]
+        });
+        validate_json_with(doc, &signal_resolver()).unwrap();
+    }
+
+    #[test]
+    fn signal_correlate_operand_rules() {
+        let cases = [
+            (
+                json!({ "to": "grandparent", "on": "trace_id", "kind": "semi" }),
+                "unknown source 'grandparent'",
+            ),
+            (
+                json!({ "to": "traces", "on": "trace_id", "kind": "semi" }),
+                "must differ from `from`",
+            ),
+            (json!({ "to": "logs", "kind": "semi" }), "requires `on`"),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "semi", "pipeline": [{ "limit": 1 }] }),
+                "only `where`",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "semi", "fanout": 5 }),
+                "`fanout` only applies to inner/left",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "inner", "fanout": 0 }),
+                "1..=10000",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "left", "fanout": 10001 }),
+                "1..=10000",
+            ),
+            (
+                json!({ "to": "logs", "on": "trace_id", "kind": "semi", "pipeline": [{ "where": { "field": "no.such", "op": "exists" } }] }),
+                "no.such",
+            ),
+        ];
+        for (correlate, needle) in cases {
+            assert_correlate_rejected(signal_doc("traces", correlate), needle);
+        }
+    }
+
+    #[test]
+    fn parent_correlate_rejects_signal_only_operands() {
+        let cases = [
+            (
+                json!({ "to": "parent", "on": "trace_id", "kind": "inner" }),
+                "`on`",
+            ),
+            (json!({ "to": "parent", "kind": "semi" }), "semi"),
+            (json!({ "to": "parent", "kind": "anti" }), "anti"),
+        ];
+        for (correlate, needle) in cases {
+            let mut doc = signal_doc("traces", correlate);
+            doc["irVersion"] = json!(8);
+            assert_correlate_rejected(doc, needle);
+        }
+    }
+
+    fn signal_pipeline_doc(pipeline: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": pipeline
+        })
+    }
+
+    #[test]
+    fn signal_correlate_inner_and_left_validate() {
+        for kind in ["inner", "left"] {
+            let d = signal_doc(
+                "traces",
+                json!({ "to": "logs", "on": "trace_id", "kind": kind, "fanout": 5 }),
+            );
+            validate_json_with(d, &signal_resolver()).unwrap();
+        }
+    }
+
+    #[test]
+    fn target_fields_resolve_only_after_an_inner_or_left_correlate() {
+        let where_body = json!({ "where": { "field": "logs.body", "op": "exists" } });
+        let after = |kind: &str| {
+            signal_pipeline_doc(json!([
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": kind } },
+                where_body.clone()
+            ]))
+        };
+        validate_json_with(after("inner"), &signal_resolver()).unwrap();
+        validate_json_with(after("left"), &signal_resolver()).unwrap();
+        for doc in [
+            after("semi"),
+            signal_pipeline_doc(json!([where_body.clone()])),
+        ] {
+            let err = validate_json_with(doc, &signal_resolver()).unwrap_err();
+            assert!(err.to_string().contains("logs.body"), "got {err}");
+        }
+    }
+
+    /// The source keeps its unprefixed names and the target is always
+    /// namespaced, so a field both sides carry never collides.
+    #[test]
+    fn a_field_on_both_sides_is_unambiguous() {
+        let doc = json!({
+            "irVersion": 11, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } },
+                { "where": { "field": "logs.severity_number", "op": "gte", "value": 17 } },
+                { "aggregate": {
+                    "by": ["service.name", "logs.service.name"],
+                    "aggs": [{ "fn": "count", "as": "n" }]
+                } }
+            ]
+        });
+        let v = validate_json_with(doc, &signal_resolver()).unwrap();
+        let RelationType::RowSet(rs) = v.terminal else {
+            panic!("expected a table");
+        };
+        let names: Vec<_> = rs.columns.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(names, vec!["service.name", "logs.service.name", "n"]);
+    }
+
+    /// After the "slowest traces" aggregate the source is closed, but the
+    /// target scope stays open until a later aggregate closes it again.
+    #[test]
+    fn target_scope_follows_an_aggregated_source_until_the_next_aggregate() {
+        let pipeline = |tail: serde_json::Value| {
+            let mut doc = signal_pipeline_doc(json!([
+                { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "max", "of": "duration_nano", "as": "slowest" }] } },
+                { "topk": { "n": 2, "of": "slowest" } },
+                { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } },
+                tail
+            ]));
+            doc["result"] = json!("table");
+            doc
+        };
+        validate_json_with(
+            pipeline(json!({ "where": { "field": "logs.body", "op": "exists" } })),
+            &signal_resolver(),
+        )
+        .unwrap();
+        let mut doc = pipeline(json!({ "limit": 5 }));
+        doc["fields"] = json!(["trace_id", "slowest", "logs.body"]);
+        validate_json_with(doc, &signal_resolver()).unwrap();
+        let mut closed = signal_pipeline_doc(json!([
+            { "correlate": { "to": "logs", "on": "trace_id", "kind": "inner" } },
+            { "aggregate": { "by": ["logs.service.name"], "aggs": [{ "fn": "count", "as": "n" }] } }
+        ]));
+        closed["result"] = json!("table");
+        closed["fields"] = json!(["logs.body"]);
+        assert_correlate_rejected(closed, "logs.body");
+    }
+
+    /// A source column already named under the target prefix would collide
+    /// with the joined target columns.
+    #[test]
+    fn a_source_column_under_the_target_prefix_is_rejected() {
+        let mut doc = signal_pipeline_doc(json!([
+            { "aggregate": { "by": ["trace_id"], "aggs": [{ "fn": "count", "as": "logs.body" }] } },
+            { "correlate": { "to": "logs", "on": "trace_id", "kind": "left" } }
+        ]));
+        doc["result"] = json!("table");
+        assert_correlate_rejected(doc, "`logs.body`");
+    }
+
+    // otel-native-schema layer 10 — structural `match` (irVersion 12).
+
+    fn match_doc(from: &str, version: i64, pipeline: serde_json::Value) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": from, "range": { "from": "now-1h", "to": "now" },
+            "result": "rows",
+            "pipeline": pipeline
+        })
+    }
+
+    fn match_stage() -> serde_json::Value {
+        json!({ "match": {
+            "spansets": {
+                "root": { "field": "service.name", "op": "eq", "value": "api" },
+                "write": { "field": "span.http.route", "op": "contains", "value": "/w" }
+            },
+            "relations": [{ "left": "root", "op": "descendant", "right": "write" }]
+        }})
+    }
+
+    fn assert_match_rejected(doc: serde_json::Value, needle: &str) {
+        let err = validate_json_with(doc, &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(&err, IrError::IllegalStage { stage, reason } if stage == "match" && reason.contains(needle)),
+            "expected an illegal match stage mentioning {needle:?}, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn match_parses_keeping_span_set_order_and_adds_a_spansets_column() {
+        let d = doc(match_doc("traces", 12, json!([match_stage()])));
+        let Stage::Match(m) = &d.pipeline[0] else {
+            panic!("expected a match stage");
+        };
+        let names: Vec<_> = m.spansets.0.iter().map(|(n, _)| n.as_str()).collect();
+        assert_eq!(names, ["root", "write"]);
+        assert_eq!(m.relations[0].op, MatchOp::Descendant);
+        let round = serde_json::to_value(&d.pipeline[0]).unwrap();
+        assert_eq!(round, match_stage());
+
+        let v = validate(&d, &SourceRegistry::core(), &traces_resolver()).unwrap();
+        let RelationType::RowSet(rs) = v.terminal else {
+            panic!("expected rows");
+        };
+        assert!(!rs.aggregated);
+        assert_eq!(rs.columns, vec![Column::new("spansets", ValueType::String)]);
+    }
+
+    #[test]
+    fn match_rejects_unknown_keys_and_ops() {
+        for bad in [
+            json!({ "match": { "spansets": {}, "bogus": 1 } }),
+            json!({ "match": { "spansets": { "a": { "field": "name", "op": "exists" } },
+                "relations": [{ "left": "a", "op": "cousin", "right": "a" }] } }),
+            json!({ "match": { "spansets": { "a": { "field": "name", "op": "exists" } },
+                "relations": [{ "left": "a", "op": "child", "right": "a", "x": 1 }] } }),
+        ] {
+            assert!(
+                serde_json::from_value::<Stage>(bad.clone()).is_err(),
+                "{bad}"
+            );
+        }
+    }
+
+    #[test]
+    fn match_below_v12_is_rejected() {
+        let err = validate_json_with(
+            match_doc("traces", 11, json!([match_stage()])),
+            &traces_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(&err, IrError::Invalid(m) if m.contains("requires irVersion 12")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn later_stages_compose_over_the_match_output() {
+        let pipeline = json!([
+            match_stage(),
+            { "where": { "field": "spansets", "op": "contains", "value": "root" } },
+            { "order": [{ "of": "duration_nano", "dir": "desc" }] },
+            { "limit": 10 }
+        ]);
+        validate_json_with(match_doc("traces", 12, pipeline), &traces_resolver()).unwrap();
+        let mut grouped = match_doc(
+            "traces",
+            12,
+            json!([match_stage(), { "aggregate": { "by": ["spansets"], "aggs": [{ "fn": "count", "as": "n" }] } }]),
+        );
+        grouped["result"] = json!("table");
+        validate_json_with(grouped, &traces_resolver()).unwrap();
+    }
+
+    #[test]
+    fn match_rejections_name_the_rule() {
+        let pred = json!({ "field": "service.name", "op": "exists" });
+        let sets = |sets: serde_json::Value| json!([{ "match": { "spansets": sets } }]);
+        let nine: serde_json::Map<_, _> = (0..9).map(|i| (format!("s{i}"), pred.clone())).collect();
+        let mut undeclared = match_stage();
+        undeclared["match"]["relations"][0]["right"] = json!("nope");
+        let filter = json!({ "where": { "field": "service.name", "op": "eq", "value": "api" } });
+        let cases = [
+            (
+                "logs",
+                json!([match_stage()]),
+                "source 'logs' does not support match (traces only)",
+            ),
+            (
+                "traces",
+                json!([filter, match_stage()]),
+                "first pipeline stage",
+            ),
+            (
+                "traces",
+                json!([match_stage(), match_stage()]),
+                "at most one",
+            ),
+            ("traces", json!([undeclared]), "'nope'"),
+            ("traces", sets(json!(nine)), "1..=8"),
+            ("traces", sets(json!({})), "1..=8"),
+            ("traces", sets(json!({ "Root": pred })), "span-set name"),
+            ("traces", sets(json!({ "1st": pred })), "span-set name"),
+            ("traces", sets(json!({ "a-b": pred })), "span-set name"),
+            ("traces", sets(json!({ "": pred })), "span-set name"),
+            (
+                "traces",
+                sets(json!({ "x".repeat(33): pred })),
+                "span-set name",
+            ),
+        ];
+        for (from, pipeline, needle) in cases {
+            assert_match_rejected(match_doc(from, 12, pipeline), needle);
+        }
+        let dup = r#"{"match":{"spansets":{"a":{"field":"service.name","op":"exists"},"a":{"field":"service.name","op":"exists"}}}}"#;
+        let mut d = doc(match_doc("traces", 12, json!([])));
+        d.pipeline = vec![serde_json::from_str(dup).unwrap()];
+        let err = validate(&d, &SourceRegistry::core(), &traces_resolver()).unwrap_err();
+        assert!(
+            matches!(&err, IrError::IllegalStage { reason, .. } if reason.contains("duplicate")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn match_predicates_are_validated_like_where() {
+        let stage = json!({ "match": { "spansets": {
+            "a": { "field": "duration_nano", "op": "gt", "value": "not a duration" }
+        } } });
+        let err = validate_json_with(match_doc("traces", 12, json!([stage])), &traces_resolver())
+            .unwrap_err();
+        assert!(matches!(err, IrError::Coercion { .. }), "got {err:?}");
+    }
+
+    #[test]
+    fn match_span_sets_take_event_and_link_fields() {
+        let doc_with = |op: &str| {
+            doc(match_doc(
+                "traces",
+                12,
+                json!([{ "match": {
+                "spansets": {
+                    "failed": { "field": "events.name", "op": op, "value": "exception" },
+                    "linked": { "field": "links.trace_id", "op": "eq", "value": "aaaa" }
+                },
+                "relations": [{ "left": "failed", "op": "descendant", "right": "linked" }]
+            } }]),
+            ))
+        };
+        let resolver = WithSpanLists(traces_resolver());
+        validate(&doc_with("eq"), &SourceRegistry::core(), &resolver).unwrap();
+        let err = validate(&doc_with("ne"), &SourceRegistry::core(), &resolver).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("events.name")),
+            "{err:?}"
+        );
+    }
+
+    /// The schema-free rules hold without a resolver, for a caller with no
+    /// table to validate against.
+    #[test]
+    fn match_placement_is_checked_without_a_schema() {
+        let pipeline = json!([match_stage()]);
+        check_structure(&doc(match_doc("traces", 12, pipeline.clone()))).unwrap();
+        for (from, version, pipeline, needle) in [
+            ("logs", 12, pipeline.clone(), "traces only"),
+            ("traces", 11, pipeline, "irVersion 12"),
+            (
+                "traces",
+                12,
+                json!([{ "limit": 1 }, match_stage()]),
+                "first pipeline stage",
+            ),
+            (
+                "traces",
+                12,
+                json!([match_stage(), match_stage()]),
+                "at most one",
+            ),
+        ] {
+            let err = check_structure(&doc(match_doc(from, version, pipeline))).unwrap_err();
+            assert!(err.to_string().contains(needle), "{needle}: {err}");
+        }
     }
 }

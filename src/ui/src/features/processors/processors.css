@@ -1,0 +1,209 @@
+/* Minimal styling for the processors feature: enough visual distinction for
+   disabled rows and status/diff markers, matching the schema hub's
+   table/page conventions rather than duplicating its full theme. */
+
+.processors-page {
+  padding: var(--gutter);
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.processors-page-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 16px;
+  flex-wrap: wrap;
+}
+
+.processors-title {
+  font-size: var(--text-title);
+  font-weight: 600;
+  margin: 0 0 8px;
+}
+
+.processors-subtitle {
+  color: var(--dim);
+  font-size: 13px;
+  margin: 0;
+  max-width: 720px;
+}
+
+.processors-note {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+.processors-applies-hint {
+  color: var(--dim);
+  font-size: 13px;
+}
+
+/* Dimmed text, not opacity: opacity also fades the status and pushes the
+   dark theme's red "invalid" below AA contrast. */
+.processors-row-disabled td,
+.processors-row-disabled a {
+  color: var(--dim);
+}
+
+.processors-row-actions {
+  text-align: right;
+}
+
+/* --- table (matches .schema-table) --- */
+.processors-table {
+  width: 100%;
+  border-collapse: collapse;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.processors-table th,
+.processors-table td {
+  padding: 8px 10px;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+  /* Names like "redact-emails" must not break at the hyphen; the
+     .table-scroll wrapper scrolls instead. */
+  white-space: nowrap;
+}
+
+.processors-table th {
+  background: var(--surface2);
+  text-align: left;
+}
+
+.processors-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.processors-table tbody tr:hover {
+  background: var(--surface2);
+}
+
+.processors-table a {
+  color: var(--text);
+  font-weight: 600;
+  text-decoration: none;
+}
+
+.processors-table a:hover {
+  text-decoration: underline;
+}
+
+.processors-status-invalid {
+  color: var(--err);
+  font-weight: 600;
+}
+
+.processors-status-ok {
+  color: var(--ok);
+}
+
+.processors-line-errors {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+/* The editor form's plain <input>/<select>/<textarea> had no rule at all
+   (browser default: white, regardless of theme) — same token treatment the
+   other feature forms (ApiKeys.css, management.css) give theirs. */
+.processors-page input,
+.processors-page select,
+.processors-page textarea {
+  font: inherit;
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface2);
+  padding: 6px 8px;
+}
+
+.processors-page .processors-statements-textarea,
+.processors-page .processors-test-textarea {
+  font-family: var(--mono);
+  font-size: 12px;
+  width: 100%;
+  resize: vertical;
+}
+
+/* One width for the whole editor, form and test panel alike. */
+.processors-editor {
+  max-width: 960px;
+}
+
+.processors-editor-actions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.processors-form {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+
+.processors-field {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.processors-field label,
+.processors-test-panel label {
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.processors-field label:has(input[type="checkbox"]) {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.processors-statements-actions {
+  display: flex;
+}
+
+.processors-button {
+  flex: none;
+}
+
+.processors-test-panel {
+  border-top: 1px solid var(--border);
+  margin-top: 1rem;
+  padding-top: 1rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+}
+
+.processors-test-head {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+
+.processors-test-panel h2,
+.processors-test-panel h3 {
+  font-size: var(--text-section);
+  font-weight: 600;
+  margin: 0.5rem 0 0;
+}
+
+.processors-test-panel > .btn {
+  align-self: flex-start;
+}
+
+.processors-statement-results {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  color: var(--dim);
+  font-size: 13px;
+}

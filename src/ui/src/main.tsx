@@ -1,10 +1,12 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { BrowserRouter } from "react-router";
-import { AppRoutes } from "./routes";
+import { AppRoot } from "./AppRoot";
+import { createAppRouter } from "./routes";
 import { initTelemetry } from "./telemetry";
+import { recordRenderError } from "./telemetry/renderErrors";
 import { initTheme } from "./lib/theme";
+import { queryRetry } from "./lib/queryRetry";
 import { sidebarWidth, spanDetailWidth } from "./lib/sidebarWidth";
 import "./styles/global.css";
 
@@ -27,17 +29,38 @@ const queryClient = new QueryClient({
       // Observability queries are time-window scoped; refetching on focus
       // would silently shift results under the user.
       refetchOnWindowFocus: false,
-      retry: 1,
+      retry: queryRetry,
     },
   },
 });
 
-createRoot(document.getElementById("root")!).render(
+// A data router (rather than plain `<BrowserRouter>`) so the shell's
+// `UnsavedChangesGuard` (App.tsx) can use `useBlocker` to intercept every
+// in-app navigation — links, the tab strip, the user menu, browser
+// Back/Forward — while a form is dirty, not just its own breadcrumb links.
+const router = createAppRouter();
+
+createRoot(document.getElementById("root")!, {
+  // `onCaughtError` is deliberately left unset: every route render error is
+  // caught by `RootErrorBoundary`'s `errorElement` (routes.tsx), which
+  // already records it via `recordRenderError` — wiring `onCaughtError` too
+  // would fire for that same catch and double-record it, since React 19
+  // calls `onCaughtError` for any boundary in the tree, including the one
+  // `errorElement` compiles to. `onUncaughtError` alone covers the gap: a
+  // render error with no boundary above it at all (outside the router tree,
+  // e.g. in `QueryClientProvider`), which should not happen given the
+  // root-level `errorElement` but has no other backstop if it does.
+  onUncaughtError: (error) =>
+    recordRenderError(error, window.location.pathname),
+}).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <AppRoot router={router} />
     </QueryClientProvider>
   </StrictMode>,
 );
+
+// Deferred and dynamically imported: registration itself already waits for
+// the `load` event, and nothing here wants to compete with first paint or
+// pull workbox-window into the entry chunk.
+void import("./pwa").then((m) => m.initPwaUpdates());

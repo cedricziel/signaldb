@@ -34,7 +34,7 @@ pub mod service;
 pub mod table_lock;
 
 // Re-export commonly used types
-pub use commit::{CommitError, DataFileChange, IcebergCommitter, is_conflict_error};
+pub use commit::{CommitError, IcebergCommitter, is_conflict_error};
 pub use executor::{
     CompactionExecutor, CompactionJob, CompactionResult, CompactionStatus, DataFileInfo,
     ExecutorConfig,
@@ -47,7 +47,7 @@ pub use iceberg::{
 pub use metrics::{CompactionMetrics, MetricsSummary};
 pub use orphan::{
     DeletionResult, OrphanCandidate, OrphanCleaner, OrphanCleanupConfig, OrphanDetector,
-    OrphanMetrics, SkipReason,
+    OrphanMetrics,
 };
 pub use planner::{
     CompactionCandidate, CompactionPlanner, FileInfo, PartitionStats, PlannerConfig,

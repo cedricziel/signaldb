@@ -24,7 +24,7 @@ Complete reference for configuring SignalDB Compactor retention and lifecycle ma
 
 ## Configuration Overview
 
-Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels). This reference covers the `[compactor*]` sections only; unrelated top-level sections that share the same `signaldb.toml` and config struct file — such as `[wal]`, including its instance cap — are documented separately (see [WAL Persistence](../wal-persistence.md#instance-cap)).
+Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels). This reference covers the `[compactor*]` sections only; unrelated top-level sections that share the same `signaldb.toml` and config struct file — authentication (including `[auth.oidc]` SSO, see [Setting up SSO / OIDC login](../oidc-sso.md)), storage, discovery, and `[wal]` (including its instance cap, see [WAL Persistence](../wal-persistence.md#instance-cap)) — are documented separately.
 
 **Configuration Precedence:**
 
@@ -208,7 +208,7 @@ profiles = "14d"
 
 - `traces` → `traces` table
 - `logs` → `logs` table
-- `metrics` → any table whose name starts with `metrics_` (`metrics_gauge`, `metrics_sum`, `metrics_histogram` by default)
+- `metrics` → the `metrics` and `metric_exemplars` tables, plus any legacy table whose name starts with `metrics_`
 - `profiles` → `profiles` table
 
 This mapping is the single predicate deciding which catalog tables the
@@ -492,7 +492,7 @@ max_live_files_threshold = 500000
 
 ### `[compactor.attr_promotion]`
 
-Attribute auto-promotion (epic #737) turns frequently queried attribute keys into materialized `label_<key>` columns at compaction time. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the persisted statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite.
+Attribute promotion copies frequently queried attributes into typed per-level `attr_<level>_<key>` columns at compaction time, and demotes them again when they go cold. Keys of every scalar canonical type (`String`, `Int64`, `Float64`, `Bool`) are eligible. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the per-level statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite. See [Attribute Promotion](operations.md#attribute-promotion).
 
 ```toml
 [compactor.attr_promotion]
@@ -503,26 +503,28 @@ min_presence = 0.005
 min_query_hits = 1
 promote_streak = 3
 max_promotions_per_cycle = 4
+demote_after_idle = "7d"
 ```
 
-| Setting                    | Type    | Default | Description                                                                                                                       |
-| -------------------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                  | boolean | `false` | Run the promotion decision pass on each rewrite                                                                                   |
-| `dry_run`                  | boolean | `true`  | Log decisions only; never change schemas or data                                                                                  |
-| `max_labels_per_table`     | integer | `32`    | Schema-width budget: maximum materialized `label_<key>` columns per table, pinned `[schema.materialized_labels]` entries included |
-| `min_presence`             | float   | `0.005` | Minimum fraction of rows a key must appear in to be promotable                                                                    |
-| `min_query_hits`           | integer | `1`     | Minimum accumulated query-demand hits for a key to be promotable                                                                  |
-| `promote_streak`           | integer | `3`     | Consecutive over-threshold cycles before promotion (hysteresis)                                                                   |
-| `max_promotions_per_cycle` | integer | `4`     | Maximum promotions per rewrite cycle                                                                                              |
+| Setting                    | Type     | Default | Description                                                                                                                   |
+| -------------------------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | boolean  | `false` | Run the promotion decision pass on each rewrite                                                                               |
+| `dry_run`                  | boolean  | `true`  | Log decisions only; never change schemas or data                                                                              |
+| `max_labels_per_table`     | integer  | `32`    | Schema-width budget per table, shared by promoted `attr_*` columns and `label_<key>` columns (pins included)                  |
+| `min_presence`             | float    | `0.005` | Minimum fraction of rows a (level, key) must appear in to be promotable                                                       |
+| `min_query_hits`           | integer  | `1`     | Minimum accumulated query-demand hits for a (level, key) to be promotable                                                     |
+| `promote_streak`           | integer  | `3`     | Consecutive over-threshold cycles before promotion (hysteresis)                                                               |
+| `max_promotions_per_cycle` | integer  | `4`     | Maximum promotions per rewrite cycle                                                                                          |
+| `demote_after_idle`        | duration | `7d`    | Demote a promoted column not queried within this window; `0s` disables idle demotion (over-budget LRU demotion still applies) |
 
 **`dry_run` semantics:**
 
-- `dry_run = true` (default): the pass only logs an `Attribute promotion decision` line per table. No schema or data changes.
-- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds the promoted columns through a metadata-only commit), backfills the column values from the attributes map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](operations.md#attribute-promotion) for the observable sequence.
+- `dry_run = true` (default): the pass only logs `Typed attribute promotion decision` and `Typed attribute demotion decision` lines per table. No schema or data changes.
+- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds or drops promoted columns through a metadata-only commit), backfills each promoted column from its level's typed map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](operations.md#attribute-promotion) for the observable sequence.
 
-The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched. Demotion (dropping unqueried auto-promoted columns) is decided and logged but not yet acted on.
+The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of promoted and label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched.
 
-**Recommendation:** run with `dry_run = true` for several compaction cycles and review the `Attribute promotion decision` log lines. Flip to `false` only once the keys they announce are ones you want as columns.
+**Recommendation:** run with `dry_run = true` for several compaction cycles and review the `Typed attribute promotion decision` log lines. Flip to `false` only once the keys they announce are ones you want as columns.
 
 ## Environment Variables
 
@@ -549,6 +551,15 @@ SIGNALDB__COMPACTOR__MEMORY_LIMIT_MB=512
 ```
 
 `SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB` and `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB` no longer exist (see [Compaction Settings](#compaction-settings)).
+
+### Network Environment Variables
+
+The standalone compactor (`signaldb compactor`) reads its Flight addresses from these variables rather than from `signaldb.toml`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `COMPACTOR_FLIGHT_ADDR` | `0.0.0.0:50055` | Socket the Flight server binds. Must be an IP address and port. |
+| `COMPACTOR_ADVERTISE_ADDR` | the bind address | Address registered in service discovery, which the router dials for the ops endpoints (`/api/v1/ops/compact*`). May be a hostname, e.g. `compactor-1:50055`. |
 
 ### Retention Environment Variables
 

@@ -183,7 +183,6 @@ mod tests {
 
     fn make_detail() -> TraceDetail {
         TraceDetail {
-            trace_id: "abc123".into(),
             spans: vec![
                 SpanInfo {
                     span_id: "span-1".into(),
