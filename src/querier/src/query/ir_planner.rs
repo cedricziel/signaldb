@@ -936,9 +936,14 @@ impl IrService {
                 .query_graph(&doc, params.now_ns, tenant_slug, dataset_slug)
                 .await;
         }
+        if doc.result == ResultEnvelope::Flamegraph {
+            return self
+                .query_flamegraph(&doc, params.now_ns, tenant_slug, dataset_slug)
+                .await;
+        }
         // Stage spans (INTERNAL) under the Flight SERVER span, so a slow
         // query is attributable to planning vs execution.
-        let Some((mut df, window, outcome)) = self
+        let Some((df, window, outcome)) = self
             .plan_with_correlate_truncation(
                 &doc,
                 tenant_slug,
@@ -957,14 +962,6 @@ impl IrService {
                 CorrelateReport::default(),
             ));
         };
-        // The flamegraph aggregation happens in Rust, not DataFusion (see
-        // `plan`'s doc comment on `apply_projection`'s flamegraph carve-out);
-        // request one row past the cap so truncation is exact, not a guess.
-        if doc.result == ResultEnvelope::Flamegraph {
-            df = df
-                .limit(0, Some(FLAMEGRAPH_PROFILE_CAP + 1))
-                .map_err(QuerierError::QueryFailed)?;
-        }
         let exec_span = tracing::info_span!(
             "signaldb.query.execute",
             signaldb.query.rows = tracing::field::Empty,
@@ -991,14 +988,60 @@ impl IrService {
             }),
             match_incomplete: outcome.match_incomplete.and_then(|m| m.report()),
         };
-        if doc.result == ResultEnvelope::Flamegraph {
-            return Ok((
-                vec![encode_flamegraph_batch(&batches, FLAMEGRAPH_PROFILE_CAP)?],
-                window,
-                report,
-            ));
-        }
         Ok((batches, window, report))
+    }
+
+    /// A `flamegraph` document. The aggregation happens in Rust, not
+    /// DataFusion (see `apply_projection`'s flamegraph carve-out).
+    async fn query_flamegraph(
+        &self,
+        doc: &Document,
+        now_ns: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow, CorrelateReport), QuerierError> {
+        let cap = FLAMEGRAPH_PROFILE_CAP;
+        let (rows, window) = self
+            .flamegraph_rows(doc, now_ns, tenant_slug, dataset_slug, cap)
+            .await?;
+        let batch = encode_flamegraph_batch(&rows, cap)?;
+        Ok((vec![batch], window, CorrelateReport::default()))
+    }
+
+    /// The newest profile rows one `flamegraph` window matches, one row past
+    /// `cap` so truncation is exact.
+    async fn flamegraph_rows(
+        &self,
+        doc: &Document,
+        now_ns: i64,
+        tenant_slug: &str,
+        dataset_slug: &str,
+        cap: usize,
+    ) -> Result<(Vec<RecordBatch>, ResolvedWindow), QuerierError> {
+        use tracing::Instrument;
+
+        let Some((df, window, _)) = self
+            .plan_with_correlate_truncation(
+                doc,
+                tenant_slug,
+                dataset_slug,
+                now_ns,
+                AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+            )
+            .instrument(tracing::info_span!("signaldb.query.plan"))
+            .await?
+        else {
+            return Ok((Vec::new(), resolve_window(doc, now_ns)?));
+        };
+        let batches = df
+            .sort(vec![ident("timestamp").sort(false, true)])
+            .and_then(|df| df.limit(0, Some(cap + 1)))
+            .map_err(QuerierError::QueryFailed)?
+            .collect()
+            .instrument(tracing::info_span!("signaldb.query.execute"))
+            .await
+            .map_err(QuerierError::from)?;
+        Ok((batches, window))
     }
 
     /// A `graph` document: assembled from fixed internal pipelines (see
@@ -1645,8 +1688,22 @@ fn histogram_step_window(h: &HistStage<'_>) -> Result<(i64, i64), QuerierError> 
 
 /// Resolve the document's range to an absolute window.
 fn resolve_window(doc: &Document, now_ns: i64) -> Result<ResolvedWindow, QuerierError> {
-    let start = resolve_instant(&doc.range.from, now_ns)?;
-    let end = resolve_instant(&doc.range.to, now_ns)?;
+    resolve_range("range", &doc.range, now_ns)
+}
+
+/// Resolve one window, rejecting a `from` after its `to`.
+fn resolve_range(
+    name: &str,
+    range: &common::query_ir::Range,
+    now_ns: i64,
+) -> Result<ResolvedWindow, QuerierError> {
+    let start = resolve_instant(&range.from, now_ns)?;
+    let end = resolve_instant(&range.to, now_ns)?;
+    if start > end {
+        return Err(QuerierError::InvalidInput(format!(
+            "{name}.from must not be after {name}.to"
+        )));
+    }
     Ok(ResolvedWindow {
         start_ns: start,
         end_ns: end,
@@ -7733,6 +7790,44 @@ mod tests {
         assert!(flamegraph.names.contains(&"foo".to_string()));
         assert!(flamegraph.names.contains(&"bar".to_string()));
         assert!(!flamegraph.names.contains(&"baz".to_string()));
+    }
+
+    /// The cap keeps the newest profiles: p2 (t=20) over p1 (t=10).
+    #[tokio::test]
+    async fn flamegraph_rows_keep_the_newest_profiles() {
+        let svc = IrService::new(profiles_ctx())
+            .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": 0, "to": 1000 },
+            "result": "flamegraph",
+            "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
+        }));
+        let (batches, _) = svc.flamegraph_rows(&d, 0, "t", "d", 1).await.unwrap();
+        let encoded = encode_flamegraph_batch(&batches, 1).unwrap();
+        assert!(truncated_from_batch(&encoded));
+        let flamegraph = flamegraph_from_batch(&encoded);
+        assert_eq!(flamegraph.total, 50, "p2 (main/bar 50) is the newest");
+        assert!(flamegraph.names.contains(&"bar".to_string()));
+    }
+
+    /// A mixed absolute/relative pair passes validation and is caught once
+    /// resolved.
+    #[tokio::test]
+    async fn an_inverted_resolved_window_is_invalid_input() {
+        let svc = IrService::new(profiles_ctx())
+            .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 1, "from": "profiles", "range": { "from": "now", "to": 0 },
+                "result": "flamegraph", "pipeline": []
+            }),
+            now_ns: 1_000,
+        };
+        let err = svc.query(&params, "t", "d").await.unwrap_err();
+        assert!(
+            matches!(err, QuerierError::InvalidInput(ref m) if m.contains("range.from")),
+            "got {err:?}"
+        );
     }
 
     /// A cap-exceeding match set is aggregated up to the cap and flagged

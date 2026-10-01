@@ -274,7 +274,7 @@ pub struct FlamegraphResult {
     pub max_self: i64,
     /// `true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
     /// matched — a row-count cap, not a byte-size one — and the flamegraph
-    /// was aggregated over only the first 1,000 of them.
+    /// was aggregated over only the newest 1,000 of them (by timestamp).
     pub truncated: bool,
     /// Source location for each entry in `names`, aligned by index; `None`
     /// (or the array is shorter than `names`) where unknown. See
@@ -958,10 +958,16 @@ pub(super) fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<Resolved
             _ => Err(ApiError::bad_request(format!("invalid time bound: {s}"))),
         }
     };
-    Ok(ResolvedWindow {
+    let window = ResolvedWindow {
         start_ns: resolve(&range.from)?,
         end_ns: resolve(&range.to)?,
-    })
+    };
+    if window.start_ns > window.end_ns {
+        return Err(ApiError::bad_request(
+            "range.from must not be after range.to",
+        ));
+    }
+    Ok(window)
 }
 
 /// Send a `query_ir` Flight ticket to a querier and collect the result
@@ -2177,7 +2183,7 @@ mod tests {
     use super::{
         GRAPH_NODE_LIMIT, MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange,
         ResolvedWindow, build_envelope, check_multi_source_scopes, document_read_scopes,
-        parse_envelope, source_read_scope, to_multi_document,
+        parse_envelope, resolve_window, source_read_scope, to_multi_document,
     };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
@@ -2616,6 +2622,17 @@ mod tests {
                 None,
             ]
         );
+    }
+
+    #[test]
+    fn an_inverted_window_is_a_bad_request() {
+        let range = QueryRange {
+            from: "now".to_string(),
+            to: "now-1h".to_string(),
+        };
+        let err = resolve_window(&range, 10_000_000_000_000).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("range.from"), "{}", err.message);
     }
 
     /// A `flamegraph_json` batch encoded before `locations` existed (no such

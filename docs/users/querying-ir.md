@@ -74,7 +74,8 @@ body. The response is the declared result envelope (see
   RFC3339, a relative anchor (`now`, `now-1h`, `now+30m`), or integer
   nanoseconds. Relative anchors are resolved **once**, against the server clock,
   at submission — every stage sees the same absolute window, and the resolved
-  window is echoed back in the response for reproducibility.
+  window is echoed back in the response for reproducibility. A `from` after
+  `to` is rejected with a 400.
 - **`result`** declares the envelope up front; the server validates it against
   the query's terminal shape and rejects a mismatch before executing.
 - **`fields`** is a curated projection of logical field names for `rows`/`table`
@@ -963,8 +964,8 @@ The response carries the Pyroscope flamebearer shape plus a truncation flag:
 `[offset_delta, total, self, name_index]` quadruples, `offset_delta` measured
 from the end of the previous block on the same level. `truncated: true` means
 more than 1,000 profile rows matched — a row-count cap, not a response-size
-one — and the flamegraph was aggregated over only the first 1,000 of them;
-narrow the query to see the rest. `fields` is not valid on a `flamegraph`
+one — and the flamegraph was aggregated over only the newest 1,000 of them
+(by `timestamp`); narrow the query to see the rest. `fields` is not valid on a `flamegraph`
 result, same as `series`. `locations` is parallel to `names`: `{file, line}` for the
 first frame seen under that name when the profiler recorded a source file,
 `null` otherwise — the Explore UI uses it to offer
