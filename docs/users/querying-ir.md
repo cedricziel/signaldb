@@ -59,7 +59,7 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // 1 to 14; declare the lowest version that carries every feature you use (see Pipeline stages)
+  "irVersion": 1, // 1 to 15; declare the lowest version that carries every feature you use (see Pipeline stages)
   "from": "logs", // a registered source: "logs", "traces", "profiles", "metrics", or "exemplars"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
@@ -128,7 +128,7 @@ joins on matching timestamps. Samples after the last instant are not
 counted. On every other source, `step` buckets are epoch-aligned
 `[t, t + step)` and labelled by their start `t`.
 
-What each `irVersion` unlocks (the server supports 1 to 14; the source of
+What each `irVersion` unlocks (the server supports 1 to 15; the source of
 truth is `src/query-ir/src/version.rs`):
 
 | Version | Adds |
@@ -146,6 +146,7 @@ truth is `src/query-ir/src/version.rs`):
 | 11 | `correlate` to another signal source |
 | 12 | `match` and the `trace` envelope |
 | 14 | document-level `page` ([Pagination](#pagination-ir-v14)) |
+| 15 | document-level `tail` ([Live tail](#live-tail-ir-v15)) |
 
 Every earlier document keeps its exact meaning; a document using a feature
 while declaring a lower version is rejected naming the version it needs, never
@@ -789,6 +790,66 @@ removed by retention during the walk stops appearing.
 
 Every page is an ordinary authenticated query: read scopes are checked and rate
 limits apply on each one.
+
+## Live tail (IR v15)
+
+A tail follows a `rows` or `trace` document forward in time, over plain
+repeated `POST /api/v1/query` calls (no streaming connection). Add a
+document-level `tail` to a document whose `range.to` is `now`:
+
+```jsonc
+{ "irVersion": 15, "from": "logs", "range": { "from": "now-15m", "to": "now" },
+  "result": "rows", "pipeline": [/* where/extract/correlate only */],
+  "page": { "size": 200 },   // rows per call; optional
+  "tail": { "settle": "10s" } } // settle optional
+```
+
+The response carries `tail: { cursor, settled_through_ns, settle_ns,
+caught_up }`. Send the same document again with `tail.cursor` set to the
+returned `cursor` to get what arrived since.
+
+- **The first call** returns the newest `page.size` rows in
+  `[range.from, settled_through_ns]`, oldest first: "show the last N, then
+  follow" in one call.
+- **Each later call** returns, oldest first, the rows after the previous
+  call's position and at or before the new `settled_through_ns`.
+- **`caught_up: false`** means `page.size` cut the call short: call again
+  right away. With `caught_up: true` the next cursor sits at the settle line,
+  so polling an idle tail rescans nothing.
+
+**Tail-time and order.** Rows are delivered in ascending tail-time, then the
+source's tie-breakers. The tail-time is the source time column, except for
+traces, where it is the span's **end** (`end_time_unix_nano`): a span is
+exported after it ends, so tailing by start time would miss long spans. Spans
+longer than `[querier].tail_max_span_duration` (1h) are not tailed. A `trace`
+result groups each call's spans by trace; a trace's spans can arrive over
+several calls.
+
+**Settle and late data.** A call at server time `T` reads up to
+`T − settle`, with `settle` clamped to `[querier].tail_min_settle` (10s) and
+`tail_max_settle` (5m) and echoed as `settle_ns`. The floor covers the time
+until a row becomes queryable (the writer's commit interval plus its loop
+tick); a deployment that raises `[writer].commit_interval` must raise
+`tail_min_settle` with it. A row that becomes queryable after the tail has
+passed its tail-time is **not delivered** by that tail: the tail is
+at-most-once for rows arriving more than `settle` late. That happens when a
+client exports late, when ingest is backed up (data still in an acceptor WAL
+while the writer is unreachable), and for spans longer than the bound above.
+Page the interval with an absolute range to read such rows.
+
+**Lag.** A cursor more than `[querier].tail_max_lag` (5m) behind the clock,
+say from a suspended browser tab, skips forward to `T − tail_max_lag`. The
+response then carries a `tail_lagged` warning naming the skipped interval
+(unix ns); page that interval with an absolute range to read it.
+
+**What can be tailed.** Whatever can be [paginated](#pagination-ir-v14), with
+`range.to` set to `now`, and without `order`, `match` or `limit` (a tail's
+order and per-call size are fixed). `tail` together with `page.cursor` is
+rejected. A violation is a 400 with `reason: "not_tailable"` naming the stage,
+envelope or `range.to`. A tail cursor is bound to tenant, dataset and document
+like a page cursor (400 otherwise; 410 for an incompatible server version),
+and every call is an ordinary authenticated, rate-limited query, so a revoked
+key or scope fails the next call.
 
 ## Graph envelope (`traces` only, IR v8+)
 
@@ -2337,9 +2398,9 @@ generated clients (the TypeScript client and Rust SDK), never hand-written HTTP.
 The IR is the base of a dependent stack; each sibling is a separate capability
 so it is designed and reviewed on its own risk profile. Still deferred:
 
-- **live tail** — following new matching records of the same document.
-  Pagination ([Pagination](#pagination-ir-v14)) and field discovery
-  ([Discovery](#discovery-what-can-i-query)) have landed.
+- **a long-poll or streaming live tail** — today a tail is client polling
+  ([Live tail](#live-tail-ir-v15)); a `tail.wait` long-poll or an SSE wrapper
+  over the same cursor may follow.
 - **typed wire and WAL fidelity** — duplicate attribute keys and key order are
   not preserved today (the wire carries attributes as JSON); keeping them needs a
   typed wire format, a breaking change of its own.

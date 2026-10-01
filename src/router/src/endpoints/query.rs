@@ -111,6 +111,11 @@ pub struct QueryIrRequest {
     /// `page.next_cursor` to continue.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<common::query_ir::Page>,
+    /// Follow the result forward in time (irVersion 15+, `range.to` must be
+    /// `now`): resend the same document with `tail.cursor` set to the
+    /// previous response's `tail.cursor`. `page.size` bounds each call.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<common::query_ir::Tail>,
 }
 
 /// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
@@ -177,6 +182,7 @@ impl QueryIrResponse {
             traces: None,
             metadata: Some(metadata),
             page: None,
+            tail: None,
             warnings,
         }
     }
@@ -319,8 +325,8 @@ pub struct FlamegraphResult {
 pub struct QueryWarning {
     /// Stable machine-readable identifier — clients branch on this, not on
     /// `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
-    /// `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`
-    /// and `graph_node_limit`.
+    /// `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
+    /// `graph_node_limit` and `tail_lagged` (a live tail skipped forward).
     #[schema(example = "unknown_group_by_field")]
     pub code: String,
     /// Human-readable explanation, safe to show verbatim.
@@ -394,6 +400,9 @@ pub struct QueryIrResponse {
     /// Present iff the request carried `page` (`rows`/`trace` only).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub page: Option<QueryPage>,
+    /// Present iff the request carried `tail` (`rows`/`trace` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<QueryTail>,
 }
 
 /// Submit a native Query IR document — either a single query or a
@@ -410,7 +419,7 @@ pub struct QueryIrResponse {
         (status = 400, description = "Invalid IR document", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 401, description = "Missing or invalid credentials", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 403, description = "Missing read scope for a queried source", body = crate::endpoints::api_error::ApiErrorBody),
-        (status = 410, description = "The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 410, description = "The `page.cursor` expired, or a page or tail cursor comes from an incompatible server version (`errorType` `gone`); restart the walk or tail", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 422, description = "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
@@ -452,23 +461,34 @@ async fn query_ir_single(
     let document = serde_json::to_value(&req)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
 
-    // A page is planned here, before any data is read: its cursor fixes the
-    // window and the position to resume after.
-    let paging = match &req.page {
-        Some(_) => {
+    // A page or a tail is planned here, before any data is read: its cursor
+    // fixes the window and the position to resume after.
+    let walked = match (req.page.is_some(), req.tail.is_some()) {
+        (false, false) => None,
+        _ => {
             let doc: common::query_ir::Document = serde_json::from_value(document.clone())
                 .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
             common::query_ir::check_structure(&doc).map_err(super::query_paging::ir_error)?;
-            let limits = &state.config().querier;
-            Some(super::query_paging::plan(
-                limits, ctx, &document, &doc, &req.range, now,
-            )?)
+            Some(doc)
         }
-        None => None,
     };
-    let window = match &paging {
-        Some(paging) => paging.window,
-        None => resolve_window(&req.range, now)?,
+    let limits = &state.config().querier;
+    let tailing = match &walked {
+        Some(doc) if req.tail.is_some() => Some(super::query_tail::plan(
+            limits, ctx, &document, doc, &req.range, now,
+        )?),
+        _ => None,
+    };
+    let paging = match &walked {
+        Some(doc) if tailing.is_none() => Some(super::query_paging::plan(
+            limits, ctx, &document, doc, &req.range, now,
+        )?),
+        _ => None,
+    };
+    let window = match (&tailing, &paging) {
+        (Some(tailing), _) => tailing.window,
+        (_, Some(paging)) => paging.window,
+        _ => resolve_window(&req.range, now)?,
     };
 
     // An introspection document is answered here, from the registry and the
@@ -484,19 +504,29 @@ async fn query_ir_single(
             .await
             .map(axum::Json);
     }
-    let ticket = match &paging {
-        Some(paging) => query_ir_page_ticket(
+    let ticket = match (&tailing, &paging) {
+        (Some(tailing), _) => query_ir_page_ticket(
+            ctx,
+            &tailing.ticket_document(&document),
+            now,
+            Some(&tailing.request),
+        )?,
+        (_, Some(paging)) => query_ir_page_ticket(
             ctx,
             &paging.ticket_document(&document),
             now,
             Some(&paging.request),
         )?,
-        None => query_ir_ticket(ctx, &document, now)?,
+        _ => query_ir_ticket(ctx, &document, now)?,
     };
 
     let (batches, correlate_report) = execute_ticket(&state, ticket).await?;
     let mut response = build_envelope(&req.result, window, &batches, &document)?;
     response.page = paging.map(|p| p.response(correlate_report.page.as_ref(), now));
+    if let Some(tailing) = tailing {
+        response.tail = Some(tailing.response(correlate_report.page.as_ref(), now));
+        response.warnings.extend(tailing.warning());
+    }
     response
         .warnings
         .extend(unknown_group_by_warnings(&req.from, &document, &batches));
@@ -531,7 +561,7 @@ async fn query_ir_multi(
     if let Some(name) = req
         .queries
         .iter()
-        .find_map(|(n, q)| q.page.as_ref().map(|_| n))
+        .find_map(|(n, q)| (q.page.is_some() || q.tail.is_some()).then_some(n))
     {
         return Err(super::query_paging::ir_error(
             common::query_ir::IrError::NotPaginatable {
@@ -598,6 +628,7 @@ async fn query_ir_multi(
         traces: None,
         metadata: None,
         page: None,
+        tail: None,
         warnings: Vec::new(),
     }))
 }
@@ -1133,6 +1164,7 @@ fn build_envelope(
                 traces: None,
                 metadata: None,
                 page: None,
+                tail: None,
                 warnings: Vec::new(),
             })
         }
@@ -1153,6 +1185,7 @@ fn build_envelope(
                 traces: None,
                 metadata: None,
                 page: None,
+                tail: None,
                 warnings: Vec::new(),
             })
         }
@@ -1172,6 +1205,7 @@ fn build_envelope(
                 traces: None,
                 metadata: None,
                 page: None,
+                tail: None,
                 warnings: Vec::new(),
             })
         }
@@ -1226,6 +1260,7 @@ fn build_envelope(
                 traces: None,
                 metadata: None,
                 page: None,
+                tail: None,
                 warnings: Vec::new(),
             })
         }
@@ -1243,6 +1278,7 @@ fn build_envelope(
             traces: None,
             metadata: None,
             page: None,
+            tail: None,
             warnings: Vec::new(),
         }),
         "trace" => {
@@ -1262,6 +1298,7 @@ fn build_envelope(
                 traces: Some(traces),
                 metadata: None,
                 page: None,
+                tail: None,
                 warnings: Vec::new(),
             })
         }
@@ -1279,6 +1316,7 @@ fn build_envelope(
                 flamegraph: None,
                 metadata: None,
                 page: None,
+                tail: None,
                 warnings: graph_node_limit_warning(graph.dropped_nodes)
                     .into_iter()
                     .collect(),
@@ -2472,6 +2510,27 @@ mod tests {
         assert_eq!(body["errorType"], "bad_data");
     }
 
+    fn tail_body(to: &str) -> Body {
+        Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "irVersion": 15, "from": "logs", "range": { "from": "now-5m", "to": to },
+                "result": "rows", "pipeline": [], "tail": {}
+            }))
+            .unwrap(),
+        )
+    }
+
+    #[tokio::test]
+    async fn a_tail_reaches_the_query_boundary_and_an_absolute_one_is_not_tailable() {
+        let app = test_app().await;
+        let (status, _) = error_body(&app, tail_body("now")).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+        let (status, body) = error_body(&app, tail_body("2026-01-01T00:00:00Z")).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["details"][0]["reason"], "not_tailable");
+        assert_eq!(body["details"][0]["column"], "range.to");
+    }
+
     #[test]
     fn a_response_without_page_carries_no_page_member() {
         let window = ResolvedWindow {
@@ -2941,6 +3000,7 @@ mod tests {
                 step: None,
                 constant: None,
                 page: None,
+                tail: None,
             },
         );
         queries.insert(
@@ -2961,6 +3021,7 @@ mod tests {
                 step: None,
                 constant: None,
                 page: None,
+                tail: None,
             },
         );
         assert!(check_multi_source_scopes(&scoped, &queries).is_err());
@@ -3000,6 +3061,7 @@ mod tests {
                 step: None,
                 constant: None,
                 page: None,
+                tail: None,
             },
         );
         let req = MultiQueryIrRequest {
