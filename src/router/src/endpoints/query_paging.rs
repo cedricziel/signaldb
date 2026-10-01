@@ -113,6 +113,7 @@ pub(super) fn plan(
             order,
             after,
             ceiling,
+            tail: None,
         },
         window,
         fingerprint,

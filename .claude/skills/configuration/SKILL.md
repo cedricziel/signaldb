@@ -13,7 +13,7 @@ sources:
 (`[database]`, `[auth]` incl. `oidc`/`default_limits`, `[storage]`,
 `[schema]` incl. `materialized_labels`/`attribute_types`/`warm_index`,
 `[discovery]`, `[wal]`, `[querier]` incl. `datafusion`/`warm_index` and the
-Query IR `correlate`/`match`/`graph`/`page_*` limits, `[writer]`,
+Query IR `correlate`/`match`/`graph`/`page_*`/`tail_*` limits, `[writer]`,
 `[processors]`, `[acceptor]`, `[compactor]` incl. `retention`/
 `orphan_cleanup`/`attr_promotion`, `[self_monitoring]` incl. `frontend`,
 `[profiling]`, `[tenants]`, `[mcp]` incl. `oauth`, `[public]`, `[github]`,
