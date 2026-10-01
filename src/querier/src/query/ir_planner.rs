@@ -987,6 +987,7 @@ impl IrService {
                 end_ns: w.end_ns,
             }),
             match_incomplete: outcome.match_incomplete.and_then(|m| m.report()),
+            page: None,
         };
         Ok((batches, window, report))
     }

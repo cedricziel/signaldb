@@ -130,6 +130,38 @@ pub struct Cursor {
     pub settled_through_ns: Option<i64>,
 }
 
+/// The `page` object of a `query_ir` Flight ticket: how the querier sorts,
+/// resumes and cuts one page of a document's result.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct PageRequest {
+    /// Rows (or traces) to return.
+    pub size: u32,
+    pub unit: query_ir::PageUnit,
+    /// The total order, from [`query_ir::pagination_order`].
+    pub order: Vec<query_ir::SortKey>,
+    /// Resume strictly after this sort key; absent on the first page.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub after: Option<Vec<KeyPart>>,
+    /// Rows left under a trailing `limit`: the page never passes them, even
+    /// inside a tie group, and reaching them ends the walk.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ceiling: Option<u32>,
+}
+
+/// What the querier emitted for a [`PageRequest`], reported in the Flight
+/// trailer (`common::flight::CorrelateReport::page`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PageReport {
+    /// The full sort key of the last emitted row; absent on an empty page.
+    #[serde(default)]
+    pub last_key: Option<Vec<KeyPart>>,
+    /// Whether rows (or traces) follow the page.
+    pub has_more: bool,
+    /// Rows (or traces) on the page.
+    pub emitted: u64,
+}
+
 #[derive(Serialize, Deserialize)]
 struct Payload {
     v: u32,
