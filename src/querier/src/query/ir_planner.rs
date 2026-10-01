@@ -36,12 +36,14 @@ use common::attrs::expr::typed_home_expr;
 use common::attrs::expr::typed_home_filter_expr;
 use common::flight::{CorrelateReport, CorrelateWindowReport};
 use common::profile::{aggregate_profiles_to_diff_flamegraph, aggregate_profiles_to_flamegraph};
+use common::query_cursor::{PageReport, PageRequest};
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
     FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Match, Parser, Predicate,
     Resolved, ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral, ValueType,
     coerce, parse_duration_ns, safe_ident, validate,
 };
+use common::query_ir::{PageUnit, page::BODY_HASH};
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use common::schema::type_authority::CanonicalType;
 use common::schema::typed_attributes::{self, has_typed_container, home_column, typed_columns};
@@ -80,6 +82,7 @@ use super::metric_ops::instants::{check_instants, check_positive};
 use super::metric_ops::range_math::RangeFn;
 use super::metric_ops::range_plan::{RangeEval, range_series};
 use super::metric_series;
+use super::page_cut::{self, CutLimits};
 use super::profile::batch_to_models;
 use super::structural_match::{self, MatchLimits};
 use super::table_lookup::{optional_table_provider, scan_provider};
@@ -850,6 +853,9 @@ pub struct IrService {
     match_limits: MatchLimits,
     /// Node cap on a `graph` result (`[querier].graph_max_nodes`).
     graph_max_nodes: usize,
+    /// `[querier].page_max_tie_rows` / `page_max_bytes`.
+    page_max_tie_rows: usize,
+    page_max_bytes: usize,
     /// Fetches committed canonical attribute types for a typed-layout table
     /// (`otel-native-schema` task 4.4). Set via [`Self::with_canonical_types`]
     /// by the production Flight service; `None` in every other caller
@@ -873,6 +879,8 @@ impl IrService {
             correlate_max_source_rows: DEFAULT_CORRELATE_MAX_SOURCE_ROWS,
             match_limits: MatchLimits::default(),
             graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
+            page_max_tie_rows: common::config::QuerierConfig::default().page_max_tie_rows,
+            page_max_bytes: common::config::QuerierConfig::default().page_max_bytes,
             canonical_type_lookup: None,
         }
     }
@@ -902,6 +910,14 @@ impl IrService {
     /// `[querier].correlate_max_source_rows`.
     pub fn with_correlate_max_source_rows(mut self, correlate_max_source_rows: usize) -> Self {
         self.correlate_max_source_rows = correlate_max_source_rows;
+        self
+    }
+
+    /// Override the page bounds, from `[querier].page_max_tie_rows` /
+    /// `page_max_bytes`.
+    pub fn with_page_limits(mut self, max_tie_rows: usize, max_bytes: usize) -> Self {
+        self.page_max_tie_rows = max_tie_rows;
+        self.page_max_bytes = max_bytes;
         self
     }
 
@@ -950,6 +966,7 @@ impl IrService {
                 dataset_slug,
                 params.now_ns,
                 AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+                params.page.as_ref().map(|p| (p, p.size as usize + 1)),
             )
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
@@ -959,7 +976,10 @@ impl IrService {
             return Ok((
                 Vec::new(),
                 resolve_window(&doc, params.now_ns)?,
-                CorrelateReport::default(),
+                CorrelateReport {
+                    page: params.page.as_ref().map(|_| PageReport::default()),
+                    ..CorrelateReport::default()
+                },
             ));
         };
         let exec_span = tracing::info_span!(
@@ -972,6 +992,66 @@ impl IrService {
             .instrument(exec_span.clone())
             .await
             .map_err(QuerierError::from)?;
+        // A page's sort fetches one row past `size`. When that row extends the
+        // tie group at the boundary, the group is read again in full, bounded
+        // by the tie limit, rather than over-fetching every page by it.
+        let crossing = match &params.page {
+            Some(page)
+                if page.unit == PageUnit::Rows && page.ceiling.is_none_or(|c| c > page.size) =>
+            {
+                page_cut::crossing_group(&batches, &page.order, page.size as usize)?
+                    .map(|crossing| (page, crossing))
+            }
+            _ => None,
+        };
+        let batches = match crossing {
+            Some((page, crossing)) => {
+                let retry = PageRequest {
+                    after: crossing.after.or_else(|| page.after.clone()),
+                    ..page.clone()
+                };
+                let fetch = self.page_max_tie_rows.saturating_add(2);
+                let group = match self
+                    .plan_with_correlate_truncation(
+                        &doc,
+                        tenant_slug,
+                        dataset_slug,
+                        params.now_ns,
+                        AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+                        Some((&retry, fetch)),
+                    )
+                    .await?
+                {
+                    Some((df, ..)) => df
+                        .collect()
+                        .instrument(exec_span.clone())
+                        .await
+                        .map_err(QuerierError::from)?,
+                    None => Vec::new(),
+                };
+                [crossing.head, group].concat()
+            }
+            None => batches,
+        };
+        let (batches, page) = match &params.page {
+            Some(page) => {
+                let limits = CutLimits {
+                    size: page.size as usize,
+                    unit: page.unit,
+                    exact: false,
+                    ceiling: page.ceiling.map(|c| c as usize),
+                    // A trace page bounds each trace's spans as `match` does.
+                    max_tie_rows: match page.unit {
+                        PageUnit::Rows => self.page_max_tie_rows,
+                        PageUnit::Traces => self.match_limits.max_spans,
+                    },
+                    max_bytes: self.page_max_bytes,
+                };
+                let (batches, report) = page_cut::cut_page(&batches, &page.order, limits)?;
+                (batches, Some(report))
+            }
+            None => (batches, None),
+        };
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
@@ -987,6 +1067,7 @@ impl IrService {
                 end_ns: w.end_ns,
             }),
             match_incomplete: outcome.match_incomplete.and_then(|m| m.report()),
+            page,
         };
         Ok((batches, window, report))
     }
@@ -1044,6 +1125,7 @@ impl IrService {
                 dataset_slug,
                 now_ns,
                 AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+                None,
             )
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
@@ -1133,6 +1215,7 @@ impl IrService {
                 dataset_slug,
                 now_ns,
                 AttributeTypeRequest::CompatOnly,
+                None,
             )
             .await?
             .map(|(df, window, _outcome)| (df, window)))
@@ -1153,6 +1236,7 @@ impl IrService {
         dataset_slug: &str,
         now_ns: i64,
         attribute_type_request: AttributeTypeRequest,
+        page: Option<(&PageRequest, usize)>,
     ) -> Result<Option<(DataFrame, ResolvedWindow, CorrelateOutcome)>, QuerierError> {
         plan_document(
             &self.session_context,
@@ -1161,7 +1245,8 @@ impl IrService {
                 .with_correlate_max_rows(self.correlate_max_rows)
                 .with_correlate_max_source_rows(self.correlate_max_source_rows)
                 .with_match_limits(self.match_limits)
-                .with_attribute_type_request(attribute_type_request),
+                .with_attribute_type_request(attribute_type_request)
+                .with_page(page),
         )
         .await
     }
@@ -1227,6 +1312,7 @@ async fn plan_operand(
         correlate_max_source_rows,
         match_limits,
         attribute_type_request,
+        page,
     } = request;
     reject_pseudo_source(doc)?;
     // Before the missing-table shortcut below skips `validate`.
@@ -1340,7 +1426,12 @@ async fn plan_operand(
     let mut metric_frame = false;
     let mut series_step = None;
     let mut match_incomplete = None;
-    for (i, (stage, &stage_window)) in doc.pipeline.iter().zip(&windows).enumerate() {
+    // A paged walk caps a trailing `limit` across pages itself.
+    let pipeline = match (page, doc.pipeline.split_last()) {
+        (Some(_), Some((Stage::Limit(_), rest))) => rest,
+        _ => &doc.pipeline[..],
+    };
+    for (i, (stage, &stage_window)) in pipeline.iter().zip(&windows).enumerate() {
         // A limit keeps the first rows, so it needs the frame's final order.
         if metric_frame && matches!(stage, Stage::Limit(_)) {
             df = metric_series::sort_frame(df, None)?;
@@ -1430,7 +1521,24 @@ async fn plan_operand(
     if metric_frame {
         df = metric_series::sort_frame(df, metric_series::terminal_order(doc, window))?;
     }
-    df = lowering.apply_projection(df, doc)?;
+    let mut page_keys = Vec::new();
+    if let Some((page, fetch)) = page {
+        for (i, key) in page.order.iter().enumerate() {
+            let value = if key.field == BODY_HASH {
+                page_cut::body_hash(lowering.value_expr("body")?)
+            } else {
+                lowering.record_field_demand(&key.field);
+                lowering.value_expr(&key.field)?
+            };
+            let name = page_cut::key_column(i);
+            df = df
+                .with_column(&name, value)
+                .map_err(QuerierError::QueryFailed)?;
+            page_keys.push(name);
+        }
+        df = page_cut::bound_to_page(df, page, fetch)?;
+    }
+    df = lowering.apply_projection(df, doc, &page_keys)?;
     let outcome = CorrelateOutcome {
         truncated: lowering.correlate_truncated,
         fanout_limit: lowering.correlate_fanout,
@@ -1514,6 +1622,8 @@ async fn lower_frame_stage(
         baseline: None,
         step: doc.step.clone(),
         constant: sub.constant,
+        page: None,
+        tail: None,
     };
     let right = match Box::pin(plan_operand(env.ctx, &child, request.clone())).await? {
         Some((right, _, _)) => metric_series::operand(right),
@@ -2238,6 +2348,9 @@ pub(crate) struct PlanRequest<'a> {
     pub correlate_max_source_rows: usize,
     pub match_limits: MatchLimits,
     pub attribute_type_request: AttributeTypeRequest,
+    /// Sort, resume and bound the result to one page, and the rows a
+    /// `rows` page's sort fetches.
+    pub page: Option<(&'a PageRequest, usize)>,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -2250,7 +2363,13 @@ impl<'a> PlanRequest<'a> {
             correlate_max_source_rows: DEFAULT_CORRELATE_MAX_SOURCE_ROWS,
             match_limits: MatchLimits::default(),
             attribute_type_request: AttributeTypeRequest::CompatOnly,
+            page: None,
         }
+    }
+
+    pub(crate) fn with_page(mut self, page: Option<(&'a PageRequest, usize)>) -> Self {
+        self.page = page;
+        self
     }
 
     pub(crate) fn with_correlate_max_rows(mut self, correlate_max_rows: usize) -> Self {
@@ -2433,6 +2552,38 @@ impl<'a> Lowering<'a> {
             }
         }
         Ok(df)
+    }
+
+    /// `time_col <op> ns` over the bare column, for an inclusive `op`. The
+    /// Iceberg provider pushes down any filter that reads only the partition
+    /// source column, but rewrites it onto the `Hour(timestamp)` partition
+    /// only when the column itself is an operand: a filter over an
+    /// expression of the column (including one pushed through a projection)
+    /// fails the scan with "No field named timestamp" (#2122). A strict
+    /// bound would become a strict bound on the hour and prune the hour it
+    /// falls in. The literal is in the column's own unit, rounded inward
+    /// (up for `>=`, down for `<=`), so a coarser column keeps the bound
+    /// exact instead of letting the planner truncate it.
+    fn time_bound(&self, df: &DataFrame, ns: i64, op: Operator) -> Result<Expr, QuerierError> {
+        let bound = if self.source.time_is_timestamp {
+            let field = df
+                .schema()
+                .field_with_unqualified_name(self.source.time_col)
+                .map_err(QuerierError::QueryFailed)?;
+            let round_up = op == Operator::GtEq;
+            lit(super::trace::timestamp_bound_scalar(
+                ns,
+                field.data_type(),
+                round_up,
+            )?)
+        } else {
+            lit(ns)
+        };
+        Ok(datafusion::logical_expr::binary_expr(
+            col(self.source.time_col),
+            op,
+            bound,
+        ))
     }
 
     fn lower_stage(&mut self, df: DataFrame, stage: &Stage) -> Result<DataFrame, QuerierError> {
@@ -3057,21 +3208,25 @@ impl<'a> Lowering<'a> {
                 // The one instant `t = from + k·step` whose `(t - step, t]`
                 // holds the point: `k` is the ceiling of `(ts - from) / step`,
                 // which integer division gives for every `ts > from - step`.
-                const INSTANT: &str = "__instant";
+                // The last instant at or before `to` bounds `ts` from above.
                 check_instants(w.start_ns, w.end_ns, step_ns, step_ns)?;
+                let span = w.end_ns.saturating_sub(w.start_ns);
+                let last = w
+                    .start_ns
+                    .saturating_add(span.div_euclid(step_ns) * step_ns);
                 let ts = cast(
                     cast(col(self.source.time_col), ts_type.clone()),
                     DataType::Int64,
                 );
                 let at = lit(w.start_ns)
-                    + (ts.clone() - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns)
-                        * lit(step_ns);
+                    + (ts - lit(w.start_ns) + lit(step_ns - 1)) / lit(step_ns) * lit(step_ns);
+                let lower = w.start_ns.saturating_sub(step_ns).saturating_add(1);
+                let lower = self.time_bound(&df, lower, Operator::GtEq)?;
+                let upper = self.time_bound(&df, last, Operator::LtEq)?;
                 df = df
-                    .filter(ts.gt(lit(w.start_ns.saturating_sub(step_ns))))
-                    .and_then(|df| df.with_column(INSTANT, at))
-                    .and_then(|df| df.filter(ident(INSTANT).lt_eq(lit(w.end_ns))))
+                    .filter(lower.and(upper))
                     .map_err(QuerierError::QueryFailed)?;
-                cast(ident(INSTANT), ts_type)
+                cast(at, ts_type)
             } else {
                 let stride = lit(ScalarValue::IntervalMonthDayNano(Some(
                     IntervalMonthDayNano::new(0, 0, step_ns),
@@ -4077,7 +4232,13 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
-    fn apply_projection(&self, df: DataFrame, doc: &Document) -> Result<DataFrame, QuerierError> {
+    /// `keep` names columns carried past the projection (a page's sort keys).
+    fn apply_projection(
+        &self,
+        df: DataFrame,
+        doc: &Document,
+        keep: &[String],
+    ) -> Result<DataFrame, QuerierError> {
         // Series results are already shaped by the step aggregate. Flamegraph
         // is decoded from the full unprojected row set (samples_json/
         // stacktraces_json included) by the caller, not curated here.
@@ -4088,7 +4249,7 @@ impl<'a> Lowering<'a> {
         {
             return Ok(df);
         }
-        let projection: Vec<Expr> = match &doc.fields {
+        let mut projection: Vec<Expr> = match &doc.fields {
             Some(fields) => fields
                 .iter()
                 .map(|f| {
@@ -4194,6 +4355,7 @@ impl<'a> Lowering<'a> {
                 projection
             }
         };
+        projection.extend(keep.iter().map(ident));
         df.select(projection).map_err(QuerierError::QueryFailed)
     }
 }
@@ -4874,6 +5036,10 @@ fn compile_regex_guard(pattern: &str) -> Result<regex::Regex, QuerierError> {
 }
 
 #[cfg(test)]
+#[path = "ir_planner_page_tests.rs"]
+mod page_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::query::metric_ops::fixtures::{
@@ -4882,7 +5048,7 @@ mod tests {
     use common::schema::type_authority::{ObservedKind, Placement};
     use datafusion::arrow::array::{
         ArrayRef, Float64Array, Int64Array, MapBuilder, MapFieldNames, StringArray, StringBuilder,
-        TimestampNanosecondArray,
+        TimestampMicrosecondArray, TimestampNanosecondArray,
     };
     use datafusion::arrow::datatypes::{Field, Fields, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
@@ -4938,7 +5104,7 @@ mod tests {
 
     /// Registers one `(schema, batch)` as `table_name` under catalog `t`,
     /// schema `d` — the common tail of every single-table fixture below.
-    fn single_table_ctx(
+    pub(super) fn single_table_ctx(
         table_name: &str,
         schema: Arc<Schema>,
         batch: RecordBatch,
@@ -5997,6 +6163,7 @@ mod tests {
         let params = IrQueryParams {
             document: increase_json("rate"),
             now_ns: 0,
+            page: None,
         };
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
@@ -6687,6 +6854,94 @@ mod tests {
         col.value(0)
     }
 
+    /// A `metrics` table whose `timestamp` scans as `Timestamp(µs)`, as the
+    /// Iceberg `timestamp` type does, holding one point per `micros`.
+    fn metrics_us_ctx(micros: &[i64]) -> SessionContext {
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(
+                "timestamp",
+                DataType::Timestamp(TimeUnit::Microsecond, None),
+                false,
+            ),
+            Field::new("service_name", DataType::Utf8, false),
+            Field::new("metric_name", DataType::Utf8, false),
+            Field::new("value", DataType::Float64, false),
+            map_field_named("attributes"),
+            map_field_named("resource_attributes"),
+        ]));
+        let n = micros.len();
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(TimestampMicrosecondArray::from(micros.to_vec())),
+                Arc::new(StringArray::from(vec!["svc"; n])),
+                Arc::new(StringArray::from(vec!["m"; n])),
+                Arc::new(Float64Array::from(vec![1.0; n])),
+                build_map(&vec![&[][..]; n]),
+                build_map(&vec![&[][..]; n]),
+            ],
+        )
+        .unwrap();
+        let batch = common::testing::to_wide(&batch, "gauge");
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(batch.schema(), vec![vec![batch]]).unwrap();
+        let sp = Arc::new(MemorySchemaProvider::new());
+        sp.register_table("metrics".to_string(), Arc::new(table))
+            .unwrap();
+        let cat = Arc::new(MemoryCatalogProvider::new());
+        cat.register_schema("d", sp).unwrap();
+        ctx.register_catalog("t", cat);
+        ctx
+    }
+
+    /// Issue #2122: a stepped `metrics` aggregate bounds its input on the
+    /// bare `timestamp` column (the Iceberg scan cannot prune on a cast of
+    /// it), and the bounds stay exact over a microsecond column: a point at
+    /// `from - step` belongs to no instant, one 1µs later to `from`.
+    #[tokio::test]
+    async fn stepped_metrics_aggregate_bounds_the_bare_timestamp_exactly() {
+        const S: i64 = 1_000_000;
+        let (from, step) = (120 * S, 60 * S);
+        let points = [from - step, from - step + 1, from, from + 2 * step];
+        let svc = IrService::new(metrics_us_ctx(&points));
+        let d = doc(serde_json::json!({
+            "irVersion": 1, "from": "metrics", "result": "series",
+            "range": { "from": from * 1_000, "to": (from + 2 * step) * 1_000 + 999 },
+            "pipeline": [
+                { "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "60s" } }
+            ]
+        }));
+        let (df, _) = svc.plan(&d, "t", "d", 0).await.unwrap().unwrap();
+        let plan = df.clone().into_optimized_plan().unwrap();
+        let text = plan.display_indent().to_string();
+        let filters: Vec<&str> = text.lines().filter(|l| l.contains("Filter:")).collect();
+        assert!(
+            !filters.is_empty() && filters.iter().all(|f| !f.contains("CAST(")),
+            "time bounds must compare the bare column: {filters:#?}"
+        );
+        let batches = df.collect().await.unwrap();
+        let got: Vec<(i64, i64)> = batches
+            .iter()
+            .flat_map(|b| {
+                let at = datafusion::arrow::compute::cast(
+                    b.column_by_name("bucket").unwrap(),
+                    &DataType::Int64,
+                )
+                .unwrap();
+                let at = at.as_any().downcast_ref::<Int64Array>().unwrap().clone();
+                let n = b
+                    .column_by_name("n")
+                    .unwrap()
+                    .as_any()
+                    .downcast_ref::<Int64Array>()
+                    .unwrap()
+                    .clone();
+                (0..b.num_rows()).map(move |i| (at.value(i), n.value(i)))
+            })
+            .collect();
+        assert_eq!(got, [(from * 1_000, 2), ((from + 2 * step) * 1_000, 1)]);
+    }
+
     #[tokio::test]
     async fn metrics_max_timestamp_aggregate_executes() {
         // gauge points at 10/20, sum point at 15 — the max spans the union.
@@ -7134,6 +7389,7 @@ mod tests {
                 } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(
@@ -7376,6 +7632,7 @@ mod tests {
                 } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let err = IrService::new(points_ctx(batch))
             .query(&params, "t", "d")
@@ -7806,6 +8063,7 @@ mod tests {
                 "pipeline": [{ "where": { "field": "profile.id", "op": "eq", "value": "p1" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(batches.len(), 1);
@@ -7828,6 +8086,7 @@ mod tests {
                 "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         let flamegraph = flamegraph_from_batch(&batches[0]);
@@ -7852,6 +8111,7 @@ mod tests {
                 "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, window, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!((window.start_ns, window.end_ns), (15, 1000));
@@ -7897,6 +8157,7 @@ mod tests {
                 "result": "flamegraph", "pipeline": []
             }),
             now_ns: 1_000,
+            page: None,
         };
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
@@ -7916,6 +8177,7 @@ mod tests {
                 "result": "flamegraph", "pipeline": []
             }),
             now_ns: 1_000,
+            page: None,
         };
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
@@ -11437,6 +11699,7 @@ mod tests {
                 "pipeline": pipeline
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -11828,6 +12091,7 @@ mod tests {
                 "pipeline": [{ "correlate": correlate }]
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -12149,6 +12413,7 @@ mod tests {
                 "result": "rows", "pipeline": [{ "correlate": correlate }]
             }),
             now_ns: 0,
+            page: None,
         };
         let default =
             params(serde_json::json!({ "to": "traces", "on": "trace_id", "kind": "semi" }));
@@ -12199,6 +12464,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let expected: Vec<Option<String>> = [6, 10, 2, 12, 4, 8]
             .into_iter()
@@ -12301,6 +12567,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let (ids, report) = correlated_trace_ids(signal_ctx(false, false), &params).await;
         assert_eq!(ids, vec![hex_id(1), hex_id(4)]);
@@ -12433,6 +12700,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let err = IrService::new(signal_ctx(false, false))
             .query(&params, "t", "d")
@@ -12522,6 +12790,7 @@ mod tests {
                 "result": result, "pipeline": pipeline
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -12845,6 +13114,7 @@ mod tests {
                 "pipeline": [{ "correlate": { "to": "traces", "on": "trace_id", "kind": "inner" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let err = IrService::new(ctx)
             .query(&params, "t", "d")
@@ -13057,6 +13327,7 @@ mod tests {
                     "pipeline": [{ "correlate": { "to": "traces", "on": "resource_identity", "kind": kind } }]
                 }),
                 now_ns: 0,
+                page: None,
             };
             let (batches, _, _) = with_empty_lookup(IrService::new(ctx()))
                 .query(&params, "t", "d")
@@ -14568,6 +14839,7 @@ mod tests {
                     "pipeline": []
                 }),
                 now_ns: 0,
+                page: None,
             };
             let _ = svc.query(&params, "t", "d").await.unwrap();
         }
@@ -14619,6 +14891,7 @@ mod tests {
                 "pipeline": []
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -14660,6 +14933,7 @@ mod tests {
                 "result": "rows", "pipeline": []
             }),
             now_ns: 0,
+            page: None,
         };
         assert!(matches!(
             svc.query(&params, "t", "d").await,
@@ -14676,6 +14950,7 @@ mod tests {
                 "result": "rows", "pipeline": []
             }),
             now_ns: 0,
+            page: None,
         };
         assert!(matches!(
             svc.query(&params, "t", "d").await,
@@ -15270,6 +15545,7 @@ mod tests {
                 "result": "rows", "fields": ["timestamp"]
             }),
             now_ns: 0,
+            page: None,
         }
     }
 

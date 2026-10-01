@@ -60,6 +60,8 @@ pub(crate) struct TestServices {
     /// `for_request` lookup the ingest handlers make (task 3.3).
     processor_registry: Arc<common::processors::ProcessorRegistry>,
     pub(crate) catalog: Arc<Catalog>,
+    /// The Iceberg catalog the writer commits to, for driving compaction.
+    pub(crate) catalog_manager: Arc<common::catalog_manager::CatalogManager>,
     config: Configuration,
     _temp_dir: TempDir,
 }
@@ -247,7 +249,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
     // Querier Flight service.
     let querier_service = QuerierFlightService::new_with_catalog_manager(
         flight_transport.clone(),
-        catalog_manager,
+        catalog_manager.clone(),
         config.querier.clone(),
     )
     .await
@@ -324,6 +326,7 @@ pub(crate) async fn setup_with(config_override: impl FnOnce(&mut Configuration))
         metrics_handler,
         processor_registry,
         catalog: processor_catalog,
+        catalog_manager,
         config,
         _temp_dir: temp_dir,
     }
@@ -500,7 +503,7 @@ pub(crate) async fn post_ir(
     post_ir_as(app, doc, "test-key-123", "test-tenant", None).await
 }
 
-async fn post_ir_as(
+pub(crate) async fn post_ir_as(
     app: &Router,
     doc: serde_json::Value,
     key: &str,
@@ -2955,6 +2958,56 @@ async fn correlate_semi_on_resource_identity_matches_same_resource_across_signal
     );
 }
 
+/// Issue #2122 — a stepped `series` aggregate over `metrics` buckets the
+/// persisted points instead of failing with "No field named timestamp".
+#[tokio::test]
+async fn metrics_series_aggregate_end_to_end() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    for (service, metric) in [("api", "requests"), ("api", "errors"), ("web", "requests")] {
+        services
+            .metrics_handler
+            .handle_grpc_otlp_metrics(&ctx, gauge_metric_request(service, metric, 1.0))
+            .await
+            .expect("ingest gauge point");
+    }
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "metrics", range(), 3).await;
+
+    let document = serde_json::json!({
+        "irVersion": 1, "from": "metrics", "result": "series",
+        "range": {
+            "from": (BASE_NS - 60_000_000_000).to_string(),
+            "to": (BASE_NS + 60_000_000_000).to_string(),
+        },
+        "pipeline": [ { "aggregate": { "by": ["service.name"], "step": "1m",
+            "aggs": [ { "fn": "count", "as": "n" } ] } } ]
+    });
+    let (status, body) = post_ir(&app, document).await;
+    assert_eq!(status, StatusCode::OK, "metrics series query: {body}");
+    let mut counts: Vec<(String, f64)> = body["series"]
+        .as_array()
+        .unwrap_or_else(|| panic!("a series result: {body}"))
+        .iter()
+        .map(|s| {
+            let service = s["labels"]["service_name"].as_str().unwrap_or_default();
+            let total = s["points"]
+                .as_array()
+                .expect("points")
+                .iter()
+                .filter_map(|p| p[1].as_f64())
+                .sum();
+            (service.to_string(), total)
+        })
+        .collect();
+    counts.sort_by(|a, b| a.0.cmp(&b.0));
+    assert_eq!(
+        counts,
+        vec![("api".to_string(), 2.0), ("web".to_string(), 1.0)],
+        "{body}"
+    );
+}
+
 /// Scenario 7 — an `inner` join's per-source-row `fanout` cap keeps only the
 /// earliest `fanout` target rows and reports it as a warning (`semi`/`anti`
 /// never do, proven above).
@@ -3469,6 +3522,62 @@ async fn match_incomplete_trace_warns_when_the_range_cuts_a_trace() {
     let message = warning["message"].as_str().expect("message");
     assert!(
         message.starts_with("1 matched trace may be missing witness spans: ")
+            && message.ends_with(&format!("Examples: {}", trace_hex(1))),
+        "{message}"
+    );
+}
+
+/// Issue #2123: a range that starts after the root, where the relation
+/// needs that root, leaves no span for the root's span-set. The trace does
+/// not match, and the warning counts it as unmatched.
+#[tokio::test]
+async fn match_incomplete_trace_counts_a_trace_whose_span_set_is_cut_off() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+    let root = span_with_ids("gateway", 1, 1, None, 10_000_000_000);
+    let mut child = span_with_ids("DoPut", 1, 2, Some(1), 1_000_000_000);
+    child.start_time_unix_nano += 5_000_000_000;
+    child.end_time_unix_nano += 5_000_000_000;
+    services
+        .trace_handler
+        .handle_grpc_otlp_traces(&ctx, traces_request("ingester", vec![root, child]))
+        .await
+        .expect("ingest a root with one child");
+
+    let app = build_router(&services).await;
+    wait_for_rows(&app, "traces", range(), 2).await;
+
+    let document = match_document(serde_json::json!({
+        "spansets": {
+            "root": { "field": "span.name", "op": "eq", "value": "gateway" },
+            "child": { "field": "span.name", "op": "eq", "value": "DoPut" }
+        },
+        "relations": [ { "left": "root", "op": "child", "right": "child" } ]
+    }));
+    let (status, body) = post_ir(&app, document.clone()).await;
+    assert_eq!(status, StatusCode::OK, "whole-trace match: {body}");
+    assert_eq!(trace_ids_in(&body), [trace_hex(1)], "{body}");
+    assert!(
+        !warning_codes(&body).contains(&"match_incomplete_trace".to_string()),
+        "the whole trace is in range: {body}"
+    );
+
+    let mut narrow = document;
+    narrow["range"] = serde_json::json!({
+        "from": (BASE_NS + 4_000_000_000).to_string(),
+        "to": (BASE_NS + 7_000_000_000).to_string(),
+    });
+    let (status, body) = post_ir(&app, narrow).await;
+    assert_eq!(status, StatusCode::OK, "narrow match: {body}");
+    assert!(trace_ids_in(&body).is_empty(), "{body}");
+    let warnings = body["warnings"].as_array().expect("warnings array");
+    let [warning] = warnings.as_slice() else {
+        panic!("exactly one warning: {body}");
+    };
+    assert_eq!(warning["code"], "match_incomplete_trace", "{body}");
+    let message = warning["message"].as_str().expect("message");
+    assert!(
+        message.starts_with("1 trace did not match but may match over a wider range: ")
             && message.ends_with(&format!("Examples: {}", trace_hex(1))),
         "{message}"
     );

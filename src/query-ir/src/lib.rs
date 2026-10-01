@@ -27,6 +27,7 @@ pub mod document;
 pub mod formula;
 #[cfg(feature = "openapi")]
 pub mod openapi;
+pub mod page;
 pub mod predicate;
 pub mod relation;
 pub mod resolver;
@@ -42,6 +43,7 @@ pub use formula::{
     EvalSeries, Expr as FormulaExpr, Formula, FormulaError, MultiDocument,
     evaluate as evaluate_formula, parse_expr as parse_formula_expr, validate_multi,
 };
+pub use page::{Page, PageUnit, SortKey, Tail, pagination_order, tail_order};
 pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
 pub use relation::{
     Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,

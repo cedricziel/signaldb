@@ -16,6 +16,7 @@ pub mod processors;
 pub mod promql;
 pub mod pyroscope;
 pub mod query;
+mod query_paging;
 pub mod schema;
 pub mod session;
 pub mod source_context;

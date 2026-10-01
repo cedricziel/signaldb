@@ -21,11 +21,15 @@ export interface RecordedRequest {
 }
 
 /**
- * Stub the generated client's fetch with a fixed JSON response, recording
- * each request's URL, headers, and (if present) JSON body. Call
+ * Stub the generated client's fetch with a fixed JSON response (or, given a
+ * function, the response for the n-th call, from 0), recording each
+ * request's URL, headers, and (if present) JSON body. Call
  * `resetApiClient()` (e.g. in `afterEach`) to restore the real transport.
  */
-export function stubApiFetch(body: unknown, status = 200): RecordedRequest[] {
+export function stubApiFetch(
+  body: unknown | ((call: number) => unknown),
+  status = 200,
+): RecordedRequest[] {
   const calls: RecordedRequest[] = [];
   const testFetch = async (input: RequestInfo | URL): Promise<Response> => {
     const request = input as Request;
@@ -38,7 +42,8 @@ export function stubApiFetch(body: unknown, status = 200): RecordedRequest[] {
       body: payload ? JSON.parse(payload) : undefined,
       headers: Object.fromEntries(request.headers.entries()),
     });
-    return new Response(JSON.stringify(body), {
+    const response = typeof body === "function" ? body(calls.length - 1) : body;
+    return new Response(JSON.stringify(response), {
       status,
       headers: { "Content-Type": "application/json" },
     });

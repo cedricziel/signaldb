@@ -6,6 +6,7 @@ sources:
   - src/common/src/flight/**
   - src/router/src/endpoints/flight.rs
   - src/querier/src/flight.rs
+  - src/querier/src/query/ir_planner.rs
   - src/writer/src/flight_iceberg.rs
   - src/compactor/src/flight.rs
 ---
@@ -193,6 +194,15 @@ gRPC protocol on the same port as Flight (see the
 that protocol does not use tickets.
 
 There is no `trace_by_id?id=...` ticket form at the Querier; that command exists only in the Router's metadata path. The Tempo HTTP endpoints bypass the Router's Flight commands entirely and send `find_trace:`/`search_traces:`/SQL tickets straight to the Querier.
+
+#### Query IR Execution Notes (`ir_planner.rs`)
+
+The `query_ir` ticket is lowered by `src/querier/src/query/ir_planner.rs` into a DataFusion `DataFrame`; see [the Query IR reference](../users/querying-ir.md) for the document shape. A few lowering details are worth knowing before touching that planner:
+
+- **Metric Series reduce through `metric_ops`, shared with PromQL.** `histogram_quantile`/`histogram_fraction` plan through `metric_ops::histogram_series` and the range functions (`rate`, `increase`, `irate`, `*_over_time`) through `metric_ops::range_series` (`src/querier/src/query/metric_ops/`), the same planners the Prometheus endpoints use, so both surfaces return identical values. Each series, keyed by `coalesce(series_id, fingerprint)`, is reduced at evaluation instants `t = from + k·step` as a DataFusion aggregate before any `by` grouping folds series together.
+- **Result columns are aliased through `safe_ident` and referenced as literal identifiers.** `common::query_ir::safe_ident` (`src/query-ir/src/alias.rs`) is shared with the router, which reads the columns back out of the batches by the same alias. Never reference them with `col()`: it lowercases an unquoted identifier, which used to 500 a mixed-case group key (#1070).
+- **Exception attributes on traces resolve via a dedicated UDF, not a span attribute.** Per the exceptions-on-spans convention, `exception.type`/`.message`/`.stacktrace`/`.escaped` on the `traces` source resolve through a new `Resolved::EventAttribute` variant: the `ir_event_attr` DataFusion UDF parses the span's stored `events` JSON array (`common::model::span::parse_span_events`), finds the first event named `exception`, and extracts the key from its own attributes. A span with no such event resolves the field absent, even when `status.code = Error`. Logs need no equivalent — per exceptions-on-logs semconv, the same four names are ordinary LogRecord attributes there.
+- **Physical column names stay unaddressable.** The resolver's `is_physical_name` check (backed by the logical schema's physical-name set, which replaced an earlier static `STORAGE_DENYLIST`) rejects any field name that would address Iceberg storage directly, in predicates, grouping, ordering, and projections alike.
 
 #### Self-Monitoring Anti-Loop Guard
 
@@ -457,6 +467,21 @@ ahead of each data batch. Decoding on the receiving side goes through
 is always empty and so cannot decode a stream containing dictionary batches.
 No column in SignalDB's own schemas is dictionary-encoded yet; this only
 removes the transport-level blocker for adopting one in the future.
+
+#### Field-Coverage Check (table-schema-consistency)
+
+`writer::schema_transform::schema_consistency` (a test, not a runtime check)
+asserts, per table, that `schemas.toml`'s current non-computed field names
+exactly match a hand-maintained "fields this transform touches" set. It
+exists to catch a field declared physical but never actually read or
+written — the failure mode `dropped_*_count` fell into silently before
+issue #1208. `transform_trace_v1_to_v2`, `transform_logs_v1_to_iceberg`, and
+`transform_profiles_v1_to_iceberg` additionally self-check this at runtime,
+each iterating its own resolved schema's field list with an exhaustive
+match that errors on an unhandled name. `transform_metrics_to_wide` and
+`transform_metric_exemplars` build columns positionally against their resolved
+`metrics.physical-v4`/`metric_exemplars.physical-v4` schemas with no such
+runtime check, so the test-level check is these two tables' only guard.
 
 ### 5.3 Service Discovery Integration ✅ **Implemented**
 

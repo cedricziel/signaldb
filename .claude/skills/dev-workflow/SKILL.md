@@ -1,6 +1,6 @@
 ---
 name: dev-workflow
-description: SignalDB development workflow - build, test, lint, format, run services, Docker, Grafana plugin, health checks, and semantic commits. Use when building, testing, running, or deploying SignalDB.
+description: SignalDB development workflow - build, test, lint, format, run services, Docker, Grafana plugin, Explore UI, health checks, and semantic commits. Use when building, testing, running, or deploying SignalDB.
 sources:
   - CLAUDE.md
   - scripts/run-dev.sh
@@ -9,153 +9,46 @@ sources:
 
 # SignalDB Development Workflow
 
-## Build
+Build and test are plain `cargo build` / `cargo test [-p <crate>]`; the scoped
+checks to run before committing are in CLAUDE.md, "Verifying a change". Local
+runs go through `scripts/run-dev.sh` (read its header for flags), Docker via
+`compose.yml`, JS via the `package.json` scripts, config via
+`signaldb.dist.toml`. Use `commit-discipline` for semantic-commit format, and
+the `verify` skill to observe a change running (monolith on an isolated data
+dir, driven through Query IR, MCP, or the Explore UI).
 
-```bash
-cargo build                # Debug build
-cargo build --release      # Release build
-cargo build -p <package>   # Build specific crate
-```
+Read `docs/contributing/benchmarking.md` for the Criterion micro-benchmark
+suite: `scripts/run-benches.sh` (all targets, `-p <crate>`, or `-- --baseline
+main` to compare against a saved baseline), what each bench target measures,
+and the nightly trend/regression workflow.
 
-## Test
+Explore UI (`src/ui`, see `src/ui/README.md`): `pnpm ui:dev`, `pnpm ui:test`,
+`pnpm --filter signaldb-ui lint`, `pnpm --filter signaldb-ui build-storybook`.
+Every new routed page ships a `Pages/<Name>` Storybook story and a
+design-sync entry — `docs/contributing/ui-page-stories.md` and
+`.design-sync/NOTES.md` have the rules.
 
-```bash
-cargo test                          # All tests
-cargo test -p <package>             # Specific crate (common, writer, acceptor, etc.)
-cargo test <test_name>              # Specific test by name
-cargo test -- --nocapture           # With stdout visible
-RUST_LOG=debug cargo test <name> -- --nocapture   # With logging
-cargo test -p tests-integration     # Integration tests
-cargo test -p tests-integration compactor   # Compactor integration tests
-cargo test -p compactor             # Compactor unit tests
-```
+## Gotchas not in CLAUDE.md
 
-## Benchmarks
-
-```bash
-scripts/run-benches.sh                        # every Criterion target (release)
-scripts/run-benches.sh -p writer              # one crate
-scripts/run-benches.sh -- --baseline main     # compare against a saved baseline
-```
-
-Nightly trend + baseline/compare workflow: `docs/contributing/benchmarking.md`.
-
-## Pre-Commit Checks (MANDATORY before committing)
-
-The cargo-husky hook runs `cargo fmt --check` and workspace-wide clippy on commits that stage Rust files, and the pnpm checks on commits that stage UI files. The scoped checks to run first are in CLAUDE.md, "Verifying a change".
-
-CI additionally enforces span hygiene (no bare `#[tracing::instrument]`;
-`otel.kind` only inside `common::self_monitoring` — boundary spans come from
-the span factories), validates `otel/registry/` with `weaver registry check`,
-and runs an advisory semconv live-check workflow. See
-`docs/contributing/rust.md` ("Boundary Spans Come From the Factories") and
-`docs/operations/self-monitoring-traces.md`.
-
-## Running Services
-
-### Monolithic Mode
-
-```bash
-cargo run --bin signaldb                              # All services in one process
-./scripts/run-dev.sh                                  # With local file storage
-./scripts/run-dev.sh --sqlite                         # SQLite (default, no deps)
-./scripts/run-dev.sh --with-deps --postgres           # With PostgreSQL via docker compose
-```
-
-### Microservices Mode
-
-```bash
-cargo run --bin signaldb -- acceptor   # OTLP ingestion (:4317/:4318)
-cargo run --bin signaldb -- router     # HTTP router (:3000) + Flight (:50053)
-cargo run --bin signaldb -- writer     # Data persistence (Flight :50061)
-cargo run --bin signaldb -- querier    # Query execution (Flight :50054)
-cargo run --bin signaldb -- compactor  # Compaction/retention (Flight :50055, metrics :9091)
-cargo run --bin signaldb -- mcp        # MCP server (Streamable HTTP :8228 /mcp; off unless [mcp].enabled)
-```
-
-```bash
-./scripts/run-dev.sh services   # All microservices (logs to .data/logs/)
-```
-
-Both modes also start `signal-producer --estate all`, which sends sample OTLP traffic to `:4317` every 10s.
-
-### Storage Locations
-
-- WAL: `.data/wal/`
-- Parquet data: `.data/storage/`
-- SQLite databases: `.data/*.db`
-
-## Docker
-
-Compose file: `compose.yml`. The stack runs PostgreSQL, Grafana, Pyroscope,
-MinIO, and the SignalDB services (writer, acceptor, querier, router, compactor).
-
-```bash
-docker compose up          # Start the full stack
-docker compose up --build  # Build images first
-docker compose build       # Build only
-```
-
-MinIO: Console `localhost:9001`, API `localhost:9000` (minioadmin/minioadmin)
-
-## Grafana Plugin
-
-JS tooling is pnpm (`packageManager` in `package.json`, root `pnpm-lock.yaml`);
-`npm install` desyncs the lockfile and breaks CI's frozen-lockfile install.
-
-```bash
-pnpm install --frozen-lockfile   # From workspace root
-pnpm run grafana:dev             # Watch + rebuild frontend
-pnpm run grafana:build           # Production build
-pnpm -C src/grafana-plugin run build:backend   # Rust backend
-```
-
-## Explore UI
-
-```bash
-pnpm ui:dev                                   # Vite dev server (see src/ui/README.md)
-pnpm ui:test                                  # vitest
-pnpm --filter signaldb-ui lint
-pnpm --filter signaldb-ui build-storybook     # page/component stories
-```
-
-Every new page (a routed view) ships with a `Pages/<Name>` Storybook story —
-a light `Default` and a `Dark` story, fixtures derived from each request's own
-range — and a design-sync entry: a `PAGES` line in `.design-sync/pkg/build.sh`
-plus `titleMap`/`overrides` in `.design-sync/config.json`
-(`.design-sync/NOTES.md` has the details).
-
-## Health Checks
-
-```bash
-curl http://localhost:4318/health   # Acceptor
-curl http://localhost:3000/health   # Router
-```
-
-## Semantic Commits
-
-Use semantic commit messages:
-
-- `feat:` new feature
-- `fix:` bug fix
-- `refactor:` code restructuring
-- `docs:` documentation
-- `test:` test changes
-- `chore:` build/tooling changes
-
-## Configuration
-
-Precedence: defaults -> `signaldb.toml` -> env vars (`SIGNALDB_*`)
-
-```bash
-cp signaldb.dist.toml signaldb.toml   # Create local config
-```
-
-Key env vars for S3/MinIO:
-
-```bash
-AWS_ENDPOINT_URL=http://localhost:9000
-AWS_ACCESS_KEY_ID=minioadmin
-AWS_SECRET_ACCESS_KEY=minioadmin
-AWS_REGION=us-east-1
-```
+- **Pre-commit hook is staged-file gated, not "run manually."**
+  `.cargo-husky/hooks/pre-commit` runs `cargo fmt --check`, `clippy -D
+warnings`, `cargo machete`, and `cargo deny check` automatically (all
+  fatal) whenever staged files match `*.rs`, `Cargo.{toml,lock}`,
+  `deny.toml`, `rustfmt.toml`, or `.cargo-husky/`; it runs `pnpm --filter
+signaldb-ui typecheck` + `lint` automatically when `src/ui/` files are
+  staged. A commit touching neither skips both.
+- **JS/TS tooling is pnpm, not npm.** Workspace = `src/grafana-plugin` +
+  `src/ui` (`pnpm-workspace.yaml`, `packageManager` in `package.json`);
+  scripts are in `package.json` (`grafana:dev`/`grafana:build`/
+  `grafana:test`, `ui:dev`/`ui:build`/`ui:test`). Install with `pnpm install
+--frozen-lockfile`; `npm install` desyncs `pnpm-lock.yaml` and breaks CI's
+  frozen-lockfile install.
+- **Grafana plugin backend is a standalone cargo workspace**
+  (`src/grafana-plugin/backend`), excluded from the root workspace so its
+  pinned Arrow version doesn't collide with SignalDB's. Build it with `pnpm
+-C src/grafana-plugin run build:backend`, not `cargo build --workspace`.
+- **`scripts/run-dev.sh` never touches `signaldb.toml`** — it generates
+  `signaldb.dev.toml` with a fixed dev tenant (`dev`, key `dev-key-123`) and
+  a `_system` self-monitoring tenant, so it's safe to run alongside a real
+  local config. Both modes also start `signal-producer --estate all`, which
+  sends sample OTLP traffic to `:4317` every 10s.

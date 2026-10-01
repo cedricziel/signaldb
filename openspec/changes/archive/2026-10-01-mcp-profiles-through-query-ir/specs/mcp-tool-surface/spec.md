@@ -13,7 +13,8 @@ Pyroscope-style selector plus a time range, default the last hour → the
 `flamegraph` envelope, subject to the same payload cap and truncation flag as
 other query tools), `compare_profiles` (a baseline and a comparison range →
 the `flamegraph` envelope with a `baseline`), and `profiles_for_trace` (the
-profiles correlated with a trace id). The selector SHALL filter on its sample
+`profiles` rows whose `trace.id` matches a hex trace id, newest first, at
+most 1,000, over the last 30 days, in the profile-summary shape). The selector SHALL filter on its sample
 type (the profile type's second `:` segment, or a bare name) and on
 `service_name` with `=`, `!=`, `=~` or `!~` (regexes fully anchored); any
 other label, operator, or a malformed selector SHALL be rejected as invalid

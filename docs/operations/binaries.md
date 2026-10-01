@@ -63,6 +63,7 @@ to something they can route to, such as the compose service name:
 | `QUERIER_ADVERTISE_ADDR` | querier | bind address (`0.0.0.0:50054` in the monolith) |
 | `COMPACTOR_ADVERTISE_ADDR` | compactor | bind address (`0.0.0.0:50055`) |
 | `ACCEPTOR_ADVERTISE_ADDR` | acceptor | bind address of the OTLP gRPC server |
+| `ROUTER_ADVERTISE_ADDR` | router | bind address of the Flight server (`0.0.0.0:50053` in the monolith) |
 
 The monolith and the standalone services read the same variables, so a
 monolith next to extra `querier-N` or `writer-N` containers sets, for example,

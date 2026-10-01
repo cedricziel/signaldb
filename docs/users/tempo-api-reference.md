@@ -4,6 +4,7 @@ type: reference
 status: living
 sources:
   - src/router/src/endpoints/tempo.rs
+  - src/querier/src/services/tempo.rs
 ---
 
 # Tempo API reference
@@ -43,6 +44,11 @@ equality matchers. `{}` is valid and selects everything.
 - **Values**: double-quoted strings, bare numbers, `true`/`false`, and bare
   identifiers (meaningful only for `status`/`kind`).
 
+An attribute matcher compares its value, coerced to the key's canonical type,
+with the key's typed home (see
+[Canonical types](schema-registry.md#canonical-types)); the `tags` parameter
+filters the same way.
+
 Anything outside the subset is rejected rather than silently dropped — a
 partially applied filter would return _more_ traces than you asked for while
 still looking like a successful search. Which rejection you get tells you
@@ -78,7 +84,10 @@ request):
   from a client that guessed the wrong unit) are rejected with **400**.
 
 Names and values are deduplicated and sorted; values are capped at 1000
-per tag. Because discovery samples rather than indexes, a key or value
+per tag. Attribute values come from decoding the whole resource/span attribute
+container (typed homes and residue) and are rendered as strings, so a typed
+value such as `200` or `true` appears as text. The dedicated tags
+(`service.name`, `name`, `rootServiceName`, `rootName`) read columns instead. Because discovery samples rather than indexes, a key or value
 that exists only outside the sampled rows can be missed — widen the
 window or narrow it with `start`/`end` around when the data was ingested
 if a key you know exists doesn't show up.
@@ -166,17 +175,20 @@ can use SignalDB as a querier backend:
 
 - `FindTraceByID` and `SearchRecent` are fully implemented (including
   `spans_per_span_set`).
-- The tenant is taken from Tempo's `X-Scope-OrgID` header (dataset
-  `default`), or from the authenticated tenant context when
-  `[auth].internal_service_key` is configured. Note that with an internal
-  service key set, the port requires SignalDB's internal auth headers,
-  which a stock Tempo query-frontend cannot send — run without the key on
-  a trusted network for Tempo interop.
+- Tenant resolution: an authenticated `TenantContext` (present only when
+  `[auth].internal_service_key` is configured and the caller sent it) always
+  wins when present; otherwise the tenant comes from Tempo's `X-Scope-OrgID`
+  header (dataset `default`); otherwise tenant `default` / dataset `default`.
+  With an internal service key set, the port requires SignalDB's internal
+  auth headers, which a stock Tempo query-frontend cannot send — run without
+  the key on a trusted network for Tempo interop.
 - `SearchBlock` returns `Unimplemented` (SignalDB stores data in Iceberg
-  tables, not Tempo blocks). Tag endpoints still advertise the old static
-  three-name set (`service.name`, `name`, `status`) rather than the
-  window-scoped discovery the HTTP API now does — not yet upgraded; tag
-  _value_ enumeration remains HTTP-only.
+  tables, not Tempo blocks).
+- `SearchTags`/`SearchTagsV2` use the same window-scoped discovery as the
+  HTTP tag-name endpoints: `SearchTags` flattens all scopes, `SearchTagsV2`
+  groups by scope and narrows to one when the request's `scope` is set.
+- `SearchTagValues`/`SearchTagValuesV2` return an empty list; tag _value_
+  enumeration is served by the HTTP API only.
 
 ## Related
 

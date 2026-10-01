@@ -87,12 +87,41 @@ describe("QueryView", () => {
     // The request went to the native IR endpoint via the generated client.
     expect(first.url).toContain("/api/v1/query");
     // The body is a structured IR document (versioned), not a dialect string.
-    const doc = first.body as { irVersion?: number; from?: string };
-    expect(doc.irVersion).toBe(1);
+    const doc = first.body as {
+      irVersion?: number;
+      from?: string;
+      page?: { size?: number };
+    };
+    // A `rows` result is paged, which needs irVersion 14.
+    expect(doc.irVersion).toBe(14);
     expect(doc.from).toBe("logs");
+    expect(doc.page?.size).toBeGreaterThan(0);
 
     // The rows envelope renders.
     await screen.findByText("checkout");
+  });
+
+  it("loads the next page of rows through the cursor", async () => {
+    const calls = stubApiFetch((call: number) => ({
+      result: "rows",
+      window: { start_ns: 0, end_ns: 1 },
+      columns: [{ name: "service_name", type: "string" }],
+      rows: [[call === 0 ? "first-page" : "second-page"]],
+      page: call === 0 ? { next_cursor: "c1" } : {},
+    }));
+    renderView();
+
+    fireEvent.click(screen.getByText("Run"));
+    await screen.findByText("first-page");
+    fireEvent.click(await screen.findByRole("button", { name: "Load more" }));
+
+    await screen.findByText("second-page");
+    expect(screen.getByText("first-page")).toBeInTheDocument();
+    const next = calls[1]!.body as { page?: { cursor?: string } };
+    expect(next.page?.cursor).toBe("c1");
+    expect(
+      screen.queryByRole("button", { name: "Load more" }),
+    ).not.toBeInTheDocument();
   });
 
   // Regression: the query-IR validator now rejects physical column names

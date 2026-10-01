@@ -226,6 +226,12 @@ pins on the same signal, level and key that they cover: all of them for a pin
 without `dataset`, only that dataset's for a pin with one. Every other global
 pin still applies to the tenant. `signaldb.dist.toml` documents the block.
 
+Registry changes reach ingest without a restart, but not instantly: the writer
+caches each tenant/dataset/signal's resolved types for 30 seconds
+(`DEFAULT_SCOPE_TTL`) and keeps serving the previous set if a refresh fails.
+The acceptor's `partial_success` warning reads a separate snapshot on the same
+30-second refresh, so a warning can briefly lag a newly established type.
+
 ## Add your own conventions
 
 Write a registry document. It is a Weaver semantic-convention file with the

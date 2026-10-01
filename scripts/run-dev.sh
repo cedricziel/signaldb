@@ -162,27 +162,18 @@ EOF
 export SIGNALDB_DATABASE_DSN="$DATABASE_DSN"
 export SIGNALDB_DISCOVERY_DSN="$DISCOVERY_DSN"
 export SIGNALDB_STORAGE_DSN="file://$(pwd)/${BASE_DIR}/storage"
-export SIGNALDB_SCHEMA_CATALOG_TYPE="sql"
-export SIGNALDB_SCHEMA_CATALOG_URI="sqlite://$(pwd)/${BASE_DIR}/iceberg_catalog.db"
 export RUST_LOG="${RUST_LOG:-info,signaldb=debug}"
 
 export SIGNALDB_ADMIN_KEY="dev-admin-key"
-export SIGNALDB_URL="http://localhost:3001"
+export SIGNALDB_URL="http://localhost:3000"
 
-# Service-specific configuration
-export ACCEPTOR_GRPC_ADDR="0.0.0.0:4317"
-export ACCEPTOR_HTTP_ADDR="0.0.0.0:4318"
+# Service-specific configuration (ports are CLI flags, not env vars)
 export ACCEPTOR_WAL_DIR="${BASE_DIR}/wal/acceptor"
 
-export WRITER_FLIGHT_ADDR="0.0.0.0:50051"
 export WRITER_ADVERTISE_ADDR="localhost:50051"
 export WRITER_WAL_DIR="${BASE_DIR}/wal/writer"
 
-export QUERIER_FLIGHT_ADDR="0.0.0.0:50054"
 export QUERIER_ADVERTISE_ADDR="localhost:50054"
-
-export ROUTER_FLIGHT_ADDR="0.0.0.0:50053"
-export ROUTER_HTTP_ADDR="0.0.0.0:3001"
 
 # Start dependencies if requested
 if [ "$START_DEPS" = true ]; then
@@ -247,7 +238,7 @@ if [ "$MODE" = "monolithic" ]; then
     echo -e "${GREEN}Services starting on:${NC}"
     echo "  • OTLP gRPC: http://localhost:4317"
     echo "  • OTLP HTTP: http://localhost:4318"
-    echo "  • HTTP API:  http://localhost:3001"
+    echo "  • HTTP API:  http://localhost:3000"
     echo "  • Flight:    http://localhost:50053"
     echo "  • Self-Monitoring: enabled (dataset: _system/_monitoring, sample ratio: 10%)"
     echo "  • Profiling: set SIGNALDB_PROFILING_ENABLED=true with Pyroscope at http://localhost:4040"
@@ -312,7 +303,7 @@ else
     echo -e "${GREEN}Starting Router...${NC}"
     cargo run --bin signaldb -- router --config "${DEV_CONFIG}" > "${LOG_DIR}/router.log" 2>&1 &
     PIDS="$PIDS $!"
-    echo "  • HTTP API: http://localhost:3001"
+    echo "  • HTTP API: http://localhost:3000"
     echo "  • Flight: http://localhost:50053"
     echo "  • Logs: ${LOG_DIR}/router.log"
 
@@ -320,7 +311,7 @@ else
     echo -e "${GREEN}Starting MCP server...${NC}"
     SIGNALDB__MCP__ENABLED=true \
     SIGNALDB__MCP__BIND_ADDRESS=0.0.0.0:8228 \
-    SIGNALDB__MCP__ROUTER_URL=http://localhost:3001 \
+    SIGNALDB__MCP__ROUTER_URL=http://localhost:3000 \
         cargo run --bin signaldb -- mcp --config "${DEV_CONFIG}" > "${LOG_DIR}/mcp.log" 2>&1 &
     PIDS="$PIDS $!"
     echo "  • MCP (Streamable HTTP): http://localhost:8228/mcp"
