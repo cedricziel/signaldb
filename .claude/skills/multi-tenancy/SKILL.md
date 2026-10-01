@@ -342,12 +342,12 @@ and off-type handling are described once, in
   changes an established type: building a scope applies the pin, logs a
   warning and counts `reason=pin_conflict`, and stored values are not retyped.
 - **Pins** are per tenant and optionally per dataset; a dataset entry wins over
-  one without `dataset`. A tenant that carries its own schema block
-  (`[tenants.tenants.<id>.schema]`, which needs `catalog_type` and
-  `catalog_uri`) replaces the **whole** global `[schema]` block
-  (`Configuration::get_tenant_schema_config`), so its pins, materialized
-  labels, warm index and `default_schemas` all come from that block and nothing
-  is inherited. Keep every pin the tenant needs in its own list.
+  one without `dataset`. A tenant's own schema block
+  (`[tenants.tenants.<id>.schema]`, a `TenantSchemaOverride`) is merged over
+  the global `[schema]` field by field (`Configuration::get_tenant_schema_config`):
+  whatever it leaves unset is inherited. A tenant pin replaces the global pins
+  on the same (signal, level, key) it covers — all of them without `dataset`,
+  only that dataset's with one — and every other global pin still applies.
 - **Caching**: the writer caches one `SignalScope` per (tenant, dataset, signal)
   and resolves each distinct key once per batch. `TypeAuthority::invalidate()`
   drops the cache but has no production caller today; a schema-version bump or

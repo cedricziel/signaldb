@@ -59,7 +59,7 @@ Apache Iceberg provides ACID transactions and structured metadata management:
 - **Namespace isolation**: Tables namespaced as `[tenant_slug, dataset_slug]`
 - **Materialized labels**: configured attribute keys promoted to dedicated
   columns for exact querying across all four signal types; allowlists
-  resolve per tenant (a tenant schema override replaces the global set —
+  resolve per tenant (a tenant's schema block is merged over the global one —
   see [storage layout](storage-layout.md#materialized-labels))
 - **Typed attribute layout**: every signal's current `schemas.toml` version
   realizes each attribute container as five columns — one typed map per

@@ -718,7 +718,7 @@ impl TenantSchemaRegistry {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::{SchemaConfig, TenantSchemaConfig, TenantsConfig};
+    use crate::config::{SchemaConfig, TenantSchemaConfig, TenantSchemaOverride, TenantsConfig};
     use crate::schema::logical::AttributeLevel;
     use std::collections::HashMap;
 
@@ -1341,9 +1341,9 @@ type = "int64"
     #[tokio::test]
     async fn test_tenant_schema_registry_with_custom_tenant() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://".to_string()),
                 ..Default::default()
             }),
             custom_schemas: Some({
@@ -1399,9 +1399,9 @@ type = "int64"
     #[tokio::test]
     async fn test_tenant_schema_registry_invalidation() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://".to_string(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://".to_string()),
                 ..Default::default()
             }),
             ..Default::default()

@@ -822,8 +822,8 @@ pub struct AttributeTypeOverride {
 /// `key=value`" checks without one bloom filter per key. Off by default
 /// (`signals` empty) -- a table only gets the column when its signal is
 /// listed here, its dataset (if `datasets` is set) matches, and its
-/// resolved schema version is the typed attribute layout. Per-tenant
-/// override replaces this wholesale, same as [`MaterializedLabels`].
+/// resolved schema version is the typed attribute layout. A tenant's schema
+/// block overrides it per field ([`WarmIndexOverride`]).
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct WarmIndexConfig {
     /// Signals to build the warm index for. Empty disables it everywhere.
@@ -952,14 +952,139 @@ impl SchemaConfig {
     }
 }
 
+/// A tenant's `[tenants.tenants.<id>.schema]` block, merged field by field
+/// over the global [`SchemaConfig`] by [`Self::merged_over`]: anything the
+/// block leaves unset keeps the global value.
+///
+/// - Scalars and booleans replace the global value when set.
+/// - `materialized_labels.<signal>` replaces that signal's global list when
+///   set; `[]` clears it. Unset signals keep the global list.
+/// - `default_schemas.custom_schemas` merges per table name, tenant wins.
+/// - `attribute_types`: a tenant pin replaces the global pins on the same
+///   (signal, level, key) that it covers: all of them when the tenant pin has
+///   no `dataset`, otherwise only the one for that dataset. Other global pins
+///   still apply.
+/// - Unknown keys are rejected, so a misspelt field cannot silently fall back
+///   to the global value.
+/// - `warm_index` merges per field. `datasets` can narrow the global
+///   allowlist but not reset it to "every dataset".
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TenantSchemaOverride {
+    pub catalog_type: Option<String>,
+    pub catalog_uri: Option<String>,
+    pub default_schemas: DefaultSchemasOverride,
+    pub materialized_labels: MaterializedLabelsOverride,
+    pub attribute_types: Vec<AttributeTypeOverride>,
+    pub warm_index: WarmIndexOverride,
+}
+
+/// The [`DefaultSchemas`] fields a tenant block may override.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DefaultSchemasOverride {
+    pub traces_enabled: Option<bool>,
+    pub logs_enabled: Option<bool>,
+    pub metrics_enabled: Option<bool>,
+    pub profiles_enabled: Option<bool>,
+    pub custom_schemas: HashMap<String, serde_json::Value>,
+}
+
+/// The [`MaterializedLabels`] lists a tenant block may override.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MaterializedLabelsOverride {
+    pub logs: Option<Vec<String>>,
+    pub traces: Option<Vec<String>>,
+    pub metrics: Option<Vec<String>>,
+    pub profiles: Option<Vec<String>>,
+}
+
+/// The [`WarmIndexConfig`] fields a tenant block may override.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WarmIndexOverride {
+    pub signals: Option<Vec<AttributeTypeSignal>>,
+    pub datasets: Option<Vec<String>>,
+    pub fpp: Option<f64>,
+    pub rows_per_row_group: Option<u64>,
+    pub attrs_per_row: Option<u64>,
+    pub max_bloom_ndv: Option<u64>,
+}
+
+fn override_with<T: Clone>(target: &mut T, value: &Option<T>) {
+    if let Some(value) = value {
+        *target = value.clone();
+    }
+}
+
+impl TenantSchemaOverride {
+    /// `global` with every field this block sets applied over it.
+    pub fn merged_over(&self, global: &SchemaConfig) -> SchemaConfig {
+        let mut merged = global.clone();
+        override_with(&mut merged.catalog_type, &self.catalog_type);
+        override_with(&mut merged.catalog_uri, &self.catalog_uri);
+
+        let schemas = &self.default_schemas;
+        let target = &mut merged.default_schemas;
+        override_with(&mut target.traces_enabled, &schemas.traces_enabled);
+        override_with(&mut target.logs_enabled, &schemas.logs_enabled);
+        override_with(&mut target.metrics_enabled, &schemas.metrics_enabled);
+        override_with(&mut target.profiles_enabled, &schemas.profiles_enabled);
+        target.custom_schemas.extend(schemas.custom_schemas.clone());
+
+        let labels = &self.materialized_labels;
+        let target = &mut merged.materialized_labels;
+        override_with(&mut target.logs, &labels.logs);
+        override_with(&mut target.traces, &labels.traces);
+        override_with(&mut target.metrics, &labels.metrics);
+        override_with(&mut target.profiles, &labels.profiles);
+
+        let pinned_by_tenant = |global_pin: &AttributeTypeOverride| {
+            self.attribute_types.iter().any(|pin| {
+                pin.signal == global_pin.signal
+                    && pin.level == global_pin.level
+                    && pin.key == global_pin.key
+                    && (pin.dataset.is_none() || pin.dataset == global_pin.dataset)
+            })
+        };
+        merged.attribute_types = self
+            .attribute_types
+            .iter()
+            .chain(
+                global
+                    .attribute_types
+                    .iter()
+                    .filter(|pin| !pinned_by_tenant(pin)),
+            )
+            .cloned()
+            .collect();
+
+        let warm = &self.warm_index;
+        let target = &mut merged.warm_index;
+        override_with(&mut target.signals, &warm.signals);
+        if warm.datasets.is_some() {
+            target.datasets.clone_from(&warm.datasets);
+        }
+        override_with(&mut target.fpp, &warm.fpp);
+        override_with(&mut target.rows_per_row_group, &warm.rows_per_row_group);
+        override_with(&mut target.attrs_per_row, &warm.attrs_per_row);
+        override_with(&mut target.max_bloom_ndv, &warm.max_bloom_ndv);
+
+        merged
+    }
+}
+
 /// Configuration for tenant-specific schema overrides
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TenantSchemaConfig {
-    /// Schema configuration that overrides global settings
-    pub schema: Option<SchemaConfig>,
+    /// Fields that override the global `[schema]`, merged over it by
+    /// [`Configuration::get_tenant_schema_config`].
+    pub schema: Option<TenantSchemaOverride>,
     /// Custom schema definitions for this tenant
     pub custom_schemas: Option<HashMap<String, String>>,
     /// Whether this tenant is enabled
+    #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
@@ -2276,9 +2401,9 @@ pub struct WriterConfig {
     /// A pass always runs at startup; this governs only the periodic re-run.
     /// Set to `0s` to disable periodic passes.
     ///
-    /// Lives under `[writer]` rather than `[schema]` on purpose: a tenant's
-    /// `SchemaConfig` overrides the global one wholesale, which would make a
-    /// per-tenant reconcile interval meaningless.
+    /// Lives under `[writer]` rather than `[schema]` on purpose: a schema
+    /// field could be overridden per tenant, and a per-tenant reconcile
+    /// interval is meaningless.
     #[serde(with = "humantime_serde")]
     pub table_reconcile_interval: Duration,
     /// How long a WAL idempotency marker left by *another* writer id is kept
@@ -2820,16 +2945,19 @@ impl Configuration {
         });
     }
 
-    /// Get the effective schema configuration for a given tenant
+    /// The effective schema configuration for a tenant: the global
+    /// `[schema]` with the tenant's own schema block, if any, merged over it
+    /// (see [`TenantSchemaOverride`]).
     pub fn get_tenant_schema_config(&self, tenant_id: &str) -> SchemaConfig {
-        if let Some(tenant_config) = self.tenants.tenants.get(tenant_id)
-            && let Some(ref tenant_schema) = tenant_config.schema
+        match self
+            .tenants
+            .tenants
+            .get(tenant_id)
+            .and_then(|tenant| tenant.schema.as_ref())
         {
-            return tenant_schema.clone();
+            Some(tenant_schema) => tenant_schema.merged_over(&self.schema),
+            None => self.schema.clone(),
         }
-
-        // Fall back to global schema config
-        self.schema.clone()
     }
 
     /// Check if a tenant is enabled
@@ -3904,9 +4032,9 @@ mod tests {
     #[test]
     fn test_tenant_configuration_with_custom_tenant() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://tenant".to_string(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://tenant".to_string()),
                 ..Default::default()
             }),
             custom_schemas: Some({
@@ -3972,39 +4100,295 @@ mod tests {
         assert!(!dataset_scoped.applies_to(AttributeTypeSignal::Logs, "staging"));
     }
 
-    #[test]
-    fn tenant_schema_override_replaces_warm_index_config_wholesale() {
-        // A tenant schema block replaces the *entire* SchemaConfig, same as
-        // materialized_labels -- warm_index rides along with it rather than
-        // merging with the global default.
-        let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                warm_index: WarmIndexConfig {
-                    signals: vec![AttributeTypeSignal::Traces],
-                    ..WarmIndexConfig::default()
-                },
-                ..SchemaConfig::default()
-            }),
-            ..TenantSchemaConfig::default()
-        };
-        let mut tenants = HashMap::new();
-        tenants.insert("tenant1".to_string(), tenant_config);
-        let config = Configuration {
-            tenants: TenantsConfig {
-                default_tenant: "tenant1".to_string(),
-                tenants,
+    fn config_with_tenant(schema: Option<TenantSchemaOverride>) -> Configuration {
+        let mut config = Configuration::default();
+        config.tenants.tenants.insert(
+            "tenant1".to_string(),
+            TenantSchemaConfig {
+                schema,
+                ..TenantSchemaConfig::default()
             },
-            ..Configuration::default()
-        };
+        );
+        config
+    }
 
-        assert!(config.schema.warm_index.signals.is_empty());
+    fn pin(
+        key: &str,
+        canonical_type: CanonicalType,
+        dataset: Option<&str>,
+    ) -> AttributeTypeOverride {
+        AttributeTypeOverride {
+            signal: AttributeTypeSignal::Logs,
+            level: AttributeLevel::Record,
+            key: key.to_string(),
+            canonical_type,
+            dataset: dataset.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tenant_schema_block_overrides_only_the_fields_it_sets() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride {
+            materialized_labels: MaterializedLabelsOverride {
+                traces: Some(vec!["http.route".to_string()]),
+                ..MaterializedLabelsOverride::default()
+            },
+            ..TenantSchemaOverride::default()
+        }));
+        config.schema.catalog_uri = "sqlite://global.db".to_string();
+        config.schema.materialized_labels.logs = vec!["service.name".to_string()];
+        config.schema.default_schemas.profiles_enabled = false;
+        config.schema.attribute_types = vec![pin("retry.count", CanonicalType::Int64, None)];
+        config.schema.warm_index.signals = vec![AttributeTypeSignal::Logs];
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(effective.materialized_labels.traces, vec!["http.route"]);
+        assert_eq!(effective.materialized_labels.logs, vec!["service.name"]);
+        assert_eq!(effective.catalog_uri, "sqlite://global.db");
+        assert_eq!(effective.catalog_type, config.schema.catalog_type);
+        assert!(!effective.default_schemas.profiles_enabled);
+        assert_eq!(effective.attribute_types, config.schema.attribute_types);
         assert_eq!(
-            config
-                .get_tenant_schema_config("tenant1")
-                .warm_index
-                .signals,
+            effective.warm_index.signals,
+            vec![AttributeTypeSignal::Logs]
+        );
+    }
+
+    #[test]
+    fn tenant_schema_block_merges_lists_and_maps() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride {
+            default_schemas: DefaultSchemasOverride {
+                metrics_enabled: Some(false),
+                custom_schemas: HashMap::from([
+                    ("shared".to_string(), serde_json::json!("tenant")),
+                    ("mine".to_string(), serde_json::json!("tenant")),
+                ]),
+                ..DefaultSchemasOverride::default()
+            },
+            // An empty list is set, not unset: it clears the global labels.
+            materialized_labels: MaterializedLabelsOverride {
+                logs: Some(Vec::new()),
+                ..MaterializedLabelsOverride::default()
+            },
+            attribute_types: vec![pin("retry.count", CanonicalType::String, None)],
+            warm_index: WarmIndexOverride {
+                datasets: Some(vec!["prod".to_string()]),
+                ..WarmIndexOverride::default()
+            },
+            ..TenantSchemaOverride::default()
+        }));
+        config.schema.default_schemas.custom_schemas = HashMap::from([
+            ("shared".to_string(), serde_json::json!("global")),
+            ("theirs".to_string(), serde_json::json!("global")),
+        ]);
+        config.schema.materialized_labels.logs = vec!["service.name".to_string()];
+        config.schema.materialized_labels.metrics = vec!["host.name".to_string()];
+        config.schema.attribute_types = vec![
+            pin("retry.count", CanonicalType::Int64, None),
+            pin("retry.count", CanonicalType::Int64, Some("prod")),
+            pin("http.status", CanonicalType::Int64, None),
+        ];
+        config.schema.warm_index.signals = vec![AttributeTypeSignal::Traces];
+        config.schema.warm_index.fpp = 0.05;
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert!(!effective.default_schemas.metrics_enabled);
+        assert!(effective.default_schemas.traces_enabled);
+        assert_eq!(
+            effective.default_schemas.custom_schemas,
+            HashMap::from([
+                ("shared".to_string(), serde_json::json!("tenant")),
+                ("mine".to_string(), serde_json::json!("tenant")),
+                ("theirs".to_string(), serde_json::json!("global")),
+            ])
+        );
+        assert!(effective.materialized_labels.logs.is_empty());
+        assert_eq!(effective.materialized_labels.metrics, vec!["host.name"]);
+        // A tenant pin replaces every global pin on the same
+        // (signal, level, key), dataset-scoped ones included; other global
+        // pins stay.
+        assert_eq!(
+            effective.attribute_types,
+            vec![
+                pin("retry.count", CanonicalType::String, None),
+                pin("http.status", CanonicalType::Int64, None),
+            ]
+        );
+        assert_eq!(
+            effective.warm_index.signals,
             vec![AttributeTypeSignal::Traces]
         );
+        assert_eq!(
+            effective.warm_index.datasets,
+            Some(vec!["prod".to_string()])
+        );
+        assert_eq!(effective.warm_index.fpp, 0.05);
+    }
+
+    #[test]
+    fn tenant_without_a_schema_block_gets_the_global_config() {
+        let mut config = config_with_tenant(None);
+        config.schema.materialized_labels.logs = vec!["service.name".to_string()];
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(effective.materialized_labels.logs, vec!["service.name"]);
+        assert_eq!(effective.catalog_uri, config.schema.catalog_uri);
+    }
+
+    #[test]
+    fn partial_tenant_schema_block_loads_from_toml_and_env() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [schema.materialized_labels]
+                logs = ["service.name"]
+
+                [tenants.tenants.acme]
+                enabled = true
+
+                [tenants.tenants.acme.schema.materialized_labels]
+                traces = ["http.route"]
+
+                [[tenants.tenants.acme.schema.attribute_types]]
+                signal = "logs"
+                level = "record"
+                key = "retry.count"
+                type = "int64"
+                "#,
+            )?;
+            jail.set_env(
+                "SIGNALDB__TENANTS__TENANTS__ACME__SCHEMA__CATALOG_URI",
+                "sqlite://acme.db",
+            );
+            let config = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .map_err(|e| *e)?;
+
+            let effective = config.get_tenant_schema_config("acme");
+            assert_eq!(effective.materialized_labels.traces, vec!["http.route"]);
+            assert_eq!(effective.materialized_labels.logs, vec!["service.name"]);
+            assert_eq!(effective.catalog_uri, "sqlite://acme.db");
+            assert_eq!(effective.catalog_type, config.schema.catalog_type);
+            assert_eq!(
+                effective.attribute_types,
+                vec![pin("retry.count", CanonicalType::Int64, None)]
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn dataset_scoped_tenant_pin_keeps_the_global_pin_for_other_datasets() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride {
+            attribute_types: vec![pin("retry.count", CanonicalType::String, Some("prod"))],
+            ..TenantSchemaOverride::default()
+        }));
+        config.schema.attribute_types = vec![
+            pin("retry.count", CanonicalType::Int64, None),
+            pin("retry.count", CanonicalType::Float64, Some("prod")),
+        ];
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(
+            effective.attribute_types,
+            vec![
+                pin("retry.count", CanonicalType::String, Some("prod")),
+                pin("retry.count", CanonicalType::Int64, None),
+            ]
+        );
+        let field = LogicalFieldId {
+            source: "logs".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "retry.count".to_string(),
+        };
+        assert_eq!(
+            effective.attribute_type_override("prod", &field),
+            Some(CanonicalType::String)
+        );
+        assert_eq!(
+            effective.attribute_type_override("staging", &field),
+            Some(CanonicalType::Int64)
+        );
+    }
+
+    #[test]
+    fn tenant_schema_block_without_custom_schemas_keeps_the_global_ones() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride::default()));
+        config.schema.default_schemas.custom_schemas =
+            HashMap::from([("mine".to_string(), serde_json::json!("global"))]);
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(
+            effective.default_schemas.custom_schemas,
+            config.schema.default_schemas.custom_schemas
+        );
+    }
+
+    #[test]
+    fn tenant_schema_block_overrides_a_warm_index_number() {
+        let config = config_with_tenant(Some(TenantSchemaOverride {
+            warm_index: WarmIndexOverride {
+                fpp: Some(0.001),
+                ..WarmIndexOverride::default()
+            },
+            ..TenantSchemaOverride::default()
+        }));
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(effective.warm_index.fpp, 0.001);
+        assert_eq!(
+            effective.warm_index.rows_per_row_group,
+            config.schema.warm_index.rows_per_row_group
+        );
+    }
+
+    #[test]
+    fn env_only_tenant_schema_block_loads_without_enabled() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__TENANTS__TENANTS__ACME__SCHEMA__CATALOG_URI",
+                "sqlite://acme.db",
+            );
+            let config = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .map_err(|e| *e)?;
+
+            assert!(config.is_tenant_enabled("acme"));
+            assert_eq!(
+                config.get_tenant_schema_config("acme").catalog_uri,
+                "sqlite://acme.db"
+            );
+            Ok(())
+        });
+    }
+
+    /// A misspelt key must fail loudly; ignored, the tenant would silently
+    /// inherit the global value it meant to override.
+    #[test]
+    fn misspelt_tenant_schema_key_is_rejected() {
+        for block in [
+            "[tenants.tenants.acme.schema]\nmaterialised_labels = {}",
+            "[tenants.tenants.acme.schema.materialized_labels]\nlog = [\"team\"]",
+            "[tenants.tenants.acme.schema.default_schemas]\nmetric_enabled = false",
+            "[tenants.tenants.acme.schema.warm_index]\nsignal = [\"logs\"]",
+        ] {
+            Jail::expect_with(|jail| {
+                jail.create_file(
+                    "signaldb.toml",
+                    &format!("[tenants.tenants.acme]\nenabled = true\n{block}"),
+                )?;
+                assert!(
+                    Configuration::load_from_path(std::path::Path::new("signaldb.toml")).is_err(),
+                    "{block}"
+                );
+                Ok(())
+            });
+        }
     }
 
     #[test]

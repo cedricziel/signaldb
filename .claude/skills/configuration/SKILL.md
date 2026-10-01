@@ -90,7 +90,7 @@ Env: `SIGNALDB__SCHEMA__CATALOG_TYPE`, `SIGNALDB__SCHEMA__CATALOG_URI` (double-u
 logs = ["namespace", "pod"]   # also: traces / metrics / profiles
 ```
 
-Per-signal allowlists of attribute keys copied, as strings, into dedicated `label_<key>` columns at ingest. The value also stays in its typed home map. The dialects that lower to the IR follow the IR's rule: a `label_<key>` column only stands in for a String-canonical key recorded at one level; only non-IR fallback paths read the column directly. Default empty. Applies to tables created after the change; older tables read the key's typed home instead. Per-tenant: a tenant's schema block, `[tenants.tenants.<id>.schema]` (with `enabled = true` on the tenant and `catalog_type`/`catalog_uri` in the block, which have no defaults), replaces the whole global `[schema]` block, not just this list. See `docs/architecture/storage-layout.md#materialized-labels`.
+Per-signal allowlists of attribute keys copied, as strings, into dedicated `label_<key>` columns at ingest. The value also stays in its typed home map. The dialects that lower to the IR follow the IR's rule: a `label_<key>` column only stands in for a String-canonical key recorded at one level; only non-IR fallback paths read the column directly. Default empty. Applies to tables created after the change; older tables read the key's typed home instead. Per-tenant: a tenant's schema block, `[tenants.tenants.<id>.schema]` (with `enabled = true` on the tenant), is merged over the global `[schema]` field by field (`TenantSchemaOverride`): every field it leaves unset keeps the global value. A signal's list set here replaces that signal's global list (`[]` clears it); unset signals keep the global list. See `docs/architecture/storage-layout.md#materialized-labels`.
 
 #### Attribute type overrides
 
@@ -103,7 +103,7 @@ type = "int64"          # string | int64 | float64 | bool
 dataset = "prod"        # optional; omitted = every dataset of the tenant
 ```
 
-Pins the canonical type of one attribute key instead of leaving it to the first-observed value or a semantic-convention hint. Values of another type still arrive losslessly but aren't typed-queryable. A dataset-specific entry wins over one with no `dataset`. Per-tenant: a tenant schema override replaces the global list wholesale, same as `[schema.materialized_labels]` above.
+Pins the canonical type of one attribute key instead of leaving it to the first-observed value or a semantic-convention hint. Values of another type still arrive losslessly but aren't typed-queryable. A dataset-specific entry wins over one with no `dataset`. Per-tenant: a tenant's entry replaces the global entries on the same (signal, level, key) it covers — all of them when it has no `dataset`, only that dataset's when it has one; other global entries still apply. Unknown keys in a tenant schema block are rejected, and a tenant's `enabled` defaults to `true`.
 
 #### Warm index
 
@@ -117,7 +117,7 @@ attrs_per_row = 16           # typed attributes per row (NDV factor)
 max_bloom_ndv = 2000000      # cap on rows_per_row_group * attrs_per_row
 ```
 
-Opt-in containment index: an `attr_index` `List<Binary>` column with a bloom filter, used to skip files for an equality predicate on an unpromoted typed attribute (the typed maps carry no per-key statistics). Only tables on the typed attribute layout gain it. It costs extra storage and write time, which is why it is off by default. Per-tenant: a tenant schema override replaces the whole `[schema]` block, including this one. Querier-side gating lives in `[querier.warm_index]` (`enabled = true`, `min_files = 4`, `sample_files = 16`, `max_keep_ratio = 0.5`, `probe_concurrency = 16`): no probe below `min_files` candidate files, and the full probe is skipped when more than `max_keep_ratio` of a `sample_files` sample survives. See `docs/architecture/storage-layout.md#attribute-storage-tiers`.
+Opt-in containment index: an `attr_index` `List<Binary>` column with a bloom filter, used to skip files for an equality predicate on an unpromoted typed attribute (the typed maps carry no per-key statistics). Only tables on the typed attribute layout gain it. It costs extra storage and write time, which is why it is off by default. Per-tenant: merged per field; `datasets` set by a tenant replaces the global allowlist (it cannot reset it to every dataset). Querier-side gating lives in `[querier.warm_index]` (`enabled = true`, `min_files = 4`, `sample_files = 16`, `max_keep_ratio = 0.5`, `probe_concurrency = 16`): no probe below `min_files` candidate files, and the full probe is skipped when more than `max_keep_ratio` of a `sample_files` sample survives. See `docs/architecture/storage-layout.md#attribute-storage-tiers`.
 
 ### Authentication
 

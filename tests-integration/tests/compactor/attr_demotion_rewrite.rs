@@ -277,9 +277,9 @@ async fn setup_with_tenant(
             config.tenants.tenants.insert(
                 tenant_id.to_string(),
                 common::config::TenantSchemaConfig {
-                    schema: Some(common::config::SchemaConfig {
-                        materialized_labels: common::config::MaterializedLabels {
-                            logs: vec!["env".to_string()],
+                    schema: Some(common::config::TenantSchemaOverride {
+                        materialized_labels: common::config::MaterializedLabelsOverride {
+                            logs: Some(vec!["env".to_string()]),
                             ..Default::default()
                         },
                         ..Default::default()

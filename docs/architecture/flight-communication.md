@@ -583,4 +583,4 @@ Current implementation provides:
 
 The Flight-based architecture with WAL integration provides a solid, production-ready foundation for observability data processing at scale.
 
-> The writer's `do_put` v1→storage transformation resolves materialized-label allowlists per tenant (a tenant schema override replaces the global set).
+> The writer's `do_put` v1→storage transformation resolves materialized-label allowlists per tenant (a list set in the tenant's schema block replaces that signal's global list).

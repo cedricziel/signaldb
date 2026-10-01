@@ -552,13 +552,11 @@ columns to tables created afterwards.
 logs = ["namespace", "pod"]
 # traces = [...]   # metrics / profiles likewise
 
-# Per-tenant override: a tenant's schema block replaces the whole global
-# [schema] block. The block needs catalog_type and catalog_uri (no defaults).
+# Per-tenant override: a tenant's schema block is merged over the global
+# [schema] field by field. This replaces acme's logs list only; its traces,
+# metrics and profiles lists stay the global ones.
 [tenants.tenants.acme]
 enabled = true
-[tenants.tenants.acme.schema]
-catalog_type = "sql"
-catalog_uri = "sqlite://.data/acme_catalog.db"
 [tenants.tenants.acme.schema.materialized_labels]
 logs = ["team", "region"]
 ```
@@ -639,10 +637,10 @@ logs = ["team", "region"]
 - **Population** (writer): each row's value is taken from its **resource**,
   then **scope**, then **record** attributes (first non-null wins); the value
   is also left in its typed home, so label discovery is unaffected.
-- **Per-tenant resolution**: allowlists resolve per tenant — a tenant
-  schema override replaces the global set wholesale (no merging) — both
-  where tables are created (`CatalogManager::ensure_table`) and in the
-  writer's transforms.
+- **Per-tenant resolution**: allowlists resolve per tenant — a signal's list
+  set in a tenant's schema block replaces that signal's global list, and an
+  unset one keeps it (`TenantSchemaOverride`) — both where tables are created
+  (`CatalogManager::ensure_table`) and in the writer's transforms.
 - **When it applies**: a table carries the columns from its configured set at
   creation time — whether provisioning or a first write created it; existing tables can gain further
   `label_<key>` columns post-creation through

@@ -40,8 +40,9 @@ tell whether it is working.
 ## What gets provisioned
 
 Up to five tables per dataset, gated on the signal types enabled **for that
-tenant** — a tenant that carries its own `[schema]` block narrows the set, so
-one that disabled metrics gets no `metrics`/`metric_exemplars` tables:
+tenant** — a tenant's own schema block overrides the gates it sets and keeps
+the global value for the rest, so one that disabled metrics gets no
+`metrics`/`metric_exemplars` tables:
 
 | Signal   | Tables                        | Gate                               |
 | -------- | ----------------------------- | ---------------------------------- |

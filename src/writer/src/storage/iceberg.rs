@@ -245,8 +245,8 @@ pub struct IcebergTableWriter {
     table: Table,
     tenant_id: String,
     dataset_id: String,
-    /// Tenant-resolved materialized-label allowlists (a tenant schema
-    /// override replaces the global set), used by the transforms.
+    /// Tenant-resolved materialized-label allowlists (the tenant's schema
+    /// block merged over the global one), used by the transforms.
     materialized: common::config::MaterializedLabels,
     /// Retry configuration for failed operations
     retry_config: RetryConfig,
