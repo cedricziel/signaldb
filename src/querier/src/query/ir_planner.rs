@@ -43,6 +43,7 @@ use common::query_ir::{
     Resolved, ResultEnvelope, SourceRegistry, SpanListField, Stage, TimestampLiteral, ValueType,
     coerce, parse_duration_ns, safe_ident, validate,
 };
+use common::query_ir::{PageUnit, page::BODY_HASH};
 use common::schema::logical::{AttributeLevel, Filterability, LogicalSchema, LogicalType};
 use common::schema::type_authority::CanonicalType;
 use common::schema::typed_attributes::{self, has_typed_container, home_column, typed_columns};
@@ -965,7 +966,7 @@ impl IrService {
                 dataset_slug,
                 params.now_ns,
                 AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
-                params.page.as_ref(),
+                params.page.as_ref().map(|p| (p, p.size as usize + 1)),
             )
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
@@ -991,6 +992,47 @@ impl IrService {
             .instrument(exec_span.clone())
             .await
             .map_err(QuerierError::from)?;
+        // A page's sort fetches one row past `size`. When that row extends the
+        // tie group at the boundary, the group is read again in full, bounded
+        // by the tie limit, rather than over-fetching every page by it.
+        let crossing = match &params.page {
+            Some(page)
+                if page.unit == PageUnit::Rows && page.ceiling.is_none_or(|c| c > page.size) =>
+            {
+                page_cut::crossing_group(&batches, &page.order, page.size as usize)?
+                    .map(|crossing| (page, crossing))
+            }
+            _ => None,
+        };
+        let batches = match crossing {
+            Some((page, crossing)) => {
+                let retry = PageRequest {
+                    after: crossing.after.or_else(|| page.after.clone()),
+                    ..page.clone()
+                };
+                let fetch = self.page_max_tie_rows.saturating_add(2);
+                let group = match self
+                    .plan_with_correlate_truncation(
+                        &doc,
+                        tenant_slug,
+                        dataset_slug,
+                        params.now_ns,
+                        AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+                        Some((&retry, fetch)),
+                    )
+                    .await?
+                {
+                    Some((df, ..)) => df
+                        .collect()
+                        .instrument(exec_span.clone())
+                        .await
+                        .map_err(QuerierError::from)?,
+                    None => Vec::new(),
+                };
+                [crossing.head, group].concat()
+            }
+            None => batches,
+        };
         let (batches, page) = match &params.page {
             Some(page) => {
                 let limits = CutLimits {
@@ -998,7 +1040,11 @@ impl IrService {
                     unit: page.unit,
                     exact: false,
                     ceiling: page.ceiling.map(|c| c as usize),
-                    max_tie_rows: self.page_max_tie_rows,
+                    // A trace page bounds each trace's spans as `match` does.
+                    max_tie_rows: match page.unit {
+                        PageUnit::Rows => self.page_max_tie_rows,
+                        PageUnit::Traces => self.match_limits.max_spans,
+                    },
                     max_bytes: self.page_max_bytes,
                 };
                 let (batches, report) = page_cut::cut_page(&batches, &page.order, limits)?;
@@ -1190,7 +1236,7 @@ impl IrService {
         dataset_slug: &str,
         now_ns: i64,
         attribute_type_request: AttributeTypeRequest,
-        page: Option<&PageRequest>,
+        page: Option<(&PageRequest, usize)>,
     ) -> Result<Option<(DataFrame, ResolvedWindow, CorrelateOutcome)>, QuerierError> {
         plan_document(
             &self.session_context,
@@ -1200,7 +1246,7 @@ impl IrService {
                 .with_correlate_max_source_rows(self.correlate_max_source_rows)
                 .with_match_limits(self.match_limits)
                 .with_attribute_type_request(attribute_type_request)
-                .with_page(page, self.page_max_tie_rows),
+                .with_page(page),
         )
         .await
     }
@@ -1267,7 +1313,6 @@ async fn plan_operand(
         match_limits,
         attribute_type_request,
         page,
-        page_max_tie_rows,
     } = request;
     reject_pseudo_source(doc)?;
     // Before the missing-table shortcut below skips `validate`.
@@ -1477,16 +1522,21 @@ async fn plan_operand(
         df = metric_series::sort_frame(df, metric_series::terminal_order(doc, window))?;
     }
     let mut page_keys = Vec::new();
-    if let Some(page) = page {
+    if let Some((page, fetch)) = page {
         for (i, key) in page.order.iter().enumerate() {
-            lowering.record_field_demand(&key.field);
+            let value = if key.field == BODY_HASH {
+                page_cut::body_hash(lowering.value_expr("body")?)
+            } else {
+                lowering.record_field_demand(&key.field);
+                lowering.value_expr(&key.field)?
+            };
             let name = page_cut::key_column(i);
             df = df
-                .with_column(&name, lowering.value_expr(&key.field)?)
+                .with_column(&name, value)
                 .map_err(QuerierError::QueryFailed)?;
             page_keys.push(name);
         }
-        df = page_cut::bound_to_page(df, page, page_max_tie_rows)?;
+        df = page_cut::bound_to_page(df, page, fetch)?;
     }
     df = lowering.apply_projection(df, doc, &page_keys)?;
     let outcome = CorrelateOutcome {
@@ -2298,11 +2348,9 @@ pub(crate) struct PlanRequest<'a> {
     pub correlate_max_source_rows: usize,
     pub match_limits: MatchLimits,
     pub attribute_type_request: AttributeTypeRequest,
-    /// Sort, resume and bound the result to one page.
-    pub page: Option<&'a PageRequest>,
-    /// `[querier].page_max_tie_rows`: how far past `page.size` the sort
-    /// fetches, so the cut can complete a tie group.
-    pub page_max_tie_rows: usize,
+    /// Sort, resume and bound the result to one page, and the rows a
+    /// `rows` page's sort fetches.
+    pub page: Option<(&'a PageRequest, usize)>,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -2316,13 +2364,11 @@ impl<'a> PlanRequest<'a> {
             match_limits: MatchLimits::default(),
             attribute_type_request: AttributeTypeRequest::CompatOnly,
             page: None,
-            page_max_tie_rows: common::config::QuerierConfig::default().page_max_tie_rows,
         }
     }
 
-    pub(crate) fn with_page(mut self, page: Option<&'a PageRequest>, max_tie_rows: usize) -> Self {
+    pub(crate) fn with_page(mut self, page: Option<(&'a PageRequest, usize)>) -> Self {
         self.page = page;
-        self.page_max_tie_rows = max_tie_rows;
         self
     }
 

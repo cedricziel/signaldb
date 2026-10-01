@@ -17,11 +17,14 @@
 
 use common::query_cursor::{KeyPart, KeyValue, PageReport, PageRequest};
 use common::query_ir::{Direction, PageUnit, SortKey};
-use datafusion::arrow::array::{ArrayRef, RecordBatch};
+use datafusion::arrow::array::{ArrayRef, AsArray, Int64Array, RecordBatch};
 use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::row::{RowConverter, Rows, SortField};
-use datafusion::functions_window::expr_fn::dense_rank;
-use datafusion::logical_expr::{Expr, ExprFunctionExt, SortExpr, lit};
+use datafusion::logical_expr::{
+    ColumnarValue, Expr, JoinType, ScalarFunctionArgs, ScalarUDF, ScalarUDFImpl, Signature,
+    SortExpr, Volatility, cast, lit,
+};
 use datafusion::prelude::{DataFrame, ident};
 use datafusion::scalar::ScalarValue;
 
@@ -34,16 +37,15 @@ pub(crate) fn key_column(index: usize) -> String {
     format!("{KEY_COLUMN_PREFIX}{index}")
 }
 
-const RANK_COLUMN: &str = "__sdb_page_rank";
+const TRACE_COLUMN: &str = "__sdb_page_trace";
 
 /// Resume `df` after `page.after` and sort it by `page.order`, bounded to
-/// what [`cut_page`] needs: `size` rows plus a tie group's worth past them,
-/// or the first `size + 1` whole traces. `df` carries one [`key_column`]
-/// per order key.
+/// `fetch` rows, or to the first `size + 1` whole traces. `df` carries one
+/// [`key_column`] per order key.
 pub(crate) fn bound_to_page(
     df: DataFrame,
     page: &PageRequest,
-    max_tie_rows: usize,
+    fetch: usize,
 ) -> Result<DataFrame, QuerierError> {
     let mut df = df;
     if let Some(after) = &page.after {
@@ -56,20 +58,19 @@ pub(crate) fn bound_to_page(
         .enumerate()
         .map(|(i, k)| ident(key_column(i)).sort(k.dir == Direction::Asc, false))
         .collect();
-    let size = page.size as usize;
     let df = match page.unit {
-        PageUnit::Rows => {
-            let cap = page.ceiling.map_or(usize::MAX, |c| c as usize);
-            let fetch = size.saturating_add(max_tie_rows).min(cap);
-            df.sort(sort)?.limit(0, Some(fetch.saturating_add(1)))?
-        }
+        PageUnit::Rows => df.sort(sort)?.limit(0, Some(fetch))?,
+        // The next `size + 1` trace ids (a TopK over the leading key), then
+        // their spans by a semi-join.
         PageUnit::Traces => {
-            let rank = dense_rank()
-                .order_by(sort[..1].to_vec())
-                .build()?
-                .alias(RANK_COLUMN);
-            df.window(vec![rank])?
-                .filter(ident(RANK_COLUMN).lt_eq(lit(page.size as u64 + 1)))?
+            let trace = ident(key_column(0));
+            let ids = df
+                .clone()
+                .select(vec![trace.clone().alias(TRACE_COLUMN)])?
+                .distinct()?
+                .sort(vec![ident(TRACE_COLUMN).sort(sort[0].asc, false)])?
+                .limit(0, Some(page.size as usize + 1))?;
+            df.join_on(ids, JoinType::LeftSemi, [trace.eq(ident(TRACE_COLUMN))])?
                 .sort(sort)?
         }
     };
@@ -251,21 +252,7 @@ pub(crate) fn cut_page(
 
     let last_key = cut
         .checked_sub(1)
-        .map(|last| {
-            order
-                .iter()
-                .zip(&keys)
-                .map(|(key, column)| {
-                    Ok(KeyPart {
-                        field: key.field.clone(),
-                        value: key_value(
-                            ScalarValue::try_from_array(column, last)
-                                .map_err(QuerierError::QueryFailed)?,
-                        )?,
-                    })
-                })
-                .collect::<Result<Vec<_>, QuerierError>>()
-        })
+        .map(|last| key_at(order, &keys, last))
         .transpose()?;
     let mut page = all.slice(0, cut);
     for &i in key_indices.iter().rev() {
@@ -279,6 +266,113 @@ pub(crate) fn cut_page(
             emitted: units as u64,
         },
     ))
+}
+
+/// The full sort key of row `row`.
+fn key_at(order: &[SortKey], keys: &[ArrayRef], row: usize) -> Result<Vec<KeyPart>, QuerierError> {
+    order
+        .iter()
+        .zip(keys)
+        .map(|(key, column)| {
+            Ok(KeyPart {
+                field: key.field.clone(),
+                value: key_value(
+                    ScalarValue::try_from_array(column, row).map_err(QuerierError::QueryFailed)?,
+                )?,
+            })
+        })
+        .collect()
+}
+
+/// The tie group at a `rows` page's boundary, when the `size + 1` rows
+/// fetched end inside it: the rows before the group, and the key of the
+/// last of them to read the whole group after (`None`: from the page's own
+/// position).
+pub(crate) struct Crossing {
+    pub head: Vec<RecordBatch>,
+    pub after: Option<Vec<KeyPart>>,
+}
+
+pub(crate) fn crossing_group(
+    batches: &[RecordBatch],
+    order: &[SortKey],
+    size: usize,
+) -> Result<Option<Crossing>, QuerierError> {
+    let Some(first) = batches.first() else {
+        return Ok(None);
+    };
+    let all = concat_batches(&first.schema(), batches).map_err(arrow_error)?;
+    if size == 0 || all.num_rows() <= size {
+        return Ok(None);
+    }
+    let keys = (0..order.len())
+        .map(|i| all.column_by_name(&key_column(i)).cloned())
+        .collect::<Option<Vec<_>>>()
+        .ok_or_else(|| QuerierError::InvalidInput("a page is missing its sort key".into()))?;
+    let rows = row_keys(&keys)?;
+    if rows.row(size) != rows.row(size - 1) {
+        return Ok(None);
+    }
+    let mut start = size - 1;
+    while start > 0 && rows.row(start - 1) == rows.row(size - 1) {
+        start -= 1;
+    }
+    let after = start
+        .checked_sub(1)
+        .map(|row| key_at(order, &keys, row))
+        .transpose()?;
+    Ok(Some(Crossing {
+        head: vec![all.slice(0, start)],
+        after,
+    }))
+}
+
+/// A stable 64-bit FNV-1a hash of a string, as the `__sdb_body_hash` sort
+/// key: log lines without trace context that share a timestamp still order
+/// totally.
+pub(crate) fn body_hash(body: Expr) -> Expr {
+    ScalarUDF::from(BodyHashUdf::new()).call(vec![cast(body, DataType::Utf8)])
+}
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+struct BodyHashUdf {
+    signature: Signature,
+}
+
+impl BodyHashUdf {
+    fn new() -> Self {
+        Self {
+            signature: Signature::exact(vec![DataType::Utf8], Volatility::Immutable),
+        }
+    }
+}
+
+impl ScalarUDFImpl for BodyHashUdf {
+    fn name(&self) -> &str {
+        "ir_body_hash"
+    }
+    fn signature(&self) -> &Signature {
+        &self.signature
+    }
+    fn return_type(&self, _arg_types: &[DataType]) -> datafusion::error::Result<DataType> {
+        Ok(DataType::Int64)
+    }
+    fn invoke_with_args(
+        &self,
+        args: ScalarFunctionArgs,
+    ) -> datafusion::error::Result<ColumnarValue> {
+        let hash = |s: &str| {
+            s.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |h, b| {
+                (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01b3)
+            }) as i64
+        };
+        let arrays = ColumnarValue::values_to_arrays(&args.args)?;
+        let strings = arrays[0].as_string_opt::<i32>().ok_or_else(|| {
+            datafusion::error::DataFusionError::Internal("ir_body_hash takes a string".into())
+        })?;
+        let hashed: Int64Array = strings.iter().map(|v| v.map(hash)).collect();
+        Ok(ColumnarValue::Array(std::sync::Arc::new(hashed)))
+    }
 }
 
 /// A sort key value as the cursor carries it.
@@ -539,5 +633,19 @@ mod tests {
             key_value(ScalarValue::Utf8(None)).expect("null"),
             KeyValue::Null
         );
+    }
+
+    #[test]
+    fn the_body_hash_rejects_a_non_string_argument() {
+        use datafusion::logical_expr::ScalarUDFImpl;
+        let udf = BodyHashUdf::new();
+        let result = udf.invoke_with_args(ScalarFunctionArgs {
+            args: vec![ColumnarValue::Array(Arc::new(Int64Array::from(vec![1])))],
+            arg_fields: vec![Arc::new(Field::new("a", DataType::Int64, true))],
+            number_rows: 1,
+            return_field: Arc::new(Field::new("r", DataType::Int64, true)),
+            config_options: Arc::new(Default::default()),
+        });
+        assert!(result.is_err());
     }
 }
