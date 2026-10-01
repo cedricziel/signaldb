@@ -374,6 +374,16 @@ match_max_trace_bytes = 67108864
 # graph keeps the focus node, then the nodes with the most call traffic,
 # and warns how many nodes it dropped.
 graph_max_nodes = 200
+#
+# Query IR pagination (`page`, irVersion 14): default and largest page size,
+# page byte budget (ends at a sort-key boundary), rows that may tie on one
+# sort key, rows one cursor chain may walk, and cursor lifetime (then 410).
+page_default_size = 1000
+page_max_size = 10000
+page_max_bytes = 16777216
+page_max_tie_rows = 10000
+page_max_walk_rows = 1000000
+page_cursor_ttl = "15m"
 
 [querier.datafusion]
 # DataFusion scan/pushdown tuning. All three default to true (DataFusion's

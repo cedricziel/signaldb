@@ -73,18 +73,19 @@ optional follow-up and outside this change's definition of done.
       carries a fetch, so it consumes its whole input before emitting and a
       streaming cut would stop nothing early. The page byte bound uses the
       batch's average row size. The keyset predicate lands with 3.6.)
-- [ ] 3.5 Write failing `ir_planner` tests: a ticket payload with `page`
+- [x] 3.5 Write failing `ir_planner` tests: a ticket payload with `page`
       (order, after, size, window) applies the sort, keyset predicate, and
       cut **before** projection (tie-breakers not in `fields` still work);
       walking a fixture page by page reproduces the unpaged sorted result
       exactly; trailing `limit` caps across pages via `emitted`; the leading
       time key shows partition pruning in `EXPLAIN`.
       Verify with `cargo test --profile ci-test -p querier ir_planner::page`
-- [ ] 3.6 Read the optional `page` object from the ticket payload in
+- [x] 3.6 Read the optional `page` object from the ticket payload in
       `IrService::query`, wire 3.4 in, and fill the trailer report. Without
       `page` the plan is byte-identical to today (assert with an `EXPLAIN`
       snapshot test). 3.5 passes. Add the `[querier]` page keys from design
       D9 to `QuerierConfig`, `signaldb.dist.toml`, and the configuration docs
+      (A paged plan drops a trailing `limit`; the router caps it via `ceiling`.)
 
 ## 4. Router: pagination goes live (router, query-ir version, API contract)
 
