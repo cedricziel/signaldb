@@ -553,6 +553,7 @@ async fn main() -> Result<()> {
             "Flight ports are UNAUTHENTICATED ([auth].internal_service_key is not set); \
              they must be restricted to a trusted network"
         );
+        router::cli::warn_unsigned_cursors();
     }
     let tenant_flight_auth = internal_service_key.clone().map(|key| {
         common::flight::auth::FlightAuthInterceptor::new(
