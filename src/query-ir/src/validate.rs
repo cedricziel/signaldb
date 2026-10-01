@@ -3701,13 +3701,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(15, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(16, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 15,
-                    max: 14,
+                    found: 16,
+                    max: 15,
                     ..
                 }
             ),

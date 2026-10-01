@@ -158,18 +158,18 @@ optional follow-up and outside this change's definition of done.
 
 ## 7. Router: live tail goes live (router, query-ir version, API contract)
 
-- [ ] 7.1 Write failing router tests: a v15 `tail` call returns `tail
+- [x] 7.1 Write failing router tests: a v15 `tail` call returns `tail
     { cursor, settled_through_ns, settle_ns, caught_up }`; a follow-up call
       returns only rows after the cursor; settle is clamped and echoed; a
       cursor older than `tail_max_lag` skips forward with a `tail_lagged`
       warning naming the interval; `not_tailable` cases → 400; cross-tenant
       cursor → 400; a revoked key → 401 on the next call.
       Verify with `cargo test -p router endpoints::query`
-- [ ] 7.2 Raise `MAX_IR_VERSION` to 15. Implement the tail cursor
+- [x] 7.2 Raise `MAX_IR_VERSION` to 15. Implement the tail cursor
       (sliding window, cursor advance to the settle line, lag skip), add
       `tail` to the request/response types, and add `tail_lagged` to the
       `QueryWarning.code` docs. 7.1 passes
-- [ ] 7.3 Regenerate the OpenAPI spec, `signaldb-sdk`, and the TS client.
+- [x] 7.3 Regenerate the OpenAPI spec, `signaldb-sdk`, and the TS client.
       Verify with `pnpm --filter ./src/ui typecheck`
 - [ ] 7.4 Write a `tests-integration` test: start a tail, ingest new logs and
       a long span, and poll. Assert each row is delivered once and in order,
@@ -177,7 +177,7 @@ optional follow-up and outside this change's definition of done.
       tail-time behind the cursor is not delivered (documented
       at-most-once). Verify with
       `cargo test --profile ci-test -p tests-integration live_tail`
-- [ ] 7.5 Docs: a "Live tail" section in `docs/users/querying-ir.md`
+- [x] 7.5 Docs: a "Live tail" section in `docs/users/querying-ir.md`
       (protocol, tail-time per source, settle and its floor before/after
       unflushed-data-visibility, late data, lag, what cannot be tailed). In
       the Roadmap section, move live tail out of "Still deferred". Verify

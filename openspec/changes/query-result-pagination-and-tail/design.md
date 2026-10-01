@@ -331,12 +331,16 @@ cursor after the newest. This gives the "show the last N lines, then follow"
 behaviour of a live log view in one call. The client does not need a separate
 initial query that would overlap the tail.
 
-**Lag.** If the cursor's tail-time is older than `T − tail_max_lag` (default
-5m), the call skips forward to `T − tail_max_lag` and adds a `tail_lagged`
-warning naming the skipped interval. This mirrors a broadcast channel's
-`Lagged`: a slow or suspended client (a backgrounded browser tab) never forces
-an unbounded catch-up scan. To read the gap completely, the client can page it
-with an ordinary absolute-range query.
+**Lag.** The settle line is `max(T − settle, cursor position, previous settle
+line)`, so it never moves backwards when router clocks disagree. If the
+cursor's tail-time is older than `settle line − tail_max_lag` (default 5m),
+the call skips forward to that bound and adds a `tail_lagged` warning naming
+the skipped interval; measuring from the settle line keeps a large `settle`
+from counting as lag. A call whose window is empty skips the querier, and a
+querier that reports no tail position yields a 503. This mirrors a broadcast
+channel's `Lagged`: a slow or suspended client (a backgrounded browser tab)
+never forces an unbounded catch-up scan. To read the gap completely, the
+client can page it with an ordinary absolute-range query.
 
 **Future exact tail.** `unflushed-data-visibility` tags hot rows with a
 per-writer sequence. A tail cursor of `kind: "tail", v: 2` could carry

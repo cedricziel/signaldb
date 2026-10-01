@@ -1467,7 +1467,7 @@
             }
           },
           "410": {
-            "description": "The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk",
+            "description": "The `page.cursor` expired, or a page or tail cursor comes from an incompatible server version (`errorType` `gone`); restart the walk or tail",
             "content": {
               "application/json": {
                 "schema": {
@@ -10110,6 +10110,27 @@
         },
         "additionalProperties": false
       },
+      "IrTail": {
+        "type": "object",
+        "description": "A document-level `tail`: follow the window forward in time.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The previous response's `tail.cursor`; absent on the first call."
+          },
+          "settle": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "How far behind the server clock the tail reads (a duration such as\n`10s`), clamped to the server's bounds."
+          }
+        },
+        "additionalProperties": false
+      },
       "IrValueType": {
         "oneOf": [
           {
@@ -11418,6 +11439,17 @@
             "description": "The default evaluation step of the series-algebra stages; required by\nthe `time`/`constant` pseudo-sources (irVersion 10+).",
             "example": "1m"
           },
+          "tail": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrTail",
+                "description": "Follow the result forward in time (irVersion 15+, `range.to` must be\n`now`): resend the same document with `tail.cursor` set to the\nprevious response's `tail.cursor`. `page.size` bounds each call."
+              }
+            ]
+          },
           "trace_id": {
             "type": [
               "string",
@@ -11534,6 +11566,17 @@
             ],
             "format": "int64"
           },
+          "tail": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QueryTail",
+                "description": "Present iff the request carried `tail` (`rows`/`trace` only)."
+              }
+            ]
+          },
           "traces": {
             "type": [
               "array",
@@ -11588,6 +11631,36 @@
           }
         }
       },
+      "QueryTail": {
+        "type": "object",
+        "description": "The `tail` member of a live-tail response.",
+        "required": [
+          "cursor",
+          "settled_through_ns",
+          "settle_ns",
+          "caught_up"
+        ],
+        "properties": {
+          "caught_up": {
+            "type": "boolean",
+            "description": "`false` when `page.size` cut the call short: call again right away."
+          },
+          "cursor": {
+            "type": "string",
+            "description": "Send back as `tail.cursor` with the same document for the next call.\nOpaque: never build or edit one."
+          },
+          "settle_ns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "The settle delay this call used: the requested one, clamped."
+          },
+          "settled_through_ns": {
+            "type": "integer",
+            "format": "int64",
+            "description": "This call read rows whose tail-time is at or before this instant."
+          }
+        }
+      },
       "QueryWarning": {
         "type": "object",
         "description": "A non-fatal diagnostic about a query that still produced a result. A\nwarning never changes the result: it explains something the caller\nprobably did not intend, so a client can surface it next to the data.",
@@ -11598,7 +11671,7 @@
         "properties": {
           "code": {
             "type": "string",
-            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field`, `no_attribute_statistics`,\n`correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,\n`graph_node_limit` and `match_incomplete_trace`.",
+            "description": "Stable machine-readable identifier — clients branch on this, not on\n`message`. Today `unknown_group_by_field`, `no_attribute_statistics`,\n`correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,\n`graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a\nlive tail skipped forward).",
             "example": "unknown_group_by_field"
           },
           "field": {

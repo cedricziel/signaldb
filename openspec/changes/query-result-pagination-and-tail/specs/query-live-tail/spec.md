@@ -85,11 +85,13 @@ tailable span duration.
 
 ### Requirement: A lagging tail is moved forward explicitly
 
-When a tail cursor's position is older than the server's maximum tail lag,
-the call SHALL skip forward to the lag bound rather than scan the whole
-backlog. The response SHALL carry a `tail_lagged` warning naming the skipped
-interval. A tail SHALL never fail, and SHALL never silently skip, because the
-client fell behind.
+When a tail cursor's position is more than the server's maximum tail lag
+behind the call's settle line (`T − settle`), the call SHALL skip forward to
+that bound rather than scan the whole backlog, so a large `settle` is never
+counted as lag. The settle line SHALL never move backwards, even when the
+server clock is behind the cursor. The response SHALL carry a `tail_lagged`
+warning naming the skipped interval. A tail SHALL never fail, and SHALL never
+silently skip, because the client fell behind.
 
 #### Scenario: A suspended client resumes with a lag warning
 
@@ -100,12 +102,14 @@ client fell behind.
 
 ### Requirement: Only tailable documents can be tailed
 
-A document carrying `tail` SHALL be paginatable (see `query-result-pagination`),
-SHALL use a relative `range.to` of `now`, and SHALL NOT contain an `order`
-stage, a `match` stage, or a `limit` stage. A `tail` combined with
-`page.cursor` SHALL be rejected. A violating document SHALL be rejected at
-validation with a 400 whose details give the reason `not_tailable` and name
-the offending stage, envelope, or range bound.
+A document carrying `tail` SHALL be paginatable (see
+`query-result-pagination`), SHALL use the `rows` envelope (a `trace` envelope
+cannot be tailed, since a tail delivers spans as they end), SHALL use a
+relative `range.to` of `now`, and SHALL NOT contain an `order` stage, a
+`match` stage, or a `limit` stage. A `tail` combined with `page.cursor` SHALL
+be rejected. A violating document SHALL be rejected at validation with a 400
+whose details give the reason `not_tailable` and name the offending stage,
+envelope, or range bound.
 
 #### Scenario: An absolute range cannot be tailed
 
@@ -116,6 +120,11 @@ the offending stage, envelope, or range bound.
 
 - **WHEN** a document with a `match` stage carries `tail`
 - **THEN** it is rejected with `not_tailable` naming the `match` stage
+
+#### Scenario: A trace envelope cannot be tailed
+
+- **WHEN** a document with `result: "trace"` carries `tail`
+- **THEN** it is rejected with `not_tailable` naming `result`
 
 #### Scenario: An aggregate cannot be tailed
 

@@ -1967,6 +1967,21 @@ export type IrSubDocument = {
 };
 
 /**
+ * A document-level `tail`: follow the window forward in time.
+ */
+export type IrTail = {
+    /**
+     * The previous response's `tail.cursor`; absent on the first call.
+     */
+    cursor?: string | null;
+    /**
+     * How far behind the server clock the tail reads (a duration such as
+     * `10s`), clamped to the server's bounds.
+     */
+    settle?: string | null;
+};
+
+/**
  * The canonical value types that flow through the IR.
  *
  * Each logical field has exactly one canonical `ValueType`, owned by the
@@ -2527,6 +2542,7 @@ export type QueryIrRequest = {
      * the `time`/`constant` pseudo-sources (irVersion 10+).
      */
     step?: string | null;
+    tail?: null | IrTail;
     /**
      * `graph` only: restrict to the services and calls of one trace.
      */
@@ -2567,6 +2583,7 @@ export type QueryIrResponse = {
     rows?: Array<Array<unknown>>;
     series?: Array<ResultSeries>;
     step_ns?: number | null;
+    tail?: null | QueryTail;
     /**
      * Present iff `result == "trace"` — the result rows grouped per trace, in
      * order of first appearance. `Some` even when no row matched.
@@ -2606,6 +2623,29 @@ export type QueryRange = {
 };
 
 /**
+ * The `tail` member of a live-tail response.
+ */
+export type QueryTail = {
+    /**
+     * `false` when `page.size` cut the call short: call again right away.
+     */
+    caught_up: boolean;
+    /**
+     * Send back as `tail.cursor` with the same document for the next call.
+     * Opaque: never build or edit one.
+     */
+    cursor: string;
+    /**
+     * The settle delay this call used: the requested one, clamped.
+     */
+    settle_ns: number;
+    /**
+     * This call read rows whose tail-time is at or before this instant.
+     */
+    settled_through_ns: number;
+};
+
+/**
  * A non-fatal diagnostic about a query that still produced a result. A
  * warning never changes the result: it explains something the caller
  * probably did not intend, so a client can surface it next to the data.
@@ -2615,7 +2655,8 @@ export type QueryWarning = {
      * Stable machine-readable identifier — clients branch on this, not on
      * `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
      * `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
-     * `graph_node_limit` and `match_incomplete_trace`.
+     * `graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a
+     * live tail skipped forward).
      */
     code: string;
     /**
@@ -4590,7 +4631,7 @@ export type QueryIrErrors = {
      */
     403: ApiErrorBody;
     /**
-     * The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk
+     * The `page.cursor` expired, or a page or tail cursor comes from an incompatible server version (`errorType` `gone`); restart the walk or tail
      */
     410: ApiErrorBody;
     /**

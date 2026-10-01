@@ -68,6 +68,7 @@ fn client_exposes_ir_query_and_round_trips_the_request() {
         constant: None,
         baseline: None,
         page: None,
+        tail: None,
         pipeline: vec![
             serde_json::from_value(serde_json::json!({
                 "where": { "field": "service.name", "op": "eq", "value": "api" }
