@@ -332,9 +332,12 @@ v10 `sample`, `scalar`, `vector`, `time`/`constant`) arrive as `bucket`/`__label
 batches; the router keys each series on the canonical `__labels` string, returns
 400 when two series share a label set at one instant, serializes NaN/±Inf as
 `null`, and answers a `scalar` document with the `scalar` envelope. Any envelope may carry a `warnings` array — non-fatal
-diagnostics with a stable `code`; today `unknown_group_by_field`, raised when an
-`aggregate.by` field is neither a logical field of the source nor carried by any
-record in the window, so the grouping produced one `null` label. It is a warning
+diagnostics with a stable `code` (the full list is in the Warnings section of
+`docs/users/querying-ir.md`). For example, `unknown_group_by_field` is raised
+when an `aggregate.by` field is neither a logical field of the source nor
+carried by any record in the window, so the grouping produced one `null` label,
+and `match_incomplete_trace` when a structural `match` evaluated traces the
+query range cut. `unknown_group_by_field` is a warning
 rather than a rejection because unpromoted attributes cannot be enumerated while
 planning (#811/#813), which makes "absent from this window" indistinguishable
 from "not a field" until the attribute registry lands. See

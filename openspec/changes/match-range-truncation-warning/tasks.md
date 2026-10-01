@@ -5,14 +5,14 @@ querier and router may be deployed in either order (design D3).
 
 ## 1. Trailer report carries match incompleteness (common)
 
-- [ ] 1.1 Write failing tests in `common::flight`: a report with
+- [x] 1.1 Write failing tests in `common::flight`: a report with
       `matchIncomplete` round-trips through `correlate_report_trailer` /
       `parse_correlate_report_trailer`; a trailer JSON with an unknown member
       still parses (forward compatibility); a pre-change trailer without the
       member parses to `match_incomplete: None`; the legacy
       `{"correlate_truncated":true}` form still maps to `row_limit` only.
       Verify with `cargo test -p common flight::`
-- [ ] 1.2 Rename `CorrelateReport` to `QueryReport` (keep a
+- [x] 1.2 Rename `CorrelateReport` to `QueryReport` (keep a
       `pub type CorrelateReport = QueryReport;` alias), add
       `match_incomplete: Option<MatchIncompleteReport { matched, unmatched,
     sample_trace_ids }>` with `#[serde(default)]`, and keep the
@@ -46,15 +46,15 @@ querier and router may be deployed in either order (design D3).
 
 ## 3. Router warning, API contract, clients, docs
 
-- [ ] 3.1 Write a failing router unit test next to `correlate_warnings`: a
+- [x] 3.1 Write a failing router unit test next to `correlate_warnings`: a
       report with `match_incomplete` produces exactly one
       `match_incomplete_trace` warning whose message carries both counts
       (dropping a zero clause) and the sample ids; a report without it
       produces none. Verify with `cargo test -p router endpoints::query`
-- [ ] 3.2 Map the report to the warning (design D4) and add
+- [x] 3.2 Map the report to the warning (design D4) and add
       `match_incomplete_trace` to the `QueryWarning.code` doc comment. 3.1
       passes
-- [ ] 3.3 Regenerate the OpenAPI spec, the Rust SDK (`src/signaldb-sdk`), and
+- [x] 3.3 Regenerate the OpenAPI spec, the Rust SDK (`src/signaldb-sdk`), and
       the TypeScript client (`src/ui/src/api/gen`). Verify the only diff is
       the `code` description, and that
       `pnpm --filter ./src/ui typecheck && pnpm --filter ./src/ui test`

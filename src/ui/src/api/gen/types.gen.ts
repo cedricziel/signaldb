@@ -2541,8 +2541,8 @@ export type QueryWarning = {
     /**
      * Stable machine-readable identifier — clients branch on this, not on
      * `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
-     * `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`
-     * and `graph_node_limit`.
+     * `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
+     * `graph_node_limit` and `match_incomplete_trace`.
      */
     code: string;
     /**

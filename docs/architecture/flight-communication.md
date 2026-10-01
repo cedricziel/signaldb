@@ -376,6 +376,17 @@ sequenceDiagram
 3. Querier executes query using DataFusion against Parquet files
 4. Results streamed back to client via Flight → HTTP
 
+**Query report trailer.** Some outcomes of a Query IR query are known only
+once its stream has run: a `correlate` stage's row or fan-out cap, its target
+scan window, and the traces a `match` stage found cut by the range. The
+querier sends them after the last batch in one data-free `FlightData` message
+whose `app_metadata` is `correlate_report:` followed by the JSON of
+`common::flight::QueryReport` (`correlate_report_trailer`). The router strips
+that message from the stream and turns the report into `QueryWarning`s.
+Every member is optional and unknown members are ignored, so a router and a
+querier from adjacent releases understand each other in either rollout
+order: a member the reader does not know only loses its warning.
+
 **Parquet footer caching.** Step 3 is dominated by _opening_ candidate Parquet
 files rather than by reading them: pruning (partition, statistics, bloom)
 already reduces a point lookup to a handful of bytes, while every candidate

@@ -34,7 +34,7 @@ pub mod schema;
 /// the querier appends after a Query IR `correlate` stage
 /// (`openspec/changes/query-ir-span-join`, `otel-native-schema`).
 ///
-/// The report it carries — [`CorrelateReport`], as JSON — is only known
+/// The report it carries — [`QueryReport`], as JSON — is only known
 /// once the join(s) have actually streamed to completion (row/fanout caps
 /// are detected by streaming operators such as `CorrelateCapExec`
 /// (`querier::query::correlate_cap`), and the target scan window is only
@@ -51,14 +51,16 @@ pub const CORRELATE_REPORT_APP_METADATA_PREFIX: &[u8] = b"correlate_report:";
 /// adjacent releases understand each other in either rollout order.
 const LEGACY_CORRELATE_TRUNCATED_APP_METADATA: &[u8] = br#"{"correlate_truncated":true}"#;
 
-/// What a `correlate` stage did while joining, reported by the querier to
-/// the router in a Flight trailer (see
+/// What a query's stages reported while running — a `correlate` stage's
+/// join outcome and a `match` stage's incomplete traces — sent by the
+/// querier to the router in a Flight trailer (see
 /// [`CORRELATE_REPORT_APP_METADATA_PREFIX`]) so the router can surface it
-/// as a `QueryWarning`. Every field defaults to "nothing to report";
-/// [`Self::is_empty`] says whether the trailer is worth sending at all.
-#[derive(Debug, Clone, Copy, Default, PartialEq, serde::Serialize, serde::Deserialize)]
+/// as `QueryWarning`s. Every field defaults to "nothing to report", and
+/// unknown members are ignored, so adjacent releases read each other's
+/// reports; [`Self::is_empty`] says whether the trailer is worth sending.
+#[derive(Debug, Clone, Default, PartialEq, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
-pub struct CorrelateReport {
+pub struct QueryReport {
     /// A `correlate` stage's joined row count reached
     /// `[querier].correlate_max_rows`; the result was truncated.
     #[serde(default)]
@@ -70,9 +72,31 @@ pub struct CorrelateReport {
     /// The target scan window a signal `correlate` stage actually used.
     #[serde(default)]
     pub window: Option<CorrelateWindowReport>,
+    /// Traces a relational `match` stage evaluated whose hierarchy the
+    /// query range visibly cut.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub match_incomplete: Option<MatchIncompleteReport>,
 }
 
-impl CorrelateReport {
+/// The pre-`match` name of [`QueryReport`].
+pub type CorrelateReport = QueryReport;
+
+/// Evaluated traces with a span whose parent is not among the evaluated
+/// spans, or a span that ends after the range: `matched` ones may be
+/// missing witness spans, `unmatched` ones may have matched over a wider
+/// range. `sample_trace_ids` holds up to three, matched first.
+#[derive(Debug, Clone, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MatchIncompleteReport {
+    #[serde(default)]
+    pub matched: u64,
+    #[serde(default)]
+    pub unmatched: u64,
+    #[serde(default)]
+    pub sample_trace_ids: Vec<String>,
+}
+
+impl QueryReport {
     /// Whether every field is at its default — nothing worth reporting.
     pub fn is_empty(&self) -> bool {
         *self == Self::default()
@@ -97,18 +121,18 @@ pub struct CorrelateWindowReport {
 
 /// Build the trailing `FlightData` message reporting a `correlate` stage's
 /// outcome (see [`CORRELATE_REPORT_APP_METADATA_PREFIX`]), or `None` when
-/// `report` [`CorrelateReport::is_empty`] or (never expected in practice)
+/// `report` [`QueryReport::is_empty`] or (never expected in practice)
 /// it fails to serialize.
-pub fn correlate_report_trailer(report: &CorrelateReport) -> Option<FlightData> {
+pub fn correlate_report_trailer(report: &QueryReport) -> Option<FlightData> {
     if report.is_empty() {
         return None;
     }
-    let app_metadata = if *report == CorrelateReport::row_limit_only() {
+    let app_metadata = if *report == QueryReport::row_limit_only() {
         LEGACY_CORRELATE_TRUNCATED_APP_METADATA.to_vec()
     } else {
         let mut app_metadata = CORRELATE_REPORT_APP_METADATA_PREFIX.to_vec();
         if let Err(e) = serde_json::to_writer(&mut app_metadata, report) {
-            tracing::error!(error = %e, "failed to serialize CorrelateReport for the Flight trailer");
+            tracing::error!(error = %e, "failed to serialize QueryReport for the Flight trailer");
             return None;
         }
         app_metadata
@@ -121,15 +145,15 @@ pub fn correlate_report_trailer(report: &CorrelateReport) -> Option<FlightData> 
     })
 }
 
-/// Parse a trailer's `app_metadata` back into a [`CorrelateReport`], or
+/// Parse a trailer's `app_metadata` back into a [`QueryReport`], or
 /// `None` if it doesn't carry [`CORRELATE_REPORT_APP_METADATA_PREFIX`].
 /// `Some(Err(_))` means the prefix matched but the JSON payload didn't
 /// parse — a malformed trailer, not one from a differently-shaped message.
 pub fn parse_correlate_report_trailer(
     app_metadata: &[u8],
-) -> Option<Result<CorrelateReport, serde_json::Error>> {
+) -> Option<Result<QueryReport, serde_json::Error>> {
     if app_metadata == LEGACY_CORRELATE_TRUNCATED_APP_METADATA {
-        return Some(Ok(CorrelateReport::row_limit_only()));
+        return Some(Ok(QueryReport::row_limit_only()));
     }
     let payload = app_metadata.strip_prefix(CORRELATE_REPORT_APP_METADATA_PREFIX)?;
     Some(serde_json::from_slice(payload))
@@ -264,18 +288,19 @@ mod correlate_report_tests {
 
     #[test]
     fn empty_report_has_no_trailer() {
-        assert!(correlate_report_trailer(&CorrelateReport::default()).is_none());
+        assert!(correlate_report_trailer(&QueryReport::default()).is_none());
     }
 
     #[test]
     fn non_empty_report_round_trips_through_the_trailer() {
-        let report = CorrelateReport {
+        let report = QueryReport {
             row_limit: true,
             fanout_limit: true,
             window: Some(CorrelateWindowReport {
                 start_ns: 1,
                 end_ns: 2,
             }),
+            ..match_incomplete_report()
         };
         let trailer = correlate_report_trailer(&report).expect("non-empty report has a trailer");
         let decoded = parse_correlate_report_trailer(&trailer.app_metadata)
@@ -286,7 +311,7 @@ mod correlate_report_tests {
 
     #[test]
     fn row_limit_only_report_uses_the_legacy_trailer_both_ways() {
-        let report = CorrelateReport::row_limit_only();
+        let report = QueryReport::row_limit_only();
         let trailer = correlate_report_trailer(&report).expect("non-empty report has a trailer");
         assert_eq!(
             trailer.app_metadata.as_ref(),
@@ -296,6 +321,47 @@ mod correlate_report_tests {
             .expect("legacy trailer is recognized")
             .expect("legacy trailer parses");
         assert_eq!(decoded, report);
+    }
+
+    fn match_incomplete_report() -> QueryReport {
+        QueryReport {
+            match_incomplete: Some(MatchIncompleteReport {
+                matched: 3,
+                unmatched: 1,
+                sample_trace_ids: vec!["5b8e".into(), "a1f0".into()],
+            }),
+            ..QueryReport::default()
+        }
+    }
+
+    #[test]
+    fn match_incomplete_round_trips_through_the_trailer() {
+        let report = match_incomplete_report();
+        let trailer = correlate_report_trailer(&report).expect("non-empty report has a trailer");
+        let decoded = parse_correlate_report_trailer(&trailer.app_metadata)
+            .expect("trailer carries the report prefix")
+            .expect("trailer JSON parses");
+        assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn unknown_report_members_are_ignored() {
+        let mut app_metadata = CORRELATE_REPORT_APP_METADATA_PREFIX.to_vec();
+        app_metadata.extend_from_slice(br#"{"fanoutLimit":true,"fromTheFuture":{"x":1}}"#);
+        let decoded = parse_correlate_report_trailer(&app_metadata)
+            .expect("prefix matched")
+            .expect("unknown members are ignored");
+        assert!(decoded.fanout_limit);
+    }
+
+    #[test]
+    fn a_pre_match_report_parses_without_match_incomplete() {
+        let mut app_metadata = CORRELATE_REPORT_APP_METADATA_PREFIX.to_vec();
+        app_metadata.extend_from_slice(br#"{"rowLimit":false,"fanoutLimit":true,"window":null}"#);
+        let decoded = parse_correlate_report_trailer(&app_metadata)
+            .expect("prefix matched")
+            .expect("old report parses");
+        assert_eq!(decoded.match_incomplete, None);
     }
 
     #[test]
