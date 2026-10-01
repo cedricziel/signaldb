@@ -192,10 +192,10 @@ optional follow-up and outside this change's definition of done.
       `tail_lagged` with the existing warning UI. Signals that cannot be
       tailed keep `liveRefetchInterval`. Verify with
       `pnpm --filter ./src/ui test && pnpm --filter ./src/ui typecheck`
-- [ ] 8.2 Write a failing CLI test, then implement `signaldb query ir
+- [x] 8.2 Write a failing CLI test, then implement `signaldb query ir
     --follow [--settle 5s]`, polling with the tail cursor and printing
       NDJSON. Verify with `cargo test -p signaldb-cli query`
-- [ ] 8.3 Extend the MCP `query_ir` tool with `tail` input/output; one call
+- [x] 8.3 Extend the MCP `query_ir` tool with `tail` input/output; one call
       per tool invocation, with no server-side loop. Verify with
       `cargo test -p mcp-server query_ir`
 - [ ] 8.4 Docs: the CLI `--follow` reference, and the UI live-mode behaviour

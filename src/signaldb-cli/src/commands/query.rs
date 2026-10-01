@@ -65,6 +65,14 @@ pub struct QueryArgs {
     /// row (or, for the `trace` envelope, each trace) as one NDJSON line.
     #[arg(long, requires = "ir")]
     all_pages: bool,
+    /// With `--ir`: live-tail the document (irVersion 15+, `range.to` of
+    /// `now`), printing new rows as NDJSON until interrupted.
+    #[arg(long, requires = "ir", conflicts_with = "all_pages")]
+    follow: bool,
+    /// With `--follow`: how far behind the clock the tail reads (e.g. `10s`);
+    /// the server clamps it to its bounds.
+    #[arg(long, requires = "follow", value_name = "DURATION")]
+    settle: Option<String>,
     /// Range start (unix seconds/ns or RFC3339). With `--promql`/`--logql`,
     /// presence of `--start` or `--end` switches to a range query.
     #[arg(long)]
@@ -207,7 +215,7 @@ impl QueryArgs {
                 page.size = Some(i32::try_from(size).context("--page-size is too large")?);
             }
         }
-        if self.all_pages {
+        if self.all_pages || self.follow {
             let client = build_http_client(
                 &self.url,
                 self.api_key.as_deref(),
@@ -226,6 +234,14 @@ impl QueryArgs {
                         .map_err(|e| anyhow::Error::new(e).context("IR query failed"))
                 }
             };
+            if self.follow {
+                request.tail = Some(signaldb_sdk::types::IrTail {
+                    cursor: None,
+                    settle: self.settle.clone(),
+                });
+                let pause = tokio::time::sleep;
+                return follow(request, fetch, pause, &mut std::io::stdout(), None).await;
+            }
             return walk_pages(request, fetch, &mut std::io::stdout().lock()).await;
         }
         let response = submit_ir(
@@ -345,23 +361,135 @@ where
 {
     loop {
         let response = fetch(request.clone()).await?;
-        for trace in response.traces.iter().flatten() {
-            writeln!(out, "{}", serde_json::to_string(trace)?)?;
-        }
-        for row in &response.rows {
-            let object: serde_json::Map<String, serde_json::Value> = response
-                .columns
-                .iter()
-                .map(|c| c.name.clone())
-                .zip(row.iter().cloned())
-                .collect();
-            writeln!(out, "{}", serde_json::Value::Object(object))?;
-        }
+        write_ndjson(&response, out)?;
         let Some(cursor) = response.page.and_then(|p| p.next_cursor) else {
             return Ok(());
         };
         request.page.get_or_insert_with(Default::default).cursor = Some(cursor);
     }
+}
+
+/// How long `--follow` waits between calls once the tail has caught up.
+const FOLLOW_POLL_INTERVAL: Duration = Duration::from_secs(2);
+
+/// The longest wait between `--follow` retries while the server is
+/// unavailable.
+const FOLLOW_MAX_BACKOFF: Duration = Duration::from_secs(30);
+
+/// What `--follow` does after a failed call.
+enum Recovery {
+    /// A transient failure: wait (as long as a `429` asks, else the
+    /// backoff) and call again.
+    Retry(Option<Duration>),
+    /// An expired cursor: start the tail again.
+    Restart,
+}
+
+fn recovery(err: &anyhow::Error) -> Option<Recovery> {
+    let sdk = err
+        .chain()
+        .find_map(|e| e.downcast_ref::<signaldb_sdk::Error<signaldb_sdk::types::ApiErrorBody>>())?;
+    match sdk.status().map(|s| s.as_u16()) {
+        Some(410) => Some(Recovery::Restart),
+        Some(429) => Some(Recovery::Retry(
+            crate::retry::throttled(err).and_then(|t| t.retry_after),
+        )),
+        Some(502..=504) => Some(Recovery::Retry(None)),
+        None if matches!(sdk, signaldb_sdk::Error::CommunicationError(_)) => {
+            Some(Recovery::Retry(None))
+        }
+        _ => None,
+    }
+}
+
+/// Live-tail an IR document: call again with each response's
+/// `tail.cursor`, at once while it reports a backlog (`caught_up: false`),
+/// else after `pause`. A transient failure (`429`, `502`-`504`, a transport
+/// error) is retried with a growing wait, or the wait a `429` asks for; a
+/// `410` (expired cursor) restarts the tail after the last settle line it
+/// delivered. Stops after `max_calls` when given (tests), else runs until
+/// interrupted.
+async fn follow<F, Fut, P, PFut>(
+    mut request: QueryIrRequest,
+    mut fetch: F,
+    pause: P,
+    out: &mut impl std::io::Write,
+    max_calls: Option<usize>,
+) -> anyhow::Result<()>
+where
+    F: FnMut(QueryIrRequest) -> Fut,
+    Fut: std::future::Future<Output = anyhow::Result<QueryIrResponse>>,
+    P: Fn(Duration) -> PFut,
+    PFut: std::future::Future<Output = ()>,
+{
+    let mut calls = 0;
+    let mut backoff = FOLLOW_POLL_INTERVAL;
+    // The settle line the tail has delivered every row through.
+    let mut delivered_through: Option<i64> = None;
+    loop {
+        let result = fetch(request.clone()).await;
+        calls += 1;
+        let done = max_calls.is_some_and(|max| calls >= max);
+        let response = match result {
+            Ok(response) => response,
+            Err(err) => match recovery(&err).filter(|_| !done) {
+                Some(Recovery::Retry(asked)) => {
+                    let wait = asked.unwrap_or(backoff);
+                    eprintln!("{err:#}; retrying in {}s", wait.as_secs());
+                    pause(wait).await;
+                    backoff = (backoff * 2).min(FOLLOW_MAX_BACKOFF);
+                    continue;
+                }
+                Some(Recovery::Restart) => {
+                    eprintln!("tail cursor expired; restarting the tail");
+                    pause(FOLLOW_POLL_INTERVAL).await;
+                    if let Some(through) = delivered_through {
+                        request.range.from = through.saturating_add(1).to_string();
+                    }
+                    if let Some(tail) = request.tail.as_mut() {
+                        tail.cursor = None;
+                    }
+                    continue;
+                }
+                None => return Err(err),
+            },
+        };
+        backoff = FOLLOW_POLL_INTERVAL;
+        write_ndjson(&response, out)?;
+        out.flush()?;
+        for warning in &response.warnings {
+            eprintln!("warning: {}", warning.message);
+        }
+        let tail = response
+            .tail
+            .context("the server did not return a tail cursor; it needs irVersion 15")?;
+        if done {
+            return Ok(());
+        }
+        if tail.caught_up {
+            delivered_through = Some(tail.settled_through_ns);
+            pause(FOLLOW_POLL_INTERVAL).await;
+        }
+        request.tail.get_or_insert_with(Default::default).cursor = Some(tail.cursor);
+    }
+}
+
+/// Each row (as an object keyed by column name), or each trace group, of
+/// an IR response as one NDJSON line.
+fn write_ndjson(response: &QueryIrResponse, out: &mut impl std::io::Write) -> anyhow::Result<()> {
+    for trace in response.traces.iter().flatten() {
+        writeln!(out, "{}", serde_json::to_string(trace)?)?;
+    }
+    for row in &response.rows {
+        let object: serde_json::Map<String, serde_json::Value> = response
+            .columns
+            .iter()
+            .map(|c| c.name.clone())
+            .zip(row.iter().cloned())
+            .collect();
+        writeln!(out, "{}", serde_json::Value::Object(object))?;
+    }
+    Ok(())
 }
 
 /// Submit a Query IR request via the generated SDK and return the envelope.
@@ -635,6 +763,145 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn follow_polls_with_the_tail_cursor_and_drains_a_backlog_at_once() {
+        let request: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 15, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [], "tail": { "settle": "10s" }
+        }))
+        .unwrap();
+        let mut sent = Vec::new();
+        let fetch = |request: QueryIrRequest| {
+            let tail = request.tail.clone().expect("tail");
+            sent.push(tail.cursor.clone());
+            let n = sent.len();
+            async move {
+                assert_eq!(tail.settle.as_deref(), Some("10s"));
+                let mut response = page(vec![serde_json::json!([format!("r{n}"), n])], None);
+                response.tail = Some(serde_json::from_value(serde_json::json!({
+                    "cursor": format!("t{n}"), "settled_through_ns": 0, "settle_ns": 0,
+                    "caught_up": n != 1,
+                }))?);
+                Ok(response)
+            }
+        };
+        let pauses = std::cell::Cell::new(0);
+        let pause = |wait: Duration| {
+            assert_eq!(wait, FOLLOW_POLL_INTERVAL);
+            pauses.set(pauses.get() + 1);
+            std::future::ready(())
+        };
+        let mut out = Vec::new();
+        follow(request, fetch, pause, &mut out, Some(3))
+            .await
+            .unwrap();
+        assert_eq!(sent, [None, Some("t1".to_string()), Some("t2".to_string())]);
+        assert_eq!(pauses.get(), 1, "a backlog is drained without waiting");
+        assert_eq!(String::from_utf8(out).unwrap().lines().count(), 3);
+    }
+
+    fn ir_request() -> QueryIrRequest {
+        serde_json::from_value(serde_json::json!({
+            "irVersion": 15, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": [], "tail": {}
+        }))
+        .unwrap()
+    }
+
+    /// A real SDK error for an IR call to `url`.
+    async fn ir_call_error(url: &str) -> anyhow::Error {
+        let client = signaldb_sdk::ClientBuilder::new(url)
+            .retry(signaldb_sdk::RetryPolicy::disabled())
+            .build()
+            .unwrap();
+        let err = client.query_ir().body(ir_request()).send().await;
+        anyhow::Error::new(err.expect_err("error")).context("IR query failed")
+    }
+
+    /// The SDK error for an IR call the server answers with `status`.
+    async fn ir_error(status: usize, retry_after: Option<&str>) -> anyhow::Error {
+        let mut server = mockito::Server::new_async().await;
+        let mut mock = server
+            .mock("POST", "/api/v1/query")
+            .with_status(status)
+            .with_body(r#"{"status":"error","errorType":"x","error":"x"}"#);
+        if let Some(wait) = retry_after {
+            mock = mock.with_header("retry-after", wait);
+        }
+        mock.create_async().await;
+        ir_call_error(&server.url()).await
+    }
+
+    #[tokio::test]
+    async fn follow_retries_transient_failures_and_restarts_after_an_expired_cursor() {
+        let mut errors = vec![
+            ir_error(429, Some("7")).await,
+            ir_error(502, None).await,
+            ir_error(503, None).await,
+            // Nothing listens on port 1: a transport error.
+            ir_call_error("http://127.0.0.1:1").await,
+            ir_error(410, None).await,
+        ]
+        .into_iter();
+        let mut sent = Vec::new();
+        let fetch = |request: QueryIrRequest| {
+            let cursor = request.tail.clone().and_then(|t| t.cursor);
+            sent.push((cursor, request.range.from.clone()));
+            let result = match sent.len() {
+                2..=6 => Err(errors.next().expect("error")),
+                n => {
+                    let mut response = page(vec![], None);
+                    response.tail = Some(
+                        serde_json::from_value(serde_json::json!({
+                            "cursor": format!("t{n}"), "settled_through_ns": 100,
+                            "settle_ns": 0, "caught_up": true,
+                        }))
+                        .unwrap(),
+                    );
+                    Ok(response)
+                }
+            };
+            std::future::ready(result)
+        };
+        let waits = std::cell::RefCell::new(Vec::new());
+        let pause = |wait: Duration| {
+            waits.borrow_mut().push(wait);
+            std::future::ready(())
+        };
+        let mut out = Vec::new();
+        follow(ir_request(), fetch, pause, &mut out, Some(7))
+            .await
+            .unwrap();
+        let t1 = (Some("t1".to_string()), "now-1h".to_string());
+        assert_eq!(
+            sent,
+            [
+                (None, "now-1h".to_string()),
+                t1.clone(),
+                t1.clone(),
+                t1.clone(),
+                t1.clone(),
+                t1,
+                // After the 410: no cursor, and no row the tail already
+                // delivered (through 100) again.
+                (None, "101".to_string()),
+            ]
+        );
+        let s = Duration::from_secs;
+        assert_eq!(
+            waits.into_inner(),
+            [
+                FOLLOW_POLL_INTERVAL,
+                s(7),
+                s(4),
+                s(8),
+                s(16),
+                FOLLOW_POLL_INTERVAL
+            ],
+            "429 waits as asked; other failures back off; a 410 pauses once"
+        );
+    }
+
     fn sql_args(flight_url: &str, query: Option<&str>) -> QueryArgs {
         QueryArgs {
             query: query.map(str::to_string),
@@ -647,6 +914,8 @@ mod tests {
             file: None,
             page_size: None,
             all_pages: false,
+            follow: false,
+            settle: None,
             start: None,
             end: None,
             step: None,
