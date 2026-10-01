@@ -112,6 +112,21 @@ fn match_stage_keeps_span_set_declaration_order() {
     assert!(positions.is_sorted(), "span-sets reordered: {text}");
 }
 
+/// Duplicate span-set names are not the SDK's to resolve: both entries go
+/// out in order, and the server rejects the document when it validates it.
+#[test]
+fn match_stage_keeps_duplicate_span_set_names() {
+    let text = r#"{"match":{"spansets":{"a":{"field":"span.name","op":"eq","value":"first"},"a":{"field":"span.name","op":"eq","value":"second"}}}}"#;
+
+    let typed: signaldb_sdk::types::IrStage = serde_json::from_str(text).unwrap();
+    let signaldb_sdk::types::IrStage::Match(stage) = &typed else {
+        panic!("not a match stage: {typed:?}");
+    };
+    let names: Vec<&str> = stage.spansets.0.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["a", "a"]);
+    assert_eq!(serde_json::to_string(&typed).unwrap(), text);
+}
+
 #[tokio::test]
 async fn client_forwards_credentials_via_default_headers() {
     use reqwest::header::{AUTHORIZATION, HeaderMap, HeaderValue};

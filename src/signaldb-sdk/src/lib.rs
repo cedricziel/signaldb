@@ -30,6 +30,7 @@ pub mod retry;
 
 pub use builder::{ClientBuildError, ClientBuilder};
 pub use generated::*;
+pub use ir::IrMatch;
 pub use query::{QueryClient, QueryError};
 pub use retry::RetryPolicy;
 

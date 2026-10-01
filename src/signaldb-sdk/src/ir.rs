@@ -16,8 +16,8 @@ use crate::types::{IrMatchRelation, IrPredicate};
 /// witnessing spans.
 ///
 /// Replaces the generated type, whose `HashMap` would lose the span-sets'
-/// declaration order.
-#[derive(Clone, Debug, Serialize, Deserialize)]
+/// declaration order. Not `PartialEq`: the generated `IrPredicate` isn't.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct IrMatch {
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -27,6 +27,8 @@ pub struct IrMatch {
 
 /// Named span-set predicates, in declaration order — the order of the names
 /// in each result row's `spansets` column. Serialized as a JSON object.
+/// Duplicate names are kept as sent; the server rejects them when it
+/// validates the document.
 #[derive(Clone, Debug, Default)]
 pub struct IrSpansets(pub Vec<(String, IrPredicate)>);
 

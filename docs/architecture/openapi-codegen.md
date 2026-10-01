@@ -270,7 +270,10 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
   built from an older document sees a new stage rejected client-side, not by
   the server. `IrMatch.spansets` key order is significant (declaration
   order), which a generated `HashMap` loses: `cargo xtask generate`
-  substitutes the hand-written `signaldb_sdk::ir::IrMatch` for progenitor's.
+  substitutes the hand-written `signaldb_sdk::ir::IrMatch` for progenitor's,
+  so there is no generated `types::IrMatch` (or `builder::IrMatch`), and
+  fails if the spec loses the `IrMatch` schema or the output stops using
+  the replacement.
   `IrPredicate`'s leaf/`and`/`or`/`not` shape is hand-written because
   `Predicate` has custom serde.
 - **A nullable `$ref` (struct or enum) used to break the Rust SDK
