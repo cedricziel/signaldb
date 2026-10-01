@@ -4,6 +4,10 @@ version = "0.4.1"
 edition.workspace = true
 license.workspace = true
 
+[features]
+# Builds the `structural_ancestry` bench under benches/ and the hook it calls.
+benchmarks = []
+
 [dependencies]
 common = { path = "../common" }
 logql.workspace = true
@@ -47,6 +51,11 @@ common = { path = "../common", features = ["testing"] }
 tracing-subscriber.workspace = true
 tracing-opentelemetry.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["trace", "testing"] }
+
+[[bench]]
+name = "structural_ancestry"
+harness = false
+required-features = ["benchmarks"]
 
 [lints]
 workspace = true
