@@ -43,6 +43,10 @@ pub struct Tail {
     pub settle: Option<String>,
 }
 
+/// The prefix of the columns the planner adds to a paged result; a paged
+/// document cannot name a field with it.
+pub const RESERVED_PREFIX: &str = "__sdb_";
+
 /// The schema-free rules for `page`/`tail`: the version that carries each,
 /// and that the document can be walked at all (design D5). A violation names
 /// the stage, envelope or range bound at fault.
@@ -80,6 +84,22 @@ pub fn check(doc: &Document) -> Result<(), IrError> {
             "a tail delivers spans as they end, so it cannot group whole traces; tail the rows envelope instead"
                 .to_string(),
         );
+    }
+    let stage_names = doc.pipeline.iter().flat_map(|stage| match stage {
+        Stage::Extract(e) => e.as_fields.iter().map(|f| f.name.as_str()).collect(),
+        Stage::Order(keys) => keys.iter().map(|k| k.of.as_str()).collect(),
+        _ => Vec::new(),
+    });
+    let mut names = doc
+        .fields
+        .iter()
+        .flatten()
+        .map(String::as_str)
+        .chain(stage_names);
+    if let Some(name) = names.find(|n| n.starts_with(RESERVED_PREFIX)) {
+        return Err(IrError::Invalid(format!(
+            "'{name}': names starting with {RESERVED_PREFIX} are reserved for paging"
+        )));
     }
     let last = doc.pipeline.len().saturating_sub(1);
     for (i, stage) in doc.pipeline.iter().enumerate() {
@@ -355,6 +375,19 @@ mod tests {
             settle: None,
         });
         assert_eq!(not_tailable_at(&t), "result");
+    }
+
+    #[test]
+    fn a_paged_document_cannot_name_the_reserved_columns() {
+        let reserved =
+            |d: &Document| matches!(check(d), Err(IrError::Invalid(m)) if m.contains("'__sdb_x'"));
+        let mut d = paged("rows", json!([]));
+        d.fields = Some(vec!["__sdb_x".into()]);
+        assert!(reserved(&d));
+        let extract = json!([{ "extract": { "parser": "json", "as": [{ "name": "__sdb_x", "type": "string" }] } }]);
+        assert!(reserved(&paged("rows", extract)));
+        let order = json!([{ "order": [{ "of": "__sdb_x", "dir": "asc" }] }]);
+        assert!(reserved(&paged("rows", order)));
     }
 
     #[test]
