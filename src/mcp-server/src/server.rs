@@ -5587,7 +5587,7 @@ fn profile_summaries(response: &signaldb_sdk::types::QueryIrResponse) -> Vec<ser
             let mut summary = serde_json::json!({
                 "profileID": text("profile_id"),
                 "timeUnixNano": number("timestamp"),
-                "durationNano": number("duration"),
+                "durationNano": number("duration_nano"),
                 "sampleType": text("sample_type"),
                 "sampleUnit": text("sample_unit"),
                 "serviceName": text("service_name"),
@@ -6892,7 +6892,7 @@ mod tests {
         let (base_url, router) = mock_capturing_router(
             "POST /api/v1/query",
             200,
-            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"profile_id","type":"string"},{"name":"timestamp","type":"timestamp_ns"},{"name":"duration","type":"int64"},{"name":"sample_type","type":"string"},{"name":"sample_unit","type":"string"},{"name":"service_name","type":"string"},{"name":"span_id","type":"string"}],"rows":[["p1","1",2,"cpu","nanoseconds","checkout",null]]}"#,
+            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"profile_id","type":"string"},{"name":"timestamp","type":"timestamp_ns"},{"name":"duration_nano","type":"int64"},{"name":"sample_type","type":"string"},{"name":"sample_unit","type":"string"},{"name":"service_name","type":"string"},{"name":"span_id","type":"string"}],"rows":[["p1","1",2,"cpu","nanoseconds","checkout",null]]}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
