@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { Outlet, useLocation, useNavigate } from "react-router";
+import { whoami } from "./api/session";
 import {
   isAuthError,
   loadPersistedTenantContext,
@@ -90,6 +91,47 @@ export function App() {
     update,
   ]);
 
+  // Until the probe answers there is no tenant to query for, and a visitor
+  // without a session would only collect a 401 per widget before the redirect
+  // below, so the routes stay unmounted. The probe only knows cookies: with
+  // API-key auth (the Vite dev proxy injects the key and tenant) it is always
+  // a 401, so one `whoami` decides — it succeeds for a key, 401s for a
+  // logged-out visitor, who then goes straight to the login page.
+  const probeRejected =
+    needsTenantResolution && isAuthError(sessionQuery.error);
+  const identityQuery = useQuery({
+    queryKey: ["whoami", "session-fallback"],
+    queryFn: () => whoami(),
+    enabled: probeRejected,
+    retry: false,
+  });
+  useEffect(() => {
+    if (!probeRejected || !identityQuery.isSuccess) return;
+    update({
+      tenant: identityQuery.data.tenant.id,
+      dataset: identityQuery.data.default_dataset ?? "",
+    });
+  }, [probeRejected, identityQuery.isSuccess, identityQuery.data, update]);
+  const holdRoutes =
+    needsTenantResolution &&
+    (sessionQuery.isPending || (probeRejected && identityQuery.isPending));
+  const sessionRejected = probeRejected && isAuthError(identityQuery.error);
+  useEffect(() => {
+    if (!sessionRejected) return;
+    navigate(
+      loginRedirectPath(
+        `${location.pathname}${location.search}${location.hash}`,
+      ),
+      { replace: true },
+    );
+  }, [
+    sessionRejected,
+    location.pathname,
+    location.search,
+    location.hash,
+    navigate,
+  ]);
+
   // A pending PWA update (see lib/pwaUpdate.ts) applies itself the next time
   // the visitor navigates, as long as no form is dirty — never on the
   // landing render, only on an actual route change thereafter.
@@ -140,7 +182,9 @@ export function App() {
       state={effective}
       update={update}
     >
-      <Outlet context={{ state: effective, update }} />
+      {holdRoutes || sessionRejected ? null : (
+        <Outlet context={{ state: effective, update }} />
+      )}
     </AppShell>
   );
 }
