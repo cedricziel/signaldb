@@ -33,6 +33,12 @@ pub(crate) fn split_host_port(addr: &str) -> Option<(&str, u16)> {
     Some((host, port))
 }
 
+fn resolve_advertise_addr(advertise: Option<String>, bind: impl std::fmt::Display) -> String {
+    advertise
+        .filter(|addr| !addr.is_empty())
+        .unwrap_or_else(|| bind.to_string())
+}
+
 /// Strip the `[...]` brackets from an IPv6 host literal, if present.
 fn strip_brackets(host: &str) -> &str {
     host.strip_prefix('[')
@@ -75,6 +81,24 @@ impl ServiceType {
         }
     }
 
+    /// Environment variable that overrides the address this service registers
+    /// in discovery.
+    pub fn advertise_env_var(&self) -> &'static str {
+        match self {
+            ServiceType::Acceptor => "ACCEPTOR_ADVERTISE_ADDR",
+            ServiceType::Writer => "WRITER_ADVERTISE_ADDR",
+            ServiceType::Router => "ROUTER_ADVERTISE_ADDR",
+            ServiceType::Querier => "QUERIER_ADVERTISE_ADDR",
+            ServiceType::Compactor => "COMPACTOR_ADVERTISE_ADDR",
+        }
+    }
+
+    /// Address to register in discovery: the [`Self::advertise_env_var`]
+    /// override if set and non-empty, else `bind`.
+    pub fn advertise_addr(&self, bind: impl std::fmt::Display) -> String {
+        resolve_advertise_addr(std::env::var(self.advertise_env_var()).ok(), bind)
+    }
+
     /// Parse a service type persisted by [`Self::catalog_name`].
     pub fn from_catalog_name(s: &str) -> Option<ServiceType> {
         ServiceType::ALL
@@ -109,11 +133,24 @@ pub struct ServiceBootstrap {
 }
 
 impl ServiceBootstrap {
-    /// Create a new service bootstrap instance and register with catalog
+    /// Register a service bound to `bind` under its advertised address
+    /// ([`ServiceType::advertise_addr`]), which peers in other containers dial.
+    pub async fn from_bind_addr(
+        config: Configuration,
+        service_type: ServiceType,
+        bind: std::net::SocketAddr,
+    ) -> Result<Self> {
+        let address = service_type.advertise_addr(bind);
+        Self::new(config, service_type, address).await
+    }
+
+    /// Create a new service bootstrap instance and register `address` with the
+    /// catalog verbatim. Services use [`Self::from_bind_addr`] so the
+    /// advertise override applies.
     #[tracing::instrument(
         level = "debug",
         skip_all,
-        fields(service_type = ?service_type, address = %address)
+        fields(signaldb.service.type = ?service_type, signaldb.service.address = %address)
     )]
     pub async fn new(
         config: Configuration,
@@ -127,10 +164,10 @@ impl ServiceBootstrap {
             &config.database.dsn
         };
 
-        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Using DSN for service bootstrap");
-        tracing::info!(dsn = %crate::config::redact_dsn(&config.database.dsn), "Database config DSN");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(dsn), "Using DSN for service bootstrap");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(&config.database.dsn), "Database config DSN");
         if let Some(discovery_config) = &config.discovery {
-            tracing::info!(dsn = %crate::config::redact_dsn(&discovery_config.dsn), "Discovery config DSN");
+            tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(&discovery_config.dsn), "Discovery config DSN");
         } else {
             tracing::info!("No discovery config found");
         }
@@ -141,7 +178,7 @@ impl ServiceBootstrap {
         let catalog = Catalog::new(dsn).await?;
         let service_id = Uuid::new_v4();
 
-        tracing::info!(service_type = %service_type, service_id = %service_id, address = %address, "Registering service with catalog");
+        tracing::info!(signaldb.service.type = %service_type, service.instance.id = %service_id, signaldb.service.address = %address, "Registering service with catalog");
 
         // Get default capabilities for this service type
         let capabilities = Self::get_default_capabilities(&service_type);
@@ -151,20 +188,24 @@ impl ServiceBootstrap {
             .register_ingester(service_id, &address, service_type, &capabilities)
             .await?;
 
-        // Start heartbeat if discovery config is available
-        let heartbeat_handle = if let Some(discovery_config) = &config.discovery {
-            Some(catalog.spawn_ingester_heartbeat(service_id, discovery_config.heartbeat_interval))
-        } else {
-            // Use default heartbeat interval
-            Some(catalog.spawn_ingester_heartbeat(service_id, Duration::from_secs(30)))
-        };
+        // Start heartbeat, using the configured interval or a default.
+        let heartbeat_interval = config
+            .discovery
+            .as_ref()
+            .map(|d| d.heartbeat_interval)
+            .unwrap_or(Duration::from_secs(30));
+        // A heartbeat only matters once it has missed the registration TTL
+        // (that's when a peer can reap this service as stale), so that TTL
+        // is also the threshold for escalating a failing heartbeat to ERROR.
+        let ttl = Self::discovery_ttl(&config);
+        let heartbeat_handle =
+            Some(catalog.spawn_ingester_heartbeat(service_id, heartbeat_interval, ttl));
 
         // Reap registrations whose heartbeat stopped: crashed services
         // never deregister, so without this the catalog leaks a row per
         // crash and routers keep handing out dead addresses (issue #555).
         // Rows are deleted once they are 2x TTL stale — well past the
         // staleness filter consumers apply at TTL.
-        let ttl = Self::discovery_ttl(&config);
         let reaper_handle = Some(catalog.spawn_ingester_reaper(ttl, ttl * 2));
 
         Ok(ServiceBootstrap {
@@ -189,7 +230,7 @@ impl ServiceBootstrap {
 
     /// Ensure the data directory exists for SQLite databases
     fn ensure_data_directory(dsn: &str) -> Result<()> {
-        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Ensuring data directory exists");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(dsn), "Ensuring data directory exists");
 
         // Only handle SQLite databases
         if !dsn.starts_with("sqlite:") {
@@ -232,11 +273,7 @@ impl ServiceBootstrap {
 
         // Get the directory part of the path
         if let Some(parent) = Path::new(file_path).parent() {
-            tracing::info!(
-                parent = %parent.display(),
-                exists = parent.exists(),
-                "Parent directory"
-            );
+            tracing::debug!(file.directory = %parent.display(), "Parent directory");
             if !parent.exists() {
                 tracing::info!(path = %parent.display(), "Creating directory");
                 fs::create_dir_all(parent).map_err(|e| {
@@ -465,8 +502,8 @@ impl ServiceBootstrap {
     /// Gracefully shutdown the service and deregister from catalog
     pub async fn shutdown(mut self) -> Result<()> {
         tracing::info!(
-            service_type = %self.service_type,
-            service_id = %self.service_id,
+            signaldb.service.type = %self.service_type,
+            service.instance.id = %self.service_id,
             "Shutting down service and deregistering from catalog"
         );
 
@@ -503,6 +540,35 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
+
+    #[test]
+    fn every_service_type_has_its_own_advertise_env_var() {
+        let vars: std::collections::HashSet<_> = ServiceType::ALL
+            .iter()
+            .map(|t| t.advertise_env_var())
+            .collect();
+        assert_eq!(vars.len(), ServiceType::ALL.len());
+    }
+
+    #[test]
+    fn advertise_addr_prefers_the_override() {
+        assert_eq!(
+            resolve_advertise_addr(Some("compactor-1:50055".to_string()), "0.0.0.0:50055"),
+            "compactor-1:50055"
+        );
+    }
+
+    #[test]
+    fn advertise_addr_falls_back_to_the_bind_address() {
+        assert_eq!(
+            resolve_advertise_addr(None, "0.0.0.0:50055"),
+            "0.0.0.0:50055"
+        );
+        assert_eq!(
+            resolve_advertise_addr(Some(String::new()), "0.0.0.0:50055"),
+            "0.0.0.0:50055"
+        );
+    }
 
     #[test]
     fn split_host_port_parses_valid_address() {

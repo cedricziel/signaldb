@@ -343,7 +343,7 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
 
     // Create metrics table (5 day retention)
     let mut metrics_writer = ctx
-        .create_table("test-tenant", "test-dataset", "metrics_gauge")
+        .create_table("test-tenant", "test-dataset", "metrics")
         .await?;
     let metrics_partitions = generators::generate_metrics(&mut metrics_writer, &config).await?;
     tracing::info!("Generated {} metric partitions", metrics_partitions.len());
@@ -387,7 +387,7 @@ async fn test_partition_drop_handles_mixed_signal_types() -> Result<()> {
     );
     assert_eq!(
         result.tables_processed, 3,
-        "traces, logs, and metrics_gauge exist in this test"
+        "traces, logs, and metrics exist in this test"
     );
     assert!(
         result.total_partitions_dropped >= 1,

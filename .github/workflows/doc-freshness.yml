@@ -8,14 +8,26 @@ jobs:
   check:
     name: Docs updated with their sources
     runs-on: ubuntu-latest
-    if: ${{ !contains(github.event.pull_request.labels.*.name, 'docs-not-needed') }}
+    # Release PRs are excluded: release-please only bumps versions in manifests
+    # that living docs declare as sources (otel/registry/manifest.yaml, the
+    # Cargo.toml files), which trips the gate on every release without any
+    # documentation actually going stale.
+    if: >-
+      ${{ !contains(github.event.pull_request.labels.*.name, 'docs-not-needed')
+      && !startsWith(github.head_ref, 'release-please--') }}
     steps:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
       - name: Check doc freshness
+        env:
+          # Passed via env, never interpolated into the run script: the PR body
+          # is attacker-controlled text and must not be treated as shell code.
+          PR_BODY: ${{ github.event.pull_request.body }}
         run: |
+          DOC_FRESHNESS_ACK=$(printf '%s' "$PR_BODY" | tr -d '\r' | sed -n 's/^docs-ok:[[:space:]]*//p')
+          export DOC_FRESHNESS_ACK
           if ! ./scripts/check-doc-freshness.sh "origin/${{ github.base_ref }}...HEAD" > report.txt; then
             echo "Doc hygiene check failed:" >&2
             echo >&2
@@ -25,7 +37,8 @@ jobs:
             echo "audience/type/status frontmatter (see .claude/skills/docs/SKILL.md)." >&2
             echo "Other lines are living docs whose declared sources changed in this PR" >&2
             echo "without a doc update. Read each against the diff and fix only what is" >&2
-            echo "now wrong (deleting stale text counts); if the doc is still accurate," >&2
-            echo "add the 'docs-not-needed' label instead of padding it." >&2
+            echo "now wrong (deleting stale text counts). If a doc is still accurate, add" >&2
+            echo "a 'docs-ok: <path>' line to the PR description instead of padding it, or" >&2
+            echo "the 'docs-not-needed' label if the PR owes no docs at all." >&2
             exit 1
           fi

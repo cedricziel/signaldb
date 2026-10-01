@@ -1,0 +1,293 @@
+//! The `sample` stage (D11): evaluate a metric point stream into a Series
+//! frame `(bucket, __labels, value)` at the instants `t = from + k·step`.
+//!
+//! Each point is assigned to every instant whose read window
+//! `(t − offset − window, t − offset]` covers it, then one windowed
+//! accumulator per `(label set, instant)` evaluates the function. `at` pins
+//! the read window to `at − offset` and repeats its value at every instant.
+//!
+//! Series are keyed on their rendered label set, not `series_id`: stored
+//! series that differ only in what the label set drops or flattens (metric
+//! type, an attribute's value type, an empty vs absent value) are one series
+//! to Prometheus, so their points are evaluated together.
+
+use common::query_ir::{
+    Document, Literal, Sample, SampleFn, SampleOf, Stage, ValueType, coerce, parse_duration_ns,
+};
+use datafusion::arrow::datatypes::{DataType, TimeUnit};
+use datafusion::functions::core::expr_fn::coalesce;
+use datafusion::functions_aggregate::expr_fn::last_value;
+use datafusion::functions_nested::expr_fn::gen_series;
+use datafusion::logical_expr::{Expr, Operator, binary_expr, cast, col, lit};
+use datafusion::prelude::{DataFrame, ident};
+use datafusion::scalar::ScalarValue;
+
+use super::labels::{LABELS_COLUMN, series_labels_of};
+use super::stages::drop_name;
+use crate::query::error::QuerierError;
+use crate::query::ir_planner::ResolvedWindow;
+use crate::query::metric_ops::instants::{check_grid, covering_instants_udf};
+use crate::query::metric_ops::range::range_udaf;
+use crate::query::metric_ops::range_math::RangeFn;
+
+/// `latest`'s lookback when the stage names none.
+const DEFAULT_LOOKBACK_NS: i64 = 5 * 60 * 1_000_000_000;
+const INSTANT: &str = "__instant";
+const STALE: &str = "__stale";
+
+/// What a `sample` stage needs from the document beyond the stage itself.
+pub(crate) struct SampleEnv<'a> {
+    pub window: ResolvedWindow,
+    pub doc_step: Option<&'a str>,
+    pub now_ns: i64,
+    /// The scanned table's physical column names.
+    pub schema_cols: &'a [String],
+}
+
+/// One stage's resolved read parameters, all in nanoseconds.
+struct Read {
+    f: RangeFn,
+    window_ns: i64,
+    step_ns: i64,
+    /// The first and last read-window end (`t − offset`, or `at − offset`).
+    first: i64,
+    last: i64,
+    offset_ns: i64,
+    at: bool,
+}
+
+fn duration(field: &str, value: &str, min: i64) -> Result<i64, QuerierError> {
+    parse_duration_ns(value)
+        .filter(|ns| *ns >= min)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("invalid {field} duration '{value}'")))
+}
+
+fn range_fn(sample: &Sample) -> RangeFn {
+    match sample.func {
+        SampleFn::Latest => RangeFn::Latest,
+        SampleFn::Rate => RangeFn::Rate,
+        SampleFn::Increase => RangeFn::Increase,
+        SampleFn::Irate => RangeFn::Irate,
+        SampleFn::Delta => RangeFn::Delta,
+        SampleFn::Idelta => RangeFn::Idelta,
+        SampleFn::Deriv => RangeFn::Deriv,
+        SampleFn::Resets => RangeFn::Resets,
+        SampleFn::Changes => RangeFn::Changes,
+        SampleFn::AvgOverTime => RangeFn::AvgOverTime,
+        SampleFn::MinOverTime => RangeFn::MinOverTime,
+        SampleFn::MaxOverTime => RangeFn::MaxOverTime,
+        SampleFn::SumOverTime => RangeFn::SumOverTime,
+        SampleFn::CountOverTime => RangeFn::CountOverTime,
+        SampleFn::LastOverTime => RangeFn::LastOverTime,
+        SampleFn::StddevOverTime => RangeFn::StddevOverTime,
+        SampleFn::StdvarOverTime => RangeFn::StdvarOverTime,
+        SampleFn::PresentOverTime => RangeFn::PresentOverTime,
+        SampleFn::QuantileOverTime => RangeFn::QuantileOverTime(sample.arg.unwrap_or(f64::NAN)),
+    }
+}
+
+/// Whether a function's result is no longer the metric itself, so its
+/// Series drops `metric.name` (as PromQL drops `__name__`).
+fn drops_name(func: SampleFn) -> bool {
+    !matches!(func, SampleFn::Latest | SampleFn::LastOverTime)
+}
+
+fn read(
+    sample: &Sample,
+    window: ResolvedWindow,
+    doc_step: Option<&str>,
+    now_ns: i64,
+) -> Result<Read, QuerierError> {
+    let window_ns = match (&sample.window, &sample.lookback) {
+        (Some(w), _) => duration("sample.window", w, 1)?,
+        (None, Some(l)) => duration("sample.lookback", l, 1)?,
+        (None, None) => DEFAULT_LOOKBACK_NS,
+    };
+    let step = sample.step.as_deref().or(doc_step).ok_or_else(|| {
+        QuerierError::InvalidInput("sample requires a `step`, on the stage or the document".into())
+    })?;
+    let step_ns = duration("sample.step", step, 1)?;
+    let offset_ns = match &sample.offset {
+        Some(o) => duration("sample.offset", o, 0)?,
+        None => 0,
+    };
+    let at = match &sample.at {
+        Some(at) => match coerce(at, &ValueType::TimestampNs) {
+            Ok(Literal::Timestamp(ts)) => Some(ts.resolve(now_ns)),
+            _ => {
+                return Err(QuerierError::InvalidInput(format!(
+                    "invalid sample.at: {at}"
+                )));
+            }
+        },
+        None => None,
+    };
+    let (first, last) = at.map_or((window.start_ns, window.end_ns), |at| (at, at));
+    check_grid(first, last, step_ns)?;
+    Ok(Read {
+        f: range_fn(sample),
+        window_ns,
+        step_ns,
+        first: first.saturating_sub(offset_ns),
+        last: last.saturating_sub(offset_ns),
+        offset_ns,
+        at: at.is_some(),
+    })
+}
+
+/// The scan window a document needs: with a `sample` stage, exactly its read
+/// windows' span `[first − window, last]` (which reaches back by
+/// `window + offset`, or sits at `at`), else the range. Validation allows at
+/// most one `sample`, on the point stream, and it reads nothing else.
+pub(crate) fn scan_window(
+    doc: &Document,
+    window: ResolvedWindow,
+    now_ns: i64,
+) -> Result<ResolvedWindow, QuerierError> {
+    let Some(sample) = doc.pipeline.iter().find_map(|stage| match stage {
+        Stage::Sample(sample) => Some(sample),
+        _ => None,
+    }) else {
+        return Ok(window);
+    };
+    let r = read(sample, window, doc.step.as_deref(), now_ns)?;
+    Ok(ResolvedWindow {
+        start_ns: r.first.saturating_sub(r.window_ns),
+        end_ns: r.last,
+    })
+}
+
+fn ts_lit(ns: i64) -> Expr {
+    lit(ScalarValue::TimestampNanosecond(Some(ns), None))
+}
+
+/// Lower `sample` over a metric point stream into the Series frame.
+pub(crate) fn lower_sample(
+    df: DataFrame,
+    sample: &Sample,
+    env: &SampleEnv<'_>,
+) -> Result<DataFrame, QuerierError> {
+    let r = read(sample, env.window, env.doc_step, env.now_ns)?;
+    let has = |c: &str| env.schema_cols.iter().any(|s| s == c);
+    let or_null = |c: &str| {
+        if has(c) {
+            ident(c)
+        } else {
+            lit(ScalarValue::Null)
+        }
+    };
+    let (of, value) = match sample.of {
+        SampleOf::Value => ("value", ident("value")),
+        SampleOf::Count => ("count", cast(ident("count"), DataType::Float64)),
+        SampleOf::Sum => ("sum", ident("sum")),
+    };
+    if !has(of) {
+        return Err(QuerierError::InvalidInput(format!(
+            "the metrics table has no `{of}` column to sample"
+        )));
+    }
+    let ts = ident("timestamp");
+    // `covering_instants` bounds each point's instants by the step; for `at`
+    // there is one read instant, so any positive step will do.
+    let step = if r.at { r.window_ns } else { r.step_ns };
+    let instants = covering_instants_udf().call(vec![
+        ts.clone(),
+        lit(r.first),
+        lit(r.last),
+        lit(step),
+        lit(r.window_ns),
+    ]);
+    // The full label set, rendered once per point (before the instants
+    // fan it out) and dropped of `metric.name` after evaluation.
+    let mut columns = vec![
+        series_labels_of(env.schema_cols).alias(LABELS_COLUMN),
+        ts.clone(),
+        value.alias("__value"),
+        or_null("start_timestamp").alias("__start"),
+        or_null("aggregation_temporality").alias("__temporality"),
+        or_null("is_monotonic").alias("__monotonic"),
+        or_null("metric_type").alias("__kind"),
+        instants.alias(INSTANT),
+    ];
+    // OTLP's NO_RECORDED_VALUE flag (bit 0) marks a point stale, where the
+    // Prometheus receiver puts a staleness marker.
+    let stale = has("flags").then(|| {
+        let flags = coalesce(vec![cast(ident("flags"), DataType::Int64), lit(0_i64)]);
+        binary_expr(flags, Operator::BitwiseAnd, lit(1_i64)).eq(lit(1_i64))
+    });
+    // `ts >= lo + 1`, not `ts > lo`: the Iceberg scan turns a strict bound
+    // into a strict bound on the `Hour(timestamp)` partition, which would
+    // prune the hour the window opens in.
+    let lo = r.first.saturating_sub(r.window_ns).saturating_add(1);
+    let mut points = df.filter(
+        ts.clone()
+            .gt_eq(ts_lit(lo))
+            .and(ts.clone().lt_eq(ts_lit(r.last))),
+    )?;
+    // A range function reads recorded values only; `latest` keeps the
+    // markers, since a marker as its newest point ends the series.
+    let latest_stale = match stale {
+        Some(stale) if sample.func == SampleFn::Latest => {
+            columns.push(stale.alias(STALE));
+            true
+        }
+        Some(stale) => {
+            points = points.filter(!stale)?;
+            false
+        }
+        None => false,
+    };
+    let points = points.select(columns)?.unnest_columns(&[INSTANT])?;
+    let range = range_udaf(r.f, r.window_ns).call(vec![
+        ts,
+        col("__value"),
+        col("__start"),
+        col("__temporality"),
+        col("__monotonic"),
+        col("__kind"),
+        col(INSTANT),
+    ]);
+    let mut aggs = vec![range.alias("value")];
+    let mut kept = col("value").is_not_null();
+    if latest_stale {
+        // A marker sorts after a recorded point at the same timestamp, so a
+        // tie ends the series whatever the input order.
+        let newest = vec![
+            col("timestamp").sort(true, true),
+            col(STALE).sort(true, true),
+        ];
+        aggs.push(last_value(col(STALE), newest).alias(STALE));
+        kept = kept.and(!col(STALE));
+    }
+    let evaluated = points
+        .aggregate(vec![col(LABELS_COLUMN), col(INSTANT)], aggs)?
+        .filter(kept)?;
+    // The evaluation instant `t`: the read-window end plus the offset, or,
+    // under `at`, every instant of the range.
+    let evaluated = evaluated.select(vec![col(INSTANT), col(LABELS_COLUMN), col("value")])?;
+    let evaluated = if r.at {
+        let all = gen_series(
+            lit(env.window.start_ns),
+            lit(env.window.end_ns),
+            lit(r.step_ns),
+        );
+        evaluated
+            .with_column(INSTANT, all)?
+            .unnest_columns(&[INSTANT])?
+    } else {
+        evaluated.with_column(INSTANT, col(INSTANT) + lit(r.offset_ns))?
+    };
+    let bucket = cast(
+        col(INSTANT),
+        DataType::Timestamp(TimeUnit::Nanosecond, None),
+    );
+    let out = evaluated.select(vec![
+        bucket.alias("bucket"),
+        ident(LABELS_COLUMN),
+        col("value"),
+    ])?;
+    if drops_name(sample.func) {
+        return drop_name(out);
+    }
+    Ok(out)
+}

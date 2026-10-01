@@ -55,6 +55,9 @@ nav:
   - Using SignalDB:
       - users/sending-otlp.md
       - users/explore-ui.md
+      - users/evaluations.md
+      - users/eval-sets.md
+      - users/service-map.md
       - users/grafana-datasource.md
       - users/querying-promql.md
       - users/promql-functions.md
@@ -65,10 +68,14 @@ nav:
       - users/tempo-api-reference.md
       - users/authentication.md
       - users/schema-registry.md
+      - users/processors.md
   - Operating SignalDB:
       - operations/wal-persistence.md
       - operations/binaries.md
       - operations/dokku.md
+      - operations/truenas.md
+      - operations/oidc-sso.md
+      - operations/github-app.md
       - Compactor:
           - operations/compactor/phase3-configuration.md
           - operations/compactor/phase3-operations.md
@@ -87,4 +94,7 @@ nav:
           - architecture/decisions/users-tenant-membership.md
   - Contributing:
       - contributing/rust.md
+      - contributing/compat-crates.md
       - contributing/benchmarking.md
+      - contributing/ui-e2e-live.md
+      - contributing/ui-page-stories.md

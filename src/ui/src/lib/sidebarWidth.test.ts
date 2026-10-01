@@ -1,84 +1,95 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import {
-  SIDEBAR_DEFAULT_PX,
-  SIDEBAR_MAX_PX,
-  SIDEBAR_MIN_PX,
-  clampSidebarWidth,
-  initSidebarWidth,
-  readSidebarWidth,
-  setSidebarWidth,
+  createPanelWidth,
+  sidebarWidth,
+  spanDetailWidth,
 } from "./sidebarWidth";
 
-const STORAGE_KEY = "signaldb.explore.sidebarWidth";
+const CSS_VAR = "--test-panel-w";
+const panel = createPanelWidth({
+  storageKey: "signaldb.test.panelWidth",
+  cssVar: CSS_VAR,
+  min: 200,
+  max: 480,
+  defaultPx: 248,
+  grows: "right",
+  resizerClassName: "test-resizer",
+  resizerLabel: "Resize test panel",
+});
 
-function cssVar(): string {
-  return document.documentElement.style.getPropertyValue("--sidebar-w");
-}
+const cssVar = () => document.documentElement.style.getPropertyValue(CSS_VAR);
 
 beforeEach(() => {
   localStorage.clear();
-  document.documentElement.style.removeProperty("--sidebar-w");
+  document.documentElement.style.removeProperty(CSS_VAR);
 });
 
 afterEach(() => {
   localStorage.clear();
-  document.documentElement.style.removeProperty("--sidebar-w");
+  document.documentElement.style.removeProperty(CSS_VAR);
 });
 
-describe("clampSidebarWidth", () => {
-  it("passes values inside the allowed range through unchanged", () => {
-    expect(clampSidebarWidth(300)).toBe(300);
+describe("createPanelWidth", () => {
+  it("clamps to the configured range", () => {
+    expect(panel.clamp(300)).toBe(300);
+    expect(panel.clamp(1)).toBe(200);
+    expect(panel.clamp(10_000)).toBe(480);
   });
 
-  it("clamps below the minimum", () => {
-    expect(clampSidebarWidth(1)).toBe(SIDEBAR_MIN_PX);
+  it("reads the default when nothing was saved", () => {
+    expect(panel.read()).toBe(248);
   });
 
-  it("clamps above the maximum", () => {
-    expect(clampSidebarWidth(10_000)).toBe(SIDEBAR_MAX_PX);
+  it("reads a saved width, clamped", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "9999");
+    expect(panel.read()).toBe(480);
+  });
+
+  it("init applies the saved width to <html>", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "300");
+    panel.init();
+    expect(cssVar()).toBe("300px");
+  });
+
+  it("apply sets the custom property without persisting", () => {
+    expect(panel.apply(320)).toBe(320);
+    expect(cssVar()).toBe("320px");
+    expect(localStorage.getItem("signaldb.test.panelWidth")).toBeNull();
+  });
+
+  it("set clamps, applies, and persists", () => {
+    expect(panel.set(9999)).toBe(480);
+    expect(cssVar()).toBe("480px");
+    expect(localStorage.getItem("signaldb.test.panelWidth")).toBe("480");
+  });
+
+  it("dragStart uses the drawn width when the CSS caps the saved one", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "400");
+    expect(panel.dragStart(252.6)).toBe(253);
+  });
+
+  it("dragStart keeps the saved width when the pane is drawn at it", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "300");
+    expect(panel.dragStart(300)).toBe(300);
+    expect(panel.dragStart(500)).toBe(300);
+  });
+
+  it("dragStart falls back to the saved width with nothing measured", () => {
+    localStorage.setItem("signaldb.test.panelWidth", "300");
+    expect(panel.dragStart()).toBe(300);
+    expect(panel.dragStart(0)).toBe(300);
   });
 });
 
-describe("readSidebarWidth", () => {
-  it("falls back to the default when nothing was saved", () => {
-    expect(readSidebarWidth()).toBe(SIDEBAR_DEFAULT_PX);
-  });
-
-  it("returns a saved, in-range value", () => {
-    localStorage.setItem(STORAGE_KEY, "300");
-    expect(readSidebarWidth()).toBe(300);
-  });
-
-  it("clamps a saved out-of-range value", () => {
-    localStorage.setItem(STORAGE_KEY, "9999");
-    expect(readSidebarWidth()).toBe(SIDEBAR_MAX_PX);
-  });
-});
-
-describe("initSidebarWidth", () => {
-  it("applies the saved width to <html> as --sidebar-w", () => {
-    localStorage.setItem(STORAGE_KEY, "310");
-    initSidebarWidth();
-    expect(cssVar()).toBe("310px");
-  });
-
-  it("applies the default when nothing was saved", () => {
-    initSidebarWidth();
-    expect(cssVar()).toBe(`${SIDEBAR_DEFAULT_PX}px`);
-  });
-});
-
-describe("setSidebarWidth", () => {
-  it("clamps, persists, and applies the new width", () => {
-    const applied = setSidebarWidth(350);
-    expect(applied).toBe(350);
-    expect(cssVar()).toBe("350px");
-    expect(localStorage.getItem(STORAGE_KEY)).toBe("350");
-  });
-
-  it("clamps an out-of-range width before persisting", () => {
-    setSidebarWidth(-50);
-    expect(cssVar()).toBe(`${SIDEBAR_MIN_PX}px`);
-    expect(localStorage.getItem(STORAGE_KEY)).toBe(String(SIDEBAR_MIN_PX));
+describe("panel instances", () => {
+  it("keep the keys and directions their handles rely on", () => {
+    expect(sidebarWidth.grows).toBe("right");
+    expect(spanDetailWidth.grows).toBe("left");
+    sidebarWidth.set(260);
+    expect(localStorage.getItem("signaldb.explore.sidebarWidth")).toBe("260");
+    spanDetailWidth.set(400);
+    expect(localStorage.getItem("signaldb.trace.sidebarWidth")).toBe("400");
+    document.documentElement.style.removeProperty("--sidebar-w");
+    document.documentElement.style.removeProperty("--span-detail-w");
   });
 });

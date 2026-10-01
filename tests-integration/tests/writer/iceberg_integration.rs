@@ -4,7 +4,8 @@ use common::config::{
     AuthConfig, Configuration, DatasetConfig, SchemaConfig, StorageConfig, TenantConfig,
 };
 use common::iceberg::names::build_table_identifier;
-use common::wal::{Wal, WalConfig, WalOperation, record_batch_to_bytes};
+use common::wal::manager::WalManager;
+use common::wal::{WalConfig, WalOperation, record_batch_to_bytes};
 use datafusion::arrow::array::{Int64Array, StringArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema};
 use datafusion::arrow::record_batch::RecordBatch;
@@ -12,10 +13,9 @@ use datafusion::prelude::SessionContext;
 use datafusion_iceberg::DataFusionTable;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tempfile::tempdir;
-use writer::{IcebergTableWriter, WalProcessor};
+use tests_integration::test_support::metrics_gauge_wire_batch;
 
 /// Integration test demonstrating the Iceberg table writer functionality
 #[tokio::test]
@@ -23,13 +23,11 @@ async fn test_iceberg_writer_integration() -> Result<()> {
     // Setup test environment
     let _temp_dir = tempdir()?;
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     // Creating an Iceberg writer against a fresh in-memory catalog must
     // deterministically succeed (it creates the "traces" table on demand).
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "traces".to_string(),
@@ -40,74 +38,6 @@ async fn test_iceberg_writer_integration() -> Result<()> {
     assert_eq!(writer.table_identifier().name(), "traces");
 
     Ok(())
-}
-
-/// Build a batch in the `metrics_gauge` storage schema (the same shape the
-/// writer expects on the WAL→Iceberg commit path).
-fn metrics_gauge_batch(values: &[f64]) -> Result<RecordBatch> {
-    use datafusion::arrow::array::{Date32Array, Float64Array, Int32Array};
-    use datafusion::arrow::datatypes::TimeUnit;
-
-    let n = values.len();
-    let schema = Arc::new(Schema::new(vec![
-        Field::new(
-            "timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            false,
-        ),
-        Field::new(
-            "start_timestamp",
-            DataType::Timestamp(TimeUnit::Nanosecond, None),
-            true,
-        ),
-        Field::new("service_name", DataType::Utf8, false),
-        Field::new("metric_name", DataType::Utf8, false),
-        Field::new("metric_description", DataType::Utf8, true),
-        Field::new("metric_unit", DataType::Utf8, true),
-        Field::new("value", DataType::Float64, false),
-        Field::new("flags", DataType::Int32, true),
-        Field::new("resource_schema_url", DataType::Utf8, true),
-        Field::new("resource_attributes", DataType::Utf8, true),
-        Field::new("scope_name", DataType::Utf8, true),
-        Field::new("scope_version", DataType::Utf8, true),
-        Field::new("scope_schema_url", DataType::Utf8, true),
-        Field::new("scope_attributes", DataType::Utf8, true),
-        Field::new("scope_dropped_attr_count", DataType::Int32, true),
-        Field::new("attributes", DataType::Utf8, true),
-        Field::new("exemplars", DataType::Utf8, true),
-        Field::new("date_day", DataType::Date32, false),
-        Field::new("hour", DataType::Int32, false),
-    ]));
-
-    let batch = RecordBatch::try_new(
-        schema,
-        vec![
-            Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(
-                (0..n).map(|i| 1_000_000_000 + i as i64).collect::<Vec<_>>(),
-            )),
-            Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(
-                vec![None::<i64>; n],
-            )),
-            Arc::new(StringArray::from(vec!["test-service"; n])),
-            Arc::new(StringArray::from(vec!["cpu.usage"; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![Some("%"); n])),
-            Arc::new(Float64Array::from(values.to_vec())),
-            Arc::new(Int32Array::from(vec![None::<i32>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(Int32Array::from(vec![None::<i32>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(Date32Array::from(vec![19000; n])),
-            Arc::new(Int32Array::from(vec![10; n])),
-        ],
-    )?;
-    Ok(batch)
 }
 
 /// Count rows in a table by loading it fresh from the catalog and running
@@ -144,22 +74,28 @@ async fn test_wal_processor_integration() -> Result<()> {
     // Setup test environment
     let temp_dir = tempdir()?;
     let wal_config = WalConfig::with_defaults(temp_dir.path().to_path_buf());
-    let wal = Arc::new(Wal::new(wal_config).await?);
+    // The writer keeps one WAL per tenant/dataset/signal; drive the processor
+    // through the same manager the service uses.
+    let wal_manager = Arc::new(WalManager::uniform(wal_config));
+    let wal = wal_manager.get_wal("default", "default", "metrics").await?;
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     // Create WAL processor
-    let mut processor = WalProcessor::new(wal.clone(), catalog_manager.clone(), object_store);
+    let mut processor = tests_integration::test_support::processor_with_type_authority(
+        wal_manager.clone(),
+        catalog_manager.clone(),
+    )
+    .await?;
 
     // Serialize a schema-correct metrics batch and write it to WAL.
-    let batch = metrics_gauge_batch(&[1.0, 2.0])?;
+    let batch = metrics_gauge_wire_batch(&[1.0, 2.0])?;
     let batch_bytes = record_batch_to_bytes(&batch)?;
     wal.append(WalOperation::WriteMetrics, batch_bytes, None)
         .await?;
     wal.flush().await?;
 
     // Verify we can get stats from processor
-    let stats = processor.get_stats();
+    let stats = processor.get_stats().await;
     assert_eq!(stats.active_writers, 0);
 
     // Force-commit the pending entry (the read-your-writes drain) and require
@@ -175,9 +111,9 @@ async fn test_wal_processor_integration() -> Result<()> {
 
     // The committed batch must actually be visible as rows in the table.
     assert_eq!(
-        count_rows(&catalog_manager, "metrics_gauge").await?,
+        count_rows(&catalog_manager, "metrics").await?,
         2,
-        "force-committed WAL entry should land as rows in the metrics_gauge table"
+        "force-committed WAL entry should land as rows in the metrics table"
     );
 
     // Shutdown processor
@@ -194,8 +130,7 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -221,13 +156,11 @@ async fn test_iceberg_namespace_slug_based() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create writer with tenant_id/dataset_id that map to slugs "mycorp"/"prod"
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "tenant-1".to_string(),
         "dataset-1".to_string(),
         "traces".to_string(),
@@ -264,8 +197,7 @@ async fn test_created_tables_enable_metadata_pruning() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -291,12 +223,10 @@ async fn test_created_tables_enable_metadata_pruning() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store,
         "tenant-1".to_string(),
         "dataset-1".to_string(),
         "traces".to_string(),
@@ -339,8 +269,7 @@ async fn test_metadata_pruning_reclaims_old_metadata_files() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: format!("file://{}", storage_dir.display()),
@@ -373,9 +302,8 @@ async fn test_metadata_pruning_reclaims_old_metadata_files() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create the table (applies the retention properties).
-    let _writer = IcebergTableWriter::new(
+    let _writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "tenant-1".to_string(),
         "dataset-1".to_string(),
         "traces".to_string(),
@@ -425,8 +353,7 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: "sqlite::memory:".to_string(),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: "memory://".to_string(),
@@ -434,13 +361,11 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
     // Create a writer for the traces table (which creates the table with partitioning)
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "traces".to_string(),
@@ -469,9 +394,8 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
     );
 
     // Also test logs table
-    let logs_writer = IcebergTableWriter::new(
+    let logs_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
         "logs".to_string(),
@@ -483,13 +407,11 @@ async fn test_partition_spec_roundtrip() -> Result<()> {
         .expect("Logs partition spec should also roundtrip correctly");
     assert!(!logs_spec.fields().is_empty());
 
-    // Also test metrics_gauge table
-    let metrics_writer = IcebergTableWriter::new(
+    let metrics_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "default".to_string(),
         "default".to_string(),
-        "metrics_gauge".to_string(),
+        "metrics".to_string(),
     )
     .await?;
     let metrics_metadata = metrics_writer.table_metadata();
@@ -518,8 +440,7 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
         schema: SchemaConfig {
             catalog_type: "sql".to_string(),
             catalog_uri: format!("sqlite://{}", catalog_path.display()),
-            default_schemas: Default::default(),
-            materialized_labels: Default::default(),
+            ..Default::default()
         },
         storage: StorageConfig {
             dsn: format!("file://{}", storage_path.display()),
@@ -545,13 +466,11 @@ async fn test_write_and_query_with_slugs() -> Result<()> {
         ..Default::default()
     };
 
-    let object_store = Arc::new(InMemory::new());
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
 
     // Step 1: Writer creates the traces table under slug-based namespace [testco, staging]
-    let writer = IcebergTableWriter::new(
+    let writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         "test-tenant".to_string(),
         "test-dataset".to_string(),
         "traces".to_string(),
@@ -946,142 +865,6 @@ async fn label_column_write_produces_parquet_bloom_filter() -> Result<()> {
     assert!(
         bloom_offset_of("body").is_none(),
         "body has no bloom-filter property and should not carry one"
-    );
-
-    Ok(())
-}
-
-/// End-to-end proof for #731 part 2: a wire-format logs batch written
-/// through `IcebergTableWriter` (transform → coercion → Parquet) lands with
-/// a populated `attr_tokens` column whose List leaf carries a bloom filter,
-/// and `array_has(attr_tokens, 'key=value')` filters rows correctly.
-#[tokio::test]
-async fn attr_tokens_write_populates_column_and_bloom_filter() -> Result<()> {
-    use datafusion::arrow::array::{BinaryArray, Int32Array, UInt32Array, UInt64Array};
-    use datafusion::parquet::file::reader::{FileReader, SerializedFileReader};
-    use datafusion::prelude::SessionContext;
-    use iceberg_rust::catalog::tabular::Tabular;
-    use object_store::ObjectStoreExt as _;
-
-    let mut config = Configuration::default();
-    config.schema.catalog_uri =
-        "sqlite:file:signaldb_attr_tokens?mode=memory&cache=shared".to_string();
-    let manager = CatalogManager::new(config).await?;
-    let object_store = Arc::new(InMemory::new());
-
-    let mut writer = IcebergTableWriter::new(
-        &manager,
-        object_store,
-        "default".to_string(),
-        "default".to_string(),
-        "logs".to_string(),
-    )
-    .await?;
-
-    // Two-row wire-format (v1) logs batch with attributes in all scopes.
-    let n = 2;
-    let ts: u64 = 1_700_000_000_000_000_000;
-    let wire_schema = Arc::new(Schema::new(vec![
-        Field::new("time_unix_nano", DataType::UInt64, false),
-        Field::new("observed_time_unix_nano", DataType::UInt64, false),
-        Field::new("severity_number", DataType::Int32, true),
-        Field::new("severity_text", DataType::Utf8, true),
-        Field::new("body", DataType::Utf8, true),
-        Field::new("trace_id", DataType::Binary, true),
-        Field::new("span_id", DataType::Binary, true),
-        Field::new("flags", DataType::UInt32, true),
-        Field::new("attributes_json", DataType::Utf8, true),
-        Field::new("resource_json", DataType::Utf8, true),
-        Field::new("scope_json", DataType::Utf8, true),
-        Field::new("dropped_attributes_count", DataType::UInt32, true),
-        Field::new("service_name", DataType::Utf8, true),
-        Field::new("event_name", DataType::Utf8, true),
-    ]));
-    let batch = RecordBatch::try_new(
-        wire_schema,
-        vec![
-            Arc::new(UInt64Array::from(vec![ts; n])),
-            Arc::new(UInt64Array::from(vec![ts; n])),
-            Arc::new(Int32Array::from(vec![None::<i32>; n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(StringArray::from(vec![Some("prod row"), Some("dev row")])),
-            Arc::new(BinaryArray::from(vec![None::<&[u8]>; n])),
-            Arc::new(BinaryArray::from(vec![None::<&[u8]>; n])),
-            Arc::new(UInt32Array::from(vec![None::<u32>; n])),
-            Arc::new(StringArray::from(vec![
-                Some(r#"{"env":"prod","team":"core"}"#),
-                Some(r#"{"env":"dev"}"#),
-            ])),
-            Arc::new(StringArray::from(vec![
-                Some(r#"{"attributes":{"namespace":"backend"}}"#),
-                None,
-            ])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-            Arc::new(UInt32Array::from(vec![None::<u32>; n])),
-            Arc::new(StringArray::from(vec![Some("api"); n])),
-            Arc::new(StringArray::from(vec![None::<&str>; n])),
-        ],
-    )?;
-
-    writer
-        .append_batches_with_marker("attr-tokens-test", vec![(uuid::Uuid::new_v4(), batch)])
-        .await?;
-
-    // Query back: token containment matches exactly one row per token.
-    let ident = manager.build_table_identifier("default", "default", "logs");
-    let Tabular::Table(table) = manager.catalog().load_tabular(&ident).await? else {
-        panic!("expected logs table");
-    };
-    let ctx = SessionContext::new();
-    ctx.register_table(
-        "logs",
-        Arc::new(datafusion_iceberg::DataFusionTable::from(table.clone())),
-    )?;
-    for (token, expected_body) in [
-        ("env=prod", "prod row"),
-        ("namespace=backend", "prod row"),
-        ("env=dev", "dev row"),
-    ] {
-        let rows = ctx
-            .sql(&format!(
-                "SELECT body FROM logs WHERE array_has(attr_tokens, '{token}')"
-            ))
-            .await?
-            .collect()
-            .await?;
-        let total: usize = rows.iter().map(|b| b.num_rows()).sum();
-        assert_eq!(total, 1, "token {token} should match exactly one row");
-        let body = rows[0]
-            .column_by_name("body")
-            .unwrap()
-            .as_any()
-            .downcast_ref::<StringArray>()
-            .unwrap();
-        assert_eq!(body.value(0), expected_body, "token {token}");
-    }
-
-    // The written file's attr_tokens List leaf carries a bloom filter.
-    let store = table.object_store();
-    let mut listing = store.list(None);
-    let mut parquet_paths = Vec::new();
-    while let Some(meta) = futures::StreamExt::next(&mut listing).await {
-        let meta = meta?;
-        if meta.location.as_ref().ends_with(".parquet") {
-            parquet_paths.push(meta.location);
-        }
-    }
-    assert_eq!(parquet_paths.len(), 1, "expected one data file");
-    let bytes = store.get(&parquet_paths[0]).await?.bytes().await?;
-    let reader = SerializedFileReader::new(bytes)?;
-    let row_group = reader.metadata().row_group(0);
-    let leaf = row_group
-        .columns()
-        .iter()
-        .find(|c| c.column_path().string() == "attr_tokens.list.item")
-        .expect("attr_tokens.list.item leaf column present");
-    assert!(
-        leaf.bloom_filter_offset().is_some(),
-        "attr_tokens leaf should carry a bloom filter"
     );
 
     Ok(())

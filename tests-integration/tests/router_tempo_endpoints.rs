@@ -13,7 +13,7 @@ use common::catalog::Catalog;
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use futures::TryStreamExt;
 use object_store::ObjectStore;
 use opentelemetry_proto::tonic::{
@@ -21,7 +21,7 @@ use opentelemetry_proto::tonic::{
     trace::v1::{ResourceSpans, ScopeSpans, Span, Status},
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterAppState, RouterState, discovery::ServiceRegistry, endpoints::tempo};
+use router::{RouterAppState, endpoints::tempo};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -31,7 +31,6 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 /// Test services configuration
 struct TestServices {
@@ -45,7 +44,7 @@ struct TestServices {
     pub _minio: Option<MinioTestContext>,
 }
 
-/// Set up complete test infrastructure with all services
+/// Set up complete test infrastructure with all services.
 async fn setup_test_services() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
 
@@ -76,8 +75,7 @@ async fn setup_test_services() -> TestServices {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     // Configure storage to use filesystem
@@ -107,8 +105,10 @@ async fn setup_test_services() -> TestServices {
         }],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     let wal_config = WalConfig {
@@ -138,7 +138,9 @@ async fn setup_test_services() -> TestServices {
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
 
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
 
     // Create CatalogManager for shared Iceberg catalog
     let catalog_manager = Arc::new(
@@ -147,12 +149,13 @@ async fn setup_test_services() -> TestServices {
             .expect("Failed to create CatalogManager"),
     );
 
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
 
     // Start background WAL processing
     let _writer_bg_handle = writer_service.start_background_processing();
@@ -221,7 +224,20 @@ async fn setup_test_services() -> TestServices {
         wal_config.clone(), // metrics config
         wal_config.clone(), // profiles config
     ));
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
     let acceptor_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = acceptor_listener.local_addr().unwrap();
@@ -238,7 +254,9 @@ async fn setup_test_services() -> TestServices {
                 dataset_slug: "test-dataset".to_string(),
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,
@@ -295,67 +313,17 @@ async fn setup_test_services() -> TestServices {
     }
 }
 
-/// Custom router state implementation that uses the test flight transport
-#[derive(Clone)]
-struct TestRouterState {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-
-impl std::fmt::Debug for TestRouterState {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("TestRouterState")
-            .field("catalog", &"Catalog")
-            .field("service_registry", &self.service_registry)
-            .field("config", &"Configuration")
-            .field("authenticator", &"Authenticator")
-            .finish()
-    }
-}
-
-impl router::RouterState for TestRouterState {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
-
 /// Create router state connected to the test services
-async fn create_router_state(services: &TestServices) -> TestRouterState {
+async fn create_router_state(services: &TestServices) -> RouterAppState {
     let catalog_dsn = services.config.discovery.as_ref().unwrap().dsn.clone();
     let catalog = Catalog::new(&catalog_dsn).await.unwrap();
 
-    // Create service registry that uses the same flight transport as the test services
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
-        (*services.flight_transport).clone(),
-    );
-
-    // Create authenticator for test
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    TestRouterState {
+    // Uses the same flight transport as the test services.
+    RouterAppState::new_with_flight_transport(
         catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator,
-    }
+        services.config.clone(),
+        (*services.flight_transport).clone(),
+    )
 }
 
 /// Send a test trace via OTLP
@@ -1072,8 +1040,10 @@ async fn test_tempo_v2_trace_endpoint() {
         }],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
     let state = RouterAppState::new(catalog, config);
 
@@ -1136,8 +1106,7 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn.clone(),
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     // Configure storage
@@ -1187,8 +1156,10 @@ async fn setup_multi_tenant_test_services() -> TestServices {
         ],
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
+        dataset_restriction_rollout_complete: false,
     };
 
     // Create WAL configs for both tenants
@@ -1236,19 +1207,22 @@ async fn setup_multi_tenant_test_services() -> TestServices {
     drop(writer_listener);
 
     // Create WAL for writer (we'll use acme's config as default, but writer should handle both)
-    let writer_wal = Arc::new(Wal::new(acme_wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&acme_wal_config),
+    ));
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
             .expect("Failed to create CatalogManager"),
     );
 
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
 
     let _writer_bg_handle = writer_service.start_background_processing();
 
@@ -1317,7 +1291,20 @@ async fn setup_multi_tenant_test_services() -> TestServices {
 
     // Create acceptor with gRPC authentication interceptor
     // This injects tenant context from gRPC metadata into request extensions
-    let trace_handler = TraceHandler::new(flight_transport.clone(), wal_manager.clone());
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let trace_handler = TraceHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry,
+    );
     let acceptor_service = TraceAcceptorService::new(trace_handler);
 
     // Add authentication interceptor that extracts tenant from gRPC metadata
@@ -1346,7 +1333,9 @@ async fn setup_multi_tenant_test_services() -> TestServices {
                 dataset_slug: dataset_id,
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,
@@ -1936,7 +1925,8 @@ async fn test_trace_attributes_round_trip() {
 /// Search filters must actually be applied (issue #551): matching
 /// selectors return the trace, non-matching selectors return nothing,
 /// unsupported TraceQL yields 501, and malformed tags yield 400 —
-/// never silently unfiltered results.
+/// never silently unfiltered results. Trace search lowers through
+/// `ql_ir::traceql_to_ir` + the shared IR planner (`ir-single-lowering`).
 #[tokio::test]
 async fn test_search_filters_are_applied() {
     use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value::Value};
@@ -2072,13 +2062,32 @@ async fn test_search_filters_are_applied() {
         "TraceQL attribute search must return the trace"
     );
 
-    // Unsupported TraceQL is an explicit 501, not silently unfiltered.
-    let response = search("q={ duration > 100ms }".to_string()).await;
-    assert_eq!(
-        response.status(),
-        StatusCode::NOT_IMPLEMENTED,
-        "unsupported TraceQL must be 501"
-    );
+    // Valid TraceQL we do not lower is an explicit 501, not silently
+    // unfiltered.
+    for q in [
+        "q={ duration > 100ms }",
+        r#"q={ span.x != "y" }"#,
+        r#"q={ span.a = "1" || span.b = "2" }"#,
+    ] {
+        let response = search(q.to_string()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::NOT_IMPLEMENTED,
+            "valid-but-unimplemented TraceQL must be 501: {q}"
+        );
+    }
+
+    // Input that is not TraceQL at all is the client's mistake, so 400 —
+    // answering 501 would leave a client unable to tell a wrong query from
+    // one SignalDB cannot yet run.
+    for q in ["q=notbraces", "q={ foo }", "q={ zzz = 1 }"] {
+        let response = search(q.to_string()).await;
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "unparseable TraceQL must be 400: {q}"
+        );
+    }
 
     // Malformed tags are an explicit 400.
     let response = search("tags=justaword".to_string()).await;
@@ -2086,6 +2095,64 @@ async fn test_search_filters_are_applied() {
         response.status(),
         StatusCode::BAD_REQUEST,
         "malformed tags must be 400"
+    );
+
+    // `q` and `tags` together: both conjoin into one IR document rather
+    // than lowering separately, so this exercises that combination end to
+    // end. Both narrow to the same ingested trace, so the combination must
+    // still match it.
+    let search_multi = |pairs: &[(&str, &str)]| {
+        let app = app.clone();
+        let encoded: String = url::form_urlencoded::Serializer::new(String::new())
+            .extend_pairs(pairs)
+            .finish();
+        async move {
+            let request = Request::builder()
+                .uri(format!("/api/search?{encoded}"))
+                .header("Authorization", "Bearer test-key-123")
+                .header("X-Tenant-ID", "test-tenant")
+                .body(Body::empty())
+                .unwrap();
+            app.oneshot(request).await.unwrap()
+        }
+    };
+    let response = search_multi(&[
+        ("tags", "service.name=filter-test-service"),
+        ("q", r#"{ span.http.method = "GET" }"#),
+    ])
+    .await;
+    assert_eq!(
+        response.status(),
+        StatusCode::OK,
+        "q and tags together, both matching"
+    );
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: tempo_api::SearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(
+        result.traces.iter().any(|t| t.trace_id == trace_id),
+        "q and tags together must return the trace when both match (got {:?})",
+        result.traces
+    );
+
+    // One of the two narrows to nothing: the combination must exclude the
+    // trace too, proving the two conditions are actually conjoined rather
+    // than either alone deciding the result.
+    let response = search_multi(&[
+        ("tags", "service.name=does-not-exist"),
+        ("q", r#"{ span.http.method = "GET" }"#),
+    ])
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+        .await
+        .unwrap();
+    let result: tempo_api::SearchResult = serde_json::from_slice(&body).unwrap();
+    assert!(
+        result.traces.is_empty(),
+        "q and tags together must return nothing when only one matches (got {:?})",
+        result.traces
     );
 
     println!("✅ Search filter test completed");

@@ -79,8 +79,15 @@ vectorized query engine written in Rust with Arrow as its memory model
 querier plans and executes every query with it. Notably, SignalDB's
 query APIs — TraceQL, LogQL, PromQL, and SQL — do not template SQL
 strings: each parsed query is lowered to DataFusion `Expr`s and logical
-plans directly, and DataFusion handles predicate pushdown, partition
-pruning, and vectorized execution against the Parquet files.
+plans, and DataFusion handles predicate pushdown, partition pruning, and
+vectorized execution against the Parquet files. TraceQL and LogQL take
+one further step first: the parsed query lowers to a shared, versioned
+query-IR document, which a single planner then lowers to the DataFusion
+plan — the native `POST /api/v1/query` surface plans the same IR
+documents directly, so the compat and first-party query paths share one
+lowering rather than each maintaining its own. PromQL and SQL still
+lower straight to a DataFusion plan with no IR step. See
+[Querying with the IR](../users/querying-ir.md).
 
 ### Parquet — the storage format
 
@@ -109,7 +116,10 @@ commit.
 **A WAL in front of the columnar path.** Arrow batches are buffered
 poorly by object stores, so ingestion writes to a local write-ahead log
 before acknowledging the client; the writer drains the WAL into Parquet
-asynchronously. See [WAL persistence](../operations/wal-persistence.md).
+asynchronously. WAL records are length-framed and CRC-32 checked (the
+`crc32fast` dependency), so a damaged record is attributed and skipped
+instead of poisoning its segment. See
+[WAL persistence](../operations/wal-persistence.md).
 
 **Semantics ride outside the stack.** The FDAP layers carry bytes and
 types, not meaning. What an attribute key or metric name _means_ comes from
@@ -117,6 +127,34 @@ the OpenTelemetry semantic conventions, which SignalDB vendors
 (`vendor/otel-semconv/`) and parses with the dependency-light `schema-model`
 crate — deliberately free of Arrow/DataFusion so the schema registry can be
 built and validated without the query engine.
+
+The compatibility **query languages** sit outside the stack for the same
+reason: `logql` and `traceql` carry no Arrow, no DataFusion, and no SignalDB
+dependency, so a query can be parsed and validated without the query engine.
+Lowering a parsed query onto columns stays in the querier. See
+[Compatibility crates](../contributing/compat-crates.md).
+
+**Access control is off the data path too.** Authentication brings its own
+non-FDAP dependencies — like the WAL's `crc32fast` — that never touch an Arrow
+batch: the router's OIDC relying party (an `openidconnect` client) and its
+OAuth authorization server authenticate the *humans and agents* who issue
+queries, then hand a resolved tenant context to the FDAP layers, which carry
+only bytes and types. See [Setting up SSO / OIDC login](../operations/oidc-sso.md).
+
+SignalDB's own **query IR** (`src/query-ir`) sits outside the stack for the
+same reason, though it re-implements nobody: an IR document can be built,
+versioned, and validated with `serde` alone, so a client can construct and
+check a query without the engine that will run it. Field resolution enters
+through a trait the querier implements, which is what keeps attribute
+promotion invisible to the IR.
+
+`ql-ir` joins the two: it lowers a parsed LogQL or TraceQL query into an IR
+document, and because every one of its dependencies is itself FDAP-free, so is it. That is what makes client-side query _construction_ possible rather
+than only client-side syntax checking — turning query text into something
+executable has never needed the engine that executes it. TraceQL and LogQL both lower today; what
+remains out of reach is cross-series arithmetic (`a / b`, `label_replace`),
+which needs computation between series rather than within one aggregate. See
+design D6 in the archived `publishable-ql-crates` change.
 
 **One version rule.** Arrow, Parquet, and DataFusion evolve together and
 must agree on versions. SignalDB therefore always imports Arrow and

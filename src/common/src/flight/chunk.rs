@@ -97,10 +97,10 @@ fn compact(batch: &RecordBatch) -> Result<RecordBatch, ArrowError> {
         .map(|column| {
             let data = column.to_data();
             let mut mutable = MutableArrayData::new(vec![&data], false, data.len());
-            mutable.extend(0, 0, data.len());
-            make_array(mutable.freeze())
+            mutable.try_extend(0, 0, data.len())?;
+            Ok(make_array(mutable.freeze()))
         })
-        .collect();
+        .collect::<Result<Vec<_>, ArrowError>>()?;
     RecordBatch::try_new(batch.schema(), columns)
 }
 

@@ -104,19 +104,13 @@ pub async fn run(common: &CommonArgs, _args: Args) -> Result<()> {
     let flight_addr: std::net::SocketAddr = flight_addr_str
         .parse()
         .with_context(|| format!("Invalid COMPACTOR_FLIGHT_ADDR: {flight_addr_str}"))?;
-
-    // Initialize service bootstrap — register with the real Flight address so that
-    // other services and operators can discover this compactor instance.
-    let bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Compactor,
-        flight_addr_str.clone(),
-    )
-    .await
-    .context("Failed to initialize compactor service bootstrap")?;
+    let bootstrap =
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Compactor, flight_addr)
+            .await
+            .context("Failed to initialize compactor service bootstrap")?;
 
     tracing::info!(
-        "Compactor service registered with ID: {} (Flight: {flight_addr_str})",
+        "Compactor service registered with ID: {} (Flight: {flight_addr})",
         bootstrap.service_id()
     );
 

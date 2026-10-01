@@ -8,6 +8,13 @@
 //! - **trace lookup by id** — opening a single trace (`WHERE trace_id = ?`)
 //! - **trace search / groups** — listing recent trace groups (`DISTINCT trace_id`)
 //!
+//! A second group, `declared_ordering`, times the ordered read shapes
+//! (recent-first TopK, oldest-first TopK, full ordered scan) over many
+//! sequential files, attested and not. Before timing, it prints what each
+//! arm's scan did (files reached, pruned and read, bytes, whether
+//! the sort was elided), because wall-clock alone cannot tell an elided sort
+//! from a quiet machine.
+//!
 //! Numbers are in-memory, so they measure query CPU + scan + pruning cost, not
 //! S3/disk latency. They are for relative regression tracking ("are we making
 //! it worse"), not absolute production latency.
@@ -16,15 +23,17 @@ use std::hint::black_box;
 use std::sync::Arc;
 
 use common::catalog_manager::CatalogManager;
-use criterion::{Criterion, criterion_group, criterion_main};
+use common::config::QuerierConfig;
+use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use datafusion::arrow::array::{Array, TimestampMicrosecondArray};
 use datafusion::datasource::MemTable;
 use datafusion::prelude::SessionContext;
-use object_store::memory::InMemory;
-use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
+use tests_integration::compaction_helpers::trace_sort_keys;
+use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity, SequentialLayout};
 use tests_integration::generators::{
     self, BLOOM_HIGH_SENTINEL, BLOOM_LOW_SENTINEL, BLOOM_TARGET_TRACE_ID,
 };
+use tests_integration::ordering::{ScanReport, SequentialTraces};
 use tokio::runtime::Runtime;
 use writer::IcebergTableWriter;
 
@@ -41,20 +50,18 @@ const TARGET: &str = BLOOM_TARGET_TRACE_ID;
 /// Spans of TARGET, one per spread instant — the completeness ground truth.
 const TARGET_SPAN_COUNT: usize = 3;
 
-/// Seed a traces table and hand back a DataFusion context with it registered,
-/// plus the base timestamp (millis) used for seeding so the windowed lookup can
-/// build a bounded time predicate.
-async fn seed_traces_context() -> (SessionContext, i64) {
+/// Seed a traces table and hand back the catalog holding it, plus the base
+/// timestamp (millis) used for seeding so the windowed lookup can build a
+/// bounded time predicate.
+async fn seed_traces_catalog() -> (Arc<CatalogManager>, i64) {
     let config = common::testing::TestConfigBuilder::new()
         .in_memory()
         .with_tenant(TENANT, DATASET)
         .build();
     let catalog_manager = Arc::new(CatalogManager::new(config).await.expect("catalog manager"));
-    let object_store = Arc::new(InMemory::new());
 
     let mut writer = IcebergTableWriter::new(
         &catalog_manager,
-        object_store.clone(),
         TENANT.to_string(),
         DATASET.to_string(),
         TABLE.to_string(),
@@ -98,7 +105,12 @@ async fn seed_traces_context() -> (SessionContext, i64) {
         .expect("seed spread target span");
     }
 
-    // Register the freshly-written table exactly as the querier does.
+    (catalog_manager, base_ts)
+}
+
+/// Register the seeded table on `ctx` exactly as the querier does, so every
+/// context in this bench reads the same files through the same provider.
+async fn with_traces(ctx: SessionContext, catalog_manager: &CatalogManager) -> SessionContext {
     let identifier = catalog_manager.build_table_identifier(TENANT, DATASET, TABLE);
     let tabular = catalog_manager
         .catalog()
@@ -108,9 +120,23 @@ async fn seed_traces_context() -> (SessionContext, i64) {
     let table = Arc::new(datafusion_iceberg::DataFusionTable::new(
         tabular, None, None, None,
     ));
-    let ctx = SessionContext::new();
     ctx.register_table(TABLE, table).expect("register table");
-    (ctx, base_ts)
+    ctx
+}
+
+/// The point lookup every footer-cache scenario times: one trace id, no time
+/// bound, so every candidate file has to be opened.
+async fn lookup_by_id(ctx: &SessionContext) -> usize {
+    let batches = ctx
+        .sql(&format!(
+            "SELECT * FROM {TABLE} WHERE trace_id = '{TARGET}'"
+        ))
+        .await
+        .expect("plan lookup")
+        .collect()
+        .await
+        .expect("run lookup");
+    batches.iter().map(|b| b.num_rows()).sum()
 }
 
 /// Build the point index `trace_id -> {distinct hour buckets}` as a small
@@ -189,7 +215,8 @@ async fn lookup_via_index(ctx: &SessionContext) -> usize {
 
 fn bench_read_paths(c: &mut Criterion) {
     let rt = Runtime::new().unwrap();
-    let (ctx, base_ts) = rt.block_on(seed_traces_context());
+    let (catalog_manager, base_ts) = rt.block_on(seed_traces_catalog());
+    let ctx = rt.block_on(with_traces(SessionContext::new(), &catalog_manager));
     rt.block_on(build_trace_index(&ctx));
 
     // A ±1h window (in microseconds) around the FIRST seeded instant — the
@@ -236,17 +263,65 @@ fn bench_read_paths(c: &mut Criterion) {
     // kept as the upper bound / regression guard against losing time pruning.
     group.bench_function("trace_lookup_by_id_unbounded", |b| {
         b.to_async(&rt).iter(|| async {
-            let batches = ctx
-                .sql(&format!(
-                    "SELECT * FROM {TABLE} WHERE trace_id = '{TARGET}'"
-                ))
-                .await
-                .expect("plan lookup")
-                .collect()
-                .await
-                .expect("run lookup");
-            let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
-            black_box(rows);
+            black_box(lookup_by_id(&ctx).await);
+        });
+    });
+
+    // The footer-cache lever (#880): the same unbounded lookup on the real
+    // querier session, in the three states that matter.
+    //
+    // The three-way split exists because the cache's cold and warm effects are
+    // different questions. Warm-vs-cold is the win being claimed. Cold-with-
+    // vs cold-without is the regression guard: enabling the cache must not
+    // make a first-ever lookup slower. Reading DataFusion 54's opener says it
+    // should not — the opener passes an explicit `PageIndexPolicy::Skip` on
+    // the initial metadata load, which `CachedParquetFileReader::get_metadata`
+    // forwards, so the cache never triggers the extra page-index fetch that
+    // `DFParquetMetadata` would default to when no policy is set. The cold
+    // arms measure that rather than assuming it; all the cache should add on a
+    // miss is one hash lookup and one insert.
+    //
+    // Both cold arms clear their own cache inside the timed region so neither
+    // carries a call the other does not; on the uncached arm the clear is a
+    // no-op over an empty map. These run on an in-memory object store, so they
+    // show the decode half only — on S3 each avoided footer is also a
+    // round-trip, which is where #880's ~53 ms comes from.
+    let uncached = rt.block_on(with_traces(
+        querier::flight::session_context_with_limits(&QuerierConfig {
+            parquet_metadata_cache_mb: 0,
+            ..QuerierConfig::default()
+        }),
+        &catalog_manager,
+    ));
+    let cached = rt.block_on(with_traces(
+        querier::flight::session_context_with_limits(&QuerierConfig::default()),
+        &catalog_manager,
+    ));
+    let uncached_cache = uncached
+        .runtime_env()
+        .cache_manager
+        .get_file_metadata_cache();
+    let cached_cache = cached.runtime_env().cache_manager.get_file_metadata_cache();
+
+    group.bench_function("trace_lookup_by_id_cold_without_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            uncached_cache.clear();
+            black_box(lookup_by_id(&uncached).await);
+        });
+    });
+
+    group.bench_function("trace_lookup_by_id_cold_with_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            cached_cache.clear();
+            black_box(lookup_by_id(&cached).await);
+        });
+    });
+
+    // Warm: every candidate file's footer is already resident.
+    rt.block_on(lookup_by_id(&cached));
+    group.bench_function("trace_lookup_by_id_warm_with_cache", |b| {
+        b.to_async(&rt).iter(|| async {
+            black_box(lookup_by_id(&cached).await);
         });
     });
 
@@ -298,5 +373,177 @@ fn bench_read_paths(c: &mut Criterion) {
     group.finish();
 }
 
-criterion_group!(benches, bench_read_paths);
+/// One ordered shape and what a fully attested scan must do with it.
+struct OrderedShape {
+    name: &'static str,
+    sql: String,
+    expected_rows: usize,
+    /// Whether the attested scan's declared order satisfies the request, so
+    /// the plan carries no sort at all.
+    attested_elides_sort: bool,
+}
+
+const TOPK_LIMIT: usize = 20;
+
+/// The three ordered shapes, each answered differently by the engine:
+///
+/// - `recent_first_topk` — the Explore UI's shape. DataFusion 54 pushes the
+///   sort down *inexactly*: files are reordered newest-first by statistics,
+///   row groups are read in reverse, and the TopK's dynamic filter prunes
+///   whole files once the heap is full. The sort stays; attestation is not
+///   what makes this fast.
+/// - `oldest_first_topk` — the request matches the declared order, so an
+///   attested scan declares it, the sort is elided, and the limit stops the
+///   scan after the first file of each group without reaching the rest.
+/// - `ordered_full_scan` — no limit: the whole win is the elided sort of
+///   every row versus a full sort of every row.
+fn ordered_shapes(layout: &SequentialLayout) -> [OrderedShape; 3] {
+    let table = tests_integration::ordering::TABLE;
+    [
+        OrderedShape {
+            name: "recent_first_topk",
+            sql: format!(
+                "SELECT timestamp, trace_id FROM {table} ORDER BY timestamp DESC LIMIT {TOPK_LIMIT}"
+            ),
+            expected_rows: TOPK_LIMIT,
+            attested_elides_sort: false,
+        },
+        OrderedShape {
+            name: "oldest_first_topk",
+            sql: format!(
+                "SELECT timestamp, trace_id FROM {table} ORDER BY timestamp ASC LIMIT {TOPK_LIMIT}"
+            ),
+            expected_rows: TOPK_LIMIT,
+            attested_elides_sort: true,
+        },
+        OrderedShape {
+            name: "ordered_full_scan",
+            sql: format!("SELECT timestamp, trace_id FROM {table} ORDER BY timestamp ASC"),
+            expected_rows: layout.total_rows(),
+            attested_elides_sort: true,
+        },
+    ]
+}
+
+/// One arm of the ordered-read group: a population under one session
+/// option, with what its scan did and answered for each shape, measured
+/// once up front.
+struct OrderedArm {
+    name: &'static str,
+    ctx: SessionContext,
+    /// Per shape, in `ordered_shapes` order: the scan report and the sort
+    /// keys of the rows it returned.
+    results: Vec<(ScanReport, Vec<(i64, String)>)>,
+}
+
+/// Open `population` under one session option and run every shape once.
+async fn ordered_arm(
+    name: &'static str,
+    population: &SequentialTraces,
+    split_file_groups_by_statistics: bool,
+    shapes: &[OrderedShape],
+) -> OrderedArm {
+    let ctx = population
+        .context(split_file_groups_by_statistics)
+        .await
+        .expect("querier session");
+    let mut results = Vec::with_capacity(shapes.len());
+    for shape in shapes {
+        // Footers are resident after this first run, so the timed
+        // iterations measure the steady state a warm querier is in.
+        let (report, batches) = tests_integration::ordering::scan_report(&ctx, &shape.sql)
+            .await
+            .expect("run ordered query");
+        results.push((report, trace_sort_keys(&batches).expect("sort keys")));
+    }
+    OrderedArm { name, ctx, results }
+}
+
+/// Time the ordered shapes over attested and unattested files, after
+/// printing and asserting what each scan did.
+fn bench_declared_ordering(c: &mut Criterion) {
+    let rt = Runtime::new().unwrap();
+    let layout = SequentialLayout::two_hours_of_ingest();
+    let shapes = ordered_shapes(&layout);
+
+    let (attested, unattested) = rt.block_on(async {
+        let attested = SequentialTraces::seed("ordered-attested", &layout)
+            .await
+            .expect("seed attested");
+        let unattested = attested
+            .unattested_copy("ordered-unattested")
+            .await
+            .expect("seed unattested");
+        (attested, unattested)
+    });
+    let (attested_arm, split_off_arm, unattested_arm) = rt.block_on(async {
+        (
+            ordered_arm("attested", &attested, true, &shapes).await,
+            ordered_arm("attested_split_off", &attested, false, &shapes).await,
+            ordered_arm("unattested", &unattested, true, &shapes).await,
+        )
+    });
+    let arms = [&attested_arm, &split_off_arm, &unattested_arm];
+
+    // The mechanism, in the scan's own numbers. The footprint is the
+    // denominator: what a scan that could not stop early would touch.
+    let footprint = rt.block_on(attested.footprint()).expect("table footprint");
+    eprintln!("declared_ordering population: {footprint}");
+    for (index, shape) in shapes.iter().enumerate() {
+        for arm in arms {
+            eprintln!(
+                "{:<18} {:<19} {}",
+                shape.name, arm.name, arm.results[index].0
+            );
+        }
+    }
+
+    // Correctness up front, so no arm can be timing a wrong answer: every
+    // arm returns the same rows for every shape, and the mechanism the
+    // group exists to show is actually in force.
+    for (index, shape) in shapes.iter().enumerate() {
+        let (unattested_report, truth) = &unattested_arm.results[index];
+        assert_eq!(truth.len(), shape.expected_rows, "{}", shape.name);
+        for arm in [&attested_arm, &split_off_arm] {
+            let (report, keys) = &arm.results[index];
+            assert_eq!(
+                keys, truth,
+                "{}/{} must return the true answer",
+                shape.name, arm.name
+            );
+            assert_eq!(
+                !report.sorts, shape.attested_elides_sort,
+                "{}/{}: sort elision changed: {report}",
+                shape.name, arm.name
+            );
+        }
+        assert!(
+            unattested_report.sorts,
+            "{}: an unattested scan must keep its sort: {unattested_report}",
+            shape.name
+        );
+    }
+
+    let mut group = c.benchmark_group("declared_ordering");
+    for shape in &shapes {
+        for arm in arms {
+            group.bench_function(BenchmarkId::new(shape.name, arm.name), |b| {
+                b.to_async(&rt).iter(|| async {
+                    let batches = arm
+                        .ctx
+                        .sql(&shape.sql)
+                        .await
+                        .expect("plan")
+                        .collect()
+                        .await
+                        .expect("run");
+                    black_box(batches);
+                });
+            });
+        }
+    }
+    group.finish();
+}
+
+criterion_group!(benches, bench_read_paths, bench_declared_ordering);
 criterion_main!(benches);

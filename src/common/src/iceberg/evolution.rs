@@ -22,10 +22,119 @@ use iceberg_rust::table::Table;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
-use crate::schema::materialized_column_name;
+use crate::schema::logical::AttributeLevel;
 use crate::schema::schema_parser::{
     ResolvedField, SchemaDefinitions, TableSchemaDefinition, version_chain,
 };
+use crate::schema::type_authority::CanonicalType;
+use crate::schema::{materialized_column_name, promoted_attr_column};
+
+/// The `doc` prefix [`label_doc`] stamps on every materialized label
+/// column, recording the attribute key it was created for. Authoritative
+/// over the column *name*: two keys can sanitize to the same
+/// [`materialized_column_name`] candidate (#814), but never to the same
+/// recorded origin key.
+const LABEL_DOC_PREFIX: &str = "Materialized attribute label '";
+
+/// Formats the field `doc` recording `key` as a materialized label
+/// column's authoritative origin key. [`add_label_columns`] stamps every
+/// new label column's `doc` with this; [`origin_key_of`] inverts it.
+pub fn label_doc(key: &str) -> String {
+    format!("{LABEL_DOC_PREFIX}{key}'")
+}
+
+/// Extracts the origin key from a materialized label column's field
+/// `doc`. Returns `None` for a base column (no doc, or a doc not in this
+/// format).
+pub fn origin_key_of(doc: Option<&str>) -> Option<&str> {
+    doc?.strip_prefix(LABEL_DOC_PREFIX)?.strip_suffix('\'')
+}
+
+/// The column already materializing `key` in `schema`, found by its
+/// recorded origin-key `doc` -- immune to a sanitization collision with a
+/// different key (#814), and stable across calls because it is looked up
+/// from the schema already committed, never recomputed from scratch.
+pub fn column_for_key<'a>(schema: &'a Schema, key: &str) -> Option<&'a str> {
+    schema
+        .fields()
+        .iter()
+        .find(|f| origin_key_of(f.doc.as_deref()) == Some(key))
+        .map(|f| f.name.as_str())
+}
+
+/// Resolves the physical column each of `keys` should use against
+/// `current`: a key that already has a column (found via
+/// [`column_for_key`]) keeps it; a brand-new key gets
+/// [`materialized_column_name`], or the next free deterministic suffix
+/// (`_2`, `_3`, ...) when that candidate is already taken by a *different*
+/// key or a base column. Two keys that sanitize identically therefore
+/// always resolve to distinct columns (#814), whether passed in the same
+/// call or resolved across separate calls on the same table (the second
+/// call's `current` already carries the first key's column and `doc`). A
+/// key repeated within one call resolves once, to its first assignment.
+pub fn resolve_label_columns(current: &Schema, keys: &[String]) -> Vec<(String, String)> {
+    let mut taken: HashSet<String> = current.fields().iter().map(|f| f.name.clone()).collect();
+    let mut resolved: Vec<(String, String)> = Vec::new();
+
+    for key in keys {
+        if resolved.iter().any(|(k, _)| k == key) {
+            continue;
+        }
+        if let Some(column) = column_for_key(current, key) {
+            resolved.push((key.clone(), column.to_string()));
+            continue;
+        }
+        let base = materialized_column_name(key);
+        let mut candidate = base.clone();
+        let mut suffix = 2;
+        while taken.contains(&candidate) {
+            candidate = format!("{base}_{suffix}");
+            suffix += 1;
+        }
+        taken.insert(candidate.clone());
+        resolved.push((key.clone(), candidate));
+    }
+
+    resolved
+}
+
+/// [`resolve_label_columns`], but with `keys` sorted into a canonical order
+/// (by key string) first, so two callers resolving the same *set* of keys
+/// against schemas that don't yet carry any of them -- a brand-new table
+/// being built, or no live schema to consult at all -- agree on the same
+/// columns regardless of the order that set happens to be iterated in
+/// (config file order, `Vec` construction order, ...).
+///
+/// This is what makes reordering `[schema.materialized_labels]` -- a no-op
+/// edit under any reasonable reading of that config surface -- unable to
+/// silently reassign an already-colliding key to a different physical
+/// column (#1448). It does not protect a *set* change: a newly added or
+/// removed key can still shift assignments among the keys it collides
+/// with. Guarding against that needs the table's actual committed schema,
+/// which [`resolve_label_columns`] consults directly (via each column's
+/// origin-key `doc`) when a caller already holds one -- prefer calling it
+/// directly over this canonical variant whenever a live schema is
+/// available.
+pub fn resolve_label_columns_canonical(current: &Schema, keys: &[String]) -> Vec<(String, String)> {
+    let mut sorted = keys.to_vec();
+    sorted.sort();
+    resolve_label_columns(current, &sorted)
+}
+
+/// [`resolve_label_columns_canonical`] against an empty schema, for a
+/// caller with no table to consult at all: the writer's Flight ingest hot
+/// path resolves and materializes label columns before a batch is even
+/// written to WAL, deliberately decoupled from any catalog round trip (see
+/// `flight_iceberg.rs`'s module doc) -- so table creation
+/// (`ResolvedSchema::build_iceberg_schema`) and this hot path are the two
+/// canonical-resolution callers that agree with each other as long as the
+/// configured key *set* hasn't changed since the table was created; an
+/// existing table gains a genuinely new key's column only through
+/// [`add_label_columns`], which resolves against that table's real schema.
+pub fn resolve_label_columns_fresh(keys: &[String]) -> Vec<(String, String)> {
+    let empty = Schema::from_struct_type(StructType::new(Vec::new()), 0, None);
+    resolve_label_columns_canonical(&empty, keys)
+}
 
 /// The highest field id used anywhere in the schema tree: top-level
 /// fields plus nested struct fields, list element ids, and map key/value
@@ -61,6 +170,96 @@ fn max_field_id(schema: &Schema) -> i32 {
     max
 }
 
+/// The schema id for a newly-added schema version: one past the highest id
+/// already known to `metadata` (falling back to `current`'s id for a table
+/// with only its original schema). Shared by [`add_label_columns`],
+/// [`remove_label_columns`], and [`apply_schema_migration`], which each
+/// commit their change as a new schema version via `AddSchema` +
+/// `SetCurrentSchema`.
+fn next_schema_id(
+    metadata: &iceberg_rust::spec::table_metadata::TableMetadata,
+    current: &Schema,
+) -> i32 {
+    metadata
+        .schemas
+        .keys()
+        .max()
+        .copied()
+        .unwrap_or(*current.schema_id())
+        + 1
+}
+
+/// Reload `identifier` and resolve its current schema, for the post-commit
+/// verification every schema-change function below performs. `what` names
+/// the change in the error context (e.g. "evolution", "demotion",
+/// "migration").
+async fn reload_current_schema(
+    catalog: &Arc<dyn Catalog>,
+    identifier: &Identifier,
+    what: &str,
+) -> Result<Schema> {
+    let reloaded = load_table(catalog, identifier)
+        .await
+        .with_context(|| format!("Failed to reload table for post-{what} verification"))?;
+    let schema = reloaded.current_schema().map_err(|e| {
+        anyhow::anyhow!("Failed to resolve current schema after {what} of {identifier}: {e}")
+    })?;
+    Ok(schema.clone())
+}
+
+/// Shared commit + post-commit verification for [`add_label_columns`] and
+/// [`remove_label_columns`]: commits `evolved` as the new current schema
+/// (`AddSchema` + `SetCurrentSchema`, `last_column_id` forwarded as-is --
+/// `None` for a removal, so dropped ids are never reused), then reloads and
+/// confirms `must_be_present` all landed and `must_be_absent` all
+/// disappeared. `what` names the change for the commit/verification error
+/// context (e.g. "evolution", "demotion").
+async fn commit_and_verify_schema(
+    catalog: Arc<dyn Catalog>,
+    identifier: &Identifier,
+    evolved: Schema,
+    last_column_id: Option<i32>,
+    what: &str,
+    must_be_present: &[String],
+    must_be_absent: &[String],
+) -> Result<Schema> {
+    let new_schema_id = *evolved.schema_id();
+    catalog
+        .clone()
+        .update_table(CommitTable {
+            identifier: identifier.clone(),
+            requirements: vec![],
+            updates: vec![
+                TableUpdate::AddSchema {
+                    schema: evolved,
+                    last_column_id,
+                },
+                TableUpdate::SetCurrentSchema {
+                    schema_id: new_schema_id,
+                },
+            ],
+        })
+        .await
+        .map_err(|e| anyhow::anyhow!("Failed to commit schema {what} for {identifier}: {e}"))?;
+
+    let verified = reload_current_schema(&catalog, identifier, what).await?;
+    for column in must_be_present {
+        anyhow::ensure!(
+            verified.fields().iter().any(|f| &f.name == column),
+            "Schema {what} of {identifier} did not take effect: column {column} missing from \
+             current schema; a concurrent commit likely won the race"
+        );
+    }
+    for column in must_be_absent {
+        anyhow::ensure!(
+            !verified.fields().iter().any(|f| &f.name == column),
+            "Schema {what} of {identifier} did not take effect: column {column} still present \
+             in current schema; a concurrent commit likely won the race"
+        );
+    }
+    Ok(verified)
+}
+
 /// Load a table (never a view) from the catalog.
 async fn load_table(catalog: &Arc<dyn Catalog>, identifier: &Identifier) -> Result<Table> {
     let tabular = catalog
@@ -77,12 +276,15 @@ async fn load_table(catalog: &Arc<dyn Catalog>, identifier: &Identifier) -> Resu
 /// Add one optional string `label_<key>` column per attribute key to the
 /// table's current schema and make the evolved schema current.
 ///
-/// Idempotent: keys whose materialized column (see
-/// [`materialized_column_name`]) already exists are skipped, and when no
-/// new columns remain the current schema is returned without a commit.
-/// Field ids continue after the maximum id across the whole existing
-/// schema tree (nested map/list ids included), and the new schema id is
-/// one past the highest existing schema id.
+/// Idempotent: a key whose column already exists (resolved via
+/// [`resolve_label_columns`], keyed off the column's origin-key `doc` --
+/// see [`column_for_key`]) is skipped, and when no new columns remain the
+/// current schema is returned without a commit. Two keys that sanitize to
+/// the same [`materialized_column_name`] candidate (#814) are resolved to
+/// distinct columns rather than merged. Field ids continue after the
+/// maximum id across the whole existing schema tree (nested map/list ids
+/// included), and the new schema id is one past the highest existing
+/// schema id.
 ///
 /// The change is committed as `AddSchema` + `SetCurrentSchema` through
 /// [`Catalog::update_table`], then the table is reloaded and the evolved
@@ -100,19 +302,15 @@ pub async fn add_label_columns(
         .current_schema()
         .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
 
-    // Resolve keys to column names, skipping columns that already exist
-    // and collapsing duplicates (two keys can encode to the same column).
-    let existing: Vec<&str> = current.fields().iter().map(|f| f.name.as_str()).collect();
-    let mut new_columns: Vec<(String, String)> = Vec::new(); // (key, column)
-    for key in keys {
-        let column = materialized_column_name(key);
-        if existing.iter().any(|name| *name == column)
-            || new_columns.iter().any(|(_, c)| *c == column)
-        {
-            continue;
-        }
-        new_columns.push((key.clone(), column));
-    }
+    // Resolve every key to its column: an already-materialized key keeps
+    // its existing column (found via its origin-key `doc`), and a new key
+    // gets a collision-proof candidate name (#814) -- two keys that
+    // sanitize identically never share a column.
+    let existing: HashSet<&str> = current.fields().iter().map(|f| f.name.as_str()).collect();
+    let new_columns: Vec<(String, String)> = resolve_label_columns(current, keys)
+        .into_iter()
+        .filter(|(_, column)| !existing.contains(column.as_str()))
+        .collect();
     if new_columns.is_empty() {
         return Ok(current.clone());
     }
@@ -132,7 +330,7 @@ pub async fn add_label_columns(
             name: column.clone(),
             required: false,
             field_type: Type::Primitive(PrimitiveType::String),
-            doc: Some(format!("Materialized attribute label '{key}'")),
+            doc: Some(label_doc(key)),
             initial_default: None,
             write_default: None,
         });
@@ -140,48 +338,20 @@ pub async fn add_label_columns(
     }
     let last_column_id = next_id - 1;
 
-    let new_schema_id = metadata
-        .schemas
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(*current.schema_id())
-        + 1;
+    let new_schema_id = next_schema_id(metadata, current);
     let evolved = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
+    let present: Vec<String> = new_columns.iter().map(|(_, c)| c.clone()).collect();
 
-    catalog
-        .clone()
-        .update_table(CommitTable {
-            identifier: identifier.clone(),
-            requirements: vec![],
-            updates: vec![
-                TableUpdate::AddSchema {
-                    schema: evolved,
-                    last_column_id: Some(last_column_id),
-                },
-                TableUpdate::SetCurrentSchema {
-                    schema_id: new_schema_id,
-                },
-            ],
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to commit schema evolution for {identifier}: {e}"))?;
-
-    // Post-commit verification: reload and confirm the evolved schema is
-    // current and carries every requested column.
-    let reloaded = load_table(&catalog, identifier)
-        .await
-        .context("Failed to reload table for post-evolution verification")?;
-    let verified = reloaded.current_schema().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve current schema after evolution of {identifier}: {e}")
-    })?;
-    for (key, column) in &new_columns {
-        anyhow::ensure!(
-            verified.fields().iter().any(|f| &f.name == column),
-            "Schema evolution of {identifier} did not take effect: column {column} (key '{key}') \
-             missing from current schema; a concurrent commit likely won the race"
-        );
-    }
+    let verified = commit_and_verify_schema(
+        catalog,
+        identifier,
+        evolved,
+        Some(last_column_id),
+        "evolution",
+        &present,
+        &[],
+    )
+    .await?;
 
     tracing::info!(
         table = %identifier,
@@ -197,15 +367,14 @@ pub async fn add_label_columns(
 /// keys from the table's current schema and make the pruned schema
 /// current (the demotion half of #734).
 ///
-/// Idempotent: keys whose materialized column (see
-/// [`materialized_column_name`]) is already absent are skipped, and when
+/// Idempotent: a key with no column (resolved via [`column_for_key`],
+/// keyed off the column's origin-key `doc` -- #814) is skipped, and when
 /// nothing remains to drop the current schema is returned without a
-/// commit. Only `label_<key>` columns can ever be named — the key ->
-/// column encoding always carries the `label_` prefix, so base columns
-/// are unreachable by construction. Field ids of dropped columns are
-/// never reused: the metadata's `last_column_id` is left untouched
-/// (`AddSchema` with `last_column_id: None`) and [`add_label_columns`]
-/// allocates past it.
+/// commit. Only a genuine `label_<key>` column carries an origin-key
+/// `doc`, so a base column is unreachable by construction. Field ids of
+/// dropped columns are never reused: the metadata's `last_column_id` is
+/// left untouched (`AddSchema` with `last_column_id: None`) and
+/// [`add_label_columns`] allocates past it.
 ///
 /// The change is committed as `AddSchema` + `SetCurrentSchema` through
 /// [`Catalog::update_table`], then the table is reloaded and the pruned
@@ -224,13 +393,15 @@ pub async fn remove_label_columns(
         .current_schema()
         .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
 
-    // Resolve keys to column names, keeping only columns that exist and
-    // collapsing duplicates (two keys can encode to the same column).
+    // Resolve each key to its actual column via the schema's recorded
+    // origin-key `doc` (#814) -- not by recomputing the candidate name,
+    // which could point at a different key's column after a collision.
     let mut drop_columns: Vec<String> = Vec::new();
     for key in keys {
-        let column = materialized_column_name(key);
-        if current.fields().iter().any(|f| f.name == column) && !drop_columns.contains(&column) {
-            drop_columns.push(column);
+        if let Some(column) = column_for_key(current, key)
+            && !drop_columns.iter().any(|c| c == column)
+        {
+            drop_columns.push(column.to_string());
         }
     }
     if drop_columns.is_empty() {
@@ -246,50 +417,21 @@ pub async fn remove_label_columns(
         .cloned()
         .collect();
     let metadata = table.metadata();
-    let new_schema_id = metadata
-        .schemas
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(*current.schema_id())
-        + 1;
+    let new_schema_id = next_schema_id(metadata, current);
     let pruned = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
 
-    catalog
-        .clone()
-        .update_table(CommitTable {
-            identifier: identifier.clone(),
-            requirements: vec![],
-            updates: vec![
-                TableUpdate::AddSchema {
-                    schema: pruned,
-                    // Keep `last_column_id` as is: dropped ids must never
-                    // be handed out again.
-                    last_column_id: None,
-                },
-                TableUpdate::SetCurrentSchema {
-                    schema_id: new_schema_id,
-                },
-            ],
-        })
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to commit schema demotion for {identifier}: {e}"))?;
-
-    // Post-commit verification: reload and confirm the pruned schema is
-    // current and every named column is gone.
-    let reloaded = load_table(&catalog, identifier)
-        .await
-        .context("Failed to reload table for post-demotion verification")?;
-    let verified = reloaded.current_schema().map_err(|e| {
-        anyhow::anyhow!("Failed to resolve current schema after demotion of {identifier}: {e}")
-    })?;
-    for column in &drop_columns {
-        anyhow::ensure!(
-            !verified.fields().iter().any(|f| &f.name == column),
-            "Schema demotion of {identifier} did not take effect: column {column} still present \
-             in current schema; a concurrent commit likely won the race"
-        );
-    }
+    // Keep `last_column_id` as is: dropped ids must never be handed out
+    // again.
+    let verified = commit_and_verify_schema(
+        catalog,
+        identifier,
+        pruned,
+        None,
+        "demotion",
+        &[],
+        &drop_columns,
+    )
+    .await?;
 
     tracing::info!(
         table = %identifier,
@@ -299,6 +441,239 @@ pub async fn remove_label_columns(
     );
 
     Ok(verified.clone())
+}
+
+/// The `doc` prefix [`promoted_attr_doc`] stamps on every typed promoted
+/// attribute column (`otel-native-schema` layer 6), recording the
+/// `(level, key)` it was created for. Deliberately distinct from
+/// [`LABEL_DOC_PREFIX`] so [`origin_key_of`] never matches a promoted-attr
+/// column's doc (and [`promoted_attr_origin`] never matches a label
+/// column's), even though both mechanisms can materialize the same key.
+const PROMOTED_ATTR_DOC_PREFIX: &str = "Materialized promoted attribute (level=";
+
+/// The origin `doc` of a typed promoted attribute column; inverted by [`promoted_attr_origin`].
+pub fn promoted_attr_doc(level: AttributeLevel, key: &str) -> String {
+    format!("{PROMOTED_ATTR_DOC_PREFIX}{}, key='{key}')", level.as_str())
+}
+
+/// Extracts the `(level, key)` origin from a promoted attribute column's
+/// field `doc`. Returns `None` for a base column or a `label_<key>` column
+/// (no doc, or a doc not in this format).
+pub fn promoted_attr_origin(doc: Option<&str>) -> Option<(AttributeLevel, &str)> {
+    let rest = doc?.strip_prefix(PROMOTED_ATTR_DOC_PREFIX)?;
+    let rest = rest.strip_suffix(')')?;
+    let (level_str, key_part) = rest.split_once(", key='")?;
+    let key = key_part.strip_suffix('\'')?;
+    let level = AttributeLevel::parse(level_str)?;
+    Some((level, key))
+}
+
+/// The Iceberg primitive type backing a promoted column of canonical type
+/// `canonical` (see `common::schema::type_authority::CanonicalType`).
+fn iceberg_primitive_for_canonical(canonical: CanonicalType) -> Type {
+    match canonical {
+        CanonicalType::String => Type::Primitive(PrimitiveType::String),
+        CanonicalType::Int64 => Type::Primitive(PrimitiveType::Long),
+        CanonicalType::Float64 => Type::Primitive(PrimitiveType::Double),
+        CanonicalType::Bool => Type::Primitive(PrimitiveType::Boolean),
+    }
+}
+
+/// The inverse of [`iceberg_primitive_for_canonical`]; `None` for a type promotion never uses.
+fn canonical_type_of(field_type: &Type) -> Option<CanonicalType> {
+    match field_type {
+        Type::Primitive(PrimitiveType::String) => Some(CanonicalType::String),
+        Type::Primitive(PrimitiveType::Long) => Some(CanonicalType::Int64),
+        Type::Primitive(PrimitiveType::Double) => Some(CanonicalType::Float64),
+        Type::Primitive(PrimitiveType::Boolean) => Some(CanonicalType::Bool),
+        _ => None,
+    }
+}
+
+/// Every typed promoted attribute column in `schema`, found by its origin doc:
+/// `(level, key, column, canonical type)`.
+pub fn promoted_attrs_of(schema: &Schema) -> Vec<(AttributeLevel, String, String, CanonicalType)> {
+    schema
+        .fields()
+        .iter()
+        .filter_map(|f| {
+            let (level, key) = promoted_attr_origin(f.doc.as_deref())?;
+            let canonical = canonical_type_of(&f.field_type)?;
+            Some((level, key.to_string(), f.name.clone(), canonical))
+        })
+        .collect()
+}
+
+/// Add one optional typed `attr_<level>_<key>` column per `(level, key,
+/// canonical type)` entry to the table's current schema and make the
+/// evolved schema current -- the promotion half of `otel-native-schema`
+/// layer 6 (D4/D5), mirroring [`add_label_columns`] but keyed by `(level,
+/// key)` rather than by key alone, and typed per [`CanonicalType`] rather
+/// than always `String`.
+///
+/// Idempotent: an entry whose column already exists with the exact same
+/// origin doc (found via [`promoted_attr_origin`]) is skipped, and when no
+/// new columns remain the current schema is returned without a commit. An
+/// entry whose target name is already taken by a field with a *different*
+/// origin doc (or no doc at all) is a collision this function refuses to
+/// touch -- it is skipped with a `tracing::warn!` rather than retyped or
+/// renamed, since some other mechanism owns that field. Field ids continue
+/// after the maximum id across the whole existing schema tree, and the new
+/// schema id is one past the highest existing schema id, exactly as
+/// [`add_label_columns`].
+///
+/// Returns the verified current schema (with the new columns).
+pub async fn add_promoted_attr_columns(
+    catalog: Arc<dyn Catalog>,
+    identifier: &Identifier,
+    attrs: &[(AttributeLevel, String, CanonicalType)],
+) -> Result<Schema> {
+    let table = load_table(&catalog, identifier).await?;
+    let current = table
+        .current_schema()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
+
+    let existing_by_name: HashMap<&str, &StructField> = current
+        .fields()
+        .iter()
+        .map(|f| (f.name.as_str(), f))
+        .collect();
+
+    let mut new_columns: Vec<(AttributeLevel, String, String, CanonicalType)> = Vec::new();
+    for (level, key, canonical) in attrs {
+        let column = promoted_attr_column(*level, key);
+        let doc = promoted_attr_doc(*level, key);
+        match existing_by_name.get(column.as_str()) {
+            Some(field) if field.doc.as_deref() == Some(doc.as_str()) => {}
+            Some(field) => {
+                tracing::warn!(
+                    table = %identifier,
+                    column = %column,
+                    level = level.as_str(),
+                    key = %key,
+                    existing_doc = ?field.doc,
+                    "Skipping promoted attribute column: name already taken by a field of a \
+                     different origin"
+                );
+            }
+            None if new_columns.iter().any(|(_, _, c, _)| c == &column) => {}
+            None => new_columns.push((*level, key.clone(), column, *canonical)),
+        }
+    }
+    if new_columns.is_empty() {
+        return Ok(current.clone());
+    }
+
+    let metadata = table.metadata();
+    let mut fields: Vec<StructField> = current.fields().iter().cloned().collect();
+    let mut next_id = max_field_id(current).max(metadata.last_column_id) + 1;
+    for (level, key, column, canonical) in &new_columns {
+        fields.push(StructField {
+            id: next_id,
+            name: column.clone(),
+            required: false,
+            field_type: iceberg_primitive_for_canonical(*canonical),
+            doc: Some(promoted_attr_doc(*level, key)),
+            initial_default: None,
+            write_default: None,
+        });
+        next_id += 1;
+    }
+    let last_column_id = next_id - 1;
+
+    let new_schema_id = next_schema_id(metadata, current);
+    let evolved = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
+    let present: Vec<String> = new_columns.iter().map(|(_, _, c, _)| c.clone()).collect();
+
+    let verified = commit_and_verify_schema(
+        catalog,
+        identifier,
+        evolved,
+        Some(last_column_id),
+        "promoted-attribute evolution",
+        &present,
+        &[],
+    )
+    .await?;
+
+    tracing::info!(
+        table = %identifier,
+        schema_id = *verified.schema_id(),
+        columns = ?present,
+        "Added typed promoted attribute columns via schema evolution"
+    );
+
+    Ok(verified)
+}
+
+/// Remove the typed promoted attribute columns of the given `(level, key)`
+/// pairs from the table's current schema and make the pruned schema
+/// current -- the demotion half of `otel-native-schema` layer 6, mirroring
+/// [`remove_label_columns`] but keyed by `(level, key)` rather than by key
+/// alone.
+///
+/// Idempotent: a pair with no matching column (resolved via
+/// [`promoted_attr_origin`]) is skipped, and when nothing remains to drop
+/// the current schema is returned without a commit. Field ids of dropped
+/// columns are never reused: the metadata's `last_column_id` is left
+/// untouched and [`add_promoted_attr_columns`] allocates past it.
+///
+/// Returns the verified current schema (without the dropped columns).
+pub async fn remove_promoted_attr_columns(
+    catalog: Arc<dyn Catalog>,
+    identifier: &Identifier,
+    attrs: &[(AttributeLevel, String)],
+) -> Result<Schema> {
+    let table = load_table(&catalog, identifier).await?;
+    let current = table
+        .current_schema()
+        .map_err(|e| anyhow::anyhow!("Failed to resolve current schema of {identifier}: {e}"))?;
+
+    let mut drop_columns: Vec<String> = Vec::new();
+    for (level, key) in attrs {
+        let doc = promoted_attr_doc(*level, key);
+        if let Some(field) = current
+            .fields()
+            .iter()
+            .find(|f| f.doc.as_deref() == Some(doc.as_str()))
+            && !drop_columns.iter().any(|c| c == &field.name)
+        {
+            drop_columns.push(field.name.clone());
+        }
+    }
+    if drop_columns.is_empty() {
+        return Ok(current.clone());
+    }
+
+    let fields: Vec<StructField> = current
+        .fields()
+        .iter()
+        .filter(|f| !drop_columns.contains(&f.name))
+        .cloned()
+        .collect();
+    let metadata = table.metadata();
+    let new_schema_id = next_schema_id(metadata, current);
+    let pruned = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
+
+    let verified = commit_and_verify_schema(
+        catalog,
+        identifier,
+        pruned,
+        None,
+        "promoted-attribute demotion",
+        &[],
+        &drop_columns,
+    )
+    .await?;
+
+    tracing::info!(
+        table = %identifier,
+        schema_id = *verified.schema_id(),
+        columns = ?drop_columns,
+        "Removed typed promoted attribute columns via schema evolution"
+    );
+
+    Ok(verified)
 }
 
 /// The table property carrying the `schemas.toml` version label a table
@@ -519,13 +894,7 @@ pub async fn apply_schema_migration(
         Some(next_id + diff.additions.len() as i32 - 1)
     };
 
-    let new_schema_id = metadata
-        .schemas
-        .keys()
-        .max()
-        .copied()
-        .unwrap_or(*current.schema_id())
-        + 1;
+    let new_schema_id = next_schema_id(metadata, current);
     let evolved = Schema::from_struct_type(StructType::new(fields), new_schema_id, None);
 
     let mut properties = HashMap::new();
@@ -559,6 +928,10 @@ pub async fn apply_schema_migration(
             )
         })?;
 
+    // This verification also checks `SCHEMA_VERSION_PROPERTY` below, so it
+    // needs the reloaded `Table` itself, not just its schema (unlike
+    // `add_label_columns`/`remove_label_columns`, which only need the schema
+    // and so share [`reload_current_schema`]).
     let reloaded = load_table(&catalog, identifier)
         .await
         .context("Failed to reload table for post-migration verification")?;
@@ -678,6 +1051,7 @@ pub async fn ensure_schema_current(
 mod tests {
     use super::*;
     use crate::CatalogManager;
+    use crate::schema::SCHEMA_DEFINITIONS;
     use iceberg_rust::catalog::create::CreateTableBuilder;
     use iceberg_rust::spec::partition::PartitionSpec;
     use iceberg_rust::spec::types::MapType;
@@ -844,27 +1218,124 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn duplicate_keys_collapse_to_one_column() -> anyhow::Result<()> {
+    async fn collision_proof_naming_assigns_distinct_columns_to_colliding_keys()
+    -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;
         let catalog = manager.catalog();
         let identifier = create_test_table(&catalog, "events").await?;
 
-        // `http.method` and `http_method` encode to the same column name.
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name -- each key must still get its own column (#814).
         let schema = add_label_columns(
             catalog.clone(),
             &identifier,
             &["http.method".to_string(), "http_method".to_string()],
         )
         .await?;
+
+        let first = field(&schema, "label_http_method").expect("label_http_method missing");
+        let second = field(&schema, "label_http_method_2").expect("label_http_method_2 missing");
+        assert_eq!(origin_key_of(first.doc.as_deref()), Some("http.method"));
+        assert_eq!(origin_key_of(second.doc.as_deref()), Some("http_method"));
         assert_eq!(
             schema
                 .fields()
                 .iter()
-                .filter(|f| f.name == "label_http_method")
+                .filter(|f| f.name.starts_with("label_http_method"))
                 .count(),
-            1
+            2,
+            "colliding keys must get distinct columns, not merge into one"
         );
         Ok(())
+    }
+
+    #[tokio::test]
+    async fn collision_proof_naming_is_stable_across_separate_calls() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        // Promote `http.method` first, in its own call...
+        let first_schema =
+            add_label_columns(catalog.clone(), &identifier, &["http.method".to_string()]).await?;
+        assert!(field(&first_schema, "label_http_method").is_some());
+
+        // ...then `http_method` later, in a separate call. It sanitizes to
+        // the same candidate name but must land on a fresh column rather
+        // than merging into (or displacing) `http.method`'s column (#814).
+        let second_schema =
+            add_label_columns(catalog.clone(), &identifier, &["http_method".to_string()]).await?;
+
+        let http_method_column = field(&second_schema, "label_http_method")
+            .expect("http.method's column must still exist");
+        assert_eq!(
+            origin_key_of(http_method_column.doc.as_deref()),
+            Some("http.method"),
+            "http.method must keep its original column across the second call"
+        );
+        let http_underscore_method_column = field(&second_schema, "label_http_method_2")
+            .expect("http_method must get a fresh, distinct column");
+        assert_eq!(
+            origin_key_of(http_underscore_method_column.doc.as_deref()),
+            Some("http_method")
+        );
+
+        // Per-key routing resolves each key to its correct column.
+        assert_eq!(
+            column_for_key(&second_schema, "http.method"),
+            Some("label_http_method")
+        );
+        assert_eq!(
+            column_for_key(&second_schema, "http_method"),
+            Some("label_http_method_2")
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn resolve_label_columns_fresh_is_independent_of_input_order() {
+        // Reordering the configured list (a no-op edit under any reasonable
+        // reading of `[schema.materialized_labels]`) must never reassign an
+        // already-colliding key to a different physical column (#1448
+        // Critical #1).
+        let forward = vec!["http.method".to_string(), "http_method".to_string()];
+        let reversed = vec!["http_method".to_string(), "http.method".to_string()];
+
+        let mut resolved_forward = resolve_label_columns_fresh(&forward);
+        let mut resolved_reversed = resolve_label_columns_fresh(&reversed);
+        resolved_forward.sort();
+        resolved_reversed.sort();
+
+        assert_eq!(resolved_forward, resolved_reversed);
+        assert_eq!(
+            resolved_forward,
+            vec![
+                ("http.method".to_string(), "label_http_method".to_string()),
+                ("http_method".to_string(), "label_http_method_2".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn resolve_label_columns_fresh_handles_a_three_way_collision() {
+        // Three distinct keys sanitizing to the same candidate name each get
+        // their own distinct column, assigned in canonical (sorted) order
+        // regardless of input order -- '-' < '.' < '_' in ASCII, so
+        // `http-method` claims the unsuffixed candidate.
+        let keys = vec![
+            "http_method".to_string(),
+            "http.method".to_string(),
+            "http-method".to_string(),
+        ];
+        assert_eq!(
+            resolve_label_columns_fresh(&keys),
+            vec![
+                ("http-method".to_string(), "label_http_method".to_string()),
+                ("http.method".to_string(), "label_http_method_2".to_string()),
+                ("http_method".to_string(), "label_http_method_3".to_string()),
+            ]
+        );
     }
 
     #[tokio::test]
@@ -1179,6 +1650,159 @@ mod tests {
         Ok(())
     }
 
+    /// End-to-end against the real `schemas.toml` (not a hand-built
+    /// fixture): a traces table created at physical-v3 -- the shape every
+    /// table predating #1340 actually has -- gains a nullable
+    /// `resource_identity` column and its recorded version property moves
+    /// to physical-v4 when `TableManager::ensure_schema_evolved`'s
+    /// underlying `ensure_schema_current` brings it forward. Logs'
+    /// physical-v1 -> physical-v2 hop is the same one-field-addition
+    /// shape, so this one signal stands for both; covering it too would
+    /// just re-assert the identical mechanism.
+    ///
+    /// Targets physical-v4, not `current_trace_version()`: v4 -> v5 is the
+    /// typed-attribute-layout cutover, which replaces
+    /// `map<string,string>` columns with typed maps -- `diff_schema`
+    /// cannot add or remove those (see `iceberg_type_for`), so a live
+    /// table is never evolved across that hop. `IcebergTableManager`
+    /// intercepts a legacy table there and drops+recreates it instead
+    /// (`recreate_as_typed`); this test only exercises the
+    /// `resource_identity` addition evolution still handles.
+    ///
+    /// The table is created directly at the full v3 shape (rather than via
+    /// `apply_schema_migration` onto a smaller base, as other tests here
+    /// do) because the real traces schema declares `attributes_json`,
+    /// `resource_json`, and `scope_attributes` as `map<string,string>` --
+    /// live-table evolution's `diff_schema` doesn't support *adding* a
+    /// map/list column (only `resource_identity`'s plain `string` addition
+    /// exercises that path), so creating fresh is the only way to land a
+    /// v3-shaped table for this test.
+    #[tokio::test]
+    async fn ensure_schema_current_adds_resource_identity_to_a_real_traces_v3_table()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+
+        let namespace = crate::iceberg::names::build_namespace("evo", "test")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let identifier = crate::iceberg::names::build_table_identifier("evo", "test", "traces_v3");
+        let v3_schema = SCHEMA_DEFINITIONS
+            .resolve_trace_schema("physical-v3")?
+            .to_iceberg_schema()?;
+        let create = CreateTableBuilder::default()
+            .with_name("traces_v3".to_string())
+            .with_schema(v3_schema)
+            .with_partition_spec(PartitionSpec::default())
+            .with_location(crate::iceberg::names::build_table_location(
+                "evo",
+                "test",
+                "traces_v3",
+            ))
+            .with_properties(HashMap::from([(
+                SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v3".to_string(),
+            )]))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog
+            .clone()
+            .create_table(identifier.clone(), create)
+            .await?;
+
+        ensure_schema_current(
+            catalog.clone(),
+            &identifier,
+            &SCHEMA_DEFINITIONS,
+            &SCHEMA_DEFINITIONS.traces,
+            "physical-v4",
+        )
+        .await?;
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(
+            table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
+            Some(&"physical-v4".to_string())
+        );
+        let current = table.current_schema()?;
+        let added = field(current, "resource_identity").expect("resource_identity added");
+        assert!(!added.required, "resource_identity must be nullable");
+        assert_eq!(added.field_type, Type::Primitive(PrimitiveType::String));
+        Ok(())
+    }
+
+    /// Same shape as the traces test above: creates `table_name` directly at
+    /// its real `physical-v1` shape (declaring `map<string,string>`
+    /// attribute columns the way every live pre-#1340 table has -- live-table
+    /// evolution can't add a map column, so a fresh create is the only way to
+    /// land that shape), evolves it to `target_version` (the last pre-typed
+    /// version, not the typed `current_*_version()` -- see the traces test
+    /// above for why that hop is off-limits to live evolution), and asserts
+    /// the version property and the new nullable `resource_identity` column
+    /// both land. Used by the `profiles` test below.
+    async fn assert_v1_table_evolves_in_resource_identity(
+        schemas_map: &HashMap<String, TableSchemaDefinition>,
+        table_name: &str,
+        target_version: &str,
+    ) -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+
+        let namespace = crate::iceberg::names::build_namespace("evo", "test")?;
+        let _ = catalog.clone().create_namespace(&namespace, None).await;
+        let identifier = crate::iceberg::names::build_table_identifier("evo", "test", table_name);
+        let v1_schema = SCHEMA_DEFINITIONS
+            .resolve_table_schema(schemas_map, "physical-v1")?
+            .to_iceberg_schema()?;
+        let create = CreateTableBuilder::default()
+            .with_name(table_name.to_string())
+            .with_schema(v1_schema)
+            .with_partition_spec(PartitionSpec::default())
+            .with_location(crate::iceberg::names::build_table_location(
+                "evo", "test", table_name,
+            ))
+            .with_properties(HashMap::from([(
+                SCHEMA_VERSION_PROPERTY.to_string(),
+                "physical-v1".to_string(),
+            )]))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog
+            .clone()
+            .create_table(identifier.clone(), create)
+            .await?;
+
+        ensure_schema_current(
+            catalog.clone(),
+            &identifier,
+            &SCHEMA_DEFINITIONS,
+            schemas_map,
+            target_version,
+        )
+        .await?;
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(
+            table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
+            Some(&target_version.to_string())
+        );
+        let current = table.current_schema()?;
+        let added = field(current, "resource_identity").expect("resource_identity added");
+        assert!(!added.required, "resource_identity must be nullable");
+        assert_eq!(added.field_type, Type::Primitive(PrimitiveType::String));
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn ensure_schema_current_adds_resource_identity_to_a_real_profiles_v1_table()
+    -> anyhow::Result<()> {
+        assert_v1_table_evolves_in_resource_identity(
+            &SCHEMA_DEFINITIONS.profiles,
+            "profiles_v1",
+            "physical-v2",
+        )
+        .await
+    }
+
     #[tokio::test]
     async fn apply_schema_migration_is_idempotent_when_already_at_target() -> anyhow::Result<()> {
         let manager = CatalogManager::new_in_memory().await?;
@@ -1359,15 +1983,13 @@ mod tests {
                 current_trace_version: "physical-v3".to_string(),
                 current_log_version: "physical-v1".to_string(),
                 current_metric_version: "physical-v1".to_string(),
+                current_profile_version: "physical-v1".to_string(),
                 logical_schema_version: "test".to_string(),
             },
             traces: schemas_map,
             logs: HashMap::new(),
-            metrics_gauge: HashMap::new(),
-            metrics_sum: HashMap::new(),
-            metrics_histogram: HashMap::new(),
-            metrics_exponential_histogram: HashMap::new(),
-            metrics_summary: HashMap::new(),
+            metrics: HashMap::new(),
+            metric_exemplars: HashMap::new(),
             profiles: HashMap::new(),
         }
     }
@@ -1559,6 +2181,262 @@ mod tests {
             table.metadata().properties.get(SCHEMA_VERSION_PROPERTY),
             Some(&"physical-v3".to_string())
         );
+        Ok(())
+    }
+
+    /// Shorthand for an `add_promoted_attr_columns` entry.
+    fn pa(
+        level: AttributeLevel,
+        key: &str,
+        canonical: CanonicalType,
+    ) -> (AttributeLevel, String, CanonicalType) {
+        (level, key.to_string(), canonical)
+    }
+
+    /// Shorthand for a `remove_promoted_attr_columns` entry.
+    fn pk(level: AttributeLevel, key: &str) -> (AttributeLevel, String) {
+        (level, key.to_string())
+    }
+
+    #[test]
+    fn promoted_attr_doc_round_trips_level_and_key() {
+        let doc = promoted_attr_doc(AttributeLevel::Record, "http.method");
+        assert_eq!(
+            promoted_attr_origin(Some(&doc)),
+            Some((AttributeLevel::Record, "http.method"))
+        );
+    }
+
+    #[test]
+    fn promoted_attr_origin_never_matches_a_label_doc_and_vice_versa() {
+        let label = label_doc("env");
+        assert_eq!(promoted_attr_origin(Some(&label)), None);
+
+        let promoted = promoted_attr_doc(AttributeLevel::Resource, "env");
+        assert_eq!(origin_key_of(Some(&promoted)), None);
+    }
+
+    #[tokio::test]
+    async fn adds_typed_promoted_attr_columns_with_ids_after_nested_map_ids() -> anyhow::Result<()>
+    {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        let schema = add_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[
+                pa(AttributeLevel::Record, "count", CanonicalType::Int64),
+                pa(AttributeLevel::Record, "ratio", CanonicalType::Float64),
+                pa(AttributeLevel::Resource, "ready", CanonicalType::Bool),
+                pa(AttributeLevel::Scope, "name", CanonicalType::String),
+            ],
+        )
+        .await?;
+
+        let count = field(&schema, "attr_record_count").expect("attr_record_count missing");
+        assert_eq!(count.field_type, Type::Primitive(PrimitiveType::Long));
+        assert!(!count.required);
+        assert_eq!(
+            promoted_attr_origin(count.doc.as_deref()),
+            Some((AttributeLevel::Record, "count"))
+        );
+        assert_eq!(
+            field(&schema, "attr_record_ratio").unwrap().field_type,
+            Type::Primitive(PrimitiveType::Double)
+        );
+        assert_eq!(
+            field(&schema, "attr_resource_ready").unwrap().field_type,
+            Type::Primitive(PrimitiveType::Boolean)
+        );
+        assert_eq!(
+            field(&schema, "attr_scope_name").unwrap().field_type,
+            Type::Primitive(PrimitiveType::String)
+        );
+
+        // Ids continue after the map's nested key/value ids (4, 5), not
+        // after the top-level maximum (3), and `last_column_id` matches.
+        assert_eq!(count.id, 6);
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(table.metadata().last_column_id, 9);
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn promoted_attr_rerun_is_idempotent_and_commits_nothing() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        let attrs = [
+            pa(AttributeLevel::Record, "count", CanonicalType::Int64),
+            pa(AttributeLevel::Record, "count", CanonicalType::Int64),
+        ];
+        let first = add_promoted_attr_columns(catalog.clone(), &identifier, &attrs).await?;
+        assert_eq!(
+            first
+                .fields()
+                .iter()
+                .filter(|f| f.name == "attr_record_count")
+                .count(),
+            1,
+            "a key repeated within one call is added once"
+        );
+        let second = add_promoted_attr_columns(catalog.clone(), &identifier, &attrs).await?;
+        assert_eq!(first, second, "re-run must return the same schema");
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(
+            table.metadata().schemas.len(),
+            2,
+            "idempotent re-run must not add another schema"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn preexisting_field_with_a_different_origin_is_left_alone() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        // A field already occupies `attr_record_count`'s name, but carries
+        // no promoted-attr origin doc at all -- collision guard territory.
+        let table = load_table(&catalog, &identifier).await?;
+        let current = table.current_schema()?;
+        let mut fields: Vec<StructField> = current.fields().iter().cloned().collect();
+        fields.push(string_field(10, "attr_record_count", false));
+        let evolved = Schema::from_struct_type(StructType::new(fields), 1, None);
+        catalog
+            .clone()
+            .update_table(CommitTable {
+                identifier: identifier.clone(),
+                requirements: vec![],
+                updates: vec![
+                    TableUpdate::AddSchema {
+                        schema: evolved,
+                        last_column_id: Some(10),
+                    },
+                    TableUpdate::SetCurrentSchema { schema_id: 1 },
+                ],
+            })
+            .await?;
+
+        let schema = add_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[pa(AttributeLevel::Record, "count", CanonicalType::Int64)],
+        )
+        .await?;
+
+        let untouched = field(&schema, "attr_record_count").expect("field must still exist");
+        assert_eq!(
+            untouched.field_type,
+            Type::Primitive(PrimitiveType::String),
+            "colliding field must not be retyped"
+        );
+        assert_eq!(untouched.doc, None, "colliding field's doc left alone");
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(
+            table.metadata().schemas.len(),
+            2,
+            "no commit happens when every requested column collides"
+        );
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn removes_promoted_attr_column_by_level_and_key_and_keeps_last_column_id()
+    -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        add_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[
+                pa(AttributeLevel::Record, "count", CanonicalType::Int64),
+                pa(AttributeLevel::Resource, "count", CanonicalType::Int64),
+            ],
+        )
+        .await?;
+
+        let schema = remove_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[pk(AttributeLevel::Record, "count")],
+        )
+        .await?;
+
+        assert!(
+            field(&schema, "attr_record_count").is_none(),
+            "record-level column dropped"
+        );
+        assert!(
+            field(&schema, "attr_resource_count").is_some(),
+            "resource-level column for the same key kept"
+        );
+
+        let table = load_table(&catalog, &identifier).await?;
+        assert_eq!(table.metadata().last_column_id, 7);
+
+        let re_added = add_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[pa(AttributeLevel::Record, "count", CanonicalType::Int64)],
+        )
+        .await?;
+        let readded = field(&re_added, "attr_record_count").expect("column re-added");
+        assert_eq!(readded.id, 8, "re-added column must get a fresh id");
+        Ok(())
+    }
+
+    #[tokio::test]
+    async fn label_and_promoted_columns_for_the_same_key_coexist() -> anyhow::Result<()> {
+        let manager = CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let identifier = create_test_table(&catalog, "events").await?;
+
+        add_label_columns(catalog.clone(), &identifier, &["env".to_string()]).await?;
+        let schema = add_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[pa(AttributeLevel::Resource, "env", CanonicalType::String)],
+        )
+        .await?;
+
+        let label = field(&schema, "label_env").expect("label_env kept");
+        let promoted = field(&schema, "attr_resource_env").expect("attr_resource_env added");
+        assert_eq!(origin_key_of(label.doc.as_deref()), Some("env"));
+        assert_eq!(
+            origin_key_of(promoted.doc.as_deref()),
+            None,
+            "promoted-attr doc must never resolve as a label origin"
+        );
+        assert_eq!(
+            promoted_attr_origin(label.doc.as_deref()),
+            None,
+            "label doc must never resolve as a promoted-attr origin"
+        );
+        assert_eq!(
+            promoted_attr_origin(promoted.doc.as_deref()),
+            Some((AttributeLevel::Resource, "env"))
+        );
+
+        let removed = remove_promoted_attr_columns(
+            catalog.clone(),
+            &identifier,
+            &[pk(AttributeLevel::Resource, "env")],
+        )
+        .await?;
+        assert!(
+            field(&removed, "label_env").is_some(),
+            "label column unaffected"
+        );
+        assert!(field(&removed, "attr_resource_env").is_none());
         Ok(())
     }
 }

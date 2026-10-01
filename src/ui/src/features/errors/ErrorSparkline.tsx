@@ -1,15 +1,17 @@
 // A compact "occurrences over time" chart for a selected exception group —
 // the same shape error-tracking issue views commonly lead with. Unlike
-// the full traces volume chart, this is a single, unlabeled series with no
-// axis/legend chrome: it exists to show a shape (a spike, a steady trickle);
-// the exact value per bucket is one hover away.
-import { useRef, useState } from "react";
+// the full traces volume chart, this is a single series with only start,
+// middle and end time labels: it exists to show a shape (a spike, a steady
+// trickle); the exact value per bucket is one hover away. A thin wrapper over the
+// shared `Sparkline`'s bar variant, with bucket padding and the empty-state
+// text this view needs kept local.
 import {
   bucketizeSeries,
   padBuckets,
   type VolumeSeries,
-} from "../explore/SignalHistogram";
-import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+} from "../../components/SignalHistogram";
+import { Sparkline } from "../../components/Sparkline";
+import { axisLabelFormatter } from "../../lib/time";
 import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 
 interface Props {
@@ -18,106 +20,53 @@ interface Props {
   stepMs: number;
 }
 
-const WIDTH = 300;
 const HEIGHT = 32;
 
 export function ErrorSparkline({ series, rangeMs, stepMs }: Props) {
-  const rootRef = useRef<HTMLDivElement>(null);
-  const pointer = useVizPointer(rootRef);
-  const [active, setActive] = useState<number | null>(null);
-
   let buckets = bucketizeSeries(series);
   if (buckets.length > 0) {
     buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
   }
   if (buckets.length === 0 || buckets.every((b) => b.total === 0)) {
     return (
-      <div className="errors-sparkline-empty">No occurrences in range</div>
+      <div className="errors-sparkline-empty">
+        No occurrences in this window
+      </div>
+    );
+  }
+  // A single bucket has no shape to show — the bar variant draws it at full
+  // width and full height, an undifferentiated block that reads as a stray
+  // rendering artifact rather than a trend. Say so instead of drawing it.
+  if (buckets.length === 1) {
+    return (
+      <div className="errors-sparkline-empty">
+        Not enough data in this window to show a trend
+      </div>
     );
   }
 
-  const max = Math.max(...buckets.map((b) => b.total));
-  const barWidth = WIDTH / buckets.length;
-  // A padded, empty bucket has no data under the pointer: no tooltip.
-  const activeBucket =
-    active === null || (buckets[active]?.total ?? 0) === 0
-      ? null
-      : buckets[active]!;
-
+  const label = axisLabelFormatter(rangeMs.fromMs, rangeMs.toMs);
+  const midMs = (rangeMs.fromMs + rangeMs.toMs) / 2;
   return (
-    <div className="errors-sparkline-host viz-host" ref={rootRef}>
-      <svg
-        className="errors-sparkline"
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        role="img"
-        aria-label="Occurrences over time"
-        preserveAspectRatio="none"
-      >
-        {buckets.map((b, i) => {
-          const h = max > 0 ? (b.total / max) * HEIGHT : 0;
-          return (
-            <rect
-              key={b.tMs}
-              data-testid="sparkline-bar"
-              className="errors-sparkline-bar"
-              x={i * barWidth}
-              y={HEIGHT - h}
-              width={Math.max(1, barWidth - 1)}
-              height={h}
-            />
-          );
-        })}
-        {buckets.map((b, i) => (
-          // The hit target spans the full height so a one-pixel bucket is as
-          // easy to interrogate as the peak.
-          <rect
-            key={b.tMs}
-            data-testid="sparkline-hit"
-            className="errors-sparkline-hit"
-            x={i * barWidth}
-            y={0}
-            width={barWidth}
-            height={HEIGHT}
-            tabIndex={b.total > 0 ? 0 : undefined}
-            aria-label={`${formatTimeBucket(b.tMs, stepMs)}: ${formatValue(b.total, "occurrences")}`}
-            aria-describedby={
-              activeBucket === b ? "errors-sparkline-tip" : undefined
-            }
-            onPointerMove={(e) => {
-              setActive(i);
-              pointer.track(e);
-            }}
-            onPointerLeave={() => {
-              setActive((a) => (a === i ? null : a));
-              pointer.clear();
-            }}
-            onFocus={(e) => {
-              setActive(i);
-              pointer.anchorTo(e.currentTarget);
-            }}
-            onBlur={() => {
-              setActive((a) => (a === i ? null : a));
-              pointer.clear();
-            }}
-          />
-        ))}
-      </svg>
-      {activeBucket && pointer.anchor && (
-        <VizTooltip
-          id="errors-sparkline-tip"
-          anchor={pointer.anchor}
-          host={pointer.host}
-          title={formatTimeBucket(activeBucket.tMs, stepMs)}
-          rows={[
-            {
-              swatch: "var(--svc-a)",
-              label: "occurrences",
-              value: formatValue(activeBucket.total),
-            },
-          ]}
-          valueWidthCh={formatValue(max).length}
-        />
-      )}
+    <div className="errors-sparkline-host">
+      <Sparkline
+        points={buckets.map((b) => ({ x: b.tMs, v: b.total }))}
+        variant="bar"
+        tone="error"
+        width="100%"
+        height={HEIGHT}
+        ariaLabel="Occurrences over time"
+        valueLabel="occurrences"
+        formatValue={(v) => formatValue(v)}
+        formatLabel={(x) => formatTimeBucket(x, stepMs)}
+        // A padded, empty bucket has no data under the pointer: no tooltip.
+        isFocusable={(p) => p.v > 0}
+      />
+      <div className="errors-sparkline-axis" aria-hidden="true">
+        <span>{label(rangeMs.fromMs)}</span>
+        <span>{label(midMs)}</span>
+        <span>{label(rangeMs.toMs)}</span>
+      </div>
     </div>
   );
 }

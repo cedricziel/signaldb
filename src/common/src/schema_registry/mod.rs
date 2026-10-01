@@ -14,6 +14,7 @@
 //!   and alternatives are never dropped.
 
 mod store;
+mod type_hints;
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -27,6 +28,7 @@ use schema_model::{
 use serde::{Deserialize, Serialize};
 
 pub use store::{StoreError, StoredRegistry};
+pub use type_hints::SemconvTypeHints;
 
 use crate::catalog::Catalog;
 
@@ -83,7 +85,11 @@ static BUNDLED: Lazy<Vec<BundledRegistry>> = Lazy::new(|| {
         .collect()
 });
 
-/// The bundled registries, in precedence order (`signaldb` before `otel`).
+/// Namespace of the bundled OpenTelemetry semconv snapshot.
+const OTEL_NAMESPACE: &str = "otel";
+
+/// The bundled registries, in precedence order
+/// ([`schema_model::RESERVED_NAMESPACES`]).
 pub fn bundled_registries() -> &'static [BundledRegistry] {
     &BUNDLED
 }
@@ -249,6 +255,14 @@ impl SchemaResolver {
         if let Some(v) = self.custom.get(tenant_id) {
             return Ok(v.clone());
         }
+        let arc = Arc::new(self.load_custom(tenant_id).await?);
+        self.custom.insert(tenant_id.to_string(), arc.clone());
+        Ok(arc)
+    }
+
+    /// The tenant's custom registries straight from the catalog, bypassing
+    /// (and leaving untouched) the cache.
+    async fn load_custom(&self, tenant_id: &str) -> Result<Vec<Visible>, StoreError> {
         let mut rows = self.catalog.list_schema_registries(tenant_id).await?;
         rows.sort_by(|a, b| {
             a.namespace
@@ -264,9 +278,7 @@ impl SchemaResolver {
                 resolved: Arc::new(r.resolved),
             })
             .collect();
-        let arc = Arc::new(visible);
-        self.custom.insert(tenant_id.to_string(), arc.clone());
-        Ok(arc)
+        Ok(visible)
     }
 
     fn invalidate(&self, tenant_id: &str) {
@@ -275,9 +287,14 @@ impl SchemaResolver {
 
     /// Every registry visible to the tenant in precedence order.
     async fn visible(&self, tenant_id: &str) -> Result<Vec<Visible>, StoreError> {
-        let mut all: Vec<Visible> = self.custom_for(tenant_id).await?.as_ref().clone();
+        Ok(Self::with_bundled(&self.custom_for(tenant_id).await?))
+    }
+
+    /// `custom` followed by the bundled registries: the precedence order.
+    fn with_bundled(custom: &[Visible]) -> Vec<Visible> {
+        let mut all = custom.to_vec();
         all.extend(Self::bundled_visible());
-        Ok(all)
+        all
     }
 
     // ---- listing / documents -------------------------------------------
@@ -296,13 +313,13 @@ impl SchemaResolver {
         tenant_id: &str,
         namespace: &str,
         version: &str,
-    ) -> Result<Option<(RegistrySummary, RegistryDocument)>, StoreError> {
+    ) -> Result<Option<(RegistrySummary, Arc<RegistryDocument>)>, StoreError> {
         Ok(self
             .visible(tenant_id)
             .await?
             .into_iter()
             .find(|v| v.resolved.namespace == namespace && v.resolved.version == version)
-            .map(|v| (v.summary(), v.document.as_ref().clone())))
+            .map(|v| (v.summary(), v.document)))
     }
 
     // ---- custom registry mutation --------------------------------------
@@ -321,7 +338,7 @@ impl SchemaResolver {
             deps.extend(
                 visible
                     .iter()
-                    .filter(|v| v.resolved.namespace == "otel")
+                    .filter(|v| v.resolved.namespace == OTEL_NAMESPACE)
                     .map(|v| v.resolved.clone()),
             );
         } else {
@@ -507,6 +524,64 @@ impl SchemaResolver {
             })
             .collect();
         Ok(Resolution::new(key, hits))
+    }
+
+    /// Resolve many attribute keys against one snapshot of the tenant's
+    /// visible registries, for callers enriching a whole field list. Only
+    /// keys a registry defines appear in the result.
+    pub async fn resolve_attributes(
+        &self,
+        tenant_id: &str,
+        keys: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, AttributeHit>, StoreError> {
+        let visible = self.visible(tenant_id).await?;
+        let mut out = BTreeMap::new();
+        for key in keys {
+            if out.contains_key(&key) {
+                continue;
+            }
+            let roles = entity_roles(&visible, &key);
+            if let Some(hit) = visible.iter().find_map(|v| {
+                v.resolved.attributes.get(&key).map(|def| AttributeHit {
+                    namespace: v.resolved.namespace.clone(),
+                    version: v.resolved.version.clone(),
+                    source: v.source,
+                    def: def.clone(),
+                    entity_roles: roles.clone(),
+                })
+            }) {
+                out.insert(key, hit);
+            }
+        }
+        Ok(out)
+    }
+
+    /// Resolve many metric names against one snapshot of the tenant's
+    /// visible registries, for batch definition lookups. Only names a
+    /// registry defines appear in the result.
+    pub async fn resolve_metrics(
+        &self,
+        tenant_id: &str,
+        names: impl IntoIterator<Item = String>,
+    ) -> Result<BTreeMap<String, MetricHit>, StoreError> {
+        let visible = self.visible(tenant_id).await?;
+        let mut out = BTreeMap::new();
+        for name in names {
+            if out.contains_key(&name) {
+                continue;
+            }
+            if let Some(hit) = visible.iter().find_map(|v| {
+                v.resolved.metrics.get(&name).map(|def| MetricHit {
+                    namespace: v.resolved.namespace.clone(),
+                    version: v.resolved.version.clone(),
+                    source: v.source,
+                    def: def.clone(),
+                })
+            }) {
+                out.insert(name, hit);
+            }
+        }
+        Ok(out)
     }
 
     pub async fn resolve_entity(

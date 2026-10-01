@@ -34,6 +34,22 @@ pub fn ticket_verb(ticket: &str) -> Option<&str> {
     })
 }
 
+/// Record `otel.name` (and, when present, `signaldb.flight.ticket_verb`) on a
+/// freshly-created RPC span: `{rpc_method} {detail}` when a low-cardinality
+/// detail (e.g. the Flight ticket verb) is available, else `rpc_method`
+/// alone. Shared by [`rpc_server_span`] and [`rpc_client_span`].
+fn record_span_name(span: &Span, rpc_method: &str, detail: Option<&str>) {
+    match detail {
+        Some(detail) => {
+            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
+            span.record("signaldb.flight.ticket_verb", detail);
+        }
+        None => {
+            span.record("otel.name", rpc_method);
+        }
+    }
+}
+
 /// Which side of an RPC a span describes — determines the status mapping.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum RpcBoundary {
@@ -67,15 +83,7 @@ pub fn rpc_server_span(rpc_method: &str, detail: Option<&str>) -> Span {
         network.peer.port = Empty,
         signaldb.flight.ticket_verb = Empty,
     );
-    match detail {
-        Some(detail) => {
-            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
-            span.record("signaldb.flight.ticket_verb", detail);
-        }
-        None => {
-            span.record("otel.name", rpc_method);
-        }
-    }
+    record_span_name(&span, rpc_method, detail);
     span
 }
 
@@ -105,15 +113,7 @@ pub fn rpc_client_span(
         server.port = Empty,
         signaldb.flight.ticket_verb = Empty,
     );
-    match detail {
-        Some(detail) => {
-            span.record("otel.name", format!("{rpc_method} {detail}").as_str());
-            span.record("signaldb.flight.ticket_verb", detail);
-        }
-        None => {
-            span.record("otel.name", rpc_method);
-        }
-    }
+    record_span_name(&span, rpc_method, detail);
     if let Some(addr) = server_address {
         match addr.rsplit_once(':') {
             Some((host, port)) if port.chars().all(|c| c.is_ascii_digit()) => {
@@ -241,6 +241,54 @@ pub fn job_span(job_kind: &str, tenant_id: &str, dataset_id: &str, table: Option
     span
 }
 
+/// INTERNAL span for applying a tenant's OTTL processors to one ingest
+/// request (change: tenant-ottl-processors, design D9). Bounded fields
+/// only: tenancy, the signal, and how many processors matched.
+pub fn processors_apply_span(tenant_id: &str, dataset_id: &str, signal: &str) -> Span {
+    tracing::info_span!(
+        "processors.apply",
+        otel.name = "processors.apply",
+        otel.kind = "internal",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        error.r#type = Empty,
+        signaldb.tenant.id = %tenant_id,
+        signaldb.dataset.id = %dataset_id,
+        signaldb.signal = %signal,
+        signaldb.processors.count = Empty,
+    )
+}
+
+/// INTERNAL span for one discovery read — `describe: fields`/`describe:
+/// values` on `POST /api/v1/query`, or `GET /api/v1/query/sources` (change
+/// `query-field-discovery`). The metadata-tier counterpart to the querier's
+/// `signaldb.query.execute`: it makes the cost of answering "what can I
+/// query" visible in self-monitoring next to an ordinary query read, though
+/// most discovery reads never reach a querier (only a sampled `describe:
+/// values` does). Exported as `discovery {kind}`. Bounded fields only:
+/// tenancy, which discovery question was asked, the source it was asked
+/// about (absent for `sources`, which names none), and — once the answer is
+/// known — which cost tier produced it.
+pub fn discovery_span(kind: &str, tenant_id: &str, dataset_id: &str, source: Option<&str>) -> Span {
+    let span = tracing::info_span!(
+        "signaldb.discovery",
+        otel.name = %format!("discovery {kind}"),
+        otel.kind = "internal",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        error.r#type = Empty,
+        signaldb.tenant.id = %tenant_id,
+        signaldb.dataset.id = %dataset_id,
+        signaldb.discovery.kind = %kind,
+        signaldb.discovery.source = Empty,
+        signaldb.discovery.cost_mode = Empty,
+    );
+    if let Some(source) = source {
+        span.record("signaldb.discovery.source", source);
+    }
+    span
+}
+
 /// INTERNAL span for one MCP tool call, per the MCP semantic conventions
 /// (now maintained in the GenAI conventions repository): named
 /// `{mcp.method.name} {gen_ai.tool.name}`, i.e. `tools/call {tool}`, and
@@ -279,6 +327,41 @@ pub fn mcp_tool_span(
     span
 }
 
+/// CLIENT span wrapping a single outbound HTTP request (e.g. one call to an
+/// OIDC provider's discovery/token/JWKS endpoint), per the HTTP client
+/// semantic conventions. Named `{method} {url}`; callers must only pass a
+/// `url` free of query-string secrets (the OIDC discovery/token/JWKS
+/// endpoints this backs never carry any).
+///
+/// Record the outcome via [`record_http_client_result`] when a response
+/// came back, or [`record_span_error`] for a transport failure that never
+/// produced a status code.
+pub fn http_client_span(method: &str, url: &str) -> Span {
+    tracing::info_span!(
+        "http.client",
+        otel.name = %format!("{method} {url}"),
+        otel.kind = "client",
+        otel.status_code = Empty,
+        otel.status_message = Empty,
+        http.request.method = %method,
+        url.full = %url,
+        http.response.status_code = Empty,
+        error.r#type = Empty,
+    )
+}
+
+/// Record an HTTP client outcome: the numeric status always, and — per HTTP
+/// semconv's client rule (every non-2xx/3xx response is the client's
+/// problem) — span status Error plus `error.type` set to the status code
+/// text whenever the response is `>= 400`.
+pub fn record_http_client_result(span: &Span, status: u16) {
+    span.record("http.response.status_code", status as i64);
+    if status >= 400 {
+        span.record("otel.status_code", "ERROR");
+        span.record("error.type", status.to_string().as_str());
+    }
+}
+
 /// Mark a factory span as failed: status Error plus the classified
 /// `error.type`. Callers decide *whether* an outcome is a failure for their
 /// boundary (see the per-factory docs); this only encodes *how* it is
@@ -309,6 +392,12 @@ mod tests {
         assert_eq!("db.operation.name", attribute::DB_OPERATION_NAME);
         assert_eq!("db.namespace", attribute::DB_NAMESPACE);
         assert_eq!("db.query.text", attribute::DB_QUERY_TEXT);
+        assert_eq!("http.request.method", attribute::HTTP_REQUEST_METHOD);
+        assert_eq!(
+            "http.response.status_code",
+            attribute::HTTP_RESPONSE_STATUS_CODE
+        );
+        assert_eq!("url.full", attribute::URL_FULL);
     }
 
     /// The MCP/GenAI constants are marked deprecated in the pinned crate

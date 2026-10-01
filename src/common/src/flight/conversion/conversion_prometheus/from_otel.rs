@@ -6,11 +6,10 @@
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 use opentelemetry_proto::tonic::common::v1::{AnyValue, InstrumentationScope, KeyValue, any_value};
 use opentelemetry_proto::tonic::metrics::v1::{
-    AggregationTemporality, Gauge, Histogram, Metric, NumberDataPoint, Sum, Summary, metric::Data,
-    number_data_point,
+    AggregationTemporality, ExponentialHistogram, Gauge, Histogram, Metric, NumberDataPoint, Sum,
+    Summary, metric::Data, number_data_point,
 };
 use opentelemetry_proto::tonic::resource::v1::Resource;
-use tracing;
 
 use super::types::{
     PrometheusLabel, PrometheusMetricMetadata, PrometheusMetricType, PrometheusSample,
@@ -299,13 +298,14 @@ fn convert_otel_metric_to_prometheus(
                 config,
             ));
         }
-        Some(Data::ExponentialHistogram(_)) => {
-            // Exponential histograms require native histogram support in Prometheus
-            // For now, we skip them (could convert to fixed-bucket histogram)
-            tracing::debug!(
-                metric = metric_name,
-                "Skipping exponential histogram (native histogram conversion not implemented)"
-            );
+        Some(Data::ExponentialHistogram(exponential_histogram)) => {
+            result.extend(convert_exponential_histogram_to_prometheus(
+                &metric_name,
+                unit_suffix.as_deref(),
+                exponential_histogram,
+                base_labels,
+                config,
+            ));
         }
         None => {}
     }
@@ -516,6 +516,161 @@ fn convert_histogram_to_prometheus(
         }
 
         // Generate _created metric
+        if config.generate_created_metrics
+            && histogram.aggregation_temporality == AggregationTemporality::Cumulative as i32
+            && dp.start_time_unix_nano > 0
+        {
+            let created_name = build_metric_name(metric_name, unit_suffix, Some("created"));
+            let mut created_labels = vec![PrometheusLabel {
+                name: "__name__".to_string(),
+                value: created_name,
+            }];
+            created_labels.extend(base_labels.iter().cloned());
+            created_labels.extend(attr_labels.iter().cloned());
+
+            result.push(PrometheusTimeSeries {
+                labels: created_labels,
+                samples: vec![PrometheusSample {
+                    value: (dp.start_time_unix_nano as f64) / 1_000_000_000.0,
+                    timestamp,
+                }],
+                histograms: vec![],
+            });
+        }
+    }
+
+    result
+}
+
+/// Convert OTEL ExponentialHistogram to classic fixed-bucket Prometheus series
+///
+/// Prometheus has no native exponential histogram write path here, so each
+/// data point is converted to cumulative `_bucket` series with an `le` label,
+/// derived from `base = 2^(2^-scale)` and `upper bound = base^(index+1)`. The
+/// zero-count is folded into the lowest bucket.
+fn convert_exponential_histogram_to_prometheus(
+    metric_name: &str,
+    unit_suffix: Option<&str>,
+    histogram: &ExponentialHistogram,
+    base_labels: &[PrometheusLabel],
+    config: &OtelToPrometheusConfig,
+) -> Vec<PrometheusTimeSeries> {
+    let mut result = Vec::new();
+    let bucket_name = build_metric_name(metric_name, unit_suffix, Some("bucket"));
+
+    for dp in &histogram.data_points {
+        let timestamp = (dp.time_unix_nano / 1_000_000) as i64;
+        let attr_labels = attributes_to_labels(&dp.attributes);
+        let base = 2f64.powf(2f64.powi(-dp.scale));
+
+        let mut buckets: Vec<(f64, u64)> = Vec::new();
+        if let Some(negative) = &dp.negative {
+            for (i, count) in negative.bucket_counts.iter().enumerate() {
+                let index = negative.offset + i as i32;
+                buckets.push((-base.powi(index), *count));
+            }
+        }
+        if let Some(positive) = &dp.positive {
+            for (i, count) in positive.bucket_counts.iter().enumerate() {
+                let index = positive.offset + i as i32;
+                buckets.push((base.powi(index + 1), *count));
+            }
+        }
+
+        if dp.zero_count > 0 {
+            match buckets.iter_mut().min_by(|a, b| a.0.total_cmp(&b.0)) {
+                Some(lowest) => lowest.1 += dp.zero_count,
+                None => buckets.push((0.0, dp.zero_count)),
+            }
+        }
+
+        buckets.sort_by(|a, b| a.0.total_cmp(&b.0));
+
+        let mut cumulative_count = 0u64;
+        for (bound, count) in &buckets {
+            cumulative_count += count;
+
+            let mut labels = vec![
+                PrometheusLabel {
+                    name: "__name__".to_string(),
+                    value: bucket_name.clone(),
+                },
+                PrometheusLabel {
+                    name: "le".to_string(),
+                    value: bound.to_string(),
+                },
+            ];
+            labels.extend(base_labels.iter().cloned());
+            labels.extend(attr_labels.iter().cloned());
+
+            result.push(PrometheusTimeSeries {
+                labels,
+                samples: vec![PrometheusSample {
+                    value: cumulative_count as f64,
+                    timestamp,
+                }],
+                histograms: vec![],
+            });
+        }
+
+        let mut inf_labels = vec![
+            PrometheusLabel {
+                name: "__name__".to_string(),
+                value: bucket_name.clone(),
+            },
+            PrometheusLabel {
+                name: "le".to_string(),
+                value: "+Inf".to_string(),
+            },
+        ];
+        inf_labels.extend(base_labels.iter().cloned());
+        inf_labels.extend(attr_labels.iter().cloned());
+
+        result.push(PrometheusTimeSeries {
+            labels: inf_labels,
+            samples: vec![PrometheusSample {
+                value: dp.count as f64,
+                timestamp,
+            }],
+            histograms: vec![],
+        });
+
+        let count_name = build_metric_name(metric_name, unit_suffix, Some("count"));
+        let mut count_labels = vec![PrometheusLabel {
+            name: "__name__".to_string(),
+            value: count_name,
+        }];
+        count_labels.extend(base_labels.iter().cloned());
+        count_labels.extend(attr_labels.iter().cloned());
+
+        result.push(PrometheusTimeSeries {
+            labels: count_labels,
+            samples: vec![PrometheusSample {
+                value: dp.count as f64,
+                timestamp,
+            }],
+            histograms: vec![],
+        });
+
+        if let Some(sum) = dp.sum {
+            let sum_name = build_metric_name(metric_name, unit_suffix, Some("sum"));
+            let mut sum_labels = vec![PrometheusLabel {
+                name: "__name__".to_string(),
+                value: sum_name,
+            }];
+            sum_labels.extend(base_labels.iter().cloned());
+            sum_labels.extend(attr_labels.iter().cloned());
+
+            result.push(PrometheusTimeSeries {
+                labels: sum_labels,
+                samples: vec![PrometheusSample {
+                    value: sum,
+                    timestamp,
+                }],
+                histograms: vec![],
+            });
+        }
+
         if config.generate_created_metrics
             && histogram.aggregation_temporality == AggregationTemporality::Cumulative as i32
             && dp.start_time_unix_nano > 0

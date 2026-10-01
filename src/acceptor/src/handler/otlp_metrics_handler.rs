@@ -1,21 +1,40 @@
+//! # OTLP Metrics Handler
+//!
+//! Partitions an `ExportMetricsServiceRequest` by metric type (see
+//! [`super::metrics_partition`]; each type has its own table/schema),
+//! converts each partition to Arrow, writes it to the tenant/dataset's
+//! metrics WAL, and forwards it to a writer via Flight. Shared by both the
+//! gRPC (`services::otlp_metric_service`) and HTTP
+//! (`lib::handle_http_metrics`) surfaces. `handler::prometheus_handler`
+//! reuses [`super::metrics_partition`] directly for the same reason after
+//! converting Prometheus remote_write to OTEL metrics.
+
 use std::sync::Arc;
 
 use anyhow::Context;
 use common::auth::TenantContext;
 use common::flight::conversion::otlp_metrics_to_arrow;
 use common::flight::transport::InMemoryFlightTransport;
+use common::processors::ProcessorRegistry;
 use common::wal::{WalOperation, record_batch_to_bytes};
 use opentelemetry_proto::tonic::collector::metrics::v1::ExportMetricsServiceRequest;
 
 use super::WalManager;
-use super::forward::forward_batch_to_writer;
+use super::forward::{spawn_forward_and_mark, spawn_retire_resend};
+use super::ingest_error::IngestError;
 use super::metrics_partition;
+use super::processors_apply::apply_metric_processors;
+use super::retry_dedup::{RetryDedup, stamp_batch_fingerprint};
 
 pub struct MetricsHandler {
     /// Flight transport for forwarding telemetry
     flight_transport: Arc<InMemoryFlightTransport>,
     /// WAL manager for multi-tenant WAL isolation
     wal_manager: Arc<WalManager>,
+    /// Recognizes a client's resend of a batch already made durable
+    retry_dedup: Arc<RetryDedup>,
+    /// Tenant OTTL processors (change: tenant-ottl-processors)
+    processor_registry: Arc<ProcessorRegistry>,
 }
 
 #[cfg(any(test, feature = "testing"))]
@@ -42,16 +61,12 @@ impl MockMetricsHandler {
         &self,
         _tenant_context: &TenantContext,
         request: ExportMetricsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_metrics_calls
             .lock()
             .await
             .push(request);
         Ok(())
-    }
-
-    pub fn expect_handle_grpc_otlp_metrics(&mut self) -> &mut Self {
-        self
     }
 }
 
@@ -60,11 +75,22 @@ impl MetricsHandler {
     pub fn new(
         flight_transport: Arc<InMemoryFlightTransport>,
         wal_manager: Arc<WalManager>,
+        processor_registry: Arc<ProcessorRegistry>,
     ) -> Self {
         Self {
             flight_transport,
             wal_manager,
+            retry_dedup: Arc::new(RetryDedup::default()),
+            processor_registry,
         }
+    }
+
+    /// Share one resend-dedup cache (`[acceptor].retry_dedup_window`) with
+    /// the acceptor's other handlers; the default is a private cache with
+    /// the default window.
+    pub fn with_retry_dedup(mut self, retry_dedup: Arc<RetryDedup>) -> Self {
+        self.retry_dedup = retry_dedup;
+        self
     }
 
     /// Handle an OTLP metrics export.
@@ -87,13 +113,15 @@ impl MetricsHandler {
     pub async fn handle_grpc_otlp_metrics(
         &self,
         tenant_context: &TenantContext,
-        request: ExportMetricsServiceRequest,
-    ) -> anyhow::Result<()> {
+        mut request: ExportMetricsServiceRequest,
+    ) -> Result<(), IngestError> {
         tracing::debug!(
             tenant_id = %tenant_context.tenant_id,
             dataset_id = %tenant_context.dataset_id,
             "Handling OTLP metrics request"
         );
+
+        apply_metric_processors(&self.processor_registry, tenant_context, &mut request).await?;
 
         // Get tenant/dataset-specific WAL
         let wal = self
@@ -104,7 +132,8 @@ impl MetricsHandler {
                 "metrics",
             )
             .await
-            .context("Failed to get WAL")?;
+            .context("Failed to get WAL")
+            .map_err(IngestError::Unavailable)?;
 
         // Partition metrics by type to prevent schema conflicts
         let partitions = metrics_partition::partition_metrics_by_type(&request);
@@ -114,7 +143,13 @@ impl MetricsHandler {
             return Ok(());
         }
 
-        // Metric types that failed before reaching WAL durability
+        // Metric types that failed conversion (deterministic — Invalid) vs.
+        // failed to reach WAL durability (transient — Unavailable). A
+        // durability failure anywhere in the batch takes priority in the
+        // final classification: it is always safe to ask the client to
+        // retry, whereas telling it to retry a batch that only had
+        // conversion failures would spin forever (finding M3).
+        let mut invalid: Vec<String> = Vec::new();
         let mut undurable: Vec<String> = Vec::new();
 
         tracing::debug!(
@@ -146,7 +181,7 @@ impl MetricsHandler {
                         error = %error,
                         "OTLP to Arrow conversion failed - rejecting export"
                     );
-                    undurable.push(metric_type.clone());
+                    invalid.push(metric_type.clone());
                     continue;
                 }
             };
@@ -178,8 +213,14 @@ impl MetricsHandler {
                     wal_metadata["tracestate"] = tracestate.into();
                 }
             }
+            let ingest_id = stamp_batch_fingerprint(
+                &mut wal_metadata,
+                &tenant_context.tenant_id,
+                &tenant_context.dataset_id,
+                &WalOperation::WriteMetrics,
+                &batch_bytes,
+            );
             let wal_metadata_str = serde_json::to_string(&wal_metadata).ok();
-
             let wal_entry_id = match wal
                 .append(WalOperation::WriteMetrics, batch_bytes, wal_metadata_str)
                 .await
@@ -204,6 +245,8 @@ impl MetricsHandler {
                 "Metrics written to WAL"
             );
 
+            let resend = self.retry_dedup.is_resend(ingest_id);
+
             let mut metadata = serde_json::json!({
                 "schema_version": "v1",
                 "signal_type": "metrics",
@@ -211,7 +254,6 @@ impl MetricsHandler {
                 "target_table": target_table,
                 "tenant_id": tenant_context.tenant_id,
                 "dataset_id": tenant_context.dataset_id,
-                "wal_entry_id": wal_entry_id
             });
             if let Some((traceparent, tracestate)) =
                 common::flight::trace_context::current_trace_context_fields()
@@ -222,40 +264,55 @@ impl MetricsHandler {
                 }
             }
 
-            // Step 2: Forward from WAL to writer via Flight
-            match forward_batch_to_writer(
-                &self.flight_transport,
-                record_batch,
-                Some(&metadata.to_string()),
-            )
-            .await
-            {
-                Ok(()) => {
-                    tracing::debug!(
-                        metric_type = %metric_type,
-                        target_table = %target_table,
-                        "Successfully forwarded metrics via Flight"
-                    );
-                    // Mark WAL entry as processed after successful forwarding
-                    if let Err(e) = wal.mark_processed(wal_entry_id).await {
-                        tracing::warn!(entry_id = %wal_entry_id, error = %e, "Failed to mark WAL entry as processed");
-                    }
-                }
-                Err(e) => {
-                    tracing::error!(
-                        metric_type = %metric_type,
-                        error = %e,
-                        "Failed to forward metrics - data remains in WAL for retry"
-                    );
-                }
+            // Step 2: Forward from WAL to writer via Flight, detached from
+            // this request future so a client disconnect cannot cancel it
+            // after the flush above (issue #1734). Awaiting the handle keeps
+            // behavior for connected clients unchanged. A client's resend of
+            // a partition already accepted is retired instead (see
+            // `retry_dedup`).
+            let forward_task = if resend {
+                spawn_retire_resend(
+                    wal.clone(),
+                    wal_entry_id,
+                    &tenant_context.tenant_id,
+                    &WalOperation::WriteMetrics,
+                )
+            } else {
+                spawn_forward_and_mark(
+                    self.flight_transport.clone(),
+                    wal.clone(),
+                    wal_entry_id,
+                    ingest_id,
+                    record_batch,
+                    Some(metadata.to_string()),
+                    "metrics",
+                )
+            };
+            if let Err(e) = forward_task.await {
+                tracing::error!(
+                    metric_type = %metric_type,
+                    entry_id = %wal_entry_id,
+                    error = %e,
+                    "Forward-and-mark task for metrics did not complete"
+                );
             }
         }
 
+        // A durability failure anywhere wins the classification: it is
+        // always safe to tell the client to retry (some partitions may not
+        // yet be durable), whereas Invalid would tell it to give up on a
+        // batch that could still partially succeed on retry.
         if !undurable.is_empty() {
-            anyhow::bail!(
+            return Err(IngestError::Unavailable(anyhow::anyhow!(
                 "Failed to durably accept metrics for types: {}",
                 undurable.join(", ")
-            );
+            )));
+        }
+        if !invalid.is_empty() {
+            return Err(IngestError::Invalid(anyhow::anyhow!(
+                "Failed to convert metrics for types: {}",
+                invalid.join(", ")
+            )));
         }
 
         tracing::debug!("Completed processing metrics request for all types");
@@ -367,10 +424,7 @@ mod tests {
             "Should have gauge partition"
         );
         let (gauge_table, gauge_request) = &partitions["gauge"];
-        assert_eq!(
-            gauge_table, "metrics_gauge",
-            "Gauge should map to metrics_gauge table"
-        );
+        assert_eq!(gauge_table, "metrics", "Gauge should map to metrics table");
         assert_eq!(
             gauge_request.resource_metrics[0].scope_metrics[0]
                 .metrics
@@ -386,10 +440,7 @@ mod tests {
         // Verify sum partition
         assert!(partitions.contains_key("sum"), "Should have sum partition");
         let (sum_table, sum_request) = &partitions["sum"];
-        assert_eq!(
-            sum_table, "metrics_sum",
-            "Sum should map to metrics_sum table"
-        );
+        assert_eq!(sum_table, "metrics", "Sum should map to metrics table");
         assert_eq!(
             sum_request.resource_metrics[0].scope_metrics[0]
                 .metrics
@@ -409,8 +460,8 @@ mod tests {
         );
         let (histogram_table, histogram_request) = &partitions["histogram"];
         assert_eq!(
-            histogram_table, "metrics_histogram",
-            "Histogram should map to metrics_histogram table"
+            histogram_table, "metrics",
+            "Histogram should map to metrics table"
         );
         assert_eq!(
             histogram_request.resource_metrics[0].scope_metrics[0]
@@ -548,8 +599,8 @@ mod tests {
 
         let (table_name, exp_hist_request) = &partitions["exponential_histogram"];
         assert_eq!(
-            table_name, "metrics_exponential_histogram",
-            "ExponentialHistogram should map to metrics_exponential_histogram table"
+            table_name, "metrics",
+            "ExponentialHistogram should map to metrics table"
         );
         assert_eq!(
             exp_hist_request.resource_metrics[0].scope_metrics[0]
@@ -626,10 +677,7 @@ mod tests {
         );
 
         let (table_name, summary_request) = &partitions["summary"];
-        assert_eq!(
-            table_name, "metrics_summary",
-            "Summary should map to metrics_summary table"
-        );
+        assert_eq!(table_name, "metrics", "Summary should map to metrics table");
         assert_eq!(
             summary_request.resource_metrics[0].scope_metrics[0]
                 .metrics
@@ -790,14 +838,275 @@ mod tests {
         assert!(partitions.contains_key("exponential_histogram"));
         assert!(partitions.contains_key("summary"));
 
-        // Verify table names
-        assert_eq!(partitions["gauge"].0, "metrics_gauge");
-        assert_eq!(partitions["sum"].0, "metrics_sum");
-        assert_eq!(partitions["histogram"].0, "metrics_histogram");
-        assert_eq!(
-            partitions["exponential_histogram"].0,
-            "metrics_exponential_histogram"
-        );
-        assert_eq!(partitions["summary"].0, "metrics_summary");
+        // Under the wide layout, every metric type routes to the same table.
+        for kind in [
+            "gauge",
+            "sum",
+            "histogram",
+            "exponential_histogram",
+            "summary",
+        ] {
+            assert_eq!(partitions[kind].0, "metrics");
+        }
+    }
+
+    mod ingest_id_tests {
+        //! Each metric-type partition writes its own WAL entry and is
+        //! forwarded independently (issue #1734 step 2), so a request with
+        //! two partitions must stamp two distinct `ingest_id`s, one per
+        //! DoPut.
+
+        use super::*;
+        use arrow_flight::flight_service_server::FlightService;
+        use common::auth::{TenantContext, TenantSource};
+        use common::catalog::Catalog;
+        use common::service_bootstrap::{ServiceBootstrap, ServiceType};
+        use common::wal::WalConfig;
+        use tempfile::TempDir;
+
+        fn test_tenant_context() -> TenantContext {
+            TenantContext {
+                tenant_id: "acme".to_string(),
+                dataset_id: "production".to_string(),
+                tenant_slug: "acme".to_string(),
+                dataset_slug: "production".to_string(),
+                api_key_name: Some("test-key".to_string()),
+                api_key_scopes: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
+                user_id: None,
+                role: None,
+                is_instance_admin: false,
+                session_id: None,
+                source: TenantSource::Config,
+            }
+        }
+
+        fn test_wal_manager(base_dir: &std::path::Path) -> WalManager {
+            let config = WalConfig::with_defaults(base_dir.to_path_buf());
+            WalManager::new(config.clone(), config.clone(), config.clone(), config)
+        }
+
+        fn two_partition_request() -> ExportMetricsServiceRequest {
+            ExportMetricsServiceRequest {
+                resource_metrics: vec![ResourceMetrics {
+                    resource: Some(Resource {
+                        attributes: vec![],
+                        dropped_attributes_count: 0,
+                        entity_refs: vec![],
+                    }),
+                    scope_metrics: vec![ScopeMetrics {
+                        scope: None,
+                        metrics: vec![
+                            Metric {
+                                name: "gauge_metric".to_string(),
+                                description: String::new(),
+                                unit: "1".to_string(),
+                                data: Some(Data::Gauge(Gauge {
+                                    data_points: vec![NumberDataPoint {
+                                        attributes: vec![],
+                                        start_time_unix_nano: 1000,
+                                        time_unix_nano: 2000,
+                                        value: Some(number_data_point::Value::AsDouble(1.0)),
+                                        exemplars: vec![],
+                                        flags: 0,
+                                    }],
+                                })),
+                                metadata: vec![],
+                            },
+                            Metric {
+                                name: "sum_metric".to_string(),
+                                description: String::new(),
+                                unit: "1".to_string(),
+                                data: Some(Data::Sum(Sum {
+                                    data_points: vec![NumberDataPoint {
+                                        attributes: vec![],
+                                        start_time_unix_nano: 1000,
+                                        time_unix_nano: 2000,
+                                        value: Some(number_data_point::Value::AsInt(1)),
+                                        exemplars: vec![],
+                                        flags: 0,
+                                    }],
+                                    aggregation_temporality: AggregationTemporality::Cumulative
+                                        .into(),
+                                    is_monotonic: true,
+                                })),
+                                metadata: vec![],
+                            },
+                        ],
+                        schema_url: String::new(),
+                    }],
+                    schema_url: String::new(),
+                }],
+            }
+        }
+
+        /// A `FlightService` that accepts every `do_put` and records the
+        /// `app_metadata` of the first `FlightData` message of each call.
+        #[derive(Clone)]
+        struct CapturingFlightService {
+            captured: Arc<tokio::sync::Mutex<Vec<bytes::Bytes>>>,
+        }
+
+        #[tonic::async_trait]
+        impl FlightService for CapturingFlightService {
+            type HandshakeStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::HandshakeResponse, tonic::Status>,
+            >;
+            type ListFlightsStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::FlightInfo, tonic::Status>,
+            >;
+            type DoGetStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::FlightData, tonic::Status>,
+            >;
+            type DoPutStream =
+                futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
+            type DoExchangeStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::FlightData, tonic::Status>,
+            >;
+            type DoActionStream =
+                futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
+            type ListActionsStream = futures::stream::BoxStream<
+                'static,
+                Result<arrow_flight::ActionType, tonic::Status>,
+            >;
+
+            async fn handshake(
+                &self,
+                _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+            ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("handshake"))
+            }
+            async fn list_flights(
+                &self,
+                _request: tonic::Request<arrow_flight::Criteria>,
+            ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("list_flights"))
+            }
+            async fn get_flight_info(
+                &self,
+                _request: tonic::Request<arrow_flight::FlightDescriptor>,
+            ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+                Err(tonic::Status::unimplemented("get_flight_info"))
+            }
+            async fn poll_flight_info(
+                &self,
+                _request: tonic::Request<arrow_flight::FlightDescriptor>,
+            ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+                Err(tonic::Status::unimplemented("poll_flight_info"))
+            }
+            async fn get_schema(
+                &self,
+                _request: tonic::Request<arrow_flight::FlightDescriptor>,
+            ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+                Err(tonic::Status::unimplemented("get_schema"))
+            }
+            async fn do_get(
+                &self,
+                _request: tonic::Request<arrow_flight::Ticket>,
+            ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("do_get"))
+            }
+            async fn do_put(
+                &self,
+                request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+            ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+                use futures::StreamExt;
+                let mut stream = request.into_inner();
+                if let Some(Ok(first)) = stream.next().await {
+                    self.captured.lock().await.push(first.app_metadata);
+                }
+                Ok(tonic::Response::new(futures::stream::empty().boxed()))
+            }
+            async fn do_exchange(
+                &self,
+                _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+            ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("do_exchange"))
+            }
+            async fn do_action(
+                &self,
+                _request: tonic::Request<arrow_flight::Action>,
+            ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("do_action"))
+            }
+            async fn list_actions(
+                &self,
+                _request: tonic::Request<arrow_flight::Empty>,
+            ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+                Err(tonic::Status::unimplemented("list_actions"))
+            }
+        }
+
+        #[tokio::test]
+        async fn two_partitions_forward_with_two_distinct_ingest_ids() {
+            let catalog = Catalog::new_in_memory().await.unwrap();
+
+            let captured: Arc<tokio::sync::Mutex<Vec<bytes::Bytes>>> =
+                Arc::new(tokio::sync::Mutex::new(Vec::new()));
+            let service = CapturingFlightService {
+                captured: captured.clone(),
+            };
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let writer_addr = listener.local_addr().unwrap();
+            tokio::spawn(async move {
+                tonic::transport::Server::builder()
+                    .add_service(common::flight::flight_service_server(service))
+                    .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                    .await
+                    .unwrap();
+            });
+            ServiceBootstrap::new_for_test_with_catalog(
+                catalog.clone(),
+                ServiceType::Writer,
+                &writer_addr.to_string(),
+            )
+            .await
+            .unwrap();
+
+            let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+                catalog,
+                ServiceType::Acceptor,
+                "127.0.0.1:0",
+            )
+            .await
+            .unwrap();
+            let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+            let temp_dir = TempDir::new().unwrap();
+            let wal_manager = Arc::new(test_wal_manager(temp_dir.path()));
+            let processor_registry = Arc::new(ProcessorRegistry::new(
+                Arc::new(Catalog::new_in_memory().await.unwrap()),
+                &common::config::ProcessorsConfig::default(),
+            ));
+
+            let handler = MetricsHandler::new(flight_transport, wal_manager, processor_registry);
+            let tenant_context = test_tenant_context();
+
+            handler
+                .handle_grpc_otlp_metrics(&tenant_context, two_partition_request())
+                .await
+                .unwrap();
+
+            let captured = captured.lock().await;
+            assert_eq!(captured.len(), 2, "expected one DoPut per partition");
+
+            let ids: std::collections::HashSet<String> = captured
+                .iter()
+                .map(|metadata| {
+                    let value: serde_json::Value = serde_json::from_slice(metadata).unwrap();
+                    value["ingest_id"]
+                        .as_str()
+                        .expect("ingest_id must be present")
+                        .to_string()
+                })
+                .collect();
+            assert_eq!(ids.len(), 2, "each partition must carry its own ingest_id");
+        }
     }
 }

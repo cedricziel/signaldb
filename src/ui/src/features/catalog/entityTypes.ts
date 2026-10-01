@@ -1,3 +1,5 @@
+import { CATALOG_SOURCES } from "../../api/sourceFields";
+
 // The catalog's entity registry.
 //
 // Every entity type is discovered and measured the same way: group its
@@ -70,18 +72,57 @@ export interface EntityTypeDef {
    * metric point.
    */
   sources?: string[];
+  /**
+   * Identity to fall back to when the registry-declared one is absent from
+   * the data, in registry-declared order — the entity's descriptive
+   * attributes. Present only on a registry-derived type: where the catalog
+   * names an identity it is deliberate (see `resolveIdentity`) and is never
+   * substituted.
+   */
+  identityFallback?: string[];
+  /**
+   * The schema-registry entity this type is, by its registry name — the join
+   * key to everything else the registry says about it, such as which metrics
+   * measure it.
+   *
+   * Set by `deriveEntityTypes` for any type a registry entity matched,
+   * curated or derived; absent for a curated type no visible registry
+   * declares. It is carried rather than reversed out of `id`, because
+   * registry names contain underscores of their own (`gcp.cloud_run`), so the
+   * dots-to-underscores mapping has no safe inverse.
+   */
+  registryEntity?: string;
+  /**
+   * This type's identity, narrowed per source to the attributes that source
+   * actually carries — set by `observedEntityTypes` alongside `sources`.
+   * A source can carry the primary identity attribute while missing a
+   * secondary one, and the tier-2 listing query must group that source by
+   * what it has, not by the full tuple (see `buildEntitySourceDoc` in
+   * `api/catalog.ts`). Absent on a type that has not gone through
+   * `observedEntityTypes` — those fall back to the full `identity`.
+   */
+  identityBySource?: Record<string, string[]>;
 }
 
 /**
- * The resource-scoped multi-source list (see `EntityTypeDef.sources`).
- * `metrics` and `profiles` belong here in principle — a resource attribute
- * is attached to every signal an SDK emits — but the backend can't serve
- * them yet: neither source has a logical `timestamp` field, so the
- * "last seen" aggregate 400s (#1205), and grouping `metrics` by any
- * resource attribute other than the handful explicitly registered 500s on
- * a query-planner type mismatch (#1206). Add them back once those land.
+ * The resource-scoped multi-source list (see `EntityTypeDef.sources`): every
+ * signal a tenant can query, because a resource attribute rides on everything
+ * an SDK emits, not just on spans.
+ *
+ * This is {@link CATALOG_SOURCES} under the name that reads correctly here.
+ * The two were separate literals holding the same five strings, with nothing
+ * keeping them equal — and they mean the same thing, so a new signal source
+ * must not be able to reach one and miss the other. The API layer owns the
+ * list because it is what talks to the backend.
+ *
+ * `metrics` and `profiles` were excluded until #1205 (no logical `timestamp`
+ * field, so the "last seen" aggregate 400d) and #1206 (grouping metrics by an
+ * unregistered resource attribute 500d) were fixed. Both are closed. Their
+ * absence was not cosmetic: `process.pid` and `container.name` appear on
+ * metrics and on no other signal in a typical deployment, so the Processes
+ * and Containers pages rendered empty over data that was already stored.
  */
-export const RESOURCE_SOURCES = ["traces", "logs"];
+export const RESOURCE_SOURCES = CATALOG_SOURCES;
 
 export const ENTITY_TYPES: EntityTypeDef[] = [
   {

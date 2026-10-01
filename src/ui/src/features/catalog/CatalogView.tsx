@@ -1,6 +1,14 @@
+import { useRef, useState, type ReactNode } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
-import { fetchCatalogEntities, type EntityPin } from "../../api/catalog";
+import {
+  fetchCatalogEntities,
+  pinsKey,
+  type EntityPin,
+} from "../../api/catalog";
 import { GROUP_BUDGET, type GroupSort } from "../../api/traceGroups";
+import { fetchFieldValueSketch } from "../../api/sourceFields";
+import { EmptyState } from "../../components/EmptyState";
+import { QueryError } from "../../components/QueryError";
 import { SkeletonRows } from "../explore/Skeleton";
 import { SortTh, useSort } from "../../lib/sortTable";
 import {
@@ -8,24 +16,37 @@ import {
   upsertTraceFilter,
   type TraceFilter,
 } from "../../lib/traceFilters";
-import { NOT_SET, compositeKey, formatRate } from "../../lib/traceGroups";
+import { NOT_SET, compositeKey } from "../../lib/traceGroups";
 import {
-  formatTimestamp,
+  formatTimestampForRange,
   nanosToMs,
   rangeScopeKey,
   resolveRange,
   type ResolvedRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { formatDurationMsOrDash } from "../../lib/waterfall";
+import { CatalogServiceMap } from "./CatalogServiceMap";
 import { EntityDetail } from "./EntityDetail";
+import { redDuration, redErrorClass, redErrorRate, redRate } from "./red";
 import {
   DEFAULT_ENTITY_TYPE,
-  ENTITY_TYPES,
   entityType,
   type EntityTypeDef,
 } from "./entityTypes";
+import { useCatalogEntityTypes } from "./useEntityTypes";
+import { useSparklineColumn } from "./useEntityMetrics";
+import { EntitySparkline, type SparklinePoint } from "./EntitySparkline";
+import {
+  MobileFiltersToggle,
+  MobileSidebarDrawer,
+} from "../../components/MobileSidebarDrawer";
+import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useMobileSidebar } from "../../hooks/useMobileSidebar";
+import { formatTimeBucket, formatValue } from "../../lib/vizFormat";
 import "./catalog.css";
+// `.trace-open` (a drillable row's primary-cell button) is a shared button
+// style this view reuses from the Traces tab rather than catalog.css.
+import "../traces/traces.css";
 
 interface Props {
   state: ExploreState;
@@ -33,59 +54,183 @@ interface Props {
 }
 
 /** Shared by the list and detail views — the window's length in seconds,
- * for turning a raw count into a rate. */
-export function catalogRangeSeconds(state: ExploreState): number {
-  const r = resolveRange(state.range, Date.now());
-  return Math.max(1, (r.toMs - r.fromMs) / 1000);
+ * for turning a raw count into a rate. Takes the already-resolved range so
+ * that a page's rate and its queries describe one `now`, not two. */
+export function catalogRangeSeconds(range: ResolvedRange): number {
+  return Math.max(1, (range.toMs - range.fromMs) / 1000);
+}
+
+/**
+ * The entity type the URL names, resolved against the observed set first so
+ * a registry-derived type is addressable, then against the curated list — a
+ * bookmarked entity type stays openable while its data is out of window.
+ *
+ * Undefined means "not this URL's type": either the observed set has not
+ * landed yet, or nothing in this tenant answers to that id. Both callers
+ * must decide what to do with that; substituting a default here is what made
+ * every derived entity's detail page render the *service* dashboard.
+ */
+export function resolveEntityType(
+  id: string,
+  types: EntityTypeDef[],
+): EntityTypeDef | undefined {
+  return types.find((e) => e.id === id) ?? entityType(id);
 }
 
 export function CatalogView({ state, update }: Props) {
-  if (state.catalogPrimary !== "") {
-    return <EntityDetail state={state} update={update} />;
-  }
-
   const range = resolveRange(state.range, Date.now());
   const rangeKey = rangeScopeKey(state);
-  const selected =
-    entityType(state.catalogEntity) ?? entityType(DEFAULT_ENTITY_TYPE)!;
+  // Called before the detail branch below: an early return above a hook
+  // changes the hook count between renders of the same instance, and drilling
+  // into a row is exactly that transition.
+  const { types, isPending, analyzed, asOf, isError, error } =
+    useCatalogEntityTypes(range, rangeKey);
+  const mobileSidebar = useMobileSidebar();
+  const resolved = resolveEntityType(state.catalogEntity, types);
+
+  if (state.catalogPrimary !== "") {
+    // A detail page is entirely an entity type's own: its identity dimensions
+    // pin every query on it. Guessing one paints another entity's numbers
+    // under this entity's name, so it waits instead.
+    if (!resolved) {
+      return (
+        <div className="view-note">
+          {isPending
+            ? "Loading entity types…"
+            : `Unknown entity type "${state.catalogEntity}".`}
+        </div>
+      );
+    }
+    return (
+      <EntityDetail
+        entity={resolved}
+        range={range}
+        state={state}
+        update={update}
+      />
+    );
+  }
+
+  // The list, unlike the detail page, has somewhere sensible to land: showing
+  // the first observed type beats showing nothing.
+  const selected = resolved ?? types[0] ?? entityType(DEFAULT_ENTITY_TYPE)!;
 
   return (
-    <div className="catalog">
-      <CatalogNav
-        selectedId={selected.id}
-        range={range}
-        rangeKey={rangeKey}
-        onSelect={(id) => update({ catalogEntity: id })}
+    <>
+      <MobileFiltersToggle
+        open={mobileSidebar.open}
+        onToggle={mobileSidebar.toggle}
       />
-      <EntityTable
-        key={selected.id}
-        entity={selected}
-        range={range}
-        rangeKey={rangeKey}
-        rangeSeconds={catalogRangeSeconds(state)}
-        onRowClick={(values) =>
-          update({ catalogPrimary: compositeKey(values) }, { push: true })
-        }
-      />
+      <div className="catalog">
+        <MobileSidebarDrawer
+          open={mobileSidebar.open}
+          onClose={mobileSidebar.close}
+        >
+          <CatalogNav
+            types={types}
+            selectedId={selected.id}
+            range={range}
+            rangeKey={rangeKey}
+            analyzed={analyzed}
+            asOf={asOf}
+            isError={isError}
+            error={error}
+            onSelect={(id) => {
+              update({ catalogEntity: id });
+              mobileSidebar.close();
+            }}
+          />
+        </MobileSidebarDrawer>
+        <div className="catalog-list-pane">
+          {selected.id === "service" && state.catalogView === "map" ? (
+            <CatalogServiceMap
+              range={range}
+              rangeKey={rangeKey}
+              update={update}
+              viewSwitch={
+                <CatalogViewSwitch view={state.catalogView} update={update} />
+              }
+            />
+          ) : (
+            <EntityTable
+              key={selected.id}
+              entity={selected}
+              range={range}
+              rangeKey={rangeKey}
+              rangeSeconds={catalogRangeSeconds(range)}
+              sparkline
+              onRowClick={(values) =>
+                update({ catalogPrimary: compositeKey(values) }, { push: true })
+              }
+              viewSwitch={
+                selected.id === "service" && (
+                  <CatalogViewSwitch view={state.catalogView} update={update} />
+                )
+              }
+            />
+          )}
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** The service entity type's List | Map switch — compact, sitting inline
+ * next to whichever view's own title ("Services", either from `EntityTable`
+ * or `CatalogServiceMap`), same as the service map's own Map | Table
+ * switch. Never a full-width row of its own. */
+function CatalogViewSwitch({
+  view,
+  update,
+}: {
+  view: ExploreState["catalogView"];
+  update: UpdateFn;
+}) {
+  return (
+    <div className="trace-volume-mode" role="group" aria-label="Catalog view">
+      <button
+        type="button"
+        aria-pressed={view === "list"}
+        onClick={() => update({ catalogView: "list" })}
+      >
+        List
+      </button>
+      <button
+        type="button"
+        aria-pressed={view === "map"}
+        onClick={() => update({ catalogView: "map" })}
+      >
+        Map
+      </button>
     </div>
   );
 }
 
 function CatalogNav({
+  types,
   selectedId,
   range,
   rangeKey,
+  analyzed,
+  asOf,
+  isError,
+  error,
   onSelect,
 }: {
+  types: EntityTypeDef[];
   selectedId: string;
   range: ResolvedRange;
   rangeKey: string;
+  analyzed: boolean;
+  asOf?: string;
+  isError?: boolean;
+  error?: unknown;
   onSelect: (id: string) => void;
 }) {
   const results = useQueries({
-    queries: ENTITY_TYPES.map((e) => ({
-      queryKey: ["catalog-entities", e.id, rangeKey, "n", "desc"],
-      queryFn: () => fetchCatalogEntities(e, range),
+    queries: types.map((e) => ({
+      queryKey: entityQueryKey(e.id, rangeKey, NAV_SORT),
+      queryFn: () => fetchCatalogEntities(e, range, NAV_SORT),
       staleTime: 30_000,
     })),
   });
@@ -94,12 +239,12 @@ function CatalogNav({
     <aside className="sidebar" aria-label="Entity types">
       <div className="sidebar-head">Entities</div>
       <div className="fieldlist">
-        {ENTITY_TYPES.map((e, i) => {
+        {types.map((e, i) => {
           const result = results[i];
           const countLabel = result?.data
             ? result.data.truncated
               ? `${GROUP_BUDGET}+`
-              : String(result.data.groups.length)
+              : String(result.data.entities.length)
             : "…";
           return (
             <button
@@ -109,11 +254,23 @@ function CatalogNav({
               onClick={() => onSelect(e.id)}
             >
               <span>{e.label}</span>
-              <span className="facet-active">{countLabel}</span>
+              <span className="facet-active chip">{countLabel}</span>
             </button>
           );
         })}
       </div>
+      {isError ? (
+        <QueryError what="entity types" error={error} />
+      ) : (
+        // Absence of an entity type is a claim about the data; absence of
+        // metadata is a claim about what we know. Saying so keeps a
+        // never-compacted deployment from reading as an empty one.
+        <div className="sidebar-note">
+          {analyzed
+            ? asOf && `Field metadata as of ${asOf}`
+            : "Not analyzed yet — entity types appear once compaction has run."}
+        </div>
+      )}
     </aside>
   );
 }
@@ -138,14 +295,108 @@ export function drillFilters(
   entity.identity.forEach((field, i) => {
     if (facetField(field) === undefined) return;
     const v = values[i];
-    if (v == null) return;
-    filters = upsertTraceFilter(filters, { field, value: v });
+    // A `(not set)` identity value means the field is absent, not that it
+    // equals the literal string "(not set)" — an `eq` filter here would
+    // match nothing, and dropping the dimension (the old behavior) matched
+    // everything instead of just the traces missing it.
+    filters = upsertTraceFilter(
+      filters,
+      v == null ? { field, value: "", op: "absent" } : { field, value: v },
+    );
   });
   return filters;
 }
 
 export function isDrillable(entity: EntityTypeDef): boolean {
   return entity.identity.some((field) => facetField(field) !== undefined);
+}
+
+/**
+ * The cache key for one entity-type aggregate.
+ *
+ * The nav and the table ask for the same thing about the selected entity
+ * type — same aggregate, same sort, same window — so they must agree on the
+ * key down to the last element, or the selected type is fetched twice on
+ * every paint. They did not: the nav omitted the pin element, so its
+ * five-element key never matched the table's six.
+ *
+ * Deriving both from here is what keeps them in step; a key spelled out at
+ * each call site drifts the moment one gains a dimension.
+ */
+export function entityQueryKey(
+  entityId: string,
+  rangeKey: string,
+  sort: GroupSort,
+  pinned: EntityPin[] = [],
+): (string | undefined)[] {
+  return [
+    "catalog-entities",
+    entityId,
+    rangeKey,
+    sort.key,
+    sort.dir,
+    pinsKey(pinned),
+  ];
+}
+
+/** The sort the nav's counts are fetched at — and therefore the sort a table
+ * must be showing for the two to share a cache entry. */
+export const NAV_SORT: GroupSort = { key: "n", dir: "desc" };
+
+/**
+ * An empty result, said as precisely as the data allows.
+ *
+ * "No hosts in this window" and "no host has ever reported" are different
+ * findings — the second is a reason to go and look at your instrumentation,
+ * the first is a reason to widen the range — and a bare empty table conflates
+ * them.
+ *
+ * The maintained value sketch can tell them apart, and this is the only thing
+ * in the catalog it may be asked. It reports `window_scoped: false`: it
+ * describes what compaction last saw, never the selected range. So it can say
+ * "this attribute has values, just not here", and it must never be used to
+ * list them as though they were current — an entity last seen days ago would
+ * appear to someone who narrowed to fifteen minutes.
+ *
+ * Consulted only once the window has come back empty, so the common path
+ * costs nothing.
+ */
+function EmptyEntityState({
+  entity,
+  range,
+}: {
+  entity: EntityTypeDef;
+  range: ResolvedRange;
+}) {
+  const primary = entity.identity[0]!;
+  const sources = entity.sources ?? ["traces"];
+  const sketch = useQuery({
+    queryKey: ["catalog-empty-sketch", entity.id, primary, sources[0]],
+    queryFn: () => fetchFieldValueSketch(sources[0]!, primary, range),
+    staleTime: 5 * 60_000,
+  });
+
+  return (
+    <EmptyState title={`No ${entity.label.toLowerCase()} in this range`}>
+      No matching <code>{primary}</code> value seen in {sources.join(" or ")}.
+      {sketch.data && (
+        <>
+          {" "}
+          {sketch.data.distinct === 1
+            ? "One value has"
+            : `${sketch.data.distinct} values have`}{" "}
+          been seen outside it
+          {sketch.data.asOf ? ` (as of ${sketch.data.asOf})` : ""}
+          {sketch.data.examples.length > 0 && (
+            <>
+              , such as <code>{sketch.data.examples[0]}</code>
+            </>
+          )}
+          . Try a wider time range.
+        </>
+      )}
+    </EmptyState>
+  );
 }
 
 /**
@@ -161,39 +412,67 @@ export function EntityTable({
   rangeKey,
   rangeSeconds,
   pinned,
+  sparkline = false,
   onRowClick,
+  viewSwitch,
 }: {
   entity: EntityTypeDef;
   range: ResolvedRange;
   rangeKey: string;
   rangeSeconds: number;
   pinned?: EntityPin[];
+  /**
+   * Whether this table wants the entity type's headline-metric sparkline.
+   *
+   * Opt-in rather than inferred: this component is shared with the detail
+   * page's breakdown and top-values tables, whose entity types are synthetic
+   * and describe a dimension rather than an entity.
+   */
+  sparkline?: boolean;
   /** Omit for a read-only table (e.g. a `topValues` ranking with nothing
    * to drill into) — rows render without a click affordance. */
   onRowClick?: (values: (string | null)[]) => void;
+  /** The service entity type's List | Map switch, rendered inline in the
+   * headline next to the title — `CatalogView`'s to build, this table just
+   * gives it a slot. */
+  viewSwitch?: ReactNode;
 }) {
   const [sort, toggle] = useSort("n", "desc");
-  const pinKey = (pinned ?? []).map((p) => `${p.field}=${p.value}`).join(",");
   const result = useQuery({
-    queryKey: [
-      "catalog-entities",
-      entity.id,
-      rangeKey,
-      sort.key,
-      sort.dir,
-      pinKey,
-    ],
+    queryKey: entityQueryKey(entity.id, rangeKey, sort as GroupSort, pinned),
     queryFn: () =>
       fetchCatalogEntities(entity, range, sort as GroupSort, pinned),
   });
 
+  const { label: sparklineLabel, byRow } = useSparklineColumn(
+    entity,
+    range,
+    rangeKey,
+    sparkline,
+  );
+
+  // One tooltip for the whole table, anchored here rather than in a cell: a
+  // cell clips to its own box for the ellipsis, so a tooltip inside one is
+  // trapped in 80x18.
+  const hostRef = useRef<HTMLDivElement>(null);
+  const pointer = useVizPointer(hostRef);
+  const [hovered, setHovered] = useState<SparklinePoint | null>(null);
+  const onHover = (
+    point: SparklinePoint | null,
+    e?: { clientX: number; clientY: number },
+  ) => {
+    setHovered(point);
+    if (point && e) pointer.track(e);
+    else pointer.clear();
+  };
+
   const pending = result.isPending;
-  const rows = result.data?.groups ?? [];
-  const columns = entity.identity.length + 6;
+  const rows = result.data?.entities ?? [];
+  const columns = entity.identity.length + 5 + (sparklineLabel ? 1 : 0);
   const done = !pending && result.data !== undefined;
 
   return (
-    <div className="catalog-main">
+    <div className="catalog-main viz-host" ref={hostRef}>
       <div className="catalog-headline">
         <span className="catalog-title">{entity.label}</span>
         <span className="catalog-sub">
@@ -202,111 +481,135 @@ export function EntityTable({
             ? ` across ${entity.sources.join(", ")}`
             : ""}
         </span>
+        {viewSwitch && (
+          <div className="catalog-headline-switch">{viewSwitch}</div>
+        )}
       </div>
-      {result.isError && (
-        <div className="query-error" role="alert">
-          Entities failed: {(result.error as Error).message}
-        </div>
-      )}
-      <table className="trace-table" aria-busy={pending}>
-        <thead>
-          <tr>
-            {entity.identity.map((dim) => (
-              <th key={dim}>{dim}</th>
-            ))}
-            <SortTh
-              label="Count"
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Rate"
-              sortKey="n"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Errors"
-              sortKey="errors"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P50"
-              sortKey="p50"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="P95"
-              sortKey="p95"
-              sort={sort}
-              toggle={toggle}
-              numeric
-            />
-            <SortTh
-              label="Last seen"
-              sortKey="last"
-              sort={sort}
-              toggle={toggle}
-              firstDir="desc"
-            />
-          </tr>
-        </thead>
-        <tbody>
-          {pending ? (
-            <SkeletonRows
-              rows={8}
-              columns={columns}
-              numericFrom={entity.identity.length}
-            />
-          ) : (
-            rows.map((g) => (
-              <tr
-                key={g.values.join("")}
-                className={
-                  onRowClick ? "catalog-row-drillable" : "catalog-row-static"
-                }
-                onClick={onRowClick ? () => onRowClick(g.values) : undefined}
-              >
-                {g.values.map((v, i) => (
-                  <td key={entity.identity[i]} title={v ?? undefined}>
-                    {v ?? NOT_SET}
+      {result.isError && <QueryError what="entities" error={result.error} />}
+      <div className="table-scroll">
+        <table className="trace-table" aria-busy={pending}>
+          <thead>
+            <tr>
+              {entity.identity.map((dim) => (
+                <th key={dim}>{dim}</th>
+              ))}
+              <SortTh
+                label="Rate"
+                sortKey="n"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Errors"
+                sortKey="errors"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P50"
+                sortKey="p50"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="P95"
+                sortKey="p95"
+                sort={sort}
+                toggle={toggle}
+                numeric
+              />
+              <SortTh
+                label="Last seen"
+                sortKey="last"
+                sort={sort}
+                toggle={toggle}
+                firstDir="desc"
+              />
+              {/* Named, not decorative: the reader must know which metric the
+                shape belongs to without opening the entity. */}
+              {sparklineLabel && (
+                <th title={sparklineLabel}>{sparklineLabel}</th>
+              )}
+            </tr>
+          </thead>
+          <tbody>
+            {pending ? (
+              <SkeletonRows
+                rows={8}
+                columns={columns}
+                numericFrom={entity.identity.length}
+              />
+            ) : (
+              rows.map((g) => (
+                <tr
+                  key={g.values.join("")}
+                  className={
+                    onRowClick ? "catalog-row-drillable" : "catalog-row-static"
+                  }
+                  onClick={onRowClick ? () => onRowClick(g.values) : undefined}
+                >
+                  {g.values.map((v, i) => (
+                    <td key={entity.identity[i]} title={v ?? undefined}>
+                      {/* Only the primary identity cell is a button: it's the
+                        one drill target a row has, mirroring
+                        MemberTable.tsx's span-name cell. No own onClick — a
+                        native button dispatches a click on Enter/Space too,
+                        which bubbles to the row's own handler above, making
+                        the row keyboard-reachable without a second handler. */}
+                      {onRowClick && i === 0 ? (
+                        <button type="button" className="trace-open">
+                          {v ?? NOT_SET}
+                        </button>
+                      ) : (
+                        (v ?? NOT_SET)
+                      )}
+                    </td>
+                  ))}
+                  <td className="num">{redRate(g.red, rangeSeconds)}</td>
+                  <td className={`num ${redErrorClass(g.red)}`}>
+                    {redErrorRate(g.red)}
                   </td>
-                ))}
-                <td className="num">{g.count}</td>
-                <td className="num">{formatRate(g.count, rangeSeconds)}</td>
-                <td className={`num${g.errors > 0 ? " err-rate" : ""}`}>
-                  {g.errors > 0
-                    ? `${Math.round((100 * g.errors) / (g.traceCount ?? g.count))}%`
-                    : "–"}
-                </td>
-                <td className="num">
-                  {formatDurationMsOrDash(g.traceCount, g.p50Ms)}
-                </td>
-                <td className="num">
-                  {formatDurationMsOrDash(g.traceCount, g.p95Ms)}
-                </td>
-                <td>{formatTimestamp(nanosToMs(g.lastNs))}</td>
-              </tr>
-            ))
-          )}
-        </tbody>
-      </table>
+                  <td className="num">{redDuration(g.red, "p50Ms")}</td>
+                  <td className="num">{redDuration(g.red, "p95Ms")}</td>
+                  <td>{formatTimestampForRange(nanosToMs(g.lastNs), range)}</td>
+                  {sparklineLabel && (
+                    <td className="entity-sparkline-cell">
+                      <EntitySparkline
+                        series={byRow.get(compositeKey(g.values)) ?? []}
+                        label={sparklineLabel}
+                        onHover={onHover}
+                      />
+                    </td>
+                  )}
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+      {hovered && sparklineLabel && pointer.anchor && (
+        <VizTooltip
+          anchor={pointer.anchor}
+          host={pointer.host}
+          title={formatTimeBucket(hovered.tMs, hovered.stepMs)}
+          rows={[
+            {
+              swatch: "var(--accent)",
+              label: sparklineLabel,
+              value: formatValue(hovered.v),
+            },
+          ]}
+          valueWidthCh={formatValue(hovered.max).length}
+        />
+      )}
       {done && rows.length === 0 && (
-        <div className="traces-note">
-          No {entity.label.toLowerCase()} observed in this window — no matching{" "}
-          <code>{entity.identity[0]}</code> value seen in{" "}
-          {(entity.sources ?? ["traces"]).join(" or ")}.
-        </div>
+        <EmptyEntityState entity={entity} range={range} />
       )}
       {result.data?.truncated && (
-        <div className="traces-note">
+        <div className="view-note">
           Showing the top {GROUP_BUDGET} {entity.label.toLowerCase()} by the
           current sort — narrow the time range to see the rest.
         </div>

@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.1.3](https://github.com/cedricziel/signaldb/compare/tempo-api-v0.1.2...tempo-api-v0.1.3) (2026-09-12)
+
+
+### Code Refactoring
+
+* make query-ir and tempo-api standalone, and cover the parser crates ([#1369](https://github.com/cedricziel/signaldb/issues/1369)) ([1a4d78f](https://github.com/cedricziel/signaldb/commit/1a4d78f077616a9c4846cb6c02715b147b5ad1c2))
+
+
+### Continuous Integration
+
+* **ql:** publish the parser crates on their own release train ([#1362](https://github.com/cedricziel/signaldb/issues/1362)) ([bfc2162](https://github.com/cedricziel/signaldb/commit/bfc216206d779b5a556b7513a882e06dc77bf116))
+
+## [0.1.2](https://github.com/cedricziel/signaldb/compare/tempo-api-v0.1.1...tempo-api-v0.1.2) (2026-08-17)
+
+
+### Features
+
+* **api:** document Tempo trace query endpoints in OpenAPI + SDK ([#861](https://github.com/cedricziel/signaldb/issues/861)) ([a1e0d7f](https://github.com/cedricziel/signaldb/commit/a1e0d7f9f3c355f8bf73da686db1952487c3e046))
+* **querier,router:** surface span events on the single-trace path ([#848](https://github.com/cedricziel/signaldb/issues/848)) ([5b344e9](https://github.com/cedricziel/signaldb/commit/5b344e98b6e787aeca35d68bf18ca5ca92657454))
+* **tempo:** back trace tag discovery with real querier data ([#1258](https://github.com/cedricziel/signaldb/issues/1258)) ([4aeda0d](https://github.com/cedricziel/signaldb/commit/4aeda0d3314fbe7b5546f0411657fdc646e301dd))
+
+
+### Bug Fixes
+
+* **writer,tempo-api:** stop leaking Option Debug into logs; accept lowercase Tempo tag scopes ([#1149](https://github.com/cedricziel/signaldb/issues/1149)) ([4a83388](https://github.com/cedricziel/signaldb/commit/4a8338801252c36a948efa10d1a5cfe0d4f7de5a))
+
+
+### Code Refactoring
+
+* **tempo-api:** simplify pass ([#1176](https://github.com/cedricziel/signaldb/issues/1176)) ([10fd364](https://github.com/cedricziel/signaldb/commit/10fd36487971613586084cc1eb29c0dd93a99b9d))
+
+
+### Tests
+
+* delete tautological tests and rewrite salvageable ones as contract tests ([#961](https://github.com/cedricziel/signaldb/issues/961)) ([b3e884a](https://github.com/cedricziel/signaldb/commit/b3e884ad59b4df853429133d5eef2724a8adcada))
+* polish medium/low audit findings across the workspace ([#969](https://github.com/cedricziel/signaldb/issues/969)) ([8962f6d](https://github.com/cedricziel/signaldb/commit/8962f6d1d22c8a176d4a1d99376d61b42b1da258))
+
 ## [0.1.1](https://github.com/cedricziel/signaldb/compare/tempo-api-v0.1.0...tempo-api-v0.1.1) (2026-07-30)
 
 

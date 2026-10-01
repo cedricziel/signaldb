@@ -21,3 +21,15 @@ export function upsertBy<T>(
   copy[idx] = next;
   return copy;
 }
+
+/**
+ * Toggle `item`'s membership in `set`, returning a new `Set` either way —
+ * the add-or-remove pattern behind every collapsed/opened-id toggle
+ * (`FieldSidebar`'s `toggleGroup`, `TraceFacets`'s `toggle`).
+ */
+export function toggleInSet<T>(set: ReadonlySet<T>, item: T): Set<T> {
+  const next = new Set(set);
+  if (next.has(item)) next.delete(item);
+  else next.add(item);
+  return next;
+}

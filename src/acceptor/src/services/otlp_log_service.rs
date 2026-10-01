@@ -1,12 +1,18 @@
+//! gRPC `LogsService` implementation — see `services` module docs for the
+//! shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::logs::v1::{
     ExportLogsServiceRequest, ExportLogsServiceResponse, logs_service_server::LogsService,
 };
 use tonic::{Request, Response, Status};
 
+use crate::handler::IngestError;
 use crate::handler::otlp_log_handler::LogHandler;
 use crate::middleware::get_tenant_context;
+use crate::type_warning::WithOffTypeWarning;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::schema::type_authority::TypeSnapshots;
 use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
@@ -17,7 +23,7 @@ pub trait LogHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), IngestError>;
 }
 
 #[async_trait::async_trait]
@@ -26,8 +32,23 @@ impl LogHandlerTrait for LogHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_logs(tenant_context, request).await
+    }
+}
+
+/// Lets the gRPC log service run on the same `Arc<LogHandler>` the trace
+/// handler's evaluation-result fan-out shares (see `handler::otlp_grpc`).
+#[async_trait::async_trait]
+impl LogHandlerTrait for Arc<LogHandler> {
+    async fn handle_grpc_otlp_logs(
+        &self,
+        tenant_context: &TenantContext,
+        request: ExportLogsServiceRequest,
+    ) -> Result<(), IngestError> {
+        self.as_ref()
+            .handle_grpc_otlp_logs(tenant_context, request)
+            .await
     }
 }
 
@@ -35,6 +56,7 @@ pub struct LogAcceptorService<H: LogHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
     storage_quota: Option<Arc<StorageUsageTracker>>,
+    type_snapshots: Option<Arc<TypeSnapshots>>,
 }
 
 impl<H: LogHandlerTrait> LogAcceptorService<H> {
@@ -43,6 +65,7 @@ impl<H: LogHandlerTrait> LogAcceptorService<H> {
             handler,
             rate_limiter: None,
             storage_quota: None,
+            type_snapshots: None,
         }
     }
 
@@ -55,6 +78,12 @@ impl<H: LogHandlerTrait> LogAcceptorService<H> {
     /// Enforce per-tenant storage quotas on this service.
     pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
         self.storage_quota = Some(storage_quota);
+        self
+    }
+
+    /// Warn senders of off-type attribute values via `partial_success`.
+    pub fn with_type_snapshots(mut self, type_snapshots: Arc<TypeSnapshots>) -> Self {
+        self.type_snapshots = Some(type_snapshots);
         self
     }
 }
@@ -105,6 +134,14 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
             .sum();
         let rpc_start = std::time::Instant::now();
 
+        // Computed before the handler takes ownership of the request.
+        let off_type_warning = crate::type_warning::off_type_warning(
+            self.type_snapshots.as_ref(),
+            &tenant_context,
+            "logs",
+            &request_inner,
+        );
+
         // Anti-loop guard: processing the _system tenant's own telemetry must
         // not generate more self-monitoring telemetry.
         let handle = self
@@ -117,14 +154,21 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
                 handle.await
             };
 
-        // Reject the export if the data was not durably accepted, so the
-        // client retries instead of dropping its copy (OTLP treats
-        // UNAVAILABLE as retryable).
+        // Classify the failure (finding M3): a deterministic conversion
+        // failure is INVALID_ARGUMENT (retrying the same bytes will fail
+        // again), while a WAL/durability failure stays UNAVAILABLE so the
+        // client retries instead of dropping its copy.
         if let Err(e) = result {
-            tracing::error!(error = %e, "Failed to durably accept logs export");
-            return Err(Status::unavailable(format!(
-                "failed to durably accept logs export: {e:#}"
-            )));
+            return Err(match e {
+                IngestError::Invalid(err) => {
+                    tracing::warn!(error = %err, "Rejecting logs export: invalid payload");
+                    Status::invalid_argument(format!("invalid logs payload: {err:#}"))
+                }
+                IngestError::Unavailable(err) => {
+                    tracing::error!(error = %err, "Failed to durably accept logs export");
+                    Status::unavailable(format!("failed to durably accept logs export: {err:#}"))
+                }
+            });
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -152,7 +196,9 @@ impl<H: LogHandlerTrait + Send + Sync + 'static> LogsService for LogAcceptorServ
             )],
         );
 
-        Ok(Response::new(ExportLogsServiceResponse::default()))
+        Ok(Response::new(
+            ExportLogsServiceResponse::with_off_type_warning(off_type_warning),
+        ))
     }
 }
 
@@ -163,7 +209,7 @@ impl LogHandlerTrait for crate::handler::otlp_log_handler::MockLogHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportLogsServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_logs(tenant_context, request).await
     }
 }
@@ -178,8 +224,7 @@ mod tests {
         resource::v1::Resource,
     };
 
-    /// Handler that always fails before WAL durability, e.g. when the
-    /// OTLP -> Arrow conversion errors (issue #926) or the WAL write fails.
+    /// Handler that always fails with a WAL/durability error (transient).
     struct FailingLogHandler;
 
     #[async_trait::async_trait]
@@ -188,8 +233,26 @@ mod tests {
             &self,
             _tenant_context: &TenantContext,
             _request: ExportLogsServiceRequest,
-        ) -> anyhow::Result<()> {
-            anyhow::bail!("WAL unavailable")
+        ) -> Result<(), IngestError> {
+            Err(IngestError::Unavailable(anyhow::anyhow!("WAL unavailable")))
+        }
+    }
+
+    /// Handler that always fails with a deterministic conversion error
+    /// (finding M3), e.g. when the OTLP -> Arrow conversion errors (issue
+    /// #926). Distinct from [`FailingLogHandler`]'s transient failure.
+    struct InvalidPayloadLogHandler;
+
+    #[async_trait::async_trait]
+    impl LogHandlerTrait for InvalidPayloadLogHandler {
+        async fn handle_grpc_otlp_logs(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportLogsServiceRequest,
+        ) -> Result<(), IngestError> {
+            Err(IngestError::Invalid(anyhow::anyhow!(
+                "OTLP to Arrow conversion failed"
+            )))
         }
     }
 
@@ -218,7 +281,7 @@ mod tests {
             &self,
             _tenant_context: &TenantContext,
             _request: ExportLogsServiceRequest,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), IngestError> {
             self.calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             Ok(())
         }
@@ -232,7 +295,9 @@ mod tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -319,6 +384,26 @@ mod tests {
 
         assert_eq!(status.code(), tonic::Code::Unavailable);
         assert!(status.message().contains("durably accept"));
+    }
+
+    #[tokio::test]
+    async fn export_rejects_with_invalid_argument_when_conversion_fails() {
+        // Finding M3: a deterministic conversion failure must map to
+        // INVALID_ARGUMENT (400), not UNAVAILABLE, so a well-behaved
+        // client stops retrying instead of spinning forever on a payload
+        // that can never succeed.
+        let service = LogAcceptorService::new(InvalidPayloadLogHandler);
+
+        let mut tonic_request = Request::new(ExportLogsServiceRequest::default());
+        tonic_request.extensions_mut().insert(test_tenant_context());
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("export must fail when the payload cannot be converted");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("invalid logs payload"));
     }
 
     #[tokio::test]

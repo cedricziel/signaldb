@@ -3,24 +3,28 @@
 // api/dependencyBreakdown.ts for how the numbers are derived (five
 // sum(duration) queries combined client-side; no dedicated backend
 // aggregation exists for a derived category like this).
-import { useRef, useState } from "react";
+import { useRef, useState, type CSSProperties } from "react";
 import { useQuery } from "@tanstack/react-query";
 import { fetchDependencyBreakdown } from "../../api/dependencyBreakdown";
+import { QueryError } from "../../components/QueryError";
+import { ShareBar } from "../../components/ShareBar";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useRovingFocus } from "../../hooks/useRovingFocus";
 import type { ResolvedRange } from "../../lib/time";
-import { formatShare, formatValue } from "../../lib/vizFormat";
+import { formatShare, formatValue, pluralCount } from "../../lib/vizFormat";
 import { formatDurationMs } from "../../lib/waterfall";
+import { SkeletonLines } from "../explore/Skeleton";
+import { DependencyTable } from "./DependencyTable";
 
-function plural(n: number, noun: string): string {
-  return `${n.toLocaleString()} ${noun}${n === 1 ? "" : "s"}`;
-}
-
-/** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css. */
-const DEP_COLORS: Record<string, string> = {
-  database: "var(--svc-a)",
+/** Tooltip swatch per category — mirrors the `.dep-*` rules in catalog.css.
+ * Exported so `DependencyTable`'s per-row kind swatch reuses the same
+ * mapping rather than inventing a second palette. Avoids the green and
+ * yellow series slots, which read as the ok/warn status colours. */
+export const DEP_COLORS: Record<string, string> = {
+  database: "var(--svc-i)",
   http: "var(--svc-b)",
   rpc: "var(--svc-c)",
-  messaging: "var(--svc-d)",
+  messaging: "var(--svc-g)",
   other: "var(--faint)",
 };
 
@@ -40,23 +44,22 @@ export function DependencyBreakdown({
   const rootRef = useRef<HTMLDivElement>(null);
   const pointer = useVizPointer(rootRef);
   const [active, setActive] = useState<string | null>(null);
+  // One tab stop for the whole bar; called unconditionally ahead of the
+  // pending/error/empty returns below, as hooks must be.
+  const roving = useRovingFocus(query.data?.length ?? 0);
 
   if (query.isPending) {
-    return <div className="traces-note">Loading…</div>;
+    return <SkeletonLines lines={5} />;
   }
   if (query.isError) {
-    return (
-      <div className="query-error" role="alert">
-        Failed to load: {(query.error as Error).message}
-      </div>
-    );
+    return <QueryError what="dependencies" error={query.error} />;
   }
 
   const categories = query.data;
   const total = categories.reduce((sum, c) => sum + c.durationNs, 0);
   if (total === 0) {
     return (
-      <div className="traces-note">
+      <div className="view-note">
         No database, HTTP, RPC, or messaging calls observed for this service in
         this window.
       </div>
@@ -66,48 +69,67 @@ export function DependencyBreakdown({
 
   return (
     <div className="dep-breakdown viz-host" ref={rootRef}>
-      <div
-        className="dep-bar"
-        role="img"
-        aria-label={`Time spent by dependency type: ${categories
+      <ShareBar
+        segments={categories.map((c) => ({
+          key: c.key,
+          value: c.durationNs,
+          // The `.dep-*` classes in catalog.css set the actual background;
+          // this only satisfies `ShareBarSegment`'s shape.
+          color: DEP_COLORS[c.key] ?? "var(--faint)",
+          label: c.label,
+        }))}
+        ariaLabel={`Time spent by dependency type: ${categories
           .map((c) => `${c.label} ${formatShare(c.durationNs, total)}`)
           .join(", ")}`}
-      >
-        {categories.map((c) => (
-          <span
-            key={c.key}
-            className={`dep-seg dep-${c.key}`}
-            data-testid="dep-seg"
-            style={{ width: `${(c.durationNs / total) * 100}%` }}
-            tabIndex={0}
-            aria-label={`${c.label}: ${formatDurationMs(c.durationNs / 1e6)}, ${formatShare(c.durationNs, total)}`}
-            aria-describedby={active === c.key ? "dep-tip" : undefined}
-            onPointerMove={(e) => {
+        segmentProps={(_seg, i) => {
+          const c = categories[i]!;
+          const item = roving.itemProps(i);
+          return {
+            className: `dep-seg dep-${c.key}`,
+            "data-testid": "dep-seg",
+            tabIndex: item.tabIndex,
+            ref: item.ref,
+            onKeyDown: item.onKeyDown,
+            "aria-label": `${c.label}: ${formatDurationMs(c.durationNs / 1e6)}, ${formatShare(c.durationNs, total)}`,
+            "aria-describedby": active === c.key ? "dep-tip" : undefined,
+            onPointerMove: (e) => {
               setActive(c.key);
+              roving.setActiveIndex(i);
               pointer.track(e);
-            }}
-            onPointerLeave={() => {
+            },
+            onPointerLeave: () => {
               setActive((a) => (a === c.key ? null : a));
               pointer.clear();
-            }}
-            onFocus={(e) => {
+            },
+            onFocus: (e) => {
+              item.onFocus();
               setActive(c.key);
               pointer.anchorTo(e.currentTarget);
-            }}
-            onBlur={() => {
+            },
+            onBlur: () => {
               setActive((a) => (a === c.key ? null : a));
               pointer.clear();
-            }}
-          />
-        ))}
-      </div>
+            },
+          };
+        }}
+      />
       <dl className="dep-legend">
         {categories.map((c) => (
           <div key={c.key} className="dep-legend-item">
-            <dt className={`dep-swatch dep-${c.key}`}>{c.label}</dt>
+            <dt
+              className="dep-swatch"
+              style={
+                {
+                  "--kind-color": DEP_COLORS[c.key] ?? "var(--faint)",
+                } as CSSProperties & { "--kind-color": string }
+              }
+            >
+              {c.label}
+            </dt>
             <dd>
               {formatDurationMs(c.durationNs / 1e6)} ·{" "}
-              {formatShare(c.durationNs, total)} · {plural(c.count, "call")}
+              {formatShare(c.durationNs, total)} ·{" "}
+              {pluralCount(c.count, "call")}
             </dd>
           </div>
         ))}
@@ -132,6 +154,11 @@ export function DependencyBreakdown({
           ]}
         />
       )}
+      <DependencyTable
+        serviceName={serviceName}
+        range={range}
+        rangeKey={rangeKey}
+      />
     </div>
   );
 }

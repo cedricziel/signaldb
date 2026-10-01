@@ -8,6 +8,12 @@ sources:
   - src/router/src/endpoints/tenant.rs
   - src/router/src/endpoints/session.rs
   - src/router/src/endpoints/management.rs
+  - src/router/src/endpoints/tenants.rs
+  - src/common/src/ratelimit.rs
+  - src/router/src/endpoints/oidc.rs
+  - src/router/src/oidc.rs
+  - src/router/src/endpoints/github.rs
+  - src/router/src/endpoints/source_context.rs
   - src/common/src/auth/session.rs
   - src/common/src/auth/mod.rs
   - src/common/src/bootstrap.rs
@@ -24,11 +30,11 @@ Every authenticated surface uses the same three values. HTTP APIs read
 them as headers; gRPC/Flight surfaces read them as request metadata
 (lowercase keys).
 
-| HTTP header     | gRPC metadata key | Required | Value                                                                                                     |
-| --------------- | ----------------- | -------- | --------------------------------------------------------------------------------------------------------- |
-| `Authorization` | `authorization`   | yes      | `Bearer <api-key>` (HTTP accepts any casing of the scheme; gRPC/Flight accepts only `Bearer` or `bearer`) |
-| `X-Tenant-ID`   | `x-tenant-id`     | yes      | tenant the request acts on                                                                                |
-| `X-Dataset-ID`  | `x-dataset-id`    | no       | dataset within the tenant; omitted → the tenant's default dataset                                         |
+| HTTP header     | gRPC metadata key | Required | Value                                                                              |
+| --------------- | ----------------- | -------- | ---------------------------------------------------------------------------------- |
+| `Authorization` | `authorization`   | yes      | `Bearer <api-key>` (scheme match is case-insensitive on both HTTP and gRPC/Flight) |
+| `X-Tenant-ID`   | `x-tenant-id`     | yes      | tenant the request acts on                                                         |
+| `X-Dataset-ID`  | `x-dataset-id`    | no       | dataset within the tenant; omitted → the tenant's default dataset                  |
 
 Tenant and dataset IDs are validated: restricted character set, length
 cap, and path-traversal patterns rejected (they become WAL paths and
@@ -53,7 +59,7 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
 - `POST /ui/session` (public) takes
   `{"email", "password", "tenant"?, "dataset"?}` as JSON. It verifies the
   password, creates a 12-hour server-side session, and sets an `HttpOnly`,
-  `Secure`, `SameSite=Strict` cookie containing only an opaque random
+  `Secure`, `SameSite=Lax` cookie containing only an opaque random
   token. The response lists the user's tenant memberships (with display
   names and roles). `tenant` is optional: a sole membership is
   auto-selected; with several, the response's `tenant` is null and the
@@ -62,30 +68,120 @@ the headers, for browsers using the [embedded explore UI](explore-ui.md):
   no memberships is rejected with 403.
 - On requests without an `Authorization` header, the router validates the
   opaque session and resolves `X-Tenant-ID` through the user's memberships.
-  The optional `X-Dataset-ID` selects a dataset in that tenant.
+  The optional `X-Dataset-ID` selects a dataset in that tenant. A session's
+  TTL slides forward: any authenticated request (this path, `GET
+/ui/session`, or the OTLP/Tempo/Loki/query routes below) made within 6
+  hours of the session's expiry extends it another 12, and the response
+  carries a fresh `Set-Cookie` when that happens. A session only lapses
+  after 12 hours with no authenticated request — capped at 30 days since
+  login, after which it stops renewing and the user must sign in again
+  regardless of activity.
 - `DELETE /ui/session` revokes the server-side session before clearing the
   cookie. Disabling a user immediately invalidates all of their sessions.
+- `GET /ui/session` (cookie only) introspects the current session without a
+  tenant header: it returns the signed-in user, every membership the session
+  may enter, and `tenant`/`dataset` resolved by the same rule as login (a
+  sole membership is auto-selected, several leave both `null`). A user with
+  no memberships gets `200` with an empty list, not `403`, so the login page
+  can explain the situation. Without a valid cookie the response is `401`;
+  an API key or `X-Tenant-ID` header does not substitute for the cookie.
+- `GET /ui/session/config` (public) reports which credentials the login page
+  should offer: `{"password_enabled": true, "oidc": null}` today. `oidc` is
+  always present and stays `null` until provider discovery succeeds; even
+  with `[auth.oidc]` configured, it reports `null` while discovery is still
+  pending or the provider is unreachable, and becomes `{"name": ...}` once
+  discovery resolves (retried in the background on failure, no restart
+  needed).
 - `GET /api/v1/whoami` returns the human identity, all memberships, and the
   selected tenant's datasets. API-key requests remain supported and omit
   the human identity.
 
+All of these are in the OpenAPI document (operations `create_session`,
+`current_session`, `delete_session`, `login_config`, and `whoami`), so the
+generated clients reach them like any other endpoint. Session failures
+answer with a `{"error": "..."}` body.
+
+### Demo account
+
+When an instance runs with `[demo] enabled = true`, a shared read-only login
+(default `demo@example.com` / `demo`) signs in as a Viewer of the demo tenant. It can run
+queries but every request that would change something returns 403. See
+[Demo mode](../operations/demo-mode.md).
+
+## Signing in with SSO (OIDC)
+
+When your operator has configured an OIDC identity provider (Authentik,
+Keycloak, and the like), the login page shows a **Sign in with &lt;provider&gt;**
+button next to (or instead of) the email/password form. Clicking it signs you
+in with your organisation's identity instead of a SignalDB-specific password.
+
+**What happens when you click it.** SignalDB uses the standard OIDC
+authorization-code flow with PKCE:
+
+1. The button sends you to your identity provider, where you log in (and
+   approve access the first time).
+2. The provider sends you back to SignalDB, which verifies the response and
+   issues the **same** `signaldb_session` cookie a password login would — same
+   12-hour lifetime, same tenant/dataset selection, same `whoami`. Nothing
+   about the session downstream is SSO-specific.
+
+If anything about the return trip fails to verify, you land back on the login
+page with a generic error and no session — SignalDB never says which check
+failed.
+
+**First login creates your account (JIT provisioning).** The first time you
+sign in via SSO, SignalDB provisions a user for you from the identity your
+provider asserts (email and display name). That account has **no password** —
+it exists only as an SSO identity. Your operator may restrict which email
+domains are allowed to self-provision this way.
+
+**Linking to an existing account.** If you already have a SignalDB account with
+a password and your provider asserts the **same, verified** email, your first
+SSO login links the two: afterward either door (password or SSO) reaches the
+same account and the same memberships. SignalDB only links on a
+provider-asserted `email_verified: true`; an unverified email is treated as no
+match, so it can never take over an existing account.
+
+**SSO-only accounts and the password form.** An account created via SSO has no
+password, so the email/password form will not log it in — submitting any
+password returns the same generic "invalid email or password" failure. Ask an
+admin to set a password if you need password login for that account. Your
+operator can also **turn the password form off entirely** once SSO is
+configured, in which case the login page offers only the SSO button.
+
+**Break-glass access still works.** Turning off password login never disables
+the machine and bootstrap credentials. API keys, the `admin_api_key`, and the
+operator's [CLI/config bootstrap path](#getting-an-api-key) for minting an
+instance admin all keep working — even during an identity-provider outage — so
+operators are never locked out.
+
+Operators: see [Setting up SSO / OIDC login](../operations/oidc-sso.md) for
+provider configuration, the reverse-proxy redirect-URL caveat, email-domain
+allowlists, and group-to-role mapping.
+
 ## OAuth access tokens (MCP connectors)
 
 A third credential type, alongside API keys and session cookies, for
-Claude.ai / ChatGPT MCP connectors (see [MCP server](mcp.md#claude-ai-and-chatgpt-oauth-connector)).
+Claude.ai / ChatGPT MCP connectors (see [MCP server](mcp.md#claudeai-and-chatgpt-oauth-connector)).
 An `Authorization: Bearer` value starting with `sdb_at_` is an opaque OAuth
-access token: the tenant is resolved **from the token record itself**, not
-from `X-Tenant-ID` — that header is ignored for this credential, because an
-OAuth session is bound to the single tenant it was granted at consent and
-cannot be redirected to another one.
+access token, audience-bound to `[mcp.oauth].resource_url`. Its tenants come
+from the grant chosen at consent, not from the token holder's other
+memberships:
+
+- A **single-tenant** grant ignores `X-Tenant-ID`; the token's one tenant
+  always resolves.
+- A **multi-tenant** grant requires `X-Tenant-ID` on every request,
+  `whoami` included. A request without it, or naming a tenant outside the
+  grant, is rejected. The matched grant entry's own dataset restriction
+  applies.
 
 ## Error codes
 
-| HTTP | gRPC                | Meaning                                                                                       |
-| ---- | ------------------- | --------------------------------------------------------------------------------------------- |
-| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                    |
-| 401  | `UNAUTHENTICATED`   | Credentials missing/invalid, or the API key/session is unknown, revoked, expired, or disabled |
-| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset                                   |
+| HTTP | gRPC                | Meaning                                                                                              |
+| ---- | ------------------- | ---------------------------------------------------------------------------------------------------- |
+| 400  | `INVALID_ARGUMENT`  | Header malformed (wrong scheme, invalid tenant/dataset ID)                                           |
+| 401  | `UNAUTHENTICATED`   | Credentials missing/invalid, or the API key/session is unknown, revoked, expired, or disabled        |
+| 403  | `PERMISSION_DENIED` | Principal is not authorized for the named tenant or dataset, or lacks the scope the surface requires |
 
 ## Tenants and datasets
 
@@ -112,22 +208,25 @@ operator via one of:
 | Method        | Where                                                                                                                                                                                                                                                                                |
 | ------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | Static config | `[[auth.tenants]]` blocks in `signaldb.toml`                                                                                                                                                                                                                                         |
-| Admin API     | `/api/v1/admin/*` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>`                                                                                                                                                                              |
+| Admin API     | `/api/v1/*` (instance-admin tenant/user management) and `/api/v1/tenants/{id}/api-keys\|datasets` on the router (port 3000), authenticated with `Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID`                                                                         |
 | CLI           | `signaldb-cli admin tenant\|api-key\|dataset ...` — a client for the admin API (`--url`, default `http://localhost:3000`; `--admin-key` or `SIGNALDB_ADMIN_KEY`; `--no-retry` / `SIGNALDB_NO_RETRY=1` to fail fast on throttling, exit code 4 — see [client retry](client-retry.md)) |
 
 ### Admin API endpoints
 
-All mounted at `/api/v1/admin`, requiring `Authorization: Bearer <admin-api-key>`:
+Instance-admin operations, authenticated with the break-glass
+`Authorization: Bearer <admin-api-key>` and no `X-Tenant-ID` (or an
+instance-admin session):
 
-| Endpoint                                           | Methods          | Description                                                                  |
-| -------------------------------------------------- | ---------------- | ---------------------------------------------------------------------------- |
-| `/api/v1/admin/tenants`                            | GET, POST        | List/create tenants                                                          |
-| `/api/v1/admin/tenants/{id}`                       | GET, PUT, DELETE | Manage a tenant                                                              |
-| `/api/v1/admin/tenants/{id}/api-keys`              | GET, POST        | List/create API keys                                                         |
-| `/api/v1/admin/tenants/{id}/api-keys/{key_id}`     | DELETE, PATCH    | Revoke a key / update its scopes and dataset restriction                     |
-| `/api/v1/admin/tenants/{id}/datasets`              | GET, POST        | List/create datasets                                                         |
-| `/api/v1/admin/tenants/{id}/datasets/{dataset_id}` | DELETE           | Delete a dataset                                                             |
-| `/api/v1/admin/users`                              | POST             | Create a human user + initial tenant membership (`signaldb-cli user create`) |
+| Endpoint               | Methods            | Description                                                                               |
+| ---------------------- | ------------------ | ----------------------------------------------------------------------------------------- |
+| `/api/v1/tenants`      | GET, POST          | List/create tenants                                                                       |
+| `/api/v1/tenants/{id}` | GET, PATCH, DELETE | Manage a tenant                                                                           |
+| `/api/v1/users`        | GET, POST          | List users / create a human user + initial tenant membership (`signaldb-cli user create`) |
+
+The admin key also reaches a tenant's `api-keys`, `datasets`, and
+`memberships` under `/api/v1/tenants/{id}/...`; those rows are listed in the
+[tenant management API](#tenant-management-api). It does not reach the
+`github-installations` rows, which need a tenant credential.
 
 Example (operator-side):
 
@@ -149,17 +248,37 @@ The vocabulary is shared:
 | `traces:read`, `logs:read`, `metrics:read`, `profiles:read`     | Query access to that signal (Tempo/Loki/Prometheus/Pyroscope APIs, MCP)                                                    |
 | `schema:read`                                                   | Reading the schema registry (registries, attribute/entity/metric lookups)                                                  |
 | `schema:write`                                                  | Creating, replacing, validating, and deleting custom schema registries                                                     |
+| `processors:read`                                               | Listing, reading, validating, and dry-running telemetry processors (see [Telemetry processors](processors.md))             |
+| `processors:write`                                              | Creating, replacing, and deleting telemetry processors (tenant admin)                                                      |
+| `evals:read`                                                    | Listing and reading eval sets (see [Eval sets](eval-sets.md))                                                              |
+| `evals:write`                                                   | Creating, replacing, deleting, and appending to eval sets (tenant admin)                                                   |
 | `tenant:manage`                                                 | The [tenant management API](#tenant-management-api) for the key's own tenant: datasets, API keys, memberships, schema view |
 
-Keys may additionally be restricted to one dataset (`--dataset` / `dataset_id`).
+Keys may additionally be restricted to a **set** of datasets within their
+tenant (`--dataset`, repeatable / `dataset_ids`). Omitting it leaves the key
+unrestricted — reachable against every dataset in its tenant, same as today.
+A restricted key that sends no `X-Dataset-ID` resolves to its one dataset when
+the restriction names exactly one, and is rejected (never falls through to the
+tenant default) when it names several. `whoami`, dataset discovery, and the
+table listing show only the datasets the restriction names.
+An explicit empty set (`dataset_ids: []`) is rejected as invalid everywhere:
+it never means "unrestricted" or "deny everything" — a caller that wants
+unrestricted omits the field, and one that wants to remove an existing
+restriction uses the dedicated clear signal below. A restriction naming two
+or more datasets is refused by every surface until the operator confirms a
+one-time rollout precondition (see "Multi-dataset rollout" below); a
+single-dataset restriction has no such precondition and behaves exactly as
+before this feature existed.
+
 Keys defined in `signaldb.toml` (and keys that predate scopes) carry no scope
 list and remain unrestricted for ingest, query, and schema access — with one
 deliberate exception: `tenant:manage` is **explicit only**. A legacy unscoped
 key never gains tenant management, because those keys were minted before
 management existed for keys and silently widening them would be a security
 surprise. `tenant:manage` is also never grantable through OAuth consent (like
-`schema:write`). Human sessions read the schema with any tenant role and
-write it as tenant admin or instance admin.
+`schema:write`, `processors:write` and `evals:write`). Human sessions read the
+schema, the telemetry processors and eval sets with any tenant role and write
+them as tenant admin or instance admin.
 
 The scopes and dataset restriction of a live key can be changed without
 rotating its secret; the change applies to the key's next request:
@@ -169,11 +288,67 @@ signaldb-cli --admin-key <admin-key> admin api-key update acme <key-id> \
   --scope traces:write --scope schema:read --scope schema:write
 ```
 
-Over HTTP this is `PATCH /api/v1/admin/tenants/{id}/api-keys/{key_id}` (or
-`/api/v1/manage/tenants/{id}/api-keys/{key_id}` for a tenant-admin session)
-with a body of `{"scopes": [...], "dataset_id": "..."}`; absent fields are
-left untouched, and revoked keys cannot be updated. Listing keys on any
-surface shows each key's scopes.
+Over HTTP this is `PATCH /api/v1/tenants/{id}/api-keys/{key_id}` —
+authenticated with the break-glass admin key and no tenant, or with a
+tenant-admin session or `tenant:manage`-scoped key for that tenant —
+with a body of `{"scopes": [...], "dataset_ids": [...]}`; a field omitted
+from the body is left untouched (including `dataset_ids` — omitting it
+never changes an existing restriction), and revoked keys cannot be updated.
+Restricting a key to a set replaces its restriction entirely (it is never
+merged with a previous one); clearing an existing restriction back to
+unrestricted is a separate, explicit `clear_dataset_restriction: true`
+(`--clear-dataset-restriction` on the CLI) sent with no `dataset_ids` —
+sending both together in the same request is rejected as contradictory, and
+`dataset_ids: []` is rejected on update exactly as on create (see above).
+Listing keys on any surface shows each key's scopes and its dataset set (or
+that it is unrestricted).
+
+**Legacy field removed.** A create or update request that still sends the
+old, singular `dataset_id` field is rejected outright, naming the field and
+pointing at `dataset_ids` — it is never silently accepted or dropped, since
+silently dropping it would create an _unrestricted_ key when the caller
+asked for a restricted one. A key created before multi-dataset restrictions
+existed, with a single dataset, keeps working identically today, and its
+restriction is visible in `dataset_ids` as a one-element set. The singular
+`dataset_id` field is fully gone now, on both sides: no API-key response
+returns it (it was kept, deprecated, for one release after `dataset_ids`
+shipped, purely so an existing reader that only ever expected a single
+dataset saw no shape change — that grace period is over), and storage holds
+no `dataset_id` column at all — `dataset_ids` is the only representation,
+in the database and on the wire.
+
+### Multi-dataset rollout
+
+A key restriction naming two or more datasets is refused, with an error
+naming the `dataset_restriction_rollout_complete` config key, until an
+operator sets `[auth] dataset_restriction_rollout_complete = true`
+(`SIGNALDB__AUTH__DATASET_RESTRICTION_ROLLOUT_COMPLETE=1`; same
+defaults → TOML → environment precedence as every other setting) — default
+`false`, so a fresh deployment and every deployment upgrading into this
+feature start in the safe state with no action required. This protects
+against a node still running code that predates dataset-set restrictions
+entirely: such a node has never enforced a dataset restriction and would
+treat a newly-created multi-element restriction as _unrestricted_ rather
+than refusing it, the opposite of what the restriction is for.
+
+The same rollout flag applies, more strictly, to the OAuth connector's
+dataset restriction (see [MCP server](mcp.md#claudeai-and-chatgpt-oauth-connector)):
+_any_ non-empty restriction — not only a multi-element one — is refused
+until the flag is set, because an old node has never enforced a dataset
+restriction on an OAuth token and would treat one as unrestricted.
+
+**Upgrading past the legacy `dataset_id` column.** Storage no longer keeps
+the singular `dataset_id` column described above at all — it was dropped,
+not merely stopped-at. Unlike every other schema change this project has
+shipped (which only ever add a column, and are invisible to a node that
+doesn't know about the new one yet), dropping a column that a still-running
+older binary explicitly references in its own queries breaks that binary
+outright — every API-key create, update, list, or auth lookup on it starts
+failing with a database error, not a stale read. Deploy this upgrade as a
+full stop-and-restart of every instance sharing the catalog database
+(acceptor, router, writer, querier, compactor, mcp, or the monolithic
+`signaldb` binary), never as a staggered or rolling upgrade where instances
+on either side of this change serve traffic concurrently.
 
 Tenants and datasets created through the Admin API or CLI are usable for
 both ingest and query the moment they are created — no service restart and
@@ -181,6 +356,11 @@ no matching `[[auth.tenants]]` block in `signaldb.toml` are required. The
 querier resolves a tenant's catalog on demand from the tenant registry, so
 the first query after creation succeeds. (Config-file tenants remain the
 bootstrap seed and are equally first-class.)
+
+This holds for a dataset created at runtime on a config-file tenant too: a
+`signaldb.toml` API key can select it via `X-Dataset-ID` even though it has
+no matching `[[auth.tenants.datasets]]` entry, because dataset resolution
+falls back to the tenant registry when the config doesn't know the id.
 
 Creating a tenant with a `default_dataset` creates that dataset too, so no
 separate dataset call is needed to start sending data. Changing a tenant's
@@ -201,10 +381,36 @@ admin, management, tenant self-service, and the PromQL/LogQL/TraceQL/Query-IR
 query-compat endpoints (SQL is separate, served over Arrow Flight). The CLI
 and MCP server are both built on it and expose no capability it doesn't.
 
+### Origin restriction (browser/CORS ingestion)
+
+A key may also be restricted to a **set** of browser origins allowed to use
+it directly from client-side JavaScript (`--allowed-origin`, repeatable /
+`allowed_origins`). Omitting it leaves the key unrestricted — same as
+today, and a no-op for the vast majority of ingest traffic, since only a
+browser request carries an `Origin` header at all. An explicit empty set is
+rejected the same way an empty `dataset_ids` is: omit the field for
+unrestricted, or use the clear signal below to remove an existing
+restriction.
+
+```bash
+signaldb-cli --admin-key <admin-key> admin api-key create acme \
+  --name "Website widget key" --scope traces:write \
+  --allowed-origin https://example.com --allowed-origin https://app.example.com
+```
+
+Over HTTP, `allowed_origins` sits alongside `scopes`/`dataset_ids` on the
+same create/update bodies; `clear_allowed_origins: true`
+(`--clear-allowed-origins` on the CLI) removes an existing restriction,
+mirroring `clear_dataset_restriction` — sending both `allowed_origins` and
+`clear_allowed_origins: true` together is rejected as contradictory.
+
+See [Sending OTLP data](sending-otlp.md#browser-cors-ingestion) for how this
+restriction is enforced on the wire.
+
 ## Rate limits and quotas
 
 Configured under `[auth.default_limits]` (overridable per tenant via
-`[[auth.tenants]].limits`); see the `configuration` reference for the TOML
+`[[auth.tenants]].limits`); see `signaldb.dist.toml` for the TOML
 keys. Unset fields mean unlimited, and tenants provisioned through the Admin
 API get the defaults.
 
@@ -218,6 +424,9 @@ API get the defaults.
 | `[querier].max_concurrent_queries_per_tenant`              | Querier                                                               | query rejected                              |
 
 Ingest and query rate limits are independent token buckets per tenant.
+`burst_seconds` (default 10, minimum 1) sets how many seconds of budget a
+tenant may spend at once, so an interactive fan-out such as an Explore page
+load or an MCP investigation does not trip a freshly configured deployment.
 Storage quotas compare cached per-tenant usage — refreshed from Iceberg
 manifests every `[auth].storage_usage_refresh_interval` (default 60s) —
 against `max_storage_bytes`, so enforcement is eventually consistent by
@@ -237,15 +446,18 @@ exposes tenant-scoped endpoints under `/api/v1` (read-only, plus one
 table-creation endpoint). Every row below is in the OpenAPI document, so
 each is reachable through `signaldb-sdk`, not only raw HTTP:
 
-| Method | Path                                        | Returns                                                                          | SDK operation            | CLI / MCP                                                                        |
-| ------ | ------------------------------------------- | -------------------------------------------------------------------------------- | ------------------------ | -------------------------------------------------------------------------------- |
-| GET    | `/api/v1/whoami`                            | The authenticated tenant (id, slug, name), its datasets, and the default dataset | `whoami`                 | `signaldb-cli whoami` / `server_info`                                            |
-| GET    | `/api/v1/tenants`                           | All configured tenants, filtered to the caller's own                             | `list_tenants_self`      | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
-| GET    | `/api/v1/tenants/{tenant_id}`               | Tenant details                                                                   | `get_tenant_self`        | `signaldb-cli tenant show` / `tenant_info`                                       |
-| GET    | `/api/v1/tenants/{tenant_id}/tables`        | The tenant's provisioned tables, grouped by dataset                              | `list_tenant_tables`     | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
-| POST   | `/api/v1/tenants/{tenant_id}/tables/create` | Creates the tenant's signal tables (see below)                                   | `create_tenant_tables`   | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
-| GET    | `/api/v1/tenants/{tenant_id}/schemas`       | The tenant's configured table schema types                                       | `list_tenant_schemas`    | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
-| GET    | `/api/v1/schemas/available`                 | Every table schema type SignalDB can provision                                   | `list_available_schemas` | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
+| Method | Path                                         | Returns                                                                                                                                                                              | SDK operation                 | CLI / MCP                                                                        |
+| ------ | -------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ----------------------------- | -------------------------------------------------------------------------------- |
+| GET    | `/api/v1/whoami`                             | The authenticated tenant (id, slug, name), its datasets, and the default dataset — filtered to the caller's own dataset restriction, if any (`dataset_ids` in the response names it) | `whoami`                      | `signaldb-cli whoami` / `server_info`                                            |
+| GET    | `/api/v1/connection`                         | Public ingest/query endpoints, headers, required scopes, and OTel env vars for this deployment, scoped to the caller's tenant/dataset                                                | `connection_info`             | `signaldb-cli connection` / `connection_info`                                    |
+| GET    | `/api/v1/tenants`                            | All configured tenants, filtered to the caller's own                                                                                                                                 | `list_tenants_self`           | `signaldb-cli tenant show` / `tenant_info` (single-item view of the same tenant) |
+| GET    | `/api/v1/tenants/{tenant_id}`                | Tenant details                                                                                                                                                                       | `get_tenant_self`             | `signaldb-cli tenant show` / `tenant_info`                                       |
+| GET    | `/api/v1/tenants/{tenant_id}/tables`         | The tenant's provisioned tables, grouped by dataset                                                                                                                                  | `list_tenant_tables`          | `signaldb-cli tenant table list` / `tenant_list_tables`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/tables/create`  | Creates the tenant's signal tables (see below)                                                                                                                                       | `create_tenant_tables`        | `signaldb-cli tenant table provision` / `tenant_create_tables`                   |
+| GET    | `/api/v1/tenants/{tenant_id}/schemas`        | The tenant's configured table schema types                                                                                                                                           | `list_tenant_schemas`         | `signaldb-cli tenant table schemas` / `tenant_list_table_schemas`                |
+| GET    | `/api/v1/schemas/available`                  | Every table schema type SignalDB can provision                                                                                                                                       | `list_available_schemas`      | `signaldb-cli tenant table available-schemas` / `list_available_table_schemas`   |
+| POST   | `/api/v1/tenants/{tenant_id}/source-context` | Source snippet around a stack-frame location via the tenant's linked GitHub App installation(s); always `200`, `status: available\|unavailable` (see below)                          | `source_context`              | `signaldb-cli tenant source-context` / `get_source_context`                      |
+| GET    | `/api/v1/tenants/{tenant_id}/source-context` | Whether source context can be served at all (`configured`, `linked`); no dedicated CLI/MCP surface (see below)                                                                       | `source_context_availability` | —                                                                                |
 
 `GET /tenants` and `GET /tenants/{tenant_id}` return only the caller's own
 tenant — a single-entry view — so both map to `signaldb-cli tenant show` and
@@ -256,7 +468,7 @@ credential than any valid tenant key.
 
 ## Tenant management API
 
-`/api/v1/manage/...` (the `manage_*` SDK operations) manages one tenant from
+`/api/v1/...` manages one tenant from
 the inside: its datasets, API keys, user memberships, and the registered
 logical/physical schema. Every request acts on the tenant of the caller's
 context; the path `tenant_id` must match it (`403` otherwise), so a caller can
@@ -269,23 +481,57 @@ never reach another tenant. It accepts either of two credentials:
   read-only keys, and legacy unscoped keys are refused with `403` and the
   message `Tenant administrator role or tenant:manage scope required`.
 
-Tenant _creation_ (`POST /api/v1/manage/tenants`) stays instance-admin-only;
+A credential carrying a non-empty dataset restriction — an API key (even one
+with `tenant:manage`) or an OAuth session held by a tenant-admin user — is
+refused for **every** management-API operation, regardless of scope or
+role: a narrower, dataset-scoped grant does not get a workaround path to
+widen itself by creating or updating other credentials. Use an unrestricted
+credential for management operations.
+
+Tenant _creation_ (`POST /api/v1/tenants`) stays instance-admin-only;
 API-key automation creates tenants through the admin API
 (`signaldb-cli admin tenant create`).
 
-| Method | Path                                                    | SDK operation              | CLI / MCP                                                                            |
-| ------ | ------------------------------------------------------- | -------------------------- | ------------------------------------------------------------------------------------ |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/datasets`           | `manage_list_datasets`     | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/datasets`           | `manage_create_dataset`    | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/datasets/{name}`    | `manage_delete_dataset`    | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/api-keys`           | `manage_list_api_keys`     | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
-| POST   | `/api/v1/manage/tenants/{tenant_id}/api-keys`           | `manage_create_api_key`    | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
-| PATCH  | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`  | `manage_update_api_key`    | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/api-keys/{key_id}`  | `manage_revoke_api_key`    | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
-| GET    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_list_memberships`  | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
-| PUT    | `/api/v1/manage/tenants/{tenant_id}/memberships`        | `manage_upsert_membership` | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
-| DELETE | `/api/v1/manage/tenants/{tenant_id}/memberships/{user}` | `manage_remove_membership` | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
-| GET    | `/api/v1/manage/schema`                                 | `manage_get_schema`        | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
+| Method | Path                                                                 | SDK operation                | CLI / MCP                                                                            |
+| ------ | -------------------------------------------------------------------- | ---------------------------- | ------------------------------------------------------------------------------------ |
+| GET    | `/api/v1/tenants/{tenant_id}/datasets`                               | `list_datasets`              | `signaldb-cli tenant dataset list` / `tenant_list_datasets`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/datasets`                               | `create_dataset`             | `signaldb-cli tenant dataset create <name>` / `tenant_create_dataset`                |
+| DELETE | `/api/v1/tenants/{tenant_id}/datasets/{name}`                        | `delete_dataset`             | `signaldb-cli tenant dataset delete <name>` / `tenant_delete_dataset`                |
+| GET    | `/api/v1/tenants/{tenant_id}/api-keys`                               | `list_api_keys`              | `signaldb-cli tenant api-key list` / `tenant_list_api_keys`                          |
+| POST   | `/api/v1/tenants/{tenant_id}/api-keys`                               | `create_api_key`             | `signaldb-cli tenant api-key create --scope ...` / `tenant_create_api_key`           |
+| PATCH  | `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`                      | `update_api_key`             | `signaldb-cli tenant api-key update <key-id>` / `tenant_update_api_key`              |
+| DELETE | `/api/v1/tenants/{tenant_id}/api-keys/{key_id}`                      | `revoke_api_key`             | `signaldb-cli tenant api-key revoke <key-id>` / `tenant_revoke_api_key`              |
+| GET    | `/api/v1/tenants/{tenant_id}/memberships`                            | `list_memberships`           | `signaldb-cli tenant membership list` / `tenant_list_memberships`                    |
+| PUT    | `/api/v1/tenants/{tenant_id}/memberships`                            | `upsert_membership`          | `signaldb-cli tenant membership set <email> --role ...` / `tenant_upsert_membership` |
+| DELETE | `/api/v1/tenants/{tenant_id}/memberships/{user}`                     | `remove_membership`          | `signaldb-cli tenant membership remove <user-id>` / `tenant_remove_membership`       |
+| GET    | `/api/v1/schema`                                                     | `get_schema`                 | `signaldb-cli tenant schema get` / `tenant_get_schema`                               |
+| POST   | `/api/v1/tenants/{tenant_id}/github-installations/link`              | `start_github_link`          | `signaldb-cli tenant github link`                                                    |
+| GET    | `/api/v1/tenants/{tenant_id}/github-installations`                   | `list_github_installations`  | `signaldb-cli tenant github list`                                                    |
+| DELETE | `/api/v1/tenants/{tenant_id}/github-installations/{installation_id}` | `remove_github_installation` | `signaldb-cli tenant github remove <installation_id>`                                |
+| POST   | `/api/v1/tenants/{tenant_id}/github-installations/attach`            | `attach_github_installation` | `tenant_attach_github_installation`                                                  |
+
+The `github-installations` operations connect SignalDB's GitHub App to the
+tenant's repositories; they answer `404` until the operator configures
+`[github]`. Starting a link returns an install URL the admin opens in a
+browser signed in to SignalDB; GitHub redirects back to
+`/ui/github/callback`, which completes the link against that session.
+`attach` skips that flow entirely: it links an installation id that already
+exists (e.g. one already linked to another tenant on the same GitHub
+account, where a second OAuth install attempt cannot complete because
+GitHub skips straight to its own installation-management page) directly,
+with no state token. Unlike every other row in this table, `attach`
+requires **instance-admin** — a tenant's own `tenant:manage` grant is not
+enough, because attach has no GitHub `code` to verify the caller actually
+controls the installation being linked (see [How linking is
+secured](../operations/github-app.md#how-linking-is-secured)). See
+[Connecting GitHub](../operations/github-app.md).
+
+`POST /api/v1/tenants/{tenant_id}/source-context` (`source_context`, and
+its `GET` sibling `source_context_availability` answering whether the
+tenant can be served at all) is the read side of that integration: any principal that may read a signal
+(a session, an OAuth token, or a key with a `<signal>:read` scope or no
+scopes) can fetch the source lines around a stack frame from the tenant's
+linked repositories; an ingest-only key is refused with `403`.
 
 Example — CI provisioning a dataset and an ingest key with a `tenant:manage`
 key (`--api-key`/`SIGNALDB_API_KEY`, `--tenant-id`/`SIGNALDB_TENANT_ID`):
@@ -312,9 +558,11 @@ possession as sufficient trust for this endpoint (unlike the management API
 above, which needs `tenant:manage`) — and returns `500` if any table could not
 be created.
 
-You rarely need it: SignalDB provisions those tables on its own, shortly after
-a tenant or dataset is created, and a query against a dataset with no tables
-yet returns an empty result rather than an error. Use the endpoint (or
+You rarely need it: SignalDB provisions a dataset's tables synchronously,
+best-effort, as part of creating it, and the periodic table reconciler is the
+backstop for whatever that misses. A query against a dataset with no tables
+yet returns an empty result rather than an error either way. Use the endpoint
+(or
 `signaldb-cli tenant table provision` / the `tenant_create_tables` MCP tool,
 or the web UI's management area) when you want the tables to exist _now_ —
 see [Signal table provisioning](../operations/table-provisioning.md).

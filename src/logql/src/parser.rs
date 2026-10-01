@@ -20,14 +20,18 @@ use crate::token::{SpannedToken, Token};
 /// A top-level LogQL expression: either a log query (returns log lines)
 /// or a metric query (returns numeric samples).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum Expr {
     Log(LogQuery),
     Metric(MetricQuery),
 }
 
 /// Parse error with 1-based source position.
+///
+/// `#[non_exhaustive]` for the same reason as [`crate::LexError`].
 #[derive(Debug, Clone, PartialEq, thiserror::Error)]
 #[error("{message} at line {line}, column {col}")]
+#[non_exhaustive]
 pub struct ParseError {
     pub message: String,
     pub line: u32,
@@ -46,6 +50,21 @@ impl From<LexError> for ParseError {
 
 /// Parse a full log query: a stream selector followed by an optional
 /// pipeline. Metric-query wrappers are not parsed here.
+///
+/// # Examples
+///
+/// ```
+/// let q = logql::parse_query(r#"{service_name="api"} |= "error""#)?;
+/// assert_eq!(q.selector.matchers.len(), 1);
+/// assert_eq!(q.pipeline.len(), 1);
+/// # Ok::<(), logql::ParseError>(())
+/// ```
+///
+/// A metric query is rejected here — use [`parse`] to accept either form:
+///
+/// ```
+/// assert!(logql::parse_query(r#"rate({service_name="api"}[5m])"#).is_err());
+/// ```
 pub fn parse_query(input: &str) -> Result<LogQuery, ParseError> {
     let mut parser = Parser::new(input)?;
     let selector = parser.parse_selector()?;
@@ -56,6 +75,18 @@ pub fn parse_query(input: &str) -> Result<LogQuery, ParseError> {
 
 /// Parse a bare stream selector, as sent by the metadata endpoints'
 /// `match[]` parameter.
+///
+/// # Examples
+///
+/// ```
+/// use logql::MatchOp;
+///
+/// let selector = logql::parse_selector(r#"{service_name="api", level!="debug"}"#)?;
+/// assert_eq!(selector.matchers.len(), 2);
+/// assert_eq!(selector.matchers[0].name, "service_name");
+/// assert_eq!(selector.matchers[1].op, MatchOp::Neq);
+/// # Ok::<(), logql::ParseError>(())
+/// ```
 pub fn parse_selector(input: &str) -> Result<StreamSelector, ParseError> {
     let mut parser = Parser::new(input)?;
     let selector = parser.parse_selector()?;
@@ -67,6 +98,31 @@ pub fn parse_selector(input: &str) -> Result<StreamSelector, ParseError> {
 /// and a metric query. A query beginning with `{` is a log query; any
 /// other start (a range/vector function, a number, or a parenthesis) is
 /// a metric query.
+///
+/// # Examples
+///
+/// ```
+/// use logql::Expr;
+///
+/// assert!(matches!(
+///     logql::parse(r#"{service_name="api"} |= "error""#)?,
+///     Expr::Log(_),
+/// ));
+/// assert!(matches!(
+///     logql::parse(r#"sum by (service_name) (rate({service_name="api"}[5m]))"#)?,
+///     Expr::Metric(_),
+/// ));
+/// # Ok::<(), logql::ParseError>(())
+/// ```
+///
+/// Errors carry a 1-based position, so a caller can underline the offending
+/// token rather than restating the query:
+///
+/// ```
+/// let err = logql::parse("{service_name=}").unwrap_err();
+/// assert_eq!(err.line, 1);
+/// assert!(err.col > 1);
+/// ```
 pub fn parse(input: &str) -> Result<Expr, ParseError> {
     let mut parser = Parser::new(input)?;
     let expr = if matches!(parser.peek().map(|t| &t.token), Some(Token::LBrace)) {
@@ -81,6 +137,14 @@ pub fn parse(input: &str) -> Result<Expr, ParseError> {
 }
 
 /// Parse a metric query (rejects a bare log query).
+///
+/// # Examples
+///
+/// ```
+/// let q = logql::parse_metric_query(r#"count_over_time({service_name="api"}[1h])"#)?;
+/// assert!(format!("{q:?}").contains("CountOverTime"));
+/// # Ok::<(), logql::ParseError>(())
+/// ```
 pub fn parse_metric_query(input: &str) -> Result<MetricQuery, ParseError> {
     let mut parser = Parser::new(input)?;
     let query = parser.parse_metric_expr()?;
@@ -452,13 +516,8 @@ impl Parser {
         let name = self.expect_ident("a label name")?;
         let matcher = match self.peek().map(|t| &t.token) {
             Some(Token::Eq | Token::Neq | Token::Re | Token::Nre) => {
-                let op = match self.next().expect("peeked").token {
-                    Token::Eq => MatchOp::Eq,
-                    Token::Neq => MatchOp::Neq,
-                    Token::Re => MatchOp::Re,
-                    Token::Nre => MatchOp::Nre,
-                    _ => unreachable!(),
-                };
+                let tok = self.next().expect("peeked");
+                let op = token_to_match_op(&tok.token).expect("peeked matcher token");
                 let value = self.expect_string("a quoted matcher value")?;
                 Some((op, value))
             }
@@ -661,14 +720,14 @@ impl Parser {
         let name = self.expect_ident("label name")?;
 
         let op = match self.next() {
-            Some(t) => match t.token {
-                Token::Eq => MatchOp::Eq,
-                Token::Neq => MatchOp::Neq,
-                Token::Re => MatchOp::Re,
-                Token::Nre => MatchOp::Nre,
-                ref other => {
+            Some(t) => match token_to_match_op(&t.token) {
+                Some(op) => op,
+                None => {
                     return Err(self.error_at(
-                        format!("expected matcher operator (=, !=, =~, !~), found '{other}'"),
+                        format!(
+                            "expected matcher operator (=, !=, =~, !~), found '{}'",
+                            t.token
+                        ),
                         Some(&t),
                     ));
                 }
@@ -1098,6 +1157,18 @@ impl Parser {
     }
 }
 
+/// Maps a matcher-operator token (`=`, `!=`, `=~`, `!~`) to its `MatchOp`,
+/// or `None` if `token` isn't a matcher operator.
+fn token_to_match_op(token: &Token) -> Option<MatchOp> {
+    match token {
+        Token::Eq => Some(MatchOp::Eq),
+        Token::Neq => Some(MatchOp::Neq),
+        Token::Re => Some(MatchOp::Re),
+        Token::Nre => Some(MatchOp::Nre),
+        _ => None,
+    }
+}
+
 /// Whether an operator is a comparison (may carry a `bool` modifier).
 fn is_comparison(op: BinOp) -> bool {
     matches!(
@@ -1147,6 +1218,21 @@ mod tests {
     fn parses_empty_selector_and_trailing_comma() {
         assert!(parse_selector("{}").unwrap().matchers.is_empty());
         assert_eq!(parse_selector(r#"{job="api",}"#).unwrap().matchers.len(), 1);
+    }
+
+    /// A matcher name may spell a real dotted OTel attribute key directly,
+    /// alongside a plain (well-known) label name in the same selector.
+    #[test]
+    fn dotted_matcher_name_parses() {
+        assert_eq!(
+            parse_selector(r#"{k8s.pod.name="x", level="error"}"#)
+                .unwrap()
+                .matchers,
+            vec![
+                matcher("k8s.pod.name", MatchOp::Eq, "x"),
+                matcher("level", MatchOp::Eq, "error"),
+            ]
+        );
     }
 
     #[test]
@@ -1456,6 +1542,21 @@ mod tests {
         );
     }
 
+    /// A label filter predicate name may also be a dotted attribute key.
+    #[test]
+    fn parses_dotted_label_filter_name() {
+        assert_eq!(
+            pipeline(r#"{a="b"} | http.response.status_code >= 500"#),
+            vec![PipelineStage::LabelFilter(LabelFilterExpr::Pred(
+                LabelFilterPred {
+                    name: "http.response.status_code".into(),
+                    op: FilterOp::Gte,
+                    value: FilterValue::Number(500.0),
+                }
+            ))]
+        );
+    }
+
     #[test]
     fn label_filter_and_or_precedence() {
         // `a and b or c` parses as `(a and b) or c`.
@@ -1678,6 +1779,22 @@ mod tests {
             })
         );
         assert!(matches!(v.inner, MetricQuery::Range(_)));
+    }
+
+    /// `by (...)` grouping labels go through the same ident path as matcher
+    /// and label-filter names, so a dotted attribute key groups too.
+    #[test]
+    fn parses_dotted_grouping_label() {
+        let q = metric(r#"sum by (k8s.pod.name) (count_over_time({level="error"}[5m]))"#);
+        let v = as_vector(&q);
+        assert_eq!(v.function, AggregationFunction::Sum);
+        assert_eq!(
+            v.grouping,
+            Some(Grouping {
+                without: false,
+                labels: vec!["k8s.pod.name".into()],
+            })
+        );
     }
 
     #[test]

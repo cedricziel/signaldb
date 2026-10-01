@@ -28,6 +28,7 @@ pub struct LabelMatcher {
 
 /// Label matching operator.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum MatchOp {
     /// `=`
     Eq,
@@ -52,6 +53,7 @@ impl std::fmt::Display for MatchOp {
 
 /// One stage of a log pipeline (`|= "err"`, `| json`, `| level="error"`).
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum PipelineStage {
     /// Line filter: `|= "err"`, `!= "noise"`, `|~ "re"`, `!~ "re"`.
     LineFilter(LineFilter),
@@ -116,6 +118,7 @@ pub struct LabelPredicate {
 
 /// Line filter operators.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum LineFilterOp {
     /// `|=`
     Contains,
@@ -149,6 +152,7 @@ pub struct LabelFormat {
 
 /// The right-hand side of a `label_format` assignment.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum LabelFormatValue {
     /// `dst=src_label` — rename/copy from another label.
     Rename(String),
@@ -181,6 +185,7 @@ pub struct Unwrap {
 /// A comma between predicates is sugar for `and`. `and` binds tighter
 /// than `or`.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum LabelFilterExpr {
     Pred(LabelFilterPred),
     And(Box<LabelFilterExpr>, Box<LabelFilterExpr>),
@@ -200,6 +205,7 @@ pub struct LabelFilterPred {
 /// enum; the parser rejects operator/value combinations that don't fit
 /// (e.g. `=~` against a number).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[non_exhaustive]
 pub enum FilterOp {
     Eq,
     Neq,
@@ -214,6 +220,7 @@ pub enum FilterOp {
 
 /// The right-hand side value of a label filter.
 #[derive(Debug, Clone, PartialEq)]
+#[non_exhaustive]
 pub enum FilterValue {
     /// A quoted string (used with `=`, `!=`, `=~`, `!~`, and `==`).
     String(String),
@@ -225,4 +232,19 @@ pub enum FilterValue {
     Bytes(u64),
     /// An `ip("...")` matcher (single address, CIDR, or range).
     Ip(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// `MatchOp` renders back into a stream selector, so the text must be the
+    /// operator as written rather than the variant name.
+    #[test]
+    fn match_ops_display_as_their_operators() {
+        assert_eq!(MatchOp::Eq.to_string(), "=");
+        assert_eq!(MatchOp::Neq.to_string(), "!=");
+        assert_eq!(MatchOp::Re.to_string(), "=~");
+        assert_eq!(MatchOp::Nre.to_string(), "!~");
+    }
 }

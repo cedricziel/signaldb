@@ -34,6 +34,14 @@ sample_names = ["signaldb.*"]
 signal_type = "span"
 exclude_samples = ["level", "target", "error"]
 
+# error on *log* records: `warn!`/`error!` calls carry the same `error` field
+# whether they emit a span event or a bare log record, so the first
+# warn/error log line in a CI run would otherwise trip `missing_attribute`
+# the same way the span case above does. Same idiom, log-scoped filter.
+[[live-check.finding_filters]]
+signal_type = "log"
+exclude_samples = ["error"]
+
 # busy_ns / idle_ns / target / code.module.name on *log* records (#912): the
 # span layer (common::self_monitoring::otel_span_layer, pinned by the
 # otel_bridge_attrs test in the common crate) already disables these

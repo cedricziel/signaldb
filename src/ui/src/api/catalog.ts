@@ -14,28 +14,37 @@
  * to scope by, so they go unscoped, naturally limited to whichever records
  * carry the identity attribute at all.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrAgg, IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { sortRows, type SortValue } from "../lib/sortTable";
 import { compositeKey } from "../lib/traceGroups";
-import {
-  ERROR_PATTERN,
-  GROUP_BUDGET,
-  type GroupSort,
-  type TraceGroup,
-  type TraceGroupResult,
-} from "./traceGroups";
+import { ERROR_PATTERN, GROUP_BUDGET, type GroupSort } from "./traceGroups";
 import type { EntityTypeDef } from "../features/catalog/entityTypes";
 
 /** A raw field/value equality pin - an already-known identity value (from a
  * previously-fetched row), not user-typed input, so it bypasses
  * `FACET_FIELDS`/`TraceFilter` entirely; that mechanism exists for
  * compiling user-facing filters (TraceQL search, URL round-tripping), a
- * different concern from pinning a query to one specific entity. */
+ * different concern from pinning a query to one specific entity. `value` is
+ * `null` for a dimension whose row carries no value at all (a `"(not set)"`
+ * breakdown) — compiled to `not exists`, not `eq null` (see
+ * `buildEntitySourceDoc`), since "(not set)" means the field is absent, the
+ * same distinction `api/traceGroupMembers.ts`'s `buildMembersDoc` and
+ * `api/errors.ts`'s `pin()` make. */
 export interface EntityPin {
   field: string;
-  value: string;
+  value: string | null;
+}
+
+/** A pin set as one cache-key element. Spelled in one place so that a change
+ * to the shape — escaping a value that contains `,` or `=`, say — cannot
+ * leave some call sites on the old spelling and others on the new. A `null`
+ * value gets its own marker rather than the literal string "null", so a
+ * genuine `field=null` value (unlikely, but not impossible) can't collide
+ * with an absent one. */
+export function pinsKey(pinned: EntityPin[]): string {
+  return JSON.stringify(pinned);
 }
 
 const NANOS_PER_MS = 1_000_000;
@@ -46,6 +55,16 @@ function timeField(source: string): string {
   return source === "traces" ? "start_time_unix_nano" : "timestamp";
 }
 
+/** This entity type's identity as grouped for one source: the degraded
+ * per-source tuple where `observedEntityTypes` computed one, falling back to
+ * the full identity for a type that bypassed it (an unanalyzed deployment,
+ * or a caller in a test). A source absent from `identityBySource` here would
+ * mean the source was never confirmed to carry even the primary attribute —
+ * callers only reach this for a source `entityType.sources` already lists. */
+function sourceIdentity(entityType: EntityTypeDef, source: string): string[] {
+  return entityType.identityBySource?.[source] ?? entityType.identity;
+}
+
 /**
  * Builds the aggregate for one entity type against one of its sources.
  * Ordered by count, descending, regardless of the table's displayed sort:
@@ -54,6 +73,26 @@ function timeField(source: string): string {
  * only to bias which rows survive the per-source budget below toward the
  * ones most likely to matter.
  */
+/** One `where` stage per pin: an equality check, or — for a pin recording
+ * "this record carries no value here" — an absence check. Shared by every
+ * module that pins a query to an already-known identity (this file,
+ * `entityDetailStats.ts`, `operationSeries.ts`), so a change to how a pin
+ * compiles can't leave one of them behind. */
+export function pinsWhere(pinned: EntityPin[]): IrStage[] {
+  return pinned.map((p) => ({
+    where:
+      p.value === null
+        ? { not: { field: p.field, op: "exists" } }
+        : { field: p.field, op: "eq", value: p.value },
+  }));
+}
+
+/** A `where` stage scoping to one span kind, or no stage when `kind` is
+ * undefined. */
+export function spanKindWhere(kind: string | undefined): IrStage[] {
+  return kind ? [{ where: { field: "span_kind", op: "eq", value: kind } }] : [];
+}
+
 export function buildEntitySourceDoc(
   entityType: EntityTypeDef,
   source: string,
@@ -61,21 +100,10 @@ export function buildEntitySourceDoc(
   pinned: EntityPin[] = [],
 ): QueryIrRequest {
   const isTraces = source === "traces";
-  const scope: Record<string, unknown>[] = [
-    ...(isTraces && entityType.spanKindScope
-      ? [
-          {
-            where: {
-              field: "span_kind",
-              op: "eq",
-              value: entityType.spanKindScope,
-            },
-          },
-        ]
-      : []),
-    ...pinned.map((p) => ({
-      where: { field: p.field, op: "eq", value: p.value },
-    })),
+  const identity = sourceIdentity(entityType, source);
+  const scope: IrStage[] = [
+    ...spanKindWhere(isTraces ? entityType.spanKindScope : undefined),
+    ...pinsWhere(pinned),
   ];
 
   return {
@@ -90,11 +118,11 @@ export function buildEntitySourceDoc(
       ...scope,
       {
         aggregate: {
-          by: entityType.identity,
+          by: identity,
           aggs: [
             { fn: "count", as: "n" },
             ...(isTraces
-              ? [
+              ? ([
                   {
                     fn: "count",
                     as: "errors",
@@ -106,7 +134,7 @@ export function buildEntitySourceDoc(
                   },
                   { fn: "quantile", of: "duration", arg: 0.5, as: "p50" },
                   { fn: "quantile", of: "duration", arg: 0.95, as: "p95" },
-                ]
+                ] satisfies IrAgg[])
               : []),
             { fn: "max", of: timeField(source), as: "last" },
           ],
@@ -118,17 +146,82 @@ export function buildEntitySourceDoc(
   };
 }
 
-/** One source's decoded rows, positional per `buildEntitySourceDoc`: a
- * traces row carries [dims..., n, errors, p50, p95, last]; every other
- * source carries [dims..., n, last] - it asked for no errors/p50/p95 aggs. */
-function decodeSourceGroups(
+/**
+ * That one signal source saw this entity, and how much of it that source
+ * carried.
+ *
+ * The count never reaches the screen — see `Observed` in `CatalogView` for
+ * why a sample count is a fact about our storage rather than about the
+ * entity. It is kept because ranking needs *some* measure of how active an
+ * entity is (see {@link rankOf}), and because per-source counts are the only
+ * honest way to hold that: 5 spans and 3 log lines are 5 spans and 3 log
+ * lines, and "8" would describe neither.
+ */
+export interface EntityObservation {
+  source: string;
+  count: number;
+}
+
+/**
+ * Trace-derived measurements for one entity.
+ *
+ * Absent — not zeroed — when the entity was never observed in traces. Span
+ * status and span duration have no counterpart on a log line or a metric
+ * point, so there is no honest value to report; `undefined` says "not
+ * measurable here" where a zero would read as "measured, and it was zero".
+ */
+export interface EntityRed {
+  /** Records the measurements below are a rate *of*. */
+  traces: number;
+  errors: number;
+  p50Ms: number;
+  p95Ms: number;
+}
+
+/** One discovered entity: its identity, what each signal saw, and — where
+ * traces saw it — how it performed. */
+export interface CatalogEntity {
+  /** One value per identity dimension; `null` where the record has none. */
+  values: (string | null)[];
+  /** Per-source observations, ordered as the entity type declares its
+   * sources. A source that observed nothing contributes no entry. */
+  observations: EntityObservation[];
+  /** Most recent observation across every source, epoch nanoseconds. */
+  lastNs: string;
+  red?: EntityRed;
+}
+
+export interface CatalogEntityResult {
+  entities: CatalogEntity[];
+  /** More entities exist than the budget displays. */
+  truncated: boolean;
+}
+
+/** Total observations across sources — a ranking key only, never rendered.
+ * See {@link EntityObservation}. */
+export function rankOf(entity: CatalogEntity): number {
+  return entity.observations.reduce((sum, o) => sum + o.count, 0);
+}
+
+/** One decoded row, before it is attributed to the source it came from. */
+interface SourceRow {
+  values: (string | null)[];
+  count: number;
+  lastNs: string;
+  red?: EntityRed;
+}
+
+/** One source's decoded rows, positional per `buildEntitySourceDoc`: a traces
+ * row carries [dims..., n, errors, p50, p95, last]; every other source carries
+ * [dims..., n, last] - it asked for no errors/p50/p95 aggs. */
+function decodeSourceRows(
   res: QueryIrResponse,
   dimensionCount: number,
   isTraces: boolean,
-): { groups: TraceGroup[]; truncated: boolean } {
+): { rows: SourceRow[]; truncated: boolean } {
   const rows = res.rows ?? [];
   const d = dimensionCount;
-  const groups = rows.slice(0, GROUP_BUDGET).map((row): TraceGroup => {
+  const decoded = rows.slice(0, GROUP_BUDGET).map((row): SourceRow => {
     const cells = row as unknown[];
     const values = cells.slice(0, d).map((v) => (v == null ? null : String(v)));
     const num = (i: number) => {
@@ -140,26 +233,48 @@ function decodeSourceGroups(
     return {
       values,
       count,
-      errors: isTraces ? num(1) : 0,
-      p50Ms: isTraces ? num(2) / NANOS_PER_MS : 0,
-      p95Ms: isTraces ? num(3) / NANOS_PER_MS : 0,
       lastNs: lastCell == null ? "0" : String(lastCell),
-      traceCount: isTraces ? count : 0,
+      red: isTraces
+        ? {
+            traces: count,
+            errors: num(1),
+            p50Ms: num(2) / NANOS_PER_MS,
+            p95Ms: num(3) / NANOS_PER_MS,
+          }
+        : undefined,
     };
   });
-  return { groups, truncated: rows.length > GROUP_BUDGET };
+  return { rows: decoded, truncated: rows.length > GROUP_BUDGET };
 }
 
-/** `sortRows`'s per-cell accessor for a merged catalog group: `"last"` sorts
- * as a bigint so an epoch-nanosecond timestamp never loses precision to
- * `Number`'s 2^53 ceiling, matching every other bigint-timestamp compare in
- * this codebase. */
-function groupSortValue(g: TraceGroup, key: string): SortValue {
-  if (key === "last") return BigInt(g.lastNs);
-  if (key === "errors") return g.errors;
-  if (key === "p50") return g.p50Ms;
-  if (key === "p95") return g.p95Ms;
-  return g.count;
+/** `sortRows`'s per-cell accessor. `"last"` sorts as a bigint so an epoch-
+ * nanosecond timestamp never loses precision to `Number`'s 2^53 ceiling,
+ * matching every other bigint-timestamp compare in this codebase. An entity
+ * with no trace measurement sorts as 0 on the RED columns - it has no value
+ * to rank by, and 0 keeps it out of the way of entities that do. */
+function entitySortValue(e: CatalogEntity, key: string): SortValue {
+  if (key === "last") return BigInt(e.lastNs);
+  if (key === "errors") return e.red?.errors ?? 0;
+  if (key === "p50") return e.red?.p50Ms ?? 0;
+  if (key === "p95") return e.red?.p95Ms ?? 0;
+  return rankOf(e);
+}
+
+/** Realigns a source's row values, positioned per that source's own
+ * (possibly degraded) identity tuple, onto the entity type's full identity
+ * order — so that merging across sources compares like dimensions. A
+ * dimension the source dropped (absent from its field list) reads as
+ * unknown for that source's rows, the same way an absent value would. */
+function alignValues(
+  values: (string | null)[],
+  sourceIdentity: string[],
+  fullIdentity: string[],
+): (string | null)[] {
+  if (sourceIdentity.length === fullIdentity.length) return values;
+  return fullIdentity.map((field) => {
+    const i = sourceIdentity.indexOf(field);
+    return i === -1 ? null : values[i]!;
+  });
 }
 
 export async function fetchCatalogEntities(
@@ -167,64 +282,72 @@ export async function fetchCatalogEntities(
   range: ResolvedRange,
   sort: GroupSort = { key: "n", dir: "desc" },
   pinned: EntityPin[] = [],
-): Promise<TraceGroupResult> {
+): Promise<CatalogEntityResult> {
   const sources = entityType.sources ?? ["traces"];
-  const dimensionCount = entityType.identity.length;
 
   const perSource = await Promise.all(
     sources.map(async (source) => {
-      const isTraces = source === "traces";
+      const identity = sourceIdentity(entityType, source);
       const res = await runIrQuery(
         buildEntitySourceDoc(entityType, source, range, pinned),
       );
+      const decoded = decodeSourceRows(
+        res,
+        identity.length,
+        source === "traces",
+      );
       return {
-        isTraces,
-        ...decodeSourceGroups(res, dimensionCount, isTraces),
+        ...decoded,
+        rows: decoded.rows.map((row) => ({
+          ...row,
+          values: alignValues(row.values, identity, entityType.identity),
+        })),
+        source,
+        dimensions: identity.join("\u0000"),
       };
     }),
   );
 
-  // Merge by identity: count sums across every source (it's total observed
-  // volume), but errors/p50/p95 only ever come from the traces source - a
-  // non-trace source's rows contribute 0 to traceCount and must not clobber
-  // a real trace measurement for the same identity. traceCount itself sums
-  // like count (each source contributes its own truthful share, 0 for a
-  // non-trace source) - it's the denominator an error rate must use instead
-  // of count, not a last-write-wins flag.
-  const merged = new Map<string, TraceGroup>();
-  for (const { isTraces, groups } of perSource) {
-    for (const g of groups) {
-      const key = compositeKey(g.values);
+  // Merge by identity. Each source contributes its own observation entry;
+  // `red` only ever comes from the traces source, so a non-trace source can
+  // never clobber a real trace measurement for the same identity, nor
+  // manufacture one for an identity traces never saw.
+  const merged = new Map<string, CatalogEntity>();
+  for (const { source, rows, dimensions } of perSource) {
+    for (const row of rows) {
+      // The grouped dimensions are part of the key: a degraded row's `null`
+      // means "not carried", a full-tuple row's `null` means "absent value",
+      // and the two must not merge.
+      const key = `${dimensions}\u0001${compositeKey(row.values)}`;
+      const observation = { source, count: row.count };
       const existing = merged.get(key);
       if (!existing) {
-        merged.set(key, { ...g });
+        merged.set(key, {
+          values: row.values,
+          observations: [observation],
+          lastNs: row.lastNs,
+          red: row.red,
+        });
         continue;
       }
-      existing.count += g.count;
-      existing.traceCount = (existing.traceCount ?? 0) + (g.traceCount ?? 0);
-      if (isTraces) {
-        existing.errors = g.errors;
-        existing.p50Ms = g.p50Ms;
-        existing.p95Ms = g.p95Ms;
-      }
-      if (BigInt(g.lastNs) > BigInt(existing.lastNs)) {
-        existing.lastNs = g.lastNs;
+      existing.observations.push(observation);
+      if (row.red) existing.red = row.red;
+      if (BigInt(row.lastNs) > BigInt(existing.lastNs)) {
+        existing.lastNs = row.lastNs;
       }
     }
   }
 
-  const allGroups = sortRows([...merged.values()], sort, groupSortValue)
-    // A span/log/metric/profile with no value for the primary identity
-    // attribute still groups into its own "(not set)" row - meaningful in
-    // the traces tab's grouping, where it means "here's the slice with no
-    // value for this field", but not here: it isn't a discovered entity,
-    // it's the absence of one, so showing it as a catalog row would
-    // misrepresent a data gap as a real host/db/etc.
-    .filter((g) => g.values[0] !== null);
+  const all = sortRows([...merged.values()], sort, entitySortValue)
+    // A record with no value for the primary identity attribute still groups
+    // into its own "(not set)" row - meaningful in the traces tab's grouping,
+    // where it means "here's the slice with no value for this field", but not
+    // here: it isn't a discovered entity, it's the absence of one, so showing
+    // it as a catalog row would misrepresent a data gap as a real host/db/etc.
+    .filter((e) => e.values[0] !== null);
 
   return {
-    groups: allGroups.slice(0, GROUP_BUDGET),
-    truncated:
-      perSource.some((p) => p.truncated) || allGroups.length > GROUP_BUDGET,
+    entities: all.slice(0, GROUP_BUDGET),
+    truncated: perSource.some((p) => p.truncated) || all.length > GROUP_BUDGET,
   };
 }

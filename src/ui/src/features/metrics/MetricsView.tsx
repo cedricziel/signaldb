@@ -1,9 +1,18 @@
 import { useQuery } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
-import { promQueryRange, seriesName } from "../../api/prom";
-import { buildMetricIrDoc, irSeriesToPromSeries } from "../../api/metricsIr";
+import { useEffect, useMemo, useRef, useState } from "react";
+import {
+  buildFormulaIrDoc,
+  buildMetricIrDoc,
+  irSeriesToPromSeries,
+  seriesDisplayName,
+  type PromSeries,
+  seriesName,
+} from "../../api/ir/metrics";
 import { runIrQuery } from "../../api/queryIr";
-import { AttributeValue } from "../../components/AttributeValue";
+import { CopyValueButton } from "../../components/CopyValueButton";
+import { EmptyState } from "../../components/EmptyState";
+import { QueryError } from "../../components/QueryError";
+import { liveRefetchInterval } from "../../lib/live";
 import {
   durationToSeconds,
   rangeScopeKey,
@@ -13,50 +22,60 @@ import {
 import type { ExploreState } from "../../lib/urlState";
 import { seriesColorVar } from "../../lib/promSeries";
 import {
-  buildFormula,
   emptyQuery,
   nextRef,
+  parseBuilderState,
   type MetricQuery,
-} from "./buildPromQL";
+} from "./metricQuery";
 import { MetricsChart } from "./MetricsChart";
 import { QueryRow } from "./QueryRow";
 import "./metrics.css";
+
+const legendLabel = (s: PromSeries) => seriesDisplayName(s.labels);
 
 interface Props {
   state: ExploreState;
   update: (patch: Partial<ExploreState>) => void;
 }
 
-type Mode = "builder" | "promql";
-
 export function MetricsView({ state, update }: Props) {
-  const [mode, setMode] = useState<Mode>("builder");
-  const [queries, setQueries] = useState<MetricQuery[]>(() => [
-    emptyQuery("a"),
-  ]);
-  const [formula, setFormula] = useState("");
-  const [draft, setDraft] = useState(state.promql);
-  // The builder query snapshotted at the moment "Run" was clicked, when it
-  // was within the minimal metrics IR source's coverage (see
-  // api/metricsIr.ts) — null for a PromQL-tab run, or a builder run using a
-  // range function or multi-query formula, either of which stays on the
-  // PromQL path below. A fresh mount (including from a shared `?promql=`
-  // link) starts null, so a bookmarked raw PromQL query is never silently
-  // "upgraded" to IR — only an interactive builder Run is.
-  const [ranQuery, setRanQuery] = useState<MetricQuery | null>(null);
+  // Seeded once at mount from `?mq=` (see lib/urlState.ts's `metricQuery`).
+  const initial = parseBuilderState(state.metricQuery);
+  const [queries, setQueries] = useState<MetricQuery[]>(
+    () => initial?.queries ?? [emptyQuery("a")],
+  );
+  const [formula, setFormula] = useState(initial?.formula ?? "");
+  // The builder state (queries + formula) last run via "Run" — null before
+  // the first run. Distinct from `queries`/`formula` above, which track
+  // in-progress edits the user hasn't run yet.
+  const [ran, setRan] = useState<{
+    queries: MetricQuery[];
+    formula: string;
+  } | null>(initial);
+  // The `metricQuery` value this component itself last wrote via `update()`
+  // (seeded from the mount-time URL, which counts as already applied).
+  // Distinguishes an external change — a browser Back/Forward landing on a
+  // different `?mq=` — from this component observing its own write echoed
+  // back through `state`; only the former should resync the builder, or
+  // every Run would immediately stomp on the query state it just set.
+  const lastWritten = useRef(state.metricQuery);
+
+  useEffect(() => {
+    if (state.metricQuery === lastWritten.current) return;
+    lastWritten.current = state.metricQuery;
+    const reseeded = parseBuilderState(state.metricQuery);
+    setQueries(reseeded?.queries ?? [emptyQuery("a")]);
+    setFormula(reseeded?.formula ?? "");
+    setRan(reseeded);
+  }, [state.metricQuery]);
 
   const rangeKey = rangeScopeKey(state);
   // Freeze the resolved window per range selection so metadata pickers don't
   // refetch on every render (relative ranges resolve to a shifting "now").
-  // Keyed on rangeKey rather than state.range so the window only moves when
-  // the user changes the range or tenant/dataset.
   const metaRange = useMemo(
     () => resolveRange(state.range, Date.now()),
     [rangeKey],
   );
-
-  const compiled = buildFormula(queries, formula);
-  const promql = state.promql;
 
   const setQuery = (i: number, next: MetricQuery) =>
     setQueries((qs) => qs.map((old, j) => (j === i ? next : old)));
@@ -65,169 +84,124 @@ export function MetricsView({ state, update }: Props) {
     setQueries((qs) => (qs.length > 1 ? qs.filter((_, j) => j !== i) : qs));
 
   const chart = useQuery({
-    queryKey: [
-      "metrics-chart",
-      rangeKey,
-      ranQuery ? JSON.stringify(ranQuery) : promql,
-    ],
+    queryKey: ["metrics-chart", rangeKey, ran ? JSON.stringify(ran) : null],
     queryFn: async () => {
+      if (!ran) return [];
       const range = resolveRange(state.range, Date.now());
       const step = durationToSeconds(stepForRange(range, 120)) ?? 60;
-      const irDoc = ranQuery ? buildMetricIrDoc(ranQuery, range, step) : null;
-      if (irDoc) return irSeriesToPromSeries(await runIrQuery(irDoc));
-      return promQueryRange(promql, range, step);
+      const doc =
+        ran.formula.trim() !== "" || ran.queries.length > 1
+          ? buildFormulaIrDoc(ran.queries, ran.formula, range, step)
+          : buildMetricIrDoc(ran.queries[0]!, range, step);
+      if (doc === null) return [];
+      return irSeriesToPromSeries((await runIrQuery(doc)).series ?? []);
     },
-    enabled: ranQuery !== null || promql.trim() !== "",
-    refetchInterval: state.live ? 15_000 : false,
+    enabled: ran !== null,
+    refetchInterval: liveRefetchInterval(state.live),
   });
 
-  // Builder → Query IR when the current builder state is within its
-  // coverage (see api/metricsIr.ts); PromQL escape hatch → always PromQL,
-  // unchanged.
-  const runBuilder = () => {
-    update({ promql: compiled.trim() });
-    const solo = formula.trim() === "" && queries.length === 1;
-    setRanQuery(solo ? queries[0]! : null);
-  };
-  const runPromQL = (q: string) => {
-    update({ promql: q.trim() });
-    setRanQuery(null);
-  };
+  // Runnable when every query that would be sent has a metric selected: the
+  // solo case needs just the first query; a formula (or several queries)
+  // needs all of them, since the formula can reference any ref letter.
+  const runnable =
+    formula.trim() !== "" || queries.length > 1
+      ? queries.every((q) => q.metric.trim() !== "")
+      : (queries[0]?.metric.trim() ?? "") !== "";
 
-  const switchMode = (next: Mode) => {
-    // Builder → PromQL seeds the text box with the compiled query so the raw
-    // editor is the escape hatch. There is no PromQL → builder parse yet.
-    if (next === "promql" && mode === "builder" && compiled !== "") {
-      setDraft(compiled);
-    }
-    setMode(next);
+  const selectors = useMemo(
+    () => (chart.data ?? []).map((s) => seriesName(s.labels)),
+    [chart.data],
+  );
+
+  const run = () => {
+    const metricQuery = JSON.stringify({ queries, formula });
+    lastWritten.current = metricQuery;
+    update({ metricQuery });
+    setRan({ queries, formula });
   };
 
   return (
     <div className="metricsview">
-      <div className="metrics-modes" role="tablist" aria-label="Query editor">
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "builder"}
-          className={mode === "builder" ? "active" : ""}
-          onClick={() => switchMode("builder")}
-        >
-          Builder
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={mode === "promql"}
-          className={mode === "promql" ? "active" : ""}
-          onClick={() => switchMode("promql")}
-        >
-          PromQL
-        </button>
+      <div className="metrics-builder">
+        {queries.map((q, i) => (
+          <div className="builder-query" key={q.ref}>
+            <QueryRow
+              query={q}
+              range={metaRange}
+              onChange={(next) => setQuery(i, next)}
+            />
+            {queries.length > 1 && (
+              <button
+                type="button"
+                className="query-remove"
+                aria-label={`Remove query ${q.ref}`}
+                onClick={() => removeQuery(i)}
+              >
+                ✕
+              </button>
+            )}
+          </div>
+        ))}
+
+        <div className="builder-formula">
+          <button type="button" className="qrow-add" onClick={addQuery}>
+            + query
+          </button>
+          <span className="formula-ref" aria-hidden>
+            ƒ
+          </span>
+          <input
+            className="formula-input"
+            aria-label="Formula"
+            placeholder="formula, e.g. (a / b) * 100 — optional"
+            value={formula}
+            onChange={(e) => setFormula(e.target.value)}
+          />
+        </div>
+
+        <div className="builder-run">
+          <button
+            type="button"
+            className="btn btn-primary"
+            disabled={!runnable}
+            onClick={run}
+          >
+            Run
+          </button>
+        </div>
       </div>
 
-      {mode === "builder" ? (
-        <div className="metrics-builder">
-          {queries.map((q, i) => (
-            <div className="builder-query" key={q.ref}>
-              <QueryRow
-                query={q}
-                range={metaRange}
-                onChange={(next) => setQuery(i, next)}
-              />
-              {queries.length > 1 && (
-                <button
-                  type="button"
-                  className="query-remove"
-                  aria-label={`Remove query ${q.ref}`}
-                  onClick={() => removeQuery(i)}
-                >
-                  ✕
-                </button>
-              )}
-            </div>
-          ))}
-
-          <div className="builder-formula">
-            <button type="button" className="qrow-add" onClick={addQuery}>
-              + query
-            </button>
-            <span className="formula-ref" aria-hidden>
-              ƒ
-            </span>
-            <input
-              className="formula-input"
-              aria-label="Formula"
-              placeholder="formula, e.g. (a / b) * 100 — optional"
-              value={formula}
-              onChange={(e) => setFormula(e.target.value)}
-            />
-          </div>
-
-          <div className="builder-run">
-            <code className="builder-preview">
-              {compiled || "pick a metric to start"}
-            </code>
-            <button
-              type="button"
-              disabled={compiled === ""}
-              onClick={runBuilder}
-            >
-              Run
-            </button>
-          </div>
-        </div>
-      ) : (
-        <form
-          className="promql-form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            runPromQL(draft);
-          }}
-        >
-          <input
-            aria-label="PromQL query"
-            className="promql-input"
-            placeholder="PromQL, e.g. rate(http_server_duration_count[5m])"
-            value={draft}
-            onChange={(e) => setDraft(e.target.value)}
-          />
-          <button type="submit">Run</button>
-        </form>
-      )}
-
-      {promql === "" && (
-        <div className="metrics-note">
-          Build a query above, or switch to PromQL, then Run to chart metrics.
+      {ran === null && (
+        <div className="view-note">
+          Pick a metric above, then Run to chart it.
         </div>
       )}
-      {chart.isError && (
-        <div className="query-error" role="alert">
-          Query failed: {(chart.error as Error).message}
-        </div>
-      )}
+      {chart.isError && <QueryError what="metrics" error={chart.error} />}
       {chart.isFetching && !chart.data && (
-        <div className="metrics-note">Loading…</div>
+        <div className="view-note">Loading…</div>
       )}
-      {chart.data && chart.data.length === 0 && (
-        <div className="metrics-note">No series returned.</div>
+      {chart.data && chart.data.length === 0 && ran !== null && (
+        <EmptyState title="No series in this range" />
       )}
       {chart.data && chart.data.length > 0 && (
         <>
           <div className="mchart-wrap">
-            <MetricsChart series={chart.data} />
+            <MetricsChart series={chart.data} labelOf={legendLabel} />
           </div>
-          <ul className="mlegend" aria-label="Series">
-            {chart.data.map((s, i) => {
-              const name = seriesName(s.labels);
-              return (
-                <li key={name}>
+          <div className="mlegend-wrap">
+            <ul className="mlegend" aria-label="Series">
+              {chart.data.map((s, i) => (
+                <li key={selectors[i]} title={selectors[i]}>
                   <i style={{ background: seriesColorVar(i) }} />
-                  <AttributeValue value={name} label={`series ${name}`} />
+                  <span className="mlegend-name">{legendLabel(s)}</span>
                 </li>
-              );
-            })}
-          </ul>
+              ))}
+            </ul>
+            <CopyValueButton
+              value={selectors.join("\n")}
+              label="series selectors"
+            />
+          </div>
         </>
       )}
     </div>

@@ -1,8 +1,9 @@
 import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it } from "vitest";
 import { ErrorSparkline } from "./ErrorSparkline";
-import type { VolumeSeries } from "../explore/SignalHistogram";
+import type { VolumeSeries } from "../../components/SignalHistogram";
 import { formatTimeBucket } from "../../lib/vizFormat";
+import { axisLabelFormatter } from "../../lib/time";
 
 describe("ErrorSparkline", () => {
   it("renders one bar per bucket across the padded range", () => {
@@ -18,6 +19,42 @@ describe("ErrorSparkline", () => {
     expect(screen.getAllByTestId("sparkline-bar")).toHaveLength(4);
   });
 
+  it("labels the start, middle and end of the window", () => {
+    const series: VolumeSeries[] = [{ key: "s0", points: [[60_000, 3]] }];
+    const { container } = render(
+      <ErrorSparkline
+        series={series}
+        rangeMs={{ fromMs: 0, toMs: 180_000 }}
+        stepMs={60_000}
+      />,
+    );
+    const label = axisLabelFormatter(0, 180_000);
+    const axis = container.querySelector(".errors-sparkline-axis")!;
+    expect([...axis.children].map((c) => c.textContent)).toEqual([
+      label(0),
+      label(90_000),
+      label(180_000),
+    ]);
+  });
+
+  it("shows a 'not enough data' message instead of a single full-width bar", () => {
+    // The whole range collapses into one bucket (step >= range span) — the
+    // bar variant would otherwise draw a single full-width, full-height
+    // rect with no axis or legend, indistinguishable from a rendering bug.
+    const series: VolumeSeries[] = [{ key: "s0", points: [[0, 3]] }];
+    render(
+      <ErrorSparkline
+        series={series}
+        rangeMs={{ fromMs: 0, toMs: 30_000 }}
+        stepMs={60_000}
+      />,
+    );
+    expect(
+      screen.getByText(/Not enough data in this window to show a trend/),
+    ).toBeInTheDocument();
+    expect(screen.queryByTestId("sparkline-bar")).not.toBeInTheDocument();
+  });
+
   it("shows an empty state when there is no data in range", () => {
     render(
       <ErrorSparkline
@@ -26,7 +63,9 @@ describe("ErrorSparkline", () => {
         stepMs={60_000}
       />,
     );
-    expect(screen.getByText(/No occurrences in range/)).toBeInTheDocument();
+    expect(
+      screen.getByText(/No occurrences in this window/),
+    ).toBeInTheDocument();
     expect(screen.queryByTestId("sparkline-bar")).not.toBeInTheDocument();
   });
 

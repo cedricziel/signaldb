@@ -1,0 +1,35 @@
+[
+  { "label": "pass", "score": null, "error_type": null, "verdict": "pass" },
+  { "label": "PASSED", "score": null, "error_type": null, "verdict": "pass" },
+  { "label": "True", "score": null, "error_type": null, "verdict": "pass" },
+  { "label": "yes", "score": null, "error_type": null, "verdict": "pass" },
+  { "label": "correct", "score": null, "error_type": null, "verdict": "pass" },
+  { "label": "Safe", "score": null, "error_type": null, "verdict": "pass" },
+  { "label": "fail", "score": null, "error_type": null, "verdict": "fail" },
+  { "label": "Failed", "score": null, "error_type": null, "verdict": "fail" },
+  { "label": "FALSE", "score": null, "error_type": null, "verdict": "fail" },
+  { "label": "no", "score": null, "error_type": null, "verdict": "fail" },
+  {
+    "label": "incorrect",
+    "score": null,
+    "error_type": null,
+    "verdict": "fail"
+  },
+  { "label": "UNSAFE", "score": null, "error_type": null, "verdict": "fail" },
+  { "label": null, "score": 0.5, "error_type": null, "verdict": "pass" },
+  { "label": null, "score": 0.49, "error_type": null, "verdict": "fail" },
+  { "label": "fail", "score": 0.9, "error_type": null, "verdict": "fail" },
+  { "label": "pass", "score": 0.1, "error_type": null, "verdict": "pass" },
+  {
+    "label": "fail",
+    "score": 0.0,
+    "error_type": "timeout",
+    "verdict": "error"
+  },
+  { "label": null, "score": 0.9, "error_type": "timeout", "verdict": "error" },
+  { "label": "fail", "score": null, "error_type": "", "verdict": "fail" },
+  { "label": "partial", "score": null, "error_type": null, "verdict": "none" },
+  { "label": "partial", "score": 0.9, "error_type": null, "verdict": "pass" },
+  { "label": "maybe", "score": 0.2, "error_type": null, "verdict": "fail" },
+  { "label": null, "score": null, "error_type": null, "verdict": "none" }
+]

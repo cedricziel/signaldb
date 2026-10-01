@@ -1,0 +1,216 @@
+# SignalDB as a TrueNAS SCALE custom app (Docker Compose).
+#
+# This is the configuration the maintainers run on their own NAS, with
+# secrets and hostnames replaced by placeholders. Search for REPLACE and
+# example.com and adjust before installing. See docs/operations/truenas.md.
+#
+# Services:
+#   signaldb  monolith (acceptor + writer + querier + router + compactor + UI)
+#   mcp       MCP server sidecar, talks to the monolith over the app network
+#   otelcol   OpenTelemetry Collector: receives OTLP from the monolith's
+#             self-monitoring, scrapes host/process/container metrics for
+#             the SignalDB containers, and forwards everything back into
+#             SignalDB's _system/_monitoring tenant.
+
+networks:
+  default:
+    enable_ipv6: false
+
+services:
+  signaldb:
+    # ghcr.io/cedricziel/signaldb:main is the standard monolith. The
+    # -glibc-profiling variant adds jemalloc heap profiling; it needs
+    # MALLOC_CONF=prof:true below. Pin a release tag for production.
+    image: ghcr.io/cedricziel/signaldb:main-glibc-profiling
+    restart: unless-stopped
+    user: "1000:1000"
+    mem_limit: 6g
+    working_dir: /data
+    ports:
+      - "4317:4317"    # OTLP gRPC
+      - "4318:4318"    # OTLP HTTP
+      - "30200:3000"   # query API + UI (/ui, /tempo, /loki, /prometheus, /pyroscope)
+    volumes:
+      # Holds signaldb.toml, SQLite catalogs, WAL, and Parquet storage.
+      # Must be owned by uid/gid 1000.
+      - /mnt/tank/apps/signaldb:/data
+    environment:
+      RUST_LOG: info
+      MALLOC_CONF: prof:true
+      # Anything from signaldb.toml can be overridden with SIGNALDB__<SECTION>__<KEY>.
+      SIGNALDB__COMPACTOR__ORPHAN_CLEANUP__CLEANUP_INTERVAL_HOURS: "1"
+      # Self-monitoring: export the monolith's own telemetry to the collector.
+      SIGNALDB__SELF_MONITORING__ENDPOINT: http://otelcol:4317
+      SIGNALDB__SELF_MONITORING__PROFILES_ENABLED: "true"
+      SIGNALDB__SELF_MONITORING__HEAP_PROFILES_ENABLED: "true"
+      # Browser telemetry from the UI, sent straight to a public OTLP endpoint.
+      SIGNALDB__SELF_MONITORING__FRONTEND__ENABLED: "true"
+      SIGNALDB__SELF_MONITORING__FRONTEND__ENDPOINT: https://o11y-ingest.example.com
+      SIGNALDB__SELF_MONITORING__FRONTEND__API_KEY: sk-REPLACE-system-ingest-key
+      # OAuth 2.1 for the MCP sidecar (issuer = the public UI URL).
+      SIGNALDB__MCP__OAUTH__ENABLED: "true"
+      SIGNALDB__MCP__OAUTH__ISSUER_URL: https://o11y.example.com
+      SIGNALDB__MCP__OAUTH__RESOURCE_URL: https://o11y-mcp.example.com/mcp
+
+  mcp:
+    image: ghcr.io/cedricziel/signaldb/mcp:main
+    restart: unless-stopped
+    user: "1000:1000"
+    depends_on:
+      - signaldb
+    ports:
+      - "30228:8228"
+    environment:
+      RUST_LOG: info
+      SIGNALDB__MCP__BIND_ADDRESS: 0.0.0.0:8228
+      SIGNALDB__MCP__ROUTER_URL: http://signaldb:3000
+      # Host headers accepted besides loopback (DNS-rebinding guard):
+      # public hostname + LAN address:port.
+      SIGNALDB__MCP__ALLOWED_HOSTS: o11y-mcp.example.com,192.168.1.10:30228
+      SIGNALDB__MCP__OAUTH__ISSUER_URL: https://o11y.example.com
+      SIGNALDB__MCP__OAUTH__RESOURCE_URL: https://o11y-mcp.example.com/mcp
+
+  otelcol:
+    image: otel/opentelemetry-collector-contrib:0.158.0
+    restart: unless-stopped
+    # Shares the monolith's PID namespace so the hostmetrics process scraper
+    # sees the signaldb process; SYS_PTRACE lets it read /proc for it.
+    pid: service:signaldb
+    cap_add:
+      - SYS_PTRACE
+    user: "0:0"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+    command:
+      - --config=env:OTELCOL_CONFIG
+      - --feature-gates=service.profilesSupport,pkg.experimentalmetricmetadata.useEntityEventsSpecification
+    environment:
+      OTELCOL_CONFIG: |
+        receivers:
+          otlp:
+            protocols:
+              grpc:
+                endpoint: 0.0.0.0:4317
+                include_metadata: true
+              http:
+                endpoint: 0.0.0.0:4318
+                include_metadata: true
+          hostmetrics:
+            collection_interval: 30s
+            scrapers:
+              process:
+                mute_process_name_error: true
+                mute_process_user_error: true
+                include:
+                  match_type: regexp
+                  names: ["signaldb"]
+                resource_attributes:
+                  process.owner:
+                    enabled: false
+              cpu: {}
+              memory: {}
+              load: {}
+              network: {}
+              paging: {}
+          docker_stats:
+            endpoint: unix:///var/run/docker.sock
+            collection_interval: 30s
+
+        processors:
+          resourcedetection:
+            detectors: [env, system, docker]
+            system:
+              hostname_sources: [os]
+            docker:
+            timeout: 5s
+            override: false
+          # Only the containers of this app; TrueNAS names them ix-<app>-<service>-N.
+          filter/docker_scope:
+            metrics:
+              datapoint:
+                - 'not IsMatch(resource.attributes["container.name"], "^ix-signaldb-")'
+
+        extensions:
+          # Pass through whatever auth headers the monolith sent.
+          headers_setter:
+            headers:
+              - key: authorization
+                from_context: authorization
+                action: upsert
+              - key: x-tenant-id
+                from_context: x-tenant-id
+                action: upsert
+              - key: x-dataset-id
+                from_context: x-dataset-id
+                action: upsert
+          # Scraped metrics have no caller; stamp the self-monitoring tenant.
+          headers_setter/static:
+            headers:
+              - key: authorization
+                value: "Bearer sk-REPLACE-system-ingest-key"
+                action: upsert
+              - key: x-tenant-id
+                value: "_system"
+                action: upsert
+              - key: x-dataset-id
+                value: "_monitoring"
+                action: upsert
+
+        exporters:
+          otlp:
+            endpoint: signaldb:4317
+            compression: none
+            tls:
+              insecure: true
+            auth:
+              authenticator: headers_setter
+            sending_queue:
+              enabled: false
+          otlp/hostmetrics:
+            endpoint: signaldb:4317
+            compression: none
+            tls:
+              insecure: true
+            auth:
+              authenticator: headers_setter/static
+
+        service:
+          extensions: [headers_setter, headers_setter/static]
+          telemetry:
+            metrics:
+              readers:
+                - periodic:
+                    interval: 30000
+                    exporter:
+                      otlp:
+                        protocol: grpc
+                        endpoint: signaldb:4317
+                        insecure: true
+                        headers:
+                          authorization: "Bearer sk-REPLACE-system-ingest-key"
+                          x-tenant-id: "_system"
+                          x-dataset-id: "_monitoring"
+          pipelines:
+            traces:
+              receivers: [otlp]
+              processors: [resourcedetection]
+              exporters: [otlp]
+            logs:
+              receivers: [otlp]
+              processors: [resourcedetection]
+              exporters: [otlp]
+            metrics:
+              receivers: [otlp]
+              processors: [resourcedetection]
+              exporters: [otlp]
+            metrics/process:
+              receivers: [hostmetrics]
+              processors: [resourcedetection]
+              exporters: [otlp/hostmetrics]
+            metrics/docker:
+              receivers: [docker_stats]
+              processors: [filter/docker_scope, resourcedetection]
+              exporters: [otlp/hostmetrics]
+            profiles:
+              receivers: [otlp]
+              exporters: [otlp]

@@ -1,41 +1,73 @@
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { Fragment, useMemo, useRef, useState } from "react";
-import type { LogRow } from "../../api/loki";
-import { AttributeValue } from "../../components/AttributeValue";
+import { useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
+import type { LogRow } from "../../api/ir/logs";
+import {
+  AttributeSection,
+  AttributeSummary,
+  AttributeTable,
+  DescriptionsToggle,
+  type AttributeRowAction,
+} from "../../components/AttributeTable";
 import { CopyValueButton } from "../../components/CopyValueButton";
-import { SemanticKey } from "../../components/SemanticKey";
+import { EmptyState } from "../../components/EmptyState";
 import { useSemantics } from "../../hooks/useSemantics";
+import { useAttrDescriptions } from "../../lib/attrDescriptions";
+import { pivotRowActions } from "../../lib/attrPivots";
+import {
+  RESOURCE_IDENTITY_FIELDS,
+  summarizeAttributes,
+  type SummaryField,
+} from "../../lib/attrSummary";
 import type { LabelFilter } from "../../lib/filters";
-import { groupBySemanticTitle } from "../../lib/semantics";
 import { formatTimestamp } from "../../lib/time";
+import type { UpdateFn } from "../../lib/urlState";
 import { normalizeLevel } from "./Histogram";
+import { logScopes } from "./logScopes";
 
 interface Props {
   rows: LogRow[];
   onAddFilter: (filter: LabelFilter) => void;
   onOpenTrace: (traceId: string) => void;
+  update: UpdateFn;
+}
+
+/** Cheap canonical form of a row's attribute containers — sorted so
+ * insertion order never changes the result. `JSON.stringify`d over the
+ * sorted `[key, value]` tuples rather than joined with plain delimiters: an
+ * unescaped `,`/`=` join collapses distinct records onto the same string. */
+function canonicalEntries(record: Record<string, string>): string {
+  return JSON.stringify(
+    Object.keys(record)
+      .sort()
+      .map((k) => [k, record[k]]),
+  );
 }
 
 /**
- * Fallback label spellings, kept for rows from a source that promoted a
- * `trace_id`-named attribute to a label rather than sending it as
- * structured metadata.
+ * A row's identity for expansion/React-key purposes: the virtualizer's
+ * `item.index` shifts under a row's feet in live mode (a newer row
+ * prepends), which used to collapse whatever was expanded. Timestamp plus
+ * the body, ids, and every attribute container is stable across such a
+ * shift and cheap to compute; it does not need to be a true hash, only
+ * unique enough among the rows on screen.
  */
-const TRACE_LABELS = ["trace_id", "traceID", "traceId"];
-
-export function traceIdOf(row: LogRow): string | null {
-  const metadataTraceId = row.metadata["trace_id"];
-  if (metadataTraceId) return metadataTraceId;
-  for (const key of TRACE_LABELS) {
-    const v = row.labels[key];
-    if (v) return v;
-  }
-  return null;
+export function rowKey(row: LogRow): string {
+  return [
+    row.tsNs,
+    row.spanId ?? "",
+    row.traceId ?? "",
+    canonicalEntries(row.logAttributes),
+    canonicalEntries(row.scopeAttributes),
+    canonicalEntries(row.resourceAttributes),
+    row.body,
+  ].join("|");
 }
 
-export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
+export function LogList({ rows, onAddFilter, onOpenTrace, update }: Props) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [showDescriptions, toggleDescriptions] = useAttrDescriptions();
 
   const virtualizer = useVirtualizer({
     count: rows.length,
@@ -45,7 +77,12 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
   });
 
   if (rows.length === 0) {
-    return <div className="loglist-empty">No log lines match this query.</div>;
+    return (
+      <EmptyState title="No log lines in this range">
+        Widen the time range, or check that logs are arriving on{" "}
+        <Link to="/instrumentation">Send data</Link>.
+      </EmptyState>
+    );
   }
 
   return (
@@ -53,10 +90,9 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
       <div style={{ height: virtualizer.getTotalSize(), position: "relative" }}>
         {virtualizer.getVirtualItems().map((item) => {
           const row = rows[item.index]!;
-          const key = `${row.tsNs}-${item.index}`;
-          const level = normalizeLevel(row.labels["level"] ?? "");
+          const key = rowKey(row);
+          const level = normalizeLevel(row.severityText);
           const isOpen = expanded === key;
-          const traceId = traceIdOf(row);
           return (
             <div
               key={key}
@@ -78,43 +114,23 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
               >
                 <span className="logrow-ts">{formatTimestamp(row.tsMs)}</span>
                 <span className={`logrow-level level-${level}`}>
-                  {(row.labels["level"] ?? "-").toUpperCase()}
+                  {(row.severityText || "-").toUpperCase()}
                 </span>
-                <span className="logrow-svc">
-                  {row.labels["service_name"] ?? ""}
-                </span>
-                <span className="logrow-msg">{row.line}</span>
-                {traceId !== null && <span className="logrow-trace">⛓</span>}
+                <span className="logrow-svc">{row.serviceName}</span>
+                <span className="logrow-msg">{row.body}</span>
+                {row.traceId !== null && (
+                  <span className="logrow-trace">⛓</span>
+                )}
               </button>
               {isOpen && (
-                <div className="logdetail">
-                  <div className="logdetail-actions">
-                    {traceId !== null && (
-                      <button
-                        className="act act-primary"
-                        onClick={() => onOpenTrace(traceId)}
-                      >
-                        View trace {traceId.slice(0, 8)}…
-                      </button>
-                    )}
-                    <CopyValueButton value={row.line} label="log message" />
-                    <button
-                      className="act"
-                      onClick={() =>
-                        navigator.clipboard?.writeText(
-                          JSON.stringify(
-                            { ...row.labels, ...row.metadata, line: row.line },
-                            null,
-                            2,
-                          ),
-                        )
-                      }
-                    >
-                      Copy JSON
-                    </button>
-                  </div>
-                  <LogAttributes row={row} onAddFilter={onAddFilter} />
-                </div>
+                <LogDetail
+                  row={row}
+                  onAddFilter={onAddFilter}
+                  onOpenTrace={onOpenTrace}
+                  update={update}
+                  showDescriptions={showDescriptions}
+                  onToggleDescriptions={toggleDescriptions}
+                />
               )}
             </div>
           );
@@ -124,82 +140,218 @@ export function LogList({ rows, onAddFilter, onOpenTrace }: Props) {
   );
 }
 
-const sortedEntries = (bag: Record<string, string>): [string, string][] =>
-  Object.entries(bag).sort(([a], [b]) => a.localeCompare(b));
+/** Preferred order for the collapsed resource summary line — the shared
+ * resource-identity fields plus the container image (trailing). Level lives
+ * on the row itself now (severity_text is a first-class field, not a
+ * resource attribute), so it's no longer in this list. */
+const RESOURCE_SUMMARY_FIELDS: SummaryField[] = [
+  ...RESOURCE_IDENTITY_FIELDS,
+  { keys: ["container.image.name"] },
+];
 
 /**
- * The expanded row's attribute table: stream labels (with filter actions)
- * then per-line fields. Keys the schema registry knows carry their brief and
- * namespace and are grouped under their semantic title; a scope where
- * nothing resolved renders exactly as before.
+ * The expanded row's actions plus its attribute table: "This line" (per-line
+ * fields, always shown), "Scope" and "Resource" (collapsed behind a summary
+ * by default — see logScopes.ts for how the IR's own scopes drive the
+ * split).
  */
-function LogAttributes({
+function LogDetail({
   row,
   onAddFilter,
+  onOpenTrace,
+  update,
+  showDescriptions,
+  onToggleDescriptions,
 }: {
   row: LogRow;
   onAddFilter: (filter: LabelFilter) => void;
+  onOpenTrace: (traceId: string) => void;
+  update: UpdateFn;
+  showDescriptions: boolean;
+  onToggleDescriptions: () => void;
 }) {
-  const labels = useMemo(() => sortedEntries(row.labels), [row.labels]);
-  const metadata = useMemo(() => sortedEntries(row.metadata), [row.metadata]);
+  return (
+    <div className="logdetail">
+      <div className="logdetail-actions">
+        {row.traceId !== null && (
+          <button
+            className="act-primary btn btn-primary"
+            onClick={() => onOpenTrace(row.traceId!)}
+          >
+            View trace {row.traceId.slice(0, 8)}…
+          </button>
+        )}
+        <CopyValueButton value={row.body} label="log message" />
+        <button
+          className="btn"
+          onClick={() =>
+            navigator.clipboard?.writeText(
+              JSON.stringify(
+                {
+                  ...row.logAttributes,
+                  ...row.scopeAttributes,
+                  ...row.resourceAttributes,
+                  trace_id: row.traceId,
+                  span_id: row.spanId,
+                  body: row.body,
+                },
+                null,
+                2,
+              ),
+            )
+          }
+        >
+          Copy JSON
+        </button>
+        <DescriptionsToggle
+          checked={showDescriptions}
+          onToggle={onToggleDescriptions}
+        />
+      </div>
+      <LogAttributes
+        row={row}
+        onAddFilter={onAddFilter}
+        onOpenTrace={onOpenTrace}
+        update={update}
+        showDescriptions={showDescriptions}
+      />
+    </div>
+  );
+}
+
+function LogAttributes({
+  row,
+  onAddFilter,
+  onOpenTrace,
+  update,
+  showDescriptions,
+}: {
+  row: LogRow;
+  onAddFilter: (filter: LabelFilter) => void;
+  onOpenTrace: (traceId: string) => void;
+  update: UpdateFn;
+  showDescriptions: boolean;
+}) {
+  const groups = useMemo(() => logScopes(row), [row]);
   const keys = useMemo(
-    () => [...labels, ...metadata].map(([k]) => k),
-    [labels, metadata],
+    () => groups.flatMap((g) => g.entries.map(([k]) => k)),
+    [groups],
   );
   const semantics = useSemantics(keys);
+  // Every attribute on the row, for `pivotRowActions`'s catalog pivot —
+  // it needs an entity's full identity, not just one row's key/value.
+  const bag = useMemo(
+    (): ReadonlyMap<string, string> =>
+      new Map(groups.flatMap((g) => g.entries)),
+    [groups],
+  );
+  const [scopeExpanded, setScopeExpanded] = useState(false);
+  const [resourceExpanded, setResourceExpanded] = useState(false);
+
+  const rowActions = (k: string, v: string): AttributeRowAction[] => {
+    const filterActions: AttributeRowAction[] = [
+      {
+        label: "+ filter",
+        ariaLabel: `Filter for ${k} = ${v}`,
+        onClick: () => onAddFilter({ label: k, op: "=", value: v }),
+      },
+      {
+        label: "− exclude",
+        ariaLabel: `Filter out ${k} = ${v}`,
+        onClick: () => onAddFilter({ label: k, op: "!=", value: v }),
+      },
+    ];
+    // trace_id carries no identifying entity role of its own, but the trace
+    // it names is always one click away — mirrors the `logdetail-actions`
+    // "View trace" button for the row that has one, as a per-row action for
+    // this specific field.
+    const openTrace: AttributeRowAction[] =
+      k === "trace_id"
+        ? [
+            {
+              label: "open trace ↗",
+              ariaLabel: `Open trace ${v}`,
+              onClick: () => onOpenTrace(v),
+            },
+          ]
+        : [];
+    return [
+      ...filterActions,
+      ...openTrace,
+      ...pivotRowActions(k, v, semantics.get(k), bag, "logs", update),
+    ];
+  };
+
+  const groupByTitle = (title: string) => groups.find((g) => g.title === title);
+  const lineGroup = groupByTitle("This line");
+  const scopeGroup = groupByTitle("Scope");
+  const resourceGroup = groupByTitle("Resource");
+  const resourceSummary = useMemo(
+    () =>
+      summarizeAttributes(
+        resourceGroup?.entries ?? [],
+        RESOURCE_SUMMARY_FIELDS,
+      ),
+    [resourceGroup],
+  );
 
   return (
-    <dl className="attr-grid">
-      {groupBySemanticTitle(labels, semantics).map((group) => (
-        <Fragment key={`label:${group.title ?? ""}`}>
-          {group.title && <div className="attr-grid-title">{group.title}</div>}
-          {group.entries.map(([k, v]) => (
-            <div className="attr-row" data-scope="label" key={k}>
-              <dt>
-                <SemanticKey name={k} semantics={semantics.get(k)} />
-              </dt>
-              <dd>
-                <AttributeValue value={v} label={`value for ${k}`} />
-              </dd>
-              <span className="attr-actions">
-                <button
-                  aria-label={`Filter for ${k} = ${v}`}
-                  onClick={() => onAddFilter({ label: k, op: "=", value: v })}
-                >
-                  + filter
-                </button>
-                <button
-                  aria-label={`Filter out ${k} = ${v}`}
-                  onClick={() => onAddFilter({ label: k, op: "!=", value: v })}
-                >
-                  − exclude
-                </button>
-              </span>
-            </div>
-          ))}
-        </Fragment>
-      ))}
-      {/* Per-line fields: `trace_id`/`span_id` plus the row's log and
-          resource attributes. Shown without filter actions for now — the
-          label-filter model compiles to a stream selector, which is the
-          wrong shape for these. Filtering on them arrives with the Query IR
-          migration, where the predicate is built server-side. */}
-      {groupBySemanticTitle(metadata, semantics).map((group) => (
-        <Fragment key={`meta:${group.title ?? ""}`}>
-          {group.title && <div className="attr-grid-title">{group.title}</div>}
-          {group.entries.map(([k, v]) => (
-            <div className="attr-row" data-scope="metadata" key={k}>
-              <dt>
-                <SemanticKey name={k} semantics={semantics.get(k)} />
-              </dt>
-              <dd>
-                <AttributeValue value={v} label={`value for ${k}`} />
-              </dd>
-              <span className="attr-scope">per-line</span>
-            </div>
-          ))}
-        </Fragment>
-      ))}
-    </dl>
+    <>
+      {lineGroup && lineGroup.entries.length > 0 && (
+        <>
+          <AttributeSection title="This line" />
+          <AttributeTable
+            entries={lineGroup.entries}
+            semantics={semantics}
+            layout="grid"
+            showDescriptions={showDescriptions}
+            scope="line"
+            actions={rowActions}
+          />
+        </>
+      )}
+      {scopeGroup && (
+        <>
+          <AttributeSection
+            title="Scope"
+            count={`${scopeGroup.entries.length} fields`}
+            expanded={scopeExpanded}
+            onToggle={() => setScopeExpanded((current) => !current)}
+          />
+          {scopeExpanded && (
+            <AttributeTable
+              entries={scopeGroup.entries}
+              semantics={semantics}
+              layout="grid"
+              showDescriptions={showDescriptions}
+              scope="scope"
+              actions={rowActions}
+            />
+          )}
+        </>
+      )}
+      {resourceGroup && (
+        <>
+          <AttributeSection
+            title="Resource"
+            count={`${resourceGroup.entries.length} fields`}
+            expanded={resourceExpanded}
+            onToggle={() => setResourceExpanded((current) => !current)}
+          />
+          {resourceExpanded ? (
+            <AttributeTable
+              entries={resourceGroup.entries}
+              semantics={semantics}
+              layout="grid"
+              showDescriptions={showDescriptions}
+              scope="resource"
+              actions={rowActions}
+            />
+          ) : (
+            <AttributeSummary summary={resourceSummary} />
+          )}
+        </>
+      )}
+    </>
   );
 }

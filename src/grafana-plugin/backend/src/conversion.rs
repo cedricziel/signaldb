@@ -23,43 +23,6 @@ pub enum ConversionError {
     },
 }
 
-/// Convert Arrow RecordBatches to a Grafana Frame.
-#[allow(dead_code)]
-pub fn batches_to_frame(
-    batches: &[RecordBatch],
-    schema: &Schema,
-    frame_name: &str,
-) -> Result<data::Frame, ConversionError> {
-    if batches.is_empty() {
-        return Ok(data::Frame::new(frame_name));
-    }
-
-    let mut fields: Vec<Field> = Vec::new();
-
-    // Process each column in the schema
-    for field in schema.fields() {
-        let field_name = field.name();
-        let data_type = field.data_type();
-
-        // Collect column data from all batches
-        let arrays: Vec<&dyn Array> = batches
-            .iter()
-            .filter_map(|batch| batch.column_by_name(field_name).map(|c| c.as_ref()))
-            .collect();
-
-        if arrays.is_empty() {
-            continue;
-        }
-
-        // Convert based on data type
-        if let Some(grafana_field) = convert_column_to_field(&arrays, field_name, data_type) {
-            fields.push(grafana_field);
-        }
-    }
-
-    Ok(data::Frame::new(frame_name).with_fields(fields))
-}
-
 /// Convert Arrow RecordBatches to a Grafana Frame with a time field.
 ///
 /// This function adds a time field by converting a nanosecond timestamp column
@@ -259,10 +222,7 @@ pub fn convert_timestamp_column_to_time_field(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use arrow::array::{
-        ArrayRef, BooleanArray, Float64Array, Int32Array, Int64Array, StringArray, UInt32Array,
-        UInt64Array,
-    };
+    use arrow::array::{ArrayRef, StringArray, UInt64Array};
     use arrow::datatypes::Field as ArrowField;
     use chrono::Datelike;
     use std::sync::Arc;
@@ -321,25 +281,6 @@ mod tests {
     }
 
     #[test]
-    fn test_batches_to_frame_empty() {
-        let schema = create_test_schema();
-        let batches: Vec<RecordBatch> = vec![];
-
-        let result = batches_to_frame(&batches, &schema, "test_frame");
-        assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_batches_to_frame_with_data() {
-        let batch = create_test_batch();
-        let schema = batch.schema();
-
-        let frame = batches_to_frame(&[batch], &schema, "traces").unwrap();
-        // Should have 5 fields: trace_id, span_id, start_time_unix_nano, duration_nano, name
-        assert_eq!(frame.fields().len(), 5);
-    }
-
-    #[test]
     fn test_batches_to_frame_with_time() {
         let batch = create_test_batch();
         let schema = batch.schema();
@@ -372,148 +313,6 @@ mod tests {
             convert_timestamp_column_to_time_field(&[batch], "start_time_unix_nano", "time");
 
         assert!(result.is_ok());
-    }
-
-    #[test]
-    fn test_convert_string_column() {
-        let schema = Arc::new(Schema::new(vec![ArrowField::new(
-            "message",
-            DataType::Utf8,
-            false,
-        )]));
-        let messages: ArrayRef = Arc::new(StringArray::from(vec!["hello", "world"]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![messages]).unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 1);
-    }
-
-    #[test]
-    fn test_convert_int64_column() {
-        let schema = Arc::new(Schema::new(vec![ArrowField::new(
-            "count",
-            DataType::Int64,
-            false,
-        )]));
-        let counts: ArrayRef = Arc::new(Int64Array::from(vec![1, 2, 3]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![counts]).unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 1);
-    }
-
-    #[test]
-    fn test_convert_int32_column() {
-        let schema = Arc::new(Schema::new(vec![ArrowField::new(
-            "count",
-            DataType::Int32,
-            false,
-        )]));
-        let counts: ArrayRef = Arc::new(Int32Array::from(vec![1_i32, 2, 3]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![counts]).unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 1);
-    }
-
-    #[test]
-    fn test_convert_uint32_column() {
-        let schema = Arc::new(Schema::new(vec![ArrowField::new(
-            "count",
-            DataType::UInt32,
-            false,
-        )]));
-        let counts: ArrayRef = Arc::new(UInt32Array::from(vec![1_u32, 2, 3]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![counts]).unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 1);
-    }
-
-    #[test]
-    fn test_convert_float64_column() {
-        let schema = Arc::new(Schema::new(vec![ArrowField::new(
-            "value",
-            DataType::Float64,
-            false,
-        )]));
-        let values: ArrayRef = Arc::new(Float64Array::from(vec![1.5, 2.5, 3.5]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![values]).unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 1);
-    }
-
-    #[test]
-    fn test_convert_boolean_column() {
-        let schema = Arc::new(Schema::new(vec![ArrowField::new(
-            "is_root",
-            DataType::Boolean,
-            false,
-        )]));
-        let flags: ArrayRef = Arc::new(BooleanArray::from(vec![true, false, true]));
-        let batch = RecordBatch::try_new(schema.clone(), vec![flags]).unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 1);
-    }
-
-    #[test]
-    fn test_convert_multiple_batches() {
-        let schema = Arc::new(Schema::new(vec![
-            ArrowField::new("id", DataType::Utf8, false),
-            ArrowField::new("value", DataType::UInt64, false),
-        ]));
-
-        let batch1 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["a", "b"])) as ArrayRef,
-                Arc::new(UInt64Array::from(vec![1, 2])) as ArrayRef,
-            ],
-        )
-        .unwrap();
-
-        let batch2 = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(StringArray::from(vec!["c", "d"])) as ArrayRef,
-                Arc::new(UInt64Array::from(vec![3, 4])) as ArrayRef,
-            ],
-        )
-        .unwrap();
-
-        let frame = batches_to_frame(&[batch1, batch2], &schema, "test").unwrap();
-        assert_eq!(frame.fields().len(), 2);
-    }
-
-    #[test]
-    fn test_unsupported_type_skipped() {
-        // List type is not supported, should be skipped
-        let schema = Arc::new(Schema::new(vec![
-            ArrowField::new("name", DataType::Utf8, false),
-            ArrowField::new(
-                "tags",
-                DataType::List(Arc::new(ArrowField::new("item", DataType::Utf8, true))),
-                true,
-            ),
-        ]));
-
-        let names: ArrayRef = Arc::new(StringArray::from(vec!["test"]));
-        // Create a batch with just the string field
-        let batch = RecordBatch::try_new(
-            Arc::new(Schema::new(vec![ArrowField::new(
-                "name",
-                DataType::Utf8,
-                false,
-            )])),
-            vec![names],
-        )
-        .unwrap();
-
-        let frame = batches_to_frame(&[batch], &schema, "test").unwrap();
-        // Should only have the name field since tags (List type) is not in the batch
-        assert_eq!(frame.fields().len(), 1);
     }
 
     #[test]
@@ -569,7 +368,7 @@ struct FlameBlock {
 fn decode_level(level: &[i64]) -> Vec<FlameBlock> {
     let mut blocks = Vec::with_capacity(level.len() / 4);
     let mut cursor = 0i64;
-    for chunk in level.chunks_exact(4) {
+    for chunk in level.as_chunks::<4>().0 {
         let start = cursor + chunk[0];
         blocks.push(FlameBlock {
             start,

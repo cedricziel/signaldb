@@ -1,11 +1,19 @@
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
+
 .api-keys-page {
   padding: 24px;
   max-width: 800px;
   margin: 0 auto;
 }
 
+@container app-main (max-width: 600px) {
+  .api-keys-page {
+    padding: 12px;
+  }
+}
+
 .api-keys-title {
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0 0 8px;
 }
@@ -24,6 +32,30 @@
   margin-bottom: 24px;
 }
 
+.api-keys-create h2,
+.api-keys-list h2 {
+  font-size: var(--text-section);
+  font-weight: 650;
+}
+
+/* The list card has no padding of its own (its rows carry it), so its
+   heading brings the row inset with it. */
+.api-keys-create h2 {
+  margin: 0 0 12px;
+}
+
+.api-keys-list h2 {
+  margin: 0;
+  padding: 14px 14px 4px;
+}
+
+.api-keys-field {
+  display: grid;
+  gap: 6px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
 .api-keys-form {
   display: grid;
   gap: 12px;
@@ -36,12 +68,6 @@
   border: 1px solid var(--border);
   border-radius: 5px;
   background: var(--surface2);
-}
-
-.api-keys-form button {
-  padding: 7px 11px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
 }
 
 .scope-picker {
@@ -80,6 +106,17 @@
   font-size: 11px;
 }
 
+/* .dataset-picker/.origin-picker (and their sub-elements) live in
+   DatasetPicker.css/OriginPicker.css, imported by those components — this
+   page just uses `.dataset-clear`, its own control next to the picker. */
+.dataset-clear {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
 .api-key-main {
   flex: 1;
   min-width: 0;
@@ -98,15 +135,8 @@
 .api-key-editor-actions,
 .api-key-actions {
   display: flex;
+  flex-wrap: wrap;
   gap: 8px;
-}
-
-.api-key-editor-actions button,
-.api-key-edit {
-  padding: 5px 9px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-  font-size: 12px;
 }
 
 .api-keys-list {
@@ -115,10 +145,17 @@
   border-radius: 10px;
 }
 
+.api-keys-list > ul {
+  margin: 0;
+  padding-left: 0;
+  list-style: none;
+}
+
 .api-key-row {
   display: flex;
   align-items: center;
   justify-content: space-between;
+  gap: 12px;
   padding: 12px 14px;
   border-bottom: 1px solid var(--border);
 }
@@ -146,35 +183,12 @@
   margin-top: 3px;
 }
 
-.api-key-revoke {
-  padding: 4px 10px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
-}
-
-.api-key-revoke:hover {
-  color: var(--err);
-  border-color: var(--err);
-}
-
-.secret-modal-backdrop {
-  position: fixed;
-  inset: 0;
-  z-index: 40;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: color-mix(in srgb, var(--surface) 72%, transparent);
-  backdrop-filter: blur(5px);
-}
-
-.secret-modal {
+/* Doubled with .dialog-panel so the accent edge wins on specificity, not on
+   which stylesheet the bundle happens to emit last. */
+.dialog-panel.secret-modal {
   width: min(500px, 100%);
   padding: 24px;
-  border: 1px solid var(--accent);
-  border-radius: 10px;
-  background: var(--surface);
-  box-shadow: 0 24px 80px rgb(0 0 0 / 35%);
+  border-color: var(--accent);
 }
 
 .secret-modal code {
@@ -190,13 +204,19 @@
 
 .secret-modal-footer {
   display: flex;
+  flex-wrap: wrap;
   gap: 12px;
   justify-content: flex-end;
   margin-top: 16px;
 }
 
-.secret-modal-footer button {
-  padding: 7px 11px;
-  border: 1px solid var(--border);
-  border-radius: 5px;
+@container app-main (max-width: 600px) {
+  .api-key-row {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .api-key-actions {
+    justify-content: flex-end;
+  }
 }

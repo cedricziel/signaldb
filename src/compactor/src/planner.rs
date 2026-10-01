@@ -45,7 +45,7 @@ pub struct CompactionCandidate {
 }
 
 /// Format bytes as MB with 2 decimal places
-fn format_mb(bytes: u64) -> String {
+pub(crate) fn format_mb(bytes: u64) -> String {
     format!("{:.2}", bytes as f64 / (1024.0 * 1024.0))
 }
 
@@ -564,10 +564,13 @@ mod tests {
             target_file_size_mb: 128,
             file_count_threshold: 10,
             max_input_file_size_kb: 65536,
+            value_sketch_size: 100,
             partition_lateness: std::time::Duration::from_secs(600),
             memory_limit_mb: 512,
             target_partitions: 1,
             max_partition_input_mb: 2048,
+            scan_batch_size: 1024,
+            sort_spill_reservation_mb: 10,
             retention: Default::default(),
             orphan_cleanup: Default::default(),
             attr_promotion: Default::default(),

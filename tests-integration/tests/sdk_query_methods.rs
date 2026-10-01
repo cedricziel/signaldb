@@ -15,13 +15,12 @@
 
 use acceptor::handler::WalManager;
 use acceptor::handler::otlp_metrics_handler::MetricsHandler;
-use common::CatalogManager;
 use common::auth::{TenantContext, TenantSource};
 use common::catalog::Catalog;
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use opentelemetry_proto::tonic::{
     collector::metrics::v1::ExportMetricsServiceRequest,
     common::v1::{AnyValue, KeyValue, any_value::Value},
@@ -32,7 +31,7 @@ use opentelemetry_proto::tonic::{
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterState, create_flight_service, create_router, discovery::ServiceRegistry};
+use router::{RouterAppState, create_flight_service, create_router};
 use signaldb_sdk::{Client, QueryClient};
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -41,7 +40,6 @@ use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 const BASE_NS: u64 = 1_700_000_000_000_000_000;
 const API_KEY: &str = "test-key-123";
@@ -63,7 +61,9 @@ fn test_tenant_context() -> TenantContext {
         dataset_slug: DATASET.to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -116,41 +116,11 @@ fn gauge_metrics(service: &str, value: f64) -> ExportMetricsServiceRequest {
     }
 }
 
-/// Concrete `RouterState` for the served router.
-#[derive(Clone)]
-struct State {
-    catalog: Catalog,
-    service_registry: ServiceRegistry,
-    config: Configuration,
-    authenticator: Arc<common::auth::Authenticator>,
-}
-impl std::fmt::Debug for State {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str("State")
-    }
-}
-impl RouterState for State {
-    fn catalog(&self) -> &Catalog {
-        &self.catalog
-    }
-    fn service_registry(&self) -> &ServiceRegistry {
-        &self.service_registry
-    }
-    fn config(&self) -> &Configuration {
-        &self.config
-    }
-    fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-        &self.authenticator
-    }
-}
-
 async fn setup() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("storage");
     std::fs::create_dir_all(&storage_path).unwrap();
     let storage_dsn = format!("file://{}", storage_path.display());
-    let object_store =
-        common::storage::create_object_store_from_dsn(&storage_dsn).expect("object store");
 
     let catalog_dsn = format!("sqlite://{}", temp_dir.path().join("catalog.db").display());
     let mut config = Configuration::default();
@@ -209,18 +179,29 @@ async fn setup() -> TestServices {
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let catalog_manager = Arc::new(
-        CatalogManager::new(config.clone())
-            .await
-            .expect("catalog mgr"),
-    );
-    let writer_service = IcebergWriterFlightService::new(
-        catalog_manager.clone(),
-        object_store.clone(),
-        writer_wal.clone(),
-        &common::config::WriterConfig::default(),
-    );
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
+    // One SQL catalog behind both the writer's type authority and the
+    // catalog manager's tenant source, so the querier's IR path resolves the
+    // canonical attribute types the writer commits.
+    let type_authority_catalog = Catalog::new(&config.discovery.as_ref().unwrap().dsn)
+        .await
+        .expect("type authority catalog");
+    let (catalog_manager, type_authority_catalog) =
+        tests_integration::test_support::catalog_manager_with_tenant_source(
+            config.clone(),
+            type_authority_catalog,
+        )
+        .await
+        .expect("catalog mgr");
+    let writer_service =
+        tests_integration::test_support::writer_service_with_type_authority_and_catalog(
+            catalog_manager.clone(),
+            writer_wal.clone(),
+            &common::config::WriterConfig::default(),
+            type_authority_catalog,
+        );
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -273,7 +254,17 @@ async fn setup() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager);
+    let processor_catalog = Arc::new(
+        Catalog::new(config.discovery.as_ref().unwrap().dsn.as_str())
+            .await
+            .expect("catalog"),
+    );
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let metrics_handler =
+        MetricsHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     // Wait for query + storage services to register.
     for attempt in 0..50 {
@@ -306,20 +297,11 @@ async fn serve_router(services: &TestServices) -> (String, String) {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
         (*services.flight_transport).clone(),
     );
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-    let state = State {
-        catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator,
-    };
 
     // HTTP app.
     let http_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();

@@ -1,12 +1,18 @@
+//! gRPC `TraceService` implementation — see `services` module docs for the
+//! shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::trace::v1::{
     ExportTraceServiceRequest, ExportTraceServiceResponse, trace_service_server::TraceService,
 };
 use tonic::{Request, Response, Status};
 
+use crate::handler::IngestError;
 use crate::handler::otlp_grpc::TraceHandler;
 use crate::middleware::get_tenant_context;
+use crate::type_warning::WithOffTypeWarning;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::schema::type_authority::TypeSnapshots;
 use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
@@ -17,7 +23,7 @@ pub trait TraceHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), IngestError>;
 }
 
 #[async_trait::async_trait]
@@ -26,7 +32,7 @@ impl TraceHandlerTrait for TraceHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_traces(tenant_context, request).await
     }
 }
@@ -35,6 +41,7 @@ pub struct TraceAcceptorService<H: TraceHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
     storage_quota: Option<Arc<StorageUsageTracker>>,
+    type_snapshots: Option<Arc<TypeSnapshots>>,
 }
 
 impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
@@ -43,6 +50,7 @@ impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
             handler,
             rate_limiter: None,
             storage_quota: None,
+            type_snapshots: None,
         }
     }
 
@@ -55,6 +63,12 @@ impl<H: TraceHandlerTrait> TraceAcceptorService<H> {
     /// Enforce per-tenant storage quotas on this service.
     pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
         self.storage_quota = Some(storage_quota);
+        self
+    }
+
+    /// Warn senders of off-type attribute values via `partial_success`.
+    pub fn with_type_snapshots(mut self, type_snapshots: Arc<TypeSnapshots>) -> Self {
+        self.type_snapshots = Some(type_snapshots);
         self
     }
 }
@@ -105,6 +119,14 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
             .sum();
         let rpc_start = std::time::Instant::now();
 
+        // Computed before the handler takes ownership of the request.
+        let off_type_warning = crate::type_warning::off_type_warning(
+            self.type_snapshots.as_ref(),
+            &tenant_context,
+            "traces",
+            &request_inner,
+        );
+
         // Anti-loop guard: processing the _system tenant's own telemetry must
         // not generate more self-monitoring telemetry.
         let handle = self
@@ -117,14 +139,21 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
                 handle.await
             };
 
-        // Reject the export if the data was not durably accepted, so the
-        // client retries instead of dropping its copy (OTLP treats
-        // UNAVAILABLE as retryable).
+        // Classify the failure (finding M3): a deterministic conversion
+        // failure is INVALID_ARGUMENT (retrying the same bytes will fail
+        // again), while a WAL/durability failure stays UNAVAILABLE so the
+        // client retries instead of dropping its copy.
         if let Err(e) = result {
-            tracing::error!(error = %e, "Failed to durably accept trace export");
-            return Err(Status::unavailable(format!(
-                "failed to durably accept trace export: {e:#}"
-            )));
+            return Err(match e {
+                IngestError::Invalid(err) => {
+                    tracing::warn!(error = %err, "Rejecting trace export: invalid payload");
+                    Status::invalid_argument(format!("invalid trace payload: {err:#}"))
+                }
+                IngestError::Unavailable(err) => {
+                    tracing::error!(error = %err, "Failed to durably accept trace export");
+                    Status::unavailable(format!("failed to durably accept trace export: {err:#}"))
+                }
+            });
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -152,7 +181,9 @@ impl<H: TraceHandlerTrait + Send + Sync + 'static> TraceService for TraceAccepto
             )],
         );
 
-        Ok(Response::new(ExportTraceServiceResponse::default()))
+        Ok(Response::new(
+            ExportTraceServiceResponse::with_off_type_warning(off_type_warning),
+        ))
     }
 }
 
@@ -163,7 +194,7 @@ impl TraceHandlerTrait for crate::handler::otlp_grpc::MockTraceHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportTraceServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_traces(tenant_context, request).await
     }
 }
@@ -178,7 +209,7 @@ mod tests {
         trace::v1::{ResourceSpans, ScopeSpans, Span, Status as SpanStatus, span::SpanKind},
     };
 
-    /// Handler that always fails before WAL durability
+    /// Handler that always fails with a WAL/durability error (transient).
     struct FailingTraceHandler;
 
     #[async_trait::async_trait]
@@ -187,8 +218,26 @@ mod tests {
             &self,
             _tenant_context: &TenantContext,
             _request: ExportTraceServiceRequest,
-        ) -> anyhow::Result<()> {
-            anyhow::bail!("WAL unavailable")
+        ) -> Result<(), IngestError> {
+            Err(IngestError::Unavailable(anyhow::anyhow!("WAL unavailable")))
+        }
+    }
+
+    /// Handler that always fails with a deterministic conversion error
+    /// (finding M3), distinct from [`FailingTraceHandler`]'s transient
+    /// failure.
+    struct InvalidPayloadTraceHandler;
+
+    #[async_trait::async_trait]
+    impl TraceHandlerTrait for InvalidPayloadTraceHandler {
+        async fn handle_grpc_otlp_traces(
+            &self,
+            _tenant_context: &TenantContext,
+            _request: ExportTraceServiceRequest,
+        ) -> Result<(), IngestError> {
+            Err(IngestError::Invalid(anyhow::anyhow!(
+                "OTLP to Arrow conversion failed"
+            )))
         }
     }
 
@@ -200,7 +249,9 @@ mod tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -225,6 +276,24 @@ mod tests {
         assert!(status.message().contains("durably accept"));
     }
 
+    #[tokio::test]
+    async fn export_rejects_with_invalid_argument_when_conversion_fails() {
+        // Finding M3: a deterministic conversion failure must map to
+        // INVALID_ARGUMENT (400), not UNAVAILABLE.
+        let service = TraceAcceptorService::new(InvalidPayloadTraceHandler);
+
+        let mut tonic_request = Request::new(ExportTraceServiceRequest::default());
+        tonic_request.extensions_mut().insert(test_tenant_context());
+
+        let status = service
+            .export(tonic_request)
+            .await
+            .expect_err("export must fail when the payload cannot be converted");
+
+        assert_eq!(status.code(), tonic::Code::InvalidArgument);
+        assert!(status.message().contains("invalid trace payload"));
+    }
+
     /// Handler that always succeeds (rate-limit tests must fail before it).
     struct NoopTraceHandler;
 
@@ -234,7 +303,7 @@ mod tests {
             &self,
             _tenant_context: &TenantContext,
             _request: ExportTraceServiceRequest,
-        ) -> anyhow::Result<()> {
+        ) -> Result<(), IngestError> {
             Ok(())
         }
     }
@@ -314,8 +383,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_trace_acceptor_service() {
-        let mut mock_handler = MockTraceHandler::new();
-        mock_handler.expect_handle_grpc_otlp_traces();
+        let mock_handler = MockTraceHandler::new();
 
         let service = TraceAcceptorService::new(mock_handler);
 
@@ -370,7 +438,9 @@ mod tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,

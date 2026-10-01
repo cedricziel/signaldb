@@ -1,0 +1,6 @@
+/* Fullscreen stories (every `Pages/*` and `Shell/*` story) get a definite
+   height chain, html -> body (global.css) -> #storybook-root, so a page's
+   `height: 100%` layouts resolve like they do under the app's `#root`. */
+.sb-main-fullscreen #storybook-root {
+  height: 100%;
+}

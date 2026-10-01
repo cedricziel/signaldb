@@ -45,8 +45,8 @@ Your data is organized as `catalog.schema.table`:
 
 - **catalog** = your tenant slug
 - **schema** = your dataset slug
-- **tables** = `traces`, `logs`, `metrics_gauge`, `metrics_sum`,
-  `metrics_histogram`
+- **tables** = `traces`, `logs`, `metrics` (one row per data point of every
+  metric type, told apart by its `metric_type` column), `metric_exemplars`
 
 When you authenticate, the session's default catalog and schema are pinned
 to your tenant and dataset, so unqualified names work:

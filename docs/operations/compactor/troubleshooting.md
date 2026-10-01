@@ -21,6 +21,7 @@ Comprehensive troubleshooting guide for SignalDB Compactor retention and lifecyc
 - [Debug Procedures](#debug-procedures)
 - [Common Error Messages](#common-error-messages)
 - [Attribute Promotion](#attribute-promotion)
+- [Value Sketches for Query Discovery](#value-sketches-for-query-discovery)
 
 ## Quick Diagnosis
 
@@ -334,7 +335,7 @@ it does not classify is invisible to every lifecycle job.
 Compare per-table snapshot counts to spot the outlier:
 
 ```bash
-for t in traces logs metrics_gauge profiles; do
+for t in traces logs metrics metric_exemplars profiles; do
   echo -n "$t: "
   jq '.snapshots | length' \
     .data/storage/<tenant>/<dataset>/$t/metadata/*.metadata.json 2>/dev/null | tail -1
@@ -483,6 +484,14 @@ If cleanup is being skipped because the estimated live file count exceeds
 `max_live_files_threshold`, run snapshot expiration and compaction first to
 reduce file counts before raising the threshold.
 
+**What memory should look like:** a detection pass holds one 64-bit
+fingerprint per live file plus one entry per orphan candidate. It does not
+hold the object-store listing, the manifest entries, or a copy of the live
+set per snapshot, and a manifest shared by several retained snapshots is
+fetched once. If resident memory grows with the _listing_ rather than with
+the live-file and candidate counts, that is a regression, not a tuning
+problem — see [How detection scales](operations.md#how-detection-scales).
+
 ## Performance Issues
 
 ### Issue 8: High CPU Usage During Retention
@@ -595,6 +604,21 @@ _concurrency_, not by one oversized partition. Every DataFusion partition gets
 its own sorter plus an unspillable merge reservation, and they all divide the
 single `memory_limit_mb` budget.
 
+**Read the error before choosing a fix — it has two shapes.** The number that
+tells them apart is how much the failing sorter had _already_ allocated:
+
+| In the error                                                              | Cause                               | Fix                                                   |
+| ------------------------------------------------------------------------- | ----------------------------------- | ----------------------------------------------------- |
+| several `ExternalSorter[N]`, the failing one holding a substantial amount | fan-out divides the pool            | lower `target_partitions`, or raise `memory_limit_mb` |
+| one `ExternalSorter[0]` with **`0.0 B` already allocated**                | a single incoming batch is too wide | lower `scan_batch_size`                               |
+
+The second shape is a batch-size problem, not a pool-size one: the sorter's
+first reservation for a single batch already exceeds the pool, so raising the
+pool only moves the ceiling. See
+[Configuration](configuration.md#compactor) for why row width, not row count,
+decides that — and Issue 14 below for the cooldown these repeated failures
+trigger.
+
 **Diagnostic Steps:**
 
 ```bash
@@ -625,10 +649,21 @@ target_partitions = 1
 memory_limit_mb = 1024
 ```
 
-3. **Check the startup warnings.** The compactor logs an explicit warning when
-   `target_file_size_mb` is at or above `memory_limit_mb`, or when the
-   per-sorter share is below the spill floor. Both combinations produce this
-   failure and neither is visible from any single setting.
+3. **Shrink the scan batch** when the failing sorter had `0.0 B` allocated —
+   the wide-row shape above. Divide the requested size by the pool to see how
+   far it must come down; the default is already 8x below DataFusion's:
+
+```toml
+[compactor]
+scan_batch_size = 256
+```
+
+4. **Check the startup warnings.** The compactor logs an explicit warning when
+   `target_file_size_mb` is at or above `memory_limit_mb`, when the per-sorter
+   share is below the spill floor, or when `sort_spill_reservation_mb` claims
+   half or more of that share. Each combination produces this failure and none
+   is visible from any single setting. Note that no startup check can catch
+   the wide-row case: row width is a property of the data, not of the config.
 
 ### Issue 14: A Partition Stops Being Compacted After Repeated Failures
 
@@ -834,8 +869,9 @@ network outages.
 2. **The Holder Is Alive and Genuinely Slow:**
 
 A lease that keeps being renewed is not stale. Check whether the holder is
-still executing the job (`compactor_jobs_started_total` vs
-`compactor_jobs_succeeded_total`) before assuming a crash.
+still executing the job (`sum(compactor_jobs_started_total)` vs
+`sum(compactor_jobs_succeeded_total)` — both counters are labelled by table)
+before assuming a crash.
 
 ## Debug Procedures
 
@@ -1021,6 +1057,29 @@ WARN compactor::retention::enforcer: Table retention enforcement failed signaldb
 
 2. Retry - operations are idempotent; the next retention cycle will re-evaluate the same partitions.
 
+### Warning: "Table retention enforcement completed with errors"
+
+**Full Message:**
+
+```text
+WARN compactor::retention::enforcer: Table retention enforcement completed with errors signaldb.tenant.id=acme signaldb.dataset.id=prod signaldb.table=traces signaldb.job.partitions_dropped=48 error=Failed to expire old snapshots: ...
+```
+
+**Cause:** the partition-drop step committed successfully but the
+follow-up snapshot-expiration step then failed. Unlike "Table retention
+enforcement failed" above (the table's whole retention pass failed before
+any work landed), this table's `signaldb.job.partitions_dropped` /
+`bytes_reclaimed` counts on this event, and the run's totals, reflect real,
+already-committed work — the partition drop is not retried or rolled back.
+
+**Solutions:**
+
+1. Check catalog connectivity (same as "Table retention enforcement
+   failed" above) — the snapshot-expiration commit failed for the same
+   reasons a partition-drop commit would.
+2. Retry - the next retention cycle re-evaluates snapshot expiration for
+   this table on its own; no partition drop is repeated.
+
 ### Error: "Failed to delete orphan file"
 
 **Full Message:**
@@ -1096,13 +1155,75 @@ in a single pass — at `INFO` that flooded the log at startup. The per-batch
 
 ## Attribute Promotion
 
-**A `label_<key>` column appeared that is not in `[schema.materialized_labels]`:** attribute auto-promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor promotes frequently queried attribute keys to columns at rewrite (see the [operations guide](operations.md#attribute-promotion)).
+**An `attr_<level>_<key>` column appeared:** attribute promotion added it. With `[compactor.attr_promotion].dry_run = false`, the compactor copies frequently queried attributes into typed columns at rewrite (see the [operations guide](operations.md#attribute-promotion)). The column's `doc` names its origin level and key. New `label_<key>` columns come only from `[schema.materialized_labels]`.
 
-**How to tell a promotion happened:** look for `Added materialized label columns via schema evolution` in the compactor logs (table, schema id, columns), or compare the table's current schema against your pinned config. The preceding `Attribute promotion decision` line shows why the key qualified.
+**How to tell a promotion happened:** look for `Added typed promoted attribute columns via schema evolution` in the compactor logs (table, schema id, columns). The preceding `Typed attribute promotion decision` line shows what qualified and what is still building its streak.
+
+**A promotion was skipped:** two warnings mean the compactor left an existing column alone:
+
+- `Skipping promoted attribute column: name already taken by a field of a different origin` — another column already holds that name. It is never retyped or reused; the key stays in its typed map.
+- `Promoted attribute column already exists with a different type; left unchanged` — the key was repinned to a new canonical type after promotion. The rewrite leaves the column null and the querier ignores it; demotion removes it once it goes idle.
 
 **How to stop promotions:** set `[compactor.attr_promotion].dry_run = true` (decisions are still logged, nothing changes) or `enabled = false` (no decision pass at all). Columns already added stay in place; they are nullable and harmless to queries.
 
-**Removing a promoted column:** demotion is acted on at rewrite: unpinned promoted columns with no recorded query demand are dropped from the schema at the next compaction cycle (the data remains queryable through the attributes map). To force-keep a column, pin it in `[schema.materialized_labels]`.
+**Removing a promoted column:** a promoted column not queried within `demote_after_idle` (default `7d`) is dropped at the next rewrite, and the least recently queried ones are dropped while the table is over `max_labels_per_table`. Dropping loses no data: the typed map still holds every value. Unpinned `label_<key>` columns with no query hits are dropped the same way; pin a key in `[schema.materialized_labels]` to keep its label column.
+
+## Sort Order and Ordering Attestation
+
+**Warning `No sort configuration for table <name>, data will not be sorted`:**
+the compactor does not recognize the table as one of SignalDB's signal tables,
+so it has neither a declared sort order to read nor a canonical key to fall
+back on. Its data is compacted unsorted. Expect this only for a custom table;
+seeing it for `traces`, `logs`, `metrics_*` or `profiles` means the table name
+in the catalog is not what the compactor expects.
+
+**Debug `Table declares no sort order; sorting by the canonical key and writing
+unattested`:** the table predates the
+[declared sort order](../../architecture/storage-layout.md#declared-sort-order)
+and no writer has reconciled it yet. Compaction still sorts its output, but the
+files carry no ordering claim, so ordered queries over them keep an explicit
+sort. It resolves itself the next time a writer loads the table (which declares
+the order) and compacts it again — no action needed.
+
+**Warning `Cannot read the declared sort order; writing files unattested`:** the
+table's metadata could not be resolved far enough to read its schema or default
+sort order. Output is still written and still correct, just unattested. This is
+a metadata problem rather than a compaction one: check the catalog is reachable
+and the table's current schema resolves.
+
+**Ordered queries got slower after a compaction:** check whether the partition's
+files are attested. A partition holding even one unattested file cannot have its
+sort elided, so `ORDER BY timestamp … LIMIT n` falls back to sorting the range.
+Compacting the partition again once the table declares an order converges it.
+
+## Value Sketches for Query Discovery
+
+**Query discovery suggests no values for a key, only "no metadata covers this":**
+expected in three cases, all by design. The key's distinct values exceeded the
+analyzer's cardinality cap, so no sketch is kept at all — a partial list of a
+runaway key would be a confident wrong answer, and discovery reports it as
+uncovered instead. Or no compaction pass has yet covered that tenant's data (a
+fresh tenant, or a key first seen since the last pass), so nothing has been
+recorded to suggest from. Or `[compactor].value_sketch_size = 0`, which disables
+sketch storage while still counting presence.
+
+**How to tell which:** check whether the key has a row in the service catalog's
+`attribute_value_stats` table. No row plus a row in `attribute_stats` means the
+key was seen but its sketch was withheld (cap exceeded, or sketching disabled);
+no row in either means no pass has covered it yet.
+
+**Suggested values are stale or list values that no longer occur:** each pass
+replaces a key's sketch wholesale rather than merging into it, so suggestions
+follow the data — but only as of the last compaction pass over that data. The
+response's `cost.as_of` reports that timestamp, and `cost.approximate` is `true`
+for any sketch-derived answer. If suggestions lag further than expected, the
+compaction cycle covering that partition is the thing to check, not the sketch.
+
+**Suggestions appear for a tenant that should not see them:** sketches are stored
+per tenant and discovery never reads another tenant's rows. If this is ever
+observed, treat it as an isolation defect rather than a discovery bug and report
+it — there is a regression test asserting exactly this
+(`another_tenants_sketch_is_never_suggested`).
 
 ## Additional Resources
 

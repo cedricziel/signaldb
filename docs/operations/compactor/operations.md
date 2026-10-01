@@ -50,10 +50,25 @@ memory_limit_mb` budget (default 512 MB), spilling to disk past it. The
 > the partition. The rewrite sorts with a fan-out of `[compactor]
 target_partitions` (default `1`): the sorters share the one budget, so
 > raising the fan-out divides it and can exhaust the pool on concurrency
-> alone. The compactor warns at startup when these settings cannot work
-> together — a target file size at or above the pool, or a per-sorter share
-> too small for a spilling sort to use — since neither is visible from any
-> single value.
+> alone. It reads the partition in batches of `[compactor] scan_batch_size`
+> rows (default `1024`, below DataFusion's 8192): the sort reserves roughly
+> twice a batch's bytes before it can spill anything, so on a table with wide
+> rows the default row count would put a single unspillable reservation above
+> the whole pool. The compactor warns at startup when these settings cannot
+> work together — a target file size at or above the pool, a per-sorter share
+> too small for a spilling sort to use, or a spill reservation claiming half
+> of that share — since none is visible from any single value.
+>
+> **What the rewrite sorts by:** the table's own declared sort order (see
+> [Storage Layout](../../architecture/storage-layout.md#declared-sort-order)),
+> not a key list held by the compactor. Its output files record that order, so
+> a partition that held files written before the declaration existed comes out
+> fully attested — compaction is how such files converge, and there is no
+> backfill job. A table that has no declaration yet is still sorted by the
+> canonical key, but its output is written unattested, since there is no
+> declared order for it to claim. See
+> [Ordered queries and sort-order attestation](../query-ordering.md) for what
+> that means for query behavior and how to turn it off.
 >
 > **Default behavior:** The compactor and retention enforcement are **enabled by default** with `dry_run = false` and a 30-day retention period for traces, logs, metrics, and profiles. A default deployment deletes data older than 30 days. To keep data indefinitely, set `[compactor.retention].enabled = false`; to keep it longer, raise the per-signal durations. Orphan cleanup is also **enabled by default** with `dry_run = false` and physically reclaims files no retained snapshot references — data Parquet and unreferenced metadata files (old metadata.json versions, expired snapshots' manifests) alike; set `[compactor.orphan_cleanup].enabled = false` to opt out or `dry_run = true` to observe first.
 
@@ -296,7 +311,11 @@ curl -s localhost:9091/metrics | grep -E "compactor_(orphan_candidates_identifie
 
 ### Key Metrics to Monitor
 
-All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Counters are process-global — there are no per-tenant, per-dataset, or per-table labels. The labelled metrics are `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}` and the `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` label on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
+All lifecycle counters are exported at `localhost:9091/metrics` (see `src/compactor/src/http.rs` for the authoritative list). Most are process-global, with three exceptions worth knowing:
+
+- the job counters — `compactor_jobs_started_total`, `compactor_jobs_succeeded_total` and `compactor_jobs_failed_total` — carry `signaldb_tenant_id`, `signaldb_dataset_id` and `signaldb_table`, and the failure counter additionally carries `error_type` (see [Compaction Retries](#compaction-retries) below). Their names and label sets are declared in the SignalDB convention registry, `otel/registry/signaldb.yaml`;
+- `compactor_orphan_cleanup_skipped_total{reason="live_files_threshold_exceeded"}`;
+- `cycle="compaction"|"lease_expiry"|"retention"|"orphan_cleanup"` on `compactor_cycle_panics_total` / `compactor_cycle_down` (see [Lifecycle Task Recovery](#lifecycle-task-recovery) below).
 
 #### Compaction Retries
 
@@ -319,6 +338,37 @@ Retries far in excess of conflicts mean infrastructure flakiness rather than
 contention. The `error_class` field on each job's failure log says which class
 a given failure was.
 
+**Which table is failing.** The job counters carry the tenant, dataset and
+table they acted on, and failures additionally carry the error type — so the
+first question after "jobs are failing" is answerable from the metric rather
+than from the logs:
+
+```promql
+# Failures by table, worst first
+topk(5, sum by (signaldb_tenant_id, signaldb_dataset_id, signaldb_table) (
+  increase(compactor_jobs_failed_total[6h])
+))
+
+# Is a table failing occasionally, or every time?
+sum by (signaldb_table) (increase(compactor_jobs_failed_total[6h]))
+  / sum by (signaldb_table) (increase(compactor_jobs_started_total[6h]))
+
+# Self-resolving contention, or a job that will never succeed as configured?
+sum by (signaldb_table, error_type) (increase(compactor_jobs_failed_total[6h]))
+```
+
+An `error_type` of `conflict` means another actor committed first and the work
+will be retried. Anything else on a table that fails _every_ attempt means the
+partition is heading for [cooldown](#compaction-backoff) and will stop being
+attempted at all — that is the shape to alert on. Label names are the
+Prometheus rendering of the attributes declared in the SignalDB convention
+registry (`otel/registry/signaldb.yaml`); the label set is bounded, and tables
+past that bound are counted under `__overflow__` rather than dropped.
+
+> **Breaking change:** these three counters previously had no labels. A query
+> that read `compactor_jobs_failed_total` as a bare scalar must now aggregate:
+> `sum(compactor_jobs_failed_total)`.
+
 #### Lease Recovery
 
 **Stale Leases Expired:**
@@ -339,6 +389,14 @@ renewal calls failing against the catalog, catalog or network latency
 swallowing the `ttl / 3` renewal window, and process pauses (long GC-like
 stalls, suspended containers). A TTL that is simply too short for your job
 durations is the last of these, not the first.
+
+A single renewal miss against a SQLite catalog is not by itself a sign of
+trouble: the renewal retries transient `SQLITE_BUSY`/`SQLITE_LOCKED`
+contention internally and logs at WARN, only escalating to ERROR once
+renewal has been failing continuously past the full lease TTL — which is
+the point a concurrent instance could actually steal the lease (#1495). Grep
+for that ERROR line, not the WARN, when triaging a lease actually lost to
+renewal failure.
 
 #### Lifecycle Task Recovery
 
@@ -812,14 +870,44 @@ snapshots_to_keep = 5
 max_live_files_threshold = 500000
 ```
 
-**Memory Optimization:**
+#### How detection scales
 
-```rust
-// For very large tables (millions of files), consider:
-// - Incremental scanning (scan per partition)
-// - Bloom filters for reference set
-// - Database-backed reference set instead of in-memory HashSet
-```
+Detection cost per table is bounded by three quantities, none of which grows
+with the number of snapshots that reference the same file:
+
+| Resource                       | Cost                                                                 | Notes                                                                                                                                                                     |
+| ------------------------------ | -------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Manifest-list reads            | one per retained snapshot                                            | `snapshots_to_keep` is the lever                                                                                                                                          |
+| Manifest file reads            | one per _distinct_ manifest                                          | manifests shared by several retained snapshots are deduplicated by path before any of them is fetched, so a manifest referenced by all 14 retained snapshots is read once |
+| Manifest entries in memory     | one manifest's worth                                                 | entries are streamed; only the live path is inspected, never collected                                                                                                    |
+| Live set in memory             | one 64-bit fingerprint per live file (≈16 bytes per hash-table slot) | a 500k-file table costs single-digit MB, not the ~75 MB the same set of path strings would                                                                                |
+| Object-store listing in memory | zero                                                                 | the `data/` (and `metadata/`) listing is streamed and each entry is decided as it arrives                                                                                 |
+| Candidates in memory           | one entry per orphan candidate                                       | this, plus the live set, is the working set of a cleanup pass                                                                                                             |
+
+Consequences for tuning:
+
+- Peak memory tracks the **live file count** and the **orphan count**, not the
+  total object-store listing length and not the snapshot count. A table with
+  tens of thousands of files across a handful of shared manifests is cheap.
+- Lowering `snapshots_to_keep` reduces manifest-list reads and can shrink the
+  live set (files referenced only by expired snapshots stop being protected),
+  but it does not change the per-file memory cost.
+- `max_live_files_threshold` remains the backstop for pathological tables. It
+  is evaluated from manifest-list metadata _before_ any manifest is fetched,
+  so a table over the cap costs one manifest-list read per retained snapshot
+  and nothing else.
+
+Two deliberate non-goals:
+
+- **Fingerprints, not paths.** The live set stores a 64-bit hash of each live
+  path. A collision can only make an orphan look live — the file is kept, not
+  deleted — so the failure direction is "reclaim later", never "delete a live
+  file".
+- **One table-scoped listing, not per-partition listings.** Orphans can sit
+  under partition prefixes that table metadata no longer mentions (that is
+  precisely what makes them orphans), so cleanup lists the whole `data/`
+  prefix. Listing per partition prefix would issue more requests for the same
+  objects and would silently skip orphans in dropped partitions.
 
 ### Concurrent Operation Tuning
 
@@ -861,21 +949,39 @@ export AWS_S3_USE_ACCELERATE_ENDPOINT=true
 
 ## Attribute Promotion
 
-With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes qualifying attribute keys to materialized `label_<key>` columns as part of a normal compaction rewrite. Each acted-on promotion makes two commits per table:
+With [`[compactor.attr_promotion]`](configuration.md#attribute-promotion-configuration) enabled and `dry_run = false`, the compactor promotes frequently queried attributes to typed columns as part of a normal compaction rewrite. Promotion works per (attribute level, key): the same key at resource, scope, and record level is three candidates, each with its own column `attr_<level>_<key>` typed as the key's canonical type (`String` → string, `Int64` → long, `Float64` → double, `Bool` → boolean). See `docs/architecture/storage-layout.md` for the naming rule.
 
-1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns. No data files change; readers null-fill the new columns until the rewrite lands.
-2. **Rewrite/delta commit** (the normal compaction commit): every row _in the partition being compacted_ is rewritten with the label values backfilled from its attributes (resource, then scope, then record attributes). Existing label columns are recomputed too, healing rows the writer left null during the transition window. Because compaction is partition-scoped, backfill reaches a table's older rows as their partitions are compacted, not all at once.
+A promoted column is a **copy**. The key's typed map (`{container}_str`/`_int`/`_double`/`_bool`) stays its one home and keeps every value; the column only duplicates it so filters can use column statistics. Demotion therefore drops the column in a metadata-only commit, loses nothing, and does not change query results.
+
+A (level, key) is promoted when all of these hold for `promote_streak` consecutive cycles: it has a canonical type at that level, the table has that level's attribute container, the key is not machine-generated-looking or capped by the analyzer, its presence is at least `min_presence`, it has at least `min_query_hits` query hits, and it was queried within `demote_after_idle`. Candidates are ranked by `query_hits × presence`; at most `max_promotions_per_cycle` are promoted per cycle, within `max_labels_per_table`.
+
+Demotion runs before promotion in each cycle:
+
+1. A promoted column whose (level, key) was not queried within `demote_after_idle` is demoted.
+2. If the table is still over `max_labels_per_table`, the least recently queried promoted columns are demoted until it fits.
+
+A pair demoted in a cycle is not re-promoted in the same cycle. The budget counts promoted columns and `label_<key>` columns together.
+
+Each acted-on promotion makes two commits per table:
+
+1. **Schema flip** (before the rewrite): a metadata-only `AddSchema` + `SetCurrentSchema` commit adds the promoted columns with fresh Iceberg field ids. No data files change; readers null-fill the new columns until the rewrite lands.
+2. **Rewrite/delta commit** (the normal compaction commit): every row _in the partition being compacted_ is rewritten with each promoted column filled from its level's typed home. Because compaction is partition-scoped, backfill reaches older rows as their partitions are compacted. A column whose type no longer matches the key's canonical type (the key was repinned) is left null, and the querier ignores it.
 
 A schema-evolution failure is logged as a warning and the compaction continues under the old schema — promotion never fails a rewrite.
 
+**Queries stay correct during the transition window**: the querier reads `coalesce(promoted column, typed home)` per level, so a row the rewrite has not backfilled yet still returns its value from the map. The writer does not fill promoted columns.
+
+**Legacy `label_<key>` columns**: the compactor no longer adds new ones. Existing ones and `[schema.materialized_labels]` pins stay; pins are never demoted, and an unpinned label column with no query hits is dropped at rewrite as before.
+
 **What operators see in the logs:**
 
-- `Attribute promotion decision` (info) — per table: `dry_run`, `promote`, `demote`, and `building` (keys still accumulating their hysteresis streak).
-- `Added materialized label columns via schema evolution` (info) — the schema flip landed; lists the table, new schema id, and columns.
-- `Failed to evolve schema for attribute promotion; continuing compaction without it` (warn) — the flip failed; the rewrite proceeded without new columns.
+- `Typed attribute promotion decision` (info) — per table: `dry_run`, the (level, key) pairs to promote, and those still `building` their streak.
+- `Typed attribute demotion decision` (info) — per table: `dry_run` and the (level, key) pairs to demote (idle or over budget).
+- `Added typed promoted attribute columns via schema evolution` / `Removed typed promoted attribute columns via schema evolution` (info) — a promotion or demotion schema commit landed; lists the table, schema id, and columns.
+- `Failed to evolve schema for attribute promotion; continuing compaction without it` and `Failed to evolve schema for attribute demotion; continuing compaction without it` (warn) — the schema commit failed; the rewrite proceeded under the old schema.
 - The usual `Rewrote table data into compacted files` line covers the backfilled rewrite — there is no separate backfill log line, and no promotion-specific Prometheus metric yet.
 
-Demotion candidates are dropped at rewrite (schema commit without the column, after the promote half; the rewrite then omits it — attribute data stays in the map tier). Pinned `[schema.materialized_labels]` entries are never demoted. Note: demand counters are cumulative today, so a once-queried key is not demoted until a demand-decay window lands (follow-up).
+See [troubleshooting](troubleshooting.md#attribute-promotion) for the skip warnings.
 
 ## Additional Resources
 
@@ -883,4 +989,4 @@ Demotion candidates are dropped at rewrite (schema commit without the column, af
 - [Troubleshooting Guide](troubleshooting.md)
 - [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 
-> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass requires no configuration and changes no table data; the promotion pass built on it is covered in [Attribute Promotion](#attribute-promotion).
+> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). The same pass also counts presence per (attribute level, key) — resource/scope/record, from the typed layout's four typed homes only, never the off-type residue — into the catalog's `attribute_level_stats` table, which, together with per-level query demand recorded by the querier, drives [Attribute Promotion](#attribute-promotion); the flat `attribute_stats` does not. The same pass records a bounded per-key **value sketch** (the most frequent values with their counts, sized by `value_sketch_size`, default 100) into `attribute_value_stats`, which is what lets query discovery suggest values without reading data — a key whose distinct values exceed the analyzer's cardinality cap keeps no sketch, so a runaway key is reported as uncovered rather than partially suggested. Each pass replaces a key's sketch wholesale, so suggestions follow the data rather than accumulating values that have stopped occurring. Apart from `value_sketch_size` this pass requires no configuration and changes no table data; the promotion pass built on it is covered in [Attribute Promotion](#attribute-promotion).

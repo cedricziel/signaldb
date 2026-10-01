@@ -15,6 +15,10 @@ PostgreSQL and S3-compatible object storage.
 
 ![SignalDB Explore UI showing live logs from two services with level colors, a volume histogram, and a fields sidebar](docs/assets/screenshots/explore-logs.png)
 
+**Try it:** [signaldb-demo.58lab.org](https://signaldb-demo.58lab.org) runs SignalDB
+fed by the [OpenTelemetry Demo](https://github.com/open-telemetry/opentelemetry-demo)
+shop. Sign in with `demo@example.com` / `demo` (read-only).
+
 ## Why homelabbers run it
 
 - **One process, no dependencies.** SQLite catalog, local-disk storage,

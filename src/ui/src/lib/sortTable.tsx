@@ -54,6 +54,7 @@ export function SortTh({
   toggle,
   numeric = false,
   firstDir,
+  className,
 }: {
   label: string;
   sortKey: string;
@@ -63,11 +64,16 @@ export function SortTh({
   numeric?: boolean;
   /** Overrides the first-click direction (e.g. timestamps: newest first). */
   firstDir?: SortDir;
+  /** Extra class(es) on the `<th>`, e.g. a responsive column-priority hook
+   * that a matching `<td>` shares (see traces.css's `.col-secondary`). */
+  className?: string;
 }) {
   const active = sort.key === sortKey;
   return (
     <th
-      className={numeric ? "num" : undefined}
+      className={
+        [numeric && "num", className].filter(Boolean).join(" ") || undefined
+      }
       aria-sort={
         active ? (sort.dir === "asc" ? "ascending" : "descending") : undefined
       }

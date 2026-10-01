@@ -1,16 +1,25 @@
+mod correlate_cap;
 pub mod error;
+mod graph;
 pub mod histogram;
 pub mod ir_planner;
 pub mod logql;
 pub mod logql_metric;
 pub mod logs;
-pub mod metrics;
+pub mod metric_metadata;
+pub mod metric_ops;
+pub(crate) mod metric_series;
+mod page_cut;
+mod planner;
 pub mod profile;
-pub mod promql;
 pub mod search_filter;
+pub(crate) mod structural_match;
 pub mod table_lookup;
 pub mod table_ref;
+pub(crate) mod tags_to_ir;
 pub mod trace;
+pub(crate) mod typed_attrs;
+pub(crate) mod warm_index;
 
 /// Parameters carried in the `query_logs` Flight ticket (JSON-encoded).
 ///
@@ -44,25 +53,15 @@ pub struct IrQueryParams {
     /// Server-received clock, unix epoch nanoseconds, for resolving relative
     /// time anchors deterministically.
     pub now_ns: i64,
+    /// Sort, resume and cut the result as one page (`query-result-pagination`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<common::query_cursor::PageRequest>,
 }
 
 /// Parameters carried in the `query_metric` Flight ticket (JSON-encoded).
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 pub struct MetricQueryParams {
     /// The LogQL metric query string.
-    pub query: String,
-    /// Inclusive range start, unix epoch nanoseconds.
-    pub start: i64,
-    /// Inclusive range end, unix epoch nanoseconds.
-    pub end: i64,
-    /// Bucket width (query resolution) in nanoseconds.
-    pub step: i64,
-}
-
-/// Parameters carried in the `query_promql` Flight ticket (JSON-encoded).
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct PromQlQueryParams {
-    /// The PromQL query string.
     pub query: String,
     /// Inclusive range start, unix epoch nanoseconds.
     pub start: i64,
@@ -137,7 +136,7 @@ pub struct FindTraceByIdParams {
 /// Mirrors the Tempo search API. `spss` (spans per span set) is applied by
 /// the router when shaping the HTTP response and is intentionally absent
 /// here; unknown JSON fields in the ticket are ignored on deserialization.
-#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[derive(Debug, Clone, Default, serde::Serialize, serde::Deserialize)]
 pub struct SearchQueryParams {
     pub q: Option<String>,
     pub tags: Option<String>,

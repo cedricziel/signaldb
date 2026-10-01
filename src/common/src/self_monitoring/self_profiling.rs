@@ -522,9 +522,9 @@ impl ProfileDict {
                         ..Default::default()
                     }),
                     profiles: vec![profile],
-                    schema_url: String::new(),
+                    schema_url: super::SIGNALDB_SCHEMA_URL.to_string(),
                 }],
-                schema_url: String::new(),
+                schema_url: super::SEMCONV_SCHEMA_URL.to_string(),
             }],
             dictionary: Some(dictionary),
         }

@@ -1,10 +1,16 @@
 [package]
 name = "tempo-api"
 description = "Grafana Tempo API models"
-version = "0.1.1"
+version = "0.1.3"
 edition.workspace = true
-license = "Apache-2.0"
-publish = true
+# Grafana Tempo is AGPL-3.0, and proto/tempo.proto is a copy of its tempopb
+# definitions, from which src/generated/tempopb.rs is built. See openspec D2.
+license = "AGPL-3.0"
+# Packages and builds standalone since proto generation moved to
+# `cargo xtask generate` — the build script that wrote into this directory and
+# read a submodule outside the crate root is gone. Still unpublished: that is a
+# separate decision, and the manifest has no publication metadata yet.
+publish = false
 
 [dependencies]
 serde.workspace = true
@@ -15,14 +21,16 @@ prost.workspace = true
 
 tonic.workspace = true
 tonic-prost.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
 
-[build-dependencies]
-tonic-prost-build.workspace = true
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
 
 [features]
 default = []
 client = []
 server = []
 
-[package.metadata.cargo-machete]
-ignored = ["tonic-prost-build"]
+[lints]
+workspace = true

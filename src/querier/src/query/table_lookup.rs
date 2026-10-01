@@ -20,9 +20,10 @@
 //! error text, which is brittle across upgrades and would swallow genuine
 //! planning failures.
 
-use datafusion::arrow::array::{Array, RecordBatch, StringArray};
+use datafusion::arrow::array::{Array, ArrayRef, RecordBatch, StringArray};
 use datafusion::common::TableReference;
 use datafusion::datasource::{TableProvider, provider_as_source};
+use datafusion::logical_expr::Expr;
 use datafusion::logical_expr::LogicalPlanBuilder;
 use datafusion::prelude::{DataFrame, SessionContext, col, lit};
 use datafusion::scalar::ScalarValue;
@@ -31,6 +32,11 @@ use std::sync::Arc;
 
 use super::error::QuerierError;
 use super::table_ref::build_table_reference;
+
+/// Upper bound on rows/distinct attribute documents sampled for label/tag
+/// discovery (label names, label values, tag names, tag values). Shared by
+/// every signal's discovery path so they scan the same-sized sample.
+pub(super) const LABEL_SCAN_LIMIT: usize = 1000;
 
 /// Inclusive nanosecond time-window filter on a `timestamp` column.
 pub(super) fn time_window(df: DataFrame, start: i64, end: i64) -> Result<DataFrame, QuerierError> {
@@ -42,15 +48,20 @@ pub(super) fn time_window(df: DataFrame, start: i64, end: i64) -> Result<DataFra
     .map_err(QuerierError::QueryFailed)
 }
 
+/// Borrow `name` from `batch`, erroring if the column is missing.
+pub(super) fn column<'a>(batch: &'a RecordBatch, name: &str) -> Result<&'a ArrayRef, QuerierError> {
+    batch
+        .column_by_name(name)
+        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))
+}
+
 /// Borrow `name` from `batch` as a `StringArray`, erroring if the column is
 /// missing or a different type.
 pub(super) fn string_column<'a>(
     batch: &'a RecordBatch,
     name: &str,
 ) -> Result<&'a StringArray, QuerierError> {
-    batch
-        .column_by_name(name)
-        .ok_or_else(|| QuerierError::InvalidInput(format!("missing column '{name}'")))?
+    column(batch, name)?
         .as_any()
         .downcast_ref::<StringArray>()
         .ok_or_else(|| {
@@ -68,8 +79,9 @@ pub(super) fn distinct_non_empty(
     for batch in batches {
         let col = string_column(batch, column)?;
         for i in 0..batch.num_rows() {
-            if !col.is_null(i) && !col.value(i).is_empty() {
-                values.insert(col.value(i).to_string());
+            let value = col.value(i);
+            if !col.is_null(i) && !value.is_empty() {
+                values.insert(value.to_string());
             }
         }
     }
@@ -147,6 +159,11 @@ pub fn scan_provider(
         .build()
         .map_err(QuerierError::QueryFailed)?;
     Ok(DataFrame::new(ctx.state(), plan))
+}
+
+/// Keeps the wide `metrics` table's rows of the given `metric_type`s.
+pub(crate) fn metric_type_filter(types: &[&str]) -> Expr {
+    col("metric_type").in_list(types.iter().map(|t| lit(*t)).collect(), false)
 }
 
 #[cfg(test)]

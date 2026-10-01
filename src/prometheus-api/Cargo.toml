@@ -1,10 +1,19 @@
 [package]
 name = "prometheus-api"
-version = "0.1.2"
+version = "0.1.4"
 edition = "2024"
-description = "Prometheus HTTP API types for SignalDB"
-license = "AGPL-3.0"
+description = "Prometheus HTTP API types"
+# Prometheus, whose HTTP API these types mirror, is Apache-2.0. See openspec D2.
+license = "Apache-2.0"
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
+
+[lints]
+workspace = true

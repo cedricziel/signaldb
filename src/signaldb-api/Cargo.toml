@@ -1,9 +1,18 @@
 [package]
 name = "signaldb-api"
-version = "0.1.1"
+version = "0.2.2"
 edition.workspace = true
 license.workspace = true
 
 [dependencies]
+chrono.workspace = true
 serde.workspace = true
 utoipa.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
+
+[lints]
+workspace = true

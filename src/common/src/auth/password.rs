@@ -27,10 +27,6 @@ use argon2::{
         PasswordHash, PasswordHasher, PasswordVerifier, SaltString, rand_core::OsRng as PhcOsRng,
     },
 };
-use base64::Engine;
-use base64::engine::general_purpose::URL_SAFE_NO_PAD;
-use rand::TryRng;
-use sha2::{Digest, Sha256};
 
 /// Prefix for session tokens, making them easy to identify in logs,
 /// support tickets, and secret scanners.
@@ -97,12 +93,7 @@ pub fn verify_password(password: &str, phc_hash: &str) -> Result<bool, PasswordE
 /// This is intentional: silently producing a predictable token would be a
 /// security vulnerability, and OS RNG failure is not recoverable here.
 pub fn generate_session_token() -> String {
-    let mut bytes = [0u8; SESSION_TOKEN_BYTES];
-    if let Err(error) = rand::rngs::SysRng.try_fill_bytes(&mut bytes) {
-        panic!("OS random number generator failed while generating session token: {error}");
-    }
-    let encoded = URL_SAFE_NO_PAD.encode(bytes);
-    format!("{SESSION_TOKEN_PREFIX}{encoded}")
+    super::generate_prefixed_token(SESSION_TOKEN_PREFIX, SESSION_TOKEN_BYTES)
 }
 
 /// Hash a session token with SHA-256, returning lowercase hex.
@@ -110,14 +101,14 @@ pub fn generate_session_token() -> String {
 /// Deterministic, so the stored digest can be looked up directly by
 /// hashing an incoming token. Same shape as `Authenticator::hash_api_key`.
 pub fn hash_session_token(token: &str) -> String {
-    let mut hasher = Sha256::new();
-    hasher.update(token.as_bytes());
-    hex::encode(hasher.finalize())
+    super::sha256_hex(token)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
     use std::collections::HashSet;
 
     #[test]

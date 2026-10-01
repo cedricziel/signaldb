@@ -1,20 +1,24 @@
 //! Rewrite-coupled attribute auto-promotion (epic #737, #734)
 //!
 //! End-to-end test of the active (non-dry-run) promotion path: a table
-//! with map-typed attributes and query demand for one key runs through a
-//! compaction, which must evolve the schema (add the `label_<key>`
-//! column via AddSchema + SetCurrentSchema), backfill the column for the
-//! pre-existing rows during the rewrite, and leave the data queryable.
-//! With `dry_run = true` the same setup must change nothing.
+//! with map-typed attributes and per-level query demand for one key runs
+//! through a compaction, which must evolve the schema (add the typed
+//! `attr_record_<key>` column via AddSchema + SetCurrentSchema, per
+//! otel-native-schema layer 6), backfill the column for the pre-existing
+//! rows during the rewrite, and leave the data queryable. Legacy
+//! `label_<key>` promotion no longer decides new columns at all -- with
+//! `dry_run = true` the same setup must change nothing.
 
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
+use common::schema::logical::{AttributeLevel, LogicalFieldId};
+use common::schema::type_authority::CanonicalType;
 use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use datafusion::arrow::array::{
-    Array as _, MapBuilder, MapFieldNames, RecordBatch, StringArray, StringBuilder,
-    TimestampMicrosecondArray,
+    Array as _, ArrayRef, BinaryArray, MapBuilder, MapFieldNames, RecordBatch, StringArray,
+    StringBuilder, TimestampMicrosecondArray, new_null_array,
 };
 use datafusion::arrow::datatypes::{DataType, Field, Schema as ArrowSchema, SchemaRef, TimeUnit};
 use datafusion::prelude::SessionContext;
@@ -23,54 +27,22 @@ use iceberg_rust::arrow::write::write_parquet_partitioned;
 use iceberg_rust::catalog::create::CreateTableBuilder;
 use iceberg_rust::catalog::identifier::Identifier;
 use iceberg_rust::catalog::tabular::Tabular;
-use iceberg_rust::spec::partition::{
-    PartitionField, PartitionSpec, PartitionSpecBuilder, Transform,
-};
 use iceberg_rust::spec::schema::Schema as IcebergSchema;
 use iceberg_rust::spec::types::{MapType, PrimitiveType, StructField, StructType, Type};
-use iceberg_rust::table::Table;
 use std::sync::Arc;
-use tests_integration::compaction_helpers::busiest_partition;
+use tests_integration::compaction_helpers::{
+    busiest_partition, hour_partition_spec, load_table_by_identifier, map_field, string_field,
+};
 
 const TENANT: &str = "t1";
 const DATASET: &str = "d1";
 const TABLE: &str = "logs";
 
-fn string_field(id: i32, name: &str) -> StructField {
-    StructField {
-        id,
-        name: name.to_string(),
-        required: false,
-        field_type: Type::Primitive(PrimitiveType::String),
-        doc: None,
-        initial_default: None,
-        write_default: None,
-    }
-}
-
 /// A small logs-shaped table: the real sort columns (timestamp,
-/// service_name, severity_text) plus a map-typed `log_attributes` column
-/// whose nested key/value ids (6, 7) are allocated after the top-level
-/// ids, as the production schema parser does.
-/// Hour-partition spec on `timestamp`, matching what every production signal
-/// table uses (`common::iceberg::schemas`). Compaction is partition-scoped
-/// (issue #933), so a test table must be partitioned the way real tables are —
-/// an unpartitioned table has no `timestamp_hour` value for the planner or
-/// executor to scope a job to.
-fn hour_partition_spec() -> PartitionSpec {
-    PartitionSpecBuilder::default()
-        .with_spec_id(0)
-        // Iceberg convention: partition field_id = 1000 + source field id.
-        .with_partition_field(PartitionField::new(
-            1,
-            1001,
-            "timestamp_hour",
-            Transform::Hour,
-        ))
-        .build()
-        .expect("hour partition spec should build")
-}
-
+/// service_name, severity_text) plus a typed-layout `log_attributes`
+/// container (its string home plus residue) whose nested key/value ids (6,
+/// 7) are allocated after the top-level ids, as the production schema
+/// parser does.
 fn table_schema() -> IcebergSchema {
     let timestamp = StructField {
         id: 1,
@@ -83,7 +55,7 @@ fn table_schema() -> IcebergSchema {
     };
     let attributes = StructField {
         id: 5,
-        name: "log_attributes".to_string(),
+        name: "log_attributes_str".to_string(),
         required: false,
         field_type: Type::Map(MapType {
             key_id: 6,
@@ -103,17 +75,22 @@ fn table_schema() -> IcebergSchema {
             string_field(3, "severity_text"),
             string_field(4, "body"),
             attributes,
+            StructField {
+                id: 8,
+                name: "log_attributes_residue".to_string(),
+                required: false,
+                field_type: Type::Primitive(PrimitiveType::Binary),
+                doc: None,
+                initial_default: None,
+                write_default: None,
+            },
+            map_field(9, "log_attributes_int", PrimitiveType::Long),
+            map_field(12, "log_attributes_double", PrimitiveType::Double),
+            map_field(15, "log_attributes_bool", PrimitiveType::Boolean),
         ]),
         0,
         None,
     )
-}
-
-async fn load_table(catalog_manager: &CatalogManager, identifier: &Identifier) -> Result<Table> {
-    match catalog_manager.catalog().load_tabular(identifier).await? {
-        Tabular::Table(table) => Ok(table),
-        _ => anyhow::bail!("expected a table"),
-    }
 }
 
 /// One test row: (timestamp, service, body, attributes as key/value pairs).
@@ -125,7 +102,7 @@ async fn write_file(
     identifier: &Identifier,
     rows: &[TestRow<'_>],
 ) -> Result<()> {
-    let mut table = load_table(catalog_manager, identifier).await?;
+    let mut table = load_table_by_identifier(catalog_manager, identifier).await?;
 
     // Derive the Arrow schema from the table so the map entry/key/value
     // field names line up with what the table declares.
@@ -136,9 +113,9 @@ async fn write_file(
             .try_into()
             .map_err(|e: iceberg_rust::spec::error::Error| anyhow::anyhow!("to arrow: {e}"))?,
     );
-    let attr_field = arrow_schema.field_with_name("log_attributes")?;
+    let attr_field = arrow_schema.field_with_name("log_attributes_str")?;
     let DataType::Map(entry_field, _) = attr_field.data_type() else {
-        anyhow::bail!("log_attributes should convert to an Arrow Map");
+        anyhow::bail!("log_attributes_str should convert to an Arrow Map");
     };
     let DataType::Struct(kv_fields) = entry_field.data_type() else {
         anyhow::bail!("map entries should be a struct");
@@ -172,7 +149,16 @@ async fn write_file(
     let attrs = attrs.finish();
     let ts = TimestampMicrosecondArray::from(timestamps);
 
-    let batch_schema = Arc::new(ArrowSchema::new(vec![
+    let empty_homes = [
+        "log_attributes_int",
+        "log_attributes_double",
+        "log_attributes_bool",
+    ]
+    .into_iter()
+    .map(|name| arrow_schema.field_with_name(name).cloned())
+    .collect::<Result<Vec<_>, _>>()?;
+
+    let mut fields = vec![
         Field::new(
             "timestamp",
             DataType::Timestamp(TimeUnit::Microsecond, None),
@@ -181,18 +167,24 @@ async fn write_file(
         Field::new("service_name", DataType::Utf8, true),
         Field::new("severity_text", DataType::Utf8, true),
         Field::new("body", DataType::Utf8, true),
-        Field::new("log_attributes", attrs.data_type().clone(), true),
-    ]));
-    let batch = RecordBatch::try_new(
-        batch_schema,
-        vec![
-            Arc::new(ts),
-            Arc::new(StringArray::from(services)),
-            Arc::new(StringArray::from(severities)),
-            Arc::new(StringArray::from(bodies)),
-            Arc::new(attrs),
-        ],
-    )?;
+        Field::new("log_attributes_str", attrs.data_type().clone(), true),
+        Field::new("log_attributes_residue", DataType::Binary, true),
+    ];
+    fields.extend(empty_homes.iter().cloned());
+    let mut columns: Vec<ArrayRef> = vec![
+        Arc::new(ts),
+        Arc::new(StringArray::from(services)),
+        Arc::new(StringArray::from(severities)),
+        Arc::new(StringArray::from(bodies)),
+        Arc::new(attrs),
+        Arc::new(BinaryArray::from(vec![None::<&[u8]>; rows.len()])),
+    ];
+    columns.extend(
+        empty_homes
+            .iter()
+            .map(|f| new_null_array(f.data_type(), rows.len())),
+    );
+    let batch = RecordBatch::try_new(Arc::new(ArrowSchema::new(fields)), columns)?;
 
     let files = write_parquet_partitioned(&table, stream::iter(vec![Ok(batch)]), None).await?;
     table
@@ -226,6 +218,7 @@ async fn setup(
         min_query_hits: 1,
         promote_streak: 1,
         max_promotions_per_cycle: 4,
+        demote_after_idle: std::time::Duration::from_secs(7 * 24 * 3600),
     };
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
 
@@ -277,12 +270,33 @@ async fn setup(
     )
     .await?;
 
-    // Query demand for `env` only. The promotion pass reads stats keyed
-    // by the identifier's namespace slugs (equal to the ids here).
+    // Query demand for `env` only, at the record level -- the typed
+    // per-level promotion decision reads `attribute_level_stats`, not the
+    // flat `attribute_stats` (legacy label promotion no longer promotes new
+    // columns from it). The promotion pass reads stats keyed by the
+    // identifier's namespace slugs (equal to the ids here).
     let service_catalog = Arc::new(common::catalog::Catalog::new_in_memory().await?);
     service_catalog
-        .add_attribute_query_hits(TENANT, DATASET, "logs", "env", 10)
+        .add_attribute_level_query_hits(
+            TENANT,
+            DATASET,
+            "logs",
+            AttributeLevel::Record,
+            "env",
+            10,
+            chrono::Utc::now(),
+        )
         .await?;
+    for key in ["env", "pod"] {
+        let field = LogicalFieldId {
+            source: "logs".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: key.to_string(),
+        };
+        service_catalog
+            .override_attribute_type(TENANT, DATASET, &field, CanonicalType::String)
+            .await?;
+    }
 
     Ok((catalog_manager, service_catalog, identifier))
 }
@@ -323,70 +337,6 @@ async fn count_rows(ctx: &SessionContext, sql: &str) -> Result<usize> {
     Ok(rows.iter().map(|b| b.num_rows()).sum())
 }
 
-/// A rewrite that evolves the schema must still read the snapshot its
-/// caller pinned, not a freshly loaded one.
-///
-/// The promotion pass commits AddSchema/SetCurrentSchema, after which the
-/// rewrite reloads the table to write under the new schema. If it also
-/// *read* from that reload it would pick up any snapshot committed since
-/// — including a late write into this very partition — and rewrite rows
-/// the delta commit does not remove. The row-parity check turns that into
-/// an abort on every cycle that evolves the schema.
-#[tokio::test]
-async fn schema_evolution_does_not_sweep_in_a_late_write() -> Result<()> {
-    let _ = tracing_subscriber::fmt()
-        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env())
-        .with_test_writer()
-        .try_init();
-    let (catalog_manager, service_catalog, identifier) = setup(false).await?;
-    let partition = busiest_partition(&catalog_manager, TENANT, DATASET, TABLE).await?;
-
-    // Pin the table the way the executor does, *before* the late write.
-    let pinned = load_table(&catalog_manager, &identifier).await?;
-
-    // A late write lands in the same hour partition after pinning.
-    write_file(
-        &catalog_manager,
-        &identifier,
-        &[(
-            5_000_000,
-            "late",
-            "arrived after pinning",
-            &[("env", "prod")],
-        )],
-    )
-    .await?;
-
-    let mut rewriter = compactor::rewriter::ParquetRewriter::new(catalog_manager.clone());
-    rewriter.set_service_catalog(service_catalog);
-
-    let outcome = rewriter
-        .rewrite_partition(&pinned, partition, 128 * 1024 * 1024)
-        .await?
-        .expect("partition has data to rewrite");
-
-    // The schema did evolve — otherwise this test would pass for the
-    // wrong reason (no reload, so no way to read the wrong snapshot).
-    let reloaded = load_table(&catalog_manager, &identifier).await?;
-    assert!(
-        reloaded
-            .current_schema()?
-            .fields()
-            .iter()
-            .any(|f| f.name == "label_env"),
-        "fixture must actually evolve the schema"
-    );
-
-    assert_eq!(
-        outcome.rows_written, 4,
-        "the rewrite must cover only the 4 rows in the pinned snapshot; \
-         reading the reloaded table would sweep in the late 5th row, which \
-         the delta commit does not remove"
-    );
-
-    Ok(())
-}
-
 #[tokio::test]
 async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()> {
     let _ = tracing_subscriber::fmt()
@@ -397,17 +347,22 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
-    // Schema evolved: `label_env` exists (and only it — `pod` had no
-    // query demand and must not be promoted).
-    let table = load_table(&catalog_manager, &identifier).await?;
+    // Schema evolved: `attr_record_env` exists (and only it — `pod` had no
+    // query demand and must not be promoted, and no legacy `label_*`
+    // column is ever created any more).
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
-        schema.fields().iter().any(|f| f.name == "label_env"),
+        schema.fields().iter().any(|f| f.name == "attr_record_env"),
         "promoted column must exist in the current schema"
     );
     assert!(
-        !schema.fields().iter().any(|f| f.name == "label_pod"),
+        !schema.fields().iter().any(|f| f.name == "attr_record_pod"),
         "unqueried key must not be promoted"
+    );
+    assert!(
+        !schema.fields().iter().any(|f| f.name.starts_with("label_")),
+        "legacy label promotion must never create a new column"
     );
     assert_eq!(table.metadata().current_schema_id, 1);
     assert_eq!(table.metadata().schemas.len(), 2);
@@ -425,16 +380,20 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
 
     assert_eq!(count_rows(&ctx, "SELECT body FROM logs").await?, 4);
     assert_eq!(
-        count_rows(&ctx, "SELECT body FROM logs WHERE label_env = 'prod'").await?,
+        count_rows(&ctx, "SELECT body FROM logs WHERE attr_record_env = 'prod'").await?,
         2,
         "pre-existing rows must be backfilled from the attributes map"
     );
     assert_eq!(
-        count_rows(&ctx, "SELECT body FROM logs WHERE label_env = 'staging'").await?,
+        count_rows(
+            &ctx,
+            "SELECT body FROM logs WHERE attr_record_env = 'staging'"
+        )
+        .await?,
         1
     );
     assert_eq!(
-        count_rows(&ctx, "SELECT body FROM logs WHERE label_env IS NULL").await?,
+        count_rows(&ctx, "SELECT body FROM logs WHERE attr_record_env IS NULL").await?,
         1,
         "rows without the attribute stay null"
     );
@@ -442,7 +401,7 @@ async fn active_promotion_evolves_schema_and_backfills_on_rewrite() -> Result<()
     assert_eq!(
         count_rows(
             &ctx,
-            "SELECT body FROM logs WHERE log_attributes['env'] = 'prod'"
+            "SELECT body FROM logs WHERE log_attributes_str['env'] = 'prod'"
         )
         .await?,
         2
@@ -461,11 +420,15 @@ async fn dry_run_promotion_changes_nothing() -> Result<()> {
 
     run_compaction(catalog_manager.clone(), service_catalog).await?;
 
-    // Schema untouched: no label columns, no extra schema version.
-    let table = load_table(&catalog_manager, &identifier).await?;
+    // Schema untouched: no label or promoted-attr columns, no extra
+    // schema version.
+    let table = load_table_by_identifier(&catalog_manager, &identifier).await?;
     let schema = table.current_schema()?;
     assert!(
-        !schema.fields().iter().any(|f| f.name.starts_with("label_")),
+        !schema
+            .fields()
+            .iter()
+            .any(|f| f.name.starts_with("label_") || f.name.starts_with("attr_record_")),
         "dry run must not evolve the schema"
     );
     assert_eq!(table.metadata().schemas.len(), 1);

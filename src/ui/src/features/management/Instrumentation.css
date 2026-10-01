@@ -1,3 +1,5 @@
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
+
 .instrumentation-page {
   padding: 24px;
   display: flex;
@@ -12,7 +14,7 @@
 }
 
 .instrumentation-page h1 {
-  font-size: 20px;
+  font-size: var(--text-title);
   font-weight: 600;
   margin: 0;
   color: var(--text);
@@ -21,7 +23,7 @@
 .instrumentation-page .description {
   margin: 6px 0 0;
   color: var(--dim);
-  font-size: 135%;
+  font-size: 13px;
   line-height: 1.5;
 }
 
@@ -58,7 +60,7 @@
 
 .source-button.selected {
   background: var(--accent-soft);
-  color: var(--accent);
+  color: var(--accent-text);
   font-weight: 500;
 }
 
@@ -98,14 +100,48 @@
   line-height: 1.5;
 }
 
+.instrumentation-note {
+  margin: 0 0 20px;
+  padding: 10px 14px;
+  border-radius: 6px;
+  font-size: 12px;
+  line-height: 1.5;
+  border: 1px solid var(--border);
+}
+
+.instrumentation-note p {
+  margin: 0;
+}
+
+.instrumentation-note p + p {
+  margin-top: 4px;
+}
+
+.instrumentation-error {
+  margin: 0 0 20px;
+  padding: 14px;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
+.instrumentation-error p {
+  margin: 0;
+}
+
 .code-snippet {
   margin: 24px 0 0;
 }
 
 .code-header {
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 8px;
   margin-bottom: 10px;
 }
 
@@ -120,12 +156,14 @@
   border: 1px solid var(--border);
   border-radius: 6px;
   background: var(--surface2);
-  overflow: auto;
+  /* Scroll rather than wrap: a hard wrap splits tokens (URLs, header
+     values) that the reader copies verbatim. */
+  overflow-x: auto;
+  max-width: 100%;
   font-family: var(--mono);
   font-size: 12px;
   line-height: 1.45;
-  white-space: pre-wrap;
-  overflow-wrap: break-word;
+  white-space: pre;
 }
 
 .code-snippet code {
@@ -173,7 +211,11 @@
 }
 
 .status-icon.receiving {
-  color: var(--ok);
+  color: var(--ok-text);
+}
+
+.status-icon.error {
+  color: var(--err-text);
 }
 
 .status-text {
@@ -181,7 +223,11 @@
   color: var(--dim);
 }
 
-@media (max-width: 768px) {
+@container app-main (max-width: 720px) {
+  .instrumentation-page {
+    padding: 16px;
+  }
+
   .instrumentation-grid {
     flex-direction: column;
     gap: 16px;
@@ -189,10 +235,24 @@
 
   .source-selector {
     width: 100%;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px;
   }
 
   .source-button {
     flex: 1;
+    width: auto;
     text-align: center;
+  }
+}
+
+@container app-main (max-width: 600px) {
+  .instrumentation-page {
+    padding: 12px;
+  }
+
+  .content-panel {
+    padding: 16px;
   }
 }

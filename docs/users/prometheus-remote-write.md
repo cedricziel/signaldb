@@ -22,12 +22,17 @@ POST http://<acceptor-host>:4318/api/v1/write
 It accepts snappy-compressed protobuf (block format, not framed) with
 `Content-Type: application/x-protobuf`, remote_write protocol v1 and v2
 (v2 adds native histograms and metadata). Incoming samples are converted
-to OpenTelemetry metrics and stored in the same metrics tables as OTLP
-metrics (`metrics_gauge`, `metrics_sum`, `metrics_histogram`). Native
+to OpenTelemetry metrics and stored in the same `metrics` table as OTLP
+metrics, distinguished by `metric_type` (gauge/sum/histogram). Native
 histogram samples (v2) are converted to OpenTelemetry exponential
-histograms and stored in `metrics_exponential_histogram`; custom-bucket
-native histograms (NHCB) cannot be represented as exponential histograms
-and are dropped with a warning in the acceptor logs.
+histograms and stored with `metric_type = exponential_histogram`;
+custom-bucket native histograms (NHCB) cannot be represented as exponential
+histograms and are dropped with a warning in the acceptor logs.
+
+In the other direction, when stored metrics are rendered as Prometheus
+series, exponential histograms are downsampled to classic histograms
+(`_bucket` with `le` bounds derived from the scale, plus `_count` and
+`_sum`), so consumers without native-histogram support still see them.
 
 ## Prerequisites
 
@@ -63,17 +68,25 @@ Reload or restart Prometheus so the new remote_write target takes effect.
 - Query the data back over SQL (see [Querying with SQL](querying-sql.md)):
 
 ```bash
-signaldb-cli query --sql "SELECT * FROM metrics_gauge LIMIT 5" \
+signaldb-cli query --sql "SELECT * FROM metrics WHERE metric_type = 'gauge' LIMIT 5" \
   --api-key sk-acme-prod-key-123 --tenant-id acme
 ```
 
+Retries are safe. When Prometheus resends a write it already sent (say its
+remote-write timeout fired while SignalDB was still answering), a
+byte-identical resend within `[writer].ingest_dedup_window` (default 1 hour)
+is acknowledged without storing the samples a second time, whichever acceptor
+it reaches.
+
 ## Troubleshooting
 
-| Symptom                                                           | Cause                                                        | Fix                                                                                                                                                                                                                      |
-| ----------------------------------------------------------------- | ------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `401 Missing Authorization header` / `Missing X-Tenant-ID header` | Auth headers not configured                                  | Add the `authorization` and `headers` blocks shown above                                                                                                                                                                 |
-| `401`                                                             | API key invalid or revoked                                   | Check the key — see [Authentication](authentication.md)                                                                                                                                                                  |
-| `403`                                                             | Key not valid for that tenant/dataset                        | Use a key issued for the tenant in `X-Tenant-ID`                                                                                                                                                                         |
-| `400` decode error                                                | Body is not snappy-block-compressed protobuf                 | Use a standard remote_write client; do not gzip or send framed snappy                                                                                                                                                    |
-| `429`                                                             | Per-tenant ingest rate limit hit                             | Prometheus retries automatically; the response carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so ask your operator about tenant limits if it recurs |
-| `429` mentioning `quota_exceeded`                                 | Tenant is at or over its storage quota (`max_storage_bytes`) | Retries will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator                                                                                                          |
+| Symptom                                                           | Cause                                                                                      | Fix                                                                                                                                                                                                                      |
+| ----------------------------------------------------------------- | ------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `401 Missing Authorization header` / `Missing X-Tenant-ID header` | Auth headers not configured                                                                | Add the `authorization` and `headers` blocks shown above                                                                                                                                                                 |
+| `401`                                                             | API key invalid or revoked                                                                 | Check the key — see [Authentication](authentication.md)                                                                                                                                                                  |
+| `403`                                                             | Key not valid for that tenant/dataset                                                      | Use a key issued for the tenant in `X-Tenant-ID`                                                                                                                                                                         |
+| `400` decode error                                                | Body is not snappy-block-compressed protobuf                                               | Use a standard remote_write client; do not gzip or send framed snappy                                                                                                                                                    |
+| `400` conversion error                                            | Decoded write request could not be converted to OTEL metrics (malformed sample/label data) | Deterministic — the same batch will fail again; fix the client-side data, do not just retry                                                                                                                              |
+| `503`                                                             | WAL unavailable (transient backend issue)                                                  | Safe to retry; Prometheus does this automatically                                                                                                                                                                        |
+| `429`                                                             | Per-tenant ingest rate limit hit                                                           | Prometheus retries automatically; the response carries `Retry-After`, `X-RateLimit-Limit`, and `X-RateLimit-Burst` computed from the tenant's actual budget state, so ask your operator about tenant limits if it recurs |
+| `429` mentioning `quota_exceeded`                                 | Tenant is at or over its storage quota (`max_storage_bytes`)                               | Retries will not help until data is deleted, retention shortens, or the quota is raised — talk to your operator                                                                                                          |

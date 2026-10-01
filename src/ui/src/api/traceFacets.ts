@@ -9,7 +9,7 @@
 import type { QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import { facetField, type TraceFilter } from "../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../lib/traceFilters";
 
 /** Values shown per facet before the list is disclosed as truncated. */
 export const FACET_VALUE_LIMIT = 10;
@@ -42,13 +42,7 @@ export function buildFacetDoc(
   range: ResolvedRange,
   filters: TraceFilter[],
 ): QueryIrRequest {
-  const others = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet || facet.irField === irField) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const others = filterStages(filters, irField);
   return {
     irVersion: 1,
     from: "traces",

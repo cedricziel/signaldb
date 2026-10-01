@@ -12,6 +12,8 @@ import {
   schemaResolveAttribute,
   schemaResolveEntity,
   schemaResolveMetric,
+  schemaSearchEntities,
+  schemaSearchMetrics,
   schemaValidateRegistry,
   type AttributeHit,
   type AttributeResolution,
@@ -104,8 +106,25 @@ export const resolveAttribute = async (
 export const resolveEntity = async (name: string): Promise<EntityResolution> =>
   unwrap(await schemaResolveEntity({ path: { name } }));
 
+/** Every entity type visible to the tenant, bundled registries and its own.
+ * The catalog derives its entity types from this (see
+ * `features/catalog/deriveEntityTypes.ts`); the server caps `limit` at 200,
+ * which is well clear of the 64 the bundled OTel registry declares. */
+export const searchEntities = async (limit = 200): Promise<EntityHit[]> =>
+  (await unwrap(await schemaSearchEntities({ query: { limit } }))).hits;
+
 export const resolveMetric = async (name: string): Promise<MetricResolution> =>
   unwrap(await schemaResolveMetric({ path: { name } }));
+
+/** Metric definitions whose name starts with `prefix`, across the visible
+ * registries. The server caps `limit` at 200 and offers no cursor, so a
+ * prefix broad enough to overflow that returns a truncated namespace — call
+ * it with a segment (`system`, `process`), not with the empty string. */
+export const searchMetrics = async (
+  prefix: string,
+  limit = 200,
+): Promise<MetricHit[]> =>
+  (await unwrap(await schemaSearchMetrics({ query: { prefix, limit } }))).hits;
 
 /** What kind of definition a lookup landed on. */
 export type DefinitionKind = "attributes" | "entities" | "metrics";

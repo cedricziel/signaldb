@@ -120,6 +120,58 @@ describe("buildEntitySourceDoc", () => {
       where: { field: "db.namespace", op: "eq", value: "orders" },
     });
   });
+
+  // A "(not set)" identity dimension pins to "absent on this record", not
+  // to an unconstrained field — otherwise a two-dimension entity's KPIs
+  // could be pulled from a different entity that happens to have a value
+  // for the "(not set)" dimension.
+  it("compiles a null-valued pin to a negated exists check, not an eq", () => {
+    const doc = buildEntitySourceDoc(service, "traces", range, [
+      { field: "service.name", value: "gateway" },
+      { field: "service.namespace", value: null },
+    ]);
+    expect(doc.pipeline?.slice(0, 3)).toEqual([
+      { where: { field: "span_kind", op: "eq", value: "Server" } },
+      { where: { field: "service.name", op: "eq", value: "gateway" } },
+      { where: { not: { field: "service.namespace", op: "exists" } } },
+    ]);
+  });
+
+  // Per-source identity degradation (3.4/3.5): a source that carries only
+  // some of the declared identity attributes must group by what it has, not
+  // by the full tuple — grouping metrics by `host.name` when metrics never
+  // carries it would put every process in one null-valued bucket.
+  it("groups a source by its own degraded identity, not the full tuple", () => {
+    const process: EntityTypeDef = {
+      id: "process",
+      label: "Processes",
+      singular: "process",
+      identity: ["process.pid", "host.name"],
+      sources: ["metrics", "traces"],
+      identityBySource: {
+        metrics: ["process.pid"],
+        traces: ["process.pid", "host.name"],
+      },
+    };
+
+    const metricsDoc = buildEntitySourceDoc(process, "metrics", range);
+    expect(
+      (metricsDoc.pipeline?.[0] as { aggregate: { by: string[] } }).aggregate
+        .by,
+    ).toEqual(["process.pid"]);
+
+    const tracesDoc = buildEntitySourceDoc(process, "traces", range);
+    expect(
+      (tracesDoc.pipeline?.[0] as { aggregate: { by: string[] } }).aggregate.by,
+    ).toEqual(["process.pid", "host.name"]);
+  });
+
+  it("falls back to the full identity when no per-source identity was computed", () => {
+    const doc = buildEntitySourceDoc(host, "logs", range);
+    expect(
+      (doc.pipeline?.[0] as { aggregate: { by: string[] } }).aggregate.by,
+    ).toEqual(["host.name"]);
+  });
 });
 
 describe("fetchCatalogEntities", () => {
@@ -138,22 +190,19 @@ describe("fetchCatalogEntities", () => {
     const result = await fetchCatalogEntities(host, range);
 
     expect(runIrQuery).toHaveBeenCalledTimes(1);
-    expect(result.groups).toEqual([
+    expect(result.entities).toEqual([
       {
         values: ["ip-10-0-1-08"],
-        count: 5,
-        errors: 0,
-        p50Ms: 0.9,
-        p95Ms: 3,
+        observations: [{ source: "traces", count: 5 }],
         lastNs: "1700000000000000000",
-        traceCount: 5,
+        red: { traces: 5, errors: 0, p50Ms: 0.9, p95Ms: 3 },
       },
     ]);
   });
 
-  it("merges an entity discovered across multiple signals, keeping RED from traces only", async () => {
+  it("reports what each signal observed instead of one summed volume", async () => {
     vi.mocked(runIrQuery).mockImplementation(async (doc) => {
-      if (doc.from === "traces") {
+      if ("from" in doc && doc.from === "traces") {
         return {
           result: "table",
           columns: [],
@@ -167,45 +216,60 @@ describe("fetchCatalogEntities", () => {
         result: "table",
         columns: [],
         window: { start_ns: 1, end_ns: 2 },
-        rows: [
-          ["ip-10-0-1-08", 3, "1700000000500000000"],
-          // Only ever seen in logs — never a trace — but still a real host.
-          ["ip-10-0-2-09", 7, "1700000000600000000"],
-        ],
+        rows: [["ip-10-0-1-08", 3, "1700000000500000000"]],
       };
     });
 
     const result = await fetchCatalogEntities(hostMultiSource, range);
 
-    expect(runIrQuery).toHaveBeenCalledTimes(2);
-    expect(result.groups).toEqual([
-      // Sorted by merged count, descending: 8 beats 7.
-      {
-        values: ["ip-10-0-1-08"],
-        count: 8,
-        errors: 0,
-        p50Ms: 0.9,
-        p95Ms: 3,
-        lastNs: "1700000000500000000",
-        traceCount: 5,
-      },
-      {
-        values: ["ip-10-0-2-09"],
-        count: 7,
-        errors: 0,
-        p50Ms: 0,
-        p95Ms: 0,
-        lastNs: "1700000000600000000",
-        traceCount: 0,
-      },
+    // 5 spans and 3 log lines stay 5 spans and 3 log lines. Nothing in the
+    // row is the number 8: summing a span count into a log-line count
+    // produces a figure that describes neither.
+    expect(result.entities[0]!.observations).toEqual([
+      { source: "traces", count: 5 },
+      { source: "logs", count: 3 },
     ]);
+    expect(result.entities[0]!.lastNs).toBe("1700000000500000000");
   });
 
-  it("keeps the trace count distinct from total volume, for an accurate error rate", async () => {
-    // 1 error among 10 traces, plus 90 log lines for the same host — the
-    // error is a rate of the 10 traces, not the 100 merged records.
+  it("omits trace-derived measurements for an entity never observed in traces", async () => {
     vi.mocked(runIrQuery).mockImplementation(async (doc) => {
-      if (doc.from === "traces") {
+      if ("from" in doc && doc.from === "traces") {
+        return {
+          result: "table",
+          columns: [],
+          window: { start_ns: 1, end_ns: 2 },
+          rows: [],
+        };
+      }
+      return {
+        result: "table",
+        columns: [],
+        window: { start_ns: 1, end_ns: 2 },
+        rows: [["ip-10-0-2-09", 7, "1700000000600000000"]],
+      };
+    });
+
+    const result = await fetchCatalogEntities(hostMultiSource, range);
+
+    // A host seen only in logs has no span status and no span duration, so
+    // it carries no RED at all — rather than a zeroed one that renders as a
+    // real "0% errors, 0ms p95" measurement.
+    expect(result.entities).toEqual([
+      {
+        values: ["ip-10-0-2-09"],
+        observations: [{ source: "logs", count: 7 }],
+        lastNs: "1700000000600000000",
+      },
+    ]);
+    expect(result.entities[0]!.red).toBeUndefined();
+  });
+
+  it("counts errors against the traces observed, not total observations", async () => {
+    // 1 error among 10 traces, plus 90 log lines for the same host — the
+    // error is a rate of the 10 traces, not of 100 mixed records.
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => {
+      if ("from" in doc && doc.from === "traces") {
         return {
           result: "table",
           columns: [],
@@ -225,16 +289,140 @@ describe("fetchCatalogEntities", () => {
 
     const result = await fetchCatalogEntities(hostMultiSource, range);
 
-    expect(result.groups).toEqual([
-      {
-        values: ["ip-10-0-1-08"],
-        count: 100,
-        errors: 1,
-        p50Ms: 0.9,
-        p95Ms: 3,
-        lastNs: "1700000000500000000",
-        traceCount: 10,
-      },
+    expect(result.entities[0]!.red).toEqual({
+      traces: 10,
+      errors: 1,
+      p50Ms: 0.9,
+      p95Ms: 3,
+    });
+  });
+
+  it("ranks by total observations without presenting the total as volume", async () => {
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => {
+      if ("from" in doc && doc.from === "traces") {
+        return {
+          result: "table",
+          columns: [],
+          window: { start_ns: 1, end_ns: 2 },
+          rows: [
+            ["ip-10-0-1-08", 5, 0, 900_000, 3_000_000, "1700000000000000000"],
+          ],
+        };
+      }
+      return {
+        result: "table",
+        columns: [],
+        window: { start_ns: 1, end_ns: 2 },
+        rows: [
+          ["ip-10-0-1-08", 3, "1700000000500000000"],
+          ["ip-10-0-2-09", 7, "1700000000600000000"],
+        ],
+      };
+    });
+
+    const result = await fetchCatalogEntities(hostMultiSource, range);
+
+    // 5+3 outranks 7 — the total is a ranking key, and appears nowhere in
+    // the row as a figure a reader could mistake for request volume.
+    expect(result.entities.map((e) => e.values[0])).toEqual([
+      "ip-10-0-1-08",
+      "ip-10-0-2-09",
     ]);
+  });
+
+  it("aligns a degraded source's row onto the primary dimension, not the secondary one", async () => {
+    // metrics carries only process.pid; traces carries pid and host.name.
+    // metrics' single-column row must land on the primary dimension. It
+    // cannot be merged with the traces row for the same pid — metrics never
+    // reported a host, so the two rows are not known to share one — but its
+    // pid must not be misread as a host name.
+    const process: EntityTypeDef = {
+      id: "process",
+      label: "Processes",
+      singular: "process",
+      identity: ["process.pid", "host.name"],
+      sources: ["traces", "metrics"],
+      identityBySource: {
+        traces: ["process.pid", "host.name"],
+        metrics: ["process.pid"],
+      },
+    };
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => {
+      if ("from" in doc && doc.from === "traces") {
+        return {
+          result: "table",
+          columns: [],
+          window: { start_ns: 1, end_ns: 2 },
+          rows: [
+            [
+              "4821",
+              "ip-10-0-1-08",
+              2,
+              0,
+              900_000,
+              3_000_000,
+              "1700000000000000000",
+            ],
+          ],
+        };
+      }
+      return {
+        result: "table",
+        columns: [],
+        window: { start_ns: 1, end_ns: 2 },
+        rows: [["4821", 6, "1700000000900000000"]],
+      };
+    });
+
+    const result = await fetchCatalogEntities(process, range);
+
+    expect(result.entities).toHaveLength(2);
+    const byValues = new Map(
+      result.entities.map((e) => [JSON.stringify(e.values), e]),
+    );
+    expect(
+      byValues.get(JSON.stringify(["4821", "ip-10-0-1-08"])),
+    ).toBeDefined();
+    expect(
+      byValues.get(JSON.stringify(["4821", "ip-10-0-1-08"]))?.observations,
+    ).toEqual([{ source: "traces", count: 2 }]);
+    expect(byValues.get(JSON.stringify(["4821", null]))?.observations).toEqual([
+      { source: "metrics", count: 6 },
+    ]);
+  });
+  it("keeps a degraded row apart from a full-tuple row whose secondary value is null", async () => {
+    // traces grouped by pid and host and saw no host for pid 4821; metrics
+    // grouped by pid alone. Both align to ["4821", null], but they are
+    // different claims and must not merge.
+    const process: EntityTypeDef = {
+      id: "process",
+      label: "Processes",
+      singular: "process",
+      identity: ["process.pid", "host.name"],
+      sources: ["traces", "metrics"],
+      identityBySource: {
+        traces: ["process.pid", "host.name"],
+        metrics: ["process.pid"],
+      },
+    };
+    vi.mocked(runIrQuery).mockImplementation(async (doc) => ({
+      result: "table",
+      columns: [],
+      window: { start_ns: 1, end_ns: 2 },
+      rows:
+        "from" in doc && doc.from === "traces"
+          ? [["4821", null, 2, 0, 900_000, 3_000_000, "1700000000000000000"]]
+          : [["4821", 6, "1700000000900000000"]],
+    }));
+
+    const result = await fetchCatalogEntities(process, range);
+
+    expect(result.entities.map((e) => e.observations)).toEqual(
+      expect.arrayContaining([
+        [{ source: "traces", count: 2 }],
+        [{ source: "metrics", count: 6 }],
+      ]),
+    );
+    expect(result.entities).toHaveLength(2);
   });
 });

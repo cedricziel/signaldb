@@ -7,7 +7,9 @@
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
-use common::schema::materialized_column_name;
+use common::iceberg::sort::{DeclaredSortColumn, UndeclaredFallback, WriteSortKey, write_sort_key};
+use common::schema::logical::AttributeLevel;
+use common::schema::type_authority::CanonicalType;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::common::ScalarValue;
 use datafusion::prelude::*;
@@ -18,14 +20,20 @@ use std::collections::HashSet;
 use std::sync::Arc;
 
 /// What the promotion pass decided to do to this rewrite (epic #737,
-/// #734). Empty/default when promotion is disabled or dry-run.
+/// #734; typed per-level columns: otel-native-schema layer 6, D4/D5).
+/// Empty/default when promotion is disabled or dry-run.
 #[derive(Debug, Default)]
 struct PromotionOutcome {
     /// `(attribute key, label column)` pairs whose columns should be
     /// recomputed from the attribute sources during this rewrite.
     backfill: Vec<(String, String)>,
-    /// Whether the table's schema was evolved (label columns added or
-    /// dropped) and must be reloaded before writing.
+    /// `(level, key, column, canonical type)` typed promoted-attribute
+    /// columns to recompute during this rewrite, per
+    /// [`common::iceberg::evolution::promoted_attrs_of`]. Always empty
+    /// until something actually promotes a typed column.
+    promoted_attr_backfill: Vec<(AttributeLevel, String, String, CanonicalType)>,
+    /// Whether the table's schema was evolved (columns added or dropped)
+    /// and must be reloaded before writing.
     evolved: bool,
     /// `label_<key>` columns dropped by the demotion half: the rewrite
     /// must project them out of the merged batches, since the read
@@ -42,9 +50,11 @@ const MIN_PER_SORTER_MB: u64 = 64;
 
 /// Whether a partition read should be sorted for output, or is only being
 /// scanned for statistics.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 enum SortRows {
-    Yes,
+    /// Sort by these columns, in this key order.
+    By(Vec<DeclaredSortColumn>),
+    /// Read in whatever order the scan produces.
     No,
 }
 
@@ -66,6 +76,9 @@ pub struct ParquetRewriter {
     /// (epic #737, #733). `None` (e.g. in tests) keeps the analyzer
     /// log-only.
     service_catalog: Option<Arc<common::catalog::Catalog>>,
+    /// How many values per attribute key the analyzer keeps as a suggestion
+    /// sketch for query discovery (`compactor.value_sketch_size`).
+    value_sketch_size: usize,
 }
 
 impl ParquetRewriter {
@@ -74,7 +87,13 @@ impl ParquetRewriter {
         Self {
             catalog_manager,
             service_catalog: None,
+            value_sketch_size: crate::attr_stats::DEFAULT_VALUE_SKETCH_SIZE,
         }
+    }
+
+    /// Bound the per-key value sketch the analyzer keeps.
+    pub fn set_value_sketch_size(&mut self, size: usize) {
+        self.value_sketch_size = size;
     }
 
     /// Persist the advisory attribute statistics to this service catalog.
@@ -160,7 +179,8 @@ impl ParquetRewriter {
 
         // Pass 1: fold the advisory attribute statistics over an unsorted
         // stream (epic #737 L4a).
-        let mut stats_acc = crate::attr_stats::AttrStatsAccumulator::new();
+        let mut stats_acc =
+            crate::attr_stats::AttrStatsAccumulator::new().with_sketch_size(self.value_sketch_size);
         {
             let mut stream = self
                 .partition_stream(table, partition_hours, SortRows::No)
@@ -172,7 +192,7 @@ impl ParquetRewriter {
                 stats_acc.push_batch(&batch);
             }
         }
-        let (attr_stats, rows_read) = stats_acc.finish();
+        let (attr_stats, rows_read, attr_level_presence) = stats_acc.finish();
 
         if rows_read == 0 {
             tracing::info!(
@@ -195,6 +215,7 @@ impl ParquetRewriter {
                     dataset,
                     &table_name,
                     &attr_stats,
+                    &attr_level_presence,
                     rows_read,
                 )
                 .await;
@@ -229,19 +250,21 @@ impl ParquetRewriter {
         )
         .await;
 
-        let backfill: Vec<(String, String)> = if promotion.backfill.is_empty() {
-            vec![]
-        } else {
-            let schema_columns: HashSet<String> = write_table
-                .current_schema()
-                .map(|schema| schema.fields().iter().map(|f| f.name.clone()).collect())
-                .unwrap_or_default();
+        let schema_columns: HashSet<String> = write_table
+            .current_schema()
+            .map(|schema| schema.fields().iter().map(|f| f.name.clone()).collect())
+            .unwrap_or_default();
+        let backfill: Vec<(String, String)> = promotion
+            .backfill
+            .into_iter()
+            .filter(|(_, column)| schema_columns.contains(column))
+            .collect();
+        let promoted_attr_backfill: Vec<(AttributeLevel, String, String, CanonicalType)> =
             promotion
-                .backfill
+                .promoted_attr_backfill
                 .into_iter()
-                .filter(|(_, column)| schema_columns.contains(column))
-                .collect()
-        };
+                .filter(|(_, _, column, _)| schema_columns.contains(column))
+                .collect();
 
         // Pass 2: the sorted stream that becomes the output files.
         //
@@ -256,8 +279,16 @@ impl ParquetRewriter {
         // only the *write* uses the evolved schema. Batches read under the
         // old schema are reconciled to it by `dropped_columns` and
         // `backfill`, exactly as they were before the rewrite streamed.
+        //
+        // The sort key comes from `write_table`: it is the table the output
+        // files will be attested against, so its declaration is the one they
+        // must honor.
+        let WriteSortKey {
+            columns: sort_columns,
+            attest,
+        } = Self::rewrite_sort_key(&write_table);
         let stream = self
-            .partition_stream(table, partition_hours, SortRows::Yes)
+            .partition_stream(table, partition_hours, SortRows::By(sort_columns))
             .await
             .context("Failed to read and merge partition data")?;
 
@@ -265,13 +296,21 @@ impl ParquetRewriter {
             stream,
             promotion.dropped_columns,
             backfill,
+            promoted_attr_backfill,
             target_file_size_bytes,
         );
 
-        let new_files =
-            iceberg_rust::arrow::write::write_parquet_partitioned(&write_table, output, None)
+        // Attest the order only when the table declares one and the rows were
+        // actually sorted by it. The rewrite's transforms and chunking
+        // preserve row order, so what the sorted scan produced is what the
+        // files contain.
+        let new_files = if attest {
+            iceberg_rust::arrow::write::write_sorted_parquet_partitioned(&write_table, output, None)
                 .await
-                .context("Failed to write compacted Parquet files")?;
+        } else {
+            iceberg_rust::arrow::write::write_parquet_partitioned(&write_table, output, None).await
+        }
+        .context("Failed to write compacted Parquet files")?;
 
         let output_size_bytes: u64 = new_files
             .iter()
@@ -338,6 +377,7 @@ impl ParquetRewriter {
         mut stream: datafusion::execution::SendableRecordBatchStream,
         dropped_columns: Vec<String>,
         backfill: Vec<(String, String)>,
+        promoted_attr_backfill: Vec<(AttributeLevel, String, String, CanonicalType)>,
         target_file_size_bytes: u64,
     ) -> impl futures::Stream<
         Item = std::result::Result<RecordBatch, datafusion::arrow::error::ArrowError>,
@@ -373,6 +413,17 @@ impl ParquetRewriter {
                 };
 
                 let batch = match crate::attr_promotion::backfill_label_columns(vec![batch], &backfill) {
+                    Ok(mut batches) => batches.remove(0),
+                    Err(e) => {
+                        yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
+                        return;
+                    }
+                };
+
+                let batch = match crate::attr_promotion::backfill_promoted_attr_columns(
+                    vec![batch],
+                    &promoted_attr_backfill,
+                ) {
                     Ok(mut batches) => batches.remove(0),
                     Err(e) => {
                         yield Err(datafusion::arrow::error::ArrowError::ExternalError(e.into()));
@@ -506,20 +557,23 @@ impl ParquetRewriter {
                 return outcome;
             }
         };
-        // The table's current label_<key> columns and the pinned allowlist.
-        let label_columns: Vec<String> = table
-            .current_schema()
-            .map(|schema| {
-                schema
-                    .fields()
-                    .iter()
-                    .map(|f| f.name.clone())
-                    .filter(|n| n.starts_with("label_"))
-                    .collect()
-            })
-            .unwrap_or_default();
-        let materialized = crate::attr_promotion::materialized_keys_of(&label_columns, &stats);
-        let tenant_schema = config.get_tenant_schema_config(tenant);
+        // The table's current schema -- the source of truth for which
+        // keys are already materialized (via each label column's
+        // origin-key `doc`, #814) -- and the pinned allowlist.
+        let mut current_schema = match table.current_schema() {
+            Ok(schema) => schema.clone(),
+            Err(e) => {
+                tracing::warn!(error = %e, table = %table_name, "Failed to resolve current schema for promotion pass");
+                return outcome;
+            }
+        };
+        let materialized = crate::attr_promotion::materialized_keys_of(&current_schema, &stats);
+        // `tenant` here is the tenant *slug* (from the Iceberg namespace),
+        // but `get_tenant_schema_config` keys on the tenant id — resolve it
+        // first or a slug-!=-id tenant silently falls back to the global
+        // schema config and its pinned-label guard does nothing (#1535).
+        let tenant_id = config.get_tenant_id_by_slug(tenant);
+        let tenant_schema = config.get_tenant_schema_config(&tenant_id);
         let m = &tenant_schema.materialized_labels;
         let pinned: &[String] = match signal {
             "traces" => &m.traces,
@@ -528,47 +582,158 @@ impl ParquetRewriter {
             "profiles" => &m.profiles,
             _ => &[],
         };
-        let (decision, new_streaks) =
-            crate::attr_promotion::decide(&stats, &materialized, pinned, promotion);
+        // Only string-home keys are eligible for promotion (a `label_<key>`
+        // column can't safely stringify a non-string canonical value) --
+        // one type-authority query per table per cycle, not per candidate
+        // key.
+        let source_signal = common::discovery::signal_for_source(table_name).unwrap_or(signal);
+        // The writer's TypeAuthority establishes `attribute_types` rows
+        // under the real dataset id (from `tenant_context`), not the
+        // namespace slug `dataset` is here -- resolve it or a
+        // slug-!=-id dataset finds no rows and promotion silently stops.
+        let dataset_id = config.get_dataset_id_by_slug(&tenant_id, dataset);
+        let types = match catalog
+            .list_attribute_types_for_table(&tenant_id, &dataset_id, source_signal)
+            .await
+        {
+            Ok(types) => types,
+            Err(e) => {
+                tracing::warn!(error = %e, table = %table_name, "Failed to load attribute types for promotion pass");
+                Vec::new()
+            }
+        };
+        // Keyed per (level, key): the repin check below needs the canonical
+        // type at the exact level a promoted column was created for, not
+        // folded across levels the way legacy label promotion did.
+        let canonical_types = crate::attr_promotion::canonical_types_by_level(&types);
+        let decision = crate::attr_promotion::decide(&stats, &materialized, pinned);
         crate::attr_promotion::log_decision(table_name, &decision, promotion.dry_run);
-        for (key, streak) in new_streaks {
+
+        let level_stats = match catalog
+            .list_attribute_level_stats(tenant, dataset, signal)
+            .await
+        {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(error = %e, table = %table_name, "Failed to load per-level attribute stats for promotion pass");
+                Vec::new()
+            }
+        };
+        let promoted_attrs = common::iceberg::evolution::promoted_attrs_of(&current_schema);
+        // Schema field order, not `HashSet` iteration order: `decide_typed_demotions`'
+        // idle-demotion order (and thus which pairs the caller sees demoted
+        // first) must be deterministic run to run.
+        let promoted_list: Vec<(AttributeLevel, String)> = promoted_attrs
+            .iter()
+            .map(|(level, key, _, _)| (*level, key.clone()))
+            .collect();
+        let promoted: HashSet<(AttributeLevel, String)> = promoted_list.iter().cloned().collect();
+        let available_levels = crate::attr_promotion::available_attribute_levels(&current_schema);
+        let capped_keys: HashSet<String> = stats
+            .iter()
+            .filter(|r| r.capped)
+            .map(|r| r.attr_key.clone())
+            .collect();
+        let label_budget_used =
+            materialized.len() + pinned.iter().filter(|p| !materialized.contains(p)).count();
+        let now = chrono::Utc::now();
+        // Demotion decided (and, below, acted on) before promotion so a
+        // just-demoted column can't be re-promoted in the same cycle, and
+        // so the promotion headroom sees the slots demotion frees.
+        let typed_demote = crate::attr_promotion::decide_typed_demotions(
+            &promoted_list,
+            &level_stats,
+            now,
+            label_budget_used,
+            promotion,
+        );
+        crate::attr_promotion::log_typed_demotion(table_name, &typed_demote, promotion.dry_run);
+        let demoted_attrs: HashSet<(AttributeLevel, String)> =
+            typed_demote.iter().cloned().collect();
+        let (typed_decision, new_level_streaks) = crate::attr_promotion::decide_typed_promotions(
+            &level_stats,
+            &canonical_types,
+            &promoted,
+            &demoted_attrs,
+            &available_levels,
+            &capped_keys,
+            label_budget_used,
+            now,
+            promotion,
+        );
+        crate::attr_promotion::log_typed_decision(table_name, &typed_decision, promotion.dry_run);
+        for (level, key, streak) in new_level_streaks {
             if let Err(e) = catalog
-                .set_attribute_promote_streak(tenant, dataset, signal, &key, streak)
+                .set_attribute_level_promote_streak(tenant, dataset, signal, level, &key, streak)
                 .await
             {
-                tracing::warn!(error = %e, attr_key = %key, "Failed to persist promotion streak");
+                tracing::warn!(error = %e, attr_key = %key, level = level.as_str(), "Failed to persist per-level promotion streak");
             }
         }
 
-        // Act on the decision when the pass is out of dry-run: evolve the
-        // schema before the rewrite so the new files carry the promoted
-        // columns. An evolution failure is logged and the compaction
-        // continues under the old schema — promotion must never fail a
-        // rewrite.
         if promotion.dry_run {
             return outcome;
         }
-        if !decision.promote.is_empty() {
-            match common::iceberg::evolution::add_label_columns(
+
+        // Typed attribute demotion (D4: budgeted LRU demotion): drop the
+        // idle/over-budget promoted columns before the rewrite so the new
+        // files stop carrying them. The typed map still holds every value
+        // (it's the demoted column's home), so nothing is lost — the next
+        // query for the key falls back to it. A failure is logged and the
+        // compaction continues; at worst the column lives until the next
+        // cycle.
+        if !typed_demote.is_empty() {
+            let schema_before_demote = current_schema.clone();
+            match common::iceberg::evolution::remove_promoted_attr_columns(
                 self.catalog_manager.catalog(),
                 table.identifier(),
-                &decision.promote,
+                &typed_demote,
             )
             .await
             {
-                Ok(_) => {
-                    outcome.evolved = true;
-                    // TODO(#731): set bloom-filter table properties for the
-                    // newly promoted label columns once the
-                    // `bloom_filter_properties_for_labels` helper lands in
-                    // common.
+                Ok(pruned) => {
+                    let dropped_columns = actually_dropped_columns(&schema_before_demote, &pruned);
+                    outcome.evolved = outcome.evolved || !dropped_columns.is_empty();
+                    outcome.dropped_columns.extend(dropped_columns);
+                    current_schema = pruned;
                 }
                 Err(e) => {
                     tracing::warn!(
                         error = %e,
                         table = %table_name,
-                        keys = ?decision.promote,
-                        "Failed to evolve schema for attribute promotion; continuing compaction without it"
+                        keys = ?typed_demote,
+                        "Failed to evolve schema for typed attribute demotion; continuing compaction without it"
+                    );
+                }
+            }
+        }
+        if !typed_decision.promote.is_empty() {
+            let attrs: Vec<(AttributeLevel, String, CanonicalType)> = typed_decision
+                .promote
+                .iter()
+                .filter_map(|(level, key)| {
+                    canonical_types
+                        .get(&(*level, key.clone()))
+                        .map(|canonical| (*level, key.clone(), *canonical))
+                })
+                .collect();
+            match common::iceberg::evolution::add_promoted_attr_columns(
+                self.catalog_manager.catalog(),
+                table.identifier(),
+                &attrs,
+            )
+            .await
+            {
+                Ok(evolved) => {
+                    outcome.evolved = true;
+                    current_schema = evolved;
+                }
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        table = %table_name,
+                        keys = ?typed_decision.promote,
+                        "Failed to evolve schema for typed attribute promotion; continuing compaction without it"
                     );
                 }
             }
@@ -576,10 +741,25 @@ impl ParquetRewriter {
 
         // Demotion (#734 P3): drop the long-unqueried auto-promoted
         // columns before the rewrite so the new files stop carrying
-        // them. Like promotion, a failure is logged and the compaction
-        // continues — at worst the column lives until the next cycle.
+        // them. A failure is logged and the compaction continues — at
+        // worst the column lives until the next cycle.
         let mut demoted: Vec<String> = Vec::new();
         if !decision.demote.is_empty() {
+            // Snapshot the pre-call schema so the actually-dropped columns
+            // can be derived by diffing against whatever
+            // `remove_label_columns` returns, rather than independently
+            // re-resolving `decision.demote` against this local snapshot.
+            // `remove_label_columns` reloads the table fresh from the
+            // catalog and resolves columns against that live state; under
+            // concurrent multi-instance compaction another instance may
+            // have already demoted these keys and reused the freed column
+            // name for an unrelated, colliding key (#814) before this call
+            // lands. In that case `remove_label_columns` correctly no-ops
+            // (the schema it returns is unchanged), and diffing yields an
+            // empty `dropped_columns` instead of stale names that would
+            // otherwise cause `rewrite_stream` to drop a live column
+            // belonging to the colliding key.
+            let schema_before_demote = current_schema.clone();
             match common::iceberg::evolution::remove_label_columns(
                 self.catalog_manager.catalog(),
                 table.identifier(),
@@ -587,13 +767,12 @@ impl ParquetRewriter {
             )
             .await
             {
-                Ok(_) => {
-                    outcome.evolved = true;
+                Ok(pruned) => {
+                    let dropped_columns = actually_dropped_columns(&schema_before_demote, &pruned);
+                    outcome.evolved = outcome.evolved || !dropped_columns.is_empty();
                     demoted = decision.demote;
-                    outcome.dropped_columns = demoted
-                        .iter()
-                        .map(|key| materialized_column_name(key))
-                        .collect();
+                    outcome.dropped_columns.extend(dropped_columns);
+                    current_schema = pruned;
                 }
                 Err(e) => {
                     tracing::warn!(
@@ -606,29 +785,57 @@ impl ParquetRewriter {
             }
         }
 
-        // Backfill plan: the freshly promoted keys plus every label column
-        // whose source key is still known (already-materialized keys from
-        // the stats, and the pinned allowlist), minus what was just
-        // demoted. Recomputing existing columns heals rows the writer
-        // left null during the transition window. Deduplicated by column
-        // name — the key -> column encoding is lossy.
+        // Backfill plan: every label column whose source key is still
+        // known (already-materialized keys from the stats, and the pinned
+        // allowlist), minus what was just demoted. Recomputing existing
+        // columns heals rows the writer left null during the transition
+        // window. Each key's column is resolved from the freshly-evolved
+        // schema via its origin-key `doc` (#814); a key with no column yet
+        // (e.g. pinned but never promoted) is skipped rather than guessing
+        // a name. Deduplicated by column name.
         let mut seen_columns = HashSet::new();
-        let promoted: &[String] = if outcome.evolved {
-            &decision.promote
-        } else {
-            &[]
-        };
-        for key in promoted
+        for key in materialized
             .iter()
-            .chain(materialized.iter())
             .chain(pinned)
             .filter(|key| !demoted.contains(key))
         {
-            let column = materialized_column_name(key);
-            if seen_columns.insert(column.clone()) {
-                outcome.backfill.push((key.clone(), column));
+            if let Some(column) = common::iceberg::evolution::column_for_key(&current_schema, key) {
+                let column = column.to_string();
+                if seen_columns.insert(column.clone()) {
+                    outcome.backfill.push((key.clone(), column));
+                }
             }
         }
+
+        // Typed attr backfill plan (otel-native-schema layer 6, D4/D5):
+        // every typed promoted-attribute column of the (possibly evolved)
+        // current schema, unless the type authority's current canonical
+        // type for its `(level, key)` no longer matches the column's own
+        // stored type (a repin) — such a column is left null rather than
+        // backfilled from a home it no longer agrees with. Nothing creates
+        // a promoted attribute column yet, so `promoted_attrs_of` is empty
+        // and this is a no-op in practice until that lands.
+        for (level, key, column, stored_canonical) in
+            common::iceberg::evolution::promoted_attrs_of(&current_schema)
+        {
+            let current_canonical = canonical_types.get(&(level, key.clone())).copied();
+            if current_canonical == Some(stored_canonical) {
+                outcome
+                    .promoted_attr_backfill
+                    .push((level, key, column, stored_canonical));
+            } else {
+                tracing::warn!(
+                    table = %table_name,
+                    level = level.as_str(),
+                    attr_key = %key,
+                    column = %column,
+                    current_type = ?current_canonical,
+                    stored_type = ?stored_canonical,
+                    "Promoted attribute column's type no longer matches the key's current canonical type; skipping backfill"
+                );
+            }
+        }
+
         outcome
     }
 
@@ -671,46 +878,40 @@ impl ParquetRewriter {
         }
     }
 
-    /// Get sort columns for a given table type
+    /// The key this rewrite sorts by, taken from the table's own declaration.
     ///
-    /// Returns a list of (column_name, ascending, nulls_first) tuples
-    /// for sorting compacted data. Returns empty vector for unknown tables.
-    fn get_sort_columns(table_name: &str) -> Vec<(&'static str, bool, bool)> {
-        // Classified through the crate's single table->signal predicate
-        // (see SignalType::from_table_name) rather than a second hand-rolled
-        // match, so a table this crate doesn't yet know about warns instead
-        // of silently compacting unsorted (issue #1014's failure mode).
-        match crate::retention::SignalType::from_table_name(table_name) {
-            Ok(crate::retention::SignalType::Traces) => {
-                vec![("timestamp", true, true), ("trace_id", true, true)]
-            }
-            Ok(crate::retention::SignalType::Logs) => vec![
-                ("timestamp", true, true),
-                ("service_name", true, true),
-                ("severity_text", true, true),
-            ],
-            // All 5 metrics types use the same sort pattern
-            Ok(crate::retention::SignalType::Metrics) => vec![
-                ("timestamp", true, true),
-                ("metric_name", true, true),
-                ("service_name", true, true),
-            ],
-            Ok(crate::retention::SignalType::Profiles) => {
-                vec![("timestamp", true, true), ("service_name", true, true)]
-            }
-            Err(_) => {
-                tracing::warn!(
-                    "No sort configuration for table {table_name}, data will not be sorted"
-                );
-                vec![]
-            }
+    /// The declared sort order is the single source of truth for the ordering
+    /// contract (`common::iceberg::schemas::TableSchema::sort_key_columns`),
+    /// so the compactor reads it rather than keeping a second copy that could
+    /// drift from what the tables say and what the query engine is told.
+    ///
+    /// A table with no declaration — created by an older build and not yet
+    /// reconciled by an `ensure_table` load — still gets sorted output, by the
+    /// canonical key resolved by column name, but its files are written
+    /// unattested: there is no declared order for them to attest. A table this
+    /// crate does not recognize at all is compacted unsorted, and says so.
+    fn rewrite_sort_key(table: &Table) -> WriteSortKey {
+        let table_name = table.identifier().name();
+        let key = write_sort_key(
+            table.metadata(),
+            table_name,
+            UndeclaredFallback::CanonicalKey,
+        );
+        if key.columns.is_empty() {
+            tracing::warn!("No sort configuration for table {table_name}, data will not be sorted");
+        } else if !key.attest {
+            tracing::debug!(
+                table = %table_name,
+                "Table declares no sort order; sorting by the canonical key and writing unattested"
+            );
         }
+        key
     }
 
     /// Warn about `[compactor]` memory settings that cannot work together.
     ///
-    /// The three knobs interact, and only one of the three combinations is
-    /// obvious from any single value:
+    /// The knobs interact, and none of the bad combinations is obvious
+    /// from any single value:
     ///
     /// * a job's peak memory is `memory_limit_mb` **plus** roughly one
     ///   `target_file_size_mb` — the chunker accumulates an output file
@@ -720,7 +921,10 @@ impl ParquetRewriter {
     ///   fan-out shrinks every sorter's share (#1064);
     /// * a share too small to hold a batch plus its spill-merge
     ///   reservation makes the sort fail rather than spill, which is the
-    ///   failure this whole area exists to prevent.
+    ///   failure this whole area exists to prevent;
+    /// * `sort_spill_reservation_mb` comes *out of* that share rather
+    ///   than adding to it, so a large one leaves the sort spilling from
+    ///   the first batches on.
     ///
     /// These are warnings, not errors: an operator who has measured their
     /// workload may legitimately want an unusual ratio, and refusing to
@@ -728,8 +932,7 @@ impl ParquetRewriter {
     /// saying so loudly.
     pub fn warn_on_incoherent_memory_config(config: &common::config::CompactorConfig) {
         let pool_mb = config.memory_limit_mb as u64;
-        let fan_out = config.target_partitions.max(1) as u64;
-        let per_sorter_mb = pool_mb / fan_out;
+        let per_sorter_mb = Self::per_sorter_mb(config);
 
         if config.target_file_size_mb >= pool_mb {
             tracing::warn!(
@@ -738,6 +941,18 @@ impl ParquetRewriter {
                 "[compactor] target_file_size_mb is at or above memory_limit_mb; the chunker \
                  accumulates an output file outside the memory pool, so peak job memory will be \
                  dominated by the part the pool does not account for"
+            );
+        }
+
+        if config.sort_spill_reservation_mb * 2 >= per_sorter_mb {
+            tracing::warn!(
+                memory_limit_mb = pool_mb,
+                target_partitions = config.target_partitions,
+                per_sorter_mb,
+                sort_spill_reservation_mb = config.sort_spill_reservation_mb,
+                "[compactor] sort_spill_reservation_mb claims half or more of each sorter's \
+                 share of memory_limit_mb; that headroom cannot hold data, so the sort will \
+                 spill almost immediately"
             );
         }
 
@@ -752,6 +967,13 @@ impl ParquetRewriter {
                  rewrite will fail instead of spilling"
             );
         }
+    }
+
+    /// Each sorter's slice of the pool: the budget is divided by the
+    /// fan-out, and `0` means DataFusion picks the fan-out itself, which
+    /// is at least one.
+    fn per_sorter_mb(config: &common::config::CompactorConfig) -> u64 {
+        config.memory_limit_mb as u64 / config.target_partitions.max(1) as u64
     }
 
     /// Build the compaction session context.
@@ -794,7 +1016,7 @@ impl ParquetRewriter {
     fn compaction_context(&self) -> SessionContext {
         let compactor = &self.catalog_manager.config().compactor;
         let memory_limit_mb = compactor.memory_limit_mb;
-        let session_config = Self::compaction_session_config(compactor.target_partitions);
+        let session_config = Self::compaction_session_config(compactor);
         let builder =
             datafusion::execution::runtime_env::RuntimeEnvBuilder::new().with_memory_pool(
                 common::datafusion_runtime::bounded_memory_pool(memory_limit_mb * 1024 * 1024, 1.0),
@@ -804,6 +1026,7 @@ impl ParquetRewriter {
                 tracing::debug!(
                     memory_limit_mb,
                     target_partitions = session_config.target_partitions(),
+                    batch_size = session_config.batch_size(),
                     "Compaction memory pool configured"
                 );
                 SessionContext::new_with_config_rt(session_config, Arc::new(runtime_env))
@@ -818,17 +1041,25 @@ impl ParquetRewriter {
         }
     }
 
-    /// `SessionConfig` for the rewrite, with the partition fan-out pinned.
+    /// `SessionConfig` for the rewrite: the partition fan-out, the scan's
+    /// batch size, and the sort's spill headroom.
     ///
-    /// `0` means "use DataFusion's default" — `with_target_partitions`
-    /// rejects zero, so the knob is simply not applied.
-    fn compaction_session_config(target_partitions: usize) -> datafusion::prelude::SessionConfig {
-        let config = datafusion::prelude::SessionConfig::new();
-        if target_partitions == 0 {
-            config
-        } else {
-            config.with_target_partitions(target_partitions)
-        }
+    /// The batch size is a memory bound rather than a throughput knob;
+    /// [`common::config::CompactorConfig::scan_batch_size`] carries the
+    /// reasoning.
+    ///
+    /// `0` means "use DataFusion's default" for both counts —
+    /// `with_target_partitions` rejects zero, and a zero batch size would
+    /// stall the scan.
+    fn compaction_session_config(
+        compactor: &common::config::CompactorConfig,
+    ) -> datafusion::prelude::SessionConfig {
+        let shape = common::datafusion_runtime::ScanShape::from_mb(
+            compactor.scan_batch_size,
+            compactor.target_partitions,
+            compactor.sort_spill_reservation_mb,
+        );
+        shape.apply(datafusion::prelude::SessionConfig::new())
     }
 
     /// Predicate selecting exactly the rows of one hour partition.
@@ -880,7 +1111,7 @@ impl ParquetRewriter {
             })?;
 
         let sort_cols = match sort {
-            SortRows::Yes => Self::get_sort_columns(&table_name),
+            SortRows::By(columns) => columns,
             // The statistics pass is order-independent, so it plans no
             // sort — which is what keeps the extra scan cheap.
             SortRows::No => vec![],
@@ -888,7 +1119,7 @@ impl ParquetRewriter {
         let sorted_df = if !sort_cols.is_empty() {
             let sort_exprs: Vec<_> = sort_cols
                 .into_iter()
-                .map(|(col_name, asc, nulls_first)| col(col_name).sort(asc, nulls_first))
+                .map(|column| col(column.name).sort(!column.descending, column.nulls_first))
                 .collect();
 
             df.sort(sort_exprs)
@@ -928,6 +1159,38 @@ impl ParquetRewriter {
             }
         }
     }
+}
+
+/// The label columns actually removed by a `remove_label_columns` call,
+/// derived by diffing `before` (the schema snapshot held prior to the
+/// call) against `after` (the schema the call returned) — rather than
+/// independently re-resolving the requested demotion keys against
+/// `before` (see `ParquetRewriter::run_promotion_pass`'s demotion block).
+///
+/// `remove_label_columns` reloads the table fresh from the catalog and
+/// resolves columns against that live state, not `before`. Under
+/// concurrent multi-instance compaction of the same table, another
+/// instance may already have demoted the same keys and reused the freed
+/// column name for an unrelated, colliding key (#814) before this call
+/// lands; `remove_label_columns` then correctly no-ops (`after` is
+/// unchanged from the live schema, still carrying that column name — now
+/// under the colliding key). Diffing by name yields an empty result in
+/// that case, since the column name survives in both `before` and
+/// `after`, instead of the stale pre-call resolution wrongly reporting it
+/// dropped and causing `rewrite_stream` to project away the colliding
+/// key's live, valid data.
+fn actually_dropped_columns(
+    before: &iceberg_rust::spec::schema::Schema,
+    after: &iceberg_rust::spec::schema::Schema,
+) -> Vec<String> {
+    let after_names: HashSet<&str> = after.fields().iter().map(|f| f.name.as_str()).collect();
+    before
+        .fields()
+        .iter()
+        .map(|f| f.name.as_str())
+        .filter(|name| !after_names.contains(name))
+        .map(str::to_string)
+        .collect()
 }
 
 #[cfg(test)]
@@ -972,7 +1235,7 @@ mod tests {
             schema,
             futures::stream::iter(batches.into_iter().map(Ok)),
         ));
-        ParquetRewriter::rewrite_stream(inner, vec![], vec![], target_size_bytes)
+        ParquetRewriter::rewrite_stream(inner, vec![], vec![], vec![], target_size_bytes)
     }
 
     #[tokio::test]
@@ -1028,6 +1291,56 @@ mod tests {
 
         assert_eq!(out.len(), 1);
         assert_eq!(out[0].num_rows(), 10);
+    }
+
+    /// A rewrite is a generic column pass-through: `rewrite_stream` only
+    /// touches columns named in `dropped_columns`/`backfill`, so a column it
+    /// knows nothing about -- like the warm containment index's
+    /// `attr_index` (task 4.3, otel-native-schema) -- survives a compaction
+    /// rewrite untouched, values included.
+    #[tokio::test]
+    async fn chunking_preserves_an_unrelated_column_like_the_warm_index() {
+        use datafusion::arrow::array::{ArrayRef, BinaryArray, Int64Array, ListArray, ListBuilder};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+
+        let mut builder = ListBuilder::new(datafusion::arrow::array::BinaryBuilder::new());
+        builder.values().append_value(b"tok-a");
+        builder.append(true);
+        builder.append(true); // second row: no tokens, still a present (empty) list
+        let attr_index: ArrayRef = Arc::new(builder.finish());
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("id", DataType::Int64, false),
+            Field::new(
+                "attr_index",
+                DataType::List(Arc::new(Field::new("item", DataType::Binary, true))),
+                true,
+            ),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(Int64Array::from(vec![1, 2])), attr_index],
+        )
+        .unwrap();
+
+        let out = drain(chunk(vec![batch], 1024 * 1024)).await;
+
+        assert_eq!(out.len(), 1);
+        let attr_index = out[0]
+            .column_by_name("attr_index")
+            .expect("attr_index column must survive the rewrite")
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let row0 = attr_index
+            .value(0)
+            .as_any()
+            .downcast_ref::<BinaryArray>()
+            .unwrap()
+            .value(0)
+            .to_vec();
+        assert_eq!(row0, b"tok-a");
+        assert_eq!(attr_index.value(1).len(), 0, "row 1 kept its empty list");
     }
 
     /// A single incoming batch already larger than the target must still be
@@ -1167,8 +1480,7 @@ mod tests {
             target_partitions: 16,
             ..Default::default()
         };
-        let per_sorter = config.memory_limit_mb as u64 / config.target_partitions as u64;
-        assert!(per_sorter < MIN_PER_SORTER_MB);
+        assert!(ParquetRewriter::per_sorter_mb(&config) < MIN_PER_SORTER_MB);
         ParquetRewriter::warn_on_incoherent_memory_config(&config);
     }
 
@@ -1193,10 +1505,15 @@ mod tests {
             config.target_file_size_mb,
             config.memory_limit_mb
         );
+        let per_sorter_mb = ParquetRewriter::per_sorter_mb(&config);
         assert!(
-            config.memory_limit_mb as u64 / config.target_partitions.max(1) as u64
-                >= MIN_PER_SORTER_MB,
+            per_sorter_mb >= MIN_PER_SORTER_MB,
             "default per-sorter share must clear the spill floor"
+        );
+        assert!(
+            config.sort_spill_reservation_mb * 2 < per_sorter_mb,
+            "default spill headroom ({} MB) must leave a sorter most of its share",
+            config.sort_spill_reservation_mb
         );
     }
 
@@ -1265,23 +1582,20 @@ mod tests {
         );
     }
 
-    /// Every signal table classified by `SignalType::from_table_name` must
-    /// get a non-empty sort order — a table silently falling through to the
-    /// `_` arm compacts unsorted forever (issue #1014's failure mode).
+    /// Every signal table this crate can classify must get a non-empty sort
+    /// key — a table silently falling through to the empty case compacts
+    /// unsorted forever (issue #1014's failure mode). The key now comes from
+    /// the shared declaration in `common`, so this also guards against the
+    /// compactor and the table metadata drifting apart.
     #[test]
-    fn get_sort_columns_covers_every_known_signal_table() {
-        for table in [
-            "traces",
-            "logs",
-            "metrics_gauge",
-            "metrics_sum",
-            "metrics_histogram",
-            "metrics_exponential_histogram",
-            "metrics_summary",
-            "profiles",
-        ] {
+    fn the_canonical_sort_key_covers_every_known_signal_table() {
+        for table in ["traces", "logs", "profiles", "metrics", "metric_exemplars"] {
             assert!(
-                !ParquetRewriter::get_sort_columns(table).is_empty(),
+                crate::retention::SignalType::from_table_name(table).is_ok(),
+                "table '{table}' is not classified by this crate"
+            );
+            assert!(
+                !common::iceberg::sort::canonical_sort_columns(table).is_empty(),
                 "table '{table}' has no sort columns"
             );
         }
@@ -1300,5 +1614,209 @@ mod tests {
             datafusion::prelude::SessionConfig::new().target_partitions(),
             "zero must land on DataFusion's own default, not merely some positive count"
         );
+    }
+
+    /// The scan's batch size is a memory knob, not just a throughput one
+    /// (see [`common::config::CompactorConfig::scan_batch_size`]), so the
+    /// default has to sit below DataFusion's.
+    #[tokio::test]
+    async fn compaction_context_bounds_the_scan_batch_size() {
+        let rewriter = rewriter_with_config(|_| {}).await;
+        let ctx = rewriter.compaction_context();
+
+        assert!(
+            ctx.state().config().batch_size()
+                < datafusion::prelude::SessionConfig::new().batch_size(),
+            "compaction must read smaller batches than DataFusion's default, whose per-batch \
+             reservation cannot spill and is unbounded in bytes"
+        );
+        assert_eq!(
+            ctx.state().config().batch_size(),
+            common::config::CompactorConfig::default().scan_batch_size
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_context_honors_configured_batch_size() {
+        let rewriter = rewriter_with_config(|c| c.compactor.scan_batch_size = 256).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(ctx.state().config().batch_size(), 256);
+    }
+
+    /// `0` is the escape hatch back to DataFusion's own default, matching
+    /// `target_partitions`.
+    #[tokio::test]
+    async fn compaction_context_treats_zero_batch_size_as_auto() {
+        let rewriter = rewriter_with_config(|c| c.compactor.scan_batch_size = 0).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(
+            ctx.state().config().batch_size(),
+            datafusion::prelude::SessionConfig::new().batch_size()
+        );
+    }
+
+    /// The headroom the sorter holds back so its spill merge can run is
+    /// the knob DataFusion's own OOM message tells operators to tune, so
+    /// the compactor has to expose it.
+    #[tokio::test]
+    async fn compaction_context_sets_the_sort_spill_reservation() {
+        let rewriter = rewriter_with_config(|c| c.compactor.sort_spill_reservation_mb = 32).await;
+        let ctx = rewriter.compaction_context();
+
+        assert_eq!(
+            ctx.state()
+                .config()
+                .options()
+                .execution
+                .sort_spill_reservation_bytes,
+            32 * 1024 * 1024
+        );
+    }
+
+    /// Headroom taken from the pool is memory the sort cannot fill with
+    /// data, so a reservation that claims half a sorter's share leaves it
+    /// spilling constantly — a combination invisible from either value.
+    #[test]
+    fn a_spill_reservation_that_eats_the_per_sorter_share_is_flagged() {
+        let config = common::config::CompactorConfig {
+            memory_limit_mb: 128,
+            target_partitions: 1,
+            sort_spill_reservation_mb: 64,
+            ..Default::default()
+        };
+        assert!(
+            config.sort_spill_reservation_mb * 2 >= ParquetRewriter::per_sorter_mb(&config),
+            "fixture must actually be the incoherent case"
+        );
+        ParquetRewriter::warn_on_incoherent_memory_config(&config);
+    }
+
+    /// Unit-level proof of the diff itself: a "before" schema with
+    /// `label_env` (doc `K1`) and an "after" schema that still carries
+    /// `label_env`, unchanged, but now under a colliding key's doc `K2` --
+    /// exactly what a no-op `remove_label_columns` returns when a
+    /// concurrent instance already reused the freed column name (see the
+    /// full end-to-end race reproduced below). The diff must report zero
+    /// dropped columns, not the stale `label_env`.
+    #[test]
+    fn actually_dropped_columns_is_empty_when_the_column_survives_under_a_different_key() {
+        use common::iceberg::evolution::label_doc;
+        use iceberg_rust::spec::schema::Schema as IcebergSchema;
+        use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+
+        let label_field = |doc_key: &str| StructField {
+            id: 1,
+            name: "label_env".to_string(),
+            required: false,
+            field_type: Type::Primitive(PrimitiveType::String),
+            doc: Some(label_doc(doc_key)),
+            initial_default: None,
+            write_default: None,
+        };
+        let before =
+            IcebergSchema::from_struct_type(StructType::new(vec![label_field("K1")]), 0, None);
+        // No-op removal: same column, same schema shape, but now doc'd to
+        // K2 -- `remove_label_columns` returns the live schema untouched.
+        let after =
+            IcebergSchema::from_struct_type(StructType::new(vec![label_field("K2")]), 0, None);
+
+        assert!(actually_dropped_columns(&before, &after).is_empty());
+    }
+
+    /// End-to-end reproduction of the race against a real in-memory
+    /// catalog: two colliding keys (`http.method` / `http_method`, both
+    /// sanitizing to `label_http_method`) interleaved exactly as described
+    /// for the #814 follow-up. Instance A holds a stale schema snapshot
+    /// from before instance B's demote-then-promote interleaving frees and
+    /// reclaims the same column name for the other key. Diffing against
+    /// what `remove_label_columns` actually returns must yield an empty
+    /// `dropped_columns`, and the colliding key's column must survive.
+    #[tokio::test]
+    async fn demotion_diffs_against_the_post_removal_schema_not_a_stale_snapshot()
+    -> anyhow::Result<()> {
+        use common::iceberg::evolution::{add_label_columns, column_for_key, remove_label_columns};
+        use iceberg_rust::catalog::create::CreateTableBuilder;
+        use iceberg_rust::spec::partition::PartitionSpec;
+        use iceberg_rust::spec::schema::Schema as IcebergSchema;
+        use iceberg_rust::spec::types::{PrimitiveType, StructField, StructType, Type};
+
+        let manager = common::CatalogManager::new_in_memory().await?;
+        let catalog = manager.catalog();
+        let namespace = common::iceberg::names::build_namespace("race", "test")?;
+        catalog.clone().create_namespace(&namespace, None).await?;
+        let identifier = common::iceberg::names::build_table_identifier("race", "test", "events");
+        let base = IcebergSchema::from_struct_type(
+            StructType::new(vec![StructField {
+                id: 1,
+                name: "timestamp".to_string(),
+                required: true,
+                field_type: Type::Primitive(PrimitiveType::Timestamp),
+                doc: None,
+                initial_default: None,
+                write_default: None,
+            }]),
+            0,
+            None,
+        );
+        let create = CreateTableBuilder::default()
+            .with_name("events".to_string())
+            .with_schema(base)
+            .with_partition_spec(PartitionSpec::default())
+            .with_location(common::iceberg::names::build_table_location(
+                "race", "test", "events",
+            ))
+            .create()
+            .map_err(|e| anyhow::anyhow!("create table build: {e}"))?;
+        catalog
+            .clone()
+            .create_table(identifier.clone(), create)
+            .await?;
+
+        // Instance A promotes `http.method`, then holds this schema as its
+        // stale local `current_schema` snapshot going into its demote call.
+        let schema_before_demote =
+            add_label_columns(catalog.clone(), &identifier, &["http.method".to_string()]).await?;
+        assert_eq!(
+            column_for_key(&schema_before_demote, "http.method"),
+            Some("label_http_method")
+        );
+
+        // Meanwhile instance B: demotes `http.method` (freeing
+        // `label_http_method`), then promotes the colliding `http_method`
+        // onto the now-free column name.
+        remove_label_columns(catalog.clone(), &identifier, &["http.method".to_string()]).await?;
+        let live_after_b =
+            add_label_columns(catalog.clone(), &identifier, &["http_method".to_string()]).await?;
+        assert_eq!(
+            column_for_key(&live_after_b, "http_method"),
+            Some("label_http_method"),
+            "the colliding key must reclaim the freed column name"
+        );
+
+        // Instance A now acts on its stale decision to demote
+        // `http.method`. The real call resolves against live state, finds
+        // no column for it anymore, and correctly no-ops.
+        let pruned =
+            remove_label_columns(catalog.clone(), &identifier, &["http.method".to_string()])
+                .await?;
+        assert_eq!(
+            pruned, live_after_b,
+            "a no-op removal must leave the live schema unchanged"
+        );
+
+        let dropped = actually_dropped_columns(&schema_before_demote, &pruned);
+        assert!(
+            dropped.is_empty(),
+            "must not report label_http_method as dropped -- it now legitimately \
+             belongs to http_method: {dropped:?}"
+        );
+        assert_eq!(
+            column_for_key(&pruned, "http_method"),
+            Some("label_http_method"),
+            "the colliding key's column must survive"
+        );
+        Ok(())
     }
 }

@@ -4,6 +4,7 @@ type: reference
 status: living
 sources:
   - src/router/src/endpoints/tempo.rs
+  - src/querier/src/services/tempo.rs
 ---
 
 # Tempo API reference
@@ -28,6 +29,40 @@ authentication headers described in [Authentication](authentication.md)
 | GET    | `/api/metrics/query`              | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                                                                      |
 | GET    | `/api/metrics/query_range`        | **501**     | TraceQL metrics not implemented                                                                                                                                                                                                                                                                      |
 
+## TraceQL: the supported subset
+
+`GET /api/search`'s `q` parameter accepts a single spanset of `&&`-conjoined
+equality matchers. `{}` is valid and selects everything.
+
+```
+{ resource.service.name = "api" && span.http.method = "GET" }
+```
+
+- **Intrinsics**: `name`, `status`, `kind`, and service name spelled either
+  `resource.service.name` or `.service.name`.
+- **Attributes**: `span.<key>`, `resource.<key>`, or unscoped `.<key>`.
+- **Values**: double-quoted strings, bare numbers, `true`/`false`, and bare
+  identifiers (meaningful only for `status`/`kind`).
+
+An attribute matcher compares its value, coerced to the key's canonical type,
+with the key's typed home (see
+[Canonical types](schema-registry.md#canonical-types)); the `tags` parameter
+filters the same way.
+
+Anything outside the subset is rejected rather than silently dropped — a
+partially applied filter would return _more_ traces than you asked for while
+still looking like a successful search. Which rejection you get tells you
+whose problem it is:
+
+| Your `q`                                                | Status  | Meaning                                         |
+| ------------------------------------------------------- | ------- | ----------------------------------------------- |
+| `{ .a != "b" }`, `=~`, `>=`, `\|\|`, `duration > 100ms` | **501** | Valid TraceQL. SignalDB does not execute it yet |
+| `notbraces`, `{ foo }`, `{ zzz = 1 }`                   | **400** | Not TraceQL. Fix the query                      |
+
+> **Changed:** unparseable `q` values previously returned 501. They are now
+> 400, so a client can tell a malformed query from an unimplemented one.
+> Valid-but-unimplemented constructs still return 501, unchanged.
+
 ## Tag discovery time window
 
 The tag-name endpoints (`/api/search/tags`, `/api/v2/search/tags`) and the
@@ -49,7 +84,10 @@ request):
   from a client that guessed the wrong unit) are rejected with **400**.
 
 Names and values are deduplicated and sorted; values are capped at 1000
-per tag. Because discovery samples rather than indexes, a key or value
+per tag. Attribute values come from decoding the whole resource/span attribute
+container (typed homes and residue) and are rendered as strings, so a typed
+value such as `200` or `true` appears as text. The dedicated tags
+(`service.name`, `name`, `rootServiceName`, `rootName`) read columns instead. Because discovery samples rather than indexes, a key or value
 that exists only outside the sampled rows can be missed — widen the
 window or narrow it with `start`/`end` around when the data was ingested
 if a key you know exists doesn't show up.
@@ -76,15 +114,15 @@ timings (`Server-Timing` with `traceparent`, `querier`/`convert`/`total`
 
 ## Error mapping
 
-| HTTP status | Meaning                                                                                                                                |
-| ----------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| 400         | Invalid search parameters, including `start`/`end` values that are not unix seconds (missing/invalid headers also yield 400 from auth) |
-| 401 / 403   | Authentication or authorization failure                                                                                                |
-| 404         | Trace not found                                                                                                                        |
-| 429         | Per-tenant query rate limit exceeded — carries `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Burst` (see below)                     |
-| 501         | Feature not implemented (TraceQL metrics)                                                                                              |
-| 503         | No querier service available                                                                                                           |
-| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                             |
+| HTTP status | Meaning                                                                                                                                                                                       |
+| ----------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 400         | Invalid search parameters, including `start`/`end` values that are not unix seconds, malformed `tags`, and a `q` that is not valid TraceQL (missing/invalid headers also yield 400 from auth) |
+| 401 / 403   | Authentication or authorization failure                                                                                                                                                       |
+| 404         | Trace not found                                                                                                                                                                               |
+| 429         | Per-tenant query rate limit exceeded — carries `Retry-After`, `X-RateLimit-Limit`, `X-RateLimit-Burst` (see below)                                                                            |
+| 501         | Feature not implemented: TraceQL metrics, or a `q` that is valid TraceQL using a construct SignalDB does not execute yet                                                                      |
+| 503         | No querier service available                                                                                                                                                                  |
+| 504         | Query deadline exceeded (server-side budget, or the caller's own deadline)                                                                                                                    |
 
 A query that runs out of time is always a 504, never a 500 — whether the
 querier's `query_timeout` fired or the router's Flight channel deadline did.
@@ -145,10 +183,12 @@ can use SignalDB as a querier backend:
   auth headers, which a stock Tempo query-frontend cannot send — run without
   the key on a trusted network for Tempo interop.
 - `SearchBlock` returns `Unimplemented` (SignalDB stores data in Iceberg
-  tables, not Tempo blocks). Tag endpoints still advertise the old static
-  three-name set (`service.name`, `name`, `status`) rather than the
-  window-scoped discovery the HTTP API now does — not yet upgraded; tag
-  _value_ enumeration remains HTTP-only.
+  tables, not Tempo blocks).
+- `SearchTags`/`SearchTagsV2` use the same window-scoped discovery as the
+  HTTP tag-name endpoints: `SearchTags` flattens all scopes, `SearchTagsV2`
+  groups by scope and narrows to one when the request's `scope` is set.
+- `SearchTagValues`/`SearchTagValuesV2` return an empty list; tag _value_
+  enumeration is served by the HTTP API only.
 
 ## Related
 

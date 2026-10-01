@@ -1,0 +1,230 @@
+{
+  "projectId": "6b1371e8-5c56-402a-8c4c-81af3a725fc0",
+  "shape": "storybook",
+  "storybookConfigDir": "src/ui/.storybook",
+  "storybookStatic": ".design-sync/sb-reference",
+  "pkg": "signaldb-ui",
+  "globalName": "SignalDBUI",
+  "srcDir": "src/ui/src/components",
+  "entry": ".design-sync/pkg/dist/index.js",
+  "cssEntry": "dist/index.css",
+  "buildCmd": ".design-sync/pkg/build.sh",
+  "titleMap": {
+    "SemanticKey": "SemanticKeyLabel",
+    "Logs": "LogsView",
+    "Traces": "TracesView",
+    "Catalog": "CatalogView",
+    "Consent": "ConsentView",
+    "Errors": "ErrorsView",
+    "Instrumentation": "Instrumentation",
+    "Manage": "ManagementPanel",
+    "Metrics": "MetricsView",
+    "Processors": "ProcessorList",
+    "Profiles": "ProfilesView",
+    "Query": "QueryView",
+    "Schema": "SchemaHub",
+    "Login": "LoginRoute",
+    "APIKeys": "ApiKeys",
+    "GitHubIntegration": "GitHubIntegration",
+    "SelectTenant": "SelectTenant",
+    "Overview": "OverviewView",
+    "AgentsScores": "AgentsScoresView",
+    "Runs": "RunsView",
+    "Compare": "CompareView",
+    "Case": "CaseView",
+    "Evaluators": "EvaluatorsView",
+    "EvalSets": "EvalSetsView",
+    "EvalSet": "EvalSetView",
+    "RealUsers": "RealUsersView"
+  },
+  "provider": {
+    "component": "QueryClientProvider",
+    "props": {
+      "client": {
+        "$ref": "previewQueryClient"
+      }
+    }
+  },
+  "overrides": {
+    "AttributeTable": {
+      "cardMode": "column"
+    },
+    "VizTooltip": {
+      "cardMode": "column"
+    },
+    "Dialog": {
+      "cardMode": "single",
+      "primaryStory": "Default"
+    },
+    "MobileSidebarDrawer": {
+      "skip": [
+        "components-mobilesidebardrawer--open-by-default",
+        "components-mobilesidebardrawer--right-side"
+      ]
+    },
+    "SemanticKeyLabel": {
+      "skip": ["components-semantickey--unresolved"]
+    },
+    "SourceSnippet": {
+      "skip": ["components-sourcesnippet--unavailable"]
+    },
+    "LogsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "TracesView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "CatalogView": {
+      "cardMode": "single",
+      "viewport": "1280x2000",
+      "primaryStory": "EntityDetail"
+    },
+    "ConsentView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "SingleTenant"
+    },
+    "ErrorsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "AppShell": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "ConnectPanel": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "GitHubIntegration": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Linked"
+    },
+    "ApiKeys": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "Instrumentation": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "ManagementPanel": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "SelectTenant": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "MetricsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "ProcessorList": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "List"
+    },
+    "ProfilesView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "QueryView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "SchemaHub": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Conventions"
+    },
+    "LoginRoute": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "PasswordOnly"
+    },
+    "ThrottleBanner": {
+      "cardMode": "single",
+      "primaryStory": "Visible",
+      "skip": ["components-throttlebanner--hidden"]
+    },
+    "UpdateBanner": {
+      "cardMode": "single",
+      "primaryStory": "Visible",
+      "skip": ["components-updatebanner--hidden"]
+    },
+    "ServiceGraph": {
+      "cardMode": "column"
+    },
+    "OverviewView": {
+      "cardMode": "single",
+      "viewport": "1280x1650",
+      "primaryStory": "Default"
+    },
+    "AgentsScoresView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
+      "primaryStory": "Default"
+    },
+    "RunsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "CompareView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "CaseView": {
+      "cardMode": "single",
+      "viewport": "1280x900",
+      "primaryStory": "Default"
+    },
+    "EvaluatorsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "EvalSetsView": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
+    "EvalSetView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
+      "primaryStory": "Default"
+    },
+    "RealUsersView": {
+      "cardMode": "single",
+      "viewport": "1280x1000",
+      "primaryStory": "Default"
+    }
+  },
+  "storyImports": {
+    "shim": [
+      "@tanstack/react-query",
+      "api/gen/client.gen",
+      "api/http",
+      "react-router",
+      "lib/pwaUpdate"
+    ]
+  },
+  "readmeHeader": ".design-sync/conventions.md"
+}

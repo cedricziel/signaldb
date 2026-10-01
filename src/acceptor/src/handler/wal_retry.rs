@@ -134,6 +134,11 @@ impl WalRetryConsumer {
                 }
             };
 
+            // Reuse this listing's count to correct
+            // `signaldb.wal.entries_pending` drift (#1493) instead of a
+            // separate sweep that would re-scan the same segments.
+            wal.reconcile_pending_gauge_with_count(entries.len()).await;
+
             for entry in entries {
                 if matches!(entry.operation, WalOperation::Flush) {
                     continue;
@@ -167,10 +172,20 @@ impl WalRetryConsumer {
                     }
                 };
 
+                // The hot path forwarded under the batch fingerprint stored in
+                // the metadata; reuse it so the writer's dedup sees the same
+                // id. Entries written before the field existed fall back to
+                // their own id.
+                let ingest_id = entry
+                    .metadata
+                    .as_deref()
+                    .and_then(common::ingest_dedup::ingest_id_from_metadata)
+                    .unwrap_or(entry.id);
                 match forward_batch_to_writer(
                     &self.flight_transport,
                     batch,
                     entry.metadata.as_deref(),
+                    ingest_id,
                 )
                 .await
                 {
@@ -224,6 +239,16 @@ impl WalRetryConsumer {
                 }
             }
         }
+
+        // Reclaim WAL disk now that the pass is over and no listed entries are
+        // in flight. Cleanup compacts sealed segments, which moves surviving
+        // entries to new offsets, so it must not run *inside* a pass (#1305).
+        // This consumer is the acceptor's only WAL reader, so the end of a
+        // pass is the safe point. The manager throttles the actual sweep and
+        // logs any failures.
+        self.wal_manager.cleanup_all_if_due().await;
+
+        common::wal::dead_letter::reconcile_all(&self.wal_manager, "acceptor").await;
 
         Ok(stats)
     }
@@ -362,6 +387,51 @@ mod tests {
             .await
             .unwrap();
         Arc::new(InMemoryFlightTransport::new(bootstrap))
+    }
+
+    #[tokio::test]
+    async fn a_retry_pass_sweeps_an_orphaned_dead_letter_directory() {
+        // #1494: a dead-letter directory with no live WAL behind it anymore
+        // (segments already fully drained and cleaned up) must still be
+        // discovered and swept by the retry consumer's normal pass.
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("metrics")
+            .join("dead-letter");
+        tokio::fs::create_dir_all(&dead_letter_dir).await.unwrap();
+        let bin = dead_letter_dir.join("a.bin");
+        let marker = dead_letter_dir.join("a.rejected.json");
+        tokio::fs::write(&bin, b"payload").await.unwrap();
+        tokio::fs::write(&marker, b"{}").await.unwrap();
+        // No global CONFIG in this test, so the consumer falls back to the
+        // 30-day default retention; back-date well past that so the sweep
+        // actually deletes it.
+        let past = std::time::SystemTime::now() - std::time::Duration::from_secs(60 * 24 * 3600);
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&bin)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+        std::fs::OpenOptions::new()
+            .write(true)
+            .open(&marker)
+            .unwrap()
+            .set_modified(past)
+            .unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await);
+        consumer.run_once().await.unwrap();
+
+        assert!(
+            !bin.exists() && !marker.exists(),
+            "a dead-letter pair past retention must be swept even with no live WAL"
+        );
     }
 
     async fn append_entry(manager: &WalManager) {
@@ -561,5 +631,417 @@ mod tests {
         assert_eq!(dataset, "production");
         assert_eq!(signal, "traces");
         assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+    }
+
+    #[tokio::test]
+    async fn a_retry_pass_reclaims_processed_wal_segments() {
+        // `Wal::cleanup` had no caller in any service (#1305), so processed
+        // segments accumulated and were re-read at every start. The retry pass
+        // is the acceptor's only WAL consumer, so its end is the one point
+        // where compaction cannot move entries under a reader. This guards the
+        // wiring, not the sweep itself.
+        let temp_dir = TempDir::new().unwrap();
+        let mut config = test_config(temp_dir.path());
+        config.max_segment_size = 1024; // small: a few appends seal a segment
+        config.max_buffer_entries = 1;
+        let manager = Arc::new(WalManager::new(
+            config.clone(),
+            config.clone(),
+            config.clone(),
+            config,
+        ));
+
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        for i in 0..12u64 {
+            let id = wal
+                .append(
+                    WalOperation::WriteTraces,
+                    vec![b'x'; 200 + i as usize],
+                    None,
+                )
+                .await
+                .unwrap();
+            wal.flush().await.unwrap();
+            wal.mark_processed(id).await.unwrap();
+        }
+        assert!(
+            wal.segment_count().await > 1,
+            "test needs sealed segments to reclaim"
+        );
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), test_transport().await)
+            .with_timing(Duration::from_secs(1), Duration::from_secs(0));
+        consumer.run_once().await.unwrap();
+
+        assert_eq!(
+            wal.segment_count().await,
+            1,
+            "a retry pass must reclaim sealed segments whose entries are all processed"
+        );
+    }
+
+    /// A `FlightService` whose `do_put` always rejects the batch with
+    /// `INVALID_ARGUMENT` — the "writer inspected it and refused it" case
+    /// [`classify_forward_failure`] maps to [`ForwardFailureKind::Permanent`].
+    /// Every other RPC is unimplemented; the retry consumer only exercises
+    /// `do_put`.
+    struct RejectingFlightService;
+
+    #[tonic::async_trait]
+    impl arrow_flight::flight_service_server::FlightService for RejectingFlightService {
+        type HandshakeStream = futures::stream::BoxStream<
+            'static,
+            Result<arrow_flight::HandshakeResponse, tonic::Status>,
+        >;
+        type ListFlightsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightInfo, tonic::Status>>;
+        type DoGetStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoPutStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
+        type DoExchangeStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoActionStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
+        type ListActionsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::ActionType, tonic::Status>>;
+
+        async fn handshake(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("handshake"))
+        }
+        async fn list_flights(
+            &self,
+            _request: tonic::Request<arrow_flight::Criteria>,
+        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_flights"))
+        }
+        async fn get_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_flight_info"))
+        }
+        async fn poll_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("poll_flight_info"))
+        }
+        async fn get_schema(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_schema"))
+        }
+        async fn do_get(
+            &self,
+            _request: tonic::Request<arrow_flight::Ticket>,
+        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_get"))
+        }
+        async fn do_put(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+            Err(tonic::Status::invalid_argument(
+                "batch does not match the target table's schema",
+            ))
+        }
+        async fn do_exchange(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_exchange"))
+        }
+        async fn do_action(
+            &self,
+            _request: tonic::Request<arrow_flight::Action>,
+        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_action"))
+        }
+        async fn list_actions(
+            &self,
+            _request: tonic::Request<arrow_flight::Empty>,
+        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_actions"))
+        }
+    }
+
+    /// A minimal but valid Arrow `RecordBatch`, round-trippable through
+    /// [`common::wal::record_batch_to_bytes`]/[`bytes_to_record_batch`].
+    fn sample_record_batch() -> datafusion::arrow::record_batch::RecordBatch {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc as StdArc;
+
+        let schema = StdArc::new(Schema::new(vec![Field::new("n", DataType::Int32, false)]));
+        datafusion::arrow::record_batch::RecordBatch::try_new(
+            schema,
+            vec![StdArc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn writer_rejected_entry_is_dead_lettered_with_the_writer_s_reason() {
+        // record_rejected_entry is the third dead-letter path (the other two
+        // are covered above): the payload deserializes fine, but the writer
+        // itself refuses it. Unlike the other two, this one requires a real
+        // Flight round-trip to exercise, since the rejection is a property
+        // of what the *writer* does with a syntactically valid batch.
+        let catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let writer_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(common::flight::flight_service_server(
+                    RejectingFlightService,
+                ))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Writer,
+            &writer_addr.to_string(),
+        )
+        .await
+        .unwrap();
+
+        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+            catalog,
+            ServiceType::Acceptor,
+            "127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        let batch_bytes = common::wal::record_batch_to_bytes(&sample_record_batch()).unwrap();
+        wal.append(WalOperation::WriteTraces, batch_bytes, None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), flight_transport)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+        let stats = consumer.run_once().await.unwrap();
+
+        assert_eq!(
+            stats.dead_lettered, 1,
+            "a writer rejection must be dead-lettered, not left pending"
+        );
+        assert_eq!(stats.failed, 0);
+        assert!(wal.get_unprocessed_entries().await.unwrap().is_empty());
+
+        let dead_letter_dir = temp_dir
+            .path()
+            .join("acme")
+            .join("production")
+            .join("traces")
+            .join("dead-letter");
+        let mut saw_marker = false;
+        let mut files = tokio::fs::read_dir(&dead_letter_dir).await.unwrap();
+        while let Some(entry) = files.next_entry().await.unwrap() {
+            let path = entry.path();
+            if path.extension().and_then(|e| e.to_str()) == Some("json") {
+                let marker = tokio::fs::read_to_string(&path).await.unwrap();
+                assert!(
+                    marker.contains("schema"),
+                    "rejection marker must carry the writer's own reason: {marker}"
+                );
+                saw_marker = true;
+            }
+        }
+        assert!(saw_marker, "expected a .rejected.json marker file");
+    }
+
+    /// A `FlightService` that accepts every `do_put` and records the
+    /// `app_metadata` of the first `FlightData` message it received, so a
+    /// test can assert what the retry consumer actually sent.
+    #[derive(Clone)]
+    struct CapturingFlightService {
+        captured_metadata: Arc<std::sync::Mutex<Option<bytes::Bytes>>>,
+    }
+
+    #[tonic::async_trait]
+    impl arrow_flight::flight_service_server::FlightService for CapturingFlightService {
+        type HandshakeStream = futures::stream::BoxStream<
+            'static,
+            Result<arrow_flight::HandshakeResponse, tonic::Status>,
+        >;
+        type ListFlightsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightInfo, tonic::Status>>;
+        type DoGetStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoPutStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::PutResult, tonic::Status>>;
+        type DoExchangeStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::FlightData, tonic::Status>>;
+        type DoActionStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::Result, tonic::Status>>;
+        type ListActionsStream =
+            futures::stream::BoxStream<'static, Result<arrow_flight::ActionType, tonic::Status>>;
+
+        async fn handshake(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::HandshakeRequest>>,
+        ) -> Result<tonic::Response<Self::HandshakeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("handshake"))
+        }
+        async fn list_flights(
+            &self,
+            _request: tonic::Request<arrow_flight::Criteria>,
+        ) -> Result<tonic::Response<Self::ListFlightsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_flights"))
+        }
+        async fn get_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::FlightInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_flight_info"))
+        }
+        async fn poll_flight_info(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::PollInfo>, tonic::Status> {
+            Err(tonic::Status::unimplemented("poll_flight_info"))
+        }
+        async fn get_schema(
+            &self,
+            _request: tonic::Request<arrow_flight::FlightDescriptor>,
+        ) -> Result<tonic::Response<arrow_flight::SchemaResult>, tonic::Status> {
+            Err(tonic::Status::unimplemented("get_schema"))
+        }
+        async fn do_get(
+            &self,
+            _request: tonic::Request<arrow_flight::Ticket>,
+        ) -> Result<tonic::Response<Self::DoGetStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_get"))
+        }
+        async fn do_put(
+            &self,
+            request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoPutStream>, tonic::Status> {
+            use futures::StreamExt;
+            let mut stream = request.into_inner();
+            if let Some(Ok(first)) = stream.next().await {
+                *self.captured_metadata.lock().unwrap() = Some(first.app_metadata);
+            }
+            Ok(tonic::Response::new(futures::stream::empty().boxed()))
+        }
+        async fn do_exchange(
+            &self,
+            _request: tonic::Request<tonic::Streaming<arrow_flight::FlightData>>,
+        ) -> Result<tonic::Response<Self::DoExchangeStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_exchange"))
+        }
+        async fn do_action(
+            &self,
+            _request: tonic::Request<arrow_flight::Action>,
+        ) -> Result<tonic::Response<Self::DoActionStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("do_action"))
+        }
+        async fn list_actions(
+            &self,
+            _request: tonic::Request<arrow_flight::Empty>,
+        ) -> Result<tonic::Response<Self::ListActionsStream>, tonic::Status> {
+            Err(tonic::Status::unimplemented("list_actions"))
+        }
+    }
+
+    /// Append one valid batch with `metadata` to a WAL, run a retry pass
+    /// against a capturing writer, and return the entry id alongside the
+    /// `ingest_id` the writer received.
+    async fn ingest_id_forwarded_for(metadata: Option<String>) -> (Uuid, serde_json::Value) {
+        let catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+
+        let captured = CapturingFlightService {
+            captured_metadata: Arc::new(std::sync::Mutex::new(None)),
+        };
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let writer_addr = listener.local_addr().unwrap();
+        let service_for_server = captured.clone();
+        tokio::spawn(async move {
+            tonic::transport::Server::builder()
+                .add_service(common::flight::flight_service_server(service_for_server))
+                .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener))
+                .await
+                .unwrap();
+        });
+        ServiceBootstrap::new_for_test_with_catalog(
+            catalog.clone(),
+            ServiceType::Writer,
+            &writer_addr.to_string(),
+        )
+        .await
+        .unwrap();
+
+        let acceptor_bootstrap = ServiceBootstrap::new_for_test_with_catalog(
+            catalog,
+            ServiceType::Acceptor,
+            "127.0.0.1:0",
+        )
+        .await
+        .unwrap();
+        let flight_transport = Arc::new(InMemoryFlightTransport::new(acceptor_bootstrap));
+
+        let temp_dir = TempDir::new().unwrap();
+        let manager = Arc::new(test_manager(temp_dir.path()));
+        let wal = manager
+            .get_wal("acme", "production", "traces")
+            .await
+            .unwrap();
+        let batch_bytes = common::wal::record_batch_to_bytes(&sample_record_batch()).unwrap();
+        let entry_id = wal
+            .append(WalOperation::WriteTraces, batch_bytes, metadata)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+
+        let mut consumer = WalRetryConsumer::new(manager.clone(), flight_transport)
+            .with_timing(Duration::from_secs(1), Duration::ZERO);
+        let stats = consumer.run_once().await.unwrap();
+        assert_eq!(stats.retried, 1);
+
+        let metadata = captured.captured_metadata.lock().unwrap().clone().unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&metadata).unwrap();
+        (entry_id, value["ingest_id"].clone())
+    }
+
+    #[tokio::test]
+    async fn retried_entry_carries_the_ingest_id_from_its_metadata() {
+        // The hot path forwards under the batch fingerprint it stored in the
+        // entry's metadata; the retry consumer must reuse it (not the entry
+        // id) so the writer dedups a copy of the batch it already has.
+        let ingest_id = Uuid::new_v4();
+        let metadata = serde_json::json!({ "ingest_id": ingest_id.to_string() }).to_string();
+
+        let (_, forwarded) = ingest_id_forwarded_for(Some(metadata)).await;
+
+        assert_eq!(forwarded, ingest_id.to_string());
+    }
+
+    #[tokio::test]
+    async fn retried_entry_without_a_stored_ingest_id_uses_its_own_id() {
+        // An entry left by an acceptor that predates the stored ingest id
+        // still forwards under a stable id, so its own retries dedup.
+        let (entry_id, forwarded) = ingest_id_forwarded_for(None).await;
+
+        assert_eq!(forwarded, entry_id.to_string());
     }
 }

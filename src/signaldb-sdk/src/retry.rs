@@ -31,7 +31,10 @@
 use std::sync::Arc;
 use std::time::{Duration, SystemTime};
 
-use progenitor_client::OperationInfo;
+// Re-exported so a caller outside the generated client (an operation with no
+// SDK method, e.g. an unlisted endpoint) can still run its own request
+// through `execute` and get the shared retry-on-throttle policy.
+pub use progenitor_client::OperationInfo;
 use reqwest::header::{HeaderMap, RETRY_AFTER};
 use reqwest::{Method, StatusCode};
 
@@ -307,8 +310,11 @@ pub fn throttle_of(err: &(dyn std::error::Error + 'static)) -> Option<Throttled>
     probe!(
         (),
         crate::types::ApiError,
+        crate::types::ApiErrorBody,
         crate::types::ManageError,
+        crate::types::ProcessorError,
         crate::types::SchemaError,
+        crate::types::SessionErrorBody,
     );
     None
 }
@@ -316,7 +322,15 @@ pub fn throttle_of(err: &(dyn std::error::Error + 'static)) -> Option<Throttled>
 /// The generated error payload types [`throttle_of`] can see through. Kept
 /// next to the macro call above so the drift test can compare it with the
 /// generated file.
-pub const KNOWN_ERROR_TYPES: &[&str] = &["()", "ApiError", "ManageError", "SchemaError"];
+pub const KNOWN_ERROR_TYPES: &[&str] = &[
+    "()",
+    "ApiError",
+    "ApiErrorBody",
+    "ManageError",
+    "ProcessorError",
+    "SchemaError",
+    "SessionErrorBody",
+];
 
 fn failure_of(result: &reqwest::Result<reqwest::Response>) -> Option<Failure> {
     match result {

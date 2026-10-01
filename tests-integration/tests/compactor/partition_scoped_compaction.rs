@@ -20,12 +20,10 @@ use compactor::executor::{CompactionExecutor, CompactionStatus, ExecutorConfig};
 use compactor::metrics::CompactionMetrics;
 use compactor::planner::{CompactionCandidate, PartitionStats};
 use iceberg_rust::table::Table;
-use object_store::memory::InMemory;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -97,15 +95,13 @@ fn aligned_hour_start(hours_ago: i64) -> i64 {
 #[tokio::test]
 async fn compaction_rewrites_only_the_target_partition() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -223,15 +219,13 @@ async fn compaction_rewrites_only_the_target_partition() -> Result<()> {
 #[tokio::test]
 async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -295,9 +289,8 @@ async fn concurrent_append_does_not_invalidate_the_delta_commit() -> Result<()> 
 
     // Append into a *different*, still-open partition — the realistic shape of
     // live ingest running alongside compaction of an older hour.
-    let mut concurrent_writer = IcebergTableWriter::new(
+    let mut concurrent_writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -402,15 +395,13 @@ async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
     config.compactor.memory_limit_mb = 1;
 
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -492,6 +483,116 @@ async fn oversized_partition_stays_within_its_memory_budget() -> Result<()> {
     Ok(())
 }
 
+/// Wide rows must compact under a scan batch bounded in rows, and are the
+/// case DataFusion's 8192-row default cannot survive — a single batch's
+/// unspillable reservation outgrows the whole pool
+/// (`CompactorConfig::scan_batch_size`).
+///
+/// This pins both halves: unbounded fails attributably, bounded succeeds
+/// with every row preserved.
+#[tokio::test]
+async fn wide_rows_compact_only_under_a_bounded_scan_batch() -> Result<()> {
+    // 64 rows of 256 KB per file: one file is a 16 MB batch at DataFusion's
+    // default, four times the pool below once the sorter doubles it.
+    const FILES: usize = 2;
+    const ROWS_PER_FILE: usize = 64;
+    const PAYLOAD_BYTES: usize = 256 * 1024;
+
+    // A batch of 4 wide rows is ~1 MB, so its 2 MB reservation leaves the
+    // 16 MB pool room to accumulate and then spill.
+    for (scan_batch_size, must_succeed) in [(0usize, false), (4usize, true)] {
+        let mut config = common::testing::TestConfigBuilder::new()
+            .in_memory()
+            .with_tenant("test-tenant", "test-dataset")
+            .build();
+        config.compactor.memory_limit_mb = 16;
+        config.compactor.sort_spill_reservation_mb = 2;
+        config.compactor.scan_batch_size = scan_batch_size;
+
+        let catalog_manager = Arc::new(CatalogManager::new(config).await?);
+
+        let tenant_id = "test-tenant";
+        let dataset_id = "test-dataset";
+        let table_name = "traces";
+
+        let mut writer = tests_integration::test_support::writer_with_type_authority(
+            &catalog_manager,
+            tenant_id.to_string(),
+            dataset_id.to_string(),
+            table_name.to_string(),
+        )
+        .await
+        .context("Failed to create writer")?;
+
+        generators::generate_wide_trace_files(
+            &mut writer,
+            FILES,
+            ROWS_PER_FILE,
+            PAYLOAD_BYTES,
+            aligned_hour_start(5),
+        )
+        .await
+        .context("Failed to generate wide trace data")?;
+
+        let before =
+            live_files_by_partition(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+        let target = *before.keys().next().expect("one partition");
+        let rows_before =
+            live_row_count(&catalog_manager, tenant_id, dataset_id, table_name).await?;
+
+        let executor = CompactionExecutor::new(
+            catalog_manager.clone(),
+            ExecutorConfig::default(),
+            CompactionMetrics::new(),
+        );
+        let result = executor
+            .execute_candidate(CompactionCandidate {
+                tenant_id: tenant_id.to_string(),
+                dataset_id: dataset_id.to_string(),
+                table_name: table_name.to_string(),
+                partition_id: target.to_string(),
+                stats: PartitionStats {
+                    file_count: before[&target].len(),
+                    total_size_bytes: (FILES * ROWS_PER_FILE * PAYLOAD_BYTES) as u64,
+                    avg_file_size_bytes: (ROWS_PER_FILE * PAYLOAD_BYTES) as u64,
+                },
+            })
+            .await
+            .context("Compaction execution returned a hard error")?;
+
+        if must_succeed {
+            assert_eq!(
+                result.status,
+                CompactionStatus::Success,
+                "a scan batch of {scan_batch_size} wide rows must fit the pool, but the job \
+                 failed: {:?}",
+                result.error
+            );
+            assert_eq!(
+                live_row_count(&catalog_manager, tenant_id, dataset_id, table_name).await?,
+                rows_before,
+                "a spilling rewrite must still preserve every row"
+            );
+        } else {
+            assert_ne!(
+                result.status,
+                CompactionStatus::Success,
+                "DataFusion's default batch size must not fit these rows in the pool — if it \
+                 now does, this test no longer covers the case it was written for"
+            );
+            let error = result
+                .error
+                .expect("a non-success outcome must carry an error to be attributable");
+            assert!(
+                error.contains("Resources exhausted"),
+                "the failure must name the memory cause, got: {error}"
+            );
+        }
+    }
+
+    Ok(())
+}
+
 /// An unspillable reservation that exceeds the whole pool must fail the job
 /// with an attributable resource error (openspec task 5.1, spec sentence
 /// "Exceeding the budget SHALL fail the job with a resource error rather
@@ -529,15 +630,13 @@ async fn unspillable_reservation_over_budget_fails_with_attributable_resource_er
     config.compactor.target_partitions = 8;
 
     let catalog_manager = Arc::new(CatalogManager::new(config).await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),
@@ -626,15 +725,13 @@ async fn unspillable_reservation_over_budget_fails_with_attributable_resource_er
 #[tokio::test]
 async fn delta_commit_aborts_when_its_inputs_are_no_longer_live() -> Result<()> {
     let catalog_manager = Arc::new(CatalogManager::new_in_memory().await?);
-    let object_store = Arc::new(InMemory::new());
 
     let tenant_id = "test-tenant";
     let dataset_id = "test-dataset";
     let table_name = "traces";
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        object_store.clone(),
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

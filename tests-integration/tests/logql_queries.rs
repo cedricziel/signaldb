@@ -20,15 +20,15 @@ use common::catalog::Catalog;
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use opentelemetry_proto::tonic::{
     collector::logs::v1::ExportLogsServiceRequest,
-    common::v1::{AnyValue, KeyValue, any_value::Value},
+    common::v1::{AnyValue, KeyValue, KeyValueList, any_value::Value},
     logs::v1::{LogRecord, ResourceLogs, ScopeLogs},
     resource::v1::Resource,
 };
 use querier::flight::QuerierFlightService;
-use router::{RouterState, discovery::ServiceRegistry, endpoints::logql};
+use router::{RouterAppState, endpoints::logql};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Duration;
@@ -37,7 +37,6 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tonic::transport::Server;
 use tower::ServiceExt;
-use writer::IcebergWriterFlightService;
 
 /// A base timestamp (2023-11-14T22:13:20Z) shared by the ingested logs.
 const BASE_NS: i64 = 1_700_000_000_000_000_000;
@@ -58,7 +57,9 @@ fn test_tenant_context() -> TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -96,6 +97,8 @@ fn test_config(catalog_dsn: &str) -> Configuration {
     config
 }
 
+/// Sets up the full stack: acceptor → WAL → writer → Iceberg → querier →
+/// router, wired for a LogQL end-to-end test.
 async fn setup() -> TestServices {
     let temp_dir = TempDir::new().unwrap();
     let storage_path = temp_dir.path().join("storage");
@@ -140,18 +143,21 @@ async fn setup() -> TestServices {
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
     drop(writer_listener);
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
             .expect("catalog mgr"),
     );
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal.clone(),
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -209,7 +215,12 @@ async fn setup() -> TestServices {
         wal_config.clone(),
         wal_config.clone(),
     ));
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager);
+    let processor_catalog = Arc::new(Catalog::new(&catalog_dsn).await.expect("catalog"));
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        processor_catalog,
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     // Wait for storage + query services to register.
     for attempt in 0..50 {
@@ -272,6 +283,36 @@ fn log_record(offset_ns: i64, severity: &str, body: &str, attrs: &[(&str, &str)]
     }
 }
 
+/// A log record whose body is a structured (kvlist) `AnyValue` rather than a
+/// plain string — issue #1410's non-string-body case, which must round-trip
+/// as JSON on the Loki line rather than being unwrapped.
+fn kvlist_log_record(offset_ns: i64, entries: &[(&str, &str)]) -> LogRecord {
+    LogRecord {
+        time_unix_nano: (BASE_NS + offset_ns) as u64,
+        observed_time_unix_nano: (BASE_NS + offset_ns) as u64,
+        severity_number: 9,
+        severity_text: "INFO".to_string(),
+        body: Some(AnyValue {
+            value: Some(Value::KvlistValue(KeyValueList {
+                values: entries
+                    .iter()
+                    .map(|(k, v)| KeyValue {
+                        key: k.to_string(),
+                        value: Some(string_value(v)),
+                        ..Default::default()
+                    })
+                    .collect(),
+            })),
+        }),
+        attributes: vec![],
+        dropped_attributes_count: 0,
+        flags: 0,
+        trace_id: vec![],
+        span_id: vec![],
+        event_name: String::new(),
+    }
+}
+
 fn logs_request(service: &str, records: Vec<LogRecord>) -> ExportLogsServiceRequest {
     ExportLogsServiceRequest {
         resource_logs: vec![ResourceLogs {
@@ -299,48 +340,12 @@ async fn build_router(services: &TestServices) -> Router {
     let catalog = Catalog::new(services.config.discovery.as_ref().unwrap().dsn.as_str())
         .await
         .unwrap();
-    let service_registry = ServiceRegistry::with_flight_transport(
-        catalog.clone(),
+    let state = RouterAppState::new_with_flight_transport(
+        catalog,
+        services.config.clone(),
         (*services.flight_transport).clone(),
     );
-    let authenticator = Arc::new(common::auth::Authenticator::new(
-        services.config.auth.clone(),
-        Arc::new(catalog.clone()),
-    ));
-
-    #[derive(Clone)]
-    struct State {
-        catalog: Catalog,
-        service_registry: ServiceRegistry,
-        config: Configuration,
-        authenticator: Arc<common::auth::Authenticator>,
-    }
-    impl std::fmt::Debug for State {
-        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("State")
-        }
-    }
-    impl RouterState for State {
-        fn catalog(&self) -> &Catalog {
-            &self.catalog
-        }
-        fn service_registry(&self) -> &ServiceRegistry {
-            &self.service_registry
-        }
-        fn config(&self) -> &Configuration {
-            &self.config
-        }
-        fn authenticator(&self) -> &Arc<common::auth::Authenticator> {
-            &self.authenticator
-        }
-    }
-
-    let state = State {
-        catalog,
-        service_registry,
-        config: services.config.clone(),
-        authenticator: authenticator.clone(),
-    };
+    let authenticator = state.authenticator().clone();
     Router::new()
         .nest("/loki", logql::router().with_state(state))
         .layer(middleware::from_fn(move |req, next| {
@@ -463,6 +468,8 @@ async fn logql_stream_query_returns_all_lines_for_service() {
     assert_eq!(entries, 2, "api should have two log lines: {body}");
 }
 
+/// D6 (`ir-single-lowering`): a LogQL line filter used to be rejected
+/// outright once routed through the IR (`logs.body` was retrieval-only).
 #[tokio::test]
 async fn logql_line_filter_narrows_to_matching_lines() {
     let (_services, app) = setup_with_ingested_logs().await;
@@ -481,6 +488,109 @@ async fn logql_line_filter_narrows_to_matching_lines() {
         count_stream_entries(&body),
         1,
         "line filter should match one: {body}"
+    );
+}
+
+/// Issue #1410 — ingest JSON-encodes the `body` value so non-string bodies
+/// (kvlist/array/bytes) survive the Utf8 column; the Loki line for a plain
+/// string body must come back decoded (no surrounding quotes) while a
+/// structured body must still round-trip as JSON.
+#[tokio::test]
+async fn logql_query_range_decodes_string_bodies_and_keeps_structured_bodies() {
+    let services = setup().await;
+    let ctx = test_tenant_context();
+
+    let plain_body = "Committed 34 rows in 1 data files to Iceberg table homelab.default.logs";
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request("committer", vec![log_record(0, "INFO", plain_body, &[])]),
+        )
+        .await
+        .expect("ingest plain-string-body log");
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "structured",
+                vec![kvlist_log_record(1_000_000, &[("event", "start")])],
+            ),
+        )
+        .await
+        .expect("ingest kvlist-body log");
+    // A message whose text is itself a self-contained JSON string literal
+    // (starts and ends with a quote, nothing after the closing quote) — the
+    // one value class that actually distinguishes "decoded once" from
+    // "decoded twice": a body with trailing text after an embedded quote
+    // (e.g. `"foo" bar`) fails to re-parse as JSON on a second decode and
+    // would pass this assertion either way, silently proving nothing
+    // (review finding on #1432). Decoded once: `"already quoted"`
+    // (unchanged, correct). Decoded twice: the second pass would see a
+    // complete JSON string literal and strip the quotes to `already
+    // quoted`, which is exactly the data loss this pins against.
+    let quoted_body = r#""already quoted""#;
+    services
+        .log_handler
+        .handle_grpc_otlp_logs(
+            &ctx,
+            logs_request(
+                "quoted",
+                vec![log_record(2_000_000, "INFO", quoted_body, &[])],
+            ),
+        )
+        .await
+        .expect("ingest quoted-message-body log");
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("flush writer");
+
+    let app = build_router(&services).await;
+    let w = window();
+
+    let (status, body) = get(
+        &app,
+        &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22committer%22%7D&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "plain-body query_range: {body}");
+    let streams = body["data"]["result"].as_array().expect("streams array");
+    let line = streams[0]["values"][0][1]
+        .as_str()
+        .expect("line is a string");
+    assert_eq!(
+        line, plain_body,
+        "Loki line must be decoded, not JSON-string-quoted: {body}"
+    );
+
+    let (status, body) = get(
+        &app,
+        &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22structured%22%7D&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "kvlist-body query_range: {body}");
+    let streams = body["data"]["result"].as_array().expect("streams array");
+    let line = streams[0]["values"][0][1]
+        .as_str()
+        .expect("line is a string");
+    let kvlist_body: serde_json::Value =
+        serde_json::from_str(line).expect("kvlist body must still round-trip as JSON");
+    assert_eq!(kvlist_body, serde_json::json!({"event": "start"}));
+
+    let (status, body) = get(
+        &app,
+        &format!("/loki/api/v1/query_range?query=%7Bservice_name%3D%22quoted%22%7D&{w}"),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK, "quoted-message query_range: {body}");
+    let streams = body["data"]["result"].as_array().expect("streams array");
+    let line = streams[0]["values"][0][1]
+        .as_str()
+        .expect("line is a string");
+    assert_eq!(
+        line, quoted_body,
+        "a message that is itself quoted must decode exactly once, not twice: {body}"
     );
 }
 
@@ -535,6 +645,10 @@ async fn logql_series_endpoint_returns_matching_series() {
     );
 }
 
+/// D7 (`ir-single-lowering`): an ungrouped range aggregation collapses to
+/// one series total, not one per stream; also exercises the `step`/`value`
+/// type corrections `LogsService::query_metric_via_ir` applies (see its doc
+/// comment).
 #[tokio::test]
 async fn logql_metric_query_count_over_time_returns_matrix() {
     let (_services, app) = setup_with_ingested_logs().await;

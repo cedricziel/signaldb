@@ -4,22 +4,22 @@ use iceberg_rust::spec::types::{ListType, MapType, PrimitiveType, StructField, S
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
+use crate::schema::typed_attributes;
+
 /// Schema definitions loaded from TOML
 #[derive(Debug, Deserialize)]
 pub struct SchemaDefinitions {
     pub metadata: SchemaMetadata,
     pub traces: HashMap<String, TableSchemaDefinition>,
     pub logs: HashMap<String, TableSchemaDefinition>,
+    /// The wide, one-row-per-datapoint metrics table (otel-native-schema
+    /// layer 7, D10). Declared at `physical-v4` only.
     #[serde(default)]
-    pub metrics_gauge: HashMap<String, TableSchemaDefinition>,
+    pub metrics: HashMap<String, TableSchemaDefinition>,
+    /// The exemplars table paired with [`Self::metrics`] (otel-native-schema
+    /// layer 7, D10). Declared at `physical-v4`.
     #[serde(default)]
-    pub metrics_sum: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_histogram: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_exponential_histogram: HashMap<String, TableSchemaDefinition>,
-    #[serde(default)]
-    pub metrics_summary: HashMap<String, TableSchemaDefinition>,
+    pub metric_exemplars: HashMap<String, TableSchemaDefinition>,
     #[serde(default)]
     pub profiles: HashMap<String, TableSchemaDefinition>,
 }
@@ -30,12 +30,18 @@ pub struct SchemaMetadata {
     pub current_trace_version: String,
     pub current_log_version: String,
     pub current_metric_version: String,
+    #[serde(default = "default_profile_version")]
+    pub current_profile_version: String,
     #[serde(default = "default_logical_schema_version")]
     pub logical_schema_version: String,
 }
 
+fn default_profile_version() -> String {
+    "physical-v1".to_string()
+}
+
 fn default_logical_schema_version() -> String {
-    "otel-2026-08".to_string()
+    "otel-2026-09".to_string()
 }
 
 #[derive(Debug, Deserialize, Clone)]
@@ -127,7 +133,7 @@ impl SchemaDefinitions {
     /// Generic schema resolver that handles inheritance. Public so callers
     /// with a source-keyed map they don't have a dedicated
     /// `resolve_*_schema` wrapper for (e.g. admin schema introspection over
-    /// `metrics_gauge`/`metrics_sum`/`metrics_histogram`) can still resolve
+    /// `metrics`/`metric_exemplars`) can still resolve
     /// it without duplicating the inheritance/rename/addition logic.
     #[allow(clippy::only_used_in_recursion)]
     pub fn resolve_table_schema(
@@ -152,7 +158,7 @@ impl SchemaDefinitions {
             }
         } else {
             // Base schema - use fields directly
-            for field in &schema_def.fields {
+            for field in schema_def.fields.iter().flat_map(expand_typed_attributes) {
                 let resolved = ResolvedField {
                     name: field.name.clone(),
                     field_type: field.field_type.clone(),
@@ -177,7 +183,11 @@ impl SchemaDefinitions {
         }
 
         // Add new fields
-        for addition in &schema_def.field_additions {
+        for addition in schema_def
+            .field_additions
+            .iter()
+            .flat_map(expand_typed_attributes)
+        {
             let resolved = ResolvedField {
                 name: addition.name.clone(),
                 field_type: addition.field_type.clone(),
@@ -220,6 +230,22 @@ impl SchemaDefinitions {
             partition_by: schema_def.partition_by.clone(),
         })
     }
+}
+
+/// A `typed_attributes` field stands for its container's five typed-layout
+/// columns; any other field stands for itself.
+fn expand_typed_attributes(field: &FieldDefinition) -> Vec<FieldDefinition> {
+    if field.field_type != typed_attributes::TYPED_ATTRIBUTES_TYPE {
+        return vec![field.clone()];
+    }
+    typed_attributes::typed_fields(&field.name)
+        .into_iter()
+        .map(|(name, field_type)| FieldDefinition {
+            name,
+            field_type: field_type.to_string(),
+            ..field.clone()
+        })
+        .collect()
 }
 
 /// Walks the `inherits` chain backward from `to_version` until it reaches
@@ -275,6 +301,17 @@ pub fn version_chain(
     }
 }
 
+/// Which derived (non-`schemas.toml`) columns [`ResolvedSchema::build_iceberg_schema`]
+/// appends after the base fields and materialized labels.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DerivedColumns {
+    /// Append the warm containment index column (see
+    /// [`crate::attrs::warm_index::WARM_INDEX_COLUMN`]) -- only takes effect when the
+    /// resolved schema is the typed attribute layout; a legacy version
+    /// silently gets no column even when requested.
+    pub warm_index: bool,
+}
+
 impl ResolvedSchema {
     /// Convert to Iceberg Schema.
     pub fn to_iceberg_schema(&self) -> Result<Schema> {
@@ -283,23 +320,26 @@ impl ResolvedSchema {
 
     /// Convert to an Iceberg Schema, appending an optional `label_<key>`
     /// column for each materialized attribute label (see
-    /// [`crate::schema::materialized_column_name`]). Duplicate or
-    /// base-column-colliding labels are skipped, and field IDs continue
-    /// after the base columns.
+    /// [`crate::schema::materialized_column_name`]). A label colliding with
+    /// a base column, or with another label's candidate name, is suffixed
+    /// (`_2`, `_3`, ...) rather than skipped or merged -- see
+    /// `common::iceberg::evolution::resolve_label_columns_canonical`. An
+    /// exact-duplicate label still collapses to its first assignment.
+    /// Field IDs continue after the base columns.
     pub fn to_iceberg_schema_with_labels(&self, labels: &[String]) -> Result<Schema> {
-        self.build_iceberg_schema(labels, false)
+        self.build_iceberg_schema(labels, DerivedColumns::default())
     }
 
-    /// Like [`Self::to_iceberg_schema_with_labels`], but also appends the
-    /// derived optional `attr_tokens` `List<String>` column (see
-    /// [`crate::schema::ATTR_TOKENS_COLUMN`]). Used by the logs schema,
-    /// where the writer materializes `key=value` tokens over all attribute
-    /// scopes for bloom-filtered containment checks.
-    pub fn to_iceberg_schema_with_labels_and_attr_tokens(
+    /// Like [`Self::to_iceberg_schema_with_labels`], with full control over
+    /// which derived columns [`build_iceberg_schema`] appends. Used where a
+    /// caller (table creation) decides per table whether the warm
+    /// containment index applies -- see [`DerivedColumns::warm_index`].
+    pub fn to_iceberg_schema_with(
         &self,
         labels: &[String],
+        derived: DerivedColumns,
     ) -> Result<Schema> {
-        self.build_iceberg_schema(labels, true)
+        self.build_iceberg_schema(labels, derived)
     }
 
     /// Field IDs here are assigned positionally (`idx as i32 + 1`), recomputed
@@ -315,14 +355,15 @@ impl ResolvedSchema {
     /// its existing IDs untouched and minting new ones only for genuine
     /// additions — never regenerate a live table's target schema from this
     /// function.
-    fn build_iceberg_schema(&self, labels: &[String], attr_tokens: bool) -> Result<Schema> {
+    fn build_iceberg_schema(&self, labels: &[String], derived: DerivedColumns) -> Result<Schema> {
         let mut fields = Vec::new();
 
-        // Nested (map key/value) field IDs must be unique across the whole
-        // schema; allocate them after every top-level ID so the top-level
-        // numbering stays identical to the historical string-only layout.
+        // Nested (map key/value, list element) field IDs must be unique
+        // across the whole schema; allocate them after every top-level ID so
+        // the top-level numbering stays identical to the historical
+        // string-only layout.
         let mut next_nested_id = self.fields.len() as i32 + 1;
-        let mut map_slots: Vec<usize> = Vec::new();
+        let mut nested_slots: Vec<(usize, NestedSlot)> = Vec::new();
 
         for (idx, field) in self.fields.iter().enumerate() {
             let field_type = match field.field_type.as_str() {
@@ -334,16 +375,33 @@ impl ResolvedSchema {
                 "boolean" => Type::Primitive(PrimitiveType::Boolean),
                 "timestamp_ns" => Type::Primitive(PrimitiveType::Timestamp), // No TimestampNs in iceberg-rust
                 "date" => Type::Primitive(PrimitiveType::Date),
-                // Attribute maps: string keys to string values. Key/value
-                // IDs are assigned in a second pass below.
-                "map<string,string>" => {
-                    map_slots.push(idx);
+                "binary" => Type::Primitive(PrimitiveType::Binary),
+                // Attribute maps and typed lists: nested IDs are assigned in
+                // a second pass below.
+                map if map.starts_with("map<string,") => {
+                    let value_type = match map {
+                        "map<string,string>" => PrimitiveType::String,
+                        "map<string,long>" => PrimitiveType::Long,
+                        "map<string,double>" => PrimitiveType::Double,
+                        "map<string,boolean>" => PrimitiveType::Boolean,
+                        _ => return Err(anyhow!("Unsupported field type: {map}")),
+                    };
+                    nested_slots.push((idx, NestedSlot::Map(value_type)));
                     Type::Primitive(PrimitiveType::String) // placeholder
                 }
                 "list<struct>" => {
                     // For now, use string for complex types
                     // TODO: Properly handle nested structures
                     Type::Primitive(PrimitiveType::String)
+                }
+                list if list.starts_with("list<") => {
+                    let element_type = match list {
+                        "list<int64>" => PrimitiveType::Long,
+                        "list<double>" => PrimitiveType::Double,
+                        _ => return Err(anyhow!("Unsupported field type: {list}")),
+                    };
+                    nested_slots.push((idx, NestedSlot::List(element_type)));
+                    Type::Primitive(PrimitiveType::String) // placeholder
                 }
                 _ => return Err(anyhow!("Unsupported field type: {}", field.field_type)),
             };
@@ -361,59 +419,93 @@ impl ResolvedSchema {
             fields.push(struct_field);
         }
 
-        // Second pass: fill in map types with globally-unique nested IDs.
-        for idx in map_slots {
-            let key_id = next_nested_id;
-            let value_id = next_nested_id + 1;
-            next_nested_id += 2;
-            fields[idx].field_type = Type::Map(MapType {
-                key_id,
-                key: Box::new(Type::Primitive(PrimitiveType::String)),
-                value_id,
-                value_required: false,
-                value: Box::new(Type::Primitive(PrimitiveType::String)),
-            });
+        // Second pass: fill in nested types with globally-unique IDs.
+        for (idx, slot) in nested_slots {
+            fields[idx].field_type = match slot {
+                NestedSlot::Map(value_type) => {
+                    let key_id = next_nested_id;
+                    next_nested_id += 2;
+                    Type::Map(MapType {
+                        key_id,
+                        key: Box::new(Type::Primitive(PrimitiveType::String)),
+                        value_id: key_id + 1,
+                        value_required: false,
+                        value: Box::new(Type::Primitive(value_type)),
+                    })
+                }
+                NestedSlot::List(element_type) => {
+                    let element_id = next_nested_id;
+                    next_nested_id += 1;
+                    Type::List(ListType {
+                        element_id,
+                        element_required: false,
+                        element: Box::new(Type::Primitive(element_type)),
+                    })
+                }
+            };
         }
 
         // Append materialized-label columns after the base fields. They are
         // always optional strings (a row may not carry the attribute).
+        //
+        // Resolved through the same doc-authoritative mechanism
+        // `add_label_columns` uses to evolve an *existing* table (#814),
+        // applied here to the brand-new table this schema becomes: a
+        // `Schema` of just the base fields built so far seeds the
+        // collision-avoidance set, so a label whose candidate name collides
+        // with a base column is suffixed rather than silently dropped, and
+        // `doc` records each column's origin key the same way evolution
+        // does, so `column_for_key` resolves against a freshly created
+        // table exactly as it would against one evolved after the fact.
+        // The canonical (sorted) key order makes the assignment depend only
+        // on the *set* of configured keys, not on the order they appear in
+        // `[schema.materialized_labels]` -- reordering that config, a no-op
+        // edit under any reasonable reading of it, can never reassign an
+        // already-colliding key to a different column (#1448). The write
+        // path shares this same resolution (see
+        // `common::iceberg::evolution::resolve_label_columns_fresh`).
         let mut next_id = next_nested_id;
-        for label in labels {
-            let name = crate::schema::materialized_column_name(label);
-            if fields.iter().any(|f| f.name == name) {
-                continue; // collides with a base column or an earlier label
+        if !labels.is_empty() {
+            let base_schema = Schema::from_struct_type(StructType::new(fields.clone()), 0, None);
+            for (label, name) in
+                crate::iceberg::evolution::resolve_label_columns_canonical(&base_schema, labels)
+            {
+                fields.push(StructField {
+                    id: next_id,
+                    name,
+                    required: false,
+                    field_type: Type::Primitive(PrimitiveType::String),
+                    doc: Some(crate::iceberg::evolution::label_doc(&label)),
+                    initial_default: None,
+                    write_default: None,
+                });
+                next_id += 1;
             }
-            fields.push(StructField {
-                id: next_id,
-                name,
-                required: false,
-                field_type: Type::Primitive(PrimitiveType::String),
-                doc: Some(format!("Materialized attribute label '{label}'")),
-                initial_default: None,
-                write_default: None,
-            });
-            next_id += 1;
         }
 
-        // Derived `key=value` token column: an optional List<String> whose
-        // element ID follows every other ID in the schema.
-        if attr_tokens
+        // Derived warm containment index: an optional List<Binary> whose
+        // element ID follows every other ID in the schema. Only meaningful
+        // over the typed attribute layout (a legacy container has no per-type
+        // home columns to index), so a request against a legacy version is
+        // silently dropped rather than erroring -- the caller opted a
+        // signal/dataset in, not a specific schema version.
+        if derived.warm_index
+            && typed_attributes::is_typed_layout(fields.iter().map(|f| f.name.as_str()))
             && !fields
                 .iter()
-                .any(|f| f.name == crate::schema::ATTR_TOKENS_COLUMN)
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
         {
             fields.push(StructField {
                 id: next_id,
-                name: crate::schema::ATTR_TOKENS_COLUMN.to_string(),
+                name: crate::attrs::warm_index::WARM_INDEX_COLUMN.to_string(),
                 required: false,
                 field_type: Type::List(ListType {
                     element_id: next_id + 1,
                     element_required: false,
-                    element: Box::new(Type::Primitive(PrimitiveType::String)),
+                    element: Box::new(Type::Primitive(PrimitiveType::Binary)),
                 }),
                 doc: Some(
-                    "Derived `key=value` tokens over resource, scope, and record attributes"
-                        .to_string(),
+                    "Derived warm containment index over typed attribute columns".to_string(),
                 ),
                 initial_default: None,
                 write_default: None,
@@ -432,6 +524,13 @@ impl ResolvedSchema {
     }
 }
 
+/// A nested column whose inner field IDs are allocated after every top-level
+/// ID in `ResolvedSchema::build_iceberg_schema`.
+enum NestedSlot {
+    Map(PrimitiveType),
+    List(PrimitiveType),
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -444,7 +543,7 @@ mod tests {
         // module.
         let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
         let resolved = defs
-            .resolve_table_schema(&defs.metrics_gauge, "physical-v1")
+            .resolve_table_schema(&defs.metrics, "physical-v4")
             .unwrap();
         assert!(
             resolved.fields.iter().any(|f| f.name == "metric_name"),
@@ -508,72 +607,139 @@ mod tests {
     }
 
     #[test]
-    fn attr_tokens_variant_appends_optional_list_column() {
+    fn colliding_label_keys_get_distinct_columns_not_dropped() {
+        // `http.method` and `http_method` sanitize to the same candidate
+        // column name; both must be materialized, in distinct columns
+        // (#1448) -- the second key must never be silently dropped.
         let base = ResolvedSchema {
             version: "v1".to_string(),
             description: "test".to_string(),
-            fields: vec![
-                ResolvedField {
-                    name: "timestamp".to_string(),
-                    field_type: "timestamp_ns".to_string(),
-                    required: true,
-                    computed: None,
-                    physical_only: false,
-                    field_id: 1,
-                },
-                ResolvedField {
-                    name: "log_attributes".to_string(),
-                    field_type: "map<string,string>".to_string(),
-                    required: false,
-                    computed: None,
-                    physical_only: false,
-                    field_id: 2,
-                },
-            ],
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let labels = vec!["http.method".to_string(), "http_method".to_string()];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        assert!(
+            names.contains(&"label_http_method".to_string()),
+            "expected label_http_method in {names:?}"
+        );
+        assert!(
+            names.contains(&"label_http_method_2".to_string()),
+            "http_method must get its own distinct column, got {names:?}"
+        );
+
+        // The compactor's evolution-path backfill (#814) trusts each
+        // column's `doc` as the authoritative origin-key record, not the
+        // column name -- a table created by this path must stamp it the
+        // same way `add_label_columns` does.
+        let first = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_http_method")
+            .unwrap();
+        let second = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_http_method_2")
+            .unwrap();
+        assert_eq!(
+            crate::iceberg::evolution::origin_key_of(first.doc.as_deref()),
+            Some("http.method")
+        );
+        assert_eq!(
+            crate::iceberg::evolution::origin_key_of(second.doc.as_deref()),
+            Some("http_method")
+        );
+    }
+
+    #[test]
+    fn three_way_collision_gets_three_distinct_columns() {
+        // Three distinct keys that all sanitize to the same candidate name
+        // each get their own column; none is silently dropped (#1448).
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![ResolvedField {
+                name: "timestamp".to_string(),
+                field_type: "timestamp_ns".to_string(),
+                required: true,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
+            partition_by: vec![],
+        };
+
+        let labels = vec![
+            "http_method".to_string(),
+            "http.method".to_string(),
+            "http-method".to_string(),
+        ];
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        for expected in [
+            "label_http_method",
+            "label_http_method_2",
+            "label_http_method_3",
+        ] {
+            assert!(
+                names.contains(&expected.to_string()),
+                "expected {expected} in {names:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn label_colliding_with_a_base_column_name_is_suffixed_not_dropped() {
+        // A configured label whose sanitized candidate happens to match a
+        // real base column name is vanishingly unlikely in practice (no
+        // built-in schema column is named `label_<anything>`), but must
+        // still be handled by suffixing rather than silently dropping the
+        // label's values -- the same "never drop, always suffix" guarantee
+        // as a label-vs-label collision (#1448 Important #5).
+        let base = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![ResolvedField {
+                name: "label_namespace".to_string(),
+                field_type: "string".to_string(),
+                required: false,
+                computed: None,
+                physical_only: false,
+                field_id: 1,
+            }],
             partition_by: vec![],
         };
 
         let labels = vec!["namespace".to_string()];
-        let schema = base
-            .to_iceberg_schema_with_labels_and_attr_tokens(&labels)
+        let s = base.to_iceberg_schema_with_labels(&labels).unwrap();
+        let names: Vec<String> = s.fields().iter().map(|f| f.name.clone()).collect();
+        assert_eq!(
+            names,
+            vec![
+                "label_namespace".to_string(),
+                "label_namespace_2".to_string()
+            ],
+            "the label must be suffixed past the base column, not dropped: {names:?}"
+        );
+        let promoted = s
+            .fields()
+            .iter()
+            .find(|f| f.name == "label_namespace_2")
             .unwrap();
-
-        let tokens = schema
-            .fields()
-            .iter()
-            .find(|f| f.name == "attr_tokens")
-            .expect("attr_tokens column present");
-        assert!(!tokens.required);
-        let Type::List(list) = &tokens.field_type else {
-            panic!("attr_tokens should be a List, got {:?}", tokens.field_type);
-        };
-        assert_eq!(*list.element, Type::Primitive(PrimitiveType::String));
-        assert!(!list.element_required);
-
-        // IDs stay unique across top-level, nested map, label, and list
-        // element IDs.
-        let label = schema
-            .fields()
-            .iter()
-            .find(|f| f.name == "label_namespace")
-            .unwrap();
-        let mut ids = vec![1, 2, label.id, tokens.id, list.element_id];
-        if let Type::Map(m) = &schema
-            .fields()
-            .iter()
-            .find(|f| f.name == "log_attributes")
-            .unwrap()
-            .field_type
-        {
-            ids.push(m.key_id);
-            ids.push(m.value_id);
-        }
-        let unique: std::collections::HashSet<_> = ids.iter().collect();
-        assert_eq!(unique.len(), ids.len(), "duplicate field IDs in {ids:?}");
-
-        // The labels-only variant stays token-free.
-        let plain = base.to_iceberg_schema_with_labels(&labels).unwrap();
-        assert!(!plain.fields().iter().any(|f| f.name == "attr_tokens"));
+        assert_eq!(
+            crate::iceberg::evolution::origin_key_of(promoted.doc.as_deref()),
+            Some("namespace")
+        );
     }
 
     #[test]
@@ -783,6 +949,240 @@ fields = [
             .unwrap()
             .unwrap();
         assert_eq!(chain, vec!["alpha", "zeta-but-actually-next"]);
+    }
+
+    #[test]
+    fn typed_attribute_field_types_build_typed_maps_and_a_binary_residue() {
+        let field = |name: &str, field_type: &str| ResolvedField {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: 0,
+        };
+        let resolved = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("a_str", "map<string,string>"),
+                field("a_int", "map<string,long>"),
+                field("a_double", "map<string,double>"),
+                field("a_bool", "map<string,boolean>"),
+                field("a_residue", "binary"),
+            ],
+            partition_by: vec![],
+        };
+        let schema = resolved.to_iceberg_schema().unwrap();
+
+        let mut ids = Vec::new();
+        let mut values = Vec::new();
+        for f in schema.fields().iter() {
+            ids.push(f.id);
+            match &f.field_type {
+                Type::Map(map) => {
+                    assert_eq!(*map.key, Type::Primitive(PrimitiveType::String));
+                    ids.extend([map.key_id, map.value_id]);
+                    values.push((*map.value).clone());
+                }
+                other => assert_eq!(*other, Type::Primitive(PrimitiveType::Binary)),
+            }
+        }
+        assert_eq!(
+            values,
+            [
+                PrimitiveType::String,
+                PrimitiveType::Long,
+                PrimitiveType::Double,
+                PrimitiveType::Boolean
+            ]
+            .map(Type::Primitive)
+        );
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+    }
+
+    fn field(name: &str, field_type: &str) -> ResolvedField {
+        ResolvedField {
+            name: name.to_string(),
+            field_type: field_type.to_string(),
+            required: false,
+            computed: None,
+            physical_only: false,
+            field_id: 0,
+        }
+    }
+
+    fn typed_layout_resolved_schema() -> ResolvedSchema {
+        ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("a_str", "map<string,string>"),
+                field("a_int", "map<string,long>"),
+                field("a_double", "map<string,double>"),
+                field("a_bool", "map<string,boolean>"),
+                field("a_residue", "binary"),
+            ],
+            partition_by: vec![],
+        }
+    }
+
+    fn legacy_layout_resolved_schema() -> ResolvedSchema {
+        ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![field("a", "map<string,string>")],
+            partition_by: vec![],
+        }
+    }
+
+    #[test]
+    fn warm_index_appends_a_list_binary_column_on_a_typed_layout() {
+        let schema = typed_layout_resolved_schema()
+            .to_iceberg_schema_with(&[], DerivedColumns { warm_index: true })
+            .unwrap();
+
+        let column = schema
+            .fields()
+            .iter()
+            .find(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+            .expect("attr_index column present");
+        let Type::List(list) = &column.field_type else {
+            panic!("attr_index should be a List, got {:?}", column.field_type);
+        };
+        assert_eq!(*list.element, Type::Primitive(PrimitiveType::Binary));
+        assert!(!column.required);
+
+        let ids: Vec<i32> = schema.fields().iter().map(|f| f.id).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+        assert_ne!(
+            column.id, list.element_id,
+            "the list column and its element must get distinct ids"
+        );
+    }
+
+    #[test]
+    fn warm_index_is_dropped_on_a_legacy_layout_even_when_requested() {
+        let schema = legacy_layout_resolved_schema()
+            .to_iceberg_schema_with(&[], DerivedColumns { warm_index: true })
+            .unwrap();
+
+        assert!(
+            !schema
+                .fields()
+                .iter()
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        );
+    }
+
+    #[test]
+    fn warm_index_absent_when_not_requested() {
+        let schema = typed_layout_resolved_schema()
+            .to_iceberg_schema_with_labels(&[])
+            .unwrap();
+
+        assert!(
+            !schema
+                .fields()
+                .iter()
+                .any(|f| f.name == crate::attrs::warm_index::WARM_INDEX_COLUMN)
+        );
+    }
+
+    #[test]
+    fn list_field_types_build_iceberg_lists_with_unique_element_ids() {
+        let resolved = ResolvedSchema {
+            version: "v1".to_string(),
+            description: "test".to_string(),
+            fields: vec![
+                field("bounds", "list<double>"),
+                field("counts", "list<int64>"),
+            ],
+            partition_by: vec![],
+        };
+        let schema = resolved.to_iceberg_schema().unwrap();
+
+        let bounds = schema.fields().iter().find(|f| f.name == "bounds").unwrap();
+        let Type::List(bounds_list) = &bounds.field_type else {
+            panic!("bounds should be a List, got {:?}", bounds.field_type);
+        };
+        assert_eq!(*bounds_list.element, Type::Primitive(PrimitiveType::Double));
+        assert!(!bounds_list.element_required);
+
+        let counts = schema.fields().iter().find(|f| f.name == "counts").unwrap();
+        let Type::List(counts_list) = &counts.field_type else {
+            panic!("counts should be a List, got {:?}", counts.field_type);
+        };
+        assert_eq!(*counts_list.element, Type::Primitive(PrimitiveType::Long));
+
+        let ids: Vec<i32> = schema
+            .fields()
+            .iter()
+            .map(|f| f.id)
+            .chain([bounds_list.element_id, counts_list.element_id])
+            .collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+    }
+
+    #[test]
+    fn resolving_metrics_v4_yields_typed_lists_for_every_list_column() {
+        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
+        let resolved = defs
+            .resolve_table_schema(&defs.metrics, "physical-v4")
+            .unwrap();
+        let schema = resolved.to_iceberg_schema().unwrap();
+
+        let double_lists = ["explicit_bounds", "quantiles", "quantile_values"];
+        let int_lists = [
+            "bucket_counts",
+            "positive_bucket_counts",
+            "negative_bucket_counts",
+        ];
+
+        for name in double_lists {
+            let f = schema
+                .fields()
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let Type::List(list) = &f.field_type else {
+                panic!("{name} should be a List, got {:?}", f.field_type);
+            };
+            assert_eq!(*list.element, Type::Primitive(PrimitiveType::Double));
+        }
+        for name in int_lists {
+            let f = schema
+                .fields()
+                .iter()
+                .find(|f| f.name == name)
+                .unwrap_or_else(|| panic!("missing {name}"));
+            let Type::List(list) = &f.field_type else {
+                panic!("{name} should be a List, got {:?}", f.field_type);
+            };
+            assert_eq!(*list.element, Type::Primitive(PrimitiveType::Long));
+        }
+
+        let ids: Vec<i32> = schema.fields().iter().map(|f| f.id).collect();
+        let unique: std::collections::HashSet<_> = ids.iter().collect();
+        assert_eq!(unique.len(), ids.len(), "duplicate field ids: {ids:?}");
+    }
+
+    #[test]
+    fn metric_exemplars_v4_has_the_filtered_attributes_typed_columns() {
+        let defs = SchemaDefinitions::from_toml(crate::schema::SCHEMA_DEFINITIONS_TOML).unwrap();
+        let resolved = defs
+            .resolve_table_schema(&defs.metric_exemplars, "physical-v4")
+            .unwrap();
+        for column in typed_attributes::typed_columns("filtered_attributes") {
+            assert!(
+                resolved.fields.iter().any(|f| f.name == column),
+                "missing {column}, got {:?}",
+                resolved.fields.iter().map(|f| &f.name).collect::<Vec<_>>()
+            );
+        }
     }
 
     #[test]

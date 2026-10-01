@@ -4,8 +4,10 @@ import {
   padBuckets,
   type VolumeBucket,
   type VolumeSeries,
-} from "../explore/SignalHistogram";
+} from "../../components/SignalHistogram";
 import { useVizPointer, VizTooltip } from "../../components/VizTooltip";
+import { useContainerWidth } from "../../hooks/useContainerWidth";
+import { useRovingFocus } from "../../hooks/useRovingFocus";
 import { axisLabelFormatter } from "../../lib/time";
 import {
   compactCount,
@@ -23,7 +25,9 @@ interface Props {
   label: string;
 }
 
-const WIDTH = 720;
+// A fallback for the one frame before the ResizeObserver below reports the
+// container's real pixel width — arbitrary but matches the old fixed value.
+const DEFAULT_WIDTH = 720;
 const HEIGHT = 64;
 const PADDING = { top: 4, right: 8, bottom: 16, left: 42 };
 
@@ -32,8 +36,9 @@ function areaPath(
   key: string,
   preceding: string[],
   max: number,
+  width: number,
 ): string {
-  const plotWidth = WIDTH - PADDING.left - PADDING.right;
+  const plotWidth = width - PADDING.left - PADDING.right;
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
   const x = (index: number) =>
     PADDING.left + (plotWidth * index) / Math.max(1, buckets.length - 1);
@@ -65,13 +70,22 @@ export function TraceVolumeAreaChart({
   const rootRef = useRef<HTMLDivElement>(null);
   const pointer = useVizPointer(rootRef);
   const [active, setActive] = useState<number | null>(null);
+  // The viewBox tracks the container's real pixel width so `preserveAspectRatio="none"`
+  // never has to stretch it — otherwise text (and stroke widths) render
+  // non-uniformly squeezed or stretched whenever the panel isn't exactly
+  // DEFAULT_WIDTH wide (see MetricsChart for the same container-measuring
+  // pattern applied to a canvas chart instead of inline SVG).
+  const width = useContainerWidth(rootRef, DEFAULT_WIDTH);
 
   let buckets = bucketizeSeries(series);
   if (buckets.length > 0) {
     buckets = padBuckets(buckets, rangeMs.fromMs, rangeMs.toMs, stepMs);
   }
+  // One tab stop for the whole strip; called unconditionally ahead of the
+  // empty-state return below, as hooks must be.
+  const roving = useRovingFocus(buckets.length);
   if (buckets.length === 0 || buckets.every((bucket) => bucket.total === 0)) {
-    return <div className="trace-area-empty">No volume in range</div>;
+    return <div className="trace-area-empty">No volume in this window</div>;
   }
 
   const max = Math.max(...buckets.map((bucket) => bucket.total));
@@ -82,7 +96,7 @@ export function TraceVolumeAreaChart({
     buckets[0]!.tMs,
     buckets[buckets.length - 1]!.tMs,
   );
-  const plotWidth = WIDTH - PADDING.left - PADDING.right;
+  const plotWidth = width - PADDING.left - PADDING.right;
   const plotHeight = HEIGHT - PADDING.top - PADDING.bottom;
   const y = (fraction: number) => PADDING.top + plotHeight * (1 - fraction);
   // Each bucket owns the half-step either side of its x position, matching
@@ -91,7 +105,7 @@ export function TraceVolumeAreaChart({
   const hitX = (index: number) =>
     Math.max(PADDING.left, PADDING.left + stepPx * (index - 0.5));
   const hitWidth = (index: number) =>
-    Math.min(WIDTH - PADDING.right, PADDING.left + stepPx * (index + 0.5)) -
+    Math.min(width - PADDING.right, PADDING.left + stepPx * (index + 0.5)) -
     hitX(index);
   const bucketLabel = (bucket: VolumeBucket) =>
     `${formatTimeBucket(bucket.tMs, stepMs)}: ${formatValue(bucket.total, unit)}`;
@@ -108,8 +122,8 @@ export function TraceVolumeAreaChart({
       ref={rootRef}
     >
       <svg
-        viewBox={`0 0 ${WIDTH} ${HEIGHT}`}
-        role="img"
+        viewBox={`0 0 ${width} ${HEIGHT}`}
+        role="group"
         aria-label={`${label} area chart`}
         preserveAspectRatio="none"
       >
@@ -118,7 +132,7 @@ export function TraceVolumeAreaChart({
             <line
               className="trace-area-grid"
               x1={PADDING.left}
-              x2={WIDTH - PADDING.right}
+              x2={width - PADDING.right}
               y1={y(fraction)}
               y2={y(fraction)}
             />
@@ -135,43 +149,50 @@ export function TraceVolumeAreaChart({
           <path
             key={key}
             className="trace-area-series"
-            d={areaPath(buckets, key, keys.slice(0, index), max)}
+            d={areaPath(buckets, key, keys.slice(0, index), max, width)}
             fill={colors[key]}
             stroke={colors[key]}
           />
         ))}
-        {buckets.map((bucket, index) => (
-          <rect
-            key={bucket.tMs}
-            className="trace-area-hit"
-            data-testid="trace-area-bucket"
-            x={hitX(index)}
-            y={PADDING.top}
-            width={hitWidth(index)}
-            height={plotHeight}
-            tabIndex={0}
-            aria-label={bucketLabel(bucket)}
-            aria-describedby={
-              activeBucket === bucket ? "trace-area-tip" : undefined
-            }
-            onPointerMove={(e) => {
-              setActive(index);
-              pointer.track(e);
-            }}
-            onPointerLeave={() => {
-              setActive((a) => (a === index ? null : a));
-              pointer.clear();
-            }}
-            onFocus={(e) => {
-              setActive(index);
-              pointer.anchorTo(e.currentTarget);
-            }}
-            onBlur={() => {
-              setActive((a) => (a === index ? null : a));
-              pointer.clear();
-            }}
-          />
-        ))}
+        {buckets.map((bucket, index) => {
+          const item = roving.itemProps(index);
+          return (
+            <rect
+              key={bucket.tMs}
+              className="trace-area-hit"
+              data-testid="trace-area-bucket"
+              x={hitX(index)}
+              y={PADDING.top}
+              width={hitWidth(index)}
+              height={plotHeight}
+              tabIndex={item.tabIndex}
+              ref={item.ref}
+              onKeyDown={item.onKeyDown}
+              aria-label={bucketLabel(bucket)}
+              aria-describedby={
+                activeBucket === bucket ? "trace-area-tip" : undefined
+              }
+              onPointerMove={(e) => {
+                setActive(index);
+                roving.setActiveIndex(index);
+                pointer.track(e);
+              }}
+              onPointerLeave={() => {
+                setActive((a) => (a === index ? null : a));
+                pointer.clear();
+              }}
+              onFocus={(e) => {
+                item.onFocus();
+                setActive(index);
+                pointer.anchorTo(e.currentTarget);
+              }}
+              onBlur={() => {
+                setActive((a) => (a === index ? null : a));
+                pointer.clear();
+              }}
+            />
+          );
+        })}
         <text className="trace-area-xlabel" x={PADDING.left} y={HEIGHT - 5}>
           {formatAxis(buckets[0]!.tMs)}
         </text>

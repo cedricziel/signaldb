@@ -165,6 +165,56 @@ pub fn validate_dataset_id(dataset_id: &str) -> Result<String, AuthError> {
     validate_id(dataset_id).map_err(|e| AuthError::bad_request(format!("Invalid dataset ID: {e}")))
 }
 
+/// Parse an `Authorization` header/metadata value as a Bearer credential.
+///
+/// Case-insensitive scheme match (`Bearer`, `bearer`, `BEARER`, ...) and
+/// tolerant of extra whitespace around the token. Shared by the HTTP
+/// (`axum::http::HeaderMap`) and gRPC (`tonic::metadata::MetadataMap`) auth
+/// paths so both surfaces accept the exact same header shapes — before this
+/// was extracted, the gRPC side only accepted the literal `"Bearer "` /
+/// `"bearer "` prefixes and diverged from the HTTP side's case-insensitive,
+/// trimming behavior.
+///
+/// # Errors
+///
+/// A `400` [`AuthError`] when the header has no whitespace-separated scheme,
+/// the scheme isn't `bearer` (case-insensitive), or the token is empty
+/// after trimming.
+///
+/// # Examples
+///
+/// ```
+/// use common::auth::validation::parse_bearer_token;
+///
+/// assert_eq!(parse_bearer_token("Bearer abc123").unwrap(), "abc123");
+/// assert_eq!(parse_bearer_token("bearer   abc123").unwrap(), "abc123");
+/// assert_eq!(parse_bearer_token("BEARER abc123   ").unwrap(), "abc123");
+/// assert!(parse_bearer_token("Basic abc123").is_err());
+/// assert!(parse_bearer_token("Bearer").is_err());
+/// ```
+pub fn parse_bearer_token(header_value: &str) -> Result<String, AuthError> {
+    let Some((scheme, token)) = header_value.split_once(char::is_whitespace) else {
+        return Err(AuthError::bad_request(
+            "Authorization header must be in format: Bearer <token>",
+        ));
+    };
+    let token = token.trim();
+
+    if !scheme.eq_ignore_ascii_case("bearer") {
+        return Err(AuthError::bad_request(
+            "Authorization header must use Bearer scheme",
+        ));
+    }
+
+    if token.is_empty() {
+        return Err(AuthError::bad_request(
+            "Authorization token cannot be empty",
+        ));
+    }
+
+    Ok(token.to_string())
+}
+
 /// Sanitize an ID for use in file paths
 ///
 /// Converts to lowercase and replaces any remaining problematic characters.
@@ -289,6 +339,40 @@ mod tests {
         let err = validate_tenant_id("").unwrap_err();
         assert_eq!(err.status_code, 400);
         assert!(err.message.contains("Invalid tenant ID"));
+        assert!(err.message.contains("empty"));
+    }
+
+    #[test]
+    fn parse_bearer_token_accepts_case_insensitive_scheme() {
+        assert_eq!(parse_bearer_token("Bearer abc123").unwrap(), "abc123");
+        assert_eq!(parse_bearer_token("bearer abc123").unwrap(), "abc123");
+        assert_eq!(parse_bearer_token("BEARER abc123").unwrap(), "abc123");
+        assert_eq!(parse_bearer_token("BeArEr abc123").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn parse_bearer_token_trims_token_whitespace() {
+        assert_eq!(parse_bearer_token("Bearer   abc123").unwrap(), "abc123");
+        assert_eq!(parse_bearer_token("Bearer abc123   ").unwrap(), "abc123");
+    }
+
+    #[test]
+    fn parse_bearer_token_rejects_wrong_scheme() {
+        let err = parse_bearer_token("Basic abc123").unwrap_err();
+        assert_eq!(err.status_code, 400);
+        assert!(err.message.contains("Bearer"));
+    }
+
+    #[test]
+    fn parse_bearer_token_rejects_missing_token() {
+        let err = parse_bearer_token("Bearer").unwrap_err();
+        assert_eq!(err.status_code, 400);
+    }
+
+    #[test]
+    fn parse_bearer_token_rejects_empty_token_after_trim() {
+        let err = parse_bearer_token("Bearer    ").unwrap_err();
+        assert_eq!(err.status_code, 400);
         assert!(err.message.contains("empty"));
     }
 

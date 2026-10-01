@@ -11,6 +11,7 @@ import {
   K8S_POD_UID_RESOLUTION,
   OTEL_REGISTRY,
   SERVICE_NAME_RESOLUTION,
+  shellOutlet,
   WHOAMI_MEMBER,
   WHOAMI_TENANT_ADMIN,
 } from "./testFixtures";
@@ -25,15 +26,17 @@ function renderBrowser(path: string) {
     <MemoryRouter initialEntries={[path]}>
       <LocationProbe />
       <Routes>
-        <Route
-          path="/schema/conventions/:ns/:version"
-          element={<RegistryBrowser />}
-        />
-        <Route
-          path="/schema/conventions/:ns/:version/:kind/:name"
-          element={<RegistryBrowser />}
-        />
-        <Route path="/schema/conventions" element={<div>List page</div>} />
+        <Route element={shellOutlet()}>
+          <Route
+            path="/schema/conventions/:ns/:version"
+            element={<RegistryBrowser />}
+          />
+          <Route
+            path="/schema/conventions/:ns/:version/:kind/:name"
+            element={<RegistryBrowser />}
+          />
+          <Route path="/schema/conventions" element={<div>List page</div>} />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
@@ -44,7 +47,13 @@ const OTEL_ROUTES = [
   { match: "/api/v1/schema/registries/otel/1.43.0", body: OTEL_REGISTRY },
 ];
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  // jsdom doesn't implement `scrollIntoView`; a few tests below stub it
+  // directly on the prototype (`vi.spyOn` needs the property to exist).
+  delete (HTMLElement.prototype as { scrollIntoView?: unknown })
+    .scrollIntoView;
+});
 
 describe("RegistryBrowser", () => {
   it("filters attributes, entities and metrics by the search text", async () => {
@@ -204,6 +213,84 @@ describe("RegistryBrowser", () => {
       "href",
       "/schema/conventions/otel/1.43.0/entities/k8s.pod",
     );
+  });
+
+  it("scrolls the definition pane into view when a definition is selected", async () => {
+    const scrollSpy = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollSpy;
+    stubFetchRoutes([
+      ...OTEL_ROUTES,
+      {
+        match: "/api/v1/schema/attributes/k8s.pod.uid",
+        body: K8S_POD_UID_RESOLUTION,
+      },
+    ]);
+    renderBrowser("/schema/conventions/otel/1.43.0");
+    const user = userEvent.setup();
+
+    const attributes = await screen.findByRole("region", {
+      name: "Attributes",
+    });
+    scrollSpy.mockClear();
+    await user.click(within(attributes).getByText("k8s.pod.uid"));
+
+    await screen.findByRole("article");
+    expect(scrollSpy).toHaveBeenCalledWith({ block: "start" });
+  });
+
+  it("scrolls the active item's nav entry into view when the selection changes", async () => {
+    const scrollSpy = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scrollSpy;
+    stubFetchRoutes([
+      ...OTEL_ROUTES,
+      {
+        match: "/api/v1/schema/attributes/k8s.pod.uid",
+        body: K8S_POD_UID_RESOLUTION,
+      },
+    ]);
+    renderBrowser("/schema/conventions/otel/1.43.0/attributes/k8s.pod.uid");
+
+    await screen.findByRole("article");
+    expect(scrollSpy).toHaveBeenCalledWith({ block: "nearest" });
+  });
+
+  it("keeps the selected item visible even past the listed cap", async () => {
+    HTMLElement.prototype.scrollIntoView = vi.fn();
+    const manyAttributes = Array.from({ length: 520 }, (_, i) => ({
+      id: `a.${String(i).padStart(4, "0")}`,
+      type: "string",
+      stability: "stable",
+      brief: "filler",
+    }));
+    const BIG_REGISTRY = {
+      ...OTEL_REGISTRY,
+      document: {
+        ...OTEL_REGISTRY.document,
+        groups: [
+          {
+            id: "registry.big",
+            type: "attribute_group",
+            brief: "Many attributes.",
+            attributes: [
+              ...manyAttributes,
+              { id: "zzz.selected", type: "string", brief: "Past the cap." },
+            ],
+          },
+        ],
+      },
+    };
+    stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_MEMBER },
+      { match: "/api/v1/schema/registries/otel/1.43.0", body: BIG_REGISTRY },
+    ]);
+    renderBrowser("/schema/conventions/otel/1.43.0/attributes/zzz.selected");
+
+    const attributes = await screen.findByRole("region", {
+      name: "Attributes",
+    });
+    expect(
+      within(attributes).getByRole("link", { name: "zzz.selected" }),
+    ).toBeInTheDocument();
   });
 
   it("offers Edit only to tenant admins on custom registries", async () => {

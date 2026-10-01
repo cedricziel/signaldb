@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use tracing::Instrument;
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 use arrow_flight::Ticket;
 use axum::{
     Router,
@@ -36,14 +36,14 @@ use loki_api::{
 };
 use serde::Deserialize;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/api/v1/query", get(query::<S>))
-        .route("/api/v1/query_range", get(query_range::<S>))
-        .route("/api/v1/labels", get(labels::<S>))
-        .route("/api/v1/label/{name}/values", get(label_values::<S>))
-        .route("/api/v1/series", get(series::<S>))
-        .route("/api/v1/detected_fields", get(detected_fields::<S>))
+        .route("/api/v1/query", get(query))
+        .route("/api/v1/query_range", get(query_range))
+        .route("/api/v1/labels", get(labels))
+        .route("/api/v1/label/{name}/values", get(label_values))
+        .route("/api/v1/series", get(series))
+        .route("/api/v1/detected_fields", get(detected_fields))
 }
 
 fn default_limit() -> u32 {
@@ -155,8 +155,8 @@ fn validate_direction(direction: &str) -> Result<(), ApiError> {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query<S: RouterState>(
-    State(state): State<S>,
+pub async fn query(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<InstantQueryParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
@@ -207,8 +207,8 @@ pub async fn query<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn query_range<S: RouterState>(
-    State(state): State<S>,
+pub async fn query_range(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<RangeQueryParams>,
 ) -> Result<axum::Json<QueryResponse>, ApiError> {
@@ -266,8 +266,8 @@ pub async fn query_range<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn labels<S: RouterState>(
-    State(state): State<S>,
+pub async fn labels(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<LabelsResponse>, ApiError> {
@@ -307,8 +307,8 @@ pub async fn labels<S: RouterState>(
         label = %name
     )
 )]
-pub async fn label_values<S: RouterState>(
-    State(state): State<S>,
+pub async fn label_values(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Path(name): Path<String>,
     Query(params): Query<MetadataParams>,
@@ -335,8 +335,8 @@ pub async fn label_values<S: RouterState>(
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn series<S: RouterState>(
-    State(state): State<S>,
+pub async fn series(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<MetadataParams>,
 ) -> Result<axum::Json<SeriesResponse>, ApiError> {
@@ -385,8 +385,8 @@ pub struct DetectedFieldsParams {
         signaldb.dataset.id = %tenant_ctx.0.dataset_id
     )
 )]
-pub async fn detected_fields<S: RouterState>(
-    State(state): State<S>,
+pub async fn detected_fields(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
     Query(params): Query<DetectedFieldsParams>,
 ) -> Result<axum::Json<DetectedFieldsResponse>, ApiError> {
@@ -427,8 +427,8 @@ const HOUR_NS: i64 = 3_600_000_000_000;
 
 /// Build and execute a `query_logs` ticket, converting the result batches
 /// into Loki streams.
-async fn run_log_query<S: RouterState>(
-    state: &S,
+async fn run_log_query(
+    state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     logql: &str,
     start: i64,
@@ -459,8 +459,8 @@ fn is_metric_query(logql: &str) -> bool {
 
 /// Build and execute a `query_metric` ticket, converting the result into a
 /// Loki matrix.
-async fn run_metric_query<S: RouterState>(
-    state: &S,
+async fn run_metric_query(
+    state: &RouterAppState,
     tenant_ctx: &TenantContextExtractor,
     logql: &str,
     start: i64,
@@ -590,8 +590,8 @@ fn default_step_ns(start: i64, end: i64) -> i64 {
 }
 
 /// Send a Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
 ) -> Result<Vec<RecordBatch>, ApiError> {
     let (mut client, server_address) = state
@@ -662,19 +662,11 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
         let severity = str_col(batch, "severity_text");
         let trace_id = str_col(batch, "trace_id");
         let span_id = str_col(batch, "span_id");
-        // A container the projection omitted, or one stored in a form this
-        // build cannot read, degrades to "no attributes from that container"
-        // rather than failing the query.
+        // A container the projection omitted decodes to `None` rows rather
+        // than failing the batch -- normal when the query didn't need it.
         let attrs: Vec<Vec<Option<common::attrs::AttrDocument>>> = ATTR_CONTAINERS
             .iter()
-            .filter(|name| batch.column_by_name(name).is_some())
-            .filter_map(|name| match common::attrs::attr_documents(batch, name) {
-                Ok(docs) => Some(docs),
-                Err(error) => {
-                    tracing::warn!(?error, container = name, "skipping attribute container");
-                    None
-                }
-            })
+            .filter_map(|name| common::attrs::attr_documents(batch, name).ok())
             .collect();
 
         for i in 0..batch.num_rows() {
@@ -709,6 +701,12 @@ fn batches_to_streams(batches: &[RecordBatch]) -> Vec<Stream> {
                 } else {
                     timestamps.value(i)
                 },
+                // `body` arrives from the querier already decoded (issue
+                // #1410: both its IR-path and LogQL-compat-fallback
+                // projections decode ingest's JSON-encoded `body` exactly
+                // once, via `body_decode_expr`). Do NOT decode again here —
+                // a body whose own text begins and ends with a quote would
+                // lose that quoting on a second decode pass.
                 value_at(&body, i).unwrap_or_default(),
                 metadata,
             );
@@ -938,8 +936,7 @@ mod tests {
             parse_timestamp_ns, series_from_batches, string_column,
         };
         use datafusion::arrow::array::{
-            ArrayRef, Float64Array, MapBuilder, RecordBatch, StringArray, StringBuilder,
-            TimestampNanosecondArray,
+            ArrayRef, Float64Array, RecordBatch, StringArray, TimestampNanosecondArray,
         };
         use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
         use std::sync::Arc;
@@ -1050,9 +1047,8 @@ mod tests {
             );
         }
 
-        /// Build a logs batch carrying attribute containers, in whichever
-        /// storage form the caller asks for.
-        fn batch_with_attrs(map_typed: bool) -> RecordBatch {
+        /// Build a typed-layout logs batch carrying attribute containers.
+        fn batch_with_attrs() -> RecordBatch {
             let mut fields = vec![
                 Field::new(
                     "timestamp",
@@ -1072,45 +1068,34 @@ mod tests {
                 Arc::new(StringArray::from(vec![Some("trace-1"), None])),
             ];
 
-            let log_rows = vec![
-                vec![("http.method", "GET"), ("user.id", "u-1")],
-                vec![("http.method", "POST")],
+            let json_row = |pairs: &[(&str, &str)]| {
+                Some(serde_json::Map::from_iter(
+                    pairs
+                        .iter()
+                        .map(|(k, v)| ((*k).to_string(), serde_json::json!(v))),
+                ))
+            };
+            let log_rows = [
+                json_row(&[("http.method", "GET"), ("user.id", "u-1")]),
+                json_row(&[("http.method", "POST")]),
             ];
-            let resource_rows = vec![
-                vec![("deployment.environment", "prod")],
-                vec![("deployment.environment", "prod")],
+            let resource_rows = [
+                json_row(&[("deployment.environment", "prod")]),
+                json_row(&[("deployment.environment", "prod")]),
             ];
 
             for (name, rows) in [
-                ("log_attributes", log_rows),
-                ("resource_attributes", resource_rows),
+                ("log_attributes", &log_rows),
+                ("resource_attributes", &resource_rows),
             ] {
-                let array: ArrayRef = if map_typed {
-                    let mut builder =
-                        MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
-                    for pairs in &rows {
-                        for (k, v) in pairs {
-                            builder.keys().append_value(*k);
-                            builder.values().append_value(*v);
-                        }
-                        builder.append(true).unwrap();
-                    }
-                    Arc::new(builder.finish())
-                } else {
-                    let json: Vec<String> = rows
-                        .iter()
-                        .map(|pairs| {
-                            let obj: serde_json::Map<String, serde_json::Value> = pairs
-                                .iter()
-                                .map(|(k, v)| ((*k).to_string(), serde_json::json!(v)))
-                                .collect();
-                            serde_json::Value::Object(obj).to_string()
-                        })
-                        .collect();
-                    Arc::new(StringArray::from(json))
-                };
-                fields.push(Field::new(name, array.data_type().clone(), true));
-                columns.push(array);
+                let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                    "logs",
+                    "physical-v4",
+                    name,
+                    rows,
+                );
+                fields.extend(typed_fields);
+                columns.extend(typed_arrays);
             }
 
             RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
@@ -1126,32 +1111,30 @@ mod tests {
         /// distinct attribute combination into its own stream.
         #[test]
         fn log_and_resource_attributes_become_structured_metadata() {
-            for map_typed in [true, false] {
-                let streams = batches_to_streams(&[batch_with_attrs(map_typed)]);
-                assert_eq!(
-                    streams.len(),
-                    1,
-                    "attributes must not fragment the label set (map_typed={map_typed})"
-                );
-                let stream = &streams[0];
-                assert!(
-                    !stream.stream.contains_key("http.method"),
-                    "an attribute must not become a stream label"
-                );
+            let streams = batches_to_streams(&[batch_with_attrs()]);
+            assert_eq!(
+                streams.len(),
+                1,
+                "attributes must not fragment the label set"
+            );
+            let stream = &streams[0];
+            assert!(
+                !stream.stream.contains_key("http.method"),
+                "an attribute must not become a stream label"
+            );
 
-                let first = &stream.values[0];
-                assert_eq!(first.metadata["http.method"], "GET");
-                assert_eq!(first.metadata["user.id"], "u-1");
-                assert_eq!(first.metadata["deployment.environment"], "prod");
-                assert_eq!(first.metadata["trace_id"], "trace-1");
+            let first = &stream.values[0];
+            assert_eq!(first.metadata["http.method"], "GET");
+            assert_eq!(first.metadata["user.id"], "u-1");
+            assert_eq!(first.metadata["deployment.environment"], "prod");
+            assert_eq!(first.metadata["trace_id"], "trace-1");
 
-                // Per-row, not per-stream: the second line has its own value
-                // and does not inherit the first line's `user.id`.
-                let second = &stream.values[1];
-                assert_eq!(second.metadata["http.method"], "POST");
-                assert!(!second.metadata.contains_key("user.id"));
-                assert!(!second.metadata.contains_key("trace_id"));
-            }
+            // Per-row, not per-stream: the second line has its own value
+            // and does not inherit the first line's `user.id`.
+            let second = &stream.values[1];
+            assert_eq!(second.metadata["http.method"], "POST");
+            assert!(!second.metadata.contains_key("user.id"));
+            assert!(!second.metadata.contains_key("trace_id"));
         }
 
         /// `trace_id`/`span_id` are read from their own columns, so an
@@ -1159,7 +1142,7 @@ mod tests {
         /// the UI's trace link follows that key.
         #[test]
         fn column_trace_id_wins_over_a_same_named_attribute() {
-            let schema = Arc::new(Schema::new(vec![
+            let mut fields = vec![
                 Field::new(
                     "timestamp",
                     DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1167,18 +1150,25 @@ mod tests {
                 ),
                 Field::new("body", DataType::Utf8, true),
                 Field::new("trace_id", DataType::Utf8, true),
-                Field::new("log_attributes", DataType::Utf8, true),
-            ]));
-            let batch = RecordBatch::try_new(
-                schema,
-                vec![
-                    Arc::new(TimestampNanosecondArray::from(vec![100])),
-                    Arc::new(StringArray::from(vec!["a"])),
-                    Arc::new(StringArray::from(vec![Some("from-column")])),
-                    Arc::new(StringArray::from(vec![Some(r#"{"trace_id":"from-attr"}"#)])),
-                ],
-            )
-            .unwrap();
+            ];
+            let mut columns: Vec<ArrayRef> = vec![
+                Arc::new(TimestampNanosecondArray::from(vec![100])),
+                Arc::new(StringArray::from(vec!["a"])),
+                Arc::new(StringArray::from(vec![Some("from-column")])),
+            ];
+            let rows = [Some(serde_json::Map::from_iter([(
+                "trace_id".to_string(),
+                serde_json::json!("from-attr"),
+            )]))];
+            let (typed_fields, typed_arrays) = common::testing::typed_attribute_columns_from(
+                "logs",
+                "physical-v4",
+                "log_attributes",
+                &rows,
+            );
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+            let batch = RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap();
 
             let streams = batches_to_streams(&[batch]);
             assert_eq!(streams[0].values[0].metadata["trace_id"], "from-column");

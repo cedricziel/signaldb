@@ -1,5 +1,44 @@
 # Changelog
 
+## [0.2.2](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.1...signaldb-api-v0.2.2) (2026-09-23)
+
+
+### Features
+
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+* **router:** serialize API timestamps as native UTC DateTime ([#1643](https://github.com/cedricziel/signaldb/issues/1643)) ([1327fae](https://github.com/cedricziel/signaldb/commit/1327fae5760510f7e2180ab9e323ba6961d8b657))
+
+## [0.2.1](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.2.0...signaldb-api-v0.2.1) (2026-09-12)
+
+
+### Features
+
+* implement multi-dataset restriction for API keys and OAuth grants ([#1475](https://github.com/cedricziel/signaldb/issues/1475)) ([11deba9](https://github.com/cedricziel/signaldb/commit/11deba995c6937324576f87e87284a1580faa624))
+
+
+### Bug Fixes
+
+* **auth:** remove the dataset_id legacy shims from multi-dataset-key-restriction ([#1480](https://github.com/cedricziel/signaldb/issues/1480)) ([e8c85de](https://github.com/cedricziel/signaldb/commit/e8c85dedc0a9a73c5a133b952e858603d78c0c36))
+
+## [0.2.0](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.1.1...signaldb-api-v0.2.0) (2026-08-17)
+
+
+### ⚠ BREAKING CHANGES
+
+* **auth:** POST /api/v1/admin/tenants/{id}/api-keys requires a non-empty `scopes` array; bodies without it are rejected.
+
+### Features
+
+* **api:** code-first OpenAPI — generate spec + Rust/TS clients from annotations ([#856](https://github.com/cedricziel/signaldb/issues/856)) ([e34fbfb](https://github.com/cedricziel/signaldb/commit/e34fbfbd094034416f78597c59b306975dd97271))
+* **auth:** schema:read/schema:write API-key scopes, scopes on every key surface ([#1217](https://github.com/cedricziel/signaldb/issues/1217)) ([34c7a28](https://github.com/cedricziel/signaldb/commit/34c7a28e4e62fad7a05089c1a3543739d6e28450))
+
+
+### Code Refactoring
+
+* **cli:** make signaldb-cli depend only on the SDK (+ create_user API) ([#874](https://github.com/cedricziel/signaldb/issues/874)) ([8e5cce5](https://github.com/cedricziel/signaldb/commit/8e5cce56c821d69917b55cc8c21a9a2ef55864b7))
+* **signaldb-api:** merge extensions.rs into schemas.rs, drop unused Default derives ([#1184](https://github.com/cedricziel/signaldb/issues/1184)) ([665e238](https://github.com/cedricziel/signaldb/commit/665e2381b808f85cb9010ea1ff1acf08bf7cef47))
+
 ## [0.1.1](https://github.com/cedricziel/signaldb/compare/signaldb-api-v0.1.0...signaldb-api-v0.1.1) (2026-07-30)
 
 

@@ -14,8 +14,7 @@ async fn ensure_table_backfills_metadata_pruning_properties_on_existing_tables()
     let config = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
     let catalog = create_catalog(config).await.unwrap();
     let labels = common::config::MaterializedLabels::default();
@@ -105,8 +104,7 @@ async fn ensure_table_reflects_commits_made_through_other_handles() {
     let config = SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: "sqlite::memory:".to_string(),
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
     let catalog = create_catalog(config).await.unwrap();
     let manager = IcebergTableManager::new(catalog.clone(), 100);

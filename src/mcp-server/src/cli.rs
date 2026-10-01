@@ -31,6 +31,12 @@ pub struct Args {
     )]
     pub router_url: String,
 
+    /// Base URL of the SignalDB UI (e.g. `https://signaldb.example.com`). When
+    /// set, tool results that map to a UI view carry a `_links.ui` deep link;
+    /// unset (the default), no such link is added.
+    #[arg(long, env = "SIGNALDB__MCP__UI_BASE_URL")]
+    pub ui_base_url: Option<String>,
+
     /// Comma-separated `Host` header allowlist (`host` or `host:port`) for the
     /// Streamable HTTP transport's DNS-rebinding guard. The transport accepts
     /// only loopback hosts by default; set this to the externally-reachable
@@ -94,6 +100,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
             args.router_url,
             router_timeout,
             args.max_concurrent_tool_calls,
+            args.ui_base_url,
         )
         .await;
         if let Some(telemetry) = telemetry {
@@ -109,7 +116,8 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
 
     let mut state = McpAppState::new(args.router_url.clone())
         .with_router_timeout(router_timeout)
-        .with_max_concurrent_tool_calls(args.max_concurrent_tool_calls);
+        .with_max_concurrent_tool_calls(args.max_concurrent_tool_calls)
+        .with_ui_base_url(args.ui_base_url);
     match (
         args.oauth_resource_url.clone(),
         args.oauth_issuer_url.clone(),
@@ -185,6 +193,7 @@ async fn serve_stdio(
     router_url: String,
     router_timeout: std::time::Duration,
     max_concurrent_tool_calls: usize,
+    ui_base_url: Option<String>,
 ) -> Result<()> {
     use rmcp::ServiceExt;
 
@@ -194,6 +203,7 @@ async fn serve_stdio(
         router_timeout,
         max_concurrent_tool_calls,
     )
+    .with_ui_base_url(ui_base_url)
     .serve(rmcp::transport::stdio())
     .await
     .context("Failed to start MCP stdio transport")?;

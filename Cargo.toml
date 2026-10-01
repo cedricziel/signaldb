@@ -5,12 +5,16 @@ members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/eval-model",
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
+    "src/ottl",
     "src/prometheus-api",
     "src/pyroscope-api",
     "src/querier",
+    "src/ql-ir",
+    "src/query-ir",
     "src/router",
     "src/schema-model",
     "src/signal-producer",
@@ -19,30 +23,32 @@ members = [
     "src/signaldb-cli",
     "src/signaldb-sdk",
     "src/tempo-api",
+    "src/traceql",
     "src/writer",
     "tests-integration",
+    "workspace-hack",
     "xtask",
 ]
 
 # The Grafana plugin backend is a standalone workspace: its grafana-plugin-sdk
 # pin drags in a second Arrow major version, which would otherwise be compiled
 # on every --workspace build. It has its own CI (grafana-plugin-*.yml).
-#
-# vendor/opentelemetry-proto is a patched copy of a crates.io dependency
-# (see vendor/opentelemetry-proto/README.md), referenced only via
-# [patch.crates-io] below — not a crate we build or test directly.
-exclude = ["src/grafana-plugin/backend", "vendor/opentelemetry-proto"]
+exclude = ["src/grafana-plugin/backend"]
 
 default-members = [
     "src/acceptor",
     "src/common",
     "src/compactor",
+    "src/eval-model",
     "src/logql",
     "src/loki-api",
     "src/mcp-server",
+    "src/ottl",
     "src/prometheus-api",
     "src/pyroscope-api",
     "src/querier",
+    "src/ql-ir",
+    "src/query-ir",
     "src/router",
     "src/signal-producer",
     "src/signaldb-api",
@@ -50,27 +56,38 @@ default-members = [
     "src/signaldb-cli",
     "src/signaldb-sdk",
     "src/tempo-api",
+    "src/traceql",
     "src/writer",
     "tests-integration",
 ]
 
 [workspace.package]
-version = "0.1.0"
 edition = "2024"
 license = "AGPL-3.0"
 
+# Every member depends on workspace-hack only to unify features (cargo-hakari),
+# which cargo cannot tell apart from a real unused dependency. cargo machete
+# --with-metadata covers unused dependencies instead, with that exception.
+[workspace.lints.cargo]
+unused_dependencies = "allow"
+
 [workspace.dependencies]
-acceptor = { path = "src/acceptor", features = ["testing"] }
 common = { path = "src/common" }
-compactor = { path = "src/compactor" }
+eval-model = { path = "src/eval-model" }
+query-ir = { path = "src/query-ir" }
+ql-ir = { path = "src/ql-ir" }
 signaldb-api = { path = "src/signaldb-api" }
 signaldb-sdk = { path = "src/signaldb-sdk" }
-logql = { path = "src/logql" }
+# `package` keeps the dependency (and import) name `logql` while the crates.io
+# package is `logql-parser`; likewise `traceql`. Every `logql.workspace = true`
+# and every `use logql::…` is therefore unaffected by the publishing rename.
+logql = { path = "src/logql", package = "logql-parser" }
+traceql = { path = "src/traceql", package = "traceql-parser" }
 loki-api = { path = "src/loki-api" }
+ottl = { path = "src/ottl" }
 prometheus-api = { path = "src/prometheus-api" }
 pyroscope-api = { path = "src/pyroscope-api" }
 tempo-api = { path = "src/tempo-api" }
-writer = { path = "src/writer" }
 
 async-trait = "0.1.88"
 async-stream = "0.3.0"
@@ -86,49 +103,40 @@ crossterm = { version = "0.29.0", features = ["event-stream"] }
 tui-tree-widget = "0.24.0"
 
 # DataFusion for workspace members
-datafusion = { version = "54.1.0", default-features = false, features = [
+datafusion = { version = "55.0.0", default-features = false, features = [
     "parquet",
 ] }
-# Direct Arrow and Parquet dependencies
+# Direct Arrow dependency
 # ipc_compression enables the lz4/zstd IPC buffer codecs on every build that
 # encodes or decodes Flight/WAL payloads — including per-package builds and
 # the published SDK, which don't inherit the codecs transitively.
-arrow = { version = "58.3.0", features = ["prettyprint", "ipc_compression"] }
-parquet = { version = "58.3.0", features = ["arrow", "async"] }
-arrow-flight = { version = "58.3.0" }
+arrow = { version = "59.3.0", features = ["prettyprint", "ipc_compression"] }
+arrow-flight = { version = "59.3.0" }
 object_store = { version = "0.13.2", features = ["aws"] }
 
 # Iceberg table format support (schema, catalog, and write operations)
 #
-# Pinned to `signaldb/integration` on our fork: a branch that composes every
-# fix we have upstream but not yet merged, so SignalDB stays functional while
-# the individual PRs are in review. Each commit on it is one open upstream PR:
-#
-#   JanKaul/iceberg-rust#388 — honor write.target-file-size-bytes, roll on real file size
-#
-# (#382, #386, #387, #389 and #390 have merged upstream and are no longer
-# carried here.)
-#
-# Drop a commit from the branch as its PR merges; revert to JanKaul/iceberg-rust
-# once the branch is empty.
-datafusion_iceberg = { git = "https://github.com/cedricziel/iceberg-rust", rev = "beacdb971f8fd04b9959503021796c5bb8539743" }
-iceberg-rust = { git = "https://github.com/cedricziel/iceberg-rust", rev = "beacdb971f8fd04b9959503021796c5bb8539743" }
-iceberg-sql-catalog = { git = "https://github.com/cedricziel/iceberg-rust", rev = "beacdb971f8fd04b9959503021796c5bb8539743" }
+# Git pin on upstream `main` because no crates.io release of `iceberg-rust`
+# carries JanKaul/iceberg-rust#391 (declared sort orders) yet; drop the pin
+# for a published version once one does. Rev 5820c16a is upstream main as of
+# 2026-09-07, carrying JanKaul/iceberg-rust#392 (DataFusion 55 upgrade) and
+# #394 (Glue fix).
+datafusion_iceberg = { git = "https://github.com/JanKaul/iceberg-rust", rev = "5820c16a2a464ada64a345014dd1c104ed815282" }
+iceberg-rust = { git = "https://github.com/JanKaul/iceberg-rust", rev = "5820c16a2a464ada64a345014dd1c104ed815282" }
+iceberg-sql-catalog = { git = "https://github.com/JanKaul/iceberg-rust", rev = "5820c16a2a464ada64a345014dd1c104ed815282" }
 
 tonic = { version = "0.14.2", features = ["transport", "channel", "gzip", "zstd"] }
-tonic-build = "0.14.2"
 tonic-prost = "0.14.5"
 tonic-prost-build = "0.14.3"
-tonic-reflection = "0.14.2"
+http-body = "1"
 
-opentelemetry = "0.32.0"
-opentelemetry_sdk = "0.32.1"
-opentelemetry-stdout = { version = "0.31.0" }
-opentelemetry-otlp = { version = "0.32.0" }
-opentelemetry-proto = { version = "0.32.0", features = ["full", "profiles"] }
+opentelemetry = "0.33.0"
+opentelemetry_sdk = "0.33.0"
+opentelemetry-otlp = { version = "0.33.0" }
+opentelemetry-proto = { version = "0.33.0", features = ["full", "profiles"] }
 # `semconv_experimental` exposes the Release-Candidate `rpc.*` constants
 # (post-1.39 names) used by the self-monitoring span factories.
-opentelemetry-semantic-conventions = { version = "0.32.1", features = [
+opentelemetry-semantic-conventions = { version = "0.33.0", features = [
     "semconv_experimental",
 ] }
 
@@ -148,8 +156,11 @@ tokio-test = "0.4.2"
 tracing = "0.1"
 httpdate = "1.0"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
-tracing-opentelemetry = "0.33"
-opentelemetry-appender-tracing = "0.32"
+# tracing-opentelemetry 0.33.0 (latest release) targets opentelemetry 0.32;
+# upstream main has the 0.33 bump but no release yet. Return to a crates.io
+# version once one ships.
+tracing-opentelemetry = { git = "https://github.com/tokio-rs/tracing-opentelemetry", rev = "b475aa173d926b5f8bc4eecf255691a453850b4c" }
+opentelemetry-appender-tracing = "0.33"
 
 # Continuous profiling: Pyroscope agent (pprof-rs CPU backend built in;
 # jemalloc heap backend behind the opt-in `jemalloc-profiling` feature)
@@ -169,13 +180,19 @@ anyhow = "1.0.102"
 # Use the same axum version that tonic depends on
 axum = "0.8.8"
 tower-http = "0.7.0"
+flate2 = "1.1"
+zstd = "0.14"
 
 serde = { version = "1.0.219", features = ["derive"] }
 serde_json = "1.0.145"
+# CBOR codec for the typed-attribute residue column (native byte strings,
+# unlike JSON's base64-in-text carrier).
+ciborium = "0.2"
 bincode = "1.3.3"
+crc32fast = "1.5"
 
 # Code-first OpenAPI: ToSchema derives on DTOs, #[utoipa::path] on handlers.
-utoipa = { version = "5", features = ["axum_extras", "yaml"] }
+utoipa = { version = "5", features = ["axum_extras", "chrono", "yaml"] }
 
 # Model Context Protocol server (standalone signaldb-mcp service).
 rmcp = { version = "3.1", features = [
@@ -188,8 +205,6 @@ rmcp = { version = "3.1", features = [
 
 
 prost = "0.14"
-prost-types = "0.14"
-prost-build = "0.14"
 
 # Snappy compression for Prometheus remote write
 snap = "1.1"
@@ -199,8 +214,13 @@ promql-parser = "0.10"
 
 thiserror = "2.0.12"
 
-reqwest = { version = "0.13", features = ["json"] }
-progenitor-client = "0.14.0"
+# OTTL parser (ottl crate)
+pest = "2.8"
+pest_derive = "2.8"
+regex = "1.13"
+
+reqwest = { version = "0.13", features = ["json", "form"] }
+progenitor-client = "0.15.0"
 
 figment = { version = "0.10.19", features = ["toml", "env"] }
 once_cell = "1.21.1"
@@ -209,9 +229,17 @@ bytes = "1"
 
 uuid = { version = "1.21.0", features = ["serde", "v4"] }
 
+# Fixed-key (non-randomized) hashing for rendezvous/HRW writer selection —
+# deliberately not std's RandomState, which reseeds per process and would
+# pin a given key to a different writer on every restart.
+twox-hash = "2.1.4"
+
 humantime-serde = "1.1.1"
 
 hex = "0.4"
+
+# RFC 4180 CSV reader for eval results uploads (change: agent-offline-evals).
+csv = "1.4"
 base64 = "0.23"
 argon2 = { version = "0.5.3", features = ["std"] }
 tower = "0.5.2"
@@ -219,17 +247,33 @@ dashmap = "6.2"
 # Fast, non-cryptographic hasher for internal hot maps keyed on already-random
 # data (e.g. Uuid) where SipHash's DoS resistance buys nothing (issue #1112).
 rustc-hash = "2.1"
+# Bounded, LRU-evicting cache (change: github-app-source-context, the
+# source-context snippet cache).
+lru = "0.18"
 
-testcontainers = { version = "0.27.3", features = ["blocking"] }
-testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "minio"] }
+testcontainers-modules = { version = "0.15", features = ["postgres", "kafka", "minio", "http_wait"] }
 tempfile = "3.20.0"
 rand = "0.10"
 
-
-# Dev dependencies
-pretty_assertions = "1.4"
-rdkafka = { version = "0.36", features = ["tokio"] }
-
+# OIDC relying-party flow (change: oidc-login): discovery, JWKS, PKCE, ID
+# token validation. `reqwest` selects the crate's async client (its own
+# vendored `reqwest`/`rustls-tls`, independent of the workspace's `reqwest`).
+openidconnect = { version = "4.0.1", default-features = false, features = ["reqwest", "rustls-tls"] }
+# HMAC-signs the OIDC pending-login cookie (state/nonce/PKCE-verifier,
+# change: oidc-login); pairs with `sha2`.
+hmac = "0.13"
+sha2 = "0.11"
+# HTTP mock server for RP-flow tests against a fake IdP (discovery, JWKS,
+# token endpoint) — change: oidc-login.
+wiremock = "0.6"
+# Signs/verifies the GitHub App RS256 JWT (change: github-app-source-context);
+# `aws_lc_rs` selects the crate's `aws-lc-rs` backend, already in the tree,
+# over pulling in the `rust_crypto` backend's separate dependency stack.
+jsonwebtoken = { version = "11", default-features = false, features = ["use_pem", "aws_lc_rs"] }
+# Parses the GitHub App private key at config-validation time so a bad key
+# fails startup rather than the first mint attempt (change:
+# github-app-source-context).
+rsa = "0.9"
 criterion = { version = "0.8", features = ["html_reports", "async_tokio"] }
 
 chrono = { version = "0.4", features = ["serde"] }
@@ -287,18 +331,3 @@ inherits = "test"
 debug = 0
 strip = true
 incremental = false
-
-# ------------------------------------------------------------
-# Patches
-# ------------------------------------------------------------
-
-# opentelemetry-proto's JSON `AnyValue` deserializer rejects the empty `{}`
-# object as an error, even though the OTLP spec explicitly allows an AnyValue
-# with none of its oneof fields set ("considered to be empty"). Real clients
-# send this: the OTel JS browser SDK's auto-instrumentation emits event-style
-# log records with an empty `body` and can emit an empty `AnyValue` for an
-# attribute whose source value is absent. `vendor/opentelemetry-proto`
-# carries that one-function fix (see vendor/opentelemetry-proto/README.md).
-# Drop this patch once fixed upstream.
-[patch.crates-io]
-opentelemetry-proto = { path = "vendor/opentelemetry-proto" }

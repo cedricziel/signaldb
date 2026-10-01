@@ -1,0 +1,355 @@
+// The centered ⌘K command palette: jump to a page, a service's catalog
+// entry, a recent query, an action, or straight to a pasted trace id.
+
+import { useQuery } from "@tanstack/react-query";
+import { useEffect, useMemo, useRef, useState } from "react";
+import { Link, useNavigate } from "react-router";
+import { fetchCatalogEntities } from "../../api/catalog";
+import { fetchRumApps } from "../../api/rum";
+import { fetchSessionLookup } from "../../api/rumSessions";
+import { RUM_TABS } from "../rum/rumModel";
+import { entityType } from "../catalog/entityTypes";
+import { entityQueryKey, NAV_SORT } from "../catalog/CatalogView";
+import { loadRecentQueries } from "../../lib/recentQueries";
+import { compositeKey } from "../../lib/traceGroups";
+import { rangeScopeKey, resolveRange } from "../../lib/time";
+import {
+  buildPath,
+  crossSignalSearch,
+  type ExploreState,
+} from "../../lib/urlState";
+import { NavIcon } from "./NavIcon";
+import { pageHref, visibleNavGroups } from "./navModel";
+import {
+  buildPaletteGroups,
+  isSessionIdLike,
+  type PaletteItem,
+  type PaletteSources,
+} from "./paletteModel";
+
+interface Props {
+  state: ExploreState;
+  canManage: boolean;
+  isDemo: boolean;
+  onClose: () => void;
+}
+
+export function CommandPalette({ state, canManage, isDemo, onClose }: Props) {
+  const navigate = useNavigate();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const listRef = useRef<HTMLDivElement>(null);
+  const [query, setQuery] = useState("");
+  const [active, setActive] = useState(0);
+
+  // Focus the input on open; hand focus back to whatever opened the
+  // palette (the header's search field, a sidebar item, …) on close.
+  useEffect(() => {
+    const opener = document.activeElement as HTMLElement | null;
+    inputRef.current?.focus();
+    return () => opener?.focus?.();
+  }, []);
+
+  const services = useServiceItems(state, query.trim() !== "");
+  const rumApps = useRumAppItems(state, query.trim() !== "");
+  const sessionLookup = useSessionLookupItem(state, query);
+  const recent = useMemo(
+    () =>
+      loadRecentQueries().map((q) => ({
+        label: q.text,
+        meta: q.signal,
+        href: q.href,
+      })),
+    [],
+  );
+
+  const sources: PaletteSources = useMemo(() => {
+    const pages: PaletteItem[] = visibleNavGroups({
+      canManage,
+      isDemo,
+    }).flatMap((g) =>
+      g.pages.map((p) => ({
+        label: p.label,
+        meta: g.title.toLowerCase(),
+        href: pageHref(p, state),
+        group: g.title,
+      })),
+    );
+    // Every Real users tab (`rumModel.ts`'s `RUM_TABS`) — a later group's
+    // new tab shows up here automatically. Labels stay the tabs' default
+    // (browser) ones rather than the selected app's platform-aware labels
+    // (`rumTabLabel`): the palette has no reason to have that app's platform
+    // loaded, and ids/hrefs — the part that actually has to be right — don't
+    // change per platform.
+    const rumSearch = crossSignalSearch(state);
+    for (const t of RUM_TABS) {
+      pages.push({
+        label: `Real users: ${t.label}`,
+        meta: "real users",
+        href: `/rum/${t.id}${rumSearch}`,
+        group: "Monitor",
+      });
+    }
+    const actions: PaletteItem[] = [
+      ...(canManage
+        ? [
+            { label: "Invite members", meta: "action", href: "/manage" },
+            { label: "Create API key", meta: "action", href: "/api-keys" },
+          ]
+        : []),
+      {
+        label: "Instrument a service",
+        meta: "action",
+        href: "/instrumentation",
+      },
+      ...(canManage
+        ? [
+            {
+              label: "Connect GitHub",
+              meta: "action",
+              href: "/integrations/github",
+            },
+          ]
+        : []),
+      { label: "Switch tenant", meta: "action", href: "/select-tenant" },
+      {
+        label: "Open setup checklist",
+        meta: "action",
+        href: withParam(`/overview${crossSignalSearch(state)}`, "setup"),
+      },
+    ];
+    return { pages, services, rumApps, recent, actions, sessionLookup };
+  }, [state, canManage, isDemo, services, rumApps, recent, sessionLookup]);
+
+  const groups = buildPaletteGroups(query, sources);
+  const flat = groups.flatMap((g) => g.items);
+  const activeIndex = Math.min(active, Math.max(0, flat.length - 1));
+
+  // Keep the keyboard-selected row in view as ↑/↓ move past the edge.
+  useEffect(() => {
+    listRef.current
+      ?.querySelector<HTMLElement>('[aria-selected="true"]')
+      ?.scrollIntoView?.({ block: "nearest" });
+  }, [activeIndex]);
+
+  const open = (item: PaletteItem) => {
+    onClose();
+    navigate(item.href);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent) => {
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive(Math.min(flat.length - 1, activeIndex + 1));
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive(Math.max(0, activeIndex - 1));
+    } else if (e.key === "Enter") {
+      const item = flat[activeIndex];
+      if (item) {
+        e.preventDefault();
+        open(item);
+      }
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      e.stopPropagation();
+      onClose();
+    }
+  };
+
+  let index = 0;
+  return (
+    <>
+      <div className="palette-backdrop" onClick={onClose} aria-hidden="true" />
+      <div
+        className="palette"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Command palette"
+        onKeyDown={onKeyDown}
+      >
+        <div className="palette-input-row">
+          <NavIcon name="search" size={18} />
+          <input
+            ref={inputRef}
+            type="search"
+            className="palette-input"
+            value={query}
+            placeholder="Search pages, services, queries, or paste a trace ID…"
+            aria-label="Search"
+            aria-controls="palette-results"
+            aria-activedescendant={
+              flat.length > 0 ? `palette-opt-${activeIndex}` : undefined
+            }
+            autoComplete="off"
+            spellCheck={false}
+            onChange={(e) => {
+              setQuery(e.target.value);
+              setActive(0);
+            }}
+          />
+          <kbd className="nav-kbd">esc</kbd>
+        </div>
+        <div
+          id="palette-results"
+          className="palette-results"
+          role="listbox"
+          aria-label="Results"
+          ref={listRef}
+        >
+          {groups.map((g) => (
+            <div key={g.title} role="group" aria-label={g.title}>
+              <div className="nav-section-label palette-group-label">
+                {g.title}
+              </div>
+              {g.items.map((item) => {
+                const i = index++;
+                const selected = i === activeIndex;
+                return (
+                  <Link
+                    key={`${g.title}:${item.href}:${item.label}`}
+                    id={`palette-opt-${i}`}
+                    to={item.href}
+                    role="option"
+                    aria-selected={selected}
+                    className="palette-row"
+                    onMouseEnter={() => setActive(i)}
+                    onClick={(e) => {
+                      e.preventDefault();
+                      open(item);
+                    }}
+                  >
+                    <span className="palette-row-label">{item.label}</span>
+                    <span className="palette-row-meta">{item.meta}</span>
+                    {selected && (
+                      <span className="palette-row-enter" aria-hidden="true">
+                        ↵
+                      </span>
+                    )}
+                  </Link>
+                );
+              })}
+            </div>
+          ))}
+          {query.trim() !== "" && flat.length === 0 && (
+            <div className="palette-empty">
+              No matches for “{query.trim()}”. Paste a trace ID to jump straight
+              to it.
+            </div>
+          )}
+        </div>
+        <div className="palette-footer" aria-hidden="true">
+          <span>↑↓ navigate</span>
+          <span>↵ open</span>
+          <span>esc close</span>
+        </div>
+      </div>
+    </>
+  );
+}
+
+/** `href` with a bare `name` flag appended to its query string. */
+function withParam(href: string, name: string): string {
+  return `${href}${href.includes("?") ? "&" : "?"}${name}`;
+}
+
+/** The catalog's service list as palette rows — the same query (and cache
+ * entry) the catalog's entity nav uses, fetched only once there's something
+ * typed to match against. */
+function useServiceItems(state: ExploreState, enabled: boolean): PaletteItem[] {
+  const service = entityType("service");
+  const rangeKey = rangeScopeKey(state);
+  const { data } = useQuery({
+    queryKey: entityQueryKey("service", rangeKey, NAV_SORT),
+    queryFn: () =>
+      fetchCatalogEntities(
+        service!,
+        resolveRange(state.range, Date.now()),
+        NAV_SORT,
+      ),
+    enabled: enabled && service !== undefined && state.tenant !== "",
+    staleTime: 30_000,
+  });
+  return useMemo(() => {
+    if (!data) return [];
+    const search = crossSignalSearch(state);
+    return data.entities.map((e) => ({
+      label: e.values.filter((v) => v !== null).join(" · ") || "(not set)",
+      meta: "service",
+      href: `${buildPath("catalog", "", {
+        catalogEntity: "service",
+        catalogPrimary: compositeKey(e.values),
+        catalogSecondary: "",
+      })}${search}`,
+    }));
+  }, [data, state]);
+}
+
+/** Frontend apps with RUM data as palette rows, opening the Real users
+ * Overview scoped to that app (`explore-ui-rum`'s "Real users command
+ * palette entries" requirement) — fetched only once there's something
+ * typed to match against, like `useServiceItems`. */
+function useRumAppItems(state: ExploreState, enabled: boolean): PaletteItem[] {
+  const rangeKey = rangeScopeKey(state);
+  const { data } = useQuery({
+    queryKey: ["rum-apps", rangeKey],
+    queryFn: () => fetchRumApps(resolveRange(state.range, Date.now())),
+    enabled,
+    staleTime: 30_000,
+  });
+  return useMemo(() => {
+    if (!data) return [];
+    const search = crossSignalSearch(state);
+    return data.map((a) => ({
+      label: a.serviceName,
+      meta: "real users app",
+      href: `/rum/overview${search}${search ? "&" : "?"}app=${encodeURIComponent(a.serviceName)}`,
+    }));
+  }, [data, state]);
+}
+
+/** Debounce lookup requests so a session id typed character-by-character
+ * doesn't fire one bounded read per keystroke while it still looks
+ * id-shaped at every intermediate length. */
+const SESSION_LOOKUP_DEBOUNCE_MS = 300;
+
+function useDebouncedValue<T>(value: T, delayMs: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const id = setTimeout(() => setDebounced(value), delayMs);
+    return () => clearTimeout(id);
+  }, [value, delayMs]);
+  return debounced;
+}
+
+/** A pasted session id, resolved to its app via one bounded logs read
+ * (`fetchSessionLookup`) — the spec's "Pasting a session id" scenario.
+ * `null` while the query doesn't look like a session id, the lookup hasn't
+ * settled yet, or nothing matched. */
+function useSessionLookupItem(
+  state: ExploreState,
+  query: string,
+): PaletteItem | null {
+  const debounced = useDebouncedValue(query.trim(), SESSION_LOOKUP_DEBOUNCE_MS);
+  const enabled = isSessionIdLike(debounced);
+  const rangeKey = rangeScopeKey(state);
+  const { data } = useQuery({
+    queryKey: ["rum-session-lookup", debounced, rangeKey],
+    queryFn: () =>
+      fetchSessionLookup(debounced, resolveRange(state.range, Date.now())),
+    enabled,
+    staleTime: 30_000,
+  });
+  return useMemo(() => {
+    // Guards against picking a stale match: if the user kept typing past
+    // the debounce window, `debounced`/`data` still reflect the older
+    // query until the next debounce settles.
+    if (!enabled || !data || debounced !== query.trim()) return null;
+    const search = crossSignalSearch(state);
+    const sep = search ? "&" : "?";
+    return {
+      label: `Open session ${debounced}`,
+      meta: "session",
+      href: `/rum/sessions${search}${sep}app=${encodeURIComponent(data)}&session=${encodeURIComponent(debounced)}`,
+    };
+  }, [enabled, data, debounced, query, state]);
+}

@@ -1,4 +1,4 @@
-import { screen, within } from "@testing-library/react";
+import { act, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetSemanticsCache } from "../../hooks/useSemantics";
@@ -39,6 +39,34 @@ function renderFacets(props: Partial<Parameters<typeof TraceFacets>[0]> = {}) {
 }
 
 describe("TraceFacets", () => {
+  it("offers an errors-only checkbox that toggles the status = Error filter", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: table([]) }]);
+    const { onAddFilter } = renderFacets();
+    const box = screen.getByRole("checkbox", { name: "Errors only" });
+    expect(box).not.toBeChecked();
+    await userEvent.click(box);
+    // Same filter the status facet would add, so groups, list, volume, and
+    // facet counts all narrow together.
+    expect(onAddFilter).toHaveBeenCalledWith({
+      field: "status",
+      value: "Error",
+    });
+  });
+
+  it("shows the errors-only checkbox checked while the filter is active and clears it on click", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: table([]) }]);
+    const { onRemoveFilter } = renderFacets({
+      filters: [{ field: "status", value: "Error" }],
+    });
+    const box = screen.getByRole("checkbox", { name: "Errors only" });
+    expect(box).toBeChecked();
+    await userEvent.click(box);
+    expect(onRemoveFilter).toHaveBeenCalledWith({
+      field: "status",
+      value: "Error",
+    });
+  });
+
   it("lists the enumerable facet fields", () => {
     stubFetchRoutes([{ match: "/api/v1/query", body: table([]) }]);
     renderFacets();
@@ -69,6 +97,57 @@ describe("TraceFacets", () => {
     expect(values[0]).toHaveTextContent("signaldb");
     expect(values[0]).toHaveTextContent("2,903");
     expect(values[1]).toHaveTextContent("980");
+  });
+
+  it("lists every span kind as a checkbox with its count, checked for the selected ones", async () => {
+    stubFetchRoutes([
+      {
+        match: "/api/v1/query",
+        body: table([
+          ["Server", 218135],
+          ["Internal", 83586],
+        ]),
+      },
+    ]);
+    const { onAddFilter, onRemoveFilter } = renderFacets({
+      filters: [
+        { field: "kind", value: "Server" },
+        { field: "kind", value: "Client" },
+      ],
+    });
+    // kind has a selection, so it is listed first and already expanded.
+    // Every kind is offered, in the fixed order, even with no data for it.
+    const boxes = await screen.findAllByRole("checkbox", {
+      name: /^(Server|Client|Internal|Producer|Consumer)/,
+    });
+    expect(boxes.map((b) => b.getAttribute("aria-label"))).toEqual([
+      "Server",
+      "Client",
+      "Internal",
+      "Producer",
+      "Consumer",
+    ]);
+    expect(screen.getByRole("checkbox", { name: "Server" })).toBeChecked();
+    expect(screen.getByRole("checkbox", { name: "Client" })).toBeChecked();
+    expect(
+      screen.getByRole("checkbox", { name: "Internal" }),
+    ).not.toBeChecked();
+    // Counts fill in once the facet query resolves; 0 for kinds without data.
+    await screen.findByText("218,135");
+    const values = screen.getAllByTestId("facet-value");
+    expect(values[0]).toHaveTextContent("218,135");
+    expect(values[1]).toHaveTextContent("0");
+
+    await userEvent.click(screen.getByRole("checkbox", { name: "Internal" }));
+    expect(onAddFilter).toHaveBeenCalledWith({
+      field: "kind",
+      value: "Internal",
+    });
+    await userEvent.click(screen.getByRole("checkbox", { name: "Server" }));
+    expect(onRemoveFilter).toHaveBeenCalledWith({
+      field: "kind",
+      value: "Server",
+    });
   });
 
   it("selects a value", async () => {
@@ -123,9 +202,7 @@ describe("TraceFacets", () => {
     const { onRemoveFilter } = renderFacets({
       filters: [{ field: "service.name", value: "signaldb" }],
     });
-    await userEvent.click(
-      screen.getByRole("button", { name: /service\.name/ }),
-    );
+    // A facet with a filter set starts expanded — no click needed.
     const active = await screen.findByTestId("facet-value");
     expect(active).toHaveAttribute("aria-pressed", "true");
     await userEvent.click(active);
@@ -146,11 +223,102 @@ describe("TraceFacets", () => {
     expect(await screen.findByText(/could not load/i)).toBeInTheDocument();
   });
 
+  it("keeps the span kinds selectable but shows no counts when their query fails", async () => {
+    stubFetchRoutes([
+      { match: "/api/v1/query", body: { error: "boom" }, status: 500 },
+    ]);
+    renderFacets({ filters: [{ field: "kind", value: "Server" }] });
+    expect(
+      await screen.findByText(/could not load counts/i),
+    ).toBeInTheDocument();
+    const values = screen.getAllByTestId("facet-value");
+    expect(values).toHaveLength(5);
+    for (const v of values) expect(v).not.toHaveTextContent(/\d/);
+    expect(screen.getByRole("checkbox", { name: "Client" })).toBeEnabled();
+  });
+
   it("opens a facet with a filter already applied", async () => {
     stubFetchRoutes([{ match: "/api/v1/query", body: table([["error", 6]]) }]);
     renderFacets({ filters: [{ field: "status", value: "error" }] });
     const statusBtn = screen.getByRole("button", { name: /status/ });
     expect(within(statusBtn).getByText("1")).toBeInTheDocument();
+  });
+
+  it("lists facets with a filter set first, expanded, and lets them collapse", async () => {
+    stubFetchRoutes([{ match: "/api/v1/query", body: table([["error", 6]]) }]);
+    renderFacets({
+      filters: [
+        { field: "status", value: "error" },
+        { field: "kind", value: "Server" },
+      ],
+    });
+    const fields = screen
+      .getAllByRole("button", { expanded: true })
+      .concat(screen.getAllByRole("button", { expanded: false }));
+    // Active facets first, in the curated order (status before kind), then
+    // the rest in their curated order.
+    const names = screen
+      .getByLabelText("Facets")
+      .querySelectorAll(".field-row .field > span:first-child");
+    expect([...names].slice(0, 3).map((n) => n.textContent)).toEqual([
+      "status",
+      "span.kind",
+      "service.name",
+    ]);
+    expect(fields.length).toBeGreaterThan(2);
+    const statusBtn = screen.getByRole("button", { name: /status/ });
+    const kindBtn = screen.getByRole("button", { name: /span\.kind/ });
+    const serviceBtn = screen.getByRole("button", { name: /service\.name/ });
+    expect(statusBtn).toHaveAttribute("aria-expanded", "true");
+    expect(kindBtn).toHaveAttribute("aria-expanded", "true");
+    expect(serviceBtn).toHaveAttribute("aria-expanded", "false");
+    // Both stay expanded together — this is no longer one-at-a-time.
+    await screen.findAllByTestId("facet-value");
+    // An active facet can still be collapsed by hand.
+    await userEvent.click(statusBtn);
+    expect(statusBtn).toHaveAttribute("aria-expanded", "false");
+    expect(kindBtn).toHaveAttribute("aria-expanded", "true");
+  });
+
+  describe("live refetching", () => {
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    it("polls an open facet's query on the given interval", async () => {
+      vi.useFakeTimers();
+      const fetchMock = stubFetchRoutes([
+        { match: "/api/v1/query", body: table([]) },
+      ]);
+      renderFacets({
+        filters: [{ field: "status", value: "error" }],
+        refetchInterval: 2_000,
+      });
+      await act(async () => {}); // let the initial fetch settle
+      const afterMount = fetchMock.mock.calls.length;
+      expect(afterMount).toBeGreaterThan(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(2_000);
+      });
+      expect(fetchMock.mock.calls.length).toBeGreaterThan(afterMount);
+    });
+
+    it("does not poll when no refetchInterval is given", async () => {
+      vi.useFakeTimers();
+      const fetchMock = stubFetchRoutes([
+        { match: "/api/v1/query", body: table([]) },
+      ]);
+      renderFacets({ filters: [{ field: "status", value: "error" }] });
+      await act(async () => {});
+      const afterMount = fetchMock.mock.calls.length;
+      expect(afterMount).toBeGreaterThan(0);
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(60_000);
+      });
+      expect(fetchMock.mock.calls.length).toBe(afterMount);
+    });
   });
 
   it("adds an info glyph with the registry tooltip to facets it knows", async () => {

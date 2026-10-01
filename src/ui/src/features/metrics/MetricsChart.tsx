@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState } from "react";
 import uPlot from "uplot";
 import "uplot/dist/uPlot.min.css";
-import { seriesName, type PromSeries } from "../../api/prom";
+import { seriesName, type PromSeries } from "../../api/ir/metrics";
 import { VizTooltip, type VizTooltipRow } from "../../components/VizTooltip";
-import { alignSeries, seriesColorVar } from "../../lib/promSeries";
-import { formatTimestamp, formatValue } from "../../lib/vizFormat";
+import { alignSeries, seriesColorVar, seriesDash } from "../../lib/promSeries";
+import { subscribeTheme } from "../../lib/theme";
+import {
+  compactCount,
+  formatTimestamp,
+  formatValue,
+} from "../../lib/vizFormat";
+import { timeAxisLabels } from "../../lib/time";
 
 interface Props {
   series: PromSeries[];
@@ -26,33 +32,57 @@ export interface CursorPlot {
   over: HTMLElement;
 }
 
+/** Rows shown at once; past this, a chart with many series (a busy metric
+ * builder formula, a high-cardinality group-by) would otherwise grow a
+ * tooltip taller than the chart itself. */
+const MAX_TOOLTIP_ROWS = 10;
+
 /**
  * Resolve the cursor's x-aligned index into tooltip rows: the timestamp at
  * the panel's resolution, and one row per series with its swatch and value —
  * a muted `–` where the series has no sample rather than dropping the row.
+ * Past {@link MAX_TOOLTIP_ROWS}, only the largest-magnitude values are shown
+ * (a missing sample sorts last), with the rest summarized in `footer`.
  */
 export function rowsForCursorIndex(
   u: CursorPlot,
   idx: number,
   unit = "",
-): { title: string; rows: VizTooltipRow[] } {
+): { title: string; rows: VizTooltipRow[]; footer?: string } {
   const xs = u.data[0] ?? [];
   const t = Number(xs[idx]);
   const resolution =
     xs.length > 1 ? Math.abs(Number(xs[1]) - Number(xs[0])) : 60_000;
-  const rows: VizTooltipRow[] = [];
+  const all = [];
   for (let i = 1; i < u.series.length; i++) {
     const v = u.data[i]?.[idx];
     const missing = v === null || v === undefined || Number.isNaN(v);
     const stroke = u.series[i]?.stroke;
-    rows.push({
-      swatch: typeof stroke === "string" ? stroke : undefined,
-      label: u.series[i]?.label ?? `series ${i}`,
-      value: missing ? "–" : formatValue(v, unit),
-      muted: missing,
+    all.push({
+      // -1 (rather than 0) keeps a missing sample ranked below even a
+      // genuine zero-valued series, not just below every nonzero one.
+      magnitude: missing ? -1 : Math.abs(Number(v)),
+      row: {
+        swatch: typeof stroke === "string" ? stroke : undefined,
+        label: u.series[i]?.label ?? `series ${i}`,
+        value: missing ? "–" : formatValue(v, unit),
+        muted: missing,
+      } satisfies VizTooltipRow,
     });
   }
-  return { title: formatTimestamp(t, resolution), rows };
+  const title = formatTimestamp(t, resolution);
+  if (all.length <= MAX_TOOLTIP_ROWS) {
+    return { title, rows: all.map((r) => r.row) };
+  }
+  const shown = [...all]
+    .sort((a, b) => b.magnitude - a.magnitude)
+    .slice(0, MAX_TOOLTIP_ROWS)
+    .map((r) => r.row);
+  return {
+    title,
+    rows: shown,
+    footer: `+${all.length - MAX_TOOLTIP_ROWS} more`,
+  };
 }
 
 function cssColor(varExpr: string, el: HTMLElement): string {
@@ -66,6 +96,7 @@ interface Tip {
   host: { width: number; height: number };
   title: string;
   rows: VizTooltipRow[];
+  footer?: string;
 }
 
 /** Hoisted so a stable default keeps the chart effect from re-running. */
@@ -79,6 +110,13 @@ export function MetricsChart({
 }: Props) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [tip, setTip] = useState<Tip | null>(null);
+  // Bumped whenever the effective theme may have changed (a toggle, or a
+  // system-level prefers-color-scheme flip) so the effect below re-runs and
+  // rebuilds the chart with freshly resolved CSS variables — a chart drawn
+  // once at mount otherwise keeps the colours (grid, ticks, series strokes)
+  // of whichever theme was active then.
+  const [themeTick, setThemeTick] = useState(0);
+  useEffect(() => subscribeTheme(() => setThemeTick((t) => t + 1)), []);
 
   useEffect(() => {
     const host = hostRef.current;
@@ -95,7 +133,7 @@ export function MetricsChart({
       }
       const hostRect = host.getBoundingClientRect();
       const overRect = u.over.getBoundingClientRect();
-      const { title, rows } = rowsForCursorIndex(u, idx, unit);
+      const { title, rows, footer } = rowsForCursorIndex(u, idx, unit);
       setTip({
         anchor: {
           x: (u.cursor.left ?? 0) + overRect.left - hostRect.left,
@@ -104,12 +142,71 @@ export function MetricsChart({
         host: { width: hostRect.width, height: hostRect.height },
         title,
         rows,
+        footer,
       });
+    };
+    const initialWidth = host.clientWidth || 800;
+    const gridStroke = cssColor("var(--border)", host);
+    const tickStroke = cssColor("var(--dim)", host);
+    const font = getComputedStyle(host).getPropertyValue("--ui").trim();
+    // Both axes read the same theme colours; built once and shared rather
+    // than repeating the same four-key object per axis.
+    const axis: uPlot.Axis = {
+      stroke: tickStroke,
+      ticks: { stroke: tickStroke, width: 1 },
+      grid: { stroke: gridStroke, width: 1 },
+      font: font ? `12px ${font}` : undefined,
+    };
+    // The y-axis routes its tick labels through the same unit-aware
+    // formatter as the tooltip (a byte-valued metric otherwise shows a
+    // plain grouped number, e.g. "536,870,912" rather than "512 MB") and
+    // reserves enough gutter width for the longest label this series can
+    // produce — uPlot's own auto-sizing measures the *rendered* ticks, which
+    // is one render behind a chart whose data just grew a digit, and a tile
+    // at 120px tall has little room to recover from a clipped label.
+    // Mirrors the character-width measurement `TraceVolumeHeatmap.tsx` uses
+    // for its own y-axis gutter.
+    let maxAbsValue = 0;
+    let hasNegativeValue = false;
+    for (const s of series) {
+      for (const [, v] of s.points) {
+        maxAbsValue = Math.max(maxAbsValue, Math.abs(v));
+        if (v < 0) hasNegativeValue = true;
+      }
+    }
+    const AXIS_CHAR_WIDTH = 6.5;
+    const AXIS_MIN_SIZE = 40;
+    const widestLabel =
+      (hasNegativeValue ? "-" : "") + compactCount(maxAbsValue, unit);
+    // One-line labels with the date only where it changes, spaced for the
+    // widest (`MM-DD HH:mm:ss`) so neighbours never overlap.
+    const xAxis: uPlot.Axis = {
+      ...axis,
+      space: 80,
+      values: (_u, splits, _axisIdx, _space, incr) =>
+        timeAxisLabels(splits, incr),
+    };
+    const yAxis: uPlot.Axis = {
+      ...axis,
+      values: (_u, splits) => {
+        // Ticks are evenly spaced; the gap between the first two non-null
+        // values is this axis's step, used to size decimals for sub-1 series
+        // (e.g. `0, 0.2, 0.4, …`) so ticks don't all round to the same label.
+        const numericSplits = splits.filter((v): v is number => v !== null);
+        const step =
+          numericSplits.length > 1
+            ? numericSplits[1]! - numericSplits[0]!
+            : undefined;
+        return splits.map((v) =>
+          v === null ? null : compactCount(v, unit, step),
+        );
+      },
+      size: Math.max(AXIS_MIN_SIZE, widestLabel.length * AXIS_CHAR_WIDTH + 18),
     };
     const make = () =>
       new uPlot(
         {
-          width: host.clientWidth || 800,
+          width: initialWidth,
           height,
           // Timestamps are already in ms.
           ms: 1,
@@ -118,14 +215,15 @@ export function MetricsChart({
             ...series.map((s, i) => ({
               label: labelOf(s),
               stroke: cssColor(seriesColorVar(i), host),
+              // Past the 12-color palette (uncommon: a high-cardinality
+              // group-by), a repeated color also gets a distinct dash
+              // pattern so two series sharing a hue still read apart.
+              dash: seriesDash(i),
               width: 1.5,
               points: { show: false },
             })),
           ],
-          axes: [
-            { stroke: cssColor("var(--dim)", host) },
-            { stroke: cssColor("var(--dim)", host) },
-          ],
+          axes: [xAxis, yAxis],
           legend: { show: false },
           hooks: {
             setCursor: [(u) => onCursor(u as unknown as CursorPlot)],
@@ -135,18 +233,32 @@ export function MetricsChart({
         host,
       );
 
-    let plot = make();
-    const onResize = () => {
-      plot.destroy();
-      plot = make();
-    };
-    window.addEventListener("resize", onResize);
+    const plot = make();
+    let lastWidth = initialWidth;
+    // Resize in place (`setSize`, not destroy+recreate) and react to the
+    // chart's own container rather than only `window` — a sidebar drag or
+    // any container-only reflow never fires a window resize event.
+    // Debounced so a continuous drag doesn't thrash the canvas.
+    let resizeTimer: ReturnType<typeof setTimeout> | null = null;
+    const observer = new ResizeObserver((entries) => {
+      const width = entries[0]?.contentRect.width;
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      resizeTimer = setTimeout(() => {
+        resizeTimer = null;
+        if (!width || width === lastWidth) return;
+        lastWidth = width;
+        plot.setSize({ width, height });
+      }, 120);
+    });
+    observer.observe(host);
+
     return () => {
-      window.removeEventListener("resize", onResize);
+      if (resizeTimer !== null) clearTimeout(resizeTimer);
+      observer.disconnect();
       plot.destroy();
       setTip(null);
     };
-  }, [series, height, unit, labelOf]);
+  }, [series, height, unit, labelOf, themeTick]);
 
   return (
     <div ref={hostRef} className="viz-host" data-testid="metrics-chart">
@@ -156,6 +268,7 @@ export function MetricsChart({
           host={tip.host}
           title={tip.title}
           rows={tip.rows}
+          footer={tip.footer}
         />
       )}
     </div>

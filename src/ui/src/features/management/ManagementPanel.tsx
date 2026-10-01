@@ -1,7 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
+import { Link } from "react-router";
 import {
-  createApiKey,
   createDataset,
   createTenant,
   deleteDataset,
@@ -10,13 +10,14 @@ import {
   listTables,
   provisionTables,
   removeMembership,
-  revokeApiKey,
   upsertMembership,
-  type IngestScope,
   type ManagedTables,
 } from "../../api/management";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
+import { QueryError } from "../../components/QueryError";
 import { toErrorMessage } from "../../api/http";
+import { ConfirmButton } from "../../components/ConfirmButton";
+import { Dialog } from "../../components/Dialog";
 import "./management.css";
 
 /** `ManagedTables["tables"]`'s element type. */
@@ -51,15 +52,17 @@ function tablesByDataset(
   }));
 }
 
-const scopes: IngestScope[] = [
-  "metrics:write",
-  "logs:write",
-  "traces:write",
-  "profiles:write",
-];
+function activeKeysLabel(n: number): string {
+  return `${n} active key${n === 1 ? "" : "s"}`;
+}
+
+/** Human-friendly label for a membership's `granted_by` source. */
+function grantSourceLabel(grantedBy: string): string {
+  return grantedBy === "oidc_mapping" ? "SSO group" : "Local";
+}
 
 interface Props {
-  who: WhoamiResponse;
+  who: WhoamiIdentityResponse;
   onClose: () => void;
   onTenantCreated: (tenant: string, dataset: string) => void;
 }
@@ -67,7 +70,6 @@ interface Props {
 export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
   const tenant = who.tenant.id;
   const client = useQueryClient();
-  const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const keys = useQuery({
     queryKey: ["managed-api-keys", tenant],
@@ -94,19 +96,6 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
     onSuccess: refresh,
     onError: (value) => setError(toErrorMessage(value)),
   });
-  const keyMutation = useMutation({
-    mutationFn: (input: {
-      name?: string;
-      dataset_id?: string;
-      scopes: IngestScope[];
-    }) => createApiKey(tenant, input),
-    onSuccess: (result) => {
-      setSecret(result.key);
-      setError(null);
-      refresh();
-    },
-    onError: (value) => setError(toErrorMessage(value)),
-  });
   const provisionMutation = useMutation({
     mutationFn: () => provisionTables(tenant),
     onSuccess: refresh,
@@ -114,248 +103,209 @@ export function ManagementPanel({ who, onClose, onTenantCreated }: Props) {
   });
 
   return (
-    <div className="manage-backdrop" role="dialog" aria-label="Manage tenant">
-      <section className="manage-panel">
-        <header>
-          <div>
-            <span className="eyebrow">Administration</span>
-            <h2>{tenant}</h2>
-          </div>
-          <button onClick={onClose} aria-label="Close management">
-            Close
-          </button>
-        </header>
-
-        {error && <p className="manage-error">{error}</p>}
-        {secret && (
-          <div className="secret-once">
-            <strong>Copy this key now</strong>
-            <code>{secret}</code>
-            <span>It will not be shown again.</span>
-          </div>
-        )}
-
-        <div className="manage-grid">
-          <section>
-            <h3>Datasets</h3>
-            <ul className="compact-list">
-              {who.datasets.map((dataset) => (
-                <li key={dataset.id}>
-                  <div>
-                    <code>{dataset.id}</code>
-                    {dataset.is_default && <span>default</span>}
-                  </div>
-                  {!dataset.is_default && (
-                    <button
-                      onClick={() =>
-                        deleteDataset(tenant, dataset.id)
-                          .then(refresh)
-                          .catch((value) => setError(toErrorMessage(value)))
-                      }
-                    >
-                      Delete
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                const form = event.currentTarget;
-                const name = String(
-                  new FormData(form).get("name") ?? "",
-                ).trim();
-                if (name) datasetMutation.mutate(name);
-                form.reset();
-              }}
-            >
-              <input name="name" placeholder="new-dataset" required />
-              <button disabled={datasetMutation.isPending}>
-                Create dataset
-              </button>
-            </form>
-          </section>
-
-          <section>
-            <h3>API keys</h3>
-            <ul className="compact-list">
-              {(keys.data ?? []).map((key) => (
-                <li key={key.id}>
-                  <div>
-                    <strong>{key.name || "Unnamed key"}</strong>
-                    <span>
-                      {key.dataset_id || "all datasets"} ·{" "}
-                      {key.scopes?.join(", ") || "legacy unrestricted"}
-                    </span>
-                  </div>
-                  {!key.revoked && (
-                    <button
-                      onClick={() =>
-                        revokeApiKey(tenant, key.id)
-                          .then(refresh)
-                          .catch((value) => setError(toErrorMessage(value)))
-                      }
-                    >
-                      Revoke
-                    </button>
-                  )}
-                </li>
-              ))}
-            </ul>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                const data = new FormData(event.currentTarget);
-                keyMutation.mutate({
-                  name: String(data.get("name") ?? "").trim() || undefined,
-                  dataset_id:
-                    String(data.get("dataset") ?? "").trim() || undefined,
-                  scopes: scopes.filter((scope) => data.has(scope)),
-                });
-              }}
-            >
-              <input name="name" placeholder="collector-production" />
-              <select name="dataset" defaultValue="">
-                <option value="">All datasets</option>
-                {who.datasets.map((dataset) => (
-                  <option key={dataset.id} value={dataset.id}>
-                    {dataset.id}
-                  </option>
-                ))}
-              </select>
-              <fieldset>
-                <legend>Ingestion scopes</legend>
-                {scopes.map((scope) => (
-                  <label key={scope}>
-                    <input
-                      type="checkbox"
-                      name={scope}
-                      defaultChecked={scope === "metrics:write"}
-                    />
-                    {scope}
-                  </label>
-                ))}
-              </fieldset>
-              <button disabled={keyMutation.isPending}>Create API key</button>
-            </form>
-          </section>
+    <Dialog label="Manage tenant" onClose={onClose} className="manage-panel">
+      <header>
+        <div>
+          <span className="eyebrow">Administration</span>
+          <h2>{tenant}</h2>
         </div>
+        <button
+          className="btn btn-ghost"
+          onClick={onClose}
+          aria-label="Close management"
+        >
+          Close
+        </button>
+      </header>
 
-        <section className="memberships">
-          <h3>Members</h3>
+      {error && <p className="manage-error error-text" role="alert">{error}</p>}
+
+      <div className="manage-grid">
+        <section>
+          <h3>Datasets</h3>
           <ul className="compact-list">
-            {(memberships.data ?? []).map((membership) => (
-              <li key={membership.user_id}>
+            {who.datasets.map((dataset) => (
+              <li key={dataset.id}>
                 <div>
-                  <strong>{membership.email}</strong>
-                  <span>{membership.role}</span>
+                  <code>{dataset.id}</code>
+                  {dataset.is_default && (
+                    <span
+                      className="default-dataset-badge"
+                      title="The default dataset for this tenant; it can't be deleted."
+                    >
+                      Default
+                    </span>
+                  )}
                 </div>
-                {membership.user_id !== who.user?.id && (
-                  <button
-                    onClick={() =>
-                      removeMembership(tenant, membership.user_id)
+                {dataset.is_default ? (
+                  <span className="default-dataset-note">Can't be deleted</span>
+                ) : (
+                  <ConfirmButton
+                    label="Delete"
+                    prompt={`Delete dataset ${dataset.id}?`}
+                    onConfirm={() =>
+                      deleteDataset(tenant, dataset.id)
                         .then(refresh)
                         .catch((value) => setError(toErrorMessage(value)))
                     }
-                  >
-                    Remove
-                  </button>
+                  />
                 )}
               </li>
             ))}
           </ul>
           <form
-            className="membership-form"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const form = event.currentTarget;
+              const name = String(new FormData(form).get("name") ?? "").trim();
+              if (name) datasetMutation.mutate(name);
+              form.reset();
+            }}
+          >
+            <input name="name" placeholder="new-dataset" required />
+            <button className="btn btn-primary" disabled={datasetMutation.isPending}>
+              Create dataset
+            </button>
+          </form>
+        </section>
+
+        <section>
+          <h3>API keys</h3>
+          {keys.data && (
+            <p>
+              {activeKeysLabel(keys.data.filter((k) => !k.revoked).length)}
+            </p>
+          )}
+          <Link className="btn" to="/api-keys">
+            Manage API keys
+          </Link>
+        </section>
+      </div>
+
+      <section className="memberships">
+        <h3>Members</h3>
+        <ul className="compact-list">
+          {(memberships.data ?? []).map((membership) => {
+            const isLocal = membership.granted_by === "local";
+            return (
+              <li key={`${membership.user_id}:${membership.granted_by}`}>
+                <div>
+                  <strong>{membership.email}</strong>
+                  <span>{membership.role}</span>
+                  <span>{grantSourceLabel(membership.granted_by)}</span>
+                </div>
+                {membership.user_id !== who.user?.id &&
+                  (isLocal ? (
+                    <ConfirmButton
+                      label="Remove"
+                      prompt={`Remove ${membership.email}?`}
+                      onConfirm={() =>
+                        removeMembership(tenant, membership.user_id)
+                          .then(refresh)
+                          .catch((value) => setError(toErrorMessage(value)))
+                      }
+                    />
+                  ) : (
+                    <span
+                      className="grant-badge"
+                      title="Managed by the IdP's group mapping; remove it there instead."
+                    >
+                      Managed by {grantSourceLabel(membership.granted_by)}
+                    </span>
+                  ))}
+              </li>
+            );
+          })}
+        </ul>
+        <form
+          className="membership-form"
+          onSubmit={(event) => {
+            event.preventDefault();
+            const form = event.currentTarget;
+            const data = new FormData(form);
+            upsertMembership(tenant, {
+              email: String(data.get("email") ?? "").trim(),
+              role: String(data.get("role")) as "admin" | "member" | "viewer",
+            })
+              .then(() => {
+                form.reset();
+                refresh();
+              })
+              .catch((value) => setError(toErrorMessage(value)));
+          }}
+        >
+          <input
+            name="email"
+            type="email"
+            placeholder="user@example.com"
+            required
+          />
+          <select name="role" defaultValue="viewer">
+            <option value="viewer">Viewer</option>
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+          <button className="btn btn-primary">Add or update member</button>
+        </form>
+      </section>
+
+      <section className="tables">
+        <h3>Tables</h3>
+        {tables.isLoading && <p>Loading…</p>}
+        {tables.isError && <QueryError what="tables" error={tables.error} />}
+        {tablesByDataset(tables.data).map((group) => (
+          <div className="dataset-tables" key={group.dataset}>
+            <h4>{group.dataset}</h4>
+            <ul className="compact-list">
+              {group.tables.map((table) => (
+                <li key={table.name}>
+                  <div>
+                    <strong>{table.name}</strong>
+                    <span>{table.description}</span>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        ))}
+        {tables.data && tables.data.tables.length === 0 && (
+          <p>No signal tables provisioned yet for this dataset.</p>
+        )}
+        <button
+          className="btn"
+          onClick={() => provisionMutation.mutate()}
+          disabled={provisionMutation.isPending}
+        >
+          Provision tables
+        </button>
+      </section>
+
+      {who.user?.is_instance_admin && (
+        <section className="instance-admin">
+          <h3>New tenant</h3>
+          <form
             onSubmit={(event) => {
               event.preventDefault();
               const form = event.currentTarget;
               const data = new FormData(form);
-              upsertMembership(tenant, {
-                email: String(data.get("email") ?? "").trim(),
-                role: String(data.get("role")) as "admin" | "member" | "viewer",
+              const id = String(data.get("id") ?? "").trim();
+              const dataset = String(data.get("dataset") ?? "").trim();
+              createTenant({
+                id,
+                name: String(data.get("name") ?? "").trim(),
+                default_dataset: dataset || undefined,
               })
-                .then(() => {
-                  form.reset();
-                  refresh();
-                })
+                .then(() => onTenantCreated(id, dataset))
                 .catch((value) => setError(toErrorMessage(value)));
             }}
           >
-            <input
-              name="email"
-              type="email"
-              placeholder="user@example.com"
-              required
-            />
-            <select name="role" defaultValue="viewer">
-              <option value="viewer">Viewer</option>
-              <option value="member">Member</option>
-              <option value="admin">Admin</option>
-            </select>
-            <button>Add or update member</button>
+            <input name="id" placeholder="tenant-id" required />
+            <input name="name" placeholder="Tenant name" required />
+            <input name="dataset" placeholder="default dataset" />
+            <button className="btn btn-primary">Create tenant</button>
           </form>
         </section>
-
-        <section className="tables">
-          <h3>Tables</h3>
-          {tables.isLoading && <p>Loading tables…</p>}
-          {tables.isError && (
-            <p className="manage-error">{toErrorMessage(tables.error)}</p>
-          )}
-          {tablesByDataset(tables.data).map((group) => (
-            <div className="dataset-tables" key={group.dataset}>
-              <h4>{group.dataset}</h4>
-              <ul className="compact-list">
-                {group.tables.map((table) => (
-                  <li key={table.name}>
-                    <div>
-                      <strong>{table.name}</strong>
-                      <span>{table.description}</span>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            </div>
-          ))}
-          {tables.data && tables.data.tables.length === 0 && (
-            <p>No signal tables provisioned yet for this dataset.</p>
-          )}
-          <button
-            onClick={() => provisionMutation.mutate()}
-            disabled={provisionMutation.isPending}
-          >
-            Provision tables
-          </button>
-        </section>
-
-        {who.user?.is_instance_admin && (
-          <section className="instance-admin">
-            <h3>New tenant</h3>
-            <form
-              onSubmit={(event) => {
-                event.preventDefault();
-                const form = event.currentTarget;
-                const data = new FormData(form);
-                const id = String(data.get("id") ?? "").trim();
-                const dataset = String(data.get("dataset") ?? "").trim();
-                createTenant({
-                  id,
-                  name: String(data.get("name") ?? "").trim(),
-                  default_dataset: dataset || undefined,
-                })
-                  .then(() => onTenantCreated(id, dataset))
-                  .catch((value) => setError(toErrorMessage(value)));
-              }}
-            >
-              <input name="id" placeholder="tenant-id" required />
-              <input name="name" placeholder="Tenant name" required />
-              <input name="dataset" placeholder="default dataset" />
-              <button>Create tenant</button>
-            </form>
-          </section>
-        )}
-      </section>
-    </div>
+      )}
+    </Dialog>
   );
 }

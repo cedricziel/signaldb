@@ -20,6 +20,23 @@ import {
   type RetryPolicy,
 } from "./http";
 
+/** A fetch stub that never settles until its own attempt `signal` aborts —
+ * standing in for a hung backend call, the way real `fetch` behaves once its
+ * signal fires. */
+function hungFetch(): (
+  input: RequestInfo | URL,
+  init?: RequestInit,
+) => Promise<Response> {
+  return (_input, init) =>
+    new Promise((_resolve, reject) => {
+      init?.signal?.addEventListener(
+        "abort",
+        () => reject(init.signal!.reason),
+        { once: true },
+      );
+    });
+}
+
 interface FixtureCase {
   name: string;
   failure: string;
@@ -304,6 +321,45 @@ describe("retryingFetch", () => {
       retryingFetch("/api/x", { method: "POST" }, fast),
     ).rejects.toBeInstanceOf(TypeError);
     expect(failingPost).toHaveBeenCalledTimes(1);
+  });
+
+  it("times out a hung GET and retries it as a transient failure", async () => {
+    const fetchMock = vi
+      .fn()
+      .mockImplementationOnce(hungFetch())
+      .mockResolvedValueOnce(response(200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = retryingFetch("/api/x", undefined, fast, 5_000);
+    await vi.runAllTimersAsync();
+    const res = await promise;
+    expect(res.status).toBe(200);
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not retry a timed-out POST, surfacing the timeout", async () => {
+    const fetchMock = vi.fn().mockImplementation(hungFetch());
+    vi.stubGlobal("fetch", fetchMock);
+
+    const promise = retryingFetch("/api/x", { method: "POST" }, fast, 5_000);
+    const outcome = promise.then(
+      () => "resolved",
+      (e: unknown) => e,
+    );
+    await vi.runAllTimersAsync();
+    const err = await outcome;
+    expect((err as { name?: string }).name).toBe("TimeoutError");
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels the request timeout once the response lands", async () => {
+    // A slow-but-not-hung request must not leave a dangling timer that fires
+    // after the fact — asserted by checking no timer remains pending.
+    const fetchMock = vi.fn().mockResolvedValue(response(200));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await retryingFetch("/api/x", undefined, fast, 5_000);
+    expect(vi.getTimerCount()).toBe(0);
   });
 
   it("publishes throttle state while a retry is pending", async () => {

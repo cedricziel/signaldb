@@ -7,10 +7,10 @@
  * newest N records. The row budget below therefore bounds the number of
  * *groups* returned, not the records their aggregates cover.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import { facetField, type TraceFilter } from "../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../lib/traceFilters";
 
 /** Groups shown before the table is disclosed as truncated. */
 export const GROUP_BUDGET = 500;
@@ -32,6 +32,26 @@ export const ERROR_PATTERN = "(?i)error";
 
 /** What one group row counts. */
 export type GroupGrain = "traces" | "spans";
+
+/**
+ * IR `where` stages pinning each grouping dimension to a drilled-in group's
+ * value. Shared by the group's member list (`buildMembersDoc` below, via
+ * `api/traceGroupMembers`) and its volume chart (`TracesView`'s
+ * `TraceSearch`), so both agree on what "this group" means. A `null` value
+ * (the group's "(not set)" row) compiles to a negated `exists`, not
+ * `eq null` — the field is absent, not equal to the literal value null.
+ */
+export function groupPinStages(
+  dims: string[],
+  values: (string | null)[],
+): IrStage[] {
+  return dims.map((dim, i) => ({
+    where:
+      values[i] == null
+        ? { not: { field: dim, op: "exists" } }
+        : { field: dim, op: "eq", value: values[i] },
+  }));
+}
 
 /**
  * A sortable column, named as the IR aggregate it orders by.
@@ -103,7 +123,7 @@ export function buildGroupDoc(
   grain: GroupGrain,
   sort: GroupSort = DEFAULT_GROUP_SORT,
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] =
+  const scope: IrStage[] =
     grain === "traces"
       ? [
           {
@@ -116,13 +136,7 @@ export function buildGroupDoc(
         ]
       : [];
 
-  const active = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const active = filterStages(filters);
 
   return {
     irVersion: 1,

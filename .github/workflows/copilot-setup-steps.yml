@@ -28,7 +28,7 @@ jobs:
               run: git submodule update --init --recursive
 
             - name: Setup Rust toolchain
-              uses: actions-rust-lang/setup-rust-toolchain@v1
+              uses: actions-rust-lang/setup-rust-toolchain@v2
               with:
                   components: rustfmt, clippy
                   cache: true
@@ -40,6 +40,6 @@ jobs:
                   save-if: ${{ github.ref == 'refs/heads/main' }}
 
             - name: Install system dependencies
-              run: |
-                  sudo apt-get update
-                  sudo apt-get install -y protobuf-compiler mold clang
+              uses: ./.github/actions/apt-install
+              with:
+                packages: protobuf-compiler mold clang

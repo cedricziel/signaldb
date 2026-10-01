@@ -1,0 +1,187 @@
+// A sortable table of trace/span records — extracted from the traces tab's
+// group drill-in so the catalog's entity detail page can show the same
+// "recent matching spans" shape without duplicating it. Purely
+// presentational: the caller fetches (`fetchTraceGroupMembers` or similar)
+// and supplies rows, loading/error state, and the copy that differs by
+// context (empty message, footnote, what the identity column is called).
+import { EmptyState } from "./EmptyState";
+import { QueryError } from "./QueryError";
+import { SkeletonRows } from "../features/explore/Skeleton";
+import { SortTh, sortRows, useSort, type SortValue } from "../lib/sortTable";
+import { formatTimestamp, nanosToMs } from "../lib/time";
+import { formatDurationMs } from "../lib/waterfall";
+import type { TraceGroupMember } from "../api/traceGroupMembers";
+// This table's own markup is styled by the explore views' shared
+// stylesheet (sortable header, status pill, footnote) and traces.css
+// (.trace-table, .trace-open, .trace-id); own both imports rather than
+// relying on a parent (TracesView, EntityDetail) to have loaded them.
+import "../features/explore/explore.css";
+import "../features/traces/traces.css";
+
+/** OTel status as a display word and a severity rank (errors sort first). */
+function statusOf(code: string): { word: string; rank: number } {
+  const word = code.toLowerCase();
+  if (word === "error") return { word, rank: 0 };
+  if (word === "ok") return { word, rank: 1 };
+  return { word: "unset", rank: 2 };
+}
+
+function memberSortValue(m: TraceGroupMember, key: string): SortValue {
+  switch (key) {
+    case "root":
+      return m.spanName;
+    case "service":
+      return m.serviceName;
+    case "status":
+      return statusOf(m.statusCode).rank;
+    case "duration":
+      return BigInt(m.durationNanos);
+    case "id":
+      return m.traceId;
+    default:
+      return BigInt(m.startNs);
+  }
+}
+
+export interface MemberTableProps {
+  /** `undefined` means the query is still pending. */
+  members: TraceGroupMember[] | undefined;
+  /** The query's own error (`null` while it has none), shown via the
+   * shared `QueryError`. */
+  error: unknown;
+  /** What a row is, plural, for the error alert: "traces" for trace-grain
+   * rows, "spans" otherwise. */
+  what: string;
+  /** First column's header: "Root" for trace-grain rows (always the root
+   * span), "Span" for span-grain or otherwise-unscoped rows (whatever
+   * matched, not necessarily the root). */
+  identityLabel: string;
+  /** Shown when the query resolved with zero rows. */
+  emptyMessage: string;
+  /** Shown below the table once rows are rendered, e.g. "Showing up to 500
+   * spans, newest first." Omitted entirely when not supplied. */
+  footnote?: string;
+  /** Which column the table opens sorted by — defaults to newest first
+   * (`time` desc), the group drill-in's own shape. The catalog's "Slowest
+   * traces" section instead opens sorted by `duration` desc, matching the
+   * order its own query already returned rows in. */
+  initialSort?: { key: string; dir: "asc" | "desc" };
+  onOpenTrace: (traceId: string) => void;
+}
+
+/**
+ * Drop repeat trace ids, keeping the first occurrence. A backend data issue
+ * (duplicated spans) can return the same trace twice; with React keying rows
+ * by trace id, a duplicate scrambles row order and makes sorting (e.g. by
+ * duration) look broken rather than just showing a redundant row.
+ */
+function dedupeByTraceId(members: TraceGroupMember[]): TraceGroupMember[] {
+  const seen = new Set<string>();
+  return members.filter((m) => {
+    if (seen.has(m.traceId)) return false;
+    seen.add(m.traceId);
+    return true;
+  });
+}
+
+export function MemberTable({
+  members,
+  error,
+  what,
+  identityLabel,
+  emptyMessage,
+  footnote,
+  initialSort = { key: "time", dir: "desc" },
+  onOpenTrace,
+}: MemberTableProps) {
+  const [sort, toggle] = useSort(initialSort.key, initialSort.dir);
+  const deduped = members ? dedupeByTraceId(members) : undefined;
+  const rows = deduped ? sortRows(deduped, sort, memberSortValue) : [];
+  const isError = error != null;
+  const pending = members === undefined && !isError;
+
+  const header = (
+    <tr>
+      <SortTh
+        label={identityLabel}
+        sortKey="root"
+        sort={sort}
+        toggle={toggle}
+      />
+      <SortTh label="Service" sortKey="service" sort={sort} toggle={toggle} />
+      <SortTh label="Status" sortKey="status" sort={sort} toggle={toggle} />
+      <SortTh
+        label="Time"
+        sortKey="time"
+        sort={sort}
+        toggle={toggle}
+        firstDir="desc"
+      />
+      <SortTh
+        label="Duration"
+        sortKey="duration"
+        sort={sort}
+        toggle={toggle}
+        numeric
+      />
+      <SortTh label="Trace ID" sortKey="id" sort={sort} toggle={toggle} />
+    </tr>
+  );
+
+  if (isError) {
+    return <QueryError what={what} error={error} />;
+  }
+
+  if (pending) {
+    return (
+      <div className="table-scroll">
+        <table className="trace-table" aria-busy="true">
+          <thead>{header}</thead>
+          <tbody>
+            <SkeletonRows rows={8} columns={6} numericFrom={4} />
+          </tbody>
+        </table>
+      </div>
+    );
+  }
+
+  if (rows.length === 0) {
+    return <EmptyState title={emptyMessage} />;
+  }
+
+  return (
+    <>
+      <div className="table-scroll">
+        <table className="trace-table">
+          <thead>{header}</thead>
+          <tbody>
+            {rows.map((m) => (
+              <tr key={m.traceId} onClick={() => onOpenTrace(m.traceId)}>
+                <td>
+                  <button className="trace-open">{m.spanName}</button>
+                </td>
+                <td>{m.serviceName}</td>
+                <td>
+                  {(() => {
+                    const { word } = statusOf(m.statusCode);
+                    return (
+                      <span className={`status-chip chip status-${word}`}>
+                        {word}
+                      </span>
+                    );
+                  })()}
+                </td>
+                <td>{formatTimestamp(nanosToMs(m.startNs))}</td>
+                <td className="num">
+                  {formatDurationMs(nanosToMs(m.durationNanos))}
+                </td>
+                <td className="trace-id">{m.traceId}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+      {footnote && <div className="view-note">{footnote}</div>}
+    </>
+  );
+}

@@ -7,11 +7,16 @@
  * truncation artefact the volume chart exists to avoid. The IR aggregate is
  * evaluated server-side over the whole window with no limit on the path.
  */
-import type { HeatmapResult, QueryIrRequest, QueryIrResponse } from "./gen";
+import type {
+  HeatmapResult,
+  IrStage,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import { facetField, type TraceFilter } from "../lib/traceFilters";
-import type { VolumeSeries } from "../features/explore/SignalHistogram";
+import { filterStages, type TraceFilter } from "../lib/traceFilters";
+import type { VolumeSeries } from "../components/SignalHistogram";
 export type TraceLatencyHeatmap = HeatmapResult & {
   window: { start_ns: number; end_ns: number };
 };
@@ -51,6 +56,10 @@ export function buildTraceVolumeDoc(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  // Drilled-in group pins (see `api/traceGroups`'s `groupPinStages`) — when
+  // a group is selected, the chart must describe that group's spans, the
+  // same ones the member list shows, not the whole traces tab.
+  groupPins: IrStage[] = [],
 ): QueryIrRequest {
   // The chart must describe the same traces the list shows, so the active
   // filters narrow it too.
@@ -65,6 +74,7 @@ export function buildTraceVolumeDoc(
     result: "series",
     pipeline: [
       ...where,
+      ...groupPins,
       {
         aggregate: {
           by: ["status.code"],
@@ -76,14 +86,8 @@ export function buildTraceVolumeDoc(
   };
 }
 
-function traceFilterStages(filters: TraceFilter[]): Record<string, unknown>[] {
-  return filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+function traceFilterStages(filters: TraceFilter[]): IrStage[] {
+  return filterStages(filters);
 }
 
 /** Build the v2 terminal heatmap relation over the full selected window. */
@@ -91,6 +95,7 @@ export function buildTraceLatencyHeatmapDoc(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  groupPins: IrStage[] = [],
 ): QueryIrRequest {
   return {
     irVersion: 2,
@@ -102,6 +107,7 @@ export function buildTraceLatencyHeatmapDoc(
     result: "heatmap",
     pipeline: [
       ...traceFilterStages(filters),
+      ...groupPins,
       {
         heatmap: {
           x: { step, align: "epoch" },
@@ -142,9 +148,10 @@ export async function fetchTraceVolume(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  groupPins: IrStage[] = [],
 ): Promise<VolumeSeries[]> {
   return seriesFromIrResponse(
-    await runIrQuery(buildTraceVolumeDoc(range, step, filters)),
+    await runIrQuery(buildTraceVolumeDoc(range, step, filters, groupPins)),
   );
 }
 
@@ -152,9 +159,10 @@ export async function fetchTraceLatencyHeatmap(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
+  groupPins: IrStage[] = [],
 ): Promise<TraceLatencyHeatmap> {
   const response = await runIrQuery(
-    buildTraceLatencyHeatmapDoc(range, step, filters),
+    buildTraceLatencyHeatmapDoc(range, step, filters, groupPins),
   );
   const heatmap = response.heatmap as HeatmapResult | undefined;
   if (!heatmap) throw new Error("IR heatmap response omitted heatmap data");

@@ -6,6 +6,7 @@ import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { schemaRoutes } from "./routes";
 import {
   REGISTRIES,
+  shellOutlet,
   WHOAMI_INSTANCE_ADMIN,
   WHOAMI_MEMBER,
 } from "./testFixtures";
@@ -21,8 +22,10 @@ function renderHub(path: string) {
   return renderWithClient(
     <BrowserRouter>
       <Routes>
-        {schemaRoutes()}
-        <Route path="/logs" element={<div>Logs page</div>} />
+        <Route element={shellOutlet()}>
+          {schemaRoutes()}
+          <Route path="/logs" element={<div>Logs page</div>} />
+        </Route>
       </Routes>
     </BrowserRouter>,
   );
@@ -52,8 +55,8 @@ describe("SchemaHub", () => {
   it("offers the Storage tab to an instance admin and switches on click", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: "/api/v1/schema", body: SCHEMA },
       { match: "/api/v1/schema/registries", body: REGISTRIES },
-      { match: "/api/v1/manage/schema", body: SCHEMA },
     ]);
     renderHub("/schema");
     const user = userEvent.setup();
@@ -70,7 +73,7 @@ describe("SchemaHub", () => {
   it("deep-links /schema/storage straight to the storage explorer", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
-      { match: "/api/v1/manage/schema", body: SCHEMA },
+      { match: "/api/v1/schema", body: SCHEMA },
     ]);
     renderHub("/schema/storage");
 
@@ -81,8 +84,8 @@ describe("SchemaHub", () => {
   it("returns to the previous tab on browser back", async () => {
     stubFetchRoutes([
       { match: "/api/v1/whoami", body: WHOAMI_INSTANCE_ADMIN },
+      { match: "/api/v1/schema", body: SCHEMA },
       { match: "/api/v1/schema/registries", body: REGISTRIES },
-      { match: "/api/v1/manage/schema", body: SCHEMA },
     ]);
     renderHub("/schema/conventions");
     const user = userEvent.setup();

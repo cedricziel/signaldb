@@ -1,3 +1,5 @@
+mod tempopb;
+
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
@@ -24,6 +26,12 @@ enum Command {
         #[arg(long)]
         version: Option<String>,
     },
+    /// Vendor the OpenTelemetry GenAI semantic-conventions model at a pinned
+    /// commit into `vendor/otel-semconv-genai/` (upstream has no release tag).
+    VendorSemconvGenai {
+        /// Full commit SHA of `open-telemetry/semantic-conventions-genai`.
+        commit: String,
+    },
 }
 
 fn main() -> Result<()> {
@@ -32,6 +40,7 @@ fn main() -> Result<()> {
         Command::Generate => generate(false),
         Command::Check => generate(true),
         Command::VendorSemconv { version } => vendor_semconv(version),
+        Command::VendorSemconvGenai { commit } => vendor_semconv_genai(&commit),
     }
 }
 
@@ -57,62 +66,121 @@ fn pinned_semconv_version(root: &Path) -> Result<String> {
     Ok(version)
 }
 
-/// Clone `open-telemetry/semantic-conventions` at `v<version>` and copy its
-/// `model/` tree (plus LICENSE) into `vendor/otel-semconv/<version>/`,
-/// replacing whatever vintage was vendored before, and record the version in
-/// `vendor/otel-semconv/VERSION`. The bundled `otel` schema registry is built
-/// from this tree; a unit test in `common` keeps VERSION equal to the
-/// self-monitoring pin.
+/// Clone `open-telemetry/semantic-conventions` at `v<version>` and vendor its
+/// `model/` tree into `vendor/otel-semconv/<version>/`. The bundled `otel`
+/// schema registry is built from this tree; a unit test in `common` keeps
+/// VERSION equal to the self-monitoring pin.
 fn vendor_semconv(version: Option<String>) -> Result<()> {
     let root = project_root();
     let version = match version {
         Some(v) => v,
         None => pinned_semconv_version(&root)?,
     };
-    let dest_root = root.join("vendor/otel-semconv");
-    let tmp = std::env::temp_dir().join(format!("signaldb-semconv-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&tmp);
-    let status = std::process::Command::new("git")
-        .args([
-            "clone",
-            "--quiet",
-            "--depth",
-            "1",
-            "--branch",
-            &format!("v{version}"),
-            "https://github.com/open-telemetry/semantic-conventions",
-        ])
-        .arg(&tmp)
-        .status()
-        .context("running git clone")?;
-    if !status.success() {
-        anyhow::bail!("git clone of semantic-conventions v{version} failed");
-    }
+    let readme = format!(
+        "# Vendored OpenTelemetry semantic conventions\n\n\
+         `{version}/model/` is a verbatim copy of `model/` from\n\
+         https://github.com/open-telemetry/semantic-conventions at tag `v{version}`\n\
+         (Apache-2.0, see `{version}/LICENSE`). It is the source of the bundled\n\
+         `otel` schema registry. Do not edit by hand — regenerate with\n\
+         `cargo xtask vendor-semconv` after bumping\n\
+         `common::self_monitoring::SEMCONV_SCHEMA_URL`.\n"
+    );
+    vendor_model(
+        "https://github.com/open-telemetry/semantic-conventions",
+        &format!("v{version}"),
+        &root.join("vendor/otel-semconv"),
+        &version,
+        &readme,
+    )
+}
 
+/// Vendor `open-telemetry/semantic-conventions-genai` at a full commit SHA
+/// into `vendor/otel-semconv-genai/<sha>/` (the bundled `otel-genai` schema
+/// registry) and repin `otel/registry-genai/manifest.yaml` to it.
+fn vendor_semconv_genai(commit: &str) -> Result<()> {
+    if commit.len() != 40 || !commit.chars().all(|c| c.is_ascii_hexdigit()) {
+        anyhow::bail!("expected a full 40-character commit SHA, got {commit:?}");
+    }
+    const REPO: &str = "https://github.com/open-telemetry/semantic-conventions-genai";
+    let root = project_root();
+    let readme = format!(
+        "# Vendored OpenTelemetry GenAI semantic conventions\n\n\
+         `{commit}/model/` is a verbatim copy of `model/` from\n\
+         {REPO} at commit `{commit}`\n\
+         (Apache-2.0, see `{commit}/LICENSE`). It is the source of the bundled\n\
+         `otel-genai` schema registry. Do not edit by hand — regenerate with\n\
+         `cargo xtask vendor-semconv-genai <commit>`.\n"
+    );
+    vendor_model(
+        REPO,
+        commit,
+        &root.join("vendor/otel-semconv-genai"),
+        commit,
+        &readme,
+    )?;
+
+    let manifest = root.join("otel/registry-genai/manifest.yaml");
+    let text = std::fs::read_to_string(&manifest)
+        .with_context(|| format!("reading {}", manifest.display()))?;
+    let pin = format!("{REPO}.git@");
+    let start = text
+        .find(&pin)
+        .with_context(|| format!("no `{pin}` dependency in {}", manifest.display()))?
+        + pin.len();
+    let end = start
+        + text[start..]
+            .find('[')
+            .context("dependency registry_path has no `[model]` suffix")?;
+    std::fs::write(
+        &manifest,
+        format!("{}{commit}{}", &text[..start], &text[end..]),
+    )?;
+    Ok(())
+}
+
+/// Shallow-fetch `url` at `rev` and replace `dest_root` with its `model/` tree
+/// (under `dest_root/<version>/`) plus LICENSE, a `VERSION` file holding
+/// `version`, and `readme`.
+fn vendor_model(url: &str, rev: &str, dest_root: &Path, version: &str, readme: &str) -> Result<()> {
+    let tmp = shallow_checkout(url, rev)?;
     // Replace any previously vendored vintage wholesale.
     if dest_root.exists() {
-        std::fs::remove_dir_all(&dest_root).context("clearing vendor/otel-semconv")?;
+        std::fs::remove_dir_all(dest_root)
+            .with_context(|| format!("clearing {}", dest_root.display()))?;
     }
-    let dest = dest_root.join(&version);
+    let dest = dest_root.join(version);
     copy_tree(&tmp.join("model"), &dest.join("model"))?;
     std::fs::copy(tmp.join("LICENSE"), dest.join("LICENSE")).context("copying LICENSE")?;
     std::fs::write(dest_root.join("VERSION"), format!("{version}\n"))?;
-    std::fs::write(
-        dest_root.join("README.md"),
-        format!(
-            "# Vendored OpenTelemetry semantic conventions\n\n\
-             `{version}/model/` is a verbatim copy of `model/` from\n\
-             https://github.com/open-telemetry/semantic-conventions at tag `v{version}`\n\
-             (Apache-2.0, see `{version}/LICENSE`). It is the source of the bundled\n\
-             `otel` schema registry. Do not edit by hand — regenerate with\n\
-             `cargo xtask vendor-semconv` after bumping\n\
-             `common::self_monitoring::SEMCONV_SCHEMA_URL`.\n"
-        ),
-    )?;
+    std::fs::write(dest_root.join("README.md"), readme)?;
     let _ = std::fs::remove_dir_all(&tmp);
     let files = collect_files(&dest.join("model"))?.len();
-    eprintln!("  VENDORED semconv v{version} ({files} model files)");
+    eprintln!("  VENDORED {url} @ {rev} ({files} model files)");
     Ok(())
+}
+
+/// Fetch `rev` (a tag or a full commit SHA) of `url` at depth 1 into a fresh
+/// temporary directory and return its path.
+fn shallow_checkout(url: &str, rev: &str) -> Result<PathBuf> {
+    let tmp = std::env::temp_dir().join(format!("signaldb-vendor-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp)?;
+    let git = |args: &[&str]| -> Result<()> {
+        let status = std::process::Command::new("git")
+            .arg("-C")
+            .arg(&tmp)
+            .args(args)
+            .status()
+            .with_context(|| format!("running git {}", args.join(" ")))?;
+        if !status.success() {
+            anyhow::bail!("git {} failed", args.join(" "));
+        }
+        Ok(())
+    };
+    git(&["init", "--quiet"])?;
+    git(&["fetch", "--quiet", "--depth", "1", url, rev])?;
+    git(&["checkout", "--quiet", "FETCH_HEAD"])?;
+    Ok(tmp)
 }
 
 /// Recursively copy `src` into `dst` (created if missing).
@@ -158,6 +226,11 @@ fn generate(check_only: bool) -> Result<()> {
     // --- UI TypeScript client (@hey-api/openapi-ts) ---
     generate_ts_client(&root, check_only)?;
 
+    // --- tempo-api protobuf bindings (tonic-prost-build) ---
+    // Lives here rather than in a build script: a build script may only write
+    // to OUT_DIR, and this writes committed files. See xtask/src/tempopb.rs.
+    tempopb::generate(&root, check_only, write_or_check)?;
+
     if check_only {
         eprintln!("All generated files are up-to-date.");
     } else {
@@ -169,11 +242,19 @@ fn generate(check_only: bool) -> Result<()> {
 /// Generate a full HTTP client from the OpenAPI spec using progenitor.
 ///
 /// The spec is emitted by utoipa as OpenAPI 3.1, but progenitor parses via the
-/// `openapiv3` crate, which targets 3.0. The only incompatibility our schemas
-/// hit is 3.1's nullable encoding (`"type": ["string", "null"]`), so we
-/// downconvert those to 3.0's `"type": "string", "nullable": true` before
-/// handing the spec to progenitor. The served spec and the checked-in
-/// `signaldb-api.json` stay 3.1; this rewrite is progenitor-input only.
+/// `openapiv3` crate, which targets 3.0. The incompatibilities our schemas
+/// hit are both 3.1's nullable encodings: `"type": ["string", "null"]`, and
+/// `"oneOf": [{"type": "null"}, {...}]` (utoipa's shape for `Option<$ref>`
+/// fields), so `downconvert_nullable_types` rewrites both to 3.0's
+/// `"nullable": true` form before handing the spec to progenitor. The served
+/// spec and the checked-in `signaldb-api.json` stay 3.1; this rewrite is
+/// progenitor-input only.
+/// `IrMatch.spansets` key order is significant (it orders each row's
+/// `spansets` column); the generated `HashMap` would lose it, so the SDK's
+/// hand-written `src/signaldb-sdk/src/ir.rs` stands in for the generated type.
+const IR_MATCH_SCHEMA: &str = "IrMatch";
+const IR_MATCH_REPLACEMENT: &str = "crate::ir::IrMatch";
+
 fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     // `OPERATIONS`: every operation id in the OpenAPI document, alphabetized.
     // This is the manifest `client-surface-parity`'s whole-SDK check iterates
@@ -186,6 +267,16 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     let mut operation_ids = extract_operation_ids(spec);
     operation_ids.sort();
     operation_ids.dedup();
+
+    // A renamed schema would make the replacement a silent no-op.
+    if spec
+        .pointer(&format!("/components/schemas/{IR_MATCH_SCHEMA}"))
+        .is_none()
+    {
+        anyhow::bail!(
+            "the spec has no `{IR_MATCH_SCHEMA}` schema to replace with `{IR_MATCH_REPLACEMENT}`"
+        );
+    }
 
     let mut spec = spec.clone();
     homogenize_error_response_bodies(&mut spec);
@@ -213,7 +304,8 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
         // specialization (the generated code only implements the hooks for
         // `&Client`). No post-processing of progenitor's output is needed;
         // `signaldb-sdk/tests/retry.rs` guards both halves.
-        .with_inner_type(quote::quote!(crate::retry::RetryPolicy));
+        .with_inner_type(quote::quote!(crate::retry::RetryPolicy))
+        .with_replacement(IR_MATCH_SCHEMA, IR_MATCH_REPLACEMENT, std::iter::empty());
 
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator
@@ -223,6 +315,9 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     let code = prettyplease::unparse(&ast);
 
     let mut formatted = run_rustfmt(&code)?;
+    if !formatted.contains(IR_MATCH_REPLACEMENT) {
+        anyhow::bail!("the generated SDK does not use `{IR_MATCH_REPLACEMENT}`");
+    }
 
     let operations_const = format!(
         "/// Every operation id declared in the OpenAPI document, alphabetized.\n\
@@ -456,10 +551,19 @@ fn extract_operation_ids(spec: &serde_json::Value) -> Vec<String> {
 ///   "string"` with no `nullable`).
 /// - `"oneOf": [{"type": "null"}, {"$ref": "...", ...}]` (utoipa's encoding
 ///   for `Option<SomeStruct>`, where the non-null branch is a `$ref` rather
-///   than an inline `type`) becomes the non-null branch's fields merged
-///   directly onto this object plus `"nullable": true`. Progenitor's schema
-///   converter has no 3.1 `oneOf`-with-null-branch handling and panics
-///   (`not yet implemented: invalid type: null`) on the raw form.
+///   than an inline `type`) becomes `"nullable": true` plus either the
+///   non-null branch's fields merged directly onto this object (when it has
+///   no `$ref` of its own), or — when it does — the `$ref` wrapped in
+///   `"allOf": [{"$ref": ...}]` with any other sibling fields (e.g.
+///   `description`) merged onto the outer object instead. `$ref` cannot
+///   carry sibling keywords in OpenAPI 3.0: `openapiv3::ReferenceOr`'s
+///   untagged deserialization matches any object containing a `$ref` key as
+///   a bare reference first, silently discarding siblings, so a flattened
+///   `{"$ref": ..., "nullable": true}` would parse back with `nullable`
+///   dropped and progenitor/typify would emit a non-`Option` field instead
+///   of `Option<T>`. Progenitor's schema converter also has no 3.1
+///   `oneOf`-with-null-branch handling and panics (`not yet implemented:
+///   invalid type: null`) on the raw form.
 fn downconvert_nullable_types(value: &mut serde_json::Value) {
     if let serde_json::Value::Object(map) = value
         && let Some(serde_json::Value::Array(variants)) = map.get("oneOf")
@@ -474,8 +578,14 @@ fn downconvert_nullable_types(value: &mut serde_json::Value) {
         if let Some(null_index) = null_index {
             let other = variants[1 - null_index].clone();
             if let Some(other_obj) = other.as_object() {
-                let other_obj = other_obj.clone();
+                let mut other_obj = other_obj.clone();
                 map.remove("oneOf");
+                if let Some(reference) = other_obj.remove("$ref") {
+                    map.insert(
+                        "allOf".to_string(),
+                        serde_json::Value::Array(vec![serde_json::json!({ "$ref": reference })]),
+                    );
+                }
                 for (k, v) in other_obj {
                     map.insert(k, v);
                 }
@@ -545,10 +655,60 @@ fn generate_ts_client(root: &Path, check_only: bool) -> Result<()> {
     Ok(())
 }
 
+/// Checks that `pnpm install` has populated what
+/// `pnpm --filter signaldb-ui exec openapi-ts` relies on to find and run the
+/// `openapi-ts` binary: the workspace-root `node_modules` (populated for
+/// every package), `signaldb-ui`'s own `node_modules`, and the `openapi-ts`
+/// binary entry itself (`node_modules/.bin/openapi-ts`) — verified by
+/// installing into a scratch worktree and checking `.bin/openapi-ts` only
+/// appears under `signaldb-ui`'s `node_modules`, not the workspace root. A
+/// fresh worktree has none of these, and a partial or interrupted install can
+/// leave both directories in place without the binary entry; either way,
+/// running `openapi-ts` anyway produces pnpm's opaque
+/// `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`, so this fails fast with a plain,
+/// actionable message instead. Takes the three paths explicitly so it is
+/// testable against fixture paths without touching the filesystem.
+fn check_ts_deps_installed(
+    root_node_modules: &Path,
+    ui_node_modules: &Path,
+    openapi_ts_bin: &Path,
+) -> Result<()> {
+    if root_node_modules.is_dir() && ui_node_modules.is_dir() && openapi_ts_bin.is_file() {
+        return Ok(());
+    }
+    let missing = if !root_node_modules.is_dir() {
+        root_node_modules
+    } else if !ui_node_modules.is_dir() {
+        ui_node_modules
+    } else {
+        openapi_ts_bin
+    };
+    anyhow::bail!(
+        "the TypeScript client generator (`openapi-ts`) isn't installed: {} is missing.\n\
+         Run `pnpm install --frozen-lockfile` at the repository root, then retry `cargo xtask generate`.",
+        missing.display()
+    );
+}
+
 /// Invoke `@hey-api/openapi-ts` via pnpm in the signaldb-ui package. When
 /// `output` is set it overrides the config's output directory (used for the
 /// check-mode temp comparison).
 fn run_openapi_ts(root: &Path, output: Option<&Path>) -> Result<()> {
+    let ui_node_modules = root.join("src/ui/node_modules");
+    if let Err(err) = check_ts_deps_installed(
+        &root.join("node_modules"),
+        &ui_node_modules,
+        &ui_node_modules.join(".bin/openapi-ts"),
+    ) {
+        // Print a plain, actionable message and exit directly rather than
+        // returning the error: bubbling it through `main`'s `Result` return
+        // would print a Rust backtrace (RUST_BACKTRACE=1 by default via
+        // `.cargo/config.toml`) for what is a user-fixable setup problem,
+        // not an internal error.
+        eprintln!("error: {err}");
+        std::process::exit(1);
+    }
+
     let mut cmd = std::process::Command::new("pnpm");
     cmd.current_dir(root)
         .args(["--filter", "signaldb-ui", "exec", "openapi-ts"]);
@@ -632,6 +792,11 @@ fn run_rustfmt(code: &str) -> Result<String> {
 }
 
 /// Write content to a file, or in check mode, verify the file matches.
+/// The signature of [`write_or_check`], so a generator module can be handed the
+/// one implementation rather than duplicating the committed-and-verified
+/// contract.
+pub type WriteOrCheck = fn(&Path, &str, bool) -> Result<()>;
+
 fn write_or_check(path: &Path, content: &str, check_only: bool) -> Result<()> {
     let rel = path.strip_prefix(project_root()).unwrap_or(path).display();
 
@@ -649,4 +814,240 @@ fn write_or_check(path: &Path, content: &str, check_only: bool) -> Result<()> {
         eprintln!("  GEN {rel}");
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // Fixture paths drawn from xtask's own tree rather than a tempdir crate:
+    // `src/` and `Cargo.toml` always exist in a checkout, and these literal
+    // paths do not.
+    fn existing_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("src")
+    }
+
+    fn missing_dir() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("does-not-exist-node-modules-fixture")
+    }
+
+    fn existing_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml")
+    }
+
+    fn missing_file() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("does-not-exist-openapi-ts-fixture")
+    }
+
+    #[test]
+    fn check_ts_deps_installed_ok_when_everything_present() {
+        let dir = existing_dir();
+        let bin = existing_file();
+        assert!(check_ts_deps_installed(&dir, &dir, &bin).is_ok());
+    }
+
+    #[test]
+    fn check_ts_deps_installed_errors_when_root_missing() {
+        let missing = missing_dir();
+        let err = check_ts_deps_installed(&missing, &existing_dir(), &existing_file()).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "error should name the missing root path: {err}"
+        );
+        assert!(
+            message.contains("pnpm install --frozen-lockfile"),
+            "error should name the fix: {err}"
+        );
+    }
+
+    #[test]
+    fn check_ts_deps_installed_errors_when_ui_missing() {
+        let missing = missing_dir();
+        let err = check_ts_deps_installed(&existing_dir(), &missing, &existing_file()).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "error should name the missing ui path: {err}"
+        );
+        assert!(
+            message.contains("pnpm install --frozen-lockfile"),
+            "error should name the fix: {err}"
+        );
+    }
+
+    #[test]
+    fn check_ts_deps_installed_errors_when_binary_missing() {
+        let missing = missing_file();
+        let err = check_ts_deps_installed(&existing_dir(), &existing_dir(), &missing).unwrap_err();
+        let message = err.to_string();
+        assert!(
+            message.contains(&missing.display().to_string()),
+            "error should name the missing binary path: {err}"
+        );
+        assert!(
+            message.contains("pnpm install --frozen-lockfile"),
+            "error should name the fix: {err}"
+        );
+    }
+
+    /// `oneOf: [{type: null}, {$ref: ..., description: ...}]` (utoipa's
+    /// encoding of `#[schema(required = true)] Option<SomeRefType>`) must
+    /// downconvert to a schema that `openapiv3` actually parses as nullable.
+    /// A naive merge (`{$ref, nullable: true}`) looks right as JSON but
+    /// `openapiv3::ReferenceOr`'s untagged deserialization matches any
+    /// object containing `$ref` as a bare `Reference` first, silently
+    /// dropping the sibling `nullable` — so progenitor/typify would still
+    /// generate a non-`Option` field. The `$ref` must end up wrapped in
+    /// `allOf` instead, which is not itself a `$ref` object and so
+    /// deserializes as a full `Schema` with `nullable` intact.
+    #[test]
+    fn downconvert_nullable_ref_survives_openapiv3_parse() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                {
+                    "$ref": "#/components/schemas/OidcLoginConfig",
+                    "description": "only present once configured",
+                },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert!(
+            schema.get("oneOf").is_none(),
+            "oneOf should have been rewritten away: {schema}"
+        );
+        assert_eq!(
+            schema.get("nullable"),
+            Some(&serde_json::Value::Bool(true)),
+            "schema should be marked nullable: {schema}"
+        );
+
+        assert_parses_as_nullable_schema(&schema);
+    }
+
+    /// Asserts `schema` round-trips through `openapiv3` as a nullable schema
+    /// item (not a bare `$ref`, which can't carry `nullable` at all) — shared
+    /// by the `downconvert_nullable_*` tests.
+    fn assert_parses_as_nullable_schema(schema: &serde_json::Value) {
+        let parsed: openapiv3::ReferenceOr<openapiv3::Schema> =
+            serde_json::from_value(schema.clone())
+                .unwrap_or_else(|e| panic!("openapiv3 failed to parse {schema}: {e}"));
+        let openapiv3::ReferenceOr::Item(parsed) = parsed else {
+            panic!("expected a nullable schema item, got a bare $ref: {schema}");
+        };
+        assert!(
+            parsed.schema_data.nullable,
+            "openapiv3 dropped `nullable` when parsing {schema}"
+        );
+    }
+
+    /// `oneOf: [{type: null}, {type: "string", ...}]` (utoipa's encoding of
+    /// `Option<String>`-shaped fields with an inline, non-`$ref` schema) must
+    /// downconvert by merging the non-null branch's fields directly onto the
+    /// outer object plus `nullable: true`, with no `allOf` wrapper (that's
+    /// only needed to keep a `$ref`'s siblings from being dropped).
+    #[test]
+    fn downconvert_nullable_inline_type_merges_onto_object() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                { "type": "string", "description": "a name" },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert!(
+            schema.get("oneOf").is_none(),
+            "oneOf should have been rewritten away: {schema}"
+        );
+        assert!(
+            schema.get("allOf").is_none(),
+            "inline (non-$ref) branch should not be wrapped in allOf: {schema}"
+        );
+        assert_eq!(
+            schema.get("nullable"),
+            Some(&serde_json::Value::Bool(true)),
+            "schema should be marked nullable: {schema}"
+        );
+        assert_eq!(
+            schema.get("type"),
+            Some(&serde_json::Value::String("string".to_string())),
+            "non-null branch's type should be merged onto the object: {schema}"
+        );
+        assert_eq!(
+            schema.get("description"),
+            Some(&serde_json::Value::String("a name".to_string())),
+            "non-null branch's other fields should be merged onto the object: {schema}"
+        );
+
+        assert_parses_as_nullable_schema(&schema);
+    }
+
+    /// `oneOf: [{type: null}, {$ref: ...}]` with no sibling keywords on the
+    /// `$ref` branch must downconvert to exactly `{allOf: [{$ref: ...}],
+    /// nullable: true}` — asserted as a precise shape, not just "parses".
+    #[test]
+    fn downconvert_nullable_bare_ref_produces_exact_shape() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                { "$ref": "#/components/schemas/Foo" },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert_eq!(
+            schema,
+            serde_json::json!({
+                "allOf": [{ "$ref": "#/components/schemas/Foo" }],
+                "nullable": true,
+            }),
+            "bare $ref should downconvert to exactly allOf+nullable: {schema}"
+        );
+    }
+
+    /// When the non-null branch is already `allOf`-shaped (e.g. a `$ref` with
+    /// sibling keywords already expressed as `allOf: [{$ref}], description:
+    /// ...`), the merge path has no `$ref` key to pull out, so it copies the
+    /// branch's fields (including its own `allOf`) directly onto the outer
+    /// object as siblings of `nullable`, rather than nesting another `allOf`.
+    #[test]
+    fn downconvert_nullable_allof_branch_preserves_siblings() {
+        let mut schema = serde_json::json!({
+            "oneOf": [
+                { "type": "null" },
+                {
+                    "allOf": [{ "$ref": "#/components/schemas/Foo" }],
+                    "description": "already allOf-wrapped",
+                },
+            ],
+        });
+        downconvert_nullable_types(&mut schema);
+
+        assert!(
+            schema.get("oneOf").is_none(),
+            "oneOf should have been rewritten away: {schema}"
+        );
+        assert_eq!(
+            schema.get("nullable"),
+            Some(&serde_json::Value::Bool(true)),
+            "schema should be marked nullable: {schema}"
+        );
+        assert_eq!(
+            schema.get("allOf"),
+            Some(&serde_json::json!([{ "$ref": "#/components/schemas/Foo" }])),
+            "the branch's own allOf should survive as a sibling of nullable: {schema}"
+        );
+        assert_eq!(
+            schema.get("description"),
+            Some(&serde_json::Value::String(
+                "already allOf-wrapped".to_string()
+            )),
+            "other sibling fields should survive alongside allOf and nullable: {schema}"
+        );
+
+        assert_parses_as_nullable_schema(&schema);
+    }
 }

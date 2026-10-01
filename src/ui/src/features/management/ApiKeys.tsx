@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Navigate } from "react-router";
 import {
   ALL_SCOPES,
+  INGEST_SCOPES,
   SCOPE_GROUPS,
   createApiKey,
   listApiKeys,
@@ -10,10 +11,29 @@ import {
   updateApiKey,
   type ApiKeyScope,
 } from "../../api/management";
-import { whoami } from "../../api/session";
 import { toErrorMessage } from "../../api/http";
+import type { WhoamiIdentityResponse } from "../../api/session";
+import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
+import { Dialog } from "../../components/Dialog";
+import { EmptyState } from "../../components/EmptyState";
+import { whoamiQueryError } from "../../components/QueryError";
+import { useDirtyForm } from "../../lib/dirtyForms";
+import { useOutletState } from "../../lib/outletState";
+import { useWhoami } from "../../lib/useWhoami";
+import {
+  DatasetPicker,
+  datasetRestrictionLabel,
+  restrictionSet,
+  selectedDatasetIds,
+} from "./DatasetPicker";
+import {
+  OriginPicker,
+  allowedOriginsLabel,
+  allowedOriginsSet,
+} from "./OriginPicker";
 import "./ApiKeys.css";
+import { HOME_PATH } from "../shell/navModel";
 
 /** Scopes checked in a form, in vocabulary order. */
 function selectedScopes(data: FormData): ApiKeyScope[] {
@@ -56,17 +76,55 @@ function ScopePicker({
 }
 
 export function ApiKeys() {
-  const queryClient = useQueryClient();
-  const { data: who, isLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  const { state } = useOutletState();
+  const {
+    data: who,
+    isLoading,
+    isError: whoamiIsError,
+    error: whoamiError,
+    canManage,
+  } = useWhoami(state);
 
+  if (isLoading) return null;
+  if (whoamiIsError) return whoamiQueryError("your account", whoamiError);
+
+  if (!who || !canManage) {
+    return <Navigate to={HOME_PATH} replace />;
+  }
+
+  // Keyed on the outlet's own tenant (not `who.tenant.id`, which can briefly
+  // lag it during a switch): every piece of local state below — the secret
+  // dialog, which key is being edited, the clear-restriction checkboxes — is
+  // scoped to one tenant's keys, and none of it means anything once the user
+  // has moved to another. Remounting on tenant change resets it all in one
+  // place, and drops any in-flight mutation whose `onSuccess` would otherwise
+  // land on a screen that has since moved on.
+  return <ApiKeysBody key={state.tenant} who={who} />;
+}
+
+function ApiKeysBody({ who }: { who: WhoamiIdentityResponse }) {
+  const queryClient = useQueryClient();
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [editingKeyId, setEditingKeyId] = useState<string | null>(null);
+  // A distinct clear-restriction control for the update form (D1a): unlike
+  // the dataset checkboxes, this is real React state so choosing it can
+  // visibly disable the picker, rather than relying on "every box happens
+  // to be unchecked" to mean the same thing.
+  const [clearRestriction, setClearRestriction] = useState(false);
+  // Allowed-origins are free-form strings, not a fixed checkable set, so the
+  // picker's add/remove list is real React state (both for the create form
+  // and the per-key editor) rather than form-derived like the scope/dataset
+  // checkboxes.
+  const [createOrigins, setCreateOrigins] = useState<string[]>([]);
+  const [editOrigins, setEditOrigins] = useState<string[]>([]);
+  const [clearOriginRestriction, setClearOriginRestriction] = useState(false);
+  // A typed name or a scope selection away from the create form's own
+  // defaults (see ScopePicker's INGEST_SCOPES `defaultChecked`) is unsaved
+  // input worth protecting from a PWA update reload (see lib/dirtyForms.ts).
+  // Origins have their own tracking inside OriginPicker itself.
+  const [createFormDirty, setCreateFormDirty] = useState(false);
+  useDirtyForm("api-keys-create", createFormDirty);
 
   const tenant = who?.tenant.id;
   const keys = useQuery({
@@ -81,7 +139,8 @@ export function ApiKeys() {
   const createMutation = useMutation({
     mutationFn: (input: {
       name?: string;
-      dataset_id?: string;
+      dataset_ids?: string[];
+      allowed_origins?: string[];
       scopes: ApiKeyScope[];
     }) => createApiKey(tenant!, input),
     onSuccess: (result) => {
@@ -93,10 +152,26 @@ export function ApiKeys() {
   });
 
   const updateMutation = useMutation({
-    mutationFn: (input: { keyId: string; scopes: ApiKeyScope[] }) =>
-      updateApiKey(tenant!, input.keyId, { scopes: input.scopes }),
+    mutationFn: (input: {
+      keyId: string;
+      scopes: ApiKeyScope[];
+      dataset_ids?: string[];
+      clear_dataset_restriction?: boolean;
+      allowed_origins?: string[];
+      clear_allowed_origins?: boolean;
+    }) =>
+      updateApiKey(tenant!, input.keyId, {
+        scopes: input.scopes,
+        dataset_ids: input.dataset_ids,
+        clear_dataset_restriction: input.clear_dataset_restriction,
+        allowed_origins: input.allowed_origins,
+        clear_allowed_origins: input.clear_allowed_origins,
+      }),
     onSuccess: () => {
       setEditingKeyId(null);
+      setClearRestriction(false);
+      setClearOriginRestriction(false);
+      setEditOrigins([]);
       setError(null);
       void invalidateKeys();
     },
@@ -111,16 +186,6 @@ export function ApiKeys() {
     onError: (value) => setError(toErrorMessage(value)),
   });
 
-  if (isLoading) return null;
-
-  const role = who?.memberships.find(
-    (membership) => membership.tenant_id === who.tenant.id,
-  )?.role;
-  const canManage = who?.user?.is_instance_admin || role === "admin";
-  if (!who || !canManage) {
-    return <Navigate to="/logs" replace />;
-  }
-
   const datasets = who.datasets;
 
   const handleCreate = (event: React.FormEvent<HTMLFormElement>) => {
@@ -132,12 +197,32 @@ export function ApiKeys() {
       setError("Select at least one scope.");
       return;
     }
+    // Omitting every dataset means unrestricted (D1a) — there is nothing to
+    // clear on create, so an empty selection is never ambiguous here. Same
+    // reasoning for allowed_origins.
+    const datasetIds = selectedDatasetIds(data);
     createMutation.mutate({
       name: String(data.get("name") ?? "").trim() || undefined,
-      dataset_id: String(data.get("dataset") ?? "").trim() || undefined,
+      dataset_ids: datasetIds.length > 0 ? datasetIds : undefined,
+      allowed_origins: createOrigins.length > 0 ? createOrigins : undefined,
       scopes,
     });
     form.reset();
+    setCreateOrigins([]);
+    setCreateFormDirty(false);
+  };
+
+  /** Recomputed on every keystroke/checkbox change in the create form (via
+   * the form's own bubbling `onChange`) — true once the name is non-empty or
+   * the scopes differ from the form's own defaults. */
+  const handleCreateFormChange = (event: React.FormEvent<HTMLFormElement>) => {
+    const data = new FormData(event.currentTarget);
+    const name = String(data.get("name") ?? "").trim();
+    const scopes = selectedScopes(data);
+    const scopesChanged =
+      scopes.length !== INGEST_SCOPES.length ||
+      scopes.some((scope) => !INGEST_SCOPES.includes(scope));
+    setCreateFormDirty(name !== "" || scopesChanged);
   };
 
   const handleUpdate = (
@@ -145,12 +230,31 @@ export function ApiKeys() {
     event: React.FormEvent<HTMLFormElement>,
   ) => {
     event.preventDefault();
-    const scopes = selectedScopes(new FormData(event.currentTarget));
+    const data = new FormData(event.currentTarget);
+    const scopes = selectedScopes(data);
     if (scopes.length === 0) {
       setError("Select at least one scope.");
       return;
     }
-    updateMutation.mutate({ keyId, scopes });
+    // The dataset and allowed-origins restrictions are independent, each
+    // with its own explicit clear signal (D1a) — never paired with a
+    // non-empty replacement set, and never implied by an empty
+    // picker/list alone.
+    const datasetIds = selectedDatasetIds(data);
+    updateMutation.mutate({
+      keyId,
+      scopes,
+      ...(clearRestriction
+        ? { clear_dataset_restriction: true }
+        : datasetIds.length > 0
+          ? { dataset_ids: datasetIds }
+          : {}),
+      ...(clearOriginRestriction
+        ? { clear_allowed_origins: true }
+        : editOrigins.length > 0
+          ? { allowed_origins: editOrigins }
+          : {}),
+    });
   };
 
   const handleRevoke = (keyId: string) => {
@@ -165,29 +269,38 @@ export function ApiKeys() {
         explicit scopes; edit them any time without rotating the secret.
       </p>
 
-      {error && <p className="manage-error">{error}</p>}
+      {error && <p className="manage-error error-text" role="alert">{error}</p>}
 
       <section className="api-keys-create">
         <h2>Create new key</h2>
-        <form className="api-keys-form" onSubmit={handleCreate}>
-          <input
-            name="name"
-            placeholder="collector-production"
-            aria-label="Key name (optional)"
+        <form
+          className="api-keys-form"
+          onSubmit={handleCreate}
+          onChange={handleCreateFormChange}
+        >
+          <label className="api-keys-field">
+            <span>Name (optional)</span>
+            <input name="name" placeholder="collector-production" />
+          </label>
+          <DatasetPicker
+            idPrefix="create"
+            datasets={datasets}
+            checked={() => false}
           />
-          <select name="dataset" aria-label="Dataset" defaultValue="">
-            <option value="">All datasets</option>
-            {datasets.map((dataset) => (
-              <option key={dataset.id} value={dataset.id}>
-                {dataset.id}
-              </option>
-            ))}
-          </select>
+          <OriginPicker
+            idPrefix="create"
+            origins={createOrigins}
+            onChange={setCreateOrigins}
+          />
           <ScopePicker
             idPrefix="create"
-            checked={(scope) => scope === "metrics:write"}
+            checked={(scope) => INGEST_SCOPES.includes(scope)}
           />
-          <button type="submit" disabled={createMutation.isPending}>
+          <button
+            type="submit"
+            className="btn btn-primary"
+            disabled={createMutation.isPending}
+          >
             Create API key
           </button>
         </form>
@@ -195,6 +308,9 @@ export function ApiKeys() {
 
       <section className="api-keys-list">
         <h2>Existing keys</h2>
+        {keys.data && keys.data.length === 0 && (
+          <EmptyState title="No API keys yet" />
+        )}
         <ul>
           {(keys.data ?? []).map((key) => (
             <li
@@ -206,7 +322,7 @@ export function ApiKeys() {
                   {key.name || "Unnamed key"}
                 </div>
                 <div className="api-key-meta">
-                  {key.dataset_id || "all datasets"} ·{" "}
+                  {datasetRestrictionLabel(key)} · {allowedOriginsLabel(key)} ·{" "}
                   {key.scopes?.length
                     ? key.scopes.join(", ")
                     : "legacy unrestricted"}
@@ -223,13 +339,56 @@ export function ApiKeys() {
                       idPrefix={`edit-${key.id}`}
                       checked={(scope) => key.scopes?.includes(scope) ?? false}
                     />
+                    <DatasetPicker
+                      idPrefix={`edit-${key.id}`}
+                      datasets={datasets}
+                      checked={(id) => restrictionSet(key).includes(id)}
+                      disabled={clearRestriction}
+                    />
+                    <label className="dataset-clear">
+                      <input
+                        type="checkbox"
+                        checked={clearRestriction}
+                        onChange={(event) =>
+                          setClearRestriction(event.target.checked)
+                        }
+                      />
+                      Remove dataset restriction
+                    </label>
+                    <OriginPicker
+                      idPrefix={`edit-${key.id}`}
+                      origins={editOrigins}
+                      onChange={setEditOrigins}
+                      disabled={clearOriginRestriction}
+                      mode="update"
+                    />
+                    <label className="dataset-clear">
+                      <input
+                        type="checkbox"
+                        checked={clearOriginRestriction}
+                        onChange={(event) =>
+                          setClearOriginRestriction(event.target.checked)
+                        }
+                      />
+                      Remove allowed-origins restriction
+                    </label>
                     <div className="api-key-editor-actions">
-                      <button type="submit" disabled={updateMutation.isPending}>
+                      <button
+                        type="submit"
+                        className="btn btn-primary"
+                        disabled={updateMutation.isPending}
+                      >
                         Save scopes
                       </button>
                       <button
                         type="button"
-                        onClick={() => setEditingKeyId(null)}
+                        className="btn"
+                        onClick={() => {
+                          setEditingKeyId(null);
+                          setClearRestriction(false);
+                          setClearOriginRestriction(false);
+                          setEditOrigins([]);
+                        }}
                       >
                         Cancel
                       </button>
@@ -240,20 +399,23 @@ export function ApiKeys() {
               {!key.revoked && (
                 <div className="api-key-actions">
                   <button
-                    className="api-key-edit"
-                    onClick={() =>
-                      setEditingKeyId(editingKeyId === key.id ? null : key.id)
-                    }
+                    className="btn"
+                    onClick={() => {
+                      const opening = editingKeyId !== key.id;
+                      setEditingKeyId(opening ? key.id : null);
+                      setClearRestriction(false);
+                      setClearOriginRestriction(false);
+                      setEditOrigins(opening ? allowedOriginsSet(key) : []);
+                    }}
                   >
                     Edit scopes
                   </button>
-                  <button
-                    className="api-key-revoke"
-                    onClick={() => handleRevoke(key.id)}
+                  <ConfirmButton
+                    label="Revoke"
+                    prompt={`Revoke ${key.name || "this key"}?`}
                     disabled={revokeMutation.isPending}
-                  >
-                    Revoke
-                  </button>
+                    onConfirm={() => handleRevoke(key.id)}
+                  />
                 </div>
               )}
             </li>
@@ -262,21 +424,24 @@ export function ApiKeys() {
       </section>
 
       {secret && (
-        <div
-          className="secret-modal-backdrop"
-          role="dialog"
-          aria-label="API key secret"
+        <Dialog
+          label="API key secret"
+          onClose={() => setSecret(null)}
+          className="secret-modal"
         >
-          <div className="secret-modal">
-            <strong>Copy this key now</strong>
-            <span> — it will not be shown again.</span>
-            <code>{secret}</code>
-            <div className="secret-modal-footer">
-              <CopyValueButton value={secret} label="API key" />
-              <button onClick={() => setSecret(null)}>Done</button>
-            </div>
+          <strong>Copy this key now</strong>
+          <span> — it will not be shown again.</span>
+          <code>{secret}</code>
+          <div className="secret-modal-footer">
+            <CopyValueButton value={secret} label="API key" />
+            <button
+              className="btn btn-primary"
+              onClick={() => setSecret(null)}
+            >
+              Done
+            </button>
           </div>
-        </div>
+        </Dialog>
       )}
     </div>
   );

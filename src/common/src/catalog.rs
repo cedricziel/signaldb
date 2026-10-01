@@ -4,13 +4,13 @@ use crate::flight::transport::ServiceCapability;
 use crate::service_bootstrap::ServiceType;
 use chrono::{DateTime, Utc};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions, SqliteSynchronous};
-use sqlx::{PgPool, Row, SqlitePool, query};
+use sqlx::{PgPool, Row, SqlitePool, query, query_scalar};
 use std::str::FromStr;
 use tracing::Instrument;
 use uuid::Uuid;
 
 /// Helper to parse RFC3339 datetime strings (SQLite stores timestamps as text)
-fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
+pub(crate) fn parse_rfc3339(s: &str) -> Result<DateTime<Utc>, sqlx::Error> {
     DateTime::parse_from_rfc3339(s)
         .map(|dt| dt.with_timezone(&Utc))
         .map_err(|e| sqlx::Error::Decode(Box::new(e)))
@@ -27,11 +27,626 @@ fn decode_json_vec_opt(json: Option<String>) -> Result<Option<Vec<String>>, sqlx
     json.map(decode_json_vec).transpose()
 }
 
+/// Add `column TEXT` to `table` if it doesn't already exist, via `PRAGMA
+/// table_info` (SQLite has no native `ADD COLUMN IF NOT EXISTS`) — the same
+/// gate `api_keys`' `scopes`/`created_by_user_id` columns use inline.
+/// `table` and `column` are always compile-time literals from call sites in
+/// this module, never user input.
+async fn ensure_sqlite_text_column(
+    pool: &SqlitePool,
+    table: &str,
+    column: &str,
+) -> Result<(), sqlx::Error> {
+    let columns = query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await?;
+    let has_column = columns
+        .iter()
+        .any(|row| row.get::<String, _>("name") == column);
+    if !has_column {
+        query(&format!("ALTER TABLE {table} ADD COLUMN {column} TEXT"))
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Canonicalize an email address for identity comparison: trim whitespace
 /// and lowercase, so the `users.email` UNIQUE constraint applies to the
 /// canonical form identically on SQLite and PostgreSQL.
 fn canonicalize_email(email: &str) -> String {
     email.trim().to_lowercase()
+}
+
+/// Idempotent `users` migration for OIDC support (change: oidc-login):
+/// adds the nullable `oidc_issuer`/`oidc_subject` columns and a unique index
+/// over the pair, and rebuilds the table if `password_hash` is still
+/// `NOT NULL` (SQLite has no `ALTER COLUMN ... DROP NOT NULL`). Safe to run
+/// on every startup, including a fresh install where the columns already
+/// exist from `CREATE TABLE IF NOT EXISTS`.
+async fn migrate_users_columns_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let columns = query("PRAGMA table_info(users)").fetch_all(pool).await?;
+    let column = |name: &str| columns.iter().find(|r| r.get::<String, _>("name") == name);
+
+    if column("oidc_issuer").is_none() {
+        query("ALTER TABLE users ADD COLUMN oidc_issuer TEXT")
+            .execute(pool)
+            .await?;
+    }
+    if column("oidc_subject").is_none() {
+        query("ALTER TABLE users ADD COLUMN oidc_subject TEXT")
+            .execute(pool)
+            .await?;
+    }
+    // Only load-bearing when `rebuild_users_table_sqlite` below does *not*
+    // run: a rebuild drops and recreates `users` entirely, so it recreates
+    // this index itself, inside its own transaction, after the rename.
+    query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_identity ON users(oidc_issuer, oidc_subject)",
+    )
+    .execute(pool)
+    .await?;
+
+    let password_hash_not_null = column("password_hash")
+        .map(|r| r.get::<i64, _>("notnull") != 0)
+        .unwrap_or(false);
+    if password_hash_not_null {
+        rebuild_users_table_sqlite(pool).await?;
+    }
+    Ok(())
+}
+
+/// Rebuild `users` with a nullable `password_hash`, preserving all rows and
+/// the `oidc_issuer`/`oidc_subject` columns already added by
+/// [`migrate_users_columns_sqlite`].
+///
+/// `users` is a foreign-key parent of sessions, memberships, and OAuth
+/// grants (all `ON DELETE CASCADE`); SQLite performs an implicit cascading
+/// delete on `DROP TABLE` of a referenced parent while foreign keys are
+/// enforced, so enforcement is suspended on this connection only, for the
+/// duration of the rebuild, then restored on every path (success or
+/// failure) so a failed rebuild can never hand back a pooled connection
+/// with foreign-key enforcement silently off.
+async fn rebuild_users_table_sqlite(pool: &SqlitePool) -> Result<(), sqlx::Error> {
+    let mut conn = pool.acquire().await?;
+    query("PRAGMA foreign_keys = OFF")
+        .execute(&mut *conn)
+        .await?;
+
+    let rebuild: Result<(), sqlx::Error> = async {
+        let mut tx = sqlx::Connection::begin(&mut *conn).await?;
+        query("DROP TABLE IF EXISTS users_new")
+            .execute(&mut *tx)
+            .await?;
+        query(
+            r#"
+            CREATE TABLE users_new (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT,
+                oidc_issuer TEXT,
+                oidc_subject TEXT,
+                is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                disabled_at TEXT
+            )"#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        query(
+            r#"
+            INSERT INTO users_new
+                (id, email, display_name, password_hash, oidc_issuer, oidc_subject,
+                 is_instance_admin, created_at, updated_at, disabled_at)
+            SELECT id, email, display_name, password_hash, oidc_issuer, oidc_subject,
+                   is_instance_admin, created_at, updated_at, disabled_at
+            FROM users
+            "#,
+        )
+        .execute(&mut *tx)
+        .await?;
+        query("DROP TABLE users").execute(&mut *tx).await?;
+        query("ALTER TABLE users_new RENAME TO users")
+            .execute(&mut *tx)
+            .await?;
+        // `DROP TABLE users` above drops any index defined on it, including
+        // `idx_users_oidc_identity` — recreate it here, inside the same
+        // transaction and before commit, so the rebuilt table is never left
+        // without the `(oidc_issuer, oidc_subject)` uniqueness guarantee
+        // `migrate_users_columns_sqlite`'s own `CREATE UNIQUE INDEX` (run
+        // before this rebuild, against the pre-rebuild table) can no longer
+        // provide once the table it indexed is gone.
+        query(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_identity ON users(oidc_issuer, oidc_subject)",
+        )
+        .execute(&mut *tx)
+        .await?;
+        tx.commit().await
+    }
+    .await;
+
+    match rebuild {
+        Ok(()) => {
+            query("PRAGMA foreign_keys = ON")
+                .execute(&mut *conn)
+                .await?;
+            Ok(())
+        }
+        Err(err) => {
+            // Best-effort restore; if the connection is too broken even for
+            // that, close it outright rather than let a poisoned connection
+            // (foreign keys still off) return to the pool for reuse.
+            if query("PRAGMA foreign_keys = ON")
+                .execute(&mut *conn)
+                .await
+                .is_err()
+            {
+                let _ = conn.close().await;
+            }
+            Err(err)
+        }
+    }
+}
+
+/// Idempotent `users` migration for OIDC support on PostgreSQL: unlike
+/// SQLite, `ADD COLUMN IF NOT EXISTS` and `DROP NOT NULL` are natively
+/// idempotent, so no rebuild or existence check is needed.
+async fn migrate_users_columns_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
+    query("ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_issuer TEXT")
+        .execute(pool)
+        .await?;
+    query("ALTER TABLE users ADD COLUMN IF NOT EXISTS oidc_subject TEXT")
+        .execute(pool)
+        .await?;
+    query("ALTER TABLE users ALTER COLUMN password_hash DROP NOT NULL")
+        .execute(pool)
+        .await?;
+    query(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_users_oidc_identity ON users (oidc_issuer, oidc_subject)",
+    )
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Idempotent `tenant_memberships` migration re-keying the table by
+/// `granted_by` (change: oidc-login, design decision 5). SQLite cannot
+/// alter a primary key, so the table is rebuilt inside one transaction;
+/// every pre-existing row becomes `granted_by = 'local'`. Safe to run on
+/// every startup, including after a half-applied rebuild (the whole rebuild
+/// is one transaction, so SQLite's atomicity guarantees there is nothing to
+/// resume — a crash mid-rebuild simply rolls back to the pre-migration
+/// table, and the next startup retries cleanly).
+async fn migrate_tenant_memberships_granted_by_sqlite(
+    pool: &SqlitePool,
+) -> Result<(), sqlx::Error> {
+    let columns = query("PRAGMA table_info(tenant_memberships)")
+        .fetch_all(pool)
+        .await?;
+    let already_migrated = columns
+        .iter()
+        .any(|r| r.get::<String, _>("name") == "granted_by");
+    if already_migrated {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+    query("DROP TABLE IF EXISTS tenant_memberships_new")
+        .execute(&mut *tx)
+        .await?;
+    query(
+        r#"
+        CREATE TABLE tenant_memberships_new (
+            user_id TEXT NOT NULL,
+            tenant_id TEXT NOT NULL,
+            role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+            granted_by TEXT NOT NULL DEFAULT 'local' CHECK(granted_by IN ('local', 'oidc_mapping')),
+            created_at TEXT NOT NULL DEFAULT (datetime('now')),
+            PRIMARY KEY (user_id, tenant_id, granted_by),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+        )"#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    query(
+        r#"
+        INSERT INTO tenant_memberships_new (user_id, tenant_id, role, granted_by, created_at)
+        SELECT user_id, tenant_id, role, 'local', created_at FROM tenant_memberships
+        "#,
+    )
+    .execute(&mut *tx)
+    .await?;
+    query("DROP TABLE tenant_memberships")
+        .execute(&mut *tx)
+        .await?;
+    query("ALTER TABLE tenant_memberships_new RENAME TO tenant_memberships")
+        .execute(&mut *tx)
+        .await?;
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Idempotent `tenant_memberships` re-key migration on PostgreSQL: adds
+/// `granted_by`, swaps the primary key for one that includes it, and adds
+/// the `CHECK(granted_by IN ('local', 'oidc_mapping'))` constraint the
+/// SQLite rebuild and the fresh-install DDL both carry. Guarded by
+/// inspecting the live primary key's columns so re-running it after the
+/// swap (every startup) is a no-op. The whole rebuild is one transaction so
+/// a crash mid-migration can't leave the table with no primary key.
+async fn migrate_tenant_memberships_granted_by_postgres(pool: &PgPool) -> Result<(), sqlx::Error> {
+    let pk_columns = query(
+        r#"
+        SELECT kcu.column_name
+        FROM information_schema.table_constraints tc
+        JOIN information_schema.key_column_usage kcu
+          ON tc.constraint_name = kcu.constraint_name
+         AND tc.table_schema = kcu.table_schema
+        WHERE tc.table_name = 'tenant_memberships'
+          AND tc.table_schema = current_schema()
+          AND tc.constraint_type = 'PRIMARY KEY'
+        "#,
+    )
+    .fetch_all(pool)
+    .await?;
+    let already_migrated = pk_columns
+        .iter()
+        .any(|r| r.get::<String, _>("column_name") == "granted_by");
+    if already_migrated {
+        return Ok(());
+    }
+
+    let mut tx = pool.begin().await?;
+
+    query("ALTER TABLE tenant_memberships ADD COLUMN IF NOT EXISTS granted_by TEXT NOT NULL DEFAULT 'local'")
+        .execute(&mut *tx)
+        .await?;
+
+    // The old primary key's constraint name is discovered rather than
+    // assumed (default `<table>_pkey`, but not guaranteed) before dropping
+    // and replacing it with one that includes `granted_by`.
+    let old_pk_name: Option<String> = query(
+        r#"
+        SELECT constraint_name FROM information_schema.table_constraints
+        WHERE table_name = 'tenant_memberships'
+          AND table_schema = current_schema()
+          AND constraint_type = 'PRIMARY KEY'
+        "#,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .map(|r| r.get::<String, _>("constraint_name"));
+    if let Some(name) = old_pk_name {
+        query(&format!(
+            r#"ALTER TABLE tenant_memberships DROP CONSTRAINT "{name}""#
+        ))
+        .execute(&mut *tx)
+        .await?;
+    }
+    query(
+        "ALTER TABLE tenant_memberships ADD CONSTRAINT tenant_memberships_pkey PRIMARY KEY (user_id, tenant_id, granted_by)",
+    )
+    .execute(&mut *tx)
+    .await?;
+
+    let check_exists = query(
+        r#"
+        SELECT 1 FROM information_schema.table_constraints
+        WHERE table_name = 'tenant_memberships'
+          AND table_schema = current_schema()
+          AND constraint_type = 'CHECK'
+          AND constraint_name = 'tenant_memberships_granted_by_check'
+        "#,
+    )
+    .fetch_optional(&mut *tx)
+    .await?
+    .is_some();
+    if !check_exists {
+        query(
+            "ALTER TABLE tenant_memberships ADD CONSTRAINT tenant_memberships_granted_by_check \
+             CHECK (granted_by IN ('local', 'oidc_mapping'))",
+        )
+        .execute(&mut *tx)
+        .await?;
+    }
+
+    tx.commit().await?;
+    Ok(())
+}
+
+/// The three OAuth grant tables generalized to a `tenant_grants` set
+/// (change: mcp-multi-tenant-oauth-grants, design D2). Structurally
+/// distinct (different primary keys and a handful of table-specific
+/// columns), so each gets its own rebuild/backfill call, but they share the
+/// same migration shape.
+const OAUTH_GRANT_TABLES: [&str; 3] = [
+    "oauth_authorization_codes",
+    "oauth_access_tokens",
+    "oauth_refresh_tokens",
+];
+
+/// Rebuild one OAuth grant table to drop `NOT NULL` from its legacy
+/// `tenant_id` column, if a pre-migration install still has it (SQLite has
+/// no `ALTER COLUMN ... DROP NOT NULL`; see `rebuild_users_table_sqlite`
+/// for the same technique applied to `users.password_hash`). A no-op
+/// against an already-migrated or freshly-created table, whose `tenant_id`
+/// is nullable from the start.
+///
+/// Unlike `users`, none of these three tables is ever an FK *parent* — no
+/// other table references `oauth_authorization_codes`, `oauth_access_tokens`,
+/// or `oauth_refresh_tokens` — so dropping one mid-rebuild cannot cascade
+/// into unrelated rows, and foreign-key enforcement does not need to be
+/// suspended around the rebuild (verified by
+/// `oauth_grant_table_rebuild_preserves_tenant_and_user_foreign_keys` below).
+async fn rebuild_oauth_grant_table_sqlite_if_tenant_id_required(
+    pool: &SqlitePool,
+    table: &str,
+) -> Result<(), sqlx::Error> {
+    let columns = query(&format!("PRAGMA table_info({table})"))
+        .fetch_all(pool)
+        .await?;
+    let tenant_id_not_null = columns
+        .iter()
+        .find(|r| r.get::<String, _>("name") == "tenant_id")
+        .map(|r| r.get::<i64, _>("notnull") != 0)
+        .unwrap_or(false);
+    if !tenant_id_not_null {
+        return Ok(());
+    }
+
+    // Table-specific `CREATE TABLE`/column-list pairs, `tenant_id` already
+    // nullable and `tenant_grants` already present (added by
+    // `ensure_sqlite_text_column` before this call runs).
+    let (create_new_sql, columns_csv): (&str, &str) = match table {
+        "oauth_authorization_codes" => (
+            r#"
+            CREATE TABLE oauth_authorization_codes_new (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                tenant_grants TEXT,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+            "code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, tenant_grants, \
+             redirect_uri, code_challenge, resource, created_at, expires_at",
+        ),
+        "oauth_access_tokens" => (
+            r#"
+            CREATE TABLE oauth_access_tokens_new (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                tenant_grants TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+            "id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, tenant_grants, \
+             resource, created_at, expires_at",
+        ),
+        _ => (
+            r#"
+            CREATE TABLE oauth_refresh_tokens_new (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                tenant_grants TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+            "id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, tenant_grants, \
+             resource, created_at, expires_at",
+        ),
+    };
+    let new_table = format!("{table}_new");
+
+    let mut tx = pool.begin().await?;
+    query(&format!("DROP TABLE IF EXISTS {new_table}"))
+        .execute(&mut *tx)
+        .await?;
+    query(create_new_sql).execute(&mut *tx).await?;
+    query(&format!(
+        "INSERT INTO {new_table} ({columns_csv}) SELECT {columns_csv} FROM {table}"
+    ))
+    .execute(&mut *tx)
+    .await?;
+    query(&format!("DROP TABLE {table}"))
+        .execute(&mut *tx)
+        .await?;
+    query(&format!("ALTER TABLE {new_table} RENAME TO {table}"))
+        .execute(&mut *tx)
+        .await?;
+    // `DROP TABLE` drops any index defined on it; the access/refresh token
+    // tables each carry one on `token_hash` besides the inline `UNIQUE`.
+    if table == "oauth_access_tokens" {
+        query("CREATE INDEX IF NOT EXISTS idx_oauth_access_tokens_hash ON oauth_access_tokens(token_hash)")
+            .execute(&mut *tx)
+            .await?;
+    } else if table == "oauth_refresh_tokens" {
+        query("CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash)")
+            .execute(&mut *tx)
+            .await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Primary-key column name for one of the [`OAUTH_GRANT_TABLES`] — the
+/// three tables don't share a PK name (`code_hash` vs. `id`), so the
+/// Postgres backfill (which has no SQLite-style implicit `rowid` to key its
+/// per-row `UPDATE` on) needs to know it.
+fn oauth_grant_table_pk_column(table: &str) -> &'static str {
+    if table == "oauth_authorization_codes" {
+        "code_hash"
+    } else {
+        "id"
+    }
+}
+
+/// Backfill `tenant_grants` on SQLite for every row that predates it: a
+/// single-element grant built from that row's legacy `tenant_id`/
+/// `dataset_ids`. Guarded by `tenant_grants IS NULL` on both the `SELECT`
+/// and the `UPDATE` (not just the `SELECT`) so a concurrent write from
+/// another already-migrated instance — which always populates
+/// `tenant_grants` and leaves `tenant_id` `NULL` — can't be clobbered if it
+/// lands between the two (same technique the `api_keys.dataset_ids`
+/// backfill above uses). Rows with `tenant_id IS NULL` are skipped: they
+/// were created by this change's own code, which always writes
+/// `tenant_grants` at insert time.
+async fn backfill_oauth_grant_tenant_grants_sqlite(
+    pool: &SqlitePool,
+    table: &str,
+) -> Result<(), sqlx::Error> {
+    let pending = query(&format!(
+        "SELECT rowid AS backfill_rowid, tenant_id, dataset_ids FROM {table} \
+         WHERE tenant_id IS NOT NULL AND tenant_grants IS NULL"
+    ))
+    .fetch_all(pool)
+    .await?;
+    for row in pending {
+        let rowid: i64 = row.get("backfill_rowid");
+        let tenant_id: String = row.get("tenant_id");
+        let dataset_ids: Option<String> = row.get("dataset_ids");
+        let dataset_ids = dataset_ids.map(decode_json_vec).transpose()?;
+        let grants_json = serde_json::to_string(&[TenantGrant {
+            tenant_id,
+            dataset_ids,
+        }])
+        .map_err(|e| {
+            sqlx::Error::Protocol(format!("failed to serialize tenant_grants backfill: {e}"))
+        })?;
+        query(&format!(
+            "UPDATE {table} SET tenant_grants = ? WHERE rowid = ? AND tenant_grants IS NULL"
+        ))
+        .bind(&grants_json)
+        .bind(rowid)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Postgres equivalent of [`backfill_oauth_grant_tenant_grants_sqlite`],
+/// keyed by each table's own primary key
+/// ([`oauth_grant_table_pk_column`]) rather than an implicit `rowid`.
+async fn backfill_oauth_grant_tenant_grants_postgres(
+    pool: &PgPool,
+    table: &str,
+) -> Result<(), sqlx::Error> {
+    let pk = oauth_grant_table_pk_column(table);
+    let pending = query(&format!(
+        "SELECT {pk} AS backfill_pk, tenant_id, dataset_ids FROM {table} \
+         WHERE tenant_id IS NOT NULL AND tenant_grants IS NULL"
+    ))
+    .fetch_all(pool)
+    .await?;
+    for row in pending {
+        let pk_value: String = row.get("backfill_pk");
+        let tenant_id: String = row.get("tenant_id");
+        let dataset_ids: Option<String> = row.get("dataset_ids");
+        let dataset_ids = dataset_ids.map(decode_json_vec).transpose()?;
+        let grants_json = serde_json::to_string(&[TenantGrant {
+            tenant_id,
+            dataset_ids,
+        }])
+        .map_err(|e| {
+            sqlx::Error::Protocol(format!("failed to serialize tenant_grants backfill: {e}"))
+        })?;
+        query(&format!(
+            "UPDATE {table} SET tenant_grants = $1 WHERE {pk} = $2 AND tenant_grants IS NULL"
+        ))
+        .bind(&grants_json)
+        .bind(&pk_value)
+        .execute(pool)
+        .await?;
+    }
+    Ok(())
+}
+
+/// Maximum connections handed out for an on-disk SQLite catalog pool.
+///
+/// SQLite allows exactly one writer at a time regardless of pool size, so a
+/// large pool only means more connections piling up as `SQLITE_BUSY`
+/// contenders. In monolithic mode every service (router, writer, querier,
+/// compactor) opens its own [`Catalog`] against the same `[discovery]` DSN
+/// (see `ServiceBootstrap::new`), so the default pool size of 10 multiplies
+/// into dozens of connections hammering one file (issue #1495). This pool
+/// also serves the router's per-request tenant/API-key auth lookups — not
+/// just the tiny `ingesters`/`compactor_leases` tables — so the cap stays
+/// well above 1 to leave room for concurrent reads rather than forcing a
+/// single-connection bottleneck onto that hot path.
+const SQLITE_CATALOG_MAX_CONNECTIONS: u32 = 8;
+
+/// Whether `err` is SQLite reporting lock contention (`SQLITE_BUSY` /
+/// `SQLITE_LOCKED`, including their extended codes) that a short retry can
+/// reasonably ride out, as opposed to a real failure.
+fn is_retriable_sqlite_busy(err: &sqlx::Error) -> bool {
+    let Some(code) = err.as_database_error().and_then(|e| e.code()) else {
+        return false;
+    };
+    // sqlx-sqlite's `code()` reports SQLite's *extended* result code (e.g.
+    // 261 for SQLITE_BUSY_TIMEOUT), whose low byte is still the primary
+    // code: 5 (SQLITE_BUSY, "database is locked") or 6 (SQLITE_LOCKED,
+    // "database table is locked").
+    matches!(code.parse::<i32>(), Ok(c) if matches!(c & 0xff, 5 | 6))
+}
+
+/// Retry a SQLite write a few times with short backoff when it hits
+/// `SQLITE_BUSY`/`SQLITE_LOCKED` contention. `busy_timeout` (set on every
+/// connection this pool hands out) already makes a single attempt wait out
+/// brief contention, but under a slow commit elsewhere — a competing pool's
+/// writer, or a multi-second storage-layer fsync — that wait can still be
+/// exhausted; this widens the window instead of surfacing the failure to
+/// the caller on the first miss. Non-busy errors (including a genuine
+/// `RowNotFound`) return immediately, unretried.
+async fn retry_on_sqlite_busy<T, F, Fut>(mut op: F) -> Result<T, sqlx::Error>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = Result<T, sqlx::Error>>,
+{
+    // 3 attempts against a 10s busy_timeout bounds the worst case at ~30s —
+    // roughly what a single attempt already risked before this pool's
+    // busy_timeout was 30s (see the comment on `Catalog::new`'s
+    // `busy_timeout` call) — while still giving a lock-convoy a couple of
+    // fresh windows to clear instead of failing on the first one.
+    const MAX_ATTEMPTS: u32 = 3;
+    const BASE_DELAY: std::time::Duration = std::time::Duration::from_millis(40);
+
+    let mut attempt = 0;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(err) if attempt + 1 < MAX_ATTEMPTS && is_retriable_sqlite_busy(&err) => {
+                attempt += 1;
+                tokio::time::sleep(BASE_DELAY * 2u32.pow(attempt - 1)).await;
+            }
+            Err(err) => return Err(err),
+        }
+    }
 }
 
 /// Catalog provides an interface to the catalog database (PostgreSQL or SQLite).
@@ -82,7 +697,7 @@ impl Catalog {
 
     /// Create a new Catalog client and initialize schema.
     pub async fn new(dsn: &str) -> Result<Self, sqlx::Error> {
-        tracing::info!(dsn = %crate::config::redact_dsn(dsn), "Connecting to catalog database");
+        tracing::info!(signaldb.catalog.dsn = %crate::config::redact_dsn(dsn), "Connecting to catalog database");
 
         let catalog = if dsn.starts_with("sqlite:") {
             // Add mode=rwc to create database file if it doesn't exist
@@ -104,6 +719,12 @@ impl Catalog {
             // creation). WAL lets readers proceed during a write and makes each
             // write cheaper. In-memory databases don't support WAL, so only
             // tune on-disk files.
+            //
+            // 10s, not longer: `retry_on_sqlite_busy` retries the hot write
+            // paths (heartbeat, reap, lease renew/expire) on top of this, and
+            // each of its attempts can itself wait out a full busy_timeout
+            // window before failing — a 30s window times a handful of
+            // retries turns a "short backoff" into minutes (#1495).
             let is_memory = dsn.contains(":memory:");
             let mut connect_options = SqliteConnectOptions::from_str(&dsn_with_create)
                 .map_err(|e| {
@@ -115,7 +736,7 @@ impl Catalog {
                     e
                 })?
                 .create_if_missing(true)
-                .busy_timeout(std::time::Duration::from_secs(30));
+                .busy_timeout(std::time::Duration::from_secs(10));
             if !is_memory {
                 connect_options = connect_options
                     .journal_mode(SqliteJournalMode::Wal)
@@ -123,6 +744,7 @@ impl Catalog {
             }
 
             let pool = SqlitePoolOptions::new()
+                .max_connections(SQLITE_CATALOG_MAX_CONNECTIONS)
                 .connect_with(connect_options)
                 .await
                 .map_err(|e| {
@@ -200,7 +822,6 @@ impl Catalog {
                     key_hash TEXT NOT NULL UNIQUE,
                     tenant_id TEXT NOT NULL,
                     name TEXT,
-                    dataset_id TEXT,
                     scopes TEXT,
                     created_by_user_id TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
@@ -215,11 +836,6 @@ impl Catalog {
                         .iter()
                         .any(|row| row.get::<String, _>("name") == name)
                 };
-                if !has_api_key_column("dataset_id") {
-                    query("ALTER TABLE api_keys ADD COLUMN dataset_id TEXT")
-                        .execute(pool)
-                        .await?;
-                }
                 if !has_api_key_column("scopes") {
                     query("ALTER TABLE api_keys ADD COLUMN scopes TEXT")
                         .execute(pool)
@@ -227,6 +843,57 @@ impl Catalog {
                 }
                 if !has_api_key_column("created_by_user_id") {
                     query("ALTER TABLE api_keys ADD COLUMN created_by_user_id TEXT")
+                        .execute(pool)
+                        .await?;
+                }
+                ensure_sqlite_text_column(pool, "api_keys", "dataset_ids").await?;
+                ensure_sqlite_text_column(pool, "api_keys", "allowed_origins").await?;
+                // D1: drop the legacy single-value column left by a
+                // pre-this-change database — but first backfill any row
+                // whose dataset_ids was never synced to it (a row that
+                // predates the dataset_ids column above, or was created
+                // under code old enough to predate `dataset_ids` entirely
+                // and never had a chance to run the backfill
+                // `multi-dataset-key-restriction` shipped). Without this, a
+                // database jumping straight from before that change to
+                // after this one — skipping any boot of the intermediate
+                // dual-write code — would drop `dataset_id` before anything
+                // ever copied its data forward, silently turning every
+                // single-dataset-restricted key unrestricted. The `AND
+                // dataset_ids IS NULL` guard on the `UPDATE` (not just the
+                // `SELECT` above it) makes this safe against a concurrent
+                // legitimate write from another service instance already
+                // running this code: if that write lands between this
+                // `SELECT` and this row's `UPDATE`, the `UPDATE` sees
+                // `dataset_ids` no longer `NULL` and affects zero rows
+                // instead of clobbering it. A fresh install never creates
+                // `dataset_id` at all (removed from `CREATE TABLE` above),
+                // so both the backfill and the guard below are simply
+                // skipped there.
+                if has_api_key_column("dataset_id") {
+                    let pending = query(
+                        "SELECT id, dataset_id FROM api_keys WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL",
+                    )
+                    .fetch_all(pool)
+                    .await?;
+                    for row in pending {
+                        let id: String = row.get("id");
+                        let dataset_id: String = row.get("dataset_id");
+                        let dataset_ids_json =
+                            serde_json::to_string(&[dataset_id]).map_err(|e| {
+                                sqlx::Error::Protocol(format!(
+                                    "failed to serialize dataset_ids backfill: {e}"
+                                ))
+                            })?;
+                        query(
+                            "UPDATE api_keys SET dataset_ids = ? WHERE id = ? AND dataset_ids IS NULL",
+                        )
+                        .bind(&dataset_ids_json)
+                        .bind(&id)
+                        .execute(pool)
+                        .await?;
+                    }
+                    query("ALTER TABLE api_keys DROP COLUMN dataset_id")
                         .execute(pool)
                         .await?;
                 }
@@ -255,31 +922,45 @@ impl Catalog {
                     .execute(pool)
                     .await?;
 
-                // User accounts, tenant memberships, and login sessions
+                // User accounts, tenant memberships, and login sessions.
+                // `password_hash` is nullable (SSO-only users via OIDC have
+                // none) and `oidc_issuer`/`oidc_subject` (nullable, unique
+                // together) carry the linked OIDC identity (change:
+                // oidc-login).
                 let create_users = r#"
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
                     display_name TEXT,
-                    password_hash TEXT NOT NULL,
+                    password_hash TEXT,
+                    oidc_issuer TEXT,
+                    oidc_subject TEXT,
                     is_instance_admin INTEGER NOT NULL DEFAULT 0,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     disabled_at TEXT
                 )"#;
                 query(create_users).execute(pool).await?;
+                migrate_users_columns_sqlite(pool).await?;
 
+                // `granted_by` distinguishes locally-granted memberships from
+                // ones synced from an OIDC group mapping, so the two never
+                // fight each other (change: oidc-login, design decision 5).
+                // The primary key includes it so a local and a mapped row
+                // for the same (user, tenant) coexist as independent rows.
                 let create_tenant_memberships = r#"
                 CREATE TABLE IF NOT EXISTS tenant_memberships (
                     user_id TEXT NOT NULL,
                     tenant_id TEXT NOT NULL,
                     role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+                    granted_by TEXT NOT NULL DEFAULT 'local' CHECK(granted_by IN ('local', 'oidc_mapping')),
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
-                    PRIMARY KEY (user_id, tenant_id),
+                    PRIMARY KEY (user_id, tenant_id, granted_by),
                     FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
                     FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
                 )"#;
                 query(create_tenant_memberships).execute(pool).await?;
+                migrate_tenant_memberships_granted_by_sqlite(pool).await?;
 
                 let create_user_sessions = r#"
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -356,6 +1037,78 @@ impl Catalog {
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
 
+                // Per-level attribute statistics (change: otel-native-schema
+                // layer 6, D4/D5): the same advisory presence/demand
+                // tracking as `attribute_stats`, but keyed per
+                // (level, key) rather than per key, so demand-driven
+                // promotion can tell a resource-level key from a
+                // record-level key of the same name apart and demote by
+                // recency (`last_queried_at`) under a per-table budget.
+                // `attribute_stats` and its readers are untouched.
+                let create_attribute_level_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_level_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    present_rows BIGINT NOT NULL DEFAULT 0,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    query_hits BIGINT NOT NULL DEFAULT 0,
+                    last_queried_at TEXT,
+                    promote_streak BIGINT NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_level_stats).execute(pool).await?;
+
+                // Attribute type authority (change: otel-native-schema layer
+                // 3): the one canonical type per (tenant, dataset, signal,
+                // level, key), written once by first-seen/config/semconv and
+                // never retyped by later data.
+                let create_attribute_types = r#"
+                CREATE TABLE IF NOT EXISTS attribute_types (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    canonical_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    hint_schema_url TEXT,
+                    schema_version TEXT NOT NULL,
+                    off_type_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_types).execute(pool).await?;
+                // The primary key ends in attr_key, so a lookup across every
+                // dataset/signal/level for one key (list_attribute_types)
+                // can't seek on it without this index.
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_attribute_types_tenant_key \
+                     ON attribute_types (tenant_id, attr_key)",
+                )
+                .execute(pool)
+                .await?;
+
+                // Value sketches (change: query-field-discovery): the bounded
+                // top values per key the analyzer observed, so discovery can
+                // suggest values without reading signal data.
+                let create_attribute_value_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_value_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    count BIGINT NOT NULL DEFAULT 0,
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, attr_key, value)
+                )"#;
+                query(create_attribute_value_stats).execute(pool).await?;
+
                 // Tenant custom schema registries (change: schema-registry).
                 // The uploaded Weaver-model document is the source of truth;
                 // `resolved` caches the flattened definitions the resolver
@@ -378,6 +1131,89 @@ impl Catalog {
                     updated_at TEXT NOT NULL DEFAULT (datetime('now')),
                     PRIMARY KEY (tenant_id, namespace, version)
                 )"#,
+                )
+                .execute(pool)
+                .await?;
+
+                // Tenant OTTL processors (change: tenant-ottl-processors,
+                // design D3). `dataset` is the dataset *name* (nullable for
+                // tenant-wide rules), matching what `TenantContext.dataset_id`
+                // carries and `api_keys.dataset_ids` stores. The composite FK
+                // relies on `datasets`' `UNIQUE(tenant_id, name)` and the
+                // SQLite pool's `PRAGMA foreign_keys = ON` so a dataset
+                // delete cascades here with no extra code.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS processors (
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    dataset TEXT,
+                    signal TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    error_mode TEXT NOT NULL DEFAULT 'ignore',
+                    description TEXT,
+                    statements TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (tenant_id, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+
+                // Eval sets for offline agent evaluation (change:
+                // agent-offline-evals, design D7). Scoped by tenant and
+                // dataset *name* (what `TenantContext.dataset_id` carries);
+                // like `processors`, the composite FK relies on `datasets`'
+                // `UNIQUE(tenant_id, name)` so a dataset delete cascades to
+                // its sets, and a set delete cascades to its cases.
+                // Timestamps are RFC 3339 text written by the store.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_sets (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    description TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, dataset, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                // `position` orders a set's cases; `expected_tools` and
+                // `tags` are JSON arrays of strings. `WITHOUT ROWID` stores
+                // rows clustered by the composite key.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_cases (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    set_name TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    input TEXT NOT NULL,
+                    expected_tools TEXT NOT NULL,
+                    reference TEXT,
+                    tags TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_trace_id TEXT,
+                    PRIMARY KEY (tenant_id, dataset, set_name, case_id),
+                    FOREIGN KEY (tenant_id, dataset, set_name) REFERENCES eval_sets(tenant_id, dataset, name) ON DELETE CASCADE
+                ) WITHOUT ROWID"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_eval_cases_position \
+                     ON eval_cases(tenant_id, dataset, set_name, position)",
                 )
                 .execute(pool)
                 .await?;
@@ -405,8 +1241,10 @@ impl Catalog {
                     code_hash TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
+                    tenant_grants TEXT,
                     redirect_uri TEXT NOT NULL,
                     code_challenge TEXT NOT NULL,
                     resource TEXT,
@@ -425,8 +1263,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     expires_at TEXT NOT NULL,
@@ -443,8 +1283,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL,
-                    tenant_id TEXT NOT NULL,
+                    tenant_id TEXT,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TEXT NOT NULL DEFAULT (datetime('now')),
                     expires_at TEXT NOT NULL,
@@ -461,6 +1303,62 @@ impl Catalog {
                 .await?;
                 query(
                     "CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash)",
+                )
+                .execute(pool)
+                .await?;
+                // Idempotent guard for a table created before `dataset_ids`/
+                // `tenant_grants` existed (SQLite has no native `ADD COLUMN
+                // IF NOT EXISTS`).
+                for table in OAUTH_GRANT_TABLES {
+                    ensure_sqlite_text_column(pool, table, "dataset_ids").await?;
+                    ensure_sqlite_text_column(pool, table, "tenant_grants").await?;
+                }
+                // Change: mcp-multi-tenant-oauth-grants (D2). Drop `NOT
+                // NULL` from a pre-migration install's `tenant_id` column
+                // (SQLite has no `ALTER COLUMN ... DROP NOT NULL`, so this
+                // rebuilds each table when needed) and backfill
+                // `tenant_grants` for every row that still lacks it.
+                for table in OAUTH_GRANT_TABLES {
+                    rebuild_oauth_grant_table_sqlite_if_tenant_id_required(pool, table).await?;
+                    backfill_oauth_grant_tenant_grants_sqlite(pool, table).await?;
+                }
+
+                // GitHub App installation linking (change:
+                // github-app-source-context).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_link_states (
+                    state_hash TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TEXT NOT NULL,
+                    expires_at TEXT NOT NULL,
+                    consumed_at TEXT
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_installations (
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    installation_id INTEGER NOT NULL,
+                    account_login TEXT NOT NULL,
+                    account_type TEXT NOT NULL,
+                    account_id INTEGER NOT NULL,
+                    repositories TEXT NOT NULL,
+                    repositories_synced_at TEXT NOT NULL,
+                    linked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    linked_by_github_login TEXT,
+                    created_at TEXT NOT NULL,
+                    updated_at TEXT NOT NULL,
+                    PRIMARY KEY (tenant_id, installation_id)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_github_link_states_expires ON github_link_states(expires_at)",
                 )
                 .execute(pool)
                 .await?;
@@ -511,7 +1409,6 @@ impl Catalog {
                     key_hash TEXT NOT NULL UNIQUE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     name TEXT,
-                    dataset_id TEXT,
                     scopes TEXT,
                     created_by_user_id TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
@@ -519,15 +1416,65 @@ impl Catalog {
                     UNIQUE(tenant_id, name)
                 )"#;
                 query(create_api_keys).execute(pool).await?;
-                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS dataset_id TEXT")
-                    .execute(pool)
-                    .await?;
                 query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS scopes TEXT")
                     .execute(pool)
                     .await?;
                 query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS created_by_user_id TEXT")
                     .execute(pool)
                     .await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS dataset_ids TEXT")
+                    .execute(pool)
+                    .await?;
+                query("ALTER TABLE api_keys ADD COLUMN IF NOT EXISTS allowed_origins TEXT")
+                    .execute(pool)
+                    .await?;
+                // D1: drop the legacy single-value column left by a
+                // pre-this-change database — but first backfill any row
+                // whose dataset_ids was never synced to it. See the SQLite
+                // branch above for the full rationale (a database jumping
+                // straight from before `multi-dataset-key-restriction` to
+                // after this change, skipping any boot of the intermediate
+                // dual-write code, would otherwise silently turn every
+                // single-dataset-restricted key unrestricted); the same
+                // `AND dataset_ids IS NULL` write-time guard applies here.
+                // Postgres has no `PRAGMA table_info` equivalent, so the
+                // existence check goes through `information_schema`; a
+                // fresh install never creates `dataset_id` at all (removed
+                // from `CREATE TABLE` above), so both the backfill and the
+                // guard below are simply skipped there.
+                let has_legacy_dataset_id_column = query(
+                    "SELECT 1 FROM information_schema.columns WHERE table_name = 'api_keys' AND column_name = 'dataset_id'",
+                )
+                .fetch_optional(pool)
+                .await?
+                .is_some();
+                if has_legacy_dataset_id_column {
+                    let pending = query(
+                        "SELECT id, dataset_id FROM api_keys WHERE dataset_id IS NOT NULL AND dataset_ids IS NULL",
+                    )
+                    .fetch_all(pool)
+                    .await?;
+                    for row in pending {
+                        let id: String = row.get("id");
+                        let dataset_id: String = row.get("dataset_id");
+                        let dataset_ids_json =
+                            serde_json::to_string(&[dataset_id]).map_err(|e| {
+                                sqlx::Error::Protocol(format!(
+                                    "failed to serialize dataset_ids backfill: {e}"
+                                ))
+                            })?;
+                        query(
+                            "UPDATE api_keys SET dataset_ids = $1 WHERE id = $2 AND dataset_ids IS NULL",
+                        )
+                        .bind(&dataset_ids_json)
+                        .bind(&id)
+                        .execute(pool)
+                        .await?;
+                    }
+                    query("ALTER TABLE api_keys DROP COLUMN IF EXISTS dataset_id")
+                        .execute(pool)
+                        .await?;
+                }
 
                 let create_datasets = r#"
                 CREATE TABLE IF NOT EXISTS datasets (
@@ -552,29 +1499,43 @@ impl Catalog {
                     .execute(pool)
                     .await?;
 
-                // User accounts, tenant memberships, and login sessions
+                // User accounts, tenant memberships, and login sessions.
+                // `password_hash` is nullable (SSO-only users via OIDC have
+                // none) and `oidc_issuer`/`oidc_subject` (nullable, unique
+                // together) carry the linked OIDC identity (change:
+                // oidc-login).
                 let create_users = r#"
                 CREATE TABLE IF NOT EXISTS users (
                     id TEXT PRIMARY KEY,
                     email TEXT NOT NULL UNIQUE,
                     display_name TEXT,
-                    password_hash TEXT NOT NULL,
+                    password_hash TEXT,
+                    oidc_issuer TEXT,
+                    oidc_subject TEXT,
                     is_instance_admin BOOLEAN NOT NULL DEFAULT FALSE,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     disabled_at TIMESTAMPTZ
                 )"#;
                 query(create_users).execute(pool).await?;
+                migrate_users_columns_postgres(pool).await?;
 
+                // `granted_by` distinguishes locally-granted memberships from
+                // ones synced from an OIDC group mapping, so the two never
+                // fight each other (change: oidc-login, design decision 5).
+                // The primary key includes it so a local and a mapped row
+                // for the same (user, tenant) coexist as independent rows.
                 let create_tenant_memberships = r#"
                 CREATE TABLE IF NOT EXISTS tenant_memberships (
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
                     tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
                     role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+                    granted_by TEXT NOT NULL DEFAULT 'local' CHECK(granted_by IN ('local', 'oidc_mapping')),
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-                    PRIMARY KEY (user_id, tenant_id)
+                    PRIMARY KEY (user_id, tenant_id, granted_by)
                 )"#;
                 query(create_tenant_memberships).execute(pool).await?;
+                migrate_tenant_memberships_granted_by_postgres(pool).await?;
 
                 let create_user_sessions = r#"
                 CREATE TABLE IF NOT EXISTS user_sessions (
@@ -650,6 +1611,67 @@ impl Catalog {
                 )"#;
                 query(create_attribute_stats).execute(pool).await?;
 
+                // Per-level attribute statistics (change: otel-native-schema
+                // layer 6, D4/D5): see the SQLite branch.
+                let create_attribute_level_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_level_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    present_rows BIGINT NOT NULL DEFAULT 0,
+                    total_rows BIGINT NOT NULL DEFAULT 0,
+                    query_hits BIGINT NOT NULL DEFAULT 0,
+                    last_queried_at TIMESTAMPTZ,
+                    promote_streak BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_level_stats).execute(pool).await?;
+
+                // Attribute type authority (change: otel-native-schema layer
+                // 3): see the SQLite branch.
+                let create_attribute_types = r#"
+                CREATE TABLE IF NOT EXISTS attribute_types (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    level TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    canonical_type TEXT NOT NULL,
+                    source TEXT NOT NULL,
+                    hint_schema_url TEXT,
+                    schema_version TEXT NOT NULL,
+                    off_type_count BIGINT NOT NULL DEFAULT 0,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, level, attr_key)
+                )"#;
+                query(create_attribute_types).execute(pool).await?;
+                // See the SQLite branch.
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_attribute_types_tenant_key \
+                     ON attribute_types (tenant_id, attr_key)",
+                )
+                .execute(pool)
+                .await?;
+
+                // Value sketches (change: query-field-discovery): see the
+                // SQLite branch.
+                let create_attribute_value_stats = r#"
+                CREATE TABLE IF NOT EXISTS attribute_value_stats (
+                    tenant_id TEXT NOT NULL,
+                    dataset_id TEXT NOT NULL,
+                    signal TEXT NOT NULL,
+                    attr_key TEXT NOT NULL,
+                    value TEXT NOT NULL,
+                    count BIGINT NOT NULL DEFAULT 0,
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset_id, signal, attr_key, value)
+                )"#;
+                query(create_attribute_value_stats).execute(pool).await?;
+
                 // Tenant custom schema registries (change: schema-registry).
                 query(
                     r#"
@@ -669,6 +1691,78 @@ impl Catalog {
                     updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     PRIMARY KEY (tenant_id, namespace, version)
                 )"#,
+                )
+                .execute(pool)
+                .await?;
+
+                // Tenant OTTL processors (change: tenant-ottl-processors,
+                // design D3). See the SQLite branch above for the FK
+                // rationale.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS processors (
+                    tenant_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    dataset TEXT,
+                    signal TEXT NOT NULL,
+                    enabled BOOLEAN NOT NULL DEFAULT TRUE,
+                    priority INTEGER NOT NULL DEFAULT 100,
+                    error_mode TEXT NOT NULL DEFAULT 'ignore',
+                    description TEXT,
+                    statements TEXT NOT NULL,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+
+                // Eval sets for offline agent evaluation (change:
+                // agent-offline-evals, design D7). See the SQLite branch
+                // above for the scoping and FK rationale.
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_sets (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    agent TEXT NOT NULL,
+                    description TEXT,
+                    created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (tenant_id, dataset, name),
+                    FOREIGN KEY (tenant_id, dataset) REFERENCES datasets(tenant_id, name) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS eval_cases (
+                    tenant_id TEXT NOT NULL,
+                    dataset TEXT NOT NULL,
+                    set_name TEXT NOT NULL,
+                    case_id TEXT NOT NULL,
+                    position BIGINT NOT NULL,
+                    input TEXT NOT NULL,
+                    expected_tools TEXT NOT NULL,
+                    reference TEXT,
+                    tags TEXT NOT NULL,
+                    source_kind TEXT NOT NULL,
+                    source_trace_id TEXT,
+                    PRIMARY KEY (tenant_id, dataset, set_name, case_id),
+                    FOREIGN KEY (tenant_id, dataset, set_name) REFERENCES eval_sets(tenant_id, dataset, name) ON DELETE CASCADE
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_eval_cases_position \
+                     ON eval_cases(tenant_id, dataset, set_name, position)",
                 )
                 .execute(pool)
                 .await?;
@@ -694,8 +1788,10 @@ impl Catalog {
                     code_hash TEXT PRIMARY KEY,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
+                    tenant_grants TEXT,
                     redirect_uri TEXT NOT NULL,
                     code_challenge TEXT NOT NULL,
                     resource TEXT,
@@ -712,8 +1808,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL
@@ -728,8 +1826,10 @@ impl Catalog {
                     token_hash TEXT NOT NULL UNIQUE,
                     client_id TEXT NOT NULL,
                     user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    tenant_id TEXT REFERENCES tenants(id) ON DELETE CASCADE,
                     scopes TEXT NOT NULL,
+                    dataset_ids TEXT,
+                    tenant_grants TEXT,
                     resource TEXT,
                     created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
                     expires_at TIMESTAMPTZ NOT NULL
@@ -744,6 +1844,67 @@ impl Catalog {
                 .await?;
                 query(
                     "CREATE INDEX IF NOT EXISTS idx_oauth_refresh_tokens_hash ON oauth_refresh_tokens(token_hash)",
+                )
+                .execute(pool)
+                .await?;
+                for table in OAUTH_GRANT_TABLES {
+                    query(&format!(
+                        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS dataset_ids TEXT"
+                    ))
+                    .execute(pool)
+                    .await?;
+                    query(&format!(
+                        "ALTER TABLE {table} ADD COLUMN IF NOT EXISTS tenant_grants TEXT"
+                    ))
+                    .execute(pool)
+                    .await?;
+                    // Change: mcp-multi-tenant-oauth-grants (D2). Native and
+                    // idempotent on Postgres, unlike the SQLite rebuild this
+                    // needs below.
+                    query(&format!(
+                        "ALTER TABLE {table} ALTER COLUMN tenant_id DROP NOT NULL"
+                    ))
+                    .execute(pool)
+                    .await?;
+                    backfill_oauth_grant_tenant_grants_postgres(pool, table).await?;
+                }
+
+                // GitHub App installation linking (change:
+                // github-app-source-context).
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_link_states (
+                    state_hash TEXT PRIMARY KEY,
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    user_id TEXT REFERENCES users(id) ON DELETE CASCADE,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    expires_at TIMESTAMPTZ NOT NULL,
+                    consumed_at TIMESTAMPTZ
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    r#"
+                CREATE TABLE IF NOT EXISTS github_installations (
+                    tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                    installation_id BIGINT NOT NULL,
+                    account_login TEXT NOT NULL,
+                    account_type TEXT NOT NULL,
+                    account_id BIGINT NOT NULL,
+                    repositories TEXT NOT NULL,
+                    repositories_synced_at TIMESTAMPTZ NOT NULL,
+                    linked_by_user_id TEXT REFERENCES users(id) ON DELETE SET NULL,
+                    linked_by_github_login TEXT,
+                    created_at TIMESTAMPTZ NOT NULL,
+                    updated_at TIMESTAMPTZ NOT NULL,
+                    PRIMARY KEY (tenant_id, installation_id)
+                )"#,
+                )
+                .execute(pool)
+                .await?;
+                query(
+                    "CREATE INDEX IF NOT EXISTS idx_github_link_states_expires ON github_link_states(expires_at)",
                 )
                 .execute(pool)
                 .await?;
@@ -860,17 +2021,24 @@ impl Catalog {
     async fn heartbeat_inner(&self, id: Uuid) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let now = Utc::now().to_rfc3339();
                 let id_str = id.to_string();
-                let stmt = r#"
-                UPDATE ingesters SET last_seen = ?
-                WHERE id = ?
-                "#;
-                Self::record_query_text(stmt);
-                let result = query(stmt).bind(&now).bind(&id_str).execute(pool).await?;
-                if result.rows_affected() == 0 {
-                    return Err(sqlx::Error::RowNotFound);
-                }
+                retry_on_sqlite_busy(|| async {
+                    let stmt = r#"
+                    UPDATE ingesters SET last_seen = ?
+                    WHERE id = ?
+                    "#;
+                    Self::record_query_text(stmt);
+                    let result = query(stmt)
+                        .bind(Utc::now().to_rfc3339())
+                        .bind(&id_str)
+                        .execute(pool)
+                        .await?;
+                    if result.rows_affected() == 0 {
+                        return Err(sqlx::Error::RowNotFound);
+                    }
+                    Ok(())
+                })
+                .await?;
             }
             Catalog::Postgres(pool) => {
                 let stmt = r#"
@@ -1170,15 +2338,18 @@ impl Catalog {
                 // last_seen is stored as chrono RFC3339 text (UTC, +00:00
                 // offset), so lexicographic comparison against another
                 // RFC3339 UTC timestamp is chronologically correct.
-                let stmt = r#"
-                DELETE FROM ingesters
-                WHERE last_seen < ?
-                "#;
-                query(stmt)
-                    .bind(cutoff.to_rfc3339())
-                    .execute(pool)
-                    .await?
-                    .rows_affected()
+                retry_on_sqlite_busy(|| async {
+                    let stmt = r#"
+                    DELETE FROM ingesters
+                    WHERE last_seen < ?
+                    "#;
+                    query(stmt)
+                        .bind(cutoff.to_rfc3339())
+                        .execute(pool)
+                        .await
+                        .map(|r| r.rows_affected())
+                })
+                .await?
             }
             Catalog::Postgres(pool) => {
                 let stmt = r#"
@@ -1230,22 +2401,65 @@ impl Catalog {
     }
 }
 
+/// Tracks how long a recurring background operation has been failing
+/// continuously, so a caller can log transient contention quietly and only
+/// escalate once the streak outlasts some threshold — e.g. a heartbeat or
+/// lease renewal failing past the registration/lease TTL is worth an ERROR;
+/// failing for one tick under ordinary SQLite contention is not (#1495).
+#[derive(Default)]
+pub struct FailureStreak {
+    since: Option<std::time::Instant>,
+}
+
+impl FailureStreak {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Clear an in-progress streak after a success.
+    pub fn record_success(&mut self) {
+        self.since = None;
+    }
+
+    /// Record a failure and report whether it has now been failing
+    /// continuously for at least `escalate_after`.
+    pub fn record_failure(&mut self, escalate_after: std::time::Duration) -> bool {
+        let since = *self.since.get_or_insert_with(std::time::Instant::now);
+        since.elapsed() >= escalate_after
+    }
+}
+
 /// Extension methods for Catalog to manage heartbeats.
 impl Catalog {
     /// Spawn a background task that updates the heartbeat (last_seen) for the given ingester ID
     /// at the specified interval. Returns a JoinHandle for the spawned task.
+    ///
+    /// A failure is logged at WARN — under ordinary SQLite contention a
+    /// heartbeat misses a tick and catches up on the next one — and
+    /// escalated to ERROR only once it has been failing continuously for
+    /// `escalate_after` (the registration TTL), since that is when a peer
+    /// can actually reap this service as stale.
     pub fn spawn_ingester_heartbeat(
         &self,
         id: Uuid,
         interval: std::time::Duration,
+        escalate_after: std::time::Duration,
     ) -> tokio::task::JoinHandle<()> {
         let catalog = self.clone();
         tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
+            let mut failures = FailureStreak::new();
             loop {
                 ticker.tick().await;
-                if let Err(e) = catalog.heartbeat(id).await {
-                    tracing::error!(service_id = %id, error = %e, "Failed to send heartbeat for ingester");
+                match catalog.heartbeat(id).await {
+                    Ok(()) => failures.record_success(),
+                    Err(e) => {
+                        if failures.record_failure(escalate_after) {
+                            tracing::error!(service_id = %id, error = %e, "Failed to send heartbeat for ingester (failing past the registration TTL)");
+                        } else {
+                            tracing::warn!(service_id = %id, error = %e, "Failed to send heartbeat for ingester");
+                        }
+                    }
                 }
             }
         })
@@ -1254,6 +2468,9 @@ impl Catalog {
     /// Spawn a background task that periodically deletes service rows
     /// whose heartbeat stopped more than `reap_after` ago. Every service
     /// runs one; the DELETE is idempotent across instances.
+    ///
+    /// Same WARN/ERROR escalation as [`Self::spawn_ingester_heartbeat`],
+    /// using `reap_after` itself as the escalation threshold.
     pub fn spawn_ingester_reaper(
         &self,
         interval: std::time::Duration,
@@ -1261,14 +2478,22 @@ impl Catalog {
     ) -> tokio::task::JoinHandle<()> {
         let catalog = self.clone();
         tokio::spawn(async move {
-            let reap_after =
+            let reap_after_chrono =
                 chrono::Duration::from_std(reap_after).unwrap_or(chrono::Duration::MAX);
             let mut ticker = tokio::time::interval(interval);
+            let mut failures = FailureStreak::new();
             loop {
                 ticker.tick().await;
-                let cutoff = Utc::now() - reap_after;
-                if let Err(e) = catalog.reap_stale_ingesters(cutoff).await {
-                    tracing::error!(error = %e, "Failed to reap stale service registrations");
+                let cutoff = Utc::now() - reap_after_chrono;
+                match catalog.reap_stale_ingesters(cutoff).await {
+                    Ok(_) => failures.record_success(),
+                    Err(e) => {
+                        if failures.record_failure(reap_after) {
+                            tracing::error!(error = %e, "Failed to reap stale service registrations (failing past the registration TTL)");
+                        } else {
+                            tracing::warn!(error = %e, "Failed to reap stale service registrations");
+                        }
+                    }
                 }
             }
         })
@@ -1347,7 +2572,12 @@ pub struct ApiKeyRecord {
     pub id: String,
     pub tenant_id: String,
     pub name: Option<String>,
-    pub dataset_id: Option<String>,
+    /// Dataset-set restriction (D1): `None` is unrestricted, `Some` is the
+    /// exact set.
+    pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin restriction for browser CORS checks: `None` is
+    /// unrestricted, `Some` is the exact set of allowed `Origin` values.
+    pub allowed_origins: Option<Vec<String>>,
     pub scopes: Option<Vec<String>>,
     pub created_by_user_id: Option<String>,
     pub created_at: DateTime<Utc>,
@@ -1359,10 +2589,332 @@ pub struct ApiKeyRecord {
 pub struct ApiKeyAuthRecord {
     pub tenant_id: String,
     pub name: Option<String>,
-    /// A bound dataset, or `None` for any dataset in the tenant.
-    pub dataset_id: Option<String>,
+    /// Dataset-set restriction; see [`ApiKeyRecord::dataset_ids`].
+    pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin restriction; see [`ApiKeyRecord::allowed_origins`].
+    pub allowed_origins: Option<Vec<String>>,
     /// Explicit scopes, or `None` for a legacy unrestricted key.
     pub scopes: Option<Vec<String>>,
+}
+
+/// Tri-state update to a live API key's dataset-set restriction (D1a/D2b).
+///
+/// The predecessor `dataset_id: Option<&str>` parameter this replaces could
+/// only express "leave unchanged" (`None`) or "set" (`Some`) through a
+/// `COALESCE`-based `UPDATE` — a `NULL` can never win a `COALESCE`, so
+/// there was no way to express "clear an existing restriction."
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetRestrictionUpdate {
+    /// Leave the existing restriction (or lack of one) untouched.
+    Keep,
+    /// Clear any restriction back to unrestricted: `dataset_ids` becomes
+    /// `NULL`.
+    Clear,
+    /// Replace the restriction with exactly this set. Validated the same
+    /// way as the create path (`upsert_scoped_api_key`): an empty or
+    /// duplicate-containing set is rejected.
+    Set(Vec<String>),
+}
+
+impl DatasetRestrictionUpdate {
+    /// Construct the tri-state update from an update request's two
+    /// dataset-restriction fields (D1a), validating their combination before
+    /// any catalog call:
+    ///
+    /// - `dataset_ids: Some(ids)` (non-empty) with `clear_dataset_restriction:
+    ///   false` → [`Self::Set`], replacing the restriction.
+    /// - `dataset_ids: None` with `clear_dataset_restriction: true` →
+    ///   [`Self::Clear`].
+    /// - Both absent/`false` → [`Self::Keep`], leaving the restriction
+    ///   untouched.
+    /// - An explicit empty array or a duplicate name is rejected
+    ///   unconditionally (via [`validate_dataset_id_set`]), regardless of
+    ///   `clear_dataset_restriction`.
+    /// - A non-empty `dataset_ids` combined with `clear_dataset_restriction:
+    ///   true` is rejected as a contradictory request.
+    ///
+    /// This is the single implementation of D1a's rule; the HTTP-layer
+    /// admin and management API handlers both call it rather than
+    /// re-approximating the same combination logic independently.
+    pub fn from_request(
+        dataset_ids: Option<Vec<String>>,
+        clear_dataset_restriction: bool,
+    ) -> Result<Self, sqlx::Error> {
+        match dataset_ids {
+            Some(ids) if !ids.is_empty() && clear_dataset_restriction => Err(sqlx::Error::Protocol(
+                "clear_dataset_restriction cannot be combined with a non-empty dataset_ids in the same request"
+                    .to_string(),
+            )),
+            Some(ids) => {
+                validate_dataset_id_set(&ids)?;
+                Ok(Self::Set(ids))
+            }
+            None if clear_dataset_restriction => Ok(Self::Clear),
+            None => Ok(Self::Keep),
+        }
+    }
+}
+
+/// Validate a create request's `dataset_ids` field (D1a) ahead of
+/// [`Catalog::upsert_scoped_api_key`]: `None` stays `None` (unrestricted),
+/// `Some` is rejected up front when empty or duplicate-containing, via the
+/// same [`validate_dataset_id_set`] the catalog write path itself applies.
+pub fn validate_create_dataset_ids(
+    dataset_ids: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    match dataset_ids {
+        Some(ids) => {
+            validate_dataset_id_set(&ids)?;
+            Ok(Some(ids))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Reject `dataset_ids` naming two or more datasets while the mixed-version
+/// rollout gate (`[auth].dataset_restriction_rollout_complete`, D2) is not
+/// yet `true`. Single-element and unrestricted sets are unaffected by the
+/// flag; callers only invoke this for a non-empty, already-validated set
+/// (e.g. the `Set` arm of [`DatasetRestrictionUpdate`] or a create request's
+/// `dataset_ids`). Shared by the admin and management API create/update
+/// handlers so the "two or more" threshold and message can't drift between
+/// them.
+pub fn check_dataset_restriction_rollout_gate(
+    dataset_ids: &[String],
+    rollout_complete: bool,
+) -> Result<(), String> {
+    if dataset_ids.len() >= 2 && !rollout_complete {
+        return Err(format!(
+            "dataset_ids names {} datasets; multi-dataset API-key restrictions require \
+             [auth].dataset_restriction_rollout_complete = true (currently false)",
+            dataset_ids.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Reject a non-empty `dataset_ids` OAuth consent decision while the
+/// mixed-version rollout gate (`[auth].dataset_restriction_rollout_complete`,
+/// D2) is not yet `true`. Stricter than
+/// [`check_dataset_restriction_rollout_gate`]'s two-or-more threshold:
+/// OAuth tokens have no single-value fallback column (D2's "Residual,
+/// documented limitation" section), so *any* non-empty restriction is
+/// unsafe until every authenticating node runs the new binary — including a
+/// single-dataset one. Callers only invoke this for an
+/// already non-empty, validated set (the empty case is D1a's separate,
+/// unconditional rejection).
+pub fn check_oauth_dataset_restriction_rollout_gate(
+    dataset_ids: &[String],
+    rollout_complete: bool,
+) -> Result<(), String> {
+    if !dataset_ids.is_empty() && !rollout_complete {
+        return Err(format!(
+            "dataset_ids names {} dataset(s); OAuth dataset restrictions require \
+             [auth].dataset_restriction_rollout_complete = true (currently false)",
+            dataset_ids.len()
+        ));
+    }
+    Ok(())
+}
+
+/// Reject an empty or duplicate-containing dataset-id set (D1a). Shared by
+/// every path that writes a dataset-id set — the API-key create path
+/// (`upsert_scoped_api_key`), the API-key update path
+/// (`update_api_key_scopes`'s `Set` variant, via [`DatasetRestrictionUpdate::from_request`]),
+/// and the OAuth grant paths — so none of them can drift into checking a
+/// different rule.
+pub fn validate_dataset_id_set(ids: &[String]) -> Result<(), sqlx::Error> {
+    if ids.is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "dataset_ids must not be empty; omit the field (or send null) for an unrestricted key"
+                .to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(ids.len());
+    for id in ids {
+        if !seen.insert(id.as_str()) {
+            return Err(sqlx::Error::Protocol(format!(
+                "dataset_ids contains duplicate dataset '{id}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate and JSON-encode a dataset-id set for the `dataset_ids` column
+/// (D1).
+fn encode_dataset_ids_json(ids: &[String]) -> Result<String, sqlx::Error> {
+    validate_dataset_id_set(ids)?;
+    serde_json::to_string(ids)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize dataset_ids: {e}")))
+}
+
+/// One tenant an OAuth grant (authorization code, access token, or refresh
+/// token) reaches, with its own optional dataset-set restriction (change:
+/// mcp-multi-tenant-oauth-grants, design D2). A grant's `tenant_grants`
+/// column stores a JSON array of these — one element for the common
+/// single-tenant case, more than one once a user consents to several
+/// tenants at once.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct TenantGrant {
+    pub tenant_id: String,
+    /// Dataset-set restriction within `tenant_id`; see
+    /// [`ApiKeyRecord::dataset_ids`]. `None` is unrestricted.
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// Reject an empty grant set, a grant set naming the same tenant more than
+/// once, or a grant whose own `dataset_ids` is empty or duplicate-containing
+/// (the same [`validate_dataset_id_set`] rule a single tenant's
+/// `dataset_ids` was already held to). `tenant_grants` has no DB-level FK or
+/// `NOT NULL` (D2 — a live deployment's pre-migration rows have none yet),
+/// so all three rules are enforced here, in application code, for every row
+/// this change's code writes. Rejecting a duplicate tenant keeps
+/// set-membership resolution (design D4) unambiguous — two entries for the
+/// same tenant would otherwise leave "the" dataset restriction for it
+/// undefined.
+pub fn validate_tenant_grants(grants: &[TenantGrant]) -> Result<(), sqlx::Error> {
+    if grants.is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "tenant_grants must not be empty".to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(grants.len());
+    for grant in grants {
+        if !seen.insert(grant.tenant_id.as_str()) {
+            return Err(sqlx::Error::Protocol(format!(
+                "tenant_grants names tenant '{}' more than once",
+                grant.tenant_id
+            )));
+        }
+        if let Some(ids) = &grant.dataset_ids {
+            validate_dataset_id_set(ids)?;
+        }
+    }
+    Ok(())
+}
+
+/// Validate and JSON-encode a grant set for the `tenant_grants` column
+/// (D2).
+fn encode_tenant_grants_json(grants: &[TenantGrant]) -> Result<String, sqlx::Error> {
+    validate_tenant_grants(grants)?;
+    serde_json::to_string(grants)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize tenant_grants: {e}")))
+}
+
+/// Decode a `tenant_grants` column value. `None` (the column is nullable)
+/// only occurs for a row that predates this change's backfill; every row
+/// [`Catalog::init`] has migrated, and every row this change's code
+/// inserts, always has it populated, so `None` here is treated as a
+/// migration-ordering bug rather than silently defaulted.
+fn decode_tenant_grants_column(json: Option<String>) -> Result<Vec<TenantGrant>, sqlx::Error> {
+    let json = json.ok_or_else(|| {
+        sqlx::Error::Protocol(
+            "tenant_grants column is NULL; row predates the tenant_grants backfill".to_string(),
+        )
+    })?;
+    serde_json::from_str(&json).map_err(|e| sqlx::Error::Decode(Box::new(e)))
+}
+
+/// Tri-state update to a live API key's allowed-origin restriction, mirroring
+/// [`DatasetRestrictionUpdate`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OriginRestrictionUpdate {
+    /// Leave the existing restriction (or lack of one) untouched.
+    Keep,
+    /// Clear any restriction back to unrestricted: `allowed_origins` becomes
+    /// `NULL`.
+    Clear,
+    /// Replace the restriction with exactly this set. Validated the same way
+    /// as the create path (`upsert_scoped_api_key`): an empty or
+    /// duplicate-containing set is rejected.
+    Set(Vec<String>),
+}
+
+impl OriginRestrictionUpdate {
+    /// Construct the tri-state update from an update request's two
+    /// origin-restriction fields, mirroring
+    /// [`DatasetRestrictionUpdate::from_request`] exactly:
+    ///
+    /// - `allowed_origins: Some(origins)` (non-empty) with
+    ///   `clear_allowed_origins: false` → [`Self::Set`], replacing the
+    ///   restriction.
+    /// - `allowed_origins: None` with `clear_allowed_origins: true` →
+    ///   [`Self::Clear`].
+    /// - Both absent/`false` → [`Self::Keep`], leaving the restriction
+    ///   untouched.
+    /// - An explicit empty array or a duplicate origin is rejected
+    ///   unconditionally (via [`validate_allowed_origins_set`]), regardless
+    ///   of `clear_allowed_origins`.
+    /// - A non-empty `allowed_origins` combined with
+    ///   `clear_allowed_origins: true` is rejected as a contradictory
+    ///   request.
+    pub fn from_request(
+        allowed_origins: Option<Vec<String>>,
+        clear_allowed_origins: bool,
+    ) -> Result<Self, sqlx::Error> {
+        match allowed_origins {
+            Some(origins) if !origins.is_empty() && clear_allowed_origins => Err(sqlx::Error::Protocol(
+                "clear_allowed_origins cannot be combined with a non-empty allowed_origins in the same request"
+                    .to_string(),
+            )),
+            Some(origins) => {
+                validate_allowed_origins_set(&origins)?;
+                Ok(Self::Set(origins))
+            }
+            None if clear_allowed_origins => Ok(Self::Clear),
+            None => Ok(Self::Keep),
+        }
+    }
+}
+
+/// Validate a create request's `allowed_origins` field ahead of
+/// [`Catalog::upsert_scoped_api_key`]: `None` stays `None` (unrestricted),
+/// `Some` is rejected up front when empty or duplicate-containing, via the
+/// same [`validate_allowed_origins_set`] the catalog write path itself
+/// applies.
+pub fn validate_create_allowed_origins(
+    allowed_origins: Option<Vec<String>>,
+) -> Result<Option<Vec<String>>, sqlx::Error> {
+    match allowed_origins {
+        Some(origins) => {
+            validate_allowed_origins_set(&origins)?;
+            Ok(Some(origins))
+        }
+        None => Ok(None),
+    }
+}
+
+/// Reject an empty or duplicate-containing allowed-origins set. Shared by
+/// every path that writes an allowed-origins set (the API-key create path
+/// `upsert_scoped_api_key` and the update path `update_api_key_scopes`'s
+/// `OriginRestrictionUpdate::Set` variant), so neither can drift into
+/// checking a different rule. Each origin is treated as an opaque string —
+/// no URL-syntax validation is performed here.
+pub fn validate_allowed_origins_set(origins: &[String]) -> Result<(), sqlx::Error> {
+    if origins.is_empty() {
+        return Err(sqlx::Error::Protocol(
+            "allowed_origins must not be empty; omit the field (or send null) for an unrestricted key"
+                .to_string(),
+        ));
+    }
+    let mut seen = std::collections::HashSet::with_capacity(origins.len());
+    for origin in origins {
+        if !seen.insert(origin.as_str()) {
+            return Err(sqlx::Error::Protocol(format!(
+                "allowed_origins contains duplicate origin '{origin}'"
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Validate and JSON-encode an allowed-origins set for the `allowed_origins`
+/// column.
+fn encode_allowed_origins_json(origins: &[String]) -> Result<String, sqlx::Error> {
+    validate_allowed_origins_set(origins)?;
+    serde_json::to_string(origins)
+        .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize allowed_origins: {e}")))
 }
 
 /// Dataset record from database
@@ -1397,6 +2949,18 @@ impl MembershipRole {
             MembershipRole::Viewer => "viewer",
         }
     }
+
+    /// Rank used to resolve the effective role when a user holds more than
+    /// one membership row for the same tenant (a `local` row and an
+    /// `oidc_mapping` row, change: oidc-login design decision 5): the
+    /// higher rank wins.
+    fn rank(self) -> u8 {
+        match self {
+            MembershipRole::Viewer => 0,
+            MembershipRole::Member => 1,
+            MembershipRole::Admin => 2,
+        }
+    }
 }
 
 impl std::fmt::Display for MembershipRole {
@@ -1420,13 +2984,67 @@ impl std::str::FromStr for MembershipRole {
     }
 }
 
-/// User account record from database
+/// Source that granted a tenant membership.
+///
+/// Stored as lowercase TEXT in the `tenant_memberships` table, matching the
+/// `CHECK(granted_by IN ('local', 'oidc_mapping'))` constraint. Part of the
+/// primary key (change: oidc-login, design decision 5): a `local` row (an
+/// admin action via the admin API, CLI, or MCP) and an `oidc_mapping` row (a
+/// config-declared OIDC group mapping, synced at login) coexist as
+/// independent rows for the same `(user_id, tenant_id)`, so neither can
+/// clobber the other.
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize, utoipa::ToSchema,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum GrantSource {
+    Local,
+    OidcMapping,
+}
+
+impl GrantSource {
+    /// The lowercase string form stored in the database.
+    pub fn as_str(&self) -> &'static str {
+        match self {
+            GrantSource::Local => "local",
+            GrantSource::OidcMapping => "oidc_mapping",
+        }
+    }
+}
+
+impl std::fmt::Display for GrantSource {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(self.as_str())
+    }
+}
+
+impl std::str::FromStr for GrantSource {
+    type Err = sqlx::Error;
+
+    fn from_str(s: &str) -> Result<Self, Self::Err> {
+        match s {
+            "local" => Ok(GrantSource::Local),
+            "oidc_mapping" => Ok(GrantSource::OidcMapping),
+            other => Err(sqlx::Error::Decode(
+                format!("invalid membership grant source: {other}").into(),
+            )),
+        }
+    }
+}
+
+/// User account record from database.
+///
+/// `password_hash` is `None` for SSO-only users provisioned or linked via
+/// OIDC; `oidc_issuer`/`oidc_subject` are `Some` once an OIDC identity is
+/// linked (change: oidc-login).
 #[derive(Debug, Clone)]
 pub struct UserRecord {
     pub id: String,
     pub email: String,
     pub display_name: Option<String>,
-    pub password_hash: String,
+    pub password_hash: Option<String>,
+    pub oidc_issuer: Option<String>,
+    pub oidc_subject: Option<String>,
     pub is_instance_admin: bool,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
@@ -1439,6 +3057,7 @@ pub struct TenantMembershipRecord {
     pub user_id: String,
     pub tenant_id: String,
     pub role: MembershipRole,
+    pub granted_by: GrantSource,
     pub created_at: DateTime<Utc>,
 }
 
@@ -1474,7 +3093,13 @@ pub struct OAuthClientRecord {
 pub struct OAuthAuthorizationCode {
     pub client_id: String,
     pub user_id: String,
-    pub tenant_id: String,
+    /// The set of tenants (each with its own optional dataset restriction)
+    /// this code's eventual token will reach (change:
+    /// mcp-multi-tenant-oauth-grants, design D2). Always non-empty. The
+    /// legacy single `tenant_id`/`dataset_ids` columns are never written or
+    /// read by this struct any more — see the column comments in
+    /// [`Catalog::init`].
+    pub tenant_grants: Vec<TenantGrant>,
     pub scopes: Vec<String>,
     pub redirect_uri: String,
     pub code_challenge: String,
@@ -1484,17 +3109,41 @@ pub struct OAuthAuthorizationCode {
 }
 
 /// An opaque OAuth token grant (access or refresh), stored and looked up by
-/// hash. Carries the tenant, scopes, and audience the token was minted for.
+/// hash. Carries the tenant set, scopes, and audience the token was minted
+/// for.
 #[derive(Debug, Clone)]
 pub struct OAuthTokenRecord {
     pub id: String,
     pub client_id: String,
     pub user_id: String,
-    pub tenant_id: String,
+    /// See [`OAuthAuthorizationCode::tenant_grants`]. Always non-empty.
+    pub tenant_grants: Vec<TenantGrant>,
     pub scopes: Vec<String>,
     pub resource: Option<String>,
     pub created_at: DateTime<Utc>,
     pub expires_at: DateTime<Utc>,
+}
+
+/// Column list shared by every `users` SELECT (change: oidc-login added the
+/// `oidc_issuer`/`oidc_subject` columns).
+const USER_COLUMNS: &str = "id, email, display_name, password_hash, oidc_issuer, oidc_subject, is_instance_admin, created_at, updated_at, disabled_at";
+
+/// Column list shared by every `tenant_memberships` SELECT (change:
+/// oidc-login added `granted_by`).
+const MEMBERSHIP_COLUMNS: &str = "user_id, tenant_id, role, granted_by, created_at";
+
+/// Resolve the effective membership from every row a user holds for one
+/// tenant (at most one `local` row and one `oidc_mapping` row): the row
+/// with the higher-ranked role wins, and its `granted_by` is reported as
+/// the effective source (change: oidc-login design decision 5).
+///
+/// On a role tie, `Local` wins deterministically: the key includes it as a
+/// secondary component rather than relying on `max_by_key`'s "last element
+/// wins" tie-break, which would make the reported source depend on
+/// unordered row-fetch order.
+fn effective_membership(rows: Vec<TenantMembershipRecord>) -> Option<TenantMembershipRecord> {
+    rows.into_iter()
+        .max_by_key(|m| (m.role.rank(), m.granted_by == GrantSource::Local))
 }
 
 /// Map a SQLite row (RFC3339 text timestamps) to a `UserRecord`.
@@ -1505,6 +3154,8 @@ fn user_from_sqlite_row(r: &sqlx::sqlite::SqliteRow) -> Result<UserRecord, sqlx:
         email: r.get("email"),
         display_name: r.get("display_name"),
         password_hash: r.get("password_hash"),
+        oidc_issuer: r.get("oidc_issuer"),
+        oidc_subject: r.get("oidc_subject"),
         is_instance_admin: r.get("is_instance_admin"),
         created_at: parse_rfc3339(r.get("created_at"))?,
         updated_at: parse_rfc3339(r.get("updated_at"))?,
@@ -1519,6 +3170,8 @@ fn user_from_pg_row(r: &sqlx::postgres::PgRow) -> UserRecord {
         email: r.get("email"),
         display_name: r.get("display_name"),
         password_hash: r.get("password_hash"),
+        oidc_issuer: r.get("oidc_issuer"),
+        oidc_subject: r.get("oidc_subject"),
         is_instance_admin: r.get("is_instance_admin"),
         created_at: r.get("created_at"),
         updated_at: r.get("updated_at"),
@@ -1531,10 +3184,12 @@ fn membership_from_sqlite_row(
     r: &sqlx::sqlite::SqliteRow,
 ) -> Result<TenantMembershipRecord, sqlx::Error> {
     let role: String = r.get("role");
+    let granted_by: String = r.get("granted_by");
     Ok(TenantMembershipRecord {
         user_id: r.get("user_id"),
         tenant_id: r.get("tenant_id"),
         role: role.parse()?,
+        granted_by: granted_by.parse()?,
         created_at: parse_rfc3339(r.get("created_at"))?,
     })
 }
@@ -1544,10 +3199,12 @@ fn membership_from_pg_row(
     r: &sqlx::postgres::PgRow,
 ) -> Result<TenantMembershipRecord, sqlx::Error> {
     let role: String = r.get("role");
+    let granted_by: String = r.get("granted_by");
     Ok(TenantMembershipRecord {
         user_id: r.get("user_id"),
         tenant_id: r.get("tenant_id"),
         role: role.parse()?,
+        granted_by: granted_by.parse()?,
         created_at: r.get("created_at"),
     })
 }
@@ -1594,6 +3251,27 @@ pub struct AttributeStatsRecord {
     /// Consecutive analyzer cycles this key scored above the promotion
     /// threshold (hysteresis state for auto-promotion, #734).
     pub promote_streak: i64,
+    /// When the analyzer last wrote this row. Discovery reports it so a
+    /// client can see how stale a statistics-derived answer is.
+    pub updated_at: String,
+}
+
+/// One value of an attribute key, with how often the analyzer saw it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AttributeValueStat {
+    pub value: String,
+    pub count: i64,
+    pub updated_at: String,
+}
+
+impl AttributeStatsRecord {
+    /// The fraction of scanned rows carrying this key, or `None` when the
+    /// analyzer has seen no rows — the one number every consumer of these
+    /// statistics derives, defined once here so they cannot disagree about
+    /// what a zero-row observation means.
+    pub fn coverage(&self) -> Option<f64> {
+        (self.total_rows > 0).then(|| self.present_rows as f64 / self.total_rows as f64)
+    }
 }
 
 /// Advisory attribute-statistics methods (epic #737, #733).
@@ -1774,7 +3452,7 @@ impl Catalog {
         let sql_sqlite = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
                    total_rows, distinct_estimate, capped, query_hits,
-                   promote_streak
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
             FROM attribute_stats
             WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
             ORDER BY attr_key
@@ -1782,7 +3460,7 @@ impl Catalog {
         let sql_pg = r#"
             SELECT tenant_id, dataset_id, signal, attr_key, present_rows,
                    total_rows, distinct_estimate, capped, query_hits,
-                   promote_streak
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
             FROM attribute_stats
             WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
             ORDER BY attr_key
@@ -1805,6 +3483,7 @@ impl Catalog {
                 capped: row.get("capped"),
                 query_hits: row.get("query_hits"),
                 promote_streak: row.get("promote_streak"),
+                updated_at: row.get("updated_at"),
             }
         }
         match self {
@@ -1825,6 +3504,432 @@ impl Catalog {
                 .await?
                 .iter()
                 .map(record)
+                .collect()),
+        }
+    }
+
+    /// Replace one key's value sketch with the analyzer's latest observation.
+    ///
+    /// The analyzer sees the whole rewritten partition, so the new sketch
+    /// supersedes the old one wholesale; replacing rather than merging keeps a
+    /// value that has stopped occurring from lingering as a suggestion
+    /// forever. Passing an empty `values` clears the sketch, which is how a
+    /// key that grew past the cardinality cap stops being suggested.
+    pub async fn replace_attribute_value_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        values: &[(String, i64)],
+    ) -> Result<(), sqlx::Error> {
+        let delete_sqlite = "DELETE FROM attribute_value_stats \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?";
+        let delete_pg = "DELETE FROM attribute_value_stats \
+             WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3 AND attr_key = $4";
+        let insert_sqlite = r#"
+            INSERT INTO attribute_value_stats
+                (tenant_id, dataset_id, signal, attr_key, value, count, updated_at)
+            VALUES (?, ?, ?, ?, ?, ?, datetime('now'))
+        "#;
+        let insert_pg = r#"
+            INSERT INTO attribute_value_stats
+                (tenant_id, dataset_id, signal, attr_key, value, count, updated_at)
+            VALUES ($1, $2, $3, $4, $5, $6, NOW())
+        "#;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                query(delete_sqlite)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(attr_key)
+                    .execute(&mut *tx)
+                    .await?;
+                for (value, count) in values {
+                    query(insert_sqlite)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
+                        .bind(value)
+                        .bind(count)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query(delete_pg)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(attr_key)
+                    .execute(&mut *tx)
+                    .await?;
+                for (value, count) in values {
+                    query(insert_pg)
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(signal)
+                        .bind(attr_key)
+                        .bind(value)
+                        .bind(count)
+                        .execute(&mut *tx)
+                        .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// One key's value sketch, most frequent first. Empty when the analyzer
+    /// keeps no sketch for the key — which discovery reports as "nothing
+    /// covers this field" rather than as "this field has no values".
+    pub async fn get_attribute_value_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        attr_key: &str,
+        limit: i64,
+    ) -> Result<Vec<AttributeValueStat>, sqlx::Error> {
+        let sql_sqlite = r#"
+            SELECT value, count, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_value_stats
+            WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND attr_key = ?
+            ORDER BY count DESC, value ASC
+            LIMIT ?
+        "#;
+        let sql_pg = r#"
+            SELECT value, count, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_value_stats
+            WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3 AND attr_key = $4
+            ORDER BY count DESC, value ASC
+            LIMIT $5
+        "#;
+        fn stat<R: Row>(row: &R) -> AttributeValueStat
+        where
+            for<'a> &'a str: sqlx::ColumnIndex<R>,
+            for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+        {
+            AttributeValueStat {
+                value: row.get("value"),
+                count: row.get("count"),
+                updated_at: row.get("updated_at"),
+            }
+        }
+        match self {
+            Catalog::Sqlite(pool) => Ok(query(sql_sqlite)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(stat)
+                .collect()),
+            Catalog::Postgres(pool) => Ok(query(sql_pg)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(attr_key)
+                .bind(limit)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(stat)
+                .collect()),
+        }
+    }
+}
+
+/// A per-(attribute level, key) statistics row (change: otel-native-schema
+/// layer 6, D4/D5): the same scan-side presence and query-demand tracking as
+/// [`AttributeStatsRecord`], keyed per [`AttributeLevel`] so promotion can
+/// demote by per-level recency under a per-table budget.
+#[derive(Debug, Clone)]
+pub struct AttributeLevelStatsRecord {
+    pub tenant_id: String,
+    pub dataset_id: String,
+    pub signal: String,
+    pub level: crate::schema::logical::AttributeLevel,
+    pub attr_key: String,
+    pub present_rows: i64,
+    pub total_rows: i64,
+    pub query_hits: i64,
+    /// When this key was last observed in query demand, for LRU demotion.
+    /// `None` for a key that has scan presence but no recorded demand yet.
+    pub last_queried_at: Option<String>,
+    pub promote_streak: i64,
+    pub updated_at: String,
+}
+
+/// Per-level advisory attribute-statistics methods (change:
+/// otel-native-schema layer 6, D4/D5). Mirrors the per-key methods above,
+/// keyed additionally by [`AttributeLevel`].
+impl Catalog {
+    /// Upsert the scan-side statistics for one (level, key), replacing the
+    /// previous presence observation. `query_hits`, `last_queried_at`, and
+    /// `promote_streak` are left untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn upsert_attribute_level_scan_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        present_rows: i64,
+        total_rows: i64,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                     total_rows, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    present_rows = excluded.present_rows,
+                    total_rows = excluded.total_rows,
+                    updated_at = datetime('now')
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(present_rows)
+                .bind(total_rows)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                     total_rows, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    present_rows = EXCLUDED.present_rows,
+                    total_rows = EXCLUDED.total_rows,
+                    updated_at = NOW()
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(present_rows)
+                .bind(total_rows)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Add query-demand hits for one (level, key), accumulating the counter
+    /// and moving `last_queried_at` forward to the later of the stored and
+    /// given time. Scan-side columns are left untouched.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn add_attribute_level_query_hits(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        hits: i64,
+        queried_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, query_hits,
+                     last_queried_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, datetime('now'))
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    query_hits = attribute_level_stats.query_hits + excluded.query_hits,
+                    last_queried_at = CASE
+                        WHEN attribute_level_stats.last_queried_at IS NULL
+                             OR excluded.last_queried_at > attribute_level_stats.last_queried_at
+                        THEN excluded.last_queried_at
+                        ELSE attribute_level_stats.last_queried_at
+                    END,
+                    updated_at = datetime('now')
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(hits)
+                .bind(queried_at.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    r#"
+                INSERT INTO attribute_level_stats
+                    (tenant_id, dataset_id, signal, level, attr_key, query_hits,
+                     last_queried_at, updated_at)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, NOW())
+                ON CONFLICT (tenant_id, dataset_id, signal, level, attr_key) DO UPDATE SET
+                    query_hits = attribute_level_stats.query_hits + EXCLUDED.query_hits,
+                    last_queried_at = CASE
+                        WHEN attribute_level_stats.last_queried_at IS NULL
+                             OR EXCLUDED.last_queried_at > attribute_level_stats.last_queried_at
+                        THEN EXCLUDED.last_queried_at
+                        ELSE attribute_level_stats.last_queried_at
+                    END,
+                    updated_at = NOW()
+                "#,
+                )
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .bind(level.as_str())
+                .bind(attr_key)
+                .bind(hits)
+                .bind(queried_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Store the new promotion streak for one (level, key) (LRU/hysteresis
+    /// state for demand-driven promotion).
+    pub async fn set_attribute_level_promote_streak(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+        level: crate::schema::logical::AttributeLevel,
+        attr_key: &str,
+        streak: i64,
+    ) -> Result<(), sqlx::Error> {
+        let sql_sqlite = "UPDATE attribute_level_stats SET promote_streak = ? \
+             WHERE tenant_id = ? AND dataset_id = ? AND signal = ? AND level = ? AND attr_key = ?";
+        let sql_pg = "UPDATE attribute_level_stats SET promote_streak = $1 \
+             WHERE tenant_id = $2 AND dataset_id = $3 AND signal = $4 AND level = $5 AND attr_key = $6";
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(sql_sqlite)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(level.as_str())
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(sql_pg)
+                    .bind(streak)
+                    .bind(tenant_id)
+                    .bind(dataset_id)
+                    .bind(signal)
+                    .bind(level.as_str())
+                    .bind(attr_key)
+                    .execute(pool)
+                    .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// The stored per-level statistics for one (tenant, dataset, signal),
+    /// sorted by level then attribute key. A row whose stored `level` string
+    /// doesn't map to a known [`AttributeLevel`] is skipped with a warning
+    /// rather than failing the whole read.
+    pub async fn list_attribute_level_stats(
+        &self,
+        tenant_id: &str,
+        dataset_id: &str,
+        signal: &str,
+    ) -> Result<Vec<AttributeLevelStatsRecord>, sqlx::Error> {
+        let sql_sqlite = r#"
+            SELECT tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                   total_rows, query_hits, CAST(last_queried_at AS TEXT) AS last_queried_at,
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_level_stats
+            WHERE tenant_id = ? AND dataset_id = ? AND signal = ?
+            ORDER BY level, attr_key
+        "#;
+        let sql_pg = r#"
+            SELECT tenant_id, dataset_id, signal, level, attr_key, present_rows,
+                   total_rows, query_hits, CAST(last_queried_at AS TEXT) AS last_queried_at,
+                   promote_streak, CAST(updated_at AS TEXT) AS updated_at
+            FROM attribute_level_stats
+            WHERE tenant_id = $1 AND dataset_id = $2 AND signal = $3
+            ORDER BY level, attr_key
+        "#;
+        fn record<R: Row>(row: &R) -> Option<AttributeLevelStatsRecord>
+        where
+            for<'a> &'a str: sqlx::ColumnIndex<R>,
+            for<'a> String: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> Option<String>: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+            for<'a> i64: sqlx::Decode<'a, R::Database> + sqlx::Type<R::Database>,
+        {
+            let level_str: String = row.get("level");
+            let Some(level) = crate::schema::logical::AttributeLevel::parse(&level_str) else {
+                tracing::warn!(
+                    level = %level_str,
+                    "attribute_level_stats row has an unrecognized level; skipping"
+                );
+                return None;
+            };
+            Some(AttributeLevelStatsRecord {
+                tenant_id: row.get("tenant_id"),
+                dataset_id: row.get("dataset_id"),
+                signal: row.get("signal"),
+                level,
+                attr_key: row.get("attr_key"),
+                present_rows: row.get("present_rows"),
+                total_rows: row.get("total_rows"),
+                query_hits: row.get("query_hits"),
+                last_queried_at: row.get("last_queried_at"),
+                promote_streak: row.get("promote_streak"),
+                updated_at: row.get("updated_at"),
+            })
+        }
+        match self {
+            Catalog::Sqlite(pool) => Ok(query(sql_sqlite)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .filter_map(record)
+                .collect()),
+            Catalog::Postgres(pool) => Ok(query(sql_pg)
+                .bind(tenant_id)
+                .bind(dataset_id)
+                .bind(signal)
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .filter_map(record)
                 .collect()),
         }
     }
@@ -1987,20 +4092,27 @@ impl Catalog {
         key_hash: &str,
         name: Option<&str>,
     ) -> Result<String, sqlx::Error> {
-        self.upsert_scoped_api_key(tenant_id, key_hash, name, None, None, None)
+        self.upsert_scoped_api_key(tenant_id, key_hash, name, None, None, None, None)
             .await
     }
 
-    /// Create or return an API key with optional dataset and scope restrictions.
+    /// Create or return an API key with optional dataset-set, allowed-origin
+    /// and scope restrictions.
     ///
     /// `scopes = None` preserves legacy unrestricted-key behavior. New
     /// user-created keys should always pass an explicit, non-empty scope list.
+    /// `dataset_ids = Some(&[])` or a set containing a duplicate name is
+    /// rejected (D1a) — omit the argument (or pass `None`) for an
+    /// unrestricted key. `allowed_origins = Some(&[])` or a set containing a
+    /// duplicate name is rejected the same way.
+    #[allow(clippy::too_many_arguments)]
     pub async fn upsert_scoped_api_key(
         &self,
         tenant_id: &str,
         key_hash: &str,
         name: Option<&str>,
-        dataset_id: Option<&str>,
+        dataset_ids: Option<&[String]>,
+        allowed_origins: Option<&[String]>,
         scopes: Option<&[String]>,
         created_by_user_id: Option<&str>,
     ) -> Result<String, sqlx::Error> {
@@ -2011,6 +4123,10 @@ impl Catalog {
             .map_err(|error| {
                 sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
             })?;
+        let dataset_ids_json = dataset_ids.map(encode_dataset_ids_json).transpose()?;
+        let allowed_origins_json = allowed_origins
+            .map(encode_allowed_origins_json)
+            .transpose()?;
 
         match self {
             Catalog::Sqlite(pool) => {
@@ -2031,17 +4147,18 @@ impl Catalog {
                 // Insert new key
                 let stmt = r#"
                 INSERT INTO api_keys (
-                    id, key_hash, tenant_id, name, dataset_id, scopes,
+                    id, key_hash, tenant_id, name, dataset_ids, allowed_origins, scopes,
                     created_by_user_id, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 "#;
                 query(stmt)
                     .bind(&key_id)
                     .bind(key_hash)
                     .bind(tenant_id)
                     .bind(name)
-                    .bind(dataset_id)
+                    .bind(&dataset_ids_json)
+                    .bind(&allowed_origins_json)
                     .bind(&scopes_json)
                     .bind(created_by_user_id)
                     .bind(&now)
@@ -2062,17 +4179,18 @@ impl Catalog {
 
                 let stmt = r#"
                 INSERT INTO api_keys (
-                    id, key_hash, tenant_id, name, dataset_id, scopes,
+                    id, key_hash, tenant_id, name, dataset_ids, allowed_origins, scopes,
                     created_by_user_id
                 )
-                VALUES ($1, $2, $3, $4, $5, $6, $7)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
                 "#;
                 query(stmt)
                     .bind(&key_id)
                     .bind(key_hash)
                     .bind(tenant_id)
                     .bind(name)
-                    .bind(dataset_id)
+                    .bind(&dataset_ids_json)
+                    .bind(&allowed_origins_json)
                     .bind(&scopes_json)
                     .bind(created_by_user_id)
                     .execute(pool)
@@ -2090,7 +4208,7 @@ impl Catalog {
     ) -> Result<Option<ApiKeyAuthRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query("SELECT tenant_id, name, dataset_id, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_ids, allowed_origins, scopes FROM api_keys WHERE key_hash = ? AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
@@ -2099,14 +4217,15 @@ impl Catalog {
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
                 .transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query("SELECT tenant_id, name, dataset_id, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
+                let row = query("SELECT tenant_id, name, dataset_ids, allowed_origins, scopes FROM api_keys WHERE key_hash = $1 AND revoked_at IS NULL")
                     .bind(key_hash)
                     .fetch_optional(pool)
                     .await?;
@@ -2115,7 +4234,8 @@ impl Catalog {
                     Ok(ApiKeyAuthRecord {
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                     })
                 })
@@ -2145,17 +4265,25 @@ impl Catalog {
         Ok(())
     }
 
-    /// Update the scopes and/or dataset restriction of a live API key.
+    /// Update the scopes, dataset-set restriction and/or allowed-origin
+    /// restriction of a live API key.
     ///
-    /// `None` leaves that attribute untouched. Returns `false` when the key
-    /// does not exist or is revoked (revoked keys are immutable). Because the
-    /// tenant context is rebuilt from the key row on every request, the change
-    /// applies to the next request made with the key.
+    /// `scopes = None` leaves scopes untouched. `dataset_update` and
+    /// `origin_update` are each a tri-state (D2b):
+    /// [`DatasetRestrictionUpdate::Keep`]/[`OriginRestrictionUpdate::Keep`]
+    /// leave the restriction untouched, `Clear` nulls the `dataset_ids`/
+    /// `allowed_origins` column, and `Set` replaces the restriction
+    /// (rejecting an empty or duplicate-containing set, D1a). Returns
+    /// `false` when the key does not exist or is revoked (revoked keys are
+    /// immutable). Because the tenant context is rebuilt from the key row on
+    /// every request, the change applies to the next request made with the
+    /// key.
     pub async fn update_api_key_scopes(
         &self,
         key_id: &str,
         scopes: Option<&[String]>,
-        dataset_id: Option<&str>,
+        dataset_update: DatasetRestrictionUpdate,
+        origin_update: OriginRestrictionUpdate,
     ) -> Result<bool, sqlx::Error> {
         let scopes_json = scopes
             .map(serde_json::to_string)
@@ -2163,29 +4291,85 @@ impl Catalog {
             .map_err(|error| {
                 sqlx::Error::Protocol(format!("failed to serialize API key scopes: {error}"))
             })?;
+        let dataset_ids_bind = match &dataset_update {
+            DatasetRestrictionUpdate::Set(ids) => Some(encode_dataset_ids_json(ids)?),
+            DatasetRestrictionUpdate::Keep | DatasetRestrictionUpdate::Clear => None,
+        };
+        let allowed_origins_bind = match &origin_update {
+            OriginRestrictionUpdate::Set(origins) => Some(encode_allowed_origins_json(origins)?),
+            OriginRestrictionUpdate::Keep | OriginRestrictionUpdate::Clear => None,
+        };
+
         let rows_affected = match self {
-            Catalog::Sqlite(pool) => query(
-                "UPDATE api_keys SET scopes = COALESCE(?, scopes), \
-                     dataset_id = COALESCE(?, dataset_id) \
-                     WHERE id = ? AND revoked_at IS NULL",
-            )
-            .bind(&scopes_json)
-            .bind(dataset_id)
-            .bind(key_id)
-            .execute(pool)
-            .await?
-            .rows_affected(),
-            Catalog::Postgres(pool) => query(
-                "UPDATE api_keys SET scopes = COALESCE($1, scopes), \
-                     dataset_id = COALESCE($2, dataset_id) \
-                     WHERE id = $3 AND revoked_at IS NULL",
-            )
-            .bind(&scopes_json)
-            .bind(dataset_id)
-            .bind(key_id)
-            .execute(pool)
-            .await?
-            .rows_affected(),
+            Catalog::Sqlite(pool) => {
+                let mut set_clauses = vec!["scopes = COALESCE(?, scopes)".to_string()];
+                match dataset_update {
+                    DatasetRestrictionUpdate::Keep => {}
+                    DatasetRestrictionUpdate::Clear => {
+                        set_clauses.push("dataset_ids = NULL".to_string())
+                    }
+                    DatasetRestrictionUpdate::Set(_) => {
+                        set_clauses.push("dataset_ids = ?".to_string())
+                    }
+                }
+                match origin_update {
+                    OriginRestrictionUpdate::Keep => {}
+                    OriginRestrictionUpdate::Clear => {
+                        set_clauses.push("allowed_origins = NULL".to_string())
+                    }
+                    OriginRestrictionUpdate::Set(_) => {
+                        set_clauses.push("allowed_origins = ?".to_string())
+                    }
+                }
+                let sql = format!(
+                    "UPDATE api_keys SET {} WHERE id = ? AND revoked_at IS NULL",
+                    set_clauses.join(", ")
+                );
+                let mut q = query(&sql).bind(&scopes_json);
+                if let Some(json) = &dataset_ids_bind {
+                    q = q.bind(json);
+                }
+                if let Some(json) = &allowed_origins_bind {
+                    q = q.bind(json);
+                }
+                q.bind(key_id).execute(pool).await?.rows_affected()
+            }
+            Catalog::Postgres(pool) => {
+                let mut set_clauses = vec!["scopes = COALESCE($1, scopes)".to_string()];
+                let mut param_idx = 2;
+                match dataset_update {
+                    DatasetRestrictionUpdate::Keep => {}
+                    DatasetRestrictionUpdate::Clear => {
+                        set_clauses.push("dataset_ids = NULL".to_string())
+                    }
+                    DatasetRestrictionUpdate::Set(_) => {
+                        set_clauses.push(format!("dataset_ids = ${param_idx}"));
+                        param_idx += 1;
+                    }
+                }
+                match origin_update {
+                    OriginRestrictionUpdate::Keep => {}
+                    OriginRestrictionUpdate::Clear => {
+                        set_clauses.push("allowed_origins = NULL".to_string())
+                    }
+                    OriginRestrictionUpdate::Set(_) => {
+                        set_clauses.push(format!("allowed_origins = ${param_idx}"));
+                        param_idx += 1;
+                    }
+                }
+                let sql = format!(
+                    "UPDATE api_keys SET {} WHERE id = ${param_idx} AND revoked_at IS NULL",
+                    set_clauses.join(", ")
+                );
+                let mut q = query(&sql).bind(&scopes_json);
+                if let Some(json) = &dataset_ids_bind {
+                    q = q.bind(json);
+                }
+                if let Some(json) = &allowed_origins_bind {
+                    q = q.bind(json);
+                }
+                q.bind(key_id).execute(pool).await?.rows_affected()
+            }
         };
         Ok(rows_affected > 0)
     }
@@ -2471,12 +4655,44 @@ impl Catalog {
         }
     }
 
+    /// Check that `dataset_name` exists for `tenant_id`, so a bad reference
+    /// is rejected with a clear error rather than relying on the FK's
+    /// (dialect-specific) error text.
+    pub(crate) async fn dataset_exists(
+        &self,
+        tenant_id: &str,
+        dataset_name: &str,
+    ) -> Result<bool, sqlx::Error> {
+        let datasets = self.get_datasets(tenant_id).await?;
+        Ok(datasets.iter().any(|d| d.name == dataset_name))
+    }
+
+    /// Find the first element of `dataset_ids` that is not a dataset of
+    /// `tenant_id`, or `None` if every element belongs to the tenant.
+    /// Shared membership check for every surface that validates a
+    /// caller-supplied dataset set against a tenant (API-key admin/management
+    /// create-update, OAuth consent) so the same `get_datasets` lookup and
+    /// membership rule isn't reimplemented at each call site.
+    pub async fn find_dataset_not_in_tenant(
+        &self,
+        tenant_id: &str,
+        dataset_ids: &[String],
+    ) -> Result<Option<String>, sqlx::Error> {
+        let datasets = self.get_datasets(tenant_id).await?;
+        let existing: std::collections::HashSet<&str> =
+            datasets.iter().map(|d| d.name.as_str()).collect();
+        Ok(dataset_ids
+            .iter()
+            .find(|id| !existing.contains(id.as_str()))
+            .cloned())
+    }
+
     /// List API keys for a tenant
     pub async fn list_api_keys(&self, tenant_id: &str) -> Result<Vec<ApiKeyRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = ? ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -2489,7 +4705,8 @@ impl Catalog {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
-                            dataset_id: r.get("dataset_id"),
+                            dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                            allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                             scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: parse_rfc3339(r.get("created_at"))?,
@@ -2500,7 +4717,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let rows = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC",
                 )
                 .bind(tenant_id)
                 .fetch_all(pool)
@@ -2512,7 +4729,8 @@ impl Catalog {
                             id: r.get("id"),
                             tenant_id: r.get("tenant_id"),
                             name: r.get("name"),
-                            dataset_id: r.get("dataset_id"),
+                            dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                            allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                             scopes: decode_json_vec_opt(r.get("scopes"))?,
                             created_by_user_id: r.get("created_by_user_id"),
                             created_at: r.get("created_at"),
@@ -2529,7 +4747,7 @@ impl Catalog {
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = ?",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
@@ -2541,7 +4759,8 @@ impl Catalog {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
@@ -2552,7 +4771,7 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 let row = query(
-                    "SELECT id, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
+                    "SELECT id, tenant_id, name, dataset_ids, allowed_origins, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = $1",
                 )
                 .bind(key_id)
                 .fetch_optional(pool)
@@ -2563,7 +4782,8 @@ impl Catalog {
                         id: r.get("id"),
                         tenant_id: r.get("tenant_id"),
                         name: r.get("name"),
-                        dataset_id: r.get("dataset_id"),
+                        dataset_ids: decode_json_vec_opt(r.get("dataset_ids"))?,
+                        allowed_origins: decode_json_vec_opt(r.get("allowed_origins"))?,
                         scopes: decode_json_vec_opt(r.get("scopes"))?,
                         created_by_user_id: r.get("created_by_user_id"),
                         created_at: r.get("created_at"),
@@ -2699,15 +4919,16 @@ impl Catalog {
 impl Catalog {
     /// Create a new user account with a random UUID id.
     ///
-    /// `password_hash` is the already-hashed PHC string; hashing is the
-    /// caller's responsibility. The email is canonicalized (trimmed and
+    /// `password_hash` is the already-hashed PHC string, or `None` for an
+    /// SSO-only user provisioned via OIDC (change: oidc-login); hashing is
+    /// the caller's responsibility. The email is canonicalized (trimmed and
     /// lowercased) before storage so the UNIQUE constraint applies to the
     /// canonical form on both backends. Fails if the email is already taken.
     pub async fn create_user(
         &self,
         email: &str,
         display_name: Option<&str>,
-        password_hash: &str,
+        password_hash: Option<&str>,
         is_instance_admin: bool,
     ) -> Result<UserRecord, sqlx::Error> {
         let user_id = Uuid::new_v4().to_string();
@@ -2754,7 +4975,9 @@ impl Catalog {
             id: user_id,
             email,
             display_name: display_name.map(str::to_string),
-            password_hash: password_hash.to_string(),
+            password_hash: password_hash.map(str::to_string),
+            oidc_issuer: None,
+            oidc_subject: None,
             is_instance_admin,
             created_at: now,
             updated_at: now,
@@ -2762,19 +4985,156 @@ impl Catalog {
         })
     }
 
-    /// Get a user by ID
-    pub async fn get_user(&self, user_id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
-        let columns = "id, email, display_name, password_hash, is_instance_admin, created_at, updated_at, disabled_at";
+    /// Just-in-time provision a user carrying an OIDC identity (change:
+    /// oidc-login), for the "no existing match" branch of the
+    /// identity-resolution order (design decision 3). Always created with no
+    /// password (`password_hash = NULL`) and never as an instance admin —
+    /// mapping the instance-admin flag from a token claim is out of scope.
+    /// Fails (unique-index violation) if `(oidc_issuer, oidc_subject)` is
+    /// already linked to another user, or if the email is already taken.
+    ///
+    /// Runs the user INSERT and the identity-link UPDATE in one transaction
+    /// so a `(oidc_issuer, oidc_subject)` unique-index violation on the
+    /// second statement rolls back the first: without this, a duplicate
+    /// identity would leave an orphaned, passwordless user row that
+    /// permanently claims `email`.
+    pub async fn create_oidc_user(
+        &self,
+        email: &str,
+        display_name: Option<&str>,
+        oidc_issuer: &str,
+        oidc_subject: &str,
+    ) -> Result<UserRecord, sqlx::Error> {
+        let user_id = Uuid::new_v4().to_string();
+        let email = canonicalize_email(email);
+        let now = Utc::now();
+
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE id = ?"))
+                let now_str = now.to_rfc3339();
+                let mut tx = pool.begin().await?;
+                query(
+                    r#"
+                    INSERT INTO users (id, email, display_name, password_hash, is_instance_admin, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(&email)
+                .bind(display_name)
+                .bind(None::<&str>)
+                .bind(false)
+                .bind(&now_str)
+                .bind(&now_str)
+                .execute(&mut *tx)
+                .await?;
+                query(
+                    "UPDATE users SET oidc_issuer = ?, oidc_subject = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(&now_str)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query(
+                    r#"
+                    INSERT INTO users (id, email, display_name, password_hash, is_instance_admin, created_at, updated_at)
+                    VALUES ($1, $2, $3, $4, $5, $6, $7)
+                    "#,
+                )
+                .bind(&user_id)
+                .bind(&email)
+                .bind(display_name)
+                .bind(None::<&str>)
+                .bind(false)
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+                query(
+                    "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, updated_at = $3 WHERE id = $4",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now)
+                .bind(&user_id)
+                .execute(&mut *tx)
+                .await?;
+                tx.commit().await?;
+            }
+        }
+
+        Ok(UserRecord {
+            id: user_id,
+            email,
+            display_name: display_name.map(str::to_string),
+            password_hash: None,
+            oidc_issuer: Some(oidc_issuer.to_string()),
+            oidc_subject: Some(oidc_subject.to_string()),
+            is_instance_admin: false,
+            created_at: now,
+            updated_at: now,
+            disabled_at: None,
+        })
+    }
+
+    /// Attach an OIDC identity to an existing user (change: oidc-login), for
+    /// the "verified email link" branch of the identity-resolution order
+    /// (design decision 3): the caller has already checked
+    /// `email_verified: true` and matched an existing user by email. Fails
+    /// (unique-index violation) if `(oidc_issuer, oidc_subject)` is already
+    /// linked to a different user.
+    pub async fn link_oidc_identity(
+        &self,
+        user_id: &str,
+        oidc_issuer: &str,
+        oidc_subject: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "UPDATE users SET oidc_issuer = ?, oidc_subject = ?, updated_at = ? WHERE id = ?",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now.to_rfc3339())
+                .bind(user_id)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE users SET oidc_issuer = $1, oidc_subject = $2, updated_at = $3 WHERE id = $4",
+                )
+                .bind(oidc_issuer)
+                .bind(oidc_subject)
+                .bind(now)
+                .bind(user_id)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a user by ID
+    pub async fn get_user(&self, user_id: &str) -> Result<Option<UserRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = ?"))
                     .bind(user_id)
                     .fetch_optional(pool)
                     .await?;
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE id = $1"))
+                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE id = $1"))
                     .bind(user_id)
                     .fetch_optional(pool)
                     .await?;
@@ -2789,20 +5149,55 @@ impl Catalog {
     /// the form stored by [`Catalog::create_user`].
     pub async fn get_user_by_email(&self, email: &str) -> Result<Option<UserRecord>, sqlx::Error> {
         let email = canonicalize_email(email);
-        let columns = "id, email, display_name, password_hash, is_instance_admin, created_at, updated_at, disabled_at";
         match self {
             Catalog::Sqlite(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE email = ?"))
+                let row = query(&format!("SELECT {USER_COLUMNS} FROM users WHERE email = ?"))
                     .bind(&email)
                     .fetch_optional(pool)
                     .await?;
                 row.map(|r| user_from_sqlite_row(&r)).transpose()
             }
             Catalog::Postgres(pool) => {
-                let row = query(&format!("SELECT {columns} FROM users WHERE email = $1"))
-                    .bind(&email)
-                    .fetch_optional(pool)
-                    .await?;
+                let row = query(&format!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE email = $1"
+                ))
+                .bind(&email)
+                .fetch_optional(pool)
+                .await?;
+                Ok(row.map(|r| user_from_pg_row(&r)))
+            }
+        }
+    }
+
+    /// Get a user by their linked OIDC identity (change: oidc-login).
+    ///
+    /// `(issuer, subject)` is the first step of the identity-resolution
+    /// order (design decision 3): a hit here always wins over an
+    /// email-based link.
+    pub async fn find_user_by_oidc_identity(
+        &self,
+        issuer: &str,
+        subject: &str,
+    ) -> Result<Option<UserRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE oidc_issuer = ? AND oidc_subject = ?"
+                ))
+                .bind(issuer)
+                .bind(subject)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| user_from_sqlite_row(&r)).transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {USER_COLUMNS} FROM users WHERE oidc_issuer = $1 AND oidc_subject = $2"
+                ))
+                .bind(issuer)
+                .bind(subject)
+                .fetch_optional(pool)
+                .await?;
                 Ok(row.map(|r| user_from_pg_row(&r)))
             }
         }
@@ -2810,16 +5205,15 @@ impl Catalog {
 
     /// List all users, ordered by email
     pub async fn list_users(&self) -> Result<Vec<UserRecord>, sqlx::Error> {
-        let columns = "id, email, display_name, password_hash, is_instance_admin, created_at, updated_at, disabled_at";
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(&format!("SELECT {columns} FROM users ORDER BY email"))
+                let rows = query(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY email"))
                     .fetch_all(pool)
                     .await?;
                 rows.iter().map(user_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(&format!("SELECT {columns} FROM users ORDER BY email"))
+                let rows = query(&format!("SELECT {USER_COLUMNS} FROM users ORDER BY email"))
                     .fetch_all(pool)
                     .await?;
                 Ok(rows.iter().map(user_from_pg_row).collect())
@@ -2866,7 +5260,51 @@ impl Catalog {
         Ok(())
     }
 
-    /// Add a user to a tenant, or update their role if already a member
+    /// Overwrite a user's password hash (already hashed by the caller).
+    ///
+    /// Bumps `updated_at`. Returns `sqlx::Error::RowNotFound` if the user
+    /// does not exist. Used by demo-mode provisioning (change: demo-mode)
+    /// to reset the demo account's password to the configured value on
+    /// every router startup, and available to any future admin
+    /// "reset password" path.
+    pub async fn set_user_password(
+        &self,
+        user_id: &str,
+        password_hash: &str,
+    ) -> Result<(), sqlx::Error> {
+        let now = Utc::now();
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => {
+                query("UPDATE users SET password_hash = ?, updated_at = ? WHERE id = ?")
+                    .bind(password_hash)
+                    .bind(now.to_rfc3339())
+                    .bind(user_id)
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            }
+            Catalog::Postgres(pool) => {
+                query("UPDATE users SET password_hash = $1, updated_at = $2 WHERE id = $3")
+                    .bind(password_hash)
+                    .bind(now)
+                    .bind(user_id)
+                    .execute(pool)
+                    .await?
+                    .rows_affected()
+            }
+        };
+        if rows_affected == 0 {
+            return Err(sqlx::Error::RowNotFound);
+        }
+        Ok(())
+    }
+
+    /// Add a user to a tenant, or update their role if already a member.
+    ///
+    /// Pinned to `granted_by = 'local'` (change: oidc-login design
+    /// decision 5): this is the admin API/CLI/MCP path, and it must never
+    /// create or overwrite a mapping-managed row. A mapped row for the same
+    /// `(user_id, tenant_id)` is untouched and coexists independently.
     pub async fn upsert_tenant_membership(
         &self,
         user_id: &str,
@@ -2877,28 +5315,30 @@ impl Catalog {
             Catalog::Sqlite(pool) => {
                 let now = Utc::now().to_rfc3339();
                 let stmt = r#"
-                INSERT INTO tenant_memberships (user_id, tenant_id, role, created_at)
-                VALUES (?, ?, ?, ?)
-                ON CONFLICT (user_id, tenant_id) DO UPDATE SET role = excluded.role
+                INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by, created_at)
+                VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT (user_id, tenant_id, granted_by) DO UPDATE SET role = excluded.role
                 "#;
                 query(stmt)
                     .bind(user_id)
                     .bind(tenant_id)
                     .bind(role.as_str())
+                    .bind(GrantSource::Local.as_str())
                     .bind(&now)
                     .execute(pool)
                     .await?;
             }
             Catalog::Postgres(pool) => {
                 let stmt = r#"
-                INSERT INTO tenant_memberships (user_id, tenant_id, role)
-                VALUES ($1, $2, $3)
-                ON CONFLICT (user_id, tenant_id) DO UPDATE SET role = EXCLUDED.role
+                INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by)
+                VALUES ($1, $2, $3, $4)
+                ON CONFLICT (user_id, tenant_id, granted_by) DO UPDATE SET role = EXCLUDED.role
                 "#;
                 query(stmt)
                     .bind(user_id)
                     .bind(tenant_id)
                     .bind(role.as_str())
+                    .bind(GrantSource::Local.as_str())
                     .execute(pool)
                     .await?;
             }
@@ -2906,7 +5346,12 @@ impl Catalog {
         Ok(())
     }
 
-    /// Remove a user from a tenant (idempotent)
+    /// Remove a user's locally-granted membership from a tenant (idempotent).
+    ///
+    /// Pinned to `granted_by = 'local'` (change: oidc-login design
+    /// decision 5): a mapping-managed row for the same `(user_id,
+    /// tenant_id)` is never deleted by this path — only
+    /// [`Catalog::sync_oidc_memberships`] touches `oidc_mapping` rows.
     pub async fn remove_tenant_membership(
         &self,
         user_id: &str,
@@ -2914,72 +5359,178 @@ impl Catalog {
     ) -> Result<(), sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                query("DELETE FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?")
-                    .bind(user_id)
-                    .bind(tenant_id)
-                    .execute(pool)
-                    .await?;
+                query(
+                    "DELETE FROM tenant_memberships WHERE user_id = ? AND tenant_id = ? AND granted_by = ?",
+                )
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(GrantSource::Local.as_str())
+                .execute(pool)
+                .await?;
             }
             Catalog::Postgres(pool) => {
-                query("DELETE FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2")
-                    .bind(user_id)
-                    .bind(tenant_id)
-                    .execute(pool)
-                    .await?;
+                query(
+                    "DELETE FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2 AND granted_by = $3",
+                )
+                .bind(user_id)
+                .bind(tenant_id)
+                .bind(GrantSource::Local.as_str())
+                .execute(pool)
+                .await?;
             }
         }
         Ok(())
     }
 
-    /// Get a single membership for a (user, tenant) pair
+    /// Sync OIDC-group-mapped memberships for a user at login (change:
+    /// oidc-login design decisions 5 & 6).
+    ///
+    /// In one transaction, replaces every `granted_by = 'oidc_mapping'` row
+    /// for this user with exactly `desired`: mappings the token's groups no
+    /// longer produce are removed, and the rest are (re)written at their
+    /// mapped role. `granted_by = 'local'` rows are never read or written,
+    /// so admin-granted memberships coexist untouched.
+    ///
+    /// `desired` may name the same `tenant_id` more than once — e.g. two
+    /// `group_mappings` rules both target `acme` and the user's token
+    /// carries both groups. That's collapsed to a single row per tenant at
+    /// the highest-ranked role before writing, so callers don't need to
+    /// de-duplicate and a duplicate never trips the `(user_id, tenant_id,
+    /// granted_by)` primary key.
+    pub async fn sync_oidc_memberships(
+        &self,
+        user_id: &str,
+        desired: &[(String, MembershipRole)],
+    ) -> Result<(), sqlx::Error> {
+        let mut by_tenant: std::collections::HashMap<&str, MembershipRole> =
+            std::collections::HashMap::new();
+        for (tenant_id, role) in desired {
+            by_tenant
+                .entry(tenant_id.as_str())
+                .and_modify(|existing| {
+                    if role.rank() > existing.rank() {
+                        *existing = *role;
+                    }
+                })
+                .or_insert(*role);
+        }
+        let desired: Vec<(String, MembershipRole)> = by_tenant
+            .into_iter()
+            .map(|(tenant_id, role)| (tenant_id.to_string(), role))
+            .collect();
+        let desired = desired.as_slice();
+        match self {
+            Catalog::Sqlite(pool) => {
+                let mut tx = pool.begin().await?;
+                query("DELETE FROM tenant_memberships WHERE user_id = ? AND granted_by = ?")
+                    .bind(user_id)
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                // One timestamp for the whole sync (loop-invariant), matching
+                // the Postgres branch where every row shares the transaction's
+                // `NOW()` default.
+                let now = Utc::now().to_rfc3339();
+                for (tenant_id, role) in desired {
+                    query(
+                        "INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by, created_at) \
+                         VALUES (?, ?, ?, ?, ?)",
+                    )
+                    .bind(user_id)
+                    .bind(tenant_id)
+                    .bind(role.as_str())
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .bind(&now)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                query("DELETE FROM tenant_memberships WHERE user_id = $1 AND granted_by = $2")
+                    .bind(user_id)
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                for (tenant_id, role) in desired {
+                    query(
+                        "INSERT INTO tenant_memberships (user_id, tenant_id, role, granted_by) \
+                         VALUES ($1, $2, $3, $4)",
+                    )
+                    .bind(user_id)
+                    .bind(tenant_id)
+                    .bind(role.as_str())
+                    .bind(GrantSource::OidcMapping.as_str())
+                    .execute(&mut *tx)
+                    .await?;
+                }
+                tx.commit().await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Get a user's effective membership for a tenant.
+    ///
+    /// A user may hold both a `local` and an `oidc_mapping` row for the
+    /// same tenant (change: oidc-login design decision 5); this returns the
+    /// one with the higher-ranked role (`admin` > `member` > `viewer`),
+    /// with `granted_by` naming the source that supplied it.
     pub async fn get_tenant_membership(
         &self,
         user_id: &str,
         tenant_id: &str,
     ) -> Result<Option<TenantMembershipRecord>, sqlx::Error> {
-        match self {
+        let rows = match self {
             Catalog::Sqlite(pool) => {
-                let row = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?",
-                )
+                query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = ? AND tenant_id = ?"
+                ))
                 .bind(user_id)
                 .bind(tenant_id)
-                .fetch_optional(pool)
-                .await?;
-                row.map(|r| membership_from_sqlite_row(&r)).transpose()
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(membership_from_sqlite_row)
+                .collect::<Result<Vec<_>, _>>()?
             }
             Catalog::Postgres(pool) => {
-                let row = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2",
-                )
+                query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = $1 AND tenant_id = $2"
+                ))
                 .bind(user_id)
                 .bind(tenant_id)
-                .fetch_optional(pool)
-                .await?;
-                row.map(|r| membership_from_pg_row(&r)).transpose()
+                .fetch_all(pool)
+                .await?
+                .iter()
+                .map(membership_from_pg_row)
+                .collect::<Result<Vec<_>, _>>()?
             }
-        }
+        };
+        Ok(effective_membership(rows))
     }
 
-    /// List all tenant memberships for a user
+    /// List every tenant-membership row for a user, including both `local`
+    /// and `oidc_mapping` rows for the same tenant when both exist.
     pub async fn list_memberships_for_user(
         &self,
         user_id: &str,
     ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = ? ORDER BY tenant_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = ? ORDER BY tenant_id"
+                ))
                 .bind(user_id)
                 .fetch_all(pool)
                 .await?;
                 rows.iter().map(membership_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE user_id = $1 ORDER BY tenant_id"
+                ))
                 .bind(user_id)
                 .fetch_all(pool)
                 .await?;
@@ -2988,25 +5539,57 @@ impl Catalog {
         }
     }
 
-    /// List all user memberships for a tenant
+    /// List a user's memberships folded to one effective row per tenant
+    /// (change: oidc-login, "session views count a tenant once"): a user
+    /// holding both a `local` and an `oidc_mapping` row in the same tenant
+    /// is reported once here, at the higher-ranked role via
+    /// [`effective_membership`] — the same resolution
+    /// [`Catalog::get_tenant_membership`] applies to a single tenant,
+    /// applied across every tenant the user belongs to.
+    ///
+    /// For session-facing surfaces only (`GET /ui/session`,
+    /// `POST /ui/session`, `GET /api/v1/whoami`): the admin management list
+    /// (`list_members_for_tenant`) deliberately keeps showing both rows, so
+    /// an admin can tell a local grant from a mapped one.
+    pub async fn list_effective_memberships_for_user(
+        &self,
+        user_id: &str,
+    ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
+        let rows = self.list_memberships_for_user(user_id).await?;
+        let mut by_tenant: std::collections::BTreeMap<String, Vec<TenantMembershipRecord>> =
+            std::collections::BTreeMap::new();
+        for row in rows {
+            by_tenant
+                .entry(row.tenant_id.clone())
+                .or_default()
+                .push(row);
+        }
+        Ok(by_tenant
+            .into_values()
+            .filter_map(effective_membership)
+            .collect())
+    }
+
+    /// List every tenant-membership row for a tenant, including both
+    /// `local` and `oidc_mapping` rows for the same user when both exist.
     pub async fn list_members_for_tenant(
         &self,
         tenant_id: &str,
     ) -> Result<Vec<TenantMembershipRecord>, sqlx::Error> {
         match self {
             Catalog::Sqlite(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE tenant_id = ? ORDER BY user_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE tenant_id = ? ORDER BY user_id"
+                ))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?;
                 rows.iter().map(membership_from_sqlite_row).collect()
             }
             Catalog::Postgres(pool) => {
-                let rows = query(
-                    "SELECT user_id, tenant_id, role, created_at FROM tenant_memberships WHERE tenant_id = $1 ORDER BY user_id",
-                )
+                let rows = query(&format!(
+                    "SELECT {MEMBERSHIP_COLUMNS} FROM tenant_memberships WHERE tenant_id = $1 ORDER BY user_id"
+                ))
                 .bind(tenant_id)
                 .fetch_all(pool)
                 .await?;
@@ -3067,6 +5650,59 @@ impl Catalog {
             expires_at,
             revoked_at: None,
         })
+    }
+
+    /// Slide a session's expiry forward. A no-op (affecting zero rows) if the
+    /// session is already revoked or does not exist; the caller treats a
+    /// failed renewal as non-fatal since the session remains valid until its
+    /// original expiry.
+    pub async fn extend_session(
+        &self,
+        session_id: &str,
+        expires_at: DateTime<Utc>,
+    ) -> Result<(), sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "UPDATE user_sessions SET expires_at = ? WHERE id = ? AND revoked_at IS NULL",
+                )
+                .bind(expires_at.to_rfc3339())
+                .bind(session_id)
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE user_sessions SET expires_at = $1 WHERE id = $2 AND revoked_at IS NULL",
+                )
+                .bind(expires_at)
+                .bind(session_id)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(())
+    }
+
+    /// Count every session row (revoked or not, expired or not) belonging to
+    /// a user. Used to assert that a refused login created nothing (change:
+    /// oidc-login task 3.4) rather than just that no cookie was returned.
+    pub async fn count_sessions_for_user(&self, user_id: &str) -> Result<i64, sqlx::Error> {
+        let count: i64 = match self {
+            Catalog::Sqlite(pool) => {
+                query_scalar("SELECT COUNT(*) FROM user_sessions WHERE user_id = ?")
+                    .bind(user_id)
+                    .fetch_one(pool)
+                    .await?
+            }
+            Catalog::Postgres(pool) => {
+                query_scalar("SELECT COUNT(*) FROM user_sessions WHERE user_id = $1")
+                    .bind(user_id)
+                    .fetch_one(pool)
+                    .await?
+            }
+        };
+        Ok(count)
     }
 
     /// Look up a session by token hash, returning it only if it is neither
@@ -3248,14 +5884,53 @@ impl Catalog {
         }
     }
 
+    /// Find the first tenant named in `tenant_grants` that no longer exists
+    /// in the tenant registry, or `None` if every one resolves. Mirrors
+    /// [`Catalog::find_dataset_not_in_tenant`]'s shape for the
+    /// tenant-existence check `tenant_grants` needs at write time, since the
+    /// column carries no DB-level FK (design: mcp-multi-tenant-oauth-grants,
+    /// D2/D3).
+    pub async fn find_tenant_grant_not_in_registry(
+        &self,
+        tenant_grants: &[TenantGrant],
+    ) -> Result<Option<String>, sqlx::Error> {
+        for grant in tenant_grants {
+            if self.get_tenant(&grant.tenant_id).await?.is_none() {
+                return Ok(Some(grant.tenant_id.clone()));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Validate a grant set against the tenant registry and JSON-encode it
+    /// for the `tenant_grants` column: non-empty (D2) and every named
+    /// tenant must currently exist (D3).
+    async fn encode_and_validate_tenant_grants(
+        &self,
+        tenant_grants: &[TenantGrant],
+    ) -> Result<String, sqlx::Error> {
+        if let Some(missing) = self
+            .find_tenant_grant_not_in_registry(tenant_grants)
+            .await?
+        {
+            return Err(sqlx::Error::Protocol(format!(
+                "tenant_grants names unknown tenant '{missing}'"
+            )));
+        }
+        encode_tenant_grants_json(tenant_grants)
+    }
+
     /// Store a single-use authorization code, keyed by its hash.
+    ///
+    /// `tenant_grants` must be non-empty and name only tenants that
+    /// currently exist, or this is rejected (D2/D3).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_authorization_code(
         &self,
         code_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
         redirect_uri: &str,
         code_challenge: &str,
@@ -3264,16 +5939,19 @@ impl Catalog {
     ) -> Result<(), sqlx::Error> {
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
+        let tenant_grants_json = self
+            .encode_and_validate_tenant_grants(tenant_grants)
+            .await?;
         let now = Utc::now();
         match self {
             Catalog::Sqlite(pool) => {
                 query(
-                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 )
                 .bind(code_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
                 .bind(redirect_uri)
                 .bind(code_challenge)
@@ -3285,12 +5963,12 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 query(
-                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+                    "INSERT INTO oauth_authorization_codes (code_hash, client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
                 )
                 .bind(code_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
                 .bind(redirect_uri)
                 .bind(code_challenge)
@@ -3312,7 +5990,7 @@ impl Catalog {
         &self,
         code_hash: &str,
     ) -> Result<Option<OAuthAuthorizationCode>, sqlx::Error> {
-        let cols = "client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, resource, created_at, expires_at";
+        let cols = "client_id, user_id, tenant_grants, scopes, redirect_uri, code_challenge, resource, created_at, expires_at";
         let record = match self {
             Catalog::Sqlite(pool) => {
                 let row = query(&format!(
@@ -3326,7 +6004,7 @@ impl Catalog {
                     Some(r) => OAuthAuthorizationCode {
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
                         redirect_uri: r.get("redirect_uri"),
                         code_challenge: r.get("code_challenge"),
@@ -3348,7 +6026,7 @@ impl Catalog {
                     Some(r) => OAuthAuthorizationCode {
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
                         redirect_uri: r.get("redirect_uri"),
                         code_challenge: r.get("code_challenge"),
@@ -3366,13 +6044,16 @@ impl Catalog {
     }
 
     /// Store an opaque access token, keyed by its hash, and return the grant.
+    ///
+    /// `tenant_grants` must be non-empty and name only tenants that
+    /// currently exist, or this is rejected (D2/D3).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_access_token(
         &self,
         token_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
@@ -3382,22 +6063,26 @@ impl Catalog {
             token_hash,
             client_id,
             user_id,
-            tenant_id,
+            tenant_grants,
             scopes,
             resource,
             expires_at,
+            true,
         )
         .await
     }
 
     /// Store an opaque refresh token, keyed by its hash, and return the grant.
+    ///
+    /// `tenant_grants` must be non-empty and name only tenants that
+    /// currently exist, or this is rejected (D2/D3).
     #[allow(clippy::too_many_arguments)]
     pub async fn create_refresh_token(
         &self,
         token_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
@@ -3407,15 +6092,89 @@ impl Catalog {
             token_hash,
             client_id,
             user_id,
-            tenant_id,
+            tenant_grants,
             scopes,
             resource,
             expires_at,
+            true,
         )
         .await
     }
 
-    /// Shared INSERT for the structurally-identical access/refresh token tables.
+    /// Store an opaque access token from an already-trusted grant set (e.g.
+    /// refreshing an existing token), skipping the tenant-registry
+    /// existence check (D3) — the grant's entries were already validated
+    /// when first created, so a refresh doesn't pay a DB round trip per
+    /// entry to re-confirm it, and a tenant deleted since then doesn't
+    /// fail the whole refresh over one now-stale entry (that entry simply
+    /// fails to resolve later, same as it already would without a
+    /// refresh in between). Shape validation (non-empty, no duplicate
+    /// `tenant_id`, well-formed `dataset_ids`) still always runs.
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_access_token_trusted(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_grants: &[TenantGrant],
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_access_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_grants,
+            scopes,
+            resource,
+            expires_at,
+            false,
+        )
+        .await
+    }
+
+    /// Store an opaque refresh token from an already-trusted grant set (the
+    /// rotated replacement for a presented refresh token) — see
+    /// [`Catalog::create_access_token_trusted`].
+    #[allow(clippy::too_many_arguments)]
+    pub async fn create_refresh_token_trusted(
+        &self,
+        token_hash: &str,
+        client_id: &str,
+        user_id: &str,
+        tenant_grants: &[TenantGrant],
+        scopes: &[String],
+        resource: Option<&str>,
+        expires_at: DateTime<Utc>,
+    ) -> Result<OAuthTokenRecord, sqlx::Error> {
+        self.insert_oauth_token(
+            "oauth_refresh_tokens",
+            token_hash,
+            client_id,
+            user_id,
+            tenant_grants,
+            scopes,
+            resource,
+            expires_at,
+            false,
+        )
+        .await
+    }
+
+    /// Shared INSERT for the structurally-identical access/refresh token
+    /// tables. `check_registry` runs the async tenant-existence check
+    /// (D3) — skipped when `tenant_grants` is known-trusted (already
+    /// validated when the grant was first created, e.g. refreshing an
+    /// existing token), so a refresh doesn't pay a DB round trip per
+    /// grant entry to re-confirm something a prior write already
+    /// confirmed, and so a tenant deleted after the original grant
+    /// doesn't fail the *whole* refresh over one now-stale entry — that
+    /// entry simply fails to resolve later (D3), exactly as it already
+    /// would without a refresh in between. Shape validation (non-empty,
+    /// no duplicate `tenant_id`, well-formed `dataset_ids`) always runs
+    /// regardless, via [`encode_tenant_grants_json`].
     #[allow(clippy::too_many_arguments)]
     async fn insert_oauth_token(
         &self,
@@ -3423,25 +6182,32 @@ impl Catalog {
         token_hash: &str,
         client_id: &str,
         user_id: &str,
-        tenant_id: &str,
+        tenant_grants: &[TenantGrant],
         scopes: &[String],
         resource: Option<&str>,
         expires_at: DateTime<Utc>,
+        check_registry: bool,
     ) -> Result<OAuthTokenRecord, sqlx::Error> {
         let id = Uuid::new_v4().to_string();
         let now = Utc::now();
         let scopes_json = serde_json::to_string(scopes)
             .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize scopes: {e}")))?;
+        let tenant_grants_json = if check_registry {
+            self.encode_and_validate_tenant_grants(tenant_grants)
+                .await?
+        } else {
+            encode_tenant_grants_json(tenant_grants)?
+        };
         match self {
             Catalog::Sqlite(pool) => {
                 query(&format!(
-                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)"
                 ))
                 .bind(&id)
                 .bind(token_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
                 .bind(resource)
                 .bind(now.to_rfc3339())
@@ -3451,13 +6217,13 @@ impl Catalog {
             }
             Catalog::Postgres(pool) => {
                 query(&format!(
-                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
+                    "INSERT INTO {table} (id, token_hash, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)"
                 ))
                 .bind(&id)
                 .bind(token_hash)
                 .bind(client_id)
                 .bind(user_id)
-                .bind(tenant_id)
+                .bind(&tenant_grants_json)
                 .bind(&scopes_json)
                 .bind(resource)
                 .bind(now)
@@ -3470,7 +6236,7 @@ impl Catalog {
             id,
             client_id: client_id.to_string(),
             user_id: user_id.to_string(),
-            tenant_id: tenant_id.to_string(),
+            tenant_grants: tenant_grants.to_vec(),
             scopes: scopes.to_vec(),
             resource: resource.map(str::to_owned),
             created_at: now,
@@ -3502,7 +6268,8 @@ impl Catalog {
         table: &str,
         token_hash: &str,
     ) -> Result<Option<OAuthTokenRecord>, sqlx::Error> {
-        let cols = "id, client_id, user_id, tenant_id, scopes, resource, created_at, expires_at";
+        let cols =
+            "id, client_id, user_id, tenant_grants, scopes, resource, created_at, expires_at";
         match self {
             Catalog::Sqlite(pool) => {
                 let row = query(&format!(
@@ -3517,7 +6284,7 @@ impl Catalog {
                         id: r.get("id"),
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
                         resource: r.get("resource"),
                         created_at: parse_rfc3339(r.get("created_at"))?,
@@ -3538,7 +6305,7 @@ impl Catalog {
                         id: r.get("id"),
                         client_id: r.get("client_id"),
                         user_id: r.get("user_id"),
-                        tenant_id: r.get("tenant_id"),
+                        tenant_grants: decode_tenant_grants_column(r.get("tenant_grants"))?,
                         scopes: decode_json_vec(r.get("scopes"))?,
                         resource: r.get("resource"),
                         created_at: r.get("created_at"),
@@ -3646,6 +6413,606 @@ impl Catalog {
         }
         Ok(deleted)
     }
+}
+
+// ── GitHub App installation linking (change: github-app-source-context) ───
+
+/// A single-use, expiring state token issued before redirecting a tenant
+/// admin to GitHub's install flow (change: github-app-source-context). Only
+/// `state_hash` (a sha256 hex digest of the opaque token) is stored — the
+/// raw token is never persisted, matching how OAuth authorization codes and
+/// tokens are stored by hash elsewhere in this module.
+#[derive(Debug, Clone, PartialEq)]
+pub struct GitHubLinkStateRecord {
+    pub state_hash: String,
+    pub tenant_id: String,
+    /// `None` when the flow was started by an API-key principal rather than
+    /// a logged-in user.
+    pub user_id: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub expires_at: DateTime<Utc>,
+    pub consumed_at: Option<DateTime<Utc>>,
+}
+
+/// A linked GitHub App installation (change: github-app-source-context).
+/// `repositories` is the last-known set of "owner/name" full names the
+/// installation covers, refreshed by [`Catalog::update_github_installation_repositories`].
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GitHubInstallationRecord {
+    pub tenant_id: String,
+    pub installation_id: i64,
+    pub account_login: String,
+    pub account_type: String,
+    pub account_id: i64,
+    pub repositories: Vec<String>,
+    pub repositories_synced_at: DateTime<Utc>,
+    pub linked_by_user_id: Option<String>,
+    pub linked_by_github_login: Option<String>,
+    pub created_at: DateTime<Utc>,
+    pub updated_at: DateTime<Utc>,
+}
+
+/// What a GitHub install-flow callback learned and wants stored, passed to
+/// [`Catalog::complete_github_link`] (change: github-app-source-context).
+#[derive(Debug, Clone)]
+pub struct NewGitHubInstallation {
+    pub installation_id: i64,
+    pub account_login: String,
+    pub account_type: String,
+    pub account_id: i64,
+    pub repositories: Vec<String>,
+    pub linked_by_user_id: Option<String>,
+    pub linked_by_github_login: Option<String>,
+}
+
+/// Outcome of [`Catalog::complete_github_link`] (change:
+/// github-app-source-context).
+#[derive(Debug, PartialEq, Eq)]
+pub enum GitHubLinkOutcome {
+    /// The state token was valid, unexpired, and unused; the installation
+    /// was created or refreshed for the tenant the state token names.
+    Linked(GitHubInstallationRecord),
+    /// The state token was missing, expired, or already consumed. Nothing
+    /// was written.
+    StateRejected,
+}
+
+impl Catalog {
+    /// Mint a link-flow state token record (change:
+    /// github-app-source-context). The caller generates the opaque token and
+    /// passes only its sha256 hex digest (`state_hash`); the raw token is
+    /// never persisted. `user_id` is `None` for an API-key-initiated flow.
+    pub async fn create_github_link_state(
+        &self,
+        state_hash: &str,
+        tenant_id: &str,
+        user_id: Option<&str>,
+        ttl: std::time::Duration,
+    ) -> Result<GitHubLinkStateRecord, sqlx::Error> {
+        let now = Utc::now();
+        let expires_at = now + chrono::Duration::from_std(ttl).unwrap_or(chrono::Duration::MAX);
+        match self {
+            Catalog::Sqlite(pool) => {
+                query(
+                    "INSERT INTO github_link_states (state_hash, tenant_id, user_id, created_at, expires_at) VALUES (?, ?, ?, ?, ?)",
+                )
+                .bind(state_hash)
+                .bind(tenant_id)
+                .bind(user_id)
+                .bind(now.to_rfc3339())
+                .bind(expires_at.to_rfc3339())
+                .execute(pool)
+                .await?;
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "INSERT INTO github_link_states (state_hash, tenant_id, user_id, created_at, expires_at) VALUES ($1, $2, $3, $4, $5)",
+                )
+                .bind(state_hash)
+                .bind(tenant_id)
+                .bind(user_id)
+                .bind(now)
+                .bind(expires_at)
+                .execute(pool)
+                .await?;
+            }
+        }
+        Ok(GitHubLinkStateRecord {
+            state_hash: state_hash.to_string(),
+            tenant_id: tenant_id.to_string(),
+            user_id: user_id.map(str::to_owned),
+            created_at: now,
+            expires_at,
+            consumed_at: None,
+        })
+    }
+
+    /// Raw lookup of a link-state row by hash, regardless of expiry or
+    /// consumption (change: github-app-source-context). Callers use this to
+    /// choose *which* redirect error to show (expired vs. unknown vs.
+    /// already used); it is never the security check — that is
+    /// [`Catalog::complete_github_link`], which re-validates atomically.
+    pub async fn get_github_link_state(
+        &self,
+        state_hash: &str,
+    ) -> Result<Option<GitHubLinkStateRecord>, sqlx::Error> {
+        let cols = "state_hash, tenant_id, user_id, created_at, expires_at, consumed_at";
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {cols} FROM github_link_states WHERE state_hash = ?"
+                ))
+                .bind(state_hash)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(GitHubLinkStateRecord {
+                        state_hash: r.get("state_hash"),
+                        tenant_id: r.get("tenant_id"),
+                        user_id: r.get("user_id"),
+                        created_at: parse_rfc3339(r.get("created_at"))?,
+                        expires_at: parse_rfc3339(r.get("expires_at"))?,
+                        consumed_at: r
+                            .get::<Option<String>, _>("consumed_at")
+                            .map(|s| parse_rfc3339(&s))
+                            .transpose()?,
+                    })
+                })
+                .transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {cols} FROM github_link_states WHERE state_hash = $1"
+                ))
+                .bind(state_hash)
+                .fetch_optional(pool)
+                .await?;
+                row.map(|r| {
+                    Ok::<_, sqlx::Error>(GitHubLinkStateRecord {
+                        state_hash: r.get("state_hash"),
+                        tenant_id: r.get("tenant_id"),
+                        user_id: r.get("user_id"),
+                        created_at: r.get("created_at"),
+                        expires_at: r.get("expires_at"),
+                        consumed_at: r.get("consumed_at"),
+                    })
+                })
+                .transpose()
+            }
+        }
+    }
+
+    /// Atomically validate, consume, and record a GitHub App installation
+    /// link (change: github-app-source-context). Consuming the state token
+    /// and creating/refreshing the installation row happen inside a single
+    /// transaction, so two concurrent completions presenting the same state
+    /// token cannot both succeed, and a state token is never left consumed
+    /// without a corresponding installation record.
+    ///
+    /// A missing, expired, or already-consumed `state_hash` yields
+    /// [`GitHubLinkOutcome::StateRejected`] with nothing written. Otherwise
+    /// the installation is upserted for the tenant the state token names
+    /// (keyed by `(tenant_id, installation_id)`), so completing a fresh
+    /// state token for an installation that is already linked refreshes the
+    /// row (e.g. after the admin added repos on GitHub) instead of failing.
+    pub async fn complete_github_link(
+        &self,
+        state_hash: &str,
+        installation: &NewGitHubInstallation,
+    ) -> Result<GitHubLinkOutcome, sqlx::Error> {
+        let now = Utc::now();
+        let repositories_json = serde_json::to_string(&installation.repositories)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize repositories: {e}")))?;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = now.to_rfc3339();
+                let mut tx = pool.begin().await?;
+                let consumed = query(
+                    "UPDATE github_link_states SET consumed_at = ? \
+                     WHERE state_hash = ? AND consumed_at IS NULL AND expires_at > ? \
+                     RETURNING tenant_id",
+                )
+                .bind(&now_str)
+                .bind(state_hash)
+                .bind(&now_str)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(consumed_row) = consumed else {
+                    tx.rollback().await?;
+                    return Ok(GitHubLinkOutcome::StateRejected);
+                };
+                let tenant_id: String = consumed_row.get("tenant_id");
+
+                let row = query(&github_installation_upsert_sqlite_sql())
+                    .bind(&tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(&now_str)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(&now_str)
+                    .bind(&now_str)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                let record = github_installation_from_sqlite_row(row)?;
+                tx.commit().await?;
+                Ok(GitHubLinkOutcome::Linked(record))
+            }
+            Catalog::Postgres(pool) => {
+                let mut tx = pool.begin().await?;
+                let consumed = query(
+                    "UPDATE github_link_states SET consumed_at = $1 \
+                     WHERE state_hash = $2 AND consumed_at IS NULL AND expires_at > $1 \
+                     RETURNING tenant_id",
+                )
+                .bind(now)
+                .bind(state_hash)
+                .fetch_optional(&mut *tx)
+                .await?;
+                let Some(consumed_row) = consumed else {
+                    tx.rollback().await?;
+                    return Ok(GitHubLinkOutcome::StateRejected);
+                };
+                let tenant_id: String = consumed_row.get("tenant_id");
+
+                let row = query(&github_installation_upsert_postgres_sql())
+                    .bind(&tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(now)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(now)
+                    .fetch_one(&mut *tx)
+                    .await?;
+                let record = github_installation_from_postgres_row(row)?;
+                tx.commit().await?;
+                Ok(GitHubLinkOutcome::Linked(record))
+            }
+        }
+    }
+
+    /// Attach an already-existing GitHub App installation to `tenant_id`
+    /// directly, with no state token involved (change: github-installation
+    /// direct-attach). Unlike [`Catalog::complete_github_link`], this never
+    /// touches `github_link_states` — callers on this path (the admin
+    /// attach-installation endpoint) authorize via the caller's own
+    /// `tenant:manage` grant instead of a state token, since GitHub only
+    /// allows one App installation per account and so skips the consent
+    /// screen (and any redirect back here) once a second tenant tries to
+    /// link an already-installed account.
+    ///
+    /// Upserts on `(tenant_id, installation_id)`, so attaching the same
+    /// installation to the same tenant again refreshes the stored row
+    /// (matching [`Catalog::complete_github_link`]'s relink-refresh
+    /// semantics), and attaching the same `installation_id` to a *different*
+    /// tenant succeeds independently — the whole point of this method.
+    pub async fn attach_github_installation(
+        &self,
+        tenant_id: &str,
+        installation: &NewGitHubInstallation,
+    ) -> Result<GitHubInstallationRecord, sqlx::Error> {
+        let now = Utc::now();
+        let repositories_json = serde_json::to_string(&installation.repositories)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize repositories: {e}")))?;
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = now.to_rfc3339();
+                let row = query(&github_installation_upsert_sqlite_sql())
+                    .bind(tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(&now_str)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(&now_str)
+                    .bind(&now_str)
+                    .fetch_one(pool)
+                    .await?;
+                github_installation_from_sqlite_row(row)
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&github_installation_upsert_postgres_sql())
+                    .bind(tenant_id)
+                    .bind(installation.installation_id)
+                    .bind(&installation.account_login)
+                    .bind(&installation.account_type)
+                    .bind(installation.account_id)
+                    .bind(&repositories_json)
+                    .bind(now)
+                    .bind(&installation.linked_by_user_id)
+                    .bind(&installation.linked_by_github_login)
+                    .bind(now)
+                    .fetch_one(pool)
+                    .await?;
+                github_installation_from_postgres_row(row)
+            }
+        }
+    }
+
+    /// List a tenant's linked installations, ordered by account login then
+    /// installation id (change: github-app-source-context). Only ever looks
+    /// at rows for `tenant_id` — the tenant-isolation boundary for
+    /// installation resolution.
+    pub async fn list_github_installations(
+        &self,
+        tenant_id: &str,
+    ) -> Result<Vec<GitHubInstallationRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let rows = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = ? \
+                     ORDER BY account_login, installation_id"
+                ))
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+                rows.into_iter()
+                    .map(github_installation_from_sqlite_row)
+                    .collect()
+            }
+            Catalog::Postgres(pool) => {
+                let rows = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = $1 \
+                     ORDER BY account_login, installation_id"
+                ))
+                .bind(tenant_id)
+                .fetch_all(pool)
+                .await?;
+                rows.into_iter()
+                    .map(github_installation_from_postgres_row)
+                    .collect()
+            }
+        }
+    }
+
+    /// Look up one tenant's installation by id (change:
+    /// github-app-source-context). Scoped to `tenant_id` — an installation
+    /// id that belongs to another tenant is reported as not found.
+    pub async fn get_github_installation(
+        &self,
+        tenant_id: &str,
+        installation_id: i64,
+    ) -> Result<Option<GitHubInstallationRecord>, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let row = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = ? AND installation_id = ?"
+                ))
+                .bind(tenant_id)
+                .bind(installation_id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(github_installation_from_sqlite_row).transpose()
+            }
+            Catalog::Postgres(pool) => {
+                let row = query(&format!(
+                    "SELECT {GITHUB_INSTALLATION_COLUMNS} FROM github_installations WHERE tenant_id = $1 AND installation_id = $2"
+                ))
+                .bind(tenant_id)
+                .bind(installation_id)
+                .fetch_optional(pool)
+                .await?;
+                row.map(github_installation_from_postgres_row).transpose()
+            }
+        }
+    }
+
+    /// Resolve which of `tenant_id`'s installations, if any, covers
+    /// `full_name` (an "owner/name" repo full name), case-insensitively
+    /// (change: github-app-source-context). Only ever considers
+    /// `tenant_id`'s own rows, so a repo covered only by another tenant's
+    /// installation resolves to `None` here.
+    pub async fn find_github_installation_for_repository(
+        &self,
+        tenant_id: &str,
+        full_name: &str,
+    ) -> Result<Option<GitHubInstallationRecord>, sqlx::Error> {
+        let installations = self.list_github_installations(tenant_id).await?;
+        Ok(installations.into_iter().find(|installation| {
+            installation
+                .repositories
+                .iter()
+                .any(|repo| repo.eq_ignore_ascii_case(full_name))
+        }))
+    }
+
+    /// Refresh the stored covered-repo list for one installation (change:
+    /// github-app-source-context). Returns whether a row matched
+    /// `(tenant_id, installation_id)`.
+    pub async fn update_github_installation_repositories(
+        &self,
+        tenant_id: &str,
+        installation_id: i64,
+        repositories: &[String],
+    ) -> Result<bool, sqlx::Error> {
+        let repositories_json = serde_json::to_string(repositories)
+            .map_err(|e| sqlx::Error::Protocol(format!("failed to serialize repositories: {e}")))?;
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => {
+                let now_str = Utc::now().to_rfc3339();
+                query(
+                    "UPDATE github_installations SET repositories = ?, repositories_synced_at = ?, updated_at = ? \
+                     WHERE tenant_id = ? AND installation_id = ?",
+                )
+                .bind(&repositories_json)
+                .bind(&now_str)
+                .bind(&now_str)
+                .bind(tenant_id)
+                .bind(installation_id)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+            Catalog::Postgres(pool) => {
+                query(
+                    "UPDATE github_installations SET repositories = $1, repositories_synced_at = NOW(), updated_at = NOW() \
+                     WHERE tenant_id = $2 AND installation_id = $3",
+                )
+                .bind(&repositories_json)
+                .bind(tenant_id)
+                .bind(installation_id)
+                .execute(pool)
+                .await?
+                .rows_affected()
+            }
+        };
+        Ok(rows_affected > 0)
+    }
+
+    /// Remove a tenant's installation link (change:
+    /// github-app-source-context). Returns whether a row matched
+    /// `(tenant_id, installation_id)`.
+    pub async fn delete_github_installation(
+        &self,
+        tenant_id: &str,
+        installation_id: i64,
+    ) -> Result<bool, sqlx::Error> {
+        let rows_affected = match self {
+            Catalog::Sqlite(pool) => query(
+                "DELETE FROM github_installations WHERE tenant_id = ? AND installation_id = ?",
+            )
+            .bind(tenant_id)
+            .bind(installation_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+            Catalog::Postgres(pool) => query(
+                "DELETE FROM github_installations WHERE tenant_id = $1 AND installation_id = $2",
+            )
+            .bind(tenant_id)
+            .bind(installation_id)
+            .execute(pool)
+            .await?
+            .rows_affected(),
+        };
+        Ok(rows_affected > 0)
+    }
+
+    /// Reap expired and already-consumed link-state rows (change:
+    /// github-app-source-context). Mirrors [`Catalog::delete_expired_oauth_grants`];
+    /// wiring a periodic reaper is a tracked follow-up. Returns the number
+    /// of rows deleted.
+    pub async fn delete_expired_github_link_states(&self) -> Result<u64, sqlx::Error> {
+        match self {
+            Catalog::Sqlite(pool) => {
+                let now = Utc::now().to_rfc3339();
+                Ok(
+                    query("DELETE FROM github_link_states WHERE expires_at < ? OR consumed_at IS NOT NULL")
+                        .bind(&now)
+                        .execute(pool)
+                        .await?
+                        .rows_affected(),
+                )
+            }
+            Catalog::Postgres(pool) => Ok(query(
+                "DELETE FROM github_link_states WHERE expires_at < NOW() OR consumed_at IS NOT NULL",
+            )
+            .execute(pool)
+            .await?
+            .rows_affected()),
+        }
+    }
+}
+
+/// Decode a SQLite `github_installations` row (RFC3339 TEXT timestamps).
+/// The `github_installations` columns every read and `RETURNING` clause
+/// selects, in the order the row-mapping helpers below expect.
+const GITHUB_INSTALLATION_COLUMNS: &str = "tenant_id, installation_id, account_login, \
+     account_type, account_id, repositories, repositories_synced_at, linked_by_user_id, \
+     linked_by_github_login, created_at, updated_at";
+
+/// The `(tenant_id, installation_id)` upsert shared by
+/// [`Catalog::complete_github_link`] and [`Catalog::attach_github_installation`]
+/// — the two entry points that create or refresh a `github_installations` row,
+/// one via a state token and one direct. Kept as a single definition so the
+/// two can never drift apart. `linked_by_user_id` and `linked_by_github_login`
+/// are `COALESCE`d against the existing row rather than blindly overwritten:
+/// `attach` never obtains a GitHub user token, so it always passes `None` for
+/// both — this pair names the SignalDB user and GitHub identity that
+/// OAuth-verified ownership, a fact attach cannot establish and must not
+/// overwrite with the attaching admin's own identity (which admin performed
+/// the attach is recorded separately, in the router's own log line). Only a
+/// fresh non-null value (a real OAuth completion) may replace either.
+fn github_installation_upsert_sqlite_sql() -> String {
+    format!(
+        "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) \
+         ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+            account_login = excluded.account_login, \
+            account_type = excluded.account_type, \
+            account_id = excluded.account_id, \
+            repositories = excluded.repositories, \
+            repositories_synced_at = excluded.repositories_synced_at, \
+            linked_by_user_id = COALESCE(excluded.linked_by_user_id, github_installations.linked_by_user_id), \
+            linked_by_github_login = COALESCE(excluded.linked_by_github_login, github_installations.linked_by_github_login), \
+            updated_at = excluded.updated_at \
+         RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+    )
+}
+
+/// PostgreSQL counterpart of [`github_installation_upsert_sqlite_sql`].
+fn github_installation_upsert_postgres_sql() -> String {
+    format!(
+        "INSERT INTO github_installations ({GITHUB_INSTALLATION_COLUMNS}) \
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $10) \
+         ON CONFLICT (tenant_id, installation_id) DO UPDATE SET \
+            account_login = EXCLUDED.account_login, \
+            account_type = EXCLUDED.account_type, \
+            account_id = EXCLUDED.account_id, \
+            repositories = EXCLUDED.repositories, \
+            repositories_synced_at = EXCLUDED.repositories_synced_at, \
+            linked_by_user_id = COALESCE(EXCLUDED.linked_by_user_id, github_installations.linked_by_user_id), \
+            linked_by_github_login = COALESCE(EXCLUDED.linked_by_github_login, github_installations.linked_by_github_login), \
+            updated_at = EXCLUDED.updated_at \
+         RETURNING {GITHUB_INSTALLATION_COLUMNS}"
+    )
+}
+
+fn github_installation_from_sqlite_row(
+    row: sqlx::sqlite::SqliteRow,
+) -> Result<GitHubInstallationRecord, sqlx::Error> {
+    Ok(GitHubInstallationRecord {
+        tenant_id: row.get("tenant_id"),
+        installation_id: row.get("installation_id"),
+        account_login: row.get("account_login"),
+        account_type: row.get("account_type"),
+        account_id: row.get("account_id"),
+        repositories: decode_json_vec(row.get("repositories"))?,
+        repositories_synced_at: parse_rfc3339(row.get("repositories_synced_at"))?,
+        linked_by_user_id: row.get("linked_by_user_id"),
+        linked_by_github_login: row.get("linked_by_github_login"),
+        created_at: parse_rfc3339(row.get("created_at"))?,
+        updated_at: parse_rfc3339(row.get("updated_at"))?,
+    })
+}
+
+/// Decode a PostgreSQL `github_installations` row (native `TIMESTAMPTZ`).
+fn github_installation_from_postgres_row(
+    row: sqlx::postgres::PgRow,
+) -> Result<GitHubInstallationRecord, sqlx::Error> {
+    Ok(GitHubInstallationRecord {
+        tenant_id: row.get("tenant_id"),
+        installation_id: row.get("installation_id"),
+        account_login: row.get("account_login"),
+        account_type: row.get("account_type"),
+        account_id: row.get("account_id"),
+        repositories: decode_json_vec(row.get("repositories"))?,
+        repositories_synced_at: row.get("repositories_synced_at"),
+        linked_by_user_id: row.get("linked_by_user_id"),
+        linked_by_github_login: row.get("linked_by_github_login"),
+        created_at: row.get("created_at"),
+        updated_at: row.get("updated_at"),
+    })
 }
 
 // ── Compactor lease management ────────────────────────────────────────────────
@@ -3773,27 +7140,30 @@ impl Catalog {
 
         match self {
             Catalog::Sqlite(pool) => {
-                let stmt = r#"
-                UPDATE compactor_leases
-                SET expires_at = ?,
-                    renewed_at = ?
-                WHERE tenant_id    = ?
-                  AND dataset_id   = ?
-                  AND table_name   = ?
-                  AND partition_id = ?
-                  AND holder_id    = ?
-                "#;
-                let result = query(stmt)
-                    .bind(expires_at.to_rfc3339())
-                    .bind(now.to_rfc3339())
-                    .bind(tenant_id)
-                    .bind(dataset_id)
-                    .bind(table_name)
-                    .bind(partition_id)
-                    .bind(holder_id)
-                    .execute(pool)
-                    .await?;
-                Ok(result.rows_affected() > 0)
+                retry_on_sqlite_busy(|| async {
+                    let stmt = r#"
+                    UPDATE compactor_leases
+                    SET expires_at = ?,
+                        renewed_at = ?
+                    WHERE tenant_id    = ?
+                      AND dataset_id   = ?
+                      AND table_name   = ?
+                      AND partition_id = ?
+                      AND holder_id    = ?
+                    "#;
+                    query(stmt)
+                        .bind(expires_at.to_rfc3339())
+                        .bind(now.to_rfc3339())
+                        .bind(tenant_id)
+                        .bind(dataset_id)
+                        .bind(table_name)
+                        .bind(partition_id)
+                        .bind(holder_id)
+                        .execute(pool)
+                        .await
+                        .map(|r| r.rows_affected() > 0)
+                })
+                .await
             }
             Catalog::Postgres(pool) => {
                 // DB clock, matching try_acquire (clock-skew immunity).
@@ -3885,11 +7255,14 @@ impl Catalog {
         let now = Utc::now();
         match self {
             Catalog::Sqlite(pool) => {
-                let result = query("DELETE FROM compactor_leases WHERE expires_at < ?")
-                    .bind(now.to_rfc3339())
-                    .execute(pool)
-                    .await?;
-                Ok(result.rows_affected())
+                retry_on_sqlite_busy(|| async {
+                    query("DELETE FROM compactor_leases WHERE expires_at < ?")
+                        .bind(now.to_rfc3339())
+                        .execute(pool)
+                        .await
+                        .map(|r| r.rows_affected())
+                })
+                .await
             }
             Catalog::Postgres(pool) => {
                 let result = query("DELETE FROM compactor_leases WHERE expires_at < NOW()")
@@ -3975,11 +7348,317 @@ impl Catalog {
 mod multi_tenancy_tests {
     use super::*;
     use sha2::{Digest, Sha256};
+    use sqlx::ConnectOptions;
 
     fn hash_api_key(key: &str) -> String {
         let mut hasher = Sha256::new();
         hasher.update(key.as_bytes());
         hex::encode(hasher.finalize())
+    }
+
+    /// Assert the legacy `dataset_id` column has been dropped from
+    /// `api_keys` entirely (D1) — this repo's first column removal, run by
+    /// `Catalog::init()`.
+    async fn assert_no_legacy_dataset_id_column(catalog: &Catalog) {
+        let Catalog::Sqlite(pool) = catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        let columns = query("PRAGMA table_info(api_keys)")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        assert!(
+            columns
+                .iter()
+                .all(|row| row.get::<String, _>("name") != "dataset_id"),
+            "dataset_id column must not exist"
+        );
+    }
+
+    /// A pool created fresh via `Catalog::init()` never has the legacy
+    /// `dataset_id` column on `api_keys` — it's removed from the literal
+    /// `CREATE TABLE IF NOT EXISTS` string, so a fresh install never
+    /// creates it in the first place.
+    #[tokio::test]
+    async fn fresh_catalog_never_has_legacy_dataset_id_column() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        assert_no_legacy_dataset_id_column(&catalog).await;
+    }
+
+    /// Simulates an upgrade: a pool seeded with the pre-this-change schema
+    /// (legacy `dataset_id` column present, a row carrying both
+    /// `dataset_id` and `dataset_ids`) has the column dropped by
+    /// `Catalog::init()`, with every other column's data for that row
+    /// surviving untouched (D1/D2). A second `init()` against the
+    /// already-migrated pool is a no-op: no error, column stays absent.
+    #[tokio::test]
+    async fn catalog_init_drops_legacy_dataset_id_column_and_preserves_row_data() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        // Seed the pre-this-change schema directly, bypassing `Catalog::new`
+        // (which would run today's `init()` and drop the column immediately).
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL,
+                name TEXT,
+                dataset_id TEXT,
+                dataset_ids TEXT,
+                scopes TEXT,
+                created_by_user_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                revoked_at TEXT,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+                UNIQUE(tenant_id, name)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, dataset_ids, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-1', 'hash-1', 'acme', 'legacy-key', 'legacy-value', '[\"a\",\"b\"]', '[\"traces:read\"]', 'user-1', '2024-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        assert_no_legacy_dataset_id_column(&catalog).await;
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        let row = query(
+            "SELECT dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = 'key-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("dataset_ids"), "[\"a\",\"b\"]");
+        assert_eq!(row.get::<String, _>("scopes"), "[\"traces:read\"]");
+        assert_eq!(row.get::<String, _>("created_by_user_id"), "user-1");
+        assert_eq!(row.get::<String, _>("created_at"), "2024-01-01T00:00:00Z");
+        assert_eq!(row.get::<Option<String>, _>("revoked_at"), None);
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+        assert_no_legacy_dataset_id_column(&catalog).await;
+    }
+
+    /// Simulates a database that jumps straight from before
+    /// `multi-dataset-key-restriction` to after this change, skipping any
+    /// boot of the intermediate dual-write code: the pre-#1475 schema
+    /// (legacy `dataset_id` column present, no `dataset_ids` column at all
+    /// yet) with a restricted row and an unrestricted row. `Catalog::init()`
+    /// must backfill the restricted row's `dataset_id` into the
+    /// newly-created `dataset_ids` column *before* dropping `dataset_id` —
+    /// dropping it first (the order this codebase originally shipped) would
+    /// silently turn the key unrestricted, since nothing would ever have
+    /// copied its restriction into `dataset_ids`.
+    #[tokio::test]
+    async fn catalog_init_backfills_dataset_ids_before_dropping_legacy_column_with_no_intermediate_boot()
+     {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        // Seed the pre-#1475 schema: dataset_id exists, dataset_ids does not.
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL,
+                name TEXT,
+                dataset_id TEXT,
+                scopes TEXT,
+                created_by_user_id TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                revoked_at TEXT,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE,
+                UNIQUE(tenant_id, name)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-restricted', 'hash-1', 'acme', 'pre-1475-restricted', 'production', '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-unrestricted', 'hash-2', 'acme', 'pre-1475-unrestricted', NULL, '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        assert_no_legacy_dataset_id_column(&catalog).await;
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        let restricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-restricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            restricted.get::<String, _>("dataset_ids"),
+            "[\"production\"]",
+            "a single-dataset restriction from a database that never booted \
+             the intermediate dual-write code must survive the column drop, \
+             not silently become unrestricted"
+        );
+        let unrestricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-unrestricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            unrestricted.get::<Option<String>, _>("dataset_ids"),
+            None,
+            "a key that was already unrestricted must stay unrestricted"
+        );
+    }
+
+    #[test]
+    fn dataset_restriction_update_from_request_covers_every_combination() {
+        // Both absent -> Keep.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(None, false).unwrap(),
+            DatasetRestrictionUpdate::Keep
+        );
+        // Non-empty ids, clear false -> Set.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), false).unwrap(),
+            DatasetRestrictionUpdate::Set(vec!["a".to_string()])
+        );
+        // No ids, clear true -> Clear.
+        assert_eq!(
+            DatasetRestrictionUpdate::from_request(None, true).unwrap(),
+            DatasetRestrictionUpdate::Clear
+        );
+        // Empty ids is rejected unconditionally, clear flag notwithstanding.
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec![]), false).is_err());
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec![]), true).is_err());
+        // Duplicate name is rejected, same as the catalog write path.
+        assert!(
+            DatasetRestrictionUpdate::from_request(
+                Some(vec!["a".to_string(), "a".to_string()]),
+                false
+            )
+            .is_err()
+        );
+        // Non-empty ids together with clear:true is a contradictory request.
+        assert!(DatasetRestrictionUpdate::from_request(Some(vec!["a".to_string()]), true).is_err());
+    }
+
+    #[test]
+    fn origin_restriction_update_from_request_covers_every_combination() {
+        // Both absent -> Keep.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(None, false).unwrap(),
+            OriginRestrictionUpdate::Keep
+        );
+        // Non-empty origins, clear false -> Set.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec!["https://a.example".to_string()]),
+                false
+            )
+            .unwrap(),
+            OriginRestrictionUpdate::Set(vec!["https://a.example".to_string()])
+        );
+        // No origins, clear true -> Clear.
+        assert_eq!(
+            OriginRestrictionUpdate::from_request(None, true).unwrap(),
+            OriginRestrictionUpdate::Clear
+        );
+        // Empty origins is rejected unconditionally, clear flag notwithstanding.
+        assert!(OriginRestrictionUpdate::from_request(Some(vec![]), false).is_err());
+        assert!(OriginRestrictionUpdate::from_request(Some(vec![]), true).is_err());
+        // Duplicate origin is rejected, same as the catalog write path.
+        assert!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec![
+                    "https://a.example".to_string(),
+                    "https://a.example".to_string()
+                ]),
+                false
+            )
+            .is_err()
+        );
+        // Non-empty origins together with clear:true is a contradictory request.
+        assert!(
+            OriginRestrictionUpdate::from_request(
+                Some(vec!["https://a.example".to_string()]),
+                true
+            )
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn validate_create_dataset_ids_rejects_empty_and_duplicate_but_passes_through_none_and_valid_sets()
+     {
+        assert_eq!(validate_create_dataset_ids(None).unwrap(), None);
+        assert_eq!(
+            validate_create_dataset_ids(Some(vec!["a".to_string(), "b".to_string()])).unwrap(),
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert!(validate_create_dataset_ids(Some(vec![])).is_err());
+        assert!(validate_create_dataset_ids(Some(vec!["a".to_string(), "a".to_string()])).is_err());
     }
 
     /// An on-disk SQLite catalog must run in WAL journal mode so that concurrent
@@ -4001,6 +7680,105 @@ mod multi_tenancy_tests {
             .unwrap()
             .get(0);
         assert_eq!(mode.to_lowercase(), "wal");
+    }
+
+    /// Monolithic mode opens one `Catalog` per service (router, writer,
+    /// querier, compactor — see `ServiceBootstrap::new`), each against the
+    /// same on-disk `[discovery]` DSN. With sqlx's default pool size of 10
+    /// that's up to 40 connections contending for one SQLite file's single
+    /// writer lock (issue #1495); the pool must cap itself well below that
+    /// default regardless of how many `Catalog`s point at the same file.
+    #[tokio::test]
+    async fn on_disk_sqlite_catalog_caps_pool_connections() {
+        let dir = tempfile::tempdir().unwrap();
+        let dsn = format!("sqlite://{}", dir.path().join("signaldb.db").display());
+
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        let Catalog::Sqlite(pool) = catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        assert_eq!(
+            pool.options().get_max_connections(),
+            SQLITE_CATALOG_MAX_CONNECTIONS
+        );
+    }
+
+    /// Reproduces the contention behind #1495: a second connection holds an
+    /// open write transaction on the same on-disk file while a write goes
+    /// through `retry_on_sqlite_busy` — exactly what an extra `SqlitePool`
+    /// against the same DSN looks like in monolithic mode. The first attempt
+    /// must fail with `SQLITE_BUSY` ((code: 5) "database is locked") and
+    /// commits the blocker before handing its error to the retry loop, so
+    /// the test never races the loop's wall-clock budget and only a retry
+    /// can succeed.
+    #[tokio::test]
+    async fn retry_on_sqlite_busy_rides_out_contention_a_single_attempt_would_miss() {
+        let dir = tempfile::tempdir().unwrap();
+        let dsn = format!("sqlite://{}", dir.path().join("contend.db").display());
+
+        let mut blocker = SqliteConnectOptions::from_str(&dsn)
+            .unwrap()
+            .create_if_missing(true)
+            .connect()
+            .await
+            .unwrap();
+        query("CREATE TABLE t (id INTEGER PRIMARY KEY, v INTEGER)")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+
+        let writer_options = SqliteConnectOptions::from_str(&dsn)
+            .unwrap()
+            .busy_timeout(std::time::Duration::from_millis(1));
+        let writer_pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(writer_options)
+            .await
+            .unwrap();
+
+        query("BEGIN IMMEDIATE")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+        query("INSERT INTO t (v) VALUES (1)")
+            .execute(&mut blocker)
+            .await
+            .unwrap();
+
+        let mut blocker = Some(blocker);
+        retry_on_sqlite_busy(|| {
+            let blocker = blocker.take();
+            let pool = &writer_pool;
+            async move {
+                let result = query("INSERT INTO t (v) VALUES (2)").execute(pool).await;
+                if let Some(mut blocker) = blocker {
+                    assert!(
+                        matches!(&result, Err(e) if is_retriable_sqlite_busy(e)),
+                        "a single attempt should hit SQLITE_BUSY while the blocker holds the write lock, got {result:?}"
+                    );
+                    query("COMMIT").execute(&mut blocker).await.unwrap();
+                }
+                result
+            }
+        })
+        .await
+        .expect("retry_on_sqlite_busy should recover once the blocking writer commits");
+    }
+
+    #[test]
+    fn failure_streak_escalates_only_after_the_threshold() {
+        let mut streak = FailureStreak::new();
+        // First failure: the streak has been running for ~0 time, well
+        // under an hour-long threshold.
+        assert!(!streak.record_failure(std::time::Duration::from_secs(3600)));
+        // Checked again immediately against a zero-length threshold: the
+        // streak already started strictly before now, so it has exceeded it.
+        assert!(streak.record_failure(std::time::Duration::from_millis(0)));
+        streak.record_success();
+        // A success must reset the streak, so the next failure starts a
+        // fresh window and is not yet past even a generous threshold.
+        assert!(!streak.record_failure(std::time::Duration::from_secs(3600)));
     }
 
     #[tokio::test]
@@ -4087,8 +7865,8 @@ mod multi_tenancy_tests {
         let validation = validation.unwrap();
         assert_eq!(validation.tenant_id, "acme");
         assert_eq!(validation.name, Some("test-key".to_string()));
-        assert_eq!(validation.dataset_id, None);
         assert_eq!(validation.scopes, None);
+        assert_eq!(validation.dataset_ids, None);
 
         // Try to create the same key again (should return existing ID)
         let duplicate_id = catalog
@@ -4187,7 +7965,8 @@ mod multi_tenancy_tests {
                 "acme",
                 &key_hash,
                 Some("metrics"),
-                Some("production"),
+                Some(&["production".to_string()]),
+                None,
                 Some(&scopes),
                 Some("user-1"),
             )
@@ -4195,11 +7974,11 @@ mod multi_tenancy_tests {
             .unwrap();
 
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
-        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
         assert_eq!(auth.scopes, Some(scopes.clone()));
+        assert_eq!(auth.dataset_ids, Some(vec!["production".to_string()]));
 
         let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
-        assert_eq!(record.dataset_id.as_deref(), Some("production"));
+        assert_eq!(record.dataset_ids, Some(vec!["production".to_string()]));
         assert_eq!(record.scopes, Some(scopes));
         assert_eq!(record.created_by_user_id.as_deref(), Some("user-1"));
     }
@@ -4218,6 +7997,7 @@ mod multi_tenancy_tests {
                 &key_hash,
                 Some("live"),
                 None,
+                None,
                 Some(&["schema:read".to_string()]),
                 None,
             )
@@ -4229,7 +8009,8 @@ mod multi_tenancy_tests {
             .update_api_key_scopes(
                 &key_id,
                 Some(&["schema:read".to_string(), "schema:write".to_string()]),
-                None,
+                DatasetRestrictionUpdate::Keep,
+                OriginRestrictionUpdate::Keep,
             )
             .await
             .unwrap();
@@ -4239,25 +8020,35 @@ mod multi_tenancy_tests {
             auth.scopes,
             Some(vec!["schema:read".to_string(), "schema:write".to_string()])
         );
-        assert_eq!(auth.dataset_id, None);
+        assert_eq!(auth.dataset_ids, None);
 
         // Dataset only: scopes untouched.
         let updated = catalog
-            .update_api_key_scopes(&key_id, None, Some("production"))
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec!["production".to_string()]),
+                OriginRestrictionUpdate::Keep,
+            )
             .await
             .unwrap();
         assert!(updated);
         let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
-        assert_eq!(auth.dataset_id.as_deref(), Some("production"));
         assert_eq!(
             auth.scopes,
             Some(vec!["schema:read".to_string(), "schema:write".to_string()])
         );
+        assert_eq!(auth.dataset_ids, Some(vec!["production".to_string()]));
 
         // Nothing to change is a no-op success.
         assert!(
             catalog
-                .update_api_key_scopes(&key_id, None, None)
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Keep,
+                    OriginRestrictionUpdate::Keep
+                )
                 .await
                 .unwrap()
         );
@@ -4277,6 +8068,7 @@ mod multi_tenancy_tests {
                 &key_hash,
                 None,
                 None,
+                None,
                 Some(&["traces:write".to_string()]),
                 None,
             )
@@ -4285,7 +8077,12 @@ mod multi_tenancy_tests {
         catalog.revoke_api_key(&key_id).await.unwrap();
 
         let updated = catalog
-            .update_api_key_scopes(&key_id, Some(&["logs:write".to_string()]), None)
+            .update_api_key_scopes(
+                &key_id,
+                Some(&["logs:write".to_string()]),
+                DatasetRestrictionUpdate::Keep,
+                OriginRestrictionUpdate::Keep,
+            )
             .await
             .unwrap();
         assert!(!updated, "revoked keys must not be updatable");
@@ -4293,10 +8090,328 @@ mod multi_tenancy_tests {
         assert_eq!(record.scopes, Some(vec!["traces:write".to_string()]));
 
         let updated = catalog
-            .update_api_key_scopes("no-such-key", Some(&["logs:write".to_string()]), None)
+            .update_api_key_scopes(
+                "no-such-key",
+                Some(&["logs:write".to_string()]),
+                DatasetRestrictionUpdate::Keep,
+                OriginRestrictionUpdate::Keep,
+            )
             .await
             .unwrap();
         assert!(!updated);
+    }
+
+    #[tokio::test]
+    async fn create_with_multi_element_dataset_ids_round_trips() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("multi-dataset-secret");
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("multi"),
+                Some(&ids),
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.dataset_ids, Some(ids.clone()));
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(ids));
+    }
+
+    #[tokio::test]
+    async fn create_with_empty_dataset_ids_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("empty-dataset-secret"),
+                None,
+                Some(&[]),
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert!(result.is_err(), "an empty dataset_ids set must be rejected");
+    }
+
+    #[tokio::test]
+    async fn create_with_duplicate_dataset_ids_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("dup-dataset-secret"),
+                None,
+                Some(&["production".to_string(), "production".to_string()]),
+                None,
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "a dataset_ids set with a duplicate name must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_keep_leaves_dataset_ids_untouched() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("keep-secret"),
+                None,
+                Some(&["a".to_string()]),
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Keep,
+                    OriginRestrictionUpdate::Keep
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["a".to_string()]));
+        assert_no_legacy_dataset_id_column(&catalog).await;
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_clear_nulls_dataset_ids() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("clear-secret"),
+                None,
+                Some(&["a".to_string()]),
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Clear,
+                    OriginRestrictionUpdate::Keep
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+        assert_no_legacy_dataset_id_column(&catalog).await;
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_set_writes_dataset_ids_only() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("set-secret"),
+                None,
+                None,
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Set(vec!["a".to_string()]),
+                    OriginRestrictionUpdate::Keep,
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(vec!["a".to_string()]));
+        assert_no_legacy_dataset_id_column(&catalog).await;
+
+        // A multi-element `Set` round-trips too — there's no legacy
+        // single-value column left to constrain it.
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Set(vec!["a".to_string(), "b".to_string()]),
+                    OriginRestrictionUpdate::Keep,
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(
+            record.dataset_ids,
+            Some(vec!["a".to_string(), "b".to_string()])
+        );
+        assert_no_legacy_dataset_id_column(&catalog).await;
+    }
+
+    #[tokio::test]
+    async fn dataset_restriction_update_set_rejects_empty_and_duplicate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("set-invalid-secret"),
+                None,
+                None,
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let empty = catalog
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec![]),
+                OriginRestrictionUpdate::Keep,
+            )
+            .await;
+        assert!(empty.is_err(), "an empty Set must be rejected");
+
+        let duplicate = catalog
+            .update_api_key_scopes(
+                &key_id,
+                None,
+                DatasetRestrictionUpdate::Set(vec!["a".to_string(), "a".to_string()]),
+                OriginRestrictionUpdate::Keep,
+            )
+            .await;
+        assert!(
+            duplicate.is_err(),
+            "a duplicate-containing Set must be rejected"
+        );
+    }
+
+    #[tokio::test]
+    async fn create_with_allowed_origins_round_trips_then_clears() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let key_hash = hash_api_key("origin-secret");
+        let origins = vec!["https://example.com".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &key_hash,
+                Some("origin-restricted"),
+                None,
+                Some(&origins),
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let auth = catalog.validate_api_key(&key_hash).await.unwrap().unwrap();
+        assert_eq!(auth.allowed_origins, Some(origins.clone()));
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.allowed_origins, Some(origins));
+
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Keep,
+                    OriginRestrictionUpdate::Clear,
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.allowed_origins, None);
+    }
+
+    #[tokio::test]
+    async fn create_with_empty_allowed_origins_is_rejected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let result = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &hash_api_key("empty-origin-secret"),
+                None,
+                None,
+                Some(&[]),
+                None,
+                None,
+            )
+            .await;
+        assert!(
+            result.is_err(),
+            "an empty allowed_origins set must be rejected"
+        );
     }
 
     /// The tenant row and its default dataset row must land together. A
@@ -4563,6 +8678,82 @@ mod multi_tenancy_tests {
     }
 
     #[tokio::test]
+    async fn attribute_value_sketch_replaces_wholesale() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "t",
+                "d",
+                "logs",
+                "http.route",
+                &[("/orders".to_string(), 9), ("/users".to_string(), 3)],
+            )
+            .await
+            .unwrap();
+
+        let sketch = catalog
+            .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+            .await
+            .unwrap();
+        assert_eq!(sketch.len(), 2);
+        assert_eq!(sketch[0].value, "/orders", "most frequent first");
+        assert_eq!(sketch[0].count, 9);
+        assert!(!sketch[0].updated_at.is_empty());
+
+        // A later pass supersedes the earlier one rather than merging: a
+        // value that stopped occurring must stop being suggested.
+        catalog
+            .replace_attribute_value_stats(
+                "t",
+                "d",
+                "logs",
+                "http.route",
+                &[("/new".to_string(), 1)],
+            )
+            .await
+            .unwrap();
+        let sketch = catalog
+            .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+            .await
+            .unwrap();
+        assert_eq!(sketch.len(), 1);
+        assert_eq!(sketch[0].value, "/new");
+
+        // Clearing it is how a key past the cardinality cap stops being
+        // suggested at all.
+        catalog
+            .replace_attribute_value_stats("t", "d", "logs", "http.route", &[])
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+
+        // Another tenant's sketch is never visible.
+        catalog
+            .replace_attribute_value_stats(
+                "other",
+                "d",
+                "logs",
+                "http.route",
+                &[("/secret".to_string(), 5)],
+            )
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .get_attribute_value_stats("t", "d", "logs", "http.route", 10)
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn attribute_stats_scan_upsert_and_demand_accumulate() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
@@ -4613,11 +8804,769 @@ mod multi_tenancy_tests {
     }
 
     #[tokio::test]
+    async fn attribute_level_stats_hits_accumulate_and_last_queried_at_only_moves_forward() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let earlier: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+        let later: DateTime<Utc> = "2026-01-02T00:00:00Z".parse().unwrap();
+
+        catalog
+            .add_attribute_level_query_hits(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Record,
+                "namespace",
+                3,
+                later,
+            )
+            .await
+            .unwrap();
+        // An older hit still accumulates the counter but must not move
+        // last_queried_at backwards.
+        catalog
+            .add_attribute_level_query_hits(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Record,
+                "namespace",
+                2,
+                earlier,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].query_hits, 5);
+        assert_eq!(
+            stats[0].last_queried_at.as_deref().unwrap(),
+            later.to_rfc3339()
+        );
+    }
+
+    #[tokio::test]
+    async fn attribute_level_scan_upsert_does_not_clobber_query_hits() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let queried_at: DateTime<Utc> = "2026-01-01T00:00:00Z".parse().unwrap();
+
+        catalog
+            .add_attribute_level_query_hits(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Resource,
+                "namespace",
+                4,
+                queried_at,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Resource,
+                "namespace",
+                90,
+                120,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].present_rows, 90);
+        assert_eq!(stats[0].total_rows, 120);
+        assert_eq!(stats[0].query_hits, 4, "scan upsert must not touch hits");
+    }
+
+    #[tokio::test]
+    async fn attribute_level_stats_are_distinct_rows_per_level_for_the_same_key() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Resource,
+                "environment",
+                10,
+                100,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Record,
+                "environment",
+                40,
+                100,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 2, "one row per level, same key");
+        let resource_row = stats
+            .iter()
+            .find(|s| s.level == AttributeLevel::Resource)
+            .expect("resource-level row");
+        assert_eq!(resource_row.present_rows, 10);
+        let record_row = stats
+            .iter()
+            .find(|s| s.level == AttributeLevel::Record)
+            .expect("record-level row");
+        assert_eq!(record_row.present_rows, 40);
+    }
+
+    #[tokio::test]
+    async fn attribute_level_stats_list_round_trips_the_level_and_promote_streak() {
+        use crate::schema::logical::AttributeLevel;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        catalog
+            .upsert_attribute_level_scan_stats(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Scope,
+                "instrumentation.name",
+                5,
+                100,
+            )
+            .await
+            .unwrap();
+        catalog
+            .set_attribute_level_promote_streak(
+                "t",
+                "d",
+                "logs",
+                AttributeLevel::Scope,
+                "instrumentation.name",
+                3,
+            )
+            .await
+            .unwrap();
+
+        let stats = catalog
+            .list_attribute_level_stats("t", "d", "logs")
+            .await
+            .unwrap();
+        assert_eq!(stats.len(), 1);
+        assert_eq!(stats[0].level, AttributeLevel::Scope);
+        assert_eq!(stats[0].attr_key, "instrumentation.name");
+        assert_eq!(stats[0].promote_streak, 3);
+
+        assert!(
+            catalog
+                .list_attribute_level_stats("t", "d", "traces")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
     async fn test_get_datasets_for_nonexistent_tenant() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let datasets = catalog.get_datasets("nonexistent").await.unwrap();
         assert!(datasets.is_empty());
+    }
+
+    /// Deleting a tenant must also remove its tenant-wide processors
+    /// (`dataset = NULL`), which the composite `(tenant_id, dataset)` FK
+    /// to `datasets` never covers, as well as its dataset-scoped ones —
+    /// otherwise a reused tenant id would silently inherit stale
+    /// transforms.
+    #[tokio::test]
+    async fn deleting_tenant_cascades_tenant_wide_and_dataset_scoped_processors() {
+        use crate::processors::ProcessorSpec;
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "default").await.unwrap();
+
+        let tenant_wide = ProcessorSpec {
+            name: "tenant-wide".to_string(),
+            dataset: None,
+            signal: "traces".to_string(),
+            enabled: true,
+            priority: 100,
+            error_mode: "ignore".to_string(),
+            description: None,
+            statements: vec![r#"set(attributes["k"], "v")"#.to_string()],
+        };
+        let dataset_scoped = ProcessorSpec {
+            name: "dataset-scoped".to_string(),
+            dataset: Some("default".to_string()),
+            ..tenant_wide.clone()
+        };
+        catalog
+            .insert_processor("acme", &tenant_wide)
+            .await
+            .unwrap();
+        catalog
+            .insert_processor("acme", &dataset_scoped)
+            .await
+            .unwrap();
+        assert_eq!(catalog.list_processors("acme").await.unwrap().len(), 2);
+
+        assert!(catalog.delete_tenant("acme").await.unwrap());
+
+        assert!(catalog.list_processors("acme").await.unwrap().is_empty());
+    }
+}
+
+/// `dataset_ids` behaves identically on Postgres (D2's dual-read/dual-write
+/// and the backfill compare-and-swap guard aren't SQLite-specific).
+#[cfg(test)]
+mod postgres_dataset_ids_tests {
+    use super::*;
+    use crate::testing::start_container_with_retry;
+    use testcontainers_modules::postgres::Postgres;
+
+    /// Start a Postgres testcontainer and return its connection DSN
+    /// alongside the container handle (which must be kept alive for the
+    /// DSN to remain reachable).
+    async fn start_postgres_container() -> (
+        String,
+        testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+    ) {
+        let container = start_container_with_retry(Postgres::default).await;
+        let host = container.get_host().await.unwrap();
+        let port = container.get_host_port_ipv4(5432).await.unwrap();
+        let dsn = format!("postgres://postgres:postgres@{host}:{port}/postgres");
+        (dsn, container)
+    }
+
+    async fn postgres_catalog() -> (
+        Catalog,
+        testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+    ) {
+        let (dsn, container) = start_postgres_container().await;
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        (catalog, container)
+    }
+
+    /// A raw Postgres pool with no schema applied yet, for tests that need
+    /// to seed a pre-`Catalog::init()` schema state before running `init()`.
+    async fn raw_postgres_pool() -> (
+        PgPool,
+        testcontainers_modules::testcontainers::ContainerAsync<Postgres>,
+    ) {
+        let (dsn, container) = start_postgres_container().await;
+        let pool = PgPool::connect(&dsn).await.unwrap();
+        (pool, container)
+    }
+
+    async fn assert_no_legacy_dataset_id_column(pool: &PgPool) {
+        let exists = query(
+            "SELECT 1 FROM information_schema.columns WHERE table_name = 'api_keys' AND column_name = 'dataset_id'",
+        )
+        .fetch_optional(pool)
+        .await
+        .unwrap();
+        assert!(exists.is_none(), "dataset_id column must not exist");
+    }
+
+    #[tokio::test]
+    async fn multi_element_dataset_ids_round_trip_on_postgres() {
+        let (catalog, _container) = postgres_catalog().await;
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let key_id = catalog
+            .upsert_scoped_api_key(
+                "acme",
+                "pg-multi-hash",
+                Some("multi"),
+                Some(&ids),
+                None,
+                Some(&["traces:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, Some(ids));
+
+        assert!(
+            catalog
+                .update_api_key_scopes(
+                    &key_id,
+                    None,
+                    DatasetRestrictionUpdate::Clear,
+                    OriginRestrictionUpdate::Keep
+                )
+                .await
+                .unwrap()
+        );
+        let record = catalog.get_api_key(&key_id).await.unwrap().unwrap();
+        assert_eq!(record.dataset_ids, None);
+    }
+
+    /// A pool created fresh via `Catalog::init()` never has the legacy
+    /// `dataset_id` column on `api_keys`.
+    #[tokio::test]
+    async fn fresh_postgres_catalog_never_has_legacy_dataset_id_column() {
+        let (catalog, _container) = postgres_catalog().await;
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+        assert_no_legacy_dataset_id_column(pool).await;
+    }
+
+    /// Simulates an upgrade: a pool seeded with the pre-this-change schema
+    /// (legacy `dataset_id` column present, a row carrying both
+    /// `dataset_id` and `dataset_ids`) has the column dropped by
+    /// `Catalog::init()`, with every other column's data for that row
+    /// surviving untouched (D1/D2). A second `init()` against the
+    /// already-migrated pool is a no-op: no error, column stays absent.
+    #[tokio::test]
+    async fn postgres_catalog_init_drops_legacy_dataset_id_column_and_preserves_row_data() {
+        let (pool, _container) = raw_postgres_pool().await;
+
+        // Seed the pre-this-change schema directly, bypassing
+        // `Catalog::new` (which would run today's `init()` and drop the
+        // column immediately).
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                name TEXT,
+                dataset_id TEXT,
+                dataset_ids TEXT,
+                scopes TEXT,
+                created_by_user_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                revoked_at TIMESTAMPTZ,
+                UNIQUE(tenant_id, name)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, dataset_ids, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-1', 'hash-1', 'acme', 'legacy-key', 'legacy-value', '[\"a\",\"b\"]', '[\"traces:read\"]', 'user-1', '2024-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+        assert_no_legacy_dataset_id_column(pool).await;
+
+        let row = query(
+            "SELECT dataset_ids, scopes, created_by_user_id, created_at, revoked_at FROM api_keys WHERE id = 'key-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(row.get::<String, _>("dataset_ids"), "[\"a\",\"b\"]");
+        assert_eq!(row.get::<String, _>("scopes"), "[\"traces:read\"]");
+        assert_eq!(row.get::<String, _>("created_by_user_id"), "user-1");
+        let expected_created_at = DateTime::parse_from_rfc3339("2024-01-01T00:00:00Z")
+            .unwrap()
+            .with_timezone(&Utc);
+        assert_eq!(
+            row.get::<DateTime<Utc>, _>("created_at"),
+            expected_created_at
+        );
+        assert_eq!(row.get::<Option<DateTime<Utc>>, _>("revoked_at"), None);
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+        assert_no_legacy_dataset_id_column(pool).await;
+    }
+
+    /// Simulates a database that jumps straight from before
+    /// `multi-dataset-key-restriction` to after this change, skipping any
+    /// boot of the intermediate dual-write code: the pre-#1475 schema
+    /// (legacy `dataset_id` column present, no `dataset_ids` column at all
+    /// yet) with a restricted row and an unrestricted row. `Catalog::init()`
+    /// must backfill the restricted row's `dataset_id` into the
+    /// newly-created `dataset_ids` column *before* dropping `dataset_id` —
+    /// dropping it first would silently turn the key unrestricted.
+    #[tokio::test]
+    async fn postgres_catalog_init_backfills_dataset_ids_before_dropping_legacy_column_with_no_intermediate_boot()
+     {
+        let (pool, _container) = raw_postgres_pool().await;
+
+        // Seed the pre-#1475 schema: dataset_id exists, dataset_ids does not.
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE api_keys (
+                id TEXT PRIMARY KEY,
+                key_hash TEXT NOT NULL UNIQUE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                name TEXT,
+                dataset_id TEXT,
+                scopes TEXT,
+                created_by_user_id TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                revoked_at TIMESTAMPTZ,
+                UNIQUE(tenant_id, name)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-restricted', 'hash-1', 'acme', 'pre-1475-restricted', 'production', '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO api_keys \
+             (id, key_hash, tenant_id, name, dataset_id, scopes, created_by_user_id, created_at, revoked_at) \
+             VALUES \
+             ('key-unrestricted', 'hash-2', 'acme', 'pre-1475-unrestricted', NULL, '[\"traces:read\"]', 'user-1', '2023-01-01T00:00:00Z', NULL)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+        assert_no_legacy_dataset_id_column(pool).await;
+
+        let restricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-restricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            restricted.get::<String, _>("dataset_ids"),
+            "[\"production\"]",
+            "a single-dataset restriction from a database that never booted \
+             the intermediate dual-write code must survive the column drop, \
+             not silently become unrestricted"
+        );
+        let unrestricted = query("SELECT dataset_ids FROM api_keys WHERE id = 'key-unrestricted'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(
+            unrestricted.get::<Option<String>, _>("dataset_ids"),
+            None,
+            "a key that was already unrestricted must stay unrestricted"
+        );
+    }
+
+    /// Seed the pre-`mcp-multi-tenant-oauth-grants` schema directly on a raw
+    /// Postgres pool: `tenant_id NOT NULL`, `dataset_ids` present, no
+    /// `tenant_grants` column at all. Mirrors
+    /// `oauth_storage_tests::seed_pre_migration_oauth_tables` (SQLite).
+    async fn seed_pre_migration_oauth_tables_postgres(pool: &PgPool) {
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT,
+                is_instance_admin BOOLEAN NOT NULL DEFAULT FALSE,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_authorization_codes (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                resource TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_access_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_refresh_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+                tenant_id TEXT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+                expires_at TIMESTAMPTZ NOT NULL
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query("INSERT INTO users (id, email) VALUES ('user-1', 'agent@example.com')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO oauth_authorization_codes \
+             (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) \
+             VALUES \
+             ('code-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, 'https://claude.ai/cb', 'challenge', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('at-1', 'at-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', '[\"production\"]', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_refresh_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('rt-1', 'rt-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Postgres counterpart of
+    /// `oauth_storage_tests::catalog_init_adds_tenant_grants_column_to_populated_oauth_tables`
+    /// (task 1.1): `Catalog::init()` adds a nullable `tenant_grants` column
+    /// via `ADD COLUMN IF NOT EXISTS`, even against populated tables.
+    #[tokio::test]
+    async fn postgres_catalog_init_adds_tenant_grants_column_to_populated_oauth_tables() {
+        let (pool, _container) = raw_postgres_pool().await;
+        seed_pre_migration_oauth_tables_postgres(&pool).await;
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+
+        for table in OAUTH_GRANT_TABLES {
+            let column = query(
+                "SELECT is_nullable FROM information_schema.columns \
+                 WHERE table_name = $1 AND column_name = 'tenant_grants'",
+            )
+            .bind(table)
+            .fetch_optional(pool)
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{table} must gain a tenant_grants column"));
+            assert_eq!(
+                column.get::<String, _>("is_nullable"),
+                "YES",
+                "{table}.tenant_grants must be nullable"
+            );
+        }
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Postgres counterpart of
+    /// `oauth_storage_tests::catalog_init_drops_tenant_id_not_null_and_preserves_row_data_on_upgrade`
+    /// (task 1.4): `ALTER COLUMN tenant_id DROP NOT NULL` is native and
+    /// idempotent on Postgres, and every pre-existing row's data survives.
+    #[tokio::test]
+    async fn postgres_catalog_init_drops_tenant_id_not_null_and_preserves_row_data() {
+        let (pool, _container) = raw_postgres_pool().await;
+        seed_pre_migration_oauth_tables_postgres(&pool).await;
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Postgres(pool) = &catalog else {
+            panic!("expected a Postgres catalog");
+        };
+
+        for table in OAUTH_GRANT_TABLES {
+            let column = query(
+                "SELECT is_nullable FROM information_schema.columns \
+                 WHERE table_name = $1 AND column_name = 'tenant_id'",
+            )
+            .bind(table)
+            .fetch_one(pool)
+            .await
+            .unwrap();
+            assert_eq!(
+                column.get::<String, _>("is_nullable"),
+                "YES",
+                "{table}.tenant_id must lose its NOT NULL constraint"
+            );
+        }
+
+        let code_row = query(
+            "SELECT client_id, tenant_id FROM oauth_authorization_codes WHERE code_hash = 'code-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(code_row.get::<String, _>("client_id"), "client-1");
+        assert_eq!(code_row.get::<String, _>("tenant_id"), "acme");
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Postgres counterpart of
+    /// `oauth_storage_tests::catalog_init_backfills_tenant_grants_from_legacy_columns`
+    /// (task 1.5/1.6).
+    #[tokio::test]
+    async fn postgres_catalog_init_backfills_tenant_grants_from_legacy_columns() {
+        let (pool, _container) = raw_postgres_pool().await;
+        seed_pre_migration_oauth_tables_postgres(&pool).await;
+
+        let catalog = Catalog::Postgres(pool);
+        catalog.init().await.unwrap();
+
+        let access = catalog
+            .get_valid_access_token("at-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration access token survives migration");
+        assert_eq!(
+            access.tenant_grants,
+            vec![TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            }]
+        );
+
+        let refresh = catalog
+            .get_valid_refresh_token("rt-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration refresh token survives migration");
+        assert_eq!(
+            refresh.tenant_grants,
+            vec![TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }]
+        );
     }
 }
 
@@ -4644,12 +9593,12 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let created = catalog
-            .create_user("alice@example.com", Some("Alice"), "phc-hash-1", true)
+            .create_user("alice@example.com", Some("Alice"), Some("phc-hash-1"), true)
             .await
             .unwrap();
         assert_eq!(created.email, "alice@example.com");
         assert_eq!(created.display_name, Some("Alice".to_string()));
-        assert_eq!(created.password_hash, "phc-hash-1");
+        assert_eq!(created.password_hash.as_deref(), Some("phc-hash-1"));
         assert!(created.is_instance_admin);
         assert!(created.disabled_at.is_none());
 
@@ -4685,11 +9634,11 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         catalog
-            .create_user("dup@example.com", None, "hash-a", false)
+            .create_user("dup@example.com", None, Some("hash-a"), false)
             .await
             .unwrap();
         let result = catalog
-            .create_user("dup@example.com", None, "hash-b", false)
+            .create_user("dup@example.com", None, Some("hash-b"), false)
             .await;
         assert!(result.is_err());
     }
@@ -4699,7 +9648,7 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let created = catalog
-            .create_user("Alice@Example.com", None, "hash-a", false)
+            .create_user("Alice@Example.com", None, Some("hash-a"), false)
             .await
             .unwrap();
         // Stored in canonical (lowercase) form
@@ -4707,7 +9656,7 @@ mod user_membership_tests {
 
         // Same address in different case hits the UNIQUE constraint
         let duplicate = catalog
-            .create_user("alice@example.com", None, "hash-b", false)
+            .create_user("alice@example.com", None, Some("hash-b"), false)
             .await;
         assert!(duplicate.is_err());
 
@@ -4725,11 +9674,11 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         catalog
-            .create_user("b@example.com", None, "hash-b", false)
+            .create_user("b@example.com", None, Some("hash-b"), false)
             .await
             .unwrap();
         catalog
-            .create_user("a@example.com", None, "hash-a", false)
+            .create_user("a@example.com", None, Some("hash-a"), false)
             .await
             .unwrap();
 
@@ -4745,7 +9694,7 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         let user = catalog
-            .create_user("flip@example.com", None, "hash", false)
+            .create_user("flip@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -4777,7 +9726,7 @@ mod user_membership_tests {
             .await
             .unwrap();
         let user = catalog
-            .create_user("member@example.com", None, "hash", false)
+            .create_user("member@example.com", None, Some("hash"), false)
             .await
             .unwrap();
         user.id
@@ -4845,7 +9794,7 @@ mod user_membership_tests {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user_id = setup_user_and_tenants(&catalog).await;
         let other = catalog
-            .create_user("other@example.com", None, "hash2", false)
+            .create_user("other@example.com", None, Some("hash2"), false)
             .await
             .unwrap();
 
@@ -4885,7 +9834,7 @@ mod user_membership_tests {
     async fn membership_insert_fails_for_nonexistent_tenant() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("orphan@example.com", None, "hash", false)
+            .create_user("orphan@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -4898,10 +9847,804 @@ mod user_membership_tests {
     }
 
     #[tokio::test]
+    async fn create_user_without_password_hash_has_none() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let created = catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
+            .await
+            .unwrap();
+        assert!(created.password_hash.is_none());
+        assert!(created.oidc_issuer.is_none());
+        assert!(created.oidc_subject.is_none());
+
+        let fetched = catalog.get_user(&created.id).await.unwrap().unwrap();
+        assert!(fetched.password_hash.is_none());
+    }
+
+    #[tokio::test]
+    async fn find_user_by_oidc_identity_returns_none_when_unlinked() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_user("plain@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
+    async fn find_user_by_oidc_identity_returns_linked_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("sso@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        // Group 1 doesn't add a public API to link an identity (that's the
+        // JIT-provisioning path, group 3); link directly via SQL the way a
+        // future `link_oidc_identity` will, to prove the lookup works.
+        if let Catalog::Sqlite(pool) = &catalog {
+            sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+                .bind("https://idp.example.com")
+                .bind("subject-1")
+                .bind(&user.id)
+                .execute(pool)
+                .await
+                .unwrap();
+        }
+
+        let found = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, user.id);
+    }
+
+    #[tokio::test]
+    async fn create_oidc_user_carries_identity_email_and_name_with_no_password() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+
+        let created = catalog
+            .create_oidc_user(
+                "sso@example.com",
+                Some("SSO User"),
+                "https://idp.example.com",
+                "subject-1",
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(created.email, "sso@example.com");
+        assert_eq!(created.display_name.as_deref(), Some("SSO User"));
+        assert_eq!(
+            created.oidc_issuer.as_deref(),
+            Some("https://idp.example.com")
+        );
+        assert_eq!(created.oidc_subject.as_deref(), Some("subject-1"));
+        assert!(created.password_hash.is_none());
+        assert!(!created.is_instance_admin);
+
+        let found = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(found.id, created.id);
+    }
+
+    #[tokio::test]
+    async fn create_oidc_user_rejects_duplicate_identity() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_oidc_user("a@example.com", None, "https://idp.example.com", "dup")
+            .await
+            .unwrap();
+
+        let conflict = catalog
+            .create_oidc_user("b@example.com", None, "https://idp.example.com", "dup")
+            .await;
+        assert!(conflict.is_err());
+
+        // The failed second insert must not leave an orphaned, passwordless
+        // user row permanently claiming "b@example.com" (the create_user +
+        // link_oidc_identity pair runs in one transaction).
+        let orphan = catalog.get_user_by_email("b@example.com").await.unwrap();
+        assert!(
+            orphan.is_none(),
+            "conflicting create_oidc_user must not leave a user row behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn link_oidc_identity_attaches_to_existing_user() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("alice@example.com", Some("Alice"), Some("hash"), false)
+            .await
+            .unwrap();
+        assert!(
+            catalog
+                .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        catalog
+            .link_oidc_identity(&user.id, "https://idp.example.com", "subject-1")
+            .await
+            .unwrap();
+
+        let linked = catalog
+            .find_user_by_oidc_identity("https://idp.example.com", "subject-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(linked.id, user.id);
+        // The password credential survives linking: both doors still work.
+        assert_eq!(linked.password_hash.as_deref(), Some("hash"));
+    }
+
+    #[tokio::test]
+    async fn link_oidc_identity_rejects_duplicate_identity() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_oidc_user("first@example.com", None, "https://idp.example.com", "dup")
+            .await
+            .unwrap();
+        let second = catalog
+            .create_user("second@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let conflict = catalog
+            .link_oidc_identity(&second.id, "https://idp.example.com", "dup")
+            .await;
+        assert!(conflict.is_err());
+    }
+
+    #[tokio::test]
+    async fn users_oidc_identity_pair_is_unique() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let a = catalog
+            .create_user("a@example.com", None, None, false)
+            .await
+            .unwrap();
+        let b = catalog
+            .create_user("b@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            unreachable!()
+        };
+        sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+            .bind("https://idp.example.com")
+            .bind("dup-subject")
+            .bind(&a.id)
+            .execute(pool)
+            .await
+            .unwrap();
+        let conflict =
+            sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+                .bind("https://idp.example.com")
+                .bind("dup-subject")
+                .bind(&b.id)
+                .execute(pool)
+                .await;
+        assert!(conflict.is_err());
+    }
+
+    #[tokio::test]
+    async fn multiple_users_with_null_oidc_identity_do_not_conflict() {
+        // Local-password users all have NULL oidc_issuer/oidc_subject; SQL's
+        // NULL-is-distinct-from-NULL semantics must let them coexist under
+        // the unique index.
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .create_user("one@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+        catalog
+            .create_user("two@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+        assert_eq!(catalog.list_users().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn upsert_and_remove_tenant_membership_only_touch_local_rows() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user_id = setup_user_and_tenants(&catalog).await;
+
+        // Seed a mapped row for the same (user, tenant) the local API will
+        // also touch.
+        catalog
+            .sync_oidc_memberships(&user_id, &[("acme".to_string(), MembershipRole::Viewer)])
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user_id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user_id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "acme should hold one local and one mapped row"
+        );
+        let local = rows
+            .iter()
+            .find(|m| m.granted_by == GrantSource::Local)
+            .expect("local row exists");
+        assert_eq!(local.role, MembershipRole::Member);
+        let mapped = rows
+            .iter()
+            .find(|m| m.granted_by == GrantSource::OidcMapping)
+            .expect("mapped row untouched by upsert_tenant_membership");
+        assert_eq!(mapped.role, MembershipRole::Viewer);
+
+        catalog
+            .remove_tenant_membership(&user_id, "acme")
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user_id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "remove_tenant_membership must not delete the mapped row"
+        );
+        assert_eq!(rows[0].granted_by, GrantSource::OidcMapping);
+    }
+
+    #[tokio::test]
+    async fn sync_oidc_memberships_creates_updates_and_removes_only_mapped_rows() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("mapped@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        // A locally-granted membership the sync must never touch.
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Admin)
+            .await
+            .unwrap();
+
+        catalog
+            .sync_oidc_memberships(
+                &user.id,
+                &[
+                    ("acme".to_string(), MembershipRole::Viewer),
+                    ("globex".to_string(), MembershipRole::Member),
+                ],
+            )
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(rows.len(), 3);
+        assert_eq!(
+            catalog
+                .get_tenant_membership(&user.id, "acme")
+                .await
+                .unwrap()
+                .unwrap()
+                .role,
+            MembershipRole::Viewer
+        );
+        // globex now holds a local `admin` row and a mapped `member` row;
+        // the effective role is the higher one.
+        let globex_effective = catalog
+            .get_tenant_membership(&user.id, "globex")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(globex_effective.role, MembershipRole::Admin);
+        assert_eq!(globex_effective.granted_by, GrantSource::Local);
+
+        // The group granting `acme` disappears from the token: only that
+        // mapped row is removed, the local `globex` grant is untouched.
+        catalog
+            .sync_oidc_memberships(&user.id, &[("globex".to_string(), MembershipRole::Member)])
+            .await
+            .unwrap();
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            2,
+            "acme's mapped row is gone, globex keeps both rows"
+        );
+        assert!(rows.iter().all(|m| m.tenant_id == "globex"));
+        assert!(
+            catalog
+                .get_tenant_membership(&user.id, "acme")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // An empty desired set clears every mapped row and nothing else.
+        catalog.sync_oidc_memberships(&user.id, &[]).await.unwrap();
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].granted_by, GrantSource::Local);
+        assert_eq!(rows[0].tenant_id, "globex");
+    }
+
+    /// Two `group_mappings` rules can both target the same tenant (e.g.
+    /// `org-viewers -> acme:viewer` and `org-admins -> acme:admin`), so a
+    /// user whose token carries both groups produces a `desired` slice with
+    /// two entries for the same tenant. The `(user_id, tenant_id,
+    /// granted_by)` primary key means a naive insert-per-entry would violate
+    /// the PK on the second row; `sync_oidc_memberships` must instead
+    /// collapse duplicate tenants to the single highest-ranked role before
+    /// writing, so the sync always succeeds.
+    #[tokio::test]
+    async fn sync_oidc_memberships_collapses_duplicate_tenant_entries_to_highest_role() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("duplicate@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .sync_oidc_memberships(
+                &user.id,
+                &[
+                    ("acme".to_string(), MembershipRole::Viewer),
+                    ("acme".to_string(), MembershipRole::Admin),
+                ],
+            )
+            .await
+            .unwrap();
+
+        let rows = catalog.list_memberships_for_user(&user.id).await.unwrap();
+        assert_eq!(
+            rows.len(),
+            1,
+            "duplicate tenant entries must collapse to one row"
+        );
+        assert_eq!(rows[0].tenant_id, "acme");
+        assert_eq!(
+            rows[0].role,
+            MembershipRole::Admin,
+            "the higher-ranked role must win"
+        );
+    }
+
+    #[tokio::test]
+    async fn list_membership_operations_expose_granted_by() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user_id = setup_user_and_tenants(&catalog).await;
+
+        catalog
+            .upsert_tenant_membership(&user_id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user_id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let for_user = catalog.list_memberships_for_user(&user_id).await.unwrap();
+        assert_eq!(for_user.len(), 2);
+        assert!(for_user.iter().any(|m| m.granted_by == GrantSource::Local));
+        assert!(
+            for_user
+                .iter()
+                .any(|m| m.granted_by == GrantSource::OidcMapping)
+        );
+
+        let for_tenant = catalog.list_members_for_tenant("acme").await.unwrap();
+        assert_eq!(for_tenant.len(), 2);
+        assert!(
+            for_tenant
+                .iter()
+                .any(|m| m.granted_by == GrantSource::Local)
+        );
+    }
+
+    /// A pre-existing (pre-oidc-login) SQLite catalog on disk gets migrated
+    /// in place: `password_hash` becomes nullable, the OIDC columns appear,
+    /// and every pre-existing membership row becomes `granted_by = 'local'`
+    /// — all without losing data (change: oidc-login migration plan).
+    #[tokio::test]
+    async fn sqlite_migration_from_pre_oidc_schema_preserves_data() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let dsn = format!("sqlite://{}", db_path.display());
+
+        // Build the pre-oidc-login schema directly and seed it, exactly as
+        // an already-deployed instance would have it on disk.
+        {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE tenants (
+                    id TEXT PRIMARY KEY, name TEXT NOT NULL, default_dataset TEXT,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE users (
+                    id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT,
+                    password_hash TEXT NOT NULL, is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')), disabled_at TEXT
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE tenant_memberships (
+                    user_id TEXT NOT NULL, tenant_id TEXT NOT NULL,
+                    role TEXT NOT NULL CHECK(role IN ('admin', 'member', 'viewer')),
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    PRIMARY KEY (user_id, tenant_id),
+                    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                    FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            // Timestamps are explicit RFC3339 (matching what production code
+            // writes) rather than the table's own `datetime('now')` default,
+            // which SQLite renders without a `T` separator or offset.
+            sqlx::query(
+                "INSERT INTO tenants (id, name, source, created_at, updated_at) \
+                 VALUES ('acme', 'Acme', 'config', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('u1', 'legacy@example.com', 'phc-legacy', '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO tenant_memberships (user_id, tenant_id, role, created_at) \
+                 VALUES ('u1', 'acme', 'admin', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        // Opening it through the real Catalog runs the migration.
+        let catalog = Catalog::new(&dsn).await.unwrap();
+
+        let user = catalog.get_user("u1").await.unwrap().unwrap();
+        assert_eq!(user.password_hash.as_deref(), Some("phc-legacy"));
+        assert!(user.oidc_issuer.is_none());
+
+        let membership = catalog
+            .get_tenant_membership("u1", "acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(membership.role, MembershipRole::Admin);
+        assert_eq!(membership.granted_by, GrantSource::Local);
+
+        // The migrated schema now accepts a nullable password_hash and a
+        // second membership row for the same (user, tenant).
+        let sso_user = catalog
+            .create_user("sso@example.com", None, None, false)
+            .await
+            .unwrap();
+        assert!(sso_user.password_hash.is_none());
+        catalog
+            .sync_oidc_memberships(
+                &sso_user.id,
+                &[("acme".to_string(), MembershipRole::Viewer)],
+            )
+            .await
+            .unwrap();
+
+        // Re-running the migration (as every startup does) is a no-op.
+        drop(catalog);
+        let catalog_again = Catalog::new(&dsn).await.unwrap();
+        let membership = catalog_again
+            .get_tenant_membership("u1", "acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(membership.role, MembershipRole::Admin);
+    }
+
+    /// Regression test (code review, Group 1 blocker 1): the SQLite rebuild
+    /// that a legacy (pre-oidc-login) schema triggers must leave
+    /// `idx_users_oidc_identity` in place, not silently drop it. A dropped
+    /// index would let two users link the same `(issuer, subject)` pair
+    /// until the next restart re-creates it — or brick the next startup if
+    /// a duplicate is written before then.
+    #[tokio::test]
+    async fn sqlite_migration_from_pre_oidc_schema_preserves_unique_oidc_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let db_path = dir.path().join("legacy.db");
+        let dsn = format!("sqlite://{}", db_path.display());
+
+        // Seed a pre-oidc-login `users` table (password_hash NOT NULL, no
+        // OIDC columns) exactly as an already-deployed instance would have
+        // it on disk, so opening it triggers `rebuild_users_table_sqlite`.
+        {
+            let pool = sqlx::sqlite::SqlitePoolOptions::new()
+                .connect_with(
+                    sqlx::sqlite::SqliteConnectOptions::new()
+                        .filename(&db_path)
+                        .create_if_missing(true),
+                )
+                .await
+                .unwrap();
+            sqlx::query(
+                r#"CREATE TABLE users (
+                    id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT,
+                    password_hash TEXT NOT NULL, is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                    created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                    updated_at TEXT NOT NULL DEFAULT (datetime('now')), disabled_at TEXT
+                )"#,
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            sqlx::query(
+                "INSERT INTO users (id, email, password_hash, created_at, updated_at) \
+                 VALUES ('u1', 'legacy@example.com', 'phc-legacy', \
+                 '2024-01-01T00:00:00+00:00', '2024-01-01T00:00:00+00:00')",
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+            pool.close().await;
+        }
+
+        // Opening it through the real Catalog runs the migration, including
+        // the rebuild (password_hash is still NOT NULL).
+        let catalog = Catalog::new(&dsn).await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            unreachable!()
+        };
+
+        sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+            .bind("https://idp.example.com")
+            .bind("subject-1")
+            .bind("u1")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let second = catalog
+            .create_user("second@example.com", None, None, false)
+            .await
+            .unwrap();
+        let conflict =
+            sqlx::query("UPDATE users SET oidc_issuer = ?, oidc_subject = ? WHERE id = ?")
+                .bind("https://idp.example.com")
+                .bind("subject-1")
+                .bind(&second.id)
+                .execute(pool)
+                .await;
+        assert!(
+            conflict.is_err(),
+            "idx_users_oidc_identity must survive the legacy-schema rebuild"
+        );
+    }
+
+    /// Regression test (code review, Group 1 blocker 2): a failed rebuild
+    /// must not leave the pooled connection with `PRAGMA foreign_keys`
+    /// suspended. Dropping `users` before the rebuild runs makes the
+    /// `INSERT INTO users_new ... SELECT ... FROM users` step fail after
+    /// foreign-key enforcement has already been turned off for the
+    /// connection.
+    #[tokio::test]
+    async fn rebuild_users_table_sqlite_restores_foreign_keys_after_error() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        query("CREATE TABLE tenants (id TEXT PRIMARY KEY)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        query(
+            r#"CREATE TABLE users (
+                id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, display_name TEXT,
+                password_hash TEXT NOT NULL, is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')), disabled_at TEXT
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE probe (
+                tenant_id TEXT NOT NULL,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id)
+            )"#,
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Drop `users` so the rebuild's INSERT...SELECT fails partway
+        // through the transaction, after PRAGMA foreign_keys = OFF has
+        // already run on this connection.
+        query("DROP TABLE users").execute(&pool).await.unwrap();
+
+        let result = rebuild_users_table_sqlite(&pool).await;
+        assert!(result.is_err());
+
+        // A pooled connection with foreign keys still off would let this
+        // FK-violating insert through silently instead of erroring.
+        let fk_violation = query("INSERT INTO probe (tenant_id) VALUES ('missing-tenant')")
+            .execute(&pool)
+            .await;
+        assert!(
+            fk_violation.is_err(),
+            "foreign key enforcement must be restored after a failed rebuild"
+        );
+    }
+
+    /// Regression test (code review, Group 1 blocker 6): on a role tie
+    /// between a `local` and an `oidc_mapping` row, the effective source
+    /// must be reported deterministically (`Local`), not depend on
+    /// unordered row-fetch order.
+    #[tokio::test]
+    async fn effective_membership_prefers_local_source_on_role_tie() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("tied@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .get_tenant_membership(&user.id, "acme")
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(effective.role, MembershipRole::Admin);
+        assert_eq!(
+            effective.granted_by,
+            GrantSource::Local,
+            "on a role tie, Local must win deterministically"
+        );
+    }
+
+    /// Change: oidc-login, "session views count a tenant once": a user
+    /// holding a `local` and an `oidc_mapping` row in the same tenant must
+    /// be reported once, at the higher-ranked role.
+    #[tokio::test]
+    async fn list_effective_memberships_collapses_local_and_mapped_row_in_one_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("collapsed@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .list_effective_memberships_for_user(&user.id)
+            .await
+            .unwrap();
+        assert_eq!(
+            effective.len(),
+            1,
+            "a local + mapped row in one tenant must collapse to one entry"
+        );
+        assert_eq!(effective[0].tenant_id, "acme");
+        assert_eq!(effective[0].role, MembershipRole::Admin);
+    }
+
+    /// Distinct tenants must not collapse into each other: a user with
+    /// memberships in two different tenants still sees two.
+    #[tokio::test]
+    async fn list_effective_memberships_keeps_distinct_tenants_separate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme Corp", None, "config")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex Corp", None, "config")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("two-tenants@example.com", None, None, false)
+            .await
+            .unwrap();
+
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let effective = catalog
+            .list_effective_memberships_for_user(&user.id)
+            .await
+            .unwrap();
+        assert_eq!(effective.len(), 2);
+        let tenant_ids: std::collections::BTreeSet<&str> =
+            effective.iter().map(|m| m.tenant_id.as_str()).collect();
+        assert_eq!(
+            tenant_ids,
+            std::collections::BTreeSet::from(["acme", "globex"])
+        );
+    }
+
+    #[tokio::test]
     async fn create_user_session_and_get_valid_session_roundtrip() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("session@example.com", None, "hash", false)
+            .create_user("session@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -4932,10 +10675,69 @@ mod user_membership_tests {
     }
 
     #[tokio::test]
+    async fn extend_session_updates_expiry() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("extend@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let expires_at = Utc::now() + Duration::hours(1);
+        let session = catalog
+            .create_user_session(&user.id, "token-hash-extend", expires_at)
+            .await
+            .unwrap();
+
+        let new_expiry = Utc::now() + Duration::hours(12);
+        catalog
+            .extend_session(&session.id, new_expiry)
+            .await
+            .unwrap();
+
+        let renewed = catalog
+            .get_valid_session("token-hash-extend")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(renewed.expires_at > expires_at);
+        assert!((renewed.expires_at - new_expiry).num_seconds().abs() < 2);
+    }
+
+    #[tokio::test]
+    async fn extend_session_is_a_no_op_for_a_revoked_session() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let user = catalog
+            .create_user("extend-revoked@example.com", None, Some("hash"), false)
+            .await
+            .unwrap();
+
+        let expires_at = Utc::now() + Duration::hours(1);
+        let session = catalog
+            .create_user_session(&user.id, "token-hash-extend-revoked", expires_at)
+            .await
+            .unwrap();
+        catalog.revoke_session(&session.id).await.unwrap();
+
+        // Must not resurrect a revoked session by extending its expiry.
+        catalog
+            .extend_session(&session.id, Utc::now() + Duration::hours(12))
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .get_valid_session("token-hash-extend-revoked")
+                .await
+                .unwrap()
+                .is_none()
+        );
+    }
+
+    #[tokio::test]
     async fn revoked_session_is_not_returned_by_get_valid_session() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("revoke@example.com", None, "hash", false)
+            .create_user("revoke@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -4962,7 +10764,7 @@ mod user_membership_tests {
     async fn disabled_user_sessions_are_not_returned_until_reenabled() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("locked@example.com", None, "hash", false)
+            .create_user("locked@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -5007,7 +10809,7 @@ mod user_membership_tests {
     async fn expired_session_is_not_returned_by_get_valid_session() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("expired@example.com", None, "hash", false)
+            .create_user("expired@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -5033,7 +10835,7 @@ mod user_membership_tests {
     async fn delete_expired_sessions_removes_only_expired_rows() {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("cleanup@example.com", None, "hash", false)
+            .create_user("cleanup@example.com", None, Some("hash"), false)
             .await
             .unwrap();
 
@@ -5073,7 +10875,7 @@ mod oauth_storage_tests {
     async fn catalog_with_principal() -> (Catalog, String, String) {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog
@@ -5081,6 +10883,440 @@ mod oauth_storage_tests {
             .await
             .unwrap();
         (catalog, user.id, "acme".to_string())
+    }
+
+    /// A single-tenant, unrestricted grant set — the common case.
+    fn single_grant(tenant_id: &str) -> Vec<TenantGrant> {
+        vec![TenantGrant {
+            tenant_id: tenant_id.to_string(),
+            dataset_ids: None,
+        }]
+    }
+
+    /// A single-tenant grant restricted to `dataset_ids`.
+    fn single_grant_with_datasets(tenant_id: &str, dataset_ids: &[String]) -> Vec<TenantGrant> {
+        vec![TenantGrant {
+            tenant_id: tenant_id.to_string(),
+            dataset_ids: Some(dataset_ids.to_vec()),
+        }]
+    }
+
+    /// Seed the pre-`mcp-multi-tenant-oauth-grants` schema directly on a raw
+    /// pool, bypassing `Catalog::init()` (which would migrate immediately):
+    /// `tenant_id NOT NULL`, `dataset_ids` present, no `tenant_grants`
+    /// column at all. One row per OAuth grant table, referencing `tenant_id`
+    /// and `user_id`, with `dataset_ids` on the access-token row so the
+    /// backfill test has something non-trivial to carry forward.
+    async fn seed_pre_migration_oauth_tables(pool: &SqlitePool) {
+        query(
+            r#"CREATE TABLE tenants (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                default_dataset TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                source TEXT NOT NULL CHECK(source IN ('config', 'database'))
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE users (
+                id TEXT PRIMARY KEY,
+                email TEXT NOT NULL UNIQUE,
+                display_name TEXT,
+                password_hash TEXT,
+                is_instance_admin INTEGER NOT NULL DEFAULT 0,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_authorization_codes (
+                code_hash TEXT PRIMARY KEY,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                redirect_uri TEXT NOT NULL,
+                code_challenge TEXT NOT NULL,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_access_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            r#"CREATE TABLE oauth_refresh_tokens (
+                id TEXT PRIMARY KEY,
+                token_hash TEXT NOT NULL UNIQUE,
+                client_id TEXT NOT NULL,
+                user_id TEXT NOT NULL,
+                tenant_id TEXT NOT NULL,
+                scopes TEXT NOT NULL,
+                dataset_ids TEXT,
+                resource TEXT,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                expires_at TEXT NOT NULL,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+                FOREIGN KEY (tenant_id) REFERENCES tenants(id) ON DELETE CASCADE
+            )"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        query("INSERT INTO tenants (id, name, source) VALUES ('acme', 'Acme', 'database')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query("INSERT INTO users (id, email) VALUES ('user-1', 'agent@example.com')")
+            .execute(pool)
+            .await
+            .unwrap();
+        query(
+            "INSERT INTO oauth_authorization_codes \
+             (code_hash, client_id, user_id, tenant_id, scopes, dataset_ids, redirect_uri, code_challenge, resource, created_at, expires_at) \
+             VALUES \
+             ('code-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, 'https://claude.ai/cb', 'challenge', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('at-1', 'at-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', '[\"production\"]', NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_refresh_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, dataset_ids, resource, created_at, expires_at) \
+             VALUES \
+             ('rt-1', 'rt-hash-1', 'client-1', 'user-1', 'acme', '[\"traces:read\"]', NULL, NULL, '2024-01-01T00:00:00Z', '2999-01-01T00:00:00Z')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Task 1.1: `Catalog::init()` adds a nullable `tenant_grants` column to
+    /// all three OAuth grant tables via a plain `ADD COLUMN`, even when a
+    /// table already has rows (SQLite has no native `ADD COLUMN IF NOT
+    /// EXISTS`, hence `ensure_sqlite_text_column`).
+    #[tokio::test]
+    async fn catalog_init_adds_tenant_grants_column_to_populated_oauth_tables() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        for table in OAUTH_GRANT_TABLES {
+            let columns = query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            let tenant_grants = columns
+                .iter()
+                .find(|r| r.get::<String, _>("name") == "tenant_grants")
+                .unwrap_or_else(|| panic!("{table} must gain a tenant_grants column"));
+            assert_eq!(
+                tenant_grants.get::<i64, _>("notnull"),
+                0,
+                "{table}.tenant_grants must be nullable"
+            );
+        }
+
+        // A second boot against the already-migrated pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Task 1.3: `tenant_id` is nullable on all three OAuth grant tables —
+    /// on a fresh catalog (never touched the pre-migration schema at all),
+    /// a row can be inserted with `tenant_id = NULL`.
+    #[tokio::test]
+    async fn oauth_tables_accept_a_row_with_tenant_id_null() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+
+        query(
+            "INSERT INTO oauth_authorization_codes \
+             (code_hash, client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, expires_at, tenant_grants) \
+             VALUES ('code-null-tenant', 'client-1', (SELECT id FROM users LIMIT 1), NULL, '[]', 'https://claude.ai/cb', 'challenge', '2999-01-01T00:00:00Z', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, expires_at, tenant_grants) \
+             VALUES ('at-null-tenant', 'at-hash-null', 'client-1', (SELECT id FROM users LIMIT 1), NULL, '[]', '2999-01-01T00:00:00Z', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        query(
+            "INSERT INTO oauth_refresh_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, scopes, expires_at, tenant_grants) \
+             VALUES ('rt-null-tenant', 'rt-hash-null', 'client-1', (SELECT id FROM users LIMIT 1), NULL, '[]', '2999-01-01T00:00:00Z', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    /// Companion to the above on an *upgraded* database: a pre-migration
+    /// install still has `tenant_id NOT NULL`, so `Catalog::init()` must
+    /// rebuild each table (SQLite has no `ALTER COLUMN ... DROP NOT NULL`)
+    /// to make it nullable, while every pre-existing row's other columns
+    /// (including the legacy `tenant_id` value itself) survive untouched.
+    #[tokio::test]
+    async fn catalog_init_drops_tenant_id_not_null_and_preserves_row_data_on_upgrade() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+        for table in OAUTH_GRANT_TABLES {
+            let columns = query(&format!("PRAGMA table_info({table})"))
+                .fetch_all(pool)
+                .await
+                .unwrap();
+            let tenant_id = columns
+                .iter()
+                .find(|r| r.get::<String, _>("name") == "tenant_id")
+                .unwrap();
+            assert_eq!(
+                tenant_id.get::<i64, _>("notnull"),
+                0,
+                "{table}.tenant_id must lose its NOT NULL constraint"
+            );
+        }
+
+        let code_row = query("SELECT client_id, user_id, tenant_id, scopes, redirect_uri, code_challenge, created_at, expires_at FROM oauth_authorization_codes WHERE code_hash = 'code-1'")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(code_row.get::<String, _>("client_id"), "client-1");
+        assert_eq!(code_row.get::<String, _>("user_id"), "user-1");
+        assert_eq!(code_row.get::<String, _>("tenant_id"), "acme");
+        assert_eq!(code_row.get::<String, _>("scopes"), "[\"traces:read\"]");
+        assert_eq!(
+            code_row.get::<String, _>("redirect_uri"),
+            "https://claude.ai/cb"
+        );
+        assert_eq!(code_row.get::<String, _>("code_challenge"), "challenge");
+        assert_eq!(
+            code_row.get::<String, _>("created_at"),
+            "2024-01-01T00:00:00Z"
+        );
+
+        let access_row = query(
+            "SELECT tenant_id, dataset_ids FROM oauth_access_tokens WHERE token_hash = 'at-hash-1'",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(access_row.get::<String, _>("tenant_id"), "acme");
+        assert_eq!(
+            access_row.get::<String, _>("dataset_ids"),
+            "[\"production\"]"
+        );
+
+        let refresh_row =
+            query("SELECT tenant_id FROM oauth_refresh_tokens WHERE token_hash = 'rt-hash-1'")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(refresh_row.get::<String, _>("tenant_id"), "acme");
+
+        // A second boot against the already-migrated (rebuilt) pool is a no-op.
+        catalog.init().await.unwrap();
+    }
+
+    /// Task 1.5/1.6: the backfill populates `tenant_grants` for every
+    /// pre-existing row from its legacy `tenant_id`/`dataset_ids` — a
+    /// single-element array, carrying the dataset restriction across when
+    /// present (the access-token row) and `None` when absent (the
+    /// authorization-code and refresh-token rows).
+    #[tokio::test]
+    async fn catalog_init_backfills_tenant_grants_from_legacy_columns() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+
+        let code = catalog
+            .consume_authorization_code("code-1")
+            .await
+            .unwrap()
+            .expect("pre-migration code survives migration");
+        assert_eq!(code.tenant_grants, single_grant("acme"));
+
+        let access = catalog
+            .get_valid_access_token("at-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration access token survives migration");
+        assert_eq!(
+            access.tenant_grants,
+            single_grant_with_datasets("acme", &["production".to_string()])
+        );
+
+        let refresh = catalog
+            .get_valid_refresh_token("rt-hash-1")
+            .await
+            .unwrap()
+            .expect("pre-migration refresh token survives migration");
+        assert_eq!(refresh.tenant_grants, single_grant("acme"));
+    }
+
+    /// The rebuild technique `catalog_init_drops_tenant_id_not_null_and_preserves_row_data_on_upgrade`
+    /// exercises is the same create-new/copy-rows/drop-old/rename shape
+    /// `rebuild_users_table_sqlite` uses for `users`, but unlike `users`,
+    /// none of the three OAuth grant tables is ever an FK *parent*, so the
+    /// rebuild does not need to suspend foreign-key enforcement the way
+    /// `rebuild_users_table_sqlite` does. This is verified empirically
+    /// (rather than assumed): after a rebuild, the `tenant_id`/`user_id`
+    /// foreign keys to `tenants`/`users` still hold — a valid tenant/user
+    /// round-trips, and an unknown one is rejected by the database itself.
+    #[tokio::test]
+    async fn oauth_grant_table_rebuild_preserves_tenant_and_user_foreign_keys() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        // A valid tenant/user still round-trips through the rebuilt table.
+        query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, expires_at, tenant_grants, scopes) \
+             VALUES ('at-fk-ok', 'at-hash-fk-ok', 'client-1', 'user-1', 'acme', '2999-01-01T00:00:00Z', '[]', '[]')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // An unknown user is still rejected by the FK the rebuild preserved.
+        let violated_user = query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, expires_at, tenant_grants, scopes) \
+             VALUES ('at-fk-bad', 'at-hash-fk-bad', 'client-1', 'no-such-user', '2999-01-01T00:00:00Z', '[]', '[]')",
+        )
+        .execute(pool)
+        .await;
+        assert!(
+            violated_user.is_err(),
+            "the user_id foreign key must still be enforced after the rebuild"
+        );
+
+        // An unknown tenant is likewise still rejected.
+        let violated_tenant = query(
+            "INSERT INTO oauth_access_tokens \
+             (id, token_hash, client_id, user_id, tenant_id, expires_at, tenant_grants, scopes) \
+             VALUES ('at-fk-bad-tenant', 'at-hash-fk-bad-tenant', 'client-1', 'user-1', 'no-such-tenant', '2999-01-01T00:00:00Z', '[]', '[]')",
+        )
+        .execute(pool)
+        .await;
+        assert!(
+            violated_tenant.is_err(),
+            "the tenant_id foreign key must still be enforced after the rebuild"
+        );
+    }
+
+    /// `DROP TABLE` (part of the rebuild) drops any index defined on the
+    /// table too; the rebuild must recreate `idx_oauth_access_tokens_hash`/
+    /// `idx_oauth_refresh_tokens_hash` rather than silently losing them.
+    #[tokio::test]
+    async fn oauth_grant_table_rebuild_preserves_token_hash_indexes() {
+        let pool = SqlitePoolOptions::new()
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        seed_pre_migration_oauth_tables(&pool).await;
+
+        let catalog = Catalog::Sqlite(pool);
+        catalog.init().await.unwrap();
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("expected a SQLite catalog");
+        };
+
+        for (table, index) in [
+            ("oauth_access_tokens", "idx_oauth_access_tokens_hash"),
+            ("oauth_refresh_tokens", "idx_oauth_refresh_tokens_hash"),
+        ] {
+            let found = query(
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ? AND tbl_name = ?",
+            )
+            .bind(index)
+            .bind(table)
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+            assert!(found.is_some(), "{index} must survive the {table} rebuild");
+        }
     }
 
     #[tokio::test]
@@ -5112,12 +11348,13 @@ mod oauth_storage_tests {
     async fn authorization_code_is_single_use() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string()];
+        let grants = single_grant(&tenant);
         catalog
             .create_authorization_code(
                 "code-hash-1",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
                 "https://claude.ai/cb",
                 "challenge-abc",
@@ -5132,7 +11369,7 @@ mod oauth_storage_tests {
             .await
             .unwrap()
             .expect("first consume returns the grant");
-        assert_eq!(first.tenant_id, tenant);
+        assert_eq!(first.tenant_grants, grants);
         assert_eq!(first.scopes, scopes);
         assert_eq!(first.code_challenge, "challenge-abc");
         assert_eq!(
@@ -5158,7 +11395,7 @@ mod oauth_storage_tests {
                 "code-hash-old",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant(&tenant),
                 &["traces:read".to_string()],
                 "https://claude.ai/cb",
                 "challenge",
@@ -5180,12 +11417,13 @@ mod oauth_storage_tests {
     async fn access_token_valid_lookup_then_revoke() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let scopes = vec!["traces:read".to_string(), "logs:read".to_string()];
+        let grants = single_grant(&tenant);
         catalog
             .create_access_token(
                 "at-hash-1",
                 "client-1",
                 &user,
-                &tenant,
+                &grants,
                 &scopes,
                 Some("https://mcp.example.com/mcp"),
                 Utc::now() + Duration::hours(1),
@@ -5198,7 +11436,7 @@ mod oauth_storage_tests {
             .await
             .unwrap()
             .expect("valid token is found");
-        assert_eq!(found.tenant_id, tenant);
+        assert_eq!(found.tenant_grants, grants);
         assert_eq!(found.scopes, scopes);
 
         catalog.revoke_access_token("at-hash-1").await.unwrap();
@@ -5219,7 +11457,7 @@ mod oauth_storage_tests {
                 "at-hash-old",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant(&tenant),
                 &["traces:read".to_string()],
                 None,
                 Utc::now() - Duration::seconds(1),
@@ -5243,7 +11481,7 @@ mod oauth_storage_tests {
                 "rt-hash-1",
                 "client-1",
                 &user,
-                &tenant,
+                &single_grant(&tenant),
                 &["traces:read".to_string()],
                 Some("https://mcp.example.com/mcp"),
                 Utc::now() + Duration::days(30),
@@ -5268,21 +11506,416 @@ mod oauth_storage_tests {
     }
 
     #[tokio::test]
+    async fn oauth_grants_round_trip_tenant_grants_with_dataset_ids() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+        let ids = vec!["a".to_string(), "b".to_string()];
+        let grants = single_grant_with_datasets(&tenant, &ids);
+
+        catalog
+            .create_authorization_code(
+                "code-with-datasets",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                "https://claude.ai/cb",
+                "challenge",
+                None,
+                Utc::now() + Duration::minutes(1),
+            )
+            .await
+            .unwrap();
+        let code = catalog
+            .consume_authorization_code("code-with-datasets")
+            .await
+            .unwrap()
+            .expect("code exists");
+        assert_eq!(code.tenant_grants, grants);
+
+        let access = catalog
+            .create_access_token(
+                "at-with-datasets",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access.tenant_grants, grants);
+        let fetched = catalog
+            .get_valid_access_token("at-with-datasets")
+            .await
+            .unwrap()
+            .expect("access token exists");
+        assert_eq!(fetched.tenant_grants, grants);
+
+        let refresh = catalog
+            .create_refresh_token(
+                "rt-with-datasets",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                None,
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+        assert_eq!(refresh.tenant_grants, grants);
+        let fetched = catalog
+            .get_valid_refresh_token("rt-with-datasets")
+            .await
+            .unwrap()
+            .expect("refresh token exists");
+        assert_eq!(fetched.tenant_grants, grants);
+    }
+
+    /// A grant naming two tenants at once (the actual new capability this
+    /// change adds) round-trips with each tenant's own, independent dataset
+    /// restriction.
+    #[tokio::test]
+    async fn multi_tenant_grant_round_trips_with_per_tenant_dataset_restrictions() {
+        let (catalog, user, tenant_a) = catalog_with_principal().await;
+        catalog
+            .upsert_tenant("beta", "Beta", Some("default"), "database")
+            .await
+            .unwrap();
+        let grants = vec![
+            TenantGrant {
+                tenant_id: tenant_a.clone(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            TenantGrant {
+                tenant_id: "beta".to_string(),
+                dataset_ids: None,
+            },
+        ];
+        let scopes = vec!["traces:read".to_string()];
+
+        let access = catalog
+            .create_access_token(
+                "at-multi-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        assert_eq!(access.tenant_grants, grants);
+
+        let fetched = catalog
+            .get_valid_access_token("at-multi-tenant")
+            .await
+            .unwrap()
+            .expect("multi-tenant access token exists");
+        assert_eq!(fetched.tenant_grants, grants);
+    }
+
+    #[tokio::test]
+    async fn create_access_token_rejects_empty_tenant_grants_and_empty_or_duplicate_dataset_ids() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+
+        let no_grants = catalog
+            .create_access_token(
+                "at-no-grants",
+                "client-1",
+                &user,
+                &[],
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(no_grants.is_err());
+
+        let empty_dataset_ids = catalog
+            .create_access_token(
+                "at-empty",
+                "client-1",
+                &user,
+                &single_grant_with_datasets(&tenant, &[]),
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(empty_dataset_ids.is_err());
+
+        let duplicate_dataset_ids = catalog
+            .create_access_token(
+                "at-dup",
+                "client-1",
+                &user,
+                &single_grant_with_datasets(&tenant, &["a".to_string(), "a".to_string()]),
+                &scopes,
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(duplicate_dataset_ids.is_err());
+    }
+
+    /// D3: a grant naming a tenant that doesn't exist in the registry is
+    /// rejected at write time, since `tenant_grants` carries no DB-level FK
+    /// to enforce this for free.
+    #[tokio::test]
+    async fn create_access_token_rejects_unknown_tenant() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let result = catalog
+            .create_access_token(
+                "at-unknown-tenant",
+                "client-1",
+                &user,
+                &single_grant("no-such-tenant"),
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// `get_valid_access_token` surfaces a decode failure as `Err`, not as
+    /// "no such token" — this is the distinction `POST /oauth/introspect`
+    /// (CodeRabbit finding on mcp-multi-tenant-oauth-grants) depends on to
+    /// report a store failure as a server error rather than `active:
+    /// false`, which would otherwise make a transient catalog outage look
+    /// like every live token was revoked.
+    #[tokio::test]
+    async fn get_valid_access_token_errors_rather_than_returns_none_on_a_corrupt_row() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        catalog
+            .create_access_token(
+                "at-corrupt-row",
+                "client-1",
+                &user,
+                &single_grant(&tenant),
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        // Simulate corruption (or a row that predates the tenant_grants
+        // backfill) directly, bypassing every write path this change's own
+        // code uses — none of which can produce a NULL tenant_grants.
+        let Catalog::Sqlite(pool) = &catalog else {
+            panic!("test catalog is always SQLite");
+        };
+        query("UPDATE oauth_access_tokens SET tenant_grants = NULL WHERE token_hash = ?")
+            .bind("at-corrupt-row")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let result = catalog.get_valid_access_token("at-corrupt-row").await;
+        assert!(
+            result.is_err(),
+            "a corrupt row must surface as an error, not Ok(None)"
+        );
+    }
+
+    /// `create_access_token_trusted`/`create_refresh_token_trusted` skip the
+    /// tenant-registry existence check (D3) — a token can be refreshed even
+    /// if one of its originally-granted tenants was deleted in the
+    /// meantime, so the *other* tenants in a multi-tenant grant keep
+    /// refreshing normally instead of the whole refresh failing over one
+    /// stale entry.
+    #[tokio::test]
+    async fn create_token_trusted_accepts_a_grant_naming_a_deleted_tenant() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let grants = single_grant("no-such-tenant");
+
+        let access = catalog
+            .create_access_token_trusted(
+                "at-trusted-deleted-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .expect("trusted access-token creation skips the registry check");
+        assert_eq!(access.tenant_grants, grants);
+
+        let refresh = catalog
+            .create_refresh_token_trusted(
+                "rt-trusted-deleted-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::days(1),
+            )
+            .await
+            .expect("trusted refresh-token creation skips the registry check");
+        assert_eq!(refresh.tenant_grants, grants);
+    }
+
+    /// The trusted path still enforces shape validation — it only skips the
+    /// async registry-existence check, not the free, in-memory checks.
+    #[tokio::test]
+    async fn create_token_trusted_still_rejects_an_empty_grant_set() {
+        let (catalog, user, _tenant) = catalog_with_principal().await;
+        let result = catalog
+            .create_access_token_trusted(
+                "at-trusted-empty",
+                "client-1",
+                &user,
+                &[],
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// A grant set naming the same tenant twice (even with different
+    /// `dataset_ids` per entry) is rejected: task-group-3's set-membership
+    /// checks (design D4) assume each tenant appears at most once, and a
+    /// duplicate would make "the" dataset restriction for that tenant
+    /// ambiguous.
+    #[tokio::test]
+    async fn create_access_token_rejects_duplicate_tenant_id_across_grants() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let grants = vec![
+            TenantGrant {
+                tenant_id: tenant.clone(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            TenantGrant {
+                tenant_id: tenant,
+                dataset_ids: None,
+            },
+        ];
+        let result = catalog
+            .create_access_token(
+                "at-duplicate-tenant",
+                "client-1",
+                &user,
+                &grants,
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await;
+        assert!(result.is_err());
+    }
+
+    /// D6: a refresh reads `tenant_grants` from the presented
+    /// `oauth_refresh_tokens` row being redeemed, not from any access
+    /// token. The original access token is revoked (gone) before the
+    /// "refresh" happens, so a wrong implementation that tries to read it
+    /// would fail loudly rather than coincidentally pass.
+    #[tokio::test]
+    async fn refresh_reads_tenant_grants_from_refresh_token_row_not_access_token() {
+        let (catalog, user, tenant) = catalog_with_principal().await;
+        let scopes = vec!["traces:read".to_string()];
+        let grants = single_grant_with_datasets(&tenant, &["production".to_string()]);
+
+        catalog
+            .create_access_token(
+                "at-original",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                None,
+                Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        catalog
+            .create_refresh_token(
+                "rt-original",
+                "client-1",
+                &user,
+                &grants,
+                &scopes,
+                None,
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+
+        // The original access token is gone by the time refresh happens.
+        catalog.revoke_access_token("at-original").await.unwrap();
+        assert!(
+            catalog
+                .get_valid_access_token("at-original")
+                .await
+                .unwrap()
+                .is_none()
+        );
+
+        // Refresh: read tenant_grants from the presented refresh token row...
+        let presented = catalog
+            .get_valid_refresh_token("rt-original")
+            .await
+            .unwrap()
+            .expect("refresh token is valid");
+        assert_eq!(presented.tenant_grants, grants);
+
+        // ...and propagate it onto BOTH the new access token and the new
+        // replacement refresh token the refresh grant mints.
+        let new_access = catalog
+            .create_access_token(
+                "at-refreshed",
+                "client-1",
+                &user,
+                &presented.tenant_grants,
+                &presented.scopes,
+                None,
+                Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let new_refresh = catalog
+            .create_refresh_token(
+                "rt-refreshed",
+                "client-1",
+                &user,
+                &presented.tenant_grants,
+                &presented.scopes,
+                None,
+                Utc::now() + Duration::days(30),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(new_access.tenant_grants, grants);
+        assert_eq!(new_refresh.tenant_grants, grants);
+    }
+
+    #[tokio::test]
     async fn delete_expired_oauth_grants_reaps_only_expired_rows() {
         let (catalog, user, tenant) = catalog_with_principal().await;
         let past = Utc::now() - Duration::hours(1);
         let future = Utc::now() + Duration::hours(1);
+        let grants = single_grant(&tenant);
         // One expired + one live token in each token table, and one expired code.
         catalog
-            .create_access_token("at-old", "c", &user, &tenant, &[], None, past)
+            .create_access_token("at-old", "c", &user, &grants, &[], None, past)
             .await
             .unwrap();
         catalog
-            .create_access_token("at-live", "c", &user, &tenant, &[], None, future)
+            .create_access_token("at-live", "c", &user, &grants, &[], None, future)
             .await
             .unwrap();
         catalog
-            .create_refresh_token("rt-old", "c", &user, &tenant, &[], None, past)
+            .create_refresh_token("rt-old", "c", &user, &grants, &[], None, past)
             .await
             .unwrap();
         catalog
@@ -5290,7 +11923,7 @@ mod oauth_storage_tests {
                 "code-old",
                 "c",
                 &user,
-                &tenant,
+                &grants,
                 &[],
                 "https://c/cb",
                 "chal",
@@ -5312,5 +11945,529 @@ mod oauth_storage_tests {
                 .is_some()
         );
         assert_eq!(catalog.delete_expired_oauth_grants().await.unwrap(), 0);
+    }
+}
+
+#[cfg(test)]
+mod github_tests {
+    use super::*;
+    use std::time::Duration;
+
+    /// A catalog with two tenants (`acme`, `globex`) and one user, whose
+    /// ids the `github_link_states`/`github_installations` rows reference.
+    async fn catalog_with_two_tenants() -> (Catalog, String) {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", None, "database")
+            .await
+            .unwrap();
+        let user = catalog
+            .create_user("admin@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        (catalog, user.id)
+    }
+
+    /// A ten-minute link state for `user_id` in `tenant_id`.
+    async fn link_state(catalog: &Catalog, state_hash: &str, tenant_id: &str, user_id: &str) {
+        catalog
+            .create_github_link_state(
+                state_hash,
+                tenant_id,
+                Some(user_id),
+                Duration::from_secs(600),
+            )
+            .await
+            .unwrap();
+    }
+
+    fn new_installation(installation_id: i64, repositories: &[&str]) -> NewGitHubInstallation {
+        NewGitHubInstallation {
+            installation_id,
+            account_login: "octo-org".to_string(),
+            account_type: "Organization".to_string(),
+            account_id: 42,
+            repositories: repositories.iter().map(|s| s.to_string()).collect(),
+            linked_by_user_id: None,
+            linked_by_github_login: Some("octocat".to_string()),
+        }
+    }
+
+    #[tokio::test]
+    async fn link_state_and_installation_round_trip() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        link_state(&catalog, "state-hash-1", "acme", &user_id).await;
+
+        let mut installation = new_installation(1001, &["octo-org/repo-a", "octo-org/repo-b"]);
+        installation.linked_by_user_id = Some(user_id.clone());
+
+        let outcome = catalog
+            .complete_github_link("state-hash-1", &installation)
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(record) = outcome else {
+            panic!("expected Linked, got {outcome:?}");
+        };
+        assert_eq!(record.tenant_id, "acme");
+        assert_eq!(record.installation_id, 1001);
+        assert_eq!(record.account_login, "octo-org");
+        assert_eq!(record.account_type, "Organization");
+        assert_eq!(record.account_id, 42);
+        assert_eq!(
+            record.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
+        );
+        assert_eq!(record.linked_by_user_id.as_deref(), Some(user_id.as_str()));
+        assert_eq!(record.linked_by_github_login.as_deref(), Some("octocat"));
+
+        let listed = catalog.list_github_installations("acme").await.unwrap();
+        assert_eq!(listed, vec![record.clone()]);
+
+        let fetched = catalog
+            .get_github_installation("acme", 1001)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched, record);
+
+        let state = catalog
+            .get_github_link_state("state-hash-1")
+            .await
+            .unwrap()
+            .unwrap();
+        assert!(state.consumed_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn tenant_isolation_is_case_insensitive_within_the_owning_tenant() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        link_state(&catalog, "state-globex", "globex", &user_id).await;
+        catalog
+            .complete_github_link("state-globex", &new_installation(2002, &["octo/repo"]))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            catalog
+                .find_github_installation_for_repository("acme", "octo/repo")
+                .await
+                .unwrap(),
+            None,
+            "tenant acme has no installations at all"
+        );
+        let found = catalog
+            .find_github_installation_for_repository("globex", "Octo/Repo")
+            .await
+            .unwrap()
+            .expect("case-insensitive match on globex's own installation");
+        assert_eq!(found.installation_id, 2002);
+    }
+
+    #[tokio::test]
+    async fn state_token_is_single_use() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-reuse", "acme", &user_id).await;
+
+        let first = catalog
+            .complete_github_link("state-reuse", &new_installation(3003, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert!(matches!(first, GitHubLinkOutcome::Linked(_)));
+
+        let second = catalog
+            .complete_github_link("state-reuse", &new_installation(3003, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert_eq!(second, GitHubLinkOutcome::StateRejected);
+
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn expired_state_is_rejected() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        catalog
+            .create_github_link_state("state-expired", "acme", Some(&user_id), Duration::ZERO)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let outcome = catalog
+            .complete_github_link("state-expired", &new_installation(4004, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert_eq!(outcome, GitHubLinkOutcome::StateRejected);
+        assert!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn unknown_state_hash_is_rejected() {
+        let (catalog, _user_id) = catalog_with_two_tenants().await;
+        let outcome = catalog
+            .complete_github_link("never-issued", &new_installation(5005, &["octo/repo"]))
+            .await
+            .unwrap();
+        assert_eq!(outcome, GitHubLinkOutcome::StateRejected);
+    }
+
+    #[tokio::test]
+    async fn concurrent_completions_produce_exactly_one_link() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-race", "acme", &user_id).await;
+
+        let mut handles = Vec::new();
+        for _ in 0..8 {
+            let catalog = catalog.clone();
+            handles.push(tokio::spawn(async move {
+                catalog
+                    .complete_github_link("state-race", &new_installation(6006, &["octo/repo"]))
+                    .await
+                    .unwrap()
+            }));
+        }
+
+        let mut linked_count = 0;
+        let mut rejected_count = 0;
+        for handle in handles {
+            match handle.await.unwrap() {
+                GitHubLinkOutcome::Linked(_) => linked_count += 1,
+                GitHubLinkOutcome::StateRejected => rejected_count += 1,
+            }
+        }
+        assert_eq!(
+            linked_count, 1,
+            "exactly one completion should win the race"
+        );
+        assert_eq!(rejected_count, 7);
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn relinking_upserts_instead_of_failing() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        link_state(&catalog, "state-first", "acme", &user_id).await;
+        let first = catalog
+            .complete_github_link("state-first", &new_installation(7007, &["octo/repo-a"]))
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(first_record) = first else {
+            panic!("expected Linked");
+        };
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        link_state(&catalog, "state-second", "acme", &user_id).await;
+        let second = catalog
+            .complete_github_link(
+                "state-second",
+                &new_installation(7007, &["octo/repo-a", "octo/repo-b"]),
+            )
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(second_record) = second else {
+            panic!("expected Linked");
+        };
+
+        assert_eq!(second_record.installation_id, first_record.installation_id);
+        assert_eq!(
+            second_record.repositories,
+            vec!["octo/repo-a", "octo/repo-b"]
+        );
+        assert!(second_record.updated_at >= first_record.updated_at);
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn update_repositories_reports_whether_a_row_matched() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-update", "acme", &user_id).await;
+        catalog
+            .complete_github_link("state-update", &new_installation(8008, &["octo/repo-a"]))
+            .await
+            .unwrap();
+
+        let updated = catalog
+            .update_github_installation_repositories(
+                "acme",
+                8008,
+                &["octo/repo-a".to_string(), "octo/repo-c".to_string()],
+            )
+            .await
+            .unwrap();
+        assert!(updated);
+        let record = catalog
+            .get_github_installation("acme", 8008)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(record.repositories, vec!["octo/repo-a", "octo/repo-c"]);
+
+        let unknown = catalog
+            .update_github_installation_repositories("acme", 9999, &["x/y".to_string()])
+            .await
+            .unwrap();
+        assert!(!unknown);
+    }
+
+    #[tokio::test]
+    async fn delete_installation_is_idempotent_and_empties_the_list() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-delete", "acme", &user_id).await;
+        catalog
+            .complete_github_link("state-delete", &new_installation(9001, &["octo/repo"]))
+            .await
+            .unwrap();
+
+        assert!(
+            catalog
+                .delete_github_installation("acme", 9001)
+                .await
+                .unwrap()
+        );
+        assert!(
+            !catalog
+                .delete_github_installation("acme", 9001)
+                .await
+                .unwrap()
+        );
+        assert!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[tokio::test]
+    async fn delete_expired_link_states_removes_consumed_and_expired_but_keeps_live() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+
+        // Consumed.
+        link_state(&catalog, "state-consumed", "acme", &user_id).await;
+        catalog
+            .complete_github_link("state-consumed", &new_installation(9101, &["octo/repo"]))
+            .await
+            .unwrap();
+
+        // Expired, never consumed.
+        catalog
+            .create_github_link_state("state-expired-only", "acme", Some(&user_id), Duration::ZERO)
+            .await
+            .unwrap();
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        // Still live.
+        link_state(&catalog, "state-live", "acme", &user_id).await;
+
+        let removed = catalog.delete_expired_github_link_states().await.unwrap();
+        assert_eq!(removed, 2);
+        assert!(
+            catalog
+                .get_github_link_state("state-consumed")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_github_link_state("state-expired-only")
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(
+            catalog
+                .get_github_link_state("state-live")
+                .await
+                .unwrap()
+                .is_some()
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_installation_creates_a_row_without_a_state_token() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        let mut installation = new_installation(20001, &["octo-org/repo-a"]);
+        installation.linked_by_user_id = Some(user_id.clone());
+        installation.linked_by_github_login = None;
+
+        let record = catalog
+            .attach_github_installation("acme", &installation)
+            .await
+            .unwrap();
+        assert_eq!(record.tenant_id, "acme");
+        assert_eq!(record.installation_id, 20001);
+        assert_eq!(record.repositories, vec!["octo-org/repo-a"]);
+        assert_eq!(record.linked_by_user_id.as_deref(), Some(user_id.as_str()));
+        assert_eq!(record.linked_by_github_login, None);
+
+        let fetched = catalog
+            .get_github_installation("acme", 20001)
+            .await
+            .unwrap()
+            .unwrap();
+        assert_eq!(fetched, record);
+    }
+
+    #[tokio::test]
+    async fn attach_installation_again_refreshes_the_row() {
+        let (catalog, _user_id) = catalog_with_two_tenants().await;
+        let first = catalog
+            .attach_github_installation("acme", &new_installation(20002, &["octo-org/repo-a"]))
+            .await
+            .unwrap();
+
+        tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+
+        let mut second_installation =
+            new_installation(20002, &["octo-org/repo-a", "octo-org/repo-b"]);
+        second_installation.account_login = "octo-org-renamed".to_string();
+        let second = catalog
+            .attach_github_installation("acme", &second_installation)
+            .await
+            .unwrap();
+
+        assert_eq!(second.installation_id, first.installation_id);
+        assert_eq!(second.account_login, "octo-org-renamed");
+        assert_eq!(
+            second.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
+        );
+        assert!(second.updated_at >= first.updated_at);
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[tokio::test]
+    async fn attach_installation_to_two_tenants_succeeds_independently() {
+        let (catalog, _user_id) = catalog_with_two_tenants().await;
+
+        let acme_record = catalog
+            .attach_github_installation("acme", &new_installation(20003, &["octo-org/repo-a"]))
+            .await
+            .unwrap();
+        let globex_record = catalog
+            .attach_github_installation("globex", &new_installation(20003, &["octo-org/repo-a"]))
+            .await
+            .unwrap();
+
+        assert_eq!(acme_record.tenant_id, "acme");
+        assert_eq!(globex_record.tenant_id, "globex");
+        assert_eq!(acme_record.installation_id, 20003);
+        assert_eq!(globex_record.installation_id, 20003);
+
+        assert_eq!(
+            catalog
+                .list_github_installations("acme")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .list_github_installations("globex")
+                .await
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            catalog
+                .get_github_installation("acme", 20003)
+                .await
+                .unwrap(),
+            Some(acme_record)
+        );
+        assert_eq!(
+            catalog
+                .get_github_installation("globex", 20003)
+                .await
+                .unwrap(),
+            Some(globex_record)
+        );
+    }
+
+    /// Attach never obtains a GitHub user token, so it always passes `None`
+    /// for both `linked_by_user_id` and `linked_by_github_login` — neither
+    /// must erase what `complete_github_link`'s OAuth flow already verified
+    /// for the same row (an earlier version only `COALESCE`d the login,
+    /// leaving the row attributed to two different people). Regression
+    /// test for the `COALESCE` on both columns in the shared upsert SQL.
+    #[tokio::test]
+    async fn attach_installation_preserves_oauth_verified_provenance() {
+        let (catalog, user_id) = catalog_with_two_tenants().await;
+        link_state(&catalog, "state-hash-preserve", "acme", &user_id).await;
+        let mut oauth_installation = new_installation(20004, &["octo-org/repo-a"]);
+        oauth_installation.linked_by_user_id = Some(user_id.clone());
+        oauth_installation.linked_by_github_login = Some("octocat".to_string());
+        let outcome = catalog
+            .complete_github_link("state-hash-preserve", &oauth_installation)
+            .await
+            .unwrap();
+        let GitHubLinkOutcome::Linked(linked) = outcome else {
+            panic!("expected Linked, got {outcome:?}");
+        };
+        assert_eq!(linked.linked_by_github_login.as_deref(), Some("octocat"));
+
+        let mut attach_installation =
+            new_installation(20004, &["octo-org/repo-a", "octo-org/repo-b"]);
+        attach_installation.linked_by_user_id = None;
+        attach_installation.linked_by_github_login = None;
+        let attached = catalog
+            .attach_github_installation("acme", &attach_installation)
+            .await
+            .unwrap();
+
+        assert_eq!(attached.linked_by_github_login.as_deref(), Some("octocat"));
+        assert_eq!(
+            attached.linked_by_user_id.as_deref(),
+            Some(user_id.as_str())
+        );
+        assert_eq!(
+            attached.repositories,
+            vec!["octo-org/repo-a", "octo-org/repo-b"]
+        );
     }
 }

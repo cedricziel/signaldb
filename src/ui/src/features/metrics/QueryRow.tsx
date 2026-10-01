@@ -1,21 +1,22 @@
 // The visual metric-query builder row: metric · from · agg by · function.
-// Each control is populated from the Prometheus metadata endpoints so filters
-// and group-by are pick-from-what-exists rather than typed blind. State is a
-// MetricQuery (see buildPromQL); the row is fully controlled via onChange.
+// Each control is populated through the Query IR's discovery stage
+// (api/ir/discovery.ts) so filters and group-by are pick-from-what-exists
+// rather than typed blind. State is a MetricQuery (see buildPromQL); the
+// row is fully controlled via onChange.
 
-import { useId, useMemo } from "react";
+import { useId, useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import {
-  promLabelNames,
-  promLabelStats,
-  promLabelValues,
-  promMetricNames,
-} from "../../api/prom";
+  fields,
+  metricNames as discoverMetricNames,
+  values as discoverValues,
+  type DiscoveredMetricName,
+} from "../../api/ir/discovery";
 import { FILTER_OPS, type LabelFilter } from "../../lib/filters";
 import type { ResolvedRange } from "../../lib/time";
 import {
   cardinalityLabel,
-  indexLabelStats,
+  indexFields,
   isHighCardinality,
   optionLabel,
 } from "./cardinality";
@@ -24,8 +25,9 @@ import {
   SPACE_AGGS,
   type MetricQuery,
   type RangeFn,
+  type RangeFnSpec,
   type SpaceAgg,
-} from "./buildPromQL";
+} from "./metricQuery";
 
 interface Props {
   query: MetricQuery;
@@ -35,28 +37,42 @@ interface Props {
 
 const rangeKey = (range: ResolvedRange) => `${range.fromMs}-${range.toMs}`;
 
+/** Bounded, case-insensitive substring match against the discovered metric
+ * names — shown as-is (unfiltered, capped) on focus with an empty input, so
+ * a new user sees what's available before typing anything. */
+const MAX_METRIC_SUGGESTIONS = 20;
+
+function matchingMetrics(
+  names: DiscoveredMetricName[],
+  typed: string,
+): DiscoveredMetricName[] {
+  const needle = typed.trim().toLowerCase();
+  const matches =
+    needle === ""
+      ? names
+      : names.filter((n) => n.value.toLowerCase().includes(needle));
+  return matches.slice(0, MAX_METRIC_SUGGESTIONS);
+}
+
 export function QueryRow({ query, range, onChange }: Props) {
-  const metricList = useId();
   const labelList = useId();
 
   const metricNames = useQuery({
-    queryKey: ["prom-metric-names", rangeKey(range)],
-    queryFn: () => promMetricNames(range),
+    queryKey: ["ir-metric-names", rangeKey(range)],
+    queryFn: () => discoverMetricNames(range),
     staleTime: 60_000,
   });
-  const labelNames = useQuery({
-    queryKey: ["prom-label-names", rangeKey(range)],
-    queryFn: () => promLabelNames(range),
-    staleTime: 60_000,
-  });
-  const labelStats = useQuery({
-    queryKey: ["prom-label-stats", rangeKey(range)],
-    queryFn: () => promLabelStats(range),
+  // `fields` doubles as the label-cardinality source: `DiscoveredField`
+  // already carries the coverage/cardinality estimate a separate
+  // `label_stats` call used to fetch.
+  const labelFields = useQuery({
+    queryKey: ["ir-metric-fields", rangeKey(range)],
+    queryFn: () => fields("metrics", range),
     staleTime: 60_000,
   });
   const statByName = useMemo(
-    () => indexLabelStats(labelStats.data ?? []),
-    [labelStats.data],
+    () => indexFields(labelFields.data ?? []),
+    [labelFields.data],
   );
 
   const patch = (p: Partial<MetricQuery>) => onChange({ ...query, ...p });
@@ -75,14 +91,13 @@ export function QueryRow({ query, range, onChange }: Props) {
 
   return (
     <div className="qrow">
-      <datalist id={metricList}>
-        {(metricNames.data ?? []).map((m) => (
-          <option key={m} value={m} />
-        ))}
-      </datalist>
       <datalist id={labelList}>
-        {(labelNames.data ?? []).map((l) => (
-          <option key={l} value={l} label={optionLabel(statByName.get(l))} />
+        {(labelFields.data ?? []).map((f) => (
+          <option
+            key={f.name}
+            value={f.name}
+            label={optionLabel(statByName.get(f.name))}
+          />
         ))}
       </datalist>
 
@@ -90,13 +105,10 @@ export function QueryRow({ query, range, onChange }: Props) {
         {query.ref}
       </span>
 
-      <input
-        className="qrow-metric"
-        aria-label="Metric"
-        list={metricList}
-        placeholder="metric"
+      <MetricNameCombobox
         value={query.metric}
-        onChange={(e) => patch({ metric: e.target.value })}
+        names={metricNames.data ?? []}
+        onChange={(metric) => patch({ metric })}
       />
 
       <span className="qrow-kw">from</span>
@@ -148,6 +160,7 @@ export function QueryRow({ query, range, onChange }: Props) {
             list={labelList}
             placeholder="group by (comma-separated)"
             value={query.agg.by.join(", ")}
+            title={query.agg.by.join(", ")}
             onChange={(e) =>
               patch({
                 agg: {
@@ -182,10 +195,7 @@ export function QueryRow({ query, range, onChange }: Props) {
         onChange={(e) =>
           patch({
             range: e.target.value
-              ? {
-                  fn: e.target.value as RangeFn,
-                  window: query.range?.window ?? "5m",
-                }
+              ? { ...query.range, fn: e.target.value as RangeFn }
               : undefined,
           })
         }
@@ -198,19 +208,138 @@ export function QueryRow({ query, range, onChange }: Props) {
         ))}
       </select>
       {query.range && (
-        <input
-          className="qrow-window"
-          aria-label="Window"
-          placeholder="5m"
-          value={query.range.window}
-          onChange={(e) =>
-            patch({
-              range: { fn: query.range?.fn ?? "rate", window: e.target.value },
-            })
-          }
+        <RangeOptions
+          range={query.range}
+          onChange={(range) => patch({ range })}
         />
       )}
     </div>
+  );
+}
+
+/** The metric-name box. A `chartable: false` name stays findable but renders
+ * disabled: picking it would chart nothing. */
+function MetricNameCombobox({
+  value,
+  names,
+  onChange,
+}: {
+  value: string;
+  names: DiscoveredMetricName[];
+  onChange: (value: string) => void;
+}) {
+  const listId = useId();
+  const [focused, setFocused] = useState(false);
+  const [active, setActive] = useState(-1);
+  const suggestions = useMemo(
+    () => matchingMetrics(names, value),
+    [names, value],
+  );
+  const selectableIndices = useMemo(
+    () =>
+      suggestions.reduce<number[]>((acc, s, i) => {
+        if (s.chartable) acc.push(i);
+        return acc;
+      }, []),
+    [suggestions],
+  );
+  const open = focused;
+  const activeSelectable = active >= 0 && active < selectableIndices.length;
+  const activeIndex = activeSelectable ? selectableIndices[active]! : -1;
+  const optionId = (index: number) => `${listId}-option-${index}`;
+
+  const pick = (name: string) => {
+    onChange(name);
+    setActive(-1);
+    setFocused(false);
+  };
+
+  const onKeyDown = (e: React.KeyboardEvent<HTMLInputElement>) => {
+    if (!open || selectableIndices.length === 0) return;
+    const count = selectableIndices.length;
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setActive((active + 1) % count);
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setActive((active - 1 + count) % count);
+    } else if (e.key === "Enter" && activeIndex >= 0) {
+      e.preventDefault();
+      pick(suggestions[activeIndex]!.value);
+    } else if (e.key === "Escape") {
+      e.preventDefault();
+      setActive(-1);
+      setFocused(false);
+    }
+  };
+
+  return (
+    <span className="qrow-metric-combobox">
+      <input
+        className="qrow-metric"
+        role="combobox"
+        aria-label="Metric"
+        aria-autocomplete="list"
+        aria-expanded={open}
+        aria-controls={open ? listId : undefined}
+        aria-activedescendant={
+          activeIndex >= 0 ? optionId(activeIndex) : undefined
+        }
+        placeholder="metric"
+        size={Math.max(20, value.length + 1)}
+        value={value}
+        title={value}
+        onChange={(e) => {
+          setActive(-1);
+          onChange(e.target.value);
+        }}
+        onFocus={() => setFocused(true)}
+        onKeyDown={onKeyDown}
+        // Clicking a suggestion's `onMouseDown` below prevents this blur
+        // from racing the click.
+        onBlur={() => {
+          setFocused(false);
+          setActive(-1);
+        }}
+      />
+      {open && (
+        <ul
+          id={listId}
+          role="listbox"
+          aria-label="Metric name suggestions"
+          className="chip-suggest"
+        >
+          {suggestions.length === 0 && (
+            <li className="chip-suggest-item chip-suggest-empty" aria-disabled>
+              No metrics in this range
+            </li>
+          )}
+          {suggestions.map((s, index) => (
+            <li
+              key={s.value}
+              id={optionId(index)}
+              role="option"
+              aria-selected={index === activeIndex}
+              aria-disabled={!s.chartable}
+              className={
+                s.chartable
+                  ? "chip-suggest-item"
+                  : "chip-suggest-item chip-suggest-item-disabled"
+              }
+              onMouseDown={(e) => e.preventDefault()}
+              onClick={s.chartable ? () => pick(s.value) : undefined}
+            >
+              <span className="chip-suggest-key">{s.value}</span>
+              {!s.chartable && (
+                <span className="chip-suggest-ns chip-suggest-histogram">
+                  histogram · not chartable yet
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+      )}
+    </span>
   );
 }
 
@@ -231,8 +360,8 @@ function FilterEditor({
 }: FilterProps) {
   const valueList = useId();
   const values = useQuery({
-    queryKey: ["prom-label-values", filter.label, rangeKey(range)],
-    queryFn: () => promLabelValues(filter.label, range),
+    queryKey: ["ir-metric-label-values", filter.label, rangeKey(range)],
+    queryFn: () => discoverValues("metrics", filter.label, range),
     enabled: filter.label !== "",
     staleTime: 60_000,
   });
@@ -263,7 +392,7 @@ function FilterEditor({
       </select>
       <datalist id={valueList}>
         {(values.data ?? []).map((v) => (
-          <option key={v} value={v} />
+          <option key={v.value} value={v.value} />
         ))}
       </datalist>
       <input
@@ -283,5 +412,52 @@ function FilterEditor({
         ✕
       </button>
     </span>
+  );
+}
+
+/** The window/across controls shown once a range function is selected — a
+ * separate component so its handlers narrow `range` once instead of
+ * asserting `query.range!` at every `onChange`. */
+function RangeOptions({
+  range,
+  onChange,
+}: {
+  range: RangeFnSpec;
+  onChange: (range: RangeFnSpec) => void;
+}) {
+  return (
+    <>
+      <input
+        className="qrow-window"
+        aria-label="Window"
+        placeholder="window (default: step)"
+        value={range.window ?? ""}
+        title={range.window ?? ""}
+        onChange={(e) =>
+          onChange({
+            ...range,
+            window: e.target.value === "" ? undefined : e.target.value,
+          })
+        }
+      />
+      <select
+        className="qrow-across"
+        aria-label="Across"
+        value={range.across ?? ""}
+        onChange={(e) =>
+          onChange({
+            ...range,
+            across: e.target.value ? (e.target.value as SpaceAgg) : undefined,
+          })
+        }
+      >
+        <option value="">across: sum</option>
+        {SPACE_AGGS.map((op) => (
+          <option key={op} value={op}>
+            across: {op}
+          </option>
+        ))}
+      </select>
+    </>
   );
 }

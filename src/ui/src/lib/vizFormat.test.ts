@@ -1,11 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
   compactCount,
+  errorRateSeverity,
+  formatErrorRate,
   formatRange,
   formatShare,
   formatTimeBucket,
   formatTimestamp,
   formatValue,
+  pluralCount,
 } from "./vizFormat";
 
 describe("compactCount", () => {
@@ -22,6 +25,64 @@ describe("compactCount", () => {
     expect(compactCount(373_329)).toBe("373K");
     expect(compactCount(1_500_000)).toBe("1.5M");
     expect(compactCount(2_400_000_000)).toBe("2.4B");
+  });
+
+  // A sub-1 series (e.g. `http.server.active_requests`) previously rounded
+  // every tick to an integer, so `0, 0.2, 0.4, 0.6, 0.8, 1` all read as
+  // "0, 0, 0, 1, 1, 1". The step between ticks now sets enough decimals to
+  // keep them distinct.
+  it("derives decimals from the tick step for sub-1 ticks", () => {
+    const ticks = [0, 0.2, 0.4, 0.6, 0.8, 1];
+    const step = ticks[1]! - ticks[0]!;
+    const labels = ticks.map((t) => compactCount(t, "", step));
+    expect(labels).toEqual(["0", "0.2", "0.4", "0.6", "0.8", "1"]);
+    expect(new Set(labels).size).toBe(ticks.length);
+  });
+
+  // Integer-stepped ticks keep their existing whole-number rendering.
+  it("stays integral when the step is a whole number", () => {
+    const ticks = [0, 500, 1000, 1500];
+    const step = ticks[1]! - ticks[0]!;
+    expect(ticks.map((t) => compactCount(t, "", step))).toEqual([
+      "0",
+      "500",
+      "1K",
+      "1.5K",
+    ]);
+  });
+
+  // A negative axis value (a delta, a diverging metric) scaled by magnitude
+  // and kept its sign, rather than falling through to an unscaled `"-1500"`
+  // because `n >= scale` never matched a negative number.
+  it("compacts a negative value by magnitude, mirroring the positive case", () => {
+    expect(compactCount(-999)).toBe("-999");
+    expect(compactCount(-1500)).toBe("-1.5K");
+    expect(compactCount(-9949)).toBe("-9.9K");
+    expect(compactCount(-186_665)).toBe("-187K");
+    expect(compactCount(-1_500_000)).toBe("-1.5M");
+    expect(compactCount(-2_400_000_000)).toBe("-2.4B");
+  });
+
+  // A byte-valued axis (OTel's "By" unit) otherwise falls through to the
+  // decimal K/M/B scaling above, which reads like a plain count rather than
+  // a size — 512 MiB showed as "537M", indistinguishable from half a
+  // billion of something. Binary-scaled instead, matching the size
+  // formatting `lib/flamebearer.ts`'s `formatTicks` already uses.
+  it("binary-scales a byte unit into B/KB/MB/GB instead of decimal K/M/B", () => {
+    expect(compactCount(0, "By")).toBe("0 B");
+    expect(compactCount(512, "By")).toBe("512 B");
+    expect(compactCount(2048, "By")).toBe("2 KB");
+    expect(compactCount(1_572_864, "by")).toBe("1.5 MB");
+    expect(compactCount(536_870_912, "bytes")).toBe("512 MB");
+    expect(compactCount(2_147_483_648, "Byte")).toBe("2 GB");
+  });
+
+  // A negative byte value rounded to one decimal below ten of a unit
+  // regardless of sign, because `v < 10` was true for every negative number
+  // — `roundToOneDecimalBelowTen` now compares the magnitude instead.
+  it("rounds a negative byte value the same as its positive counterpart", () => {
+    expect(compactCount(-536_870_912, "By")).toBe("-512 MB");
+    expect(compactCount(-12.34 * 1024 * 1024, "By")).toBe("-12 MB");
   });
 });
 
@@ -93,5 +154,51 @@ describe("formatShare", () => {
   it("renders a part of a total as a one-decimal percentage", () => {
     expect(formatShare(2, 3)).toBe("66.7%");
     expect(formatShare(0, 0)).toBe("0%");
+  });
+});
+
+describe("formatErrorRate", () => {
+  it("renders a dash for no measurement at all", () => {
+    expect(formatErrorRate(0, 0)).toBe("–");
+  });
+
+  it("renders a dash for a genuinely clean rate, not a bare 0%", () => {
+    expect(formatErrorRate(0, 500)).toBe("–");
+  });
+
+  it("renders <1% for a nonzero rate that rounds to zero", () => {
+    // 1/500 = 0.2%, which would previously round to a misleadingly clean 0%.
+    expect(formatErrorRate(1, 500)).toBe("<1%");
+    expect(formatErrorRate(2, 500)).toBe("<1%");
+  });
+
+  it("rounds a rate at or above the <1% cutoff to the nearest whole percent", () => {
+    expect(formatErrorRate(3, 500)).toBe("1%"); // 0.6%, rounds to 1%
+    expect(formatErrorRate(1, 4)).toBe("25%");
+  });
+});
+
+describe("errorRateSeverity", () => {
+  it("keeps a rate that reads <1% calm", () => {
+    expect(errorRateSeverity(0)).toBe("ok");
+    expect(errorRateSeverity(0.0049)).toBe("ok");
+  });
+
+  it("warns from 0.5%", () => {
+    expect(errorRateSeverity(0.005)).toBe("warn");
+    expect(errorRateSeverity(0.0199)).toBe("warn");
+  });
+
+  it("is critical from 2%", () => {
+    expect(errorRateSeverity(0.02)).toBe("critical");
+    expect(errorRateSeverity(1)).toBe("critical");
+  });
+});
+
+describe("pluralCount", () => {
+  it("pluralises everything but one", () => {
+    expect(pluralCount(0, "case")).toBe("0 cases");
+    expect(pluralCount(1, "case")).toBe("1 case");
+    expect(pluralCount(1200, "case")).toBe("1,200 cases");
   });
 });

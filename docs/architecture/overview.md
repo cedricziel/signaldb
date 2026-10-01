@@ -32,31 +32,38 @@ Write-Ahead Logging ensures data persistence and crash recovery:
 
 - **Before acknowledgment**: Data written to WAL before client response
 - **Automatic recovery**: Unprocessed entries replayed on restart
-- **Per-tenant/dataset isolation**: Separate WAL directories per tenant, dataset, and signal type
+- **Per-tenant/dataset isolation on the append path**: Both the acceptor and the writer hold a separate WAL instance — own segments, own flush mutex, own dead-letter directory — per tenant, dataset, and signal type, so one tenant's corrupted segment or slow fsync cannot block another tenant's `append`/`flush`. The writer's _drain_ is still one sequential loop over those WALs, so a tenant with slow Iceberg commits delays the others' commit latency within a cycle; failure is isolated, latency is not
+- **Record integrity**: Every WAL record is length-framed and CRC-32 checked, so corruption is attributed to one entry and skipped rather than poisoning a segment
 - **Segment management**: Automatic rotation, compaction, and cleanup of processed segments
+- **Bounded instance cache**: Idle eviction alone cannot bound a fleet whose _active_ tenant/dataset/signal cardinality exhausts `RLIMIT_NOFILE`, so `WalManager`'s cache also carries a soft `[wal].max_instances` cap, evicting the least-recently-appended drained, unreferenced WAL rather than ever failing a write
 
 ### 3. Dual Catalog System
 
 SignalDB maintains two distinct catalog systems:
 
 - **Service Catalog** (`Catalog`): PostgreSQL or SQLite-backed registry for service discovery, tenant management, API keys, and datasets. Used by `ServiceBootstrap` for heartbeat-based registration. At monolith startup, config tenants are synced into it; if no tenants exist at all, a `default` tenant is auto-provisioned and its API key printed once (`common::bootstrap`). The router and monolith also run `Catalog::backfill_default_datasets` at boot, which materializes a `datasets` row for any tenant naming a `default_dataset` without one — a state tenant creation no longer produces, but that older deployments carry, and one that fails authentication closed (#1066). It is a no-op once converged.
-- **Iceberg Catalog** (`CatalogManager`): SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Only SQLite URIs are accepted (file-backed or in-memory; PostgreSQL is rejected -- see `create_sql_catalog_with_builder` in `src/common/src/iceberg/mod.rs`). Shared across all services via `Arc<dyn IcebergCatalog>`.
+- **Iceberg Catalog** (`CatalogManager`): SQL catalog named `"signaldb"` for Iceberg table metadata (schemas, snapshots, manifests). Accepts SQLite (`sqlite://`, `sqlite:file:`, file-backed or in-memory) or PostgreSQL (`postgres://`, `postgresql://`) URIs -- see `create_sql_catalog_with_builder` in `src/common/src/iceberg/mod.rs`. PostgreSQL is the CAS-capable choice for a distributed deployment where writer, querier, and compactor all commit against the same catalog; SQLite is single-node (a SQLite file on shared storage does not give the same compare-and-swap guarantee). Shared across all services via `Arc<dyn IcebergCatalog>`.
 
 ### 4. Apache Iceberg Table Format
 
 Apache Iceberg provides ACID transactions and structured metadata management:
 
 - **ACID transactions** with commit/rollback for data integrity
-- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all six built-in table types (traces, logs, and all five metrics representations plus profiles), not only traces/logs
+- **Schema versioning** via `schemas.toml` with inheritance, field renames, and computed fields — the physical schema source of truth for all five built-in table types (traces, logs, metrics, metric_exemplars, profiles), not only traces/logs
 - **Hour-based partitioning** on `timestamp` for all table types
+- **Declared sort order** per signal table, time-leading (traces `(timestamp, trace_id)`, logs `(timestamp, service_name, severity_text)`, metrics `(timestamp, metric_name, service_name)`, profiles `(timestamp, service_name)`) — declared at creation and added to pre-existing tables on load. Both file producers honor it: ingest sorts each commit group before writing, and compaction sorts by the table's declaration rather than a key list of its own. A file is only claimed as ordered when it attests the order in its own Parquet footer, so mixed populations of sorted and unsorted files stay correct and legacy files converge through compaction; see [Storage Layout](storage-layout.md#declared-sort-order)
 - **Namespace isolation**: Tables namespaced as `[tenant_slug, dataset_slug]`
 - **Materialized labels**: configured attribute keys promoted to dedicated
   columns for exact querying across all four signal types; allowlists
-  resolve per tenant (a tenant schema override replaces the global set —
+  resolve per tenant (a tenant's schema block is merged over the global one —
   see [storage layout](storage-layout.md#materialized-labels))
-- **Typed attribute maps**: new tables across all four signals store
-  attributes as `Map<String,String>` columns, so any attribute is exactly queryable
-  (legacy tables keep JSON strings with per-table fallback)
+- **Typed attribute layout**: every signal's current `schemas.toml` version
+  realizes each attribute container as five columns — one typed map per
+  canonical type (`{container}_str/_int/_double/_bool`) plus a
+  `{container}_residue` binary CBOR column — so a canonical-typed attribute
+  is exactly queryable in its native type; a table still in the legacy
+  single-map layout is dropped and recreated rather than evolved (one-shot
+  cutover, see [storage layout](storage-layout.md#typed-attribute-layout-v5-one-shot-cutover))
 
 ### 5. Columnar Storage
 
@@ -71,28 +78,35 @@ Parquet storage with DataFusion query processing:
 
 ### Workspace Members
 
-| Crate                 | Path                         | Type       | Description                                                                                                                                                                              |
-| --------------------- | ---------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **acceptor**          | `src/acceptor/`              | Library    | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                        |
-| **router**            | `src/router/`                | Library    | HTTP API + Flight routing layer                                                                                                                                                          |
-| **writer**            | `src/writer/`                | Library    | Iceberg-based data persistence (the "Ingester")                                                                                                                                          |
-| **querier**           | `src/querier/`               | Library    | Query execution engine via DataFusion                                                                                                                                                    |
-| **compactor**         | `src/compactor/`             | Library    | Storage maintenance: compaction, retention (`signaldb compactor`)                                                                                                                        |
-| **common**            | `src/common/`                | Library    | Shared config, auth, WAL, Flight, catalog, schema                                                                                                                                        |
-| **pyroscope-api**     | `src/pyroscope-api/`         | Library    | Pyroscope-compatible API types (flamebearer, profile types)                                                                                                                              |
-| **tempo-api**         | `src/tempo-api/`             | Library    | Grafana Tempo API types and protobuf definitions                                                                                                                                         |
-| **loki-api**          | `src/loki-api/`              | Library    | Loki HTTP API response types (LogQL query surface)                                                                                                                                       |
-| **prometheus-api**    | `src/prometheus-api/`        | Library    | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                |
-| **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                |
-| **signaldb-bin**      | `src/signaldb-bin/`          | Binary     | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                             |
-| **signaldb-api**      | `src/signaldb-api/`          | Library    | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                       |
-| **signaldb-cli**      | `src/signaldb-cli/`          | Binary     | CLI and TUI for tenant, API key, and dataset management                                                                                                                                  |
-| **signaldb-sdk**      | `src/signaldb-sdk/`          | Library    | Generated Rust HTTP client (progenitor) for the admin API                                                                                                                                |
-| **mcp-server**        | `src/mcp-server/`            | Library    | Model Context Protocol server (`signaldb mcp`); credential-forwarding client over `signaldb-sdk`, serves MCP at `/mcp` — see [MCP server](../users/mcp.md)                               |
-| **grafana-plugin**    | `src/grafana-plugin/backend` | Plugin     | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major) |
-| **signal-producer**   | `src/signal-producer/`       | Binary     | Test data generator (OTLP traces)                                                                                                                                                        |
-| **tests-integration** | `tests-integration/`         | Test crate | Integration test suite                                                                                                                                                                   |
-| **xtask**             | `xtask/`                     | Binary     | Code generation (OpenAPI-derived Rust SDK + TypeScript UI client) and build tasks                                                                                                        |
+| Crate                 | Path                         | Type       | Description                                                                                                                                                                                    |
+| --------------------- | ---------------------------- | ---------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **acceptor**          | `src/acceptor/`              | Library    | OTLP gRPC/HTTP ingestion endpoint                                                                                                                                                              |
+| **router**            | `src/router/`                | Library    | HTTP API + Flight routing layer                                                                                                                                                                |
+| **writer**            | `src/writer/`                | Library    | Iceberg-based data persistence (the "Ingester")                                                                                                                                                |
+| **querier**           | `src/querier/`               | Library    | Query execution engine via DataFusion                                                                                                                                                          |
+| **compactor**         | `src/compactor/`             | Library    | Storage maintenance: compaction, retention (`signaldb compactor`)                                                                                                                              |
+| **common**            | `src/common/`                | Library    | Shared config, auth, WAL, Flight, catalog, schema                                                                                                                                              |
+| **pyroscope-api**     | `src/pyroscope-api/`         | Library    | Pyroscope-compatible API types (flamebearer, profile types)                                                                                                                                    |
+| **tempo-api**         | `src/tempo-api/`             | Library    | Grafana Tempo API types and protobuf definitions                                                                                                                                               |
+| **loki-api**          | `src/loki-api/`              | Library    | Loki HTTP API response types (LogQL query surface)                                                                                                                                             |
+| **prometheus-api**    | `src/prometheus-api/`        | Library    | Prometheus HTTP API response types (PromQL query surface)                                                                                                                                      |
+| **logql**             | `src/logql/`                 | Library    | LogQL lexer, AST, and parser — syntax only, no product dependency; published as `logql-parser`                                                                                                 |
+| **traceql**           | `src/traceql/`               | Library    | TraceQL parser for the supported equality subset — syntax only, no product dependency; published as `traceql-parser`                                                                           |
+| **query-ir**          | `src/query-ir/`              | Library    | Signal-agnostic query IR: document model, validation, field resolution — leaf crate, not published; re-exported as `common::query_ir`                                                          |
+| **eval-model**        | `src/eval-model/`            | Library    | Eval run/comparison model: attribute names, pass rule, run stats, Query IR reads behind `evals runs\|compare` — leaf crate, not published; re-exported as `common::evals`                      |
+| **ql-ir**             | `src/ql-ir/`                 | Library    | Lowers parsed LogQL/TraceQL onto the query IR — no FDAP dependency, so query text can become an executable document without the engine; not published                                          |
+| **ottl**              | `src/ottl/`                  | Library    | In-house bounded OTTL subset (pest grammar): parser, compiler, evaluator over `opentelemetry-proto` request structs — backs tenant telemetry processors ([Processors](../users/processors.md)) |
+| **schema-model**      | `src/schema-model/`          | Library    | OTel Weaver semantic-convention model: parser, resolver (flat attribute/entity/metric definitions), and the validator applied to custom schema registries                                      |
+| **signaldb-bin**      | `src/signaldb-bin/`          | Binary     | The `signaldb` executable: monolith by default, or one service via a subcommand (`signaldb router`, …); every service crate exposes `cli::Args` + `cli::run`                                   |
+| **signaldb-api**      | `src/signaldb-api/`          | Library    | Hand-written admin API DTOs (utoipa `ToSchema`); OpenAPI schema source — see [OpenAPI codegen](openapi-codegen.md)                                                                             |
+| **signaldb-cli**      | `src/signaldb-cli/`          | Binary     | CLI and TUI for tenant, API key, and dataset management                                                                                                                                        |
+| **signaldb-sdk**      | `src/signaldb-sdk/`          | Library    | Generated Rust HTTP client (progenitor) for the admin API                                                                                                                                      |
+| **mcp-server**        | `src/mcp-server/`            | Library    | Model Context Protocol server (`signaldb mcp`); credential-forwarding client over `signaldb-sdk`, serves MCP at `/mcp` — see [MCP server](../users/mcp.md)                                     |
+| **grafana-plugin**    | `src/grafana-plugin/backend` | Plugin     | Grafana datasource (TypeScript frontend + Rust backend; the backend is a standalone cargo workspace excluded from the root workspace, since grafana-plugin-sdk pins its own Arrow major)       |
+| **signal-producer**   | `src/signal-producer/`       | Binary     | Test data generator (OTLP traces)                                                                                                                                                              |
+| **tests-integration** | `tests-integration/`         | Test crate | Integration test suite                                                                                                                                                                         |
+| **xtask**             | `xtask/`                     | Binary     | Code generation (OpenAPI-derived Rust SDK + TypeScript UI client) and build tasks                                                                                                              |
+| **workspace-hack**    | `workspace-hack/`            | Library    | Managed by `cargo hakari`; pins one unified feature set for shared deps. See `workspace-hack/README.md`                                                                                        |
 
 ### Data Flow Overview
 
@@ -104,10 +118,10 @@ flowchart LR
     Client["OTLP client"] -->|"gRPC :4317 / HTTP :4318"| Acceptor
     Acceptor -->|"append + flush"| AWal[("Acceptor WAL")]
     Acceptor -->|"Flight do_put"| Writer["Writer :50061"]
-    Writer -->|"append (v2 schema)"| WWal[("Writer WAL")]
+    Writer -->|"append (traces/logs/profiles: physical shape)"| WWal[("Writer WAL")]
     WWal -->|"WalProcessor (5s loop, backoff on failure)"| Iceberg["Iceberg commit"]
     Iceberg --> Store[("Object store (Parquet)")]
-    Iceberg --> Cat[("Iceberg catalog (SQLite)")]
+    Iceberg --> Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
 ```
 
 Query path:
@@ -116,7 +130,7 @@ Query path:
 flowchart LR
     Client["Tempo API client"] -->|"HTTP :3000"| Router["Router :3000 / :50053"]
     Router -->|"Flight do_get"| Querier["Querier :50054"]
-    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite)")]
+    Querier -->|"table metadata"| Cat[("Iceberg catalog (SQLite/PostgreSQL)")]
     Querier -->|"DataFusion scan"| Store[("Object store (Parquet)")]
     Router -->|"JSON (Tempo format)"| Client
 ```
@@ -125,10 +139,11 @@ flowchart LR
 
 1. **OTLP Ingestion**: Client sends traces/logs/metrics via gRPC (port 4317) or HTTP (port 4318) to the Acceptor. The Acceptor also supports Prometheus remote_write at `/api/v1/write`.
 2. **Authentication**: Acceptor validates the API key via `Authorization: Bearer <key>` header, resolves tenant and dataset context.
-3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (v1 format).
+   2a. **Telemetry processors**: Acceptor applies the tenant's enabled OTTL processors (`common::processors::ProcessorRegistry`, crate `ottl`) matching the request's dataset and signal, directly against the decoded OTLP protobuf — tenant-wide first, then dataset-scoped. This runs before step 3, so the transformed request is the only form ever converted to Arrow, written to WAL, or forwarded. See [Processors](../users/processors.md).
+3. **OTLP-to-Arrow Conversion**: Acceptor converts OTLP protobuf data to Arrow RecordBatches using Flight schemas (the Flight wire format).
 4. **Acceptor WAL**: Acceptor appends the Arrow batch to its own WAL (per tenant/dataset/signal type) and flushes it before forwarding.
 5. **Flight Transfer**: Acceptor sends Arrow RecordBatches to a Writer via Flight `do_put`, discovered by `Storage` capability.
-6. **Schema Transformation**: Writer transforms v1 Flight schema to the physical-v3 Iceberg schema (field renames, type conversions, computed partition fields). On every table load (not just creation), the writer also brings an existing traces/logs table's schema forward to the current version if it's behind — see [Schema Management](#schema-management).
+6. **Schema Transformation**: Writer transforms traces, logs and profiles from the Flight wire schema to their last pre-typed physical shape (field renames, type conversions, computed partition fields) before the WAL write. Metrics batches stay in wire format (`data_json`) in the WAL and become rows of `metrics` and `metric_exemplars` at commit. At commit, the table writer also splits every attribute container into typed home maps plus a binary residue, resolving each key's canonical type through the attribute type authority (see [Canonical types](../users/schema-registry.md#canonical-types)). The acceptor reads the same types from a cached snapshot and reports off-type values to the sender in OTLP `partial_success`. On every table load (not just creation), the writer also brings an existing table's schema forward to the current version if it's behind, for every signal table — see [Schema Management](#schema-management).
 7. **Writer WAL Persistence**: Writer writes transformed data to its WAL (segmented by tenant/dataset/signal type) and confirms to the Acceptor.
 8. **Client Acknowledgment**: Acceptor marks its WAL entry processed and acknowledges to the client.
 9. **Background Flush**: Writer's `WalProcessor` reads WAL entries every 5 seconds (with exponential backoff up to 300s on repeated failures), creates/loads Iceberg tables, and writes Parquet files to the object store via DataFusion. Commits are **coalesced** per `(tenant, dataset, table)` (`[writer].commit_interval` / `max_uncommitted_rows`), so freshly-ingested data is queryable only once committed; a caller needing read-your-writes forces a commit with the Writer Flight `do_action("flush")`. See `architecture/flight-communication.md`.
@@ -164,6 +179,7 @@ flowchart LR
   - Metrics: 5000 entries, 10s flush
 - Converts OTLP protobuf to Arrow RecordBatches using `FlightSchemas`
 - Discovers Writers via `Storage` capability and sends data via Flight `do_put`
+- Fans each `gen_ai.evaluation.result` span event out into a log record (`common::evals::span_events`) written through the log handler after the trace batch is durable, so span-event eval results land in `logs` like OTLP ones; a failed log write is logged and does not fail the trace export ([Evaluating AI agents](../users/evaluations.md#results-as-span-events))
 
 ### Writer
 
@@ -177,35 +193,72 @@ flowchart LR
 | **Output**       | Iceberg tables (Parquet + metadata) to object store |
 
 - `IcebergWriterFlightService`: Flight server accepting `do_put` for trace/log/metric data
-- Transforms v1 Flight schema to v2 Iceberg schema before WAL write
-- `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads WAL entries and writes to Iceberg tables
+- Transforms traces, logs and profiles to their physical shape before WAL write; metrics stay in wire format in the WAL and are shaped at commit
+- `WalManager` (the same type the acceptor uses) gives the writer one WAL per tenant/dataset/signal, created on that combination's first write; existing directories are opened at startup so a previous run's entries drain
+- `WalProcessor`: Background task (5s interval, exponential backoff on failure) that reads every tenant WAL's entries and writes them to Iceberg tables; a WAL it cannot read is skipped for that cycle, never aborting the others
 - Caches `IcebergTableWriter` instances per `{tenant}:{dataset}:{table}` combination
-- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, and ahead of it via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. Both paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler degrades to create-on-first-write. What actually landed in the catalog is visible through the router's tenant self-service `GET /api/v1/tenants/{id}/tables`, grouped by dataset. See [Signal table provisioning](../operations/table-provisioning.md)
+- Creates Iceberg tables with schema and partition spec from `iceberg_schemas` — on first write, synchronously and best-effort when the router creates a dataset (management/admin API), and ahead of both via the table reconciler (`reconcile.rs`): a startup pass plus one every `[writer].table_reconcile_interval` over the tenant registry, so every registered tenant/dataset holds a table for each signal type enabled for it before any telemetry arrives. All three paths go through the same load-or-create `CatalogManager::ensure_table`, so a failing reconciler (or a failed synchronous attempt at creation) degrades to create-on-first-write. What actually landed in the catalog is visible through the router's tenant self-service `GET /api/v1/tenants/{id}/tables`, grouped by dataset. See [Signal table provisioning](../operations/table-provisioning.md)
 
 ### Router
 
 **Purpose**: HTTP API gateway and query routing
 
-| Property       | Value                                                                                                                                                             |
-| -------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                         |
-| **Capability** | `Routing`                                                                                                                                                         |
-| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible (stubs), native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
+| Property       | Value                                                                                                                                                     |
+| -------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Ports**      | HTTP: 3000, Flight: 50053                                                                                                                                 |
+| **Capability** | `Routing`                                                                                                                                                 |
+| **APIs**       | Tempo-compatible, Pyroscope-compatible, Loki-compatible, native Query IR (`POST /api/v1/query`), schema registry (`/api/v1/schema/*`), Admin API, OpenAPI |
 
-The router also serves the explore UI (a static SPA built from `src/ui`)
-under `/ui`, from the directory named by `SIGNALDB_UI_DIR`. See
-[the explore UI guide](../users/explore-ui.md).
+The router also serves the explore UI (a static SPA built from `src/ui`) as
+the root SPA fallback (unprefixed routes such as `/runtime-config.js`, behind
+the API routes), from the directory named by `SIGNALDB_UI_DIR`. See
+[the explore UI guide](../users/explore-ui.md). (`/ui/session` and the other
+`/ui/session/*` endpoints below are separate session API paths, not part of
+the UI's own mount.)
 
 For browsers, the router exposes `POST`/`DELETE /ui/session`
 (`src/router/src/endpoints/session.rs`): a public login endpoint that
 validates a user's email/password, then creates or revokes an opaque
-server-side session. The tenant is optional at login — the response
+server-side session. `GET /ui/session` introspects that session from the
+cookie alone (user, memberships, auto-selected tenant) and
+`GET /ui/session/config` tells the login page which credentials to offer,
+so `/login` can finish a redirect-based sign-in without a tenant header. The tenant is optional at login — the response
 carries the user's memberships so the UI can offer a picker (a sole
 membership is auto-selected); each request then re-validates the
 `X-Tenant-ID` header against those memberships. `GET /api/v1/whoami`
 returns the human identity and memberships plus the selected tenant's
-datasets for the UI's tenant selector. API-key authentication remains
-available for machine clients and ingestion.
+datasets for the UI's tenant selector. `GET /api/v1/connection` (same
+middleware, any tenant key) returns the deployment's public ingest and query
+endpoints from `[public]` config with the caller's tenant/dataset filled in,
+so agents and the UI's "Send data" page never guess hosts or ports.
+API-key authentication remains available for machine clients and ingestion.
+
+When `[auth.oidc]` is configured, the router also acts as an OIDC
+**relying party** (`src/router/src/oidc.rs` runtime,
+`src/router/src/endpoints/oidc.rs` handlers): an unauthenticated
+login-configuration probe (`GET /ui/session/config`) tells the UI whether
+to offer SSO, and `GET /ui/session/oidc/{start,callback}` run the
+authorization-code-with-PKCE flow, issuing the same `signaldb_session`
+cookie a password login would. Provider discovery runs in the background,
+so an unreachable issuer never blocks router startup: the endpoints 404
+when OIDC is unconfigured, but 503 when `[auth.oidc]` is configured and
+discovery hasn't (yet) succeeded — the config probe reports no SSO in that
+window too. Operator-facing detail lives in
+[Setting up SSO / OIDC login](../operations/oidc-sso.md).
+
+When `[github]` is configured, the router also hosts the **GitHub App
+integration** (`src/router/src/github.rs` client, `src/router/src/endpoints/github.rs`
+handlers): tenant admins link GitHub App installations to their tenant
+through `/api/v1/tenants/{id}/github-installations` and the
+`GET /ui/github/callback` install redirect, and the router mints short-lived
+installation tokens from the deployment's App private key on demand (never
+persisted). Installations are catalog rows scoped per tenant. On top of that,
+`POST /api/v1/tenants/{id}/source-context` (`src/router/src/source_context.rs`,
+`src/router/src/endpoints/source_context.rs`) fetches the lines around a stack
+frame from those repositories through a per-file, TTL/LRU-bounded cache, and
+the Query IR `flamegraph` envelope carries per-frame `locations` so the
+Explore UI can offer it on profile frames. Operator-facing detail lives in
+[Connecting GitHub](../operations/github-app.md).
 
 **Tempo API Endpoints**:
 
@@ -251,33 +304,66 @@ reachable via `signaldb-sdk`, `signaldb-cli profiles`, and the MCP
 
 **Prometheus API Endpoints** (metrics, nested at `/prometheus`; see epic #328):
 
-| Endpoint                                                           | Status                                                                                                     |
-| ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------- |
-| `GET\|POST /prometheus/api/v1/query_range`                         | Implemented -- PromQL over `metrics_gauge`+`metrics_sum`, `date_bin(step)` matrix                          |
-| `GET\|POST /prometheus/api/v1/query`                               | Implemented -- instant vector (latest sample per series)                                                   |
-| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and `{__name__, job}` series via Querier                          |
-| `GET /prometheus/api/v1/label_stats`                               | Implemented -- SignalDB extension: per-label cardinality from the catalog's `attribute_stats` (no Querier) |
-| PromQL `rate`/`increase`                                           | Implemented -- counter delta over `date_bin` buckets                                                       |
-| PromQL `histogram_quantile(phi, metric)`                           | Implemented -- interpolated per series from `metrics_histogram` OTLP buckets                               |
-| PromQL `histogram_quantile` over `rate()`, binary ops, `topk`      | Not implemented yet (#335)                                                                                 |
+| Endpoint                                                           | Status                                                                                                                                                                                                                                                                                           |
+| ------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `GET\|POST /prometheus/api/v1/query_range`, `/query`               | Implemented -- PromQL is lowered to the Query IR (`ql_ir::promql_to_ir`) and runs on the same planner as `POST /api/v1/query`: range queries at `start + k·step`, instant queries at `time`, Prometheus' 5m lookback and 11,000-step limit; see [PromQL functions](../users/promql-functions.md) |
+| `GET /prometheus/api/v1/labels`, `/label/{name}/values`, `/series` | Implemented -- metric label names/values and series via the Querier                                                                                                                                                                                                                              |
+| `GET /prometheus/api/v1/label_stats`                               | Implemented -- SignalDB extension: per-label cardinality from the catalog's `attribute_stats` (no Querier)                                                                                                                                                                                       |
+| PromQL functions, aggregations, binary operators, subqueries       | Implemented through the IR's metric Series stages; `histogram_quantile`/`histogram_fraction` over explicit and exponential histograms, summed or per series; unsupported shapes are a 400 `bad_data`                                                                                             |
 
 **Native Query IR** (`POST /api/v1/query`, `src/router/src/endpoints/query.rs`):
 the first-party structured query surface the UI and CLI build against. The
 router shapes the querier's Arrow batches into the declared envelope, encoding
-attribute containers (`Map<Utf8,Utf8>`) as JSON objects rather than flattening
-them to strings — the compatibility dialects lose the OTel resource/scope/record
+an attribute bag (`{scope}.attributes`, which the querier assembles from the
+typed home maps and the residue) as a JSON object of natively typed values
+rather than flattening it to strings — the compatibility dialects lose the OTel resource/scope/record
 distinction, the IR preserves it. `source_read_scope` gates a document's `from`
-against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`,
-with `metrics_histogram` mapped to the same `metrics` scope) before the request
-ever reaches the querier. See [the Query IR reference](../users/querying-ir.md).
+against the caller's `{signal}:read` scopes (`logs`/`traces`/`profiles`/`metrics`)
+before the request
+ever reaches the querier. A multi-query request (`queries` + `formulas`) checks
+that scope for every inner query before any of them runs, executes each inner
+`series` query the same way, and evaluates the formulas in the router,
+joining series on identical labels and timestamps. Metric Series documents (IR
+v10 `sample`, `scalar`, `vector`, `time`/`constant`) arrive as `bucket`/`__labels`/`value`
+batches; the router keys each series on the canonical `__labels` string, returns
+400 when two series share a label set at one instant, serializes NaN/±Inf as
+`null`, and answers a `scalar` document with the `scalar` envelope. Any envelope may carry a `warnings` array — non-fatal
+diagnostics with a stable `code` (the full list is in the Warnings section of
+`docs/users/querying-ir.md`). For example, `unknown_group_by_field` is raised
+when an `aggregate.by` field is neither a logical field of the source nor
+carried by any record in the window, so the grouping produced one `null` label,
+and `match_incomplete_trace` when a structural `match` evaluated traces the
+query range cut. `unknown_group_by_field` is a warning
+rather than a rejection because unpromoted attributes cannot be enumerated while
+planning (#811/#813), which makes "absent from this window" indistinguishable
+from "not a field" until the attribute registry lands. See
+[the Query IR reference](../users/querying-ir.md).
 
-**Admin API Endpoints** (requires `admin_api_key`):
+**Query discovery** (`src/router/src/endpoints/discovery.rs`): a document whose
+terminal stage is `describe` declares the `metadata` envelope and is answered in
+the Router — from `LogicalSchema::core()` (in process), the tenant's schema
+registries, and the catalog's `attribute_stats` — without a Querier round-trip,
+generalizing the pattern `/prometheus/api/v1/label_stats` already uses. Field
+discovery therefore stays available when query execution is saturated. Value
+suggestions prefer declared value sets (registry enumerations, span kind, status
+code), then the compactor analyzer's bounded per-key value sketch in
+`attribute_value_stats` (free, but marked `approximate` and dated); where
+neither covers a field the response returns no values plus the query that would
+compute the answer, and only an explicit `"sample": true` runs that query. `GET /api/v1/query/sources` lists the tenant's signal sources from the
+table listing. Every response carries a `cost` object naming which tier answered,
+whether the answer is window-scoped, and how stale the statistics behind it are.
 
-| Endpoint                              | Description            |
-| ------------------------------------- | ---------------------- |
-| `/api/v1/admin/tenants`               | CRUD for tenants       |
-| `/api/v1/admin/tenants/{id}/api-keys` | Manage tenant API keys |
-| `/api/v1/admin/tenants/{id}/datasets` | Manage tenant datasets |
+**Admin API Endpoints** (the break-glass `admin_api_key`, with no
+`X-Tenant-ID`, or an instance-admin session/tenant-scoped credential where
+noted):
+
+| Endpoint                        | Description                                                   |
+| ------------------------------- | ------------------------------------------------------------- |
+| `/api/v1/tenants`               | List/get/update/delete any tenant                             |
+| `/api/v1/users`                 | Create a user outright                                        |
+| `/api/v1/tenants`               | Create a tenant (also reachable by an instance-admin session) |
+| `/api/v1/tenants/{id}/api-keys` | Manage a tenant's API keys                                    |
+| `/api/v1/tenants/{id}/datasets` | Manage a tenant's datasets                                    |
 
 - `ServiceRegistry`: Maintains cached map of discovered services, polls catalog at configurable interval
 - Discovers Queriers via `QueryExecution` capability for query forwarding
@@ -299,6 +385,7 @@ ever reaches the querier. See [the Query IR reference](../users/querying-ir.md).
   - `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]` -- single trace lookup with optional unix-second time hints
   - `search_traces:{tenant_slug}:{dataset_slug}:{params}` -- trace search with filters
 - Uses `TableReference::full(tenant_slug, dataset_slug, "traces")` with slug validation to prevent SQL injection
+- The session runs under a `FairSpillPool` bounded by `[querier] memory_limit_mb`, and the scan feeds sorts in `[querier.datafusion] batch_size`-row batches for the same row-width reason the compactor's scan does; the monolith resolves an unset `memory_limit_mb` to min(50% of RAM, 4096 MiB) because it shares the process with ingest, while the standalone querier stays unbounded with a startup warning (#1359)
 
 ### Compactor
 
@@ -311,14 +398,14 @@ ever reaches the querier. See [the Query IR reference](../users/querying-ir.md).
 | **Binary**     | `signaldb-compactor`                                                                                       |
 
 - Plans compaction candidates from Iceberg manifest data on a `tick_interval` loop, one candidate per closed `timestamp_hour` partition. A partition is closed once its hour has ended and `[compactor] partition_lateness` has elapsed; the partition still receiving writes is never selected
-- Executes one partition per job and commits a _delta_ — the input files are removed and the compacted outputs added in one snapshot, leaving every other partition referenced unchanged. Concurrent ingest therefore does not invalidate the commit; only a change to the job's own input files does. The rewrite **streams** that partition in two passes — an unsorted scan that gathers attribute statistics, then a sorted scan that feeds the writer — both under `[compactor] memory_limit_mb` and spilling past it, so peak job memory tracks one output file rather than the partition (the service warns at startup when `memory_limit_mb`, `target_file_size_mb` and `target_partitions` are set to values that cannot work together)
+- Executes one partition per job and commits a _delta_ — the input files are removed and the compacted outputs added in one snapshot, leaving every other partition referenced unchanged. Concurrent ingest therefore does not invalidate the commit; only a change to the job's own input files does. The rewrite **streams** that partition in two passes — an unsorted scan that gathers attribute statistics, then a sorted scan that feeds the writer — both under `[compactor] memory_limit_mb` and spilling past it, so peak job memory tracks one output file rather than the partition. The scan feeds that sort in batches of `[compactor] scan_batch_size` rows, because the sort's per-batch reservation is unspillable and scales with row _width_ rather than count (the service warns at startup when `memory_limit_mb`, `target_file_size_mb`, `target_partitions` and `sort_spill_reservation_mb` are set to values that cannot work together)
 - Scheduling is round-robin across tenants with per-tenant and per-cycle caps, and the scheduler carries the one piece of cross-cycle state planning has no room for: a cooldown on partitions whose compaction just failed. Planning is stateless — it re-derives candidates from file count and size every tick — so without this a partition that cannot commit stays eligible forever and is retried every `tick_interval` indefinitely. A failure suppresses its partition for 15 minutes, doubling per consecutive failure to a 6-hour ceiling; a success clears the entry and resets the escalation. Suppressed partitions are dropped before the per-tenant cap is applied, so they cannot occupy a slot they are then skipped from. Commit conflicts are pointedly not failures here — a conflict means another actor committed first, which is contention to retry rather than a partition that is stuck (`compactor_cooldown_partitions_skipped_total`)
 - Distributed leases (`compactor_leases` catalog table) prevent concurrent compaction of the same partition; leases abandoned by a crashed instance are swept every 30s by a task of its own, so a long compaction pass never delays recovery
-- A failed job attempt is classified before the executor decides what to do with it: lost commit races and transient infrastructure failures (object store, network, catalog contention) share one bounded exponential-backoff budget, while deterministic failures — validation, schema, malformed input — fail on the first attempt rather than repeating a full rewrite to reach the same error. Only positive evidence marks a failure transient, so an unrecognized failure mode fails fast rather than silently costing three rewrites
+- A failed job attempt is classified before the executor decides what to do with it: lost commit races and transient infrastructure failures (object store, network, catalog contention) share one bounded exponential-backoff budget, while deterministic failures — validation, schema, malformed input — fail on the first attempt rather than repeating a full rewrite to reach the same error. Only positive evidence marks a failure transient, so an unrecognized failure mode fails fast rather than silently costing three rewrites. That classification is exported, not merely logged: the job counters carry the tenant, dataset and table they acted on, and failures carry the class as `error_type`, so which table is failing and whether the failure is self-resolving are both readable from the metrics endpoint
 - The four lifecycle cycles — compaction, lease expiry, retention, orphan cleanup — each run on their own task at their own cadence, so none can postpone another. Three of the four then take turns per table: a lock registry keyed by `(tenant, dataset, table)` serializes compaction commits, retention partition drops, and snapshot expiration, so those actors never act on one table at once while different tables proceed independently. Lease expiry and orphan cleanup's deletion pass do not take the lock — the former touches no table metadata, and the latter is guarded instead by its live-set check and its unconditional pre-delete re-validation. Compaction acquires it inside `execute_candidate`, which covers both the background cycle and the `compact_now` Flight action; retention acquires it across drop-plus-expire, which covers both the retention cycle and the orphan-cleanup pass that pre-expires snapshots through the same enforcer. This is an in-process ordering that removes the compactor's self-conflicts; across instances, safety still rests on catalog CAS and on the delta commit validating its own input files. Every iteration is also guarded with `catch_unwind` — a panic is caught, counted (`compactor_cycle_panics_total`/`compactor_cycle_down`), and retried with backoff instead of ending its cycle's task permanently; `/health` stays a pure liveness probe (`200` regardless) so a recovering cycle never trips a container restart, but the guard only fires under an unwinding panic strategy — this workspace's `[profile.release]` sets `panic = "abort"`, so it is not yet load-bearing in a release build
 - Flight admin interface exposes only `do_action` commands (`compact_now`, `compact_status`, `compact_dry_run`) and `list_actions`; all other Flight RPCs return `unimplemented`
-- Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`. Orphan detection derives its live-file set from the union of the retained snapshots' manifests, never from snapshot age; a re-validation pass rebuilds that set immediately before each real deletion batch, unconditionally (a dry run still identifies candidates but skips the pass, because it deletes nothing)
-- Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality, persists the statistics to the catalog's `attribute_stats` table, and — when `[compactor.attr_promotion]` is enabled — computes a promotion/demotion decision (demand × presence under a schema-width budget with streak hysteresis; epic #737 Layer 4). With `dry_run = false` (default is `true`, log-only) promotions are acted on at rewrite: the table schema is evolved to add the `label_<key>` columns, then the rewrite backfills them from the attributes map and commits via the normal partition delta path
+- Retention enforcement and orphan-file cleanup, configured via `[compactor.retention]` and `[compactor.orphan_cleanup]`. Orphan detection derives its live-file set from the union of the retained snapshots' manifests, never from snapshot age; a re-validation pass rebuilds that set immediately before each real deletion batch, unconditionally (a dry run still identifies candidates but skips the pass, because it deletes nothing). Building that set is bounded work: manifests are deduplicated across retained snapshots so each manifest file is read once, entries are streamed rather than collected, and the set itself keeps a 64-bit fingerprint per live path instead of the path — a collision can only make an orphan look live, never hide a live file. The object-store listing is streamed too, so the compactor's peak memory tracks live-file and candidate counts rather than the size of the listing
+- Advisory attribute-stats pass on every rewrite: logs per-key presence / approximate cardinality, persists the statistics to the catalog's `attribute_stats` table, and — when `[compactor.attr_promotion]` is enabled — computes a promotion/demotion decision (demand × presence under a schema-width budget with streak hysteresis; epic #737 Layer 4). Promotion works per (attribute level, key) from the catalog's `attribute_level_stats`. With `dry_run = false` (default is `true`, log-only) decisions are acted on at rewrite: the table schema is evolved to add or drop typed `attr_<level>_<key>` copy columns, then the rewrite backfills them from each level's typed map and commits via the normal partition delta path. Idle or over-budget promoted columns are demoted by a metadata-only drop; see [Attribute Promotion](../operations/compactor/operations.md#attribute-promotion)
 - Orphan cleanup logs one `DEBUG` line per deleted file and `INFO` per-batch/per-run summaries (a backlog pass can delete tens of thousands of files at startup)
 - Enabled by default (retention enforcement with 30d for each of traces, logs, metrics and profiles, and orphan-file cleanup — data files and unreferenced metadata files alike); disable with `[compactor].enabled = false`, or `[compactor.orphan_cleanup].enabled = false` / `dry_run = true` for cleanup alone
 
@@ -356,11 +443,30 @@ its own tenant and read scopes (tenant-from-token, `X-Tenant-ID` ignored),
 audience-bound to the configured MCP resource. See `docs/users/mcp.md` and the
 `multi-tenancy` skill.
 
-The tenant management API (`/api/v1/manage/*`, `endpoints/management.rs`)
+**Eval sets** (`/api/v1/eval-sets`, `endpoints/eval_sets.rs`) store
+tenant- and dataset-scoped lists of test cases for offline agent
+evaluation in the catalog (`common::eval_sets`), guarded by the
+`evals:read` / `evals:write` scopes. Building cases from traces
+(`cases/from-traces`) runs Query IR documents server-side through the same
+querier ticket path as `/api/v1/query`, and applies the shared pass rule
+(`common::evals`). See [Eval sets](../users/eval-sets.md). **Results
+upload** (`POST /api/v1/evals/results`, `endpoints/evals.rs`) turns a
+JSONL/CSV file into `gen_ai.evaluation.result` log records and reuses two
+pieces of the acceptor's ingest path from `common`: the tenant processor loop
+(`common::processors::apply`) and the writer `DoPut`
+(`common::flight::forward`). The router has no WAL of its own; the writer's
+WAL makes the upload durable before the router answers, and a retry with the
+same run id and file is deduplicated by the writer's ingest-id check. See
+[Evaluating AI agents](../users/evaluations.md#upload-a-results-file).
+
+The tenant management API (`/api/v1/*`, `endpoints/management.rs`)
 accepts a human principal (session or OAuth) with the tenant-admin role or
 instance-admin flag, or an API key carrying the explicit `tenant:manage` scope
 (`TenantContext::can_manage_via_key`); legacy unscoped keys stay out. Tenant
-creation remains instance-admin-only.
+creation, and attaching an existing GitHub App installation to a tenant
+(`endpoints/github.rs`'s `attach_github_installation` — it has no OAuth
+`code` to verify installation ownership with), remain instance-admin-only
+(`authorize_instance_admin`).
 
 ### Isolation Layers
 
@@ -454,23 +560,23 @@ Each service creates a `ServiceBootstrap` at startup which:
 
 - `InMemoryFlightTransport`: Provides connection pooling (max 50 connections, 30s connect timeout, 5min expiry) and capability-based client lookup. The per-request deadline is a separate setting, derived from `querier.query_timeout` plus a grace margin so a slow query is bounded by the callee rather than aborted by the caller
 - `ServiceRegistry` (Router-specific): Cached HashMap of services, polls catalog at configurable interval
-- Service selection: round-robin across healthy instances (stable rotation order sorted by service id)
+- Service selection: round-robin across healthy instances (stable rotation order sorted by service id), except the acceptor's forward to writers, which pins each `ingest_id` (a batch content fingerprint) to one writer by rendezvous hashing so every copy of a batch reaches the writer that deduplicates it (see [Flight communication](flight-communication.md))
 - Automatic TTL-based cleanup removes stale services that stop heartbeating
 
 ## Schema Management
 
 Schema definitions are managed in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The schema system supports:
 
-- **Versioned schemas** with metadata tracking current physical versions (e.g., traces physical-v3, logs physical-v1, metrics physical-v1) and a separate `logical_schema_version` (`otel-2026-08`) for the client-visible OTel logical schema
+- **Versioned schemas** with metadata tracking current physical versions (traces physical-v5, logs physical-v4, metrics and metric_exemplars physical-v4, profiles physical-v3 — the typed attribute layout, see below) and a separate `logical_schema_version` (`otel-2026-09`) for the client-visible OTel logical schema
 - **Inheritance**: A schema version can inherit fields from a parent version
 - **Field renames**: e.g., `name` -> `span_name` in traces physical-v2
 - **Field additions**: e.g., `timestamp`, `date_day`, `hour` computed partition fields
 - **Field removals**: A schema version can drop a field inherited from its parent
 - **Computed fields**: Fields derived from other fields at write time (e.g., `date_day` from `start_time_unix_nano`); computed and partition-by fields are marked `physical_only` during resolution — they exist in the Iceberg table but are not part of the client-visible logical schema
 
-The Flight wire format (v1) and Iceberg storage format (physical-v3) differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()`, resolving the physical schema by version key (`physical-v3`).
+The Flight wire format (v1) and Iceberg storage format differ intentionally. The Writer applies schema transformations at ingestion time via `transform_trace_v1_to_v2()` / `transform_logs_v1_to_iceberg()`, targeting each signal's last pre-typed intermediate shape (traces physical-v4, logs physical-v3 — fixed literals, not the current typed version); the typed-container splitting that carries a batch the rest of the way to the table's actual current schema (traces physical-v5, logs physical-v4) happens generically afterward, in `IcebergTableWriter::append_batches_with_marker`.
 
-**Schema evolution**: for traces and logs (the two signals whose physical schema is `schemas.toml`-sourced), an existing table's schema is brought forward to the current version on every load, not just at creation — `common::iceberg::evolution::ensure_schema_current` diffs the table's live Iceberg schema against the target version by field name (never by regenerating field IDs positionally, which is only safe for a brand-new table) and commits any missing columns additively. Metrics and profiles are hand-written in `iceberg_schemas.rs`, not yet covered by this mechanism.
+**Schema evolution**: for every signal (all five built-in tables are `schemas.toml`-sourced), an existing table's schema is brought forward to the current version on every load, not just at creation — `common::iceberg::evolution::ensure_schema_current` diffs the table's live Iceberg schema against the target version by field name (never by regenerating field IDs positionally, which is only safe for a brand-new table) and commits any missing columns additively.
 
 For full details on table schemas, partitioning, and the object store layout, see [Storage Layout Design](storage-layout.md).
 

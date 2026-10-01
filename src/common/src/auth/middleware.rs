@@ -4,12 +4,12 @@
 //! authentication headers on HTTP requests.
 
 use super::{
-    AuthError, Authenticator, TenantContext, session_token_from_headers, validate_dataset_id,
-    validate_tenant_id,
+    AuthError, Authenticator, TenantContext, session, session_token_from_headers,
+    validate_dataset_id, validate_tenant_id,
 };
 use axum::{
     extract::Request,
-    http::{HeaderMap, StatusCode},
+    http::{HeaderMap, HeaderValue, StatusCode, header::SET_COOKIE},
     middleware::Next,
     response::{IntoResponse, Response},
 };
@@ -65,6 +65,24 @@ fn required_tenant_id_header(headers: &HeaderMap) -> Result<String, AuthError> {
     validate_tenant_id(tenant_id_raw)
 }
 
+/// Extract and validate the optional `X-Tenant-ID` header (change:
+/// mcp-multi-tenant-oauth-grants D4). Unlike [`required_tenant_id_header`],
+/// its absence is not an error — an OAuth bearer's tenant selector is only
+/// required when the token's own grant set names more than one tenant, a
+/// fact [`Authenticator::authenticate_oauth_token`] checks against the token
+/// record itself, not this header-parsing layer.
+fn optional_tenant_id_header(headers: &HeaderMap) -> Result<Option<String>, AuthError> {
+    match headers.get("x-tenant-id") {
+        None => Ok(None),
+        Some(value) => {
+            let id = value
+                .to_str()
+                .map_err(|_| AuthError::bad_request("Invalid X-Tenant-ID header"))?;
+            Ok(Some(validate_tenant_id(id)?))
+        }
+    }
+}
+
 fn extract_auth_headers(
     headers: &HeaderMap,
 ) -> Result<(RequestCredentials, String, Option<String>), AuthError> {
@@ -85,13 +103,19 @@ fn extract_auth_headers(
     // Shared by all bearer kinds.
     let dataset_id = dataset_id_header(headers)?;
 
-    // An OAuth access token carries its own tenant, so X-Tenant-ID is neither
-    // required nor consulted — an OAuth session cannot be pointed at a tenant
-    // it was not granted. The tenant field is unused for this credential kind.
+    // An OAuth access token carries its own tenant(s). X-Tenant-ID is read
+    // (but never required here) as a selector among a multi-tenant grant's
+    // tenants (change: mcp-multi-tenant-oauth-grants D4) — an OAuth session
+    // still cannot be pointed at a tenant it was not granted, since
+    // `Authenticator::authenticate_oauth_token` re-validates the selector
+    // against the token's own stored grant set. An empty string here means
+    // "no selector present", the same sentinel a single-tenant grant used
+    // before this header was read at all.
     if bearer.starts_with(super::oauth::ACCESS_TOKEN_PREFIX) {
+        let tenant_selector = optional_tenant_id_header(headers)?.unwrap_or_default();
         return Ok((
             RequestCredentials::OAuthToken(bearer),
-            String::new(),
+            tenant_selector,
             dataset_id,
         ));
     }
@@ -147,6 +171,12 @@ pub async fn auth_middleware(
         }
     };
 
+    // Set only for the UserSession credential kind, so a renewed session's
+    // cookie can be reissued after the handler runs — API key and OAuth
+    // requests never carry a session cookie.
+    let mut session_token: Option<String> = None;
+    let mut session_renewed = false;
+
     // Authenticate using the Authenticator
     let auth_result = match credentials {
         RequestCredentials::ApiKey(api_key) => {
@@ -155,16 +185,30 @@ pub async fn auth_middleware(
                 .await
         }
         RequestCredentials::UserSession(token) => {
-            authenticator
+            let result = authenticator
                 .authenticate_session(&token, &tenant_id, dataset_id.as_deref())
-                .await
+                .await;
+            session_token = Some(token);
+            result.map(|(ctx, renewed)| {
+                session_renewed = renewed;
+                ctx
+            })
         }
         RequestCredentials::OAuthToken(token) => {
             // Tenant and scopes come from the token; audience is bound to the
-            // configured MCP resource.
+            // configured MCP resource. `tenant_id` is empty when the request
+            // carried no `X-Tenant-ID` (see `extract_auth_headers`'s OAuth
+            // branch); the authenticator re-validates any selector present
+            // against the token's own stored grant set (D4).
             let resource = authenticator.mcp_resource().map(str::to_owned);
+            let tenant_selector = (!tenant_id.is_empty()).then_some(tenant_id.as_str());
             authenticator
-                .authenticate_oauth_token(&token, dataset_id.as_deref(), resource.as_deref())
+                .authenticate_oauth_token(
+                    &token,
+                    tenant_selector,
+                    dataset_id.as_deref(),
+                    resource.as_deref(),
+                )
                 .await
         }
     };
@@ -187,31 +231,30 @@ pub async fn auth_middleware(
     // Anti-loop guard: processing the _system tenant's own telemetry must not
     // generate more self-monitoring telemetry (infinite feedback loop). The
     // suppression scope covers everything from here through the handler.
-    if crate::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id) {
-        crate::self_monitoring::suppress_self_telemetry(async move {
-            tracing::debug!(
-                "Authenticated request for tenant '{}', dataset '{}' (source: {})",
-                tenant_context.tenant_id,
-                tenant_context.dataset_id,
-                tenant_context.source
-            );
-            request.extensions_mut().insert(tenant_context);
-            next.run(request).await
-        })
-        .await
-    } else {
+    let suppress = crate::self_monitoring::is_self_monitoring_tenant(&tenant_context.tenant_id);
+    crate::self_monitoring::maybe_suppress_self_telemetry(suppress, async move {
         tracing::debug!(
             "Authenticated request for tenant '{}', dataset '{}' (source: {})",
             tenant_context.tenant_id,
             tenant_context.dataset_id,
             tenant_context.source
         );
-        // Insert TenantContext into request extensions
         request.extensions_mut().insert(tenant_context);
-
-        // Continue to next middleware/handler
-        next.run(request).await
-    }
+        let mut response = next.run(request).await;
+        // Sliding TTL (change: session-renewal): the authenticator already
+        // extended the session's expiry in the database when it renewed it;
+        // the browser's copy of the cookie only catches up once we reissue
+        // it here, so the client's copy doesn't drift from a renewal it
+        // never sees.
+        if let Some(token) = session_token
+            && let Some(cookie) = session::renewed_cookie_header(session_renewed, &token)
+            && let Ok(value) = HeaderValue::from_str(&cookie)
+        {
+            response.headers_mut().append(SET_COOKIE, value);
+        }
+        response
+    })
+    .await
 }
 
 /// Axum middleware function for admin API authentication
@@ -609,7 +652,7 @@ mod tests {
         };
         catalog.sync_config_tenants(&auth_config).await.unwrap();
         let user = catalog
-            .create_user("user@example.com", None, "unused", false)
+            .create_user("user@example.com", None, Some("unused"), false)
             .await
             .unwrap();
         catalog
@@ -665,6 +708,130 @@ mod tests {
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Shared setup for the session-renewal tests below: an `acme` tenant
+    /// with one dataset, a viewer user, and a session token expiring at
+    /// `expires_at`. Returns the wired-up app (a single `/test` route behind
+    /// [`auth_middleware`]) and the plaintext cookie token.
+    async fn renewal_test_app(
+        email: &str,
+        expires_at: chrono::DateTime<chrono::Utc>,
+    ) -> (axum::Router, String) {
+        use crate::auth::{generate_session_token, hash_session_token};
+        use crate::catalog::MembershipRole;
+        use axum::{Router, middleware, routing::get};
+
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&auth_config).await.unwrap();
+        let user = catalog
+            .create_user(email, None, Some("unused"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let cookie = generate_session_token();
+        catalog
+            .create_user_session(&user.id, &hash_session_token(&cookie), expires_at)
+            .await
+            .unwrap();
+        let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
+
+        async fn test_handler() -> &'static str {
+            "ok"
+        }
+
+        let app = Router::new()
+            .route("/test", get(test_handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(authenticator.clone(), req, next)
+            }));
+
+        (app, cookie)
+    }
+
+    /// A session within the renewal threshold gets its expiry extended
+    /// server-side (change: session-renewal), and the response carries a
+    /// `Set-Cookie` reissuing the same token so the browser's copy matches.
+    #[tokio::test]
+    async fn session_cookie_is_reissued_when_session_is_renewed() {
+        use crate::auth::SESSION_COOKIE;
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode, header::SET_COOKIE},
+        };
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        // Within the renewal threshold (6h): the middleware must renew it.
+        let (app, cookie) =
+            renewal_test_app("renew@example.com", Utc::now() + Duration::hours(1)).await;
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("cookie", format!("{SESSION_COOKIE}={cookie}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let set_cookie = response
+            .headers()
+            .get(SET_COOKIE)
+            .expect("renewed session reissues its cookie")
+            .to_str()
+            .unwrap();
+        assert!(
+            set_cookie.starts_with(&format!("{SESSION_COOKIE}={cookie}")),
+            "{set_cookie}"
+        );
+    }
+
+    /// A freshly created session, far from expiry, is left untouched — no
+    /// `Set-Cookie` header on a request that needed no renewal.
+    #[tokio::test]
+    async fn session_cookie_is_not_reissued_for_a_fresh_session() {
+        use crate::auth::SESSION_COOKIE;
+        use axum::{
+            body::Body,
+            http::{Request, StatusCode, header::SET_COOKIE},
+        };
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        // Far from expiry (12h, the full TTL): no renewal is due.
+        let (app, cookie) =
+            renewal_test_app("fresh@example.com", Utc::now() + Duration::hours(12)).await;
+
+        let request = Request::builder()
+            .uri("/test")
+            .header("cookie", format!("{SESSION_COOKIE}={cookie}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(response.headers().get(SET_COOKIE).is_none());
     }
 
     #[tokio::test]
@@ -772,7 +939,7 @@ mod tests {
             .unwrap();
         catalog.create_dataset("acme", "production").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog
@@ -785,7 +952,10 @@ mod tests {
                 &hash_oauth_token(&token),
                 "client-1",
                 &user.id,
-                "acme",
+                &[crate::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: None,
+                }],
                 &["traces:read".to_string()],
                 None,
                 Utc::now() + Duration::hours(1),
@@ -840,6 +1010,127 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(body, "acme");
+    }
+
+    /// Task 3.4-3.5: a multi-tenant OAuth grant's `X-Tenant-ID` header
+    /// reaches `Authenticator::authenticate_oauth_token` instead of being
+    /// silently dropped — proven at the middleware level (not just a direct
+    /// `extract_auth_headers` unit test), since the point is that the header
+    /// survives all the way to the authenticator (design:
+    /// mcp-multi-tenant-oauth-grants D4).
+    #[tokio::test]
+    async fn oauth_bearer_with_multi_tenant_grant_uses_the_tenant_header_as_a_selector() {
+        use crate::auth::oauth::{TokenKind, generate_oauth_token, hash_oauth_token};
+        use crate::catalog::MembershipRole;
+        use axum::{Router, body::Body, http::Request, middleware, routing::get};
+        use chrono::{Duration, Utc};
+        use tower::ServiceExt;
+
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let token = generate_oauth_token(TokenKind::Access);
+        catalog
+            .create_access_token(
+                &hash_oauth_token(&token),
+                "client-1",
+                &user.id,
+                &[
+                    crate::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: None,
+                    },
+                    crate::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                &["traces:read".to_string()],
+                None,
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let authenticator = Arc::new(Authenticator::new(AuthConfig::default(), catalog));
+
+        async fn handler(tenant_ctx: TenantContextExtractor) -> String {
+            tenant_ctx.0.tenant_id
+        }
+        let auth = authenticator.clone();
+        let app = Router::new()
+            .route("/test", get(handler))
+            .layer(middleware::from_fn(move |req, next| {
+                auth_middleware(auth.clone(), req, next)
+            }));
+
+        // No X-Tenant-ID: a multi-tenant grant has no default, so this is
+        // rejected rather than silently resolved against either tenant.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::OK);
+
+        // X-Tenant-ID: globex selects the globex tenant — proving the header
+        // reached the authenticator rather than being discarded.
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-tenant-id", "globex")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body, "globex");
+
+        // X-Tenant-ID naming a tenant outside the grant set is rejected.
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/test")
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("x-tenant-id", "initech")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

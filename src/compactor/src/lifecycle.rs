@@ -160,8 +160,8 @@ impl CompactionCycle {
                 .unclassifiable_files()
                 .saturating_sub(unclassifiable_before);
             tracing::info!(
-                deferred_open_partition_files = deferred,
-                unclassifiable_files = unclassifiable,
+                signaldb.job.deferred_open_partition_files = deferred as i64,
+                signaldb.job.unclassifiable_files = unclassifiable as i64,
                 "No compaction candidates found in this cycle"
             );
             return;
@@ -621,7 +621,7 @@ mod tests {
         // Only the tables that exist come back — including the metrics
         // subtypes the old hardcoded list skipped, and `profiles`, which
         // the same list excluded from orphan cleanup entirely (#1014).
-        for table in ["traces", "metrics_sum", "metrics_summary", "profiles"] {
+        for table in ["traces", "metrics", "metric_exemplars", "profiles"] {
             catalog_manager.ensure_table("t", "d", table).await.unwrap();
         }
         let tables = list_signal_tables(&catalog_manager, "t", "d")
@@ -629,7 +629,7 @@ mod tests {
             .unwrap();
         assert_eq!(
             tables,
-            vec!["metrics_sum", "metrics_summary", "profiles", "traces"]
+            vec!["metric_exemplars", "metrics", "profiles", "traces"]
         );
 
         // The phantom table from the old list cannot even be created.

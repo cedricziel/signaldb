@@ -1,27 +1,36 @@
-// User menu dropdown for the top bar. Shows avatar with initials, user info,
-// theme toggle, navigation items, and sign-out action.
+// The account menu: avatar with initials, user info, theme toggle, docs,
+// switch tenant and sign out. Pages live in the sidebar, not here.
 
-import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
-import { clearPersistedTenantContext } from "../../api/http";
-import { whoami, deleteSession, type WhoamiResponse } from "../../api/session";
-import type { ExploreState } from "../../lib/urlState";
+import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
+import { deleteSession, type WhoamiIdentityResponse } from "../../api/session";
+import { clearRecentQueries } from "../../lib/recentQueries";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
+import { useEscapeKey } from "../../hooks/useEscapeKey";
 import "./UserMenu.css";
 
 interface Props {
-  state: ExploreState;
+  /** The signed-in identity; nothing renders without a user. */
+  who: WhoamiIdentityResponse | undefined;
+  /**
+   * `topbar` (the default): avatar + name + caret, the popover dropping
+   * below. `sidebar`: the nav sidebar's footer row — avatar, then name over
+   * role when `expanded`, the popover opening beside the sidebar.
+   * `compact`: the mobile top bar's bare 32px avatar.
+   */
+  variant?: "topbar" | "sidebar" | "compact";
+  /** Sidebar variant only: whether the name/role text shows. */
+  expanded?: boolean;
 }
 
-export function UserMenu({ state }: Props) {
+export function UserMenu({
+  who,
+  variant = "topbar",
+  expanded = true,
+}: Props) {
   const [open, setOpen] = useState(false);
-  const { data: who } = useQuery({
-    queryKey: ["whoami", state.tenant, state.dataset],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
   const toggle = () => setOpen((prev) => !prev);
   const close = () => setOpen(false);
 
@@ -31,25 +40,49 @@ export function UserMenu({ state }: Props) {
   const initials = initialsFor(user.display_name || user.email);
   const role = who.memberships.find((m) => m.tenant_id === who.tenant.id)?.role;
 
+  const name = user.display_name || user.email;
+
   return (
-    <span className="user-menu">
-      <button
-        className="user-menu-toggle"
-        onClick={toggle}
-        aria-expanded={open}
-        aria-haspopup="true"
-      >
-        <span className="user-avatar">{initials}</span>
-        <span className="user-name">{user.display_name || user.email}</span>
-        <span className="user-caret">▾</span>
-      </button>
-      {open && <UserMenuPopover who={who} role={role} onClose={close} />}
+    <span className={`user-menu user-menu--${variant}`}>
+      {variant === "topbar" ? (
+        <button
+          className="user-menu-toggle"
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="true"
+        >
+          <span className="user-avatar">{initials}</span>
+          <span className="user-name">{name}</span>
+          <span className="user-caret">▾</span>
+        </button>
+      ) : (
+        <button
+          type="button"
+          className={`nav-account nav-account--${variant}`}
+          onClick={toggle}
+          aria-expanded={open}
+          aria-haspopup="true"
+          aria-label="Account"
+          title={name}
+        >
+          <span className="nav-avatar">{initials}</span>
+          {variant === "sidebar" && expanded && (
+            <span className="nav-account-text">
+              <span className="nav-account-name">{name}</span>
+              {role && <span className="nav-account-role">{role}</span>}
+            </span>
+          )}
+        </button>
+      )}
+      {open && (
+        <UserMenuPopover who={who} role={role} onClose={close} />
+      )}
     </span>
   );
 }
 
 interface PopoverProps {
-  who: WhoamiResponse;
+  who: WhoamiIdentityResponse;
   role: string | undefined;
   onClose: () => void;
 }
@@ -58,38 +91,37 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
   const client = useQueryClient();
   const navigate = useNavigate();
   const backdropRef = useRef<HTMLSpanElement>(null);
+  const [signOutError, setSignOutError] = useState<string | null>(null);
+  const [isDark, setIsDark] = useState(isDarkTheme());
 
   // Close on backdrop click or Escape
-  useEffect(() => {
-    const handleKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") onClose();
-    };
-    window.addEventListener("keydown", handleKey);
-    return () => window.removeEventListener("keydown", handleKey);
-  }, [onClose]);
+  useEscapeKey(true, onClose);
 
   const handleBackdropClick = (e: React.MouseEvent) => {
     if (e.target === backdropRef.current) onClose();
   };
 
   const handleSignOut = async () => {
+    setSignOutError(null);
     try {
       await deleteSession();
       clearPersistedTenantContext();
+      clearRecentQueries();
       client.clear();
-      navigate("/logs");
+      navigate("/login");
       window.location.reload();
-    } catch {
-      // If session delete fails, still reload to clear stale state
-      window.location.reload();
+    } catch (err) {
+      // A failed sign-out leaves the session intact — report it and keep
+      // the menu open rather than reloading into a page that still thinks
+      // it's signed in.
+      setSignOutError(toErrorMessage(err));
     }
   };
 
   const handleThemeToggle = () => {
     toggleTheme();
+    setIsDark(isDarkTheme());
   };
-
-  const isDark = isDarkTheme();
 
   const user = who.user!;
 
@@ -116,22 +148,6 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
             <span>Appearance</span>
             <span className="user-menu-hint">{isDark ? "Dark" : "Light"}</span>
           </button>
-          <Link
-            className="user-menu-item"
-            to="/instrumentation"
-            onClick={onClose}
-          >
-            <span>Send data</span>
-            <span className="user-menu-hint">instrumentation</span>
-          </Link>
-          <Link className="user-menu-item" to="/api-keys" onClick={onClose}>
-            <span>API keys</span>
-            <span className="user-menu-hint">{who.tenant.id}</span>
-          </Link>
-          <Link className="user-menu-item" to="/schema" onClick={onClose}>
-            <span>Schema</span>
-            <span className="user-menu-hint">conventions</span>
-          </Link>
           <a
             className="user-menu-item"
             href="https://signaldb.dev/docs"
@@ -142,6 +158,12 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
             <span className="user-menu-hint">↗</span>
           </a>
         </span>
+
+        {signOutError && (
+          <p className="user-menu-alert error-text" role="alert">
+            {signOutError}
+          </p>
+        )}
 
         {/* Bottom actions */}
         <span className="user-menu-actions">
@@ -154,7 +176,7 @@ function UserMenuPopover({ who, role, onClose }: PopoverProps) {
           </Link>
           <button
             className="user-menu-item user-menu-signout"
-            onClick={handleSignOut}
+            onClick={() => void handleSignOut()}
           >
             <span>Sign out</span>
           </button>

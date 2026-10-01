@@ -10,7 +10,7 @@ sources:
   - src/mcp-server/src/lib.rs
   - src/ui/src/api/http.ts
   - src/ui/src/api/client.ts
-  - src/ui/src/features/shell/ThrottleBanner.tsx
+  - src/ui/src/components/ThrottleBanner.tsx
   - src/router/src/endpoints/api_error.rs
   - api/retry-cases.json
 ---
@@ -34,7 +34,7 @@ executable form of the rules below and both test suites replay it.
 | ------------------------------------------------ | -------------------------------------------------------------- |
 | `429 Too Many Requests`                          | Yes, on **any** method — a throttled request was not processed |
 | `502`, `503`, `504`, connection failure, timeout | Only for idempotent methods (`GET`, `HEAD`, `PUT`, `DELETE`)   |
-| Any other `4xx`, `500`, malformed response       | No — reported immediately                                      |
+| Any other `4xx`, `500`, malformed response       | No — reported immediately (e.g. `422 resource_limit`)          |
 
 `POST` (Query IR, API-key creation, registry uploads) is retried on `429`
 because SignalDB's limiter rejects before any handler runs; it is not retried
@@ -58,6 +58,11 @@ on `503` or a connection reset because the server may have acted on it.
   cannot afford the wait learn at once.
 - At most **4 attempts** per call (the first request plus three retries). The
   last failure is what the caller sees.
+- The web UI also bounds each individual attempt at **30 s** (sooner than the
+  backend querier's own 60 s timeout), so a hung request fails with a clear
+  error instead of leaving the UI loading forever. A timed-out attempt is
+  treated like any other transient failure — retried for idempotent methods,
+  surfaced immediately otherwise.
 
 ## Per surface
 
@@ -130,3 +135,14 @@ Leaving a page or superseding a query aborts the request's `AbortSignal`,
 which cancels a pending wait. When retries are exhausted the panel's error
 reads `Rate limited — server asked to retry in 5 s` instead of a generic
 failure; `ApiError.retryAfterMs` carries the wait for code that wants it.
+
+Callers that consume the generated SDK's `RequestResult` (which returns an
+`error` rather than throwing) unwrap it through `unwrapSdkResult`, which
+re-throws as the same `ApiError` — preserving the HTTP status and
+`retryAfterMs` — so a `429` surfaced from a management or session call is
+still recognised and backed off exactly like a raw `retryingFetch` rejection.
+
+A network failure that outlasts the retries can also mean a reverse proxy's
+login has expired. The UI checks for that separately and reloads the page
+once so the proxy can show its login; see
+[Updates](explore-ui.md#updates) in the Explore UI guide.

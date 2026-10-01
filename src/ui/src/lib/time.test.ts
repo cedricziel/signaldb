@@ -4,6 +4,7 @@ import {
   DEFAULT_RANGE,
   durationToSeconds,
   formatRangeLabel,
+  formatTimestampForRange,
   msToNanos,
   nanosToMs,
   parseRangeParam,
@@ -12,8 +13,27 @@ import {
   resolveStep,
   secondsToDuration,
   stepForRange,
+  thinnedTimeAxisLabels,
+  timeAxisLabels,
   stepOptionsForRange,
 } from "./time";
+
+describe("formatTimestampForRange", () => {
+  // 2024-03-05 14:07:09.250 local time.
+  const ms = new Date(2024, 2, 5, 14, 7, 9, 250).getTime();
+
+  it("stays time-only within a window of a day or less", () => {
+    const range = { fromMs: ms - 3_600_000, toMs: ms };
+    expect(formatTimestampForRange(ms, range)).toBe("14:07:09.250");
+  });
+
+  it("prefixes the date once the window spans more than a day", () => {
+    const range = { fromMs: ms - 7 * 86_400_000, toMs: ms };
+    expect(formatTimestampForRange(ms, range)).toBe(
+      "2024-03-05 14:07:09.250",
+    );
+  });
+});
 
 describe("resolveRange", () => {
   it("resolves a relative range against now", () => {
@@ -39,6 +59,15 @@ describe("nanosecond conversion", () => {
   it("handles realistic epoch timestamps without precision loss", () => {
     const ms = 1_753_776_000_123;
     expect(nanosToMs(msToNanos(ms))).toBe(ms);
+  });
+
+  it("preserves sub-millisecond durations instead of truncating to zero", () => {
+    expect(nanosToMs("0")).toBe(0);
+    expect(nanosToMs("1")).toBeCloseTo(0.000001);
+    expect(nanosToMs("194000")).toBeCloseTo(0.194);
+    expect(nanosToMs("999999")).toBeCloseTo(0.999999);
+    expect(nanosToMs("1000000")).toBe(1);
+    expect(nanosToMs("5230000000")).toBeCloseTo(5230);
   });
 });
 
@@ -135,6 +164,17 @@ describe("axisLabelFormatter", () => {
     expect(fmt(at(2026, 8, 1, 0))).toBe("08-01");
     expect(fmt(at(2026, 8, 8, 0))).toBe("08-08");
   });
+
+  it("includes the year when the window crosses a year boundary", () => {
+    const fmt = axisLabelFormatter(at(2025, 12, 31, 22), at(2026, 1, 1, 6));
+    expect(fmt(at(2025, 12, 31, 22))).toBe("2025-12-31 22:00");
+    expect(fmt(at(2026, 1, 1, 6))).toBe("2026-01-01 06:00");
+  });
+
+  it("keeps the year on date-only labels across a year boundary", () => {
+    const fmt = axisLabelFormatter(at(2025, 12, 28, 0), at(2026, 1, 4, 0));
+    expect(fmt(at(2025, 12, 28, 0))).toBe("2025-12-28");
+  });
 });
 
 describe("stepOptionsForRange", () => {
@@ -182,5 +222,73 @@ describe("resolveStep", () => {
 
   it("falls back on a malformed step", () => {
     expect(resolveStep(range, "banana")).toBe(stepForRange(range));
+  });
+});
+
+describe("timeAxisLabels", () => {
+  const at = (d: number, h: number, m: number, s = 0) =>
+    new Date(2023, 10, d, h, m, s).getTime();
+
+  it("shows the date on the first tick only while the day stays the same", () => {
+    const ticks = [at(14, 22, 10), at(14, 22, 15), at(14, 22, 20)];
+    expect(timeAxisLabels(ticks, 5 * 60_000)).toEqual([
+      "11-14 22:10",
+      "22:15",
+      "22:20",
+    ]);
+  });
+
+  it("repeats the date where the day changes", () => {
+    const ticks = [at(14, 23, 0), at(14, 23, 30), at(15, 0, 0), at(15, 0, 30)];
+    expect(timeAxisLabels(ticks, 30 * 60_000)).toEqual([
+      "11-14 23:00",
+      "23:30",
+      "11-15 00:00",
+      "00:30",
+    ]);
+  });
+
+  it("adds seconds below a minute step", () => {
+    const ticks = [at(14, 22, 10, 0), at(14, 22, 10, 15)];
+    expect(timeAxisLabels(ticks, 15_000)).toEqual([
+      "11-14 22:10:00",
+      "22:10:15",
+    ]);
+  });
+
+  it("drops the time of day at a step of a day or more", () => {
+    const ticks = [at(14, 0, 0), at(15, 0, 0)];
+    expect(timeAxisLabels(ticks, 86_400_000)).toEqual(["11-14", "11-15"]);
+  });
+});
+
+describe("thinnedTimeAxisLabels", () => {
+  const at = (mo: number, d: number, h: number) =>
+    new Date(2026, mo - 1, d, h).getTime();
+
+  // The Agents & scores chart read "09-24, 09-24" with ticks ~14h apart.
+  it("keeps the hour when points are less than a day apart", () => {
+    const step = (4 * 86_400_000) / 14;
+    const points = Array.from(
+      { length: 14 },
+      (_, i) => at(9, 24, 9) + i * step,
+    );
+    const labels = thinnedTimeAxisLabels(points, 8, 86_400_000).filter(Boolean);
+    expect(labels).toHaveLength(7);
+    expect(labels[0]).toBe("09-24 09:00");
+    expect(new Set(labels).size).toBe(labels.length);
+  });
+
+  it("labels daily points with the date alone, blanking all but maxTicks", () => {
+    const points = Array.from({ length: 30 }, (_, i) => at(9, 1 + i, 0));
+    const labels = thinnedTimeAxisLabels(points, 6, 86_400_000);
+    expect(labels.filter(Boolean)).toEqual([
+      "09-01",
+      "09-06",
+      "09-11",
+      "09-16",
+      "09-21",
+      "09-26",
+    ]);
   });
 });

@@ -2,39 +2,51 @@
 //!
 //! Browser-facing authentication for the embedded explore UI:
 //!
+//! - `GET /ui/session/config` is unauthenticated and reports which
+//!   credentials the login page may offer (password, OIDC, or both).
 //! - `POST /ui/session` validates a human user's email/password and tenant
 //!   membership, then issues an opaque server-side session token.
+//! - `GET /ui/session` introspects the caller's own session cookie —
+//!   tenant-less, unlike `whoami` — reporting the signed-in user, their
+//!   memberships, and the auto-selected tenant/dataset.
 //! - `DELETE /ui/session` revokes that session and clears its cookie.
 //! - `GET /api/v1/whoami` (behind the tenant auth middleware) returns the
 //!   authenticated tenant and its datasets, strictly scoped to that tenant.
 
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json, Router,
-    extract::State,
-    http::{StatusCode, header},
+    extract::{State, rejection::JsonRejection},
+    http::{HeaderValue, StatusCode, header},
     response::{IntoResponse, Response},
-    routing::post,
+    routing::get,
 };
-use chrono::{Duration, Utc};
+use chrono::Utc;
 use common::auth::{
-    SESSION_COOKIE, TenantContextExtractor, generate_session_token, hash_session_token,
-    session_token_from_headers, validate_dataset_id, validate_tenant_id, verify_password,
+    INGEST_SCOPES, SIGNAL_READ_SCOPES, TenantContext, TenantContextExtractor,
+    cleared_session_cookie_header, generate_session_token, hash_session_token,
+    renewed_cookie_header, session_cookie_header, session_token_from_headers, validate_dataset_id,
+    validate_tenant_id, verify_password,
 };
-use common::catalog::MembershipRole;
+use common::catalog::{MembershipRole, UserRecord, UserSessionRecord};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
+use std::collections::HashMap;
 
 /// Routes mounted at the router root (absolute `/ui/session` paths, so the
 /// session endpoint coexists with the `/ui` static-asset service).
-pub fn router<S: RouterState>() -> Router<S> {
-    Router::new().route(
-        "/ui/session",
-        post(create_session::<S>).delete(delete_session::<S>),
-    )
+pub fn router() -> Router<RouterAppState> {
+    Router::new()
+        .route(
+            "/ui/session",
+            get(current_session)
+                .post(create_session)
+                .delete(delete_session),
+        )
+        .route("/ui/session/config", get(login_config))
 }
 
-#[derive(Debug, Deserialize)]
+/// `POST /ui/session`'s request body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateSessionRequest {
     pub email: String,
     pub password: String,
@@ -48,26 +60,85 @@ pub struct CreateSessionRequest {
 }
 
 /// A tenant the signed-in user may select, returned by `POST /ui/session`
-/// so the UI can present a picker instead of free-text tenant entry.
-#[derive(Debug, Serialize)]
+/// and `GET /ui/session` so the UI can present a picker instead of
+/// free-text tenant entry.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct SessionMembership {
     pub tenant_id: String,
     pub name: String,
     pub role: MembershipRole,
 }
 
+/// `POST /ui/session`'s response: the tenant/dataset the login landed in and
+/// every membership the session may enter.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CreateSessionResponse {
+    /// Always serialized, `null` when the user must still pick a tenant
+    /// from `memberships`.
+    #[schema(required = true)]
+    pub tenant: Option<String>,
+    /// Always serialized, `null` alongside `tenant`.
+    #[schema(required = true)]
+    pub dataset: Option<String>,
+    pub memberships: Vec<SessionMembership>,
+}
+
+/// The `{"error": "..."}` body the session and whoami endpoints answer
+/// failures with.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionErrorBody {
+    pub error: String,
+}
+
 /// POST /ui/session
 ///
 /// Validates the credentials and sets the session cookie. 200 on success,
-/// 401/403 with a JSON error body on invalid credentials, 400 on malformed
-/// tenant/dataset IDs. The response always carries the user's memberships;
+/// 401/403 with a JSON error body on invalid credentials, 400 on a body that
+/// isn't the expected JSON or on malformed tenant/dataset IDs. The response always carries the user's memberships;
 /// `tenant`/`dataset` are null when the user must still pick one (the
 /// session itself is tenant-agnostic — every request re-validates the
 /// `X-Tenant-ID` header against the memberships).
-pub async fn create_session<S: RouterState>(
-    State(state): State<S>,
-    Json(body): Json<CreateSessionRequest>,
+#[utoipa::path(
+    post,
+    path = "/ui/session",
+    operation_id = "create_session",
+    tag = "session",
+    security(()),
+    request_body = CreateSessionRequest,
+    responses(
+        (status = 200, description = "Session created; sets the `signaldb_session` HttpOnly cookie", body = CreateSessionResponse),
+        (status = 400, description = "Malformed request body, or malformed tenant or dataset ID", body = SessionErrorBody),
+        (status = 401, description = "Invalid email or password", body = SessionErrorBody),
+        (status = 403, description = "Password login disabled, no tenant memberships, or not a member of the requested tenant", body = SessionErrorBody),
+        (status = 500, description = "Internal error", body = SessionErrorBody),
+    )
+)]
+pub async fn create_session(
+    State(state): State<RouterAppState>,
+    body: Result<Json<CreateSessionRequest>, JsonRejection>,
 ) -> Response {
+    let body = match body {
+        Ok(Json(body)) => body,
+        Err(rejection) => return error_response(400, rejection.body_text()),
+    };
+    // The password door can be switched off entirely when `[auth.oidc]`
+    // configures it (design decision 7, task 3.7): refuse every user with a
+    // reason distinct from "wrong credentials" before touching the catalog.
+    // API-key auth, `admin_api_key`, and the CLI/config bootstrap path don't
+    // go through this endpoint at all, so they're unaffected by construction.
+    if state
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.disable_password_login)
+    {
+        return error_response(
+            403,
+            "Password login is disabled for this instance".to_string(),
+        );
+    }
+
     let requested_tenant = match body.tenant.as_deref().map(str::trim) {
         Some("") | None => None,
         Some(t) => match validate_tenant_id(t) {
@@ -92,7 +163,12 @@ pub async fn create_session<S: RouterState>(
         }
     };
     let password = body.password;
-    let password_hash = user.password_hash.clone();
+    // SSO-only users (change: oidc-login) have no password hash to check
+    // against; refuse with the same generic failure as a wrong password,
+    // without invoking the verifier.
+    let Some(password_hash) = user.password_hash.clone() else {
+        return error_response(401, "Invalid email or password".to_string());
+    };
     let password_matches = match tokio::task::spawn_blocking(move || {
         verify_password(&password, &password_hash)
     })
@@ -128,18 +204,15 @@ pub async fn create_session<S: RouterState>(
             }
             Some(tenant)
         }
-        None => match memberships.as_slice() {
-            [] => {
-                return error_response(403, "User has no tenant memberships".to_string());
-            }
-            [only] => Some(only.tenant_id.clone()),
-            _ => None,
-        },
+        None if memberships.is_empty() => {
+            return error_response(403, "User has no tenant memberships".to_string());
+        }
+        None => auto_select_tenant(&memberships),
     };
 
     let token = generate_session_token();
     let token_hash = hash_session_token(&token);
-    let expires_at = Utc::now() + Duration::hours(12);
+    let expires_at = Utc::now() + common::auth::SESSION_TTL;
     let session = match state
         .catalog()
         .create_user_session(&user.id, &token_hash, expires_at)
@@ -152,9 +225,7 @@ pub async fn create_session<S: RouterState>(
         }
     };
 
-    let cookie = format!(
-        "{SESSION_COOKIE}={token}; HttpOnly; Secure; SameSite=Strict; Path=/; Max-Age=43200"
-    );
+    let cookie = session_cookie_header(&token);
 
     let Some(tenant) = tenant else {
         // Multiple memberships and no explicit choice: hand the list to
@@ -167,21 +238,17 @@ pub async fn create_session<S: RouterState>(
         return (
             StatusCode::OK,
             [(header::SET_COOKIE, cookie)],
-            Json(json!({
-                "tenant": Option::<String>::None,
-                "dataset": Option::<String>::None,
-                "memberships": memberships,
-            })),
+            Json(CreateSessionResponse {
+                tenant: None,
+                dataset: None,
+                memberships,
+            }),
         )
             .into_response();
     };
 
-    match state
-        .authenticator()
-        .authenticate_session(&token, &tenant, dataset.as_deref())
-        .await
-    {
-        Ok(ctx) => {
+    match resolve_session_tenant(&state, &token, &tenant, dataset.as_deref()).await {
+        Ok((ctx, _renewed)) => {
             tracing::info!(
                 user_id = %user.id,
                 tenant_id = %ctx.tenant_id,
@@ -191,29 +258,67 @@ pub async fn create_session<S: RouterState>(
             (
                 StatusCode::OK,
                 [(header::SET_COOKIE, cookie)],
-                Json(json!({
-                    "tenant": ctx.tenant_id,
-                    "dataset": ctx.dataset_id,
-                    "memberships": memberships,
-                })),
+                Json(CreateSessionResponse {
+                    tenant: Some(ctx.tenant_id),
+                    dataset: Some(ctx.dataset_id),
+                    memberships,
+                }),
             )
                 .into_response()
         }
-        Err(err) => {
+        Err(response) => {
             if let Err(error) = state.catalog().revoke_session(&session.id).await {
                 tracing::error!(session_id = %session.id, error = %error, "Failed to revoke rejected session");
             }
-            tracing::warn!(tenant_id = %tenant, "UI session login failed: {}", err.message);
-            error_response(err.status_code, err.message)
+            response
         }
+    }
+}
+
+/// Resolves the tenant/dataset a session token may enter, shared by
+/// `POST /ui/session` (a freshly minted session) and `GET /ui/session` (an
+/// existing one): `state.authenticator().authenticate_session` against the
+/// requested tenant, logged and turned into an error `Response` on failure.
+/// Callers that must undo side effects on failure (`create_session` revokes
+/// the freshly minted session) do so around this call.
+#[allow(clippy::result_large_err)]
+async fn resolve_session_tenant(
+    state: &RouterAppState,
+    token: &str,
+    tenant: &str,
+    dataset: Option<&str>,
+) -> Result<(TenantContext, bool), Response> {
+    state
+        .authenticator()
+        .authenticate_session(token, tenant, dataset)
+        .await
+        .map_err(|err| {
+            tracing::warn!(tenant_id = %tenant, "UI session tenant resolution failed: {}", err.message);
+            error_response(err.status_code, err.message)
+        })
+}
+
+/// The tenant a login without an explicit choice lands in, shared by
+/// `POST /ui/session` and `GET /ui/session`: a sole membership is
+/// auto-selected; zero or several defer the choice (`None`).
+fn auto_select_tenant(memberships: &[SessionMembership]) -> Option<String> {
+    match memberships {
+        [only] => Some(only.tenant_id.clone()),
+        _ => None,
     }
 }
 
 /// The tenants a user may act in: instance admins may select any tenant
 /// (as admin); other users get their stored memberships, with display
 /// names resolved config-first to mirror the Authenticator's precedence.
-async fn list_session_memberships<S: RouterState>(
-    state: &S,
+// The error *is* the response we would send — the ordinary shape for a route
+// helper, and what lets the caller `?` straight out of a handler. Boxing it to
+// satisfy `result_large_err` would push a deref onto every call site and buy
+// nothing: an axum `Response` is large by construction. Same call the querier
+// makes in `flight.rs`.
+#[allow(clippy::result_large_err)]
+async fn list_session_memberships(
+    state: &RouterAppState,
     user: &common::catalog::UserRecord,
 ) -> Result<Vec<SessionMembership>, Response> {
     if user.is_instance_admin {
@@ -231,47 +336,124 @@ async fn list_session_memberships<S: RouterState>(
             .collect());
     }
 
+    // Collapsed to one effective membership per tenant (change: oidc-login,
+    // "session views count a tenant once"): a user with both a `local` and
+    // an `oidc_mapping` row in the same tenant is a sole membership here,
+    // not two. `Catalog::list_members_for_tenant` (the admin management
+    // list) deliberately keeps showing both rows.
     let rows = state
         .catalog()
-        .list_memberships_for_user(&user.id)
+        .list_effective_memberships_for_user(&user.id)
         .await
         .map_err(|error| {
             tracing::error!(user_id = %user.id, error = %error, "Membership lookup failed");
             error_response(500, "Unable to create session".to_string())
         })?;
-    let mut memberships = Vec::with_capacity(rows.len());
-    for row in rows {
-        let name = tenant_display_name(state, &row.tenant_id).await;
-        memberships.push(SessionMembership {
-            tenant_id: row.tenant_id,
-            name,
-            role: row.role,
-        });
-    }
-    Ok(memberships)
+
+    // Config-defined tenants resolve their name locally (mirrors the
+    // Authenticator's precedence); anything else needs one batched catalog
+    // lookup rather than a `get_tenant` call per row.
+    let config_name = |tenant_id: &str| -> Option<String> {
+        state
+            .config()
+            .auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .map(|t| t.name.clone())
+    };
+    let needs_catalog_names = rows.iter().any(|row| config_name(&row.tenant_id).is_none());
+    let catalog_names: HashMap<String, String> = if needs_catalog_names {
+        state
+            .catalog()
+            .list_tenants()
+            .await
+            .map_err(|error| {
+                tracing::error!(user_id = %user.id, error = %error, "Session tenant listing failed");
+                error_response(500, "Unable to create session".to_string())
+            })?
+            .into_iter()
+            .map(|tenant| (tenant.id, tenant.name))
+            .collect()
+    } else {
+        HashMap::new()
+    };
+
+    Ok(rows
+        .into_iter()
+        .map(|row| {
+            let name = config_name(&row.tenant_id)
+                .or_else(|| catalog_names.get(&row.tenant_id).cloned())
+                .unwrap_or_else(|| row.tenant_id.clone());
+            SessionMembership {
+                tenant_id: row.tenant_id,
+                name,
+                role: row.role,
+            }
+        })
+        .collect())
 }
 
-async fn tenant_display_name<S: RouterState>(state: &S, tenant_id: &str) -> String {
-    if let Some(tc) = state
-        .config()
-        .auth
-        .tenants
-        .iter()
-        .find(|t| t.id == tenant_id)
+/// Resolves the caller's session cookie to its token, user record, and the
+/// session row itself: the lookup `GET /ui/session` needs before it can list
+/// memberships (and, when no tenant is auto-selected, renew the session on
+/// its own — see `current_session`). Missing cookie, unknown/expired
+/// session, or unknown/disabled user all answer 401; a catalog error is a
+/// 500. `DELETE /ui/session` only needs the session half of this (no 401 on
+/// a missing/invalid cookie — logout is a no-op then), so it keeps its own
+/// lookup rather than reusing this.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn resolve_session_user(
+    state: &RouterAppState,
+    headers: &axum::http::HeaderMap,
+) -> Result<(String, UserRecord, UserSessionRecord), Response> {
+    let Some(token) = session_token_from_headers(headers) else {
+        return Err(error_response(401, "No valid session cookie".to_string()));
+    };
+    let session = match state
+        .catalog()
+        .get_valid_session(&hash_session_token(&token))
+        .await
     {
-        return tc.name.clone();
-    }
-    match state.catalog().get_tenant(tenant_id).await {
-        Ok(Some(tenant)) => tenant.name,
-        _ => tenant_id.to_string(),
-    }
+        Ok(Some(session)) => session,
+        Ok(None) => return Err(error_response(401, "No valid session cookie".to_string())),
+        Err(error) => {
+            tracing::error!(error = %error, "current_session: session lookup failed");
+            return Err(error_response(500, "Unable to resolve session".to_string()));
+        }
+    };
+    // `get_valid_session` already excludes disabled users' sessions via its
+    // join, so this re-checks `disabled_at` only as defense in depth against
+    // the account being disabled in the gap between that lookup and this
+    // one — not the primary enforcement.
+    let user = match state.catalog().get_user(&session.user_id).await {
+        Ok(Some(user)) if user.disabled_at.is_none() => user,
+        Ok(_) => return Err(error_response(401, "No valid session cookie".to_string())),
+        Err(error) => {
+            tracing::error!(error = %error, "current_session: user lookup failed");
+            return Err(error_response(500, "Unable to resolve session".to_string()));
+        }
+    };
+    Ok((token, user, session))
 }
 
 /// DELETE /ui/session
 ///
 /// Clears the session cookie (logout).
-pub async fn delete_session<S: RouterState>(
-    State(state): State<S>,
+#[utoipa::path(
+    delete,
+    path = "/ui/session",
+    operation_id = "delete_session",
+    tag = "session",
+    security((), ("sessionCookie" = [])),
+    description = "Revokes the session named by the `signaldb_session` cookie, if any, and clears the cookie. Without a valid session cookie this is a no-op that still answers 204.",
+    responses(
+        (status = 204, description = "Session revoked and cookie cleared"),
+        (status = 500, description = "Internal error", body = SessionErrorBody),
+    )
+)]
+pub async fn delete_session(
+    State(state): State<RouterAppState>,
     headers: axum::http::HeaderMap,
 ) -> Response {
     if let Some(token) = session_token_from_headers(&headers) {
@@ -295,18 +477,211 @@ pub async fn delete_session<S: RouterState>(
     }
     (
         StatusCode::NO_CONTENT,
-        [(
-            header::SET_COOKIE,
-            format!("{SESSION_COOKIE}=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0"),
-        )],
+        [(header::SET_COOKIE, cleared_session_cookie_header())],
     )
         .into_response()
+}
+
+/// A single-sign-on provider offered by the login-configuration probe.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OidcLoginConfig {
+    /// Display name shown on the "Continue with {name}" control.
+    pub name: String,
+}
+
+/// The demo account's credentials, returned by `login_config` only when
+/// `[demo].enabled` is true (change: demo-mode) so the login page can offer
+/// an "Explore the demo" shortcut.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct DemoLoginConfig {
+    pub username: String,
+    pub password: String,
+}
+
+/// `GET /ui/session/config`'s response: which credentials the login page
+/// may offer. `oidc` is `null` until an OIDC provider is configured.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct LoginConfigResponse {
+    pub password_enabled: bool,
+    /// Always serialized, `null` until an OIDC provider is configured — not
+    /// an omittable field.
+    #[schema(required = true)]
+    pub oidc: Option<OidcLoginConfig>,
+    /// Always serialized, `null` unless `[demo].enabled` is true (change:
+    /// demo-mode) — not an omittable field.
+    #[schema(required = true)]
+    pub demo: Option<DemoLoginConfig>,
+}
+
+/// GET /ui/session/config
+///
+/// Unauthenticated probe the login page reads before rendering its
+/// credential step. `oidc` is populated once `[auth.oidc]` is configured
+/// *and* its provider discovery has succeeded — otherwise `null`, so an
+/// unreachable issuer degrades to password-only rather than offering a
+/// broken SSO button (change: oidc-login). `password_enabled` reflects
+/// `[auth.oidc].disable_password_login`.
+#[utoipa::path(
+    get,
+    path = "/ui/session/config",
+    operation_id = "login_config",
+    tag = "session",
+    security(()),
+    responses(
+        (status = 200, description = "Login credential configuration", body = LoginConfigResponse),
+    )
+)]
+pub async fn login_config(State(state): State<RouterAppState>) -> Response {
+    let oidc = match state.oidc() {
+        Some(runtime) if runtime.provider().await.is_some() => Some(OidcLoginConfig {
+            name: runtime.display_name.clone(),
+        }),
+        _ => None,
+    };
+    let password_enabled = !state
+        .config()
+        .auth
+        .oidc
+        .as_ref()
+        .is_some_and(|oidc| oidc.disable_password_login);
+    let demo = state.config().demo.enabled.then(|| DemoLoginConfig {
+        username: state.config().demo.username.clone(),
+        password: state.config().demo.password.clone(),
+    });
+    Json(LoginConfigResponse {
+        password_enabled,
+        oidc,
+        demo,
+    })
+    .into_response()
+}
+
+/// The signed-in user, as reported by `GET /ui/session`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionUser {
+    pub id: String,
+    pub email: String,
+    /// Always serialized, `null` when the user has no display name.
+    #[schema(required = true)]
+    pub display_name: Option<String>,
+    pub is_instance_admin: bool,
+    /// True when this is the `[demo]` read-only account (change:
+    /// demo-mode), so the UI can show a "read-only" badge and hide
+    /// mutating navigation without hardcoding the demo username.
+    pub is_demo: bool,
+}
+
+/// `GET /ui/session`'s response: the signed-in user, the memberships the
+/// session may enter, and the auto-selected tenant/dataset.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CurrentSessionResponse {
+    pub user: SessionUser,
+    /// Always serialized, `null` when no tenant is auto-selected — not an
+    /// omittable field.
+    #[schema(required = true)]
+    pub tenant: Option<String>,
+    /// Always serialized, `null` when no tenant is auto-selected — not an
+    /// omittable field.
+    #[schema(required = true)]
+    pub dataset: Option<String>,
+    pub memberships: Vec<SessionMembership>,
+}
+
+/// GET /ui/session
+///
+/// Session introspection, tenant-less: authenticated by the
+/// `signaldb_session` cookie alone (no API key, no `X-Tenant-ID` header
+/// substitutes for it). Used by the login page to answer "already signed
+/// in?" without the tenant context `whoami` requires. `tenant`/`dataset`
+/// follow the same auto-select rule as `POST /ui/session` with no
+/// requested tenant: `null` for zero or several memberships (zero is still
+/// a 200 — the UI renders a "no access" state, not an error).
+#[utoipa::path(
+    get,
+    path = "/ui/session",
+    operation_id = "current_session",
+    tag = "session",
+    security(("sessionCookie" = [])),
+    description = "Authenticated by the `signaldb_session` HttpOnly cookie only; an API key or `X-Tenant-ID` header does not substitute for it.",
+    responses(
+        (status = 200, description = "Signed-in user, memberships, and auto-selected tenant/dataset", body = CurrentSessionResponse),
+        (status = 401, description = "No valid session cookie"),
+    )
+)]
+pub async fn current_session(
+    State(state): State<RouterAppState>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    let (token, user, session) = match resolve_session_user(&state, &headers).await {
+        Ok(resolved) => resolved,
+        Err(response) => return response,
+    };
+
+    let memberships = match list_session_memberships(&state, &user).await {
+        Ok(memberships) => memberships,
+        Err(response) => return response,
+    };
+
+    let (tenant, dataset, session_renewed) = match auto_select_tenant(&memberships) {
+        Some(tenant) => match resolve_session_tenant(&state, &token, &tenant, None).await {
+            Ok((ctx, renewed)) => (Some(ctx.tenant_id), Some(ctx.dataset_id), renewed),
+            // `tenant: null` with one membership listed is a shape the
+            // login page's state machine never expects, so a resolution
+            // failure is a hard error rather than a silent downgrade.
+            // Unlike `create_session`, there is no freshly minted session
+            // to revoke here — the cookie already existed before this
+            // request.
+            Err(response) => return response,
+        },
+        // No tenant to resolve — several memberships still awaiting a pick,
+        // or none at all — but the session itself is still valid and should
+        // still slide forward on use (change: session-renewal). Renewing
+        // directly here (rather than only through `resolve_session_tenant`)
+        // means a multi-membership user or instance admin who lingers on
+        // the tenant-selection page doesn't lose their session just because
+        // they never send a tenant-scoped request.
+        None => {
+            let renewed = state
+                .authenticator()
+                .renew_session(&session.id, session.expires_at, session.created_at)
+                .await;
+            (None, None, renewed)
+        }
+    };
+
+    let is_demo = state.config().demo.enabled
+        && user.email == state.config().demo.username.trim().to_lowercase();
+    let mut response = Json(CurrentSessionResponse {
+        user: SessionUser {
+            id: user.id,
+            email: user.email,
+            display_name: user.display_name,
+            is_instance_admin: user.is_instance_admin,
+            is_demo,
+        },
+        tenant,
+        dataset,
+        memberships,
+    })
+    .into_response();
+
+    // Sliding TTL (change: session-renewal): `resolve_session_tenant` went
+    // through `authenticate_session`, which may have just extended this
+    // session's expiry in the database. Reissue the cookie so the browser's
+    // copy matches, the same way `auth_middleware` does for every other
+    // authenticated route.
+    if let Some(cookie) = renewed_cookie_header(session_renewed, &token)
+        && let Ok(value) = HeaderValue::from_str(&cookie)
+    {
+        response.headers_mut().append(header::SET_COOKIE, value);
+    }
+    response
 }
 
 fn error_response(status: u16, message: String) -> Response {
     (
         StatusCode::from_u16(status).unwrap_or(StatusCode::UNAUTHORIZED),
-        Json(json!({ "error": message })),
+        Json(SessionErrorBody { error: message }),
     )
         .into_response()
 }
@@ -318,17 +693,21 @@ pub struct WhoamiTenant {
     pub name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiDataset {
     pub id: String,
     pub slug: String,
     pub is_default: bool,
 }
 
-#[derive(Debug, Serialize)]
-pub struct WhoamiResponse {
+/// `GET /api/v1/whoami`'s response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct WhoamiIdentityResponse {
+    /// The signed-in human user; absent for API key credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<WhoamiUser>,
+    /// Every tenant the human user belongs to (every tenant, as admin, for
+    /// an instance admin); empty for API key credentials.
     pub memberships: Vec<WhoamiMembership>,
     pub tenant: WhoamiTenant,
     /// Authenticated human user ID. Empty for API key credentials.
@@ -336,31 +715,110 @@ pub struct WhoamiResponse {
     /// Dataset resolved by the authentication middleware from the requested
     /// header or the tenant default.
     pub dataset: String,
+    /// The tenant's datasets, narrowed to the credential's own restriction.
     pub datasets: Vec<WhoamiDataset>,
+    /// Always serialized, `null` when the tenant (or the credential's
+    /// restriction) has no default dataset.
+    #[schema(required = true)]
     pub default_dataset: Option<String>,
+    /// The credential's own dataset-set restriction (`TenantContext::
+    /// api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+    /// Callers that need to know which of `datasets` they may actually
+    /// query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+    /// read this rather than assuming every listed dataset is reachable.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+    /// Every tenant this specific credential's grant reaches (change:
+    /// mcp-multi-tenant-oauth-grants D5) — a one-element array equal to
+    /// `tenant`/`dataset_ids` for a single-tenant credential (API key or
+    /// single-tenant OAuth grant), or every tenant in the grant for a
+    /// multi-tenant OAuth credential. Distinct from `memberships`, which
+    /// lists every tenant the *human user* belongs to regardless of what
+    /// this credential was scoped to.
+    pub granted_tenants: Vec<GrantedTenant>,
 }
 
-#[derive(Debug, Serialize)]
+/// One tenant a credential's grant reaches, with its own dataset-set
+/// restriction — the `whoami`/`/oauth/introspect` output shape (change:
+/// mcp-multi-tenant-oauth-grants D4/D5). Mirrors
+/// [`common::catalog::TenantGrant`]; kept as a router-local response DTO so
+/// it can derive [`utoipa::ToSchema`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct GrantedTenant {
+    pub tenant_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub dataset_ids: Option<Vec<String>>,
+}
+
+/// Build the `granted_tenants` list for a resolved [`TenantContext`]: the
+/// token's own complete grant set for an OAuth credential, or a synthesized
+/// one-element list from the context's own tenant/restriction for any other
+/// credential kind (API key, browser session) — so the field is present and
+/// consistently shaped for every credential type, not just OAuth (D5).
+fn granted_tenants(ctx: &TenantContext) -> Vec<GrantedTenant> {
+    match &ctx.oauth_tenant_grants {
+        Some(grants) => grants
+            .iter()
+            .map(|g| GrantedTenant {
+                tenant_id: g.tenant_id.clone(),
+                dataset_ids: g.dataset_ids.clone(),
+            })
+            .collect(),
+        None => vec![GrantedTenant {
+            tenant_id: ctx.tenant_id.clone(),
+            dataset_ids: ctx.api_key_dataset_ids.clone(),
+        }],
+    }
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiUser {
     pub id: String,
     pub email: String,
+    /// Always serialized, `null` when the user has no display name.
+    #[schema(required = true)]
     pub display_name: Option<String>,
     pub is_instance_admin: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiMembership {
     pub tenant_id: String,
     pub role: MembershipRole,
 }
 
-/// The non-null identity contract shared by generated clients.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct WhoamiIdentityResponse {
-    pub tenant: WhoamiTenant,
-    pub dataset: String,
-    /// Stable authenticated user ID. Empty for API key credentials.
-    pub user_id: String,
+/// D10: narrow `datasets`/`default_dataset` to a dataset-restricted
+/// credential's own set, exactly as the MCP `discover_datasets`/
+/// `tenant_list_tables` tools do. `restriction` is `ctx.api_key_dataset_ids`
+/// — `None` (unrestricted) leaves both inputs unchanged.
+///
+/// A restricted `default_dataset` outside the restriction has no safe value
+/// to fall back to in general (D4 case 4: two or more allowed datasets have
+/// no principled default), except the one case D4 case 3 gives an answer
+/// for — a single-element restriction *is* the credential's effective
+/// default when no dataset is requested explicitly — so that element is
+/// substituted; anything else is omitted rather than naming a dataset the
+/// credential cannot always default to.
+fn apply_dataset_restriction(
+    datasets: Vec<WhoamiDataset>,
+    default_dataset: Option<String>,
+    restriction: Option<&[String]>,
+) -> (Vec<WhoamiDataset>, Option<String>) {
+    let Some(allowed) = restriction else {
+        return (datasets, default_dataset);
+    };
+    let datasets = datasets
+        .into_iter()
+        .filter(|d| common::auth::dataset_allowed(Some(allowed), &d.id))
+        .collect();
+    let default_dataset = match default_dataset {
+        Some(d) if common::auth::dataset_allowed(Some(allowed), &d) => Some(d),
+        _ => match allowed {
+            [only] => Some(only.clone()),
+            _ => None,
+        },
+    };
+    (datasets, default_dataset)
 }
 
 /// GET /api/v1/whoami
@@ -378,11 +836,13 @@ pub struct WhoamiIdentityResponse {
     responses(
         (status = 200, description = "Resolved authenticated tenant and dataset", body = WhoamiIdentityResponse),
         (status = 401, description = "Invalid or expired credential"),
+        (status = 404, description = "The authenticated tenant no longer exists", body = SessionErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 500, description = "Internal error", body = SessionErrorBody),
     )
 )]
-pub async fn whoami<S: RouterState>(
-    State(state): State<S>,
+pub async fn whoami(
+    State(state): State<RouterAppState>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> Response {
     let (user, memberships) = match &ctx.user_id {
@@ -410,7 +870,14 @@ pub async fn whoami<S: RouterState>(
                     }
                 }
             } else {
-                match state.catalog().list_memberships_for_user(user_id).await {
+                // Collapsed to one effective membership per tenant (change:
+                // oidc-login, "session views count a tenant once") — see
+                // `list_session_memberships`.
+                match state
+                    .catalog()
+                    .list_effective_memberships_for_user(user_id)
+                    .await
+                {
                     Ok(memberships) => memberships
                         .into_iter()
                         .map(|membership| WhoamiMembership {
@@ -477,7 +944,12 @@ pub async fn whoami<S: RouterState>(
                 return error_response(500, "Failed to resolve datasets".to_string());
             }
         }
-        let response = WhoamiResponse {
+        let (datasets, default_dataset) = apply_dataset_restriction(
+            datasets,
+            default_dataset,
+            ctx.api_key_dataset_ids.as_deref(),
+        );
+        let response = WhoamiIdentityResponse {
             user,
             memberships,
             tenant: WhoamiTenant {
@@ -489,6 +961,8 @@ pub async fn whoami<S: RouterState>(
             dataset: ctx.dataset_id.clone(),
             datasets,
             default_dataset,
+            dataset_ids: ctx.api_key_dataset_ids.clone(),
+            granted_tenants: granted_tenants(&ctx),
         };
         return Json(response).into_response();
     }
@@ -512,7 +986,20 @@ pub async fn whoami<S: RouterState>(
         }
     };
 
-    let response = WhoamiResponse {
+    let datasets = datasets
+        .into_iter()
+        .map(|d| WhoamiDataset {
+            is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
+            slug: d.name.clone(),
+            id: d.name,
+        })
+        .collect();
+    let (datasets, default_dataset) = apply_dataset_restriction(
+        datasets,
+        tenant.default_dataset,
+        ctx.api_key_dataset_ids.as_deref(),
+    );
+    let response = WhoamiIdentityResponse {
         user,
         memberships,
         tenant: WhoamiTenant {
@@ -523,17 +1010,280 @@ pub async fn whoami<S: RouterState>(
         },
         user_id: ctx.user_id.clone().unwrap_or_default(),
         dataset: ctx.dataset_id.clone(),
-        datasets: datasets
-            .into_iter()
-            .map(|d| WhoamiDataset {
-                is_default: Some(d.name.as_str()) == tenant.default_dataset.as_deref(),
-                slug: d.name.clone(),
-                id: d.name,
-            })
-            .collect(),
-        default_dataset: tenant.default_dataset,
+        datasets,
+        default_dataset,
+        dataset_ids: ctx.api_key_dataset_ids.clone(),
+        granted_tenants: granted_tenants(&ctx),
     };
     Json(response).into_response()
+}
+
+/// `Authorization`/`X-Tenant-ID`/`X-Dataset-ID` headers to send with the
+/// filled-in credential placeholder, ready to paste into a client config.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionHeaders {
+    pub authorization: String,
+    #[serde(rename = "x-tenant-id")]
+    pub x_tenant_id: String,
+    #[serde(rename = "x-dataset-id")]
+    pub x_dataset_id: String,
+}
+
+/// The public OTLP/gRPC ingest endpoint.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OtlpGrpcEndpoint {
+    pub url: String,
+    /// `host[:port]`, with the port included only when the configured URL
+    /// states one explicitly.
+    pub authority: String,
+    pub tls: bool,
+    pub protocol: String,
+    pub signals: Vec<String>,
+}
+
+/// Per-signal paths appended to [`OtlpHttpEndpoint::url`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OtlpHttpPaths {
+    pub traces: String,
+    pub logs: String,
+    pub metrics: String,
+    pub profiles: String,
+}
+
+/// The public OTLP/HTTP ingest endpoint.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct OtlpHttpEndpoint {
+    pub url: String,
+    pub tls: bool,
+    pub protocol: String,
+    pub paths: OtlpHttpPaths,
+}
+
+/// Every ingest endpoint this deployment exposes.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionIngest {
+    pub otlp_grpc: OtlpGrpcEndpoint,
+    pub otlp_http: OtlpHttpEndpoint,
+    /// The Prometheus remote-write ingest URL.
+    pub prometheus_remote_write: String,
+}
+
+/// Path prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+/// dialects, relative to [`ConnectionQuery::api_url`]. External clients only
+/// — first-party callers use [`ConnectionQuery::query_ir`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionCompat {
+    pub tempo: String,
+    pub loki: String,
+    pub prometheus: String,
+    pub pyroscope: String,
+}
+
+/// The router's query surface: the native Query IR plus the compatibility
+/// dialects, relative to `api_url`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionQuery {
+    pub api_url: String,
+    pub query_ir: String,
+    pub openapi: String,
+    pub compat: ConnectionCompat,
+}
+
+/// The MCP Streamable HTTP endpoint, present only when this deployment has
+/// one configured (directly or via `[mcp.oauth].resource_url`).
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionMcp {
+    pub url: String,
+    pub transport: String,
+}
+
+/// The API-key scopes ingest and query each require.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionScopes {
+    pub ingest: Vec<String>,
+    pub query: Vec<String>,
+}
+
+/// Ready-to-paste `OTEL_EXPORTER_OTLP_*` environment variables for an
+/// OTel-instrumented application.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionOtelEnv {
+    #[serde(rename = "OTEL_EXPORTER_OTLP_ENDPOINT")]
+    pub otel_exporter_otlp_endpoint: String,
+    #[serde(rename = "OTEL_EXPORTER_OTLP_PROTOCOL")]
+    pub otel_exporter_otlp_protocol: String,
+    #[serde(rename = "OTEL_EXPORTER_OTLP_HEADERS")]
+    pub otel_exporter_otlp_headers: String,
+}
+
+/// `GET /api/v1/connection` response: everything needed to send data to and
+/// query this deployment from outside, for the caller's own tenant/dataset.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct ConnectionInfoResponse {
+    pub tenant_id: String,
+    pub dataset_id: String,
+    /// Whether every required `[public]` field (OTLP gRPC/HTTP, API URL) has
+    /// been explicitly set. `false` means at least one of those URLs below is
+    /// a localhost fallback, unlikely to be reachable from outside this
+    /// machine — see `notes` for which.
+    pub public_endpoints_configured: bool,
+    pub headers: ConnectionHeaders,
+    pub ingest: ConnectionIngest,
+    pub query: ConnectionQuery,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub mcp: Option<ConnectionMcp>,
+    pub required_scopes: ConnectionScopes,
+    pub otel_env: ConnectionOtelEnv,
+    /// Operator guidance, e.g. that `[public]` is unset and URLs are
+    /// localhost fallbacks. Empty when everything is configured.
+    pub notes: Vec<String>,
+}
+
+/// `host[:port]` from `url`. The port is included only when `url::Url`
+/// reports one: an unstated port is never guessed, and a stated port equal
+/// to the scheme's default (`https://host:443`) is dropped too, since the
+/// crate normalizes it away.
+fn authority_of(url: &url::Url) -> String {
+    match (url.host_str(), url.port()) {
+        (Some(host), Some(port)) => format!("{host}:{port}"),
+        (Some(host), None) => host.to_string(),
+        (None, _) => String::new(),
+    }
+}
+
+/// `scheme://host[:port][/path-prefix]` from `url`, without a trailing
+/// slash — every `[public]` URL is a base a signal path gets appended to,
+/// and `url::Url` normalizes an empty path to `/`, which would otherwise
+/// show up as a spurious trailing slash. A path prefix (an ingress that
+/// mounts the acceptor under `/otlp`) is kept.
+fn base_url_str(url: &url::Url) -> String {
+    format!(
+        "{}://{}{}",
+        url.scheme(),
+        authority_of(url),
+        url.path().trim_end_matches('/')
+    )
+}
+
+/// Filled in for the credential in every client-facing example this
+/// endpoint renders (the `Authorization` header and the OTel env vars) —
+/// never a real secret.
+const API_KEY_PLACEHOLDER: &str = "<api-key>";
+
+/// GET /api/v1/connection
+///
+/// Everything needed to send data to and query this deployment from outside:
+/// public OTLP gRPC/HTTP and Prometheus remote-write endpoints, the query API
+/// base and compatibility-dialect paths, the headers to send (with this
+/// request's tenant/dataset filled in), the API-key scopes ingest and query
+/// each require, and ready-to-paste `OTEL_EXPORTER_OTLP_*` env vars. Behind
+/// the tenant auth middleware, so any valid tenant credential — including an
+/// ingest-only key — may call it.
+#[utoipa::path(
+    get,
+    path = "/api/v1/connection",
+    operation_id = "connection_info",
+    tag = "tenants",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Connection details for this deployment, scoped to the caller's tenant", body = ConnectionInfoResponse),
+        (status = 401, description = "Invalid or expired credential"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+    )
+)]
+pub async fn connection_info(
+    State(state): State<RouterAppState>,
+    TenantContextExtractor(ctx): TenantContextExtractor,
+) -> Response {
+    let public = match state.config().public.resolve(&state.config().mcp.oauth) {
+        Ok(public) => public,
+        Err(error) => {
+            tracing::error!(error = %error, "connection_info: configured public URL is invalid");
+            return error_response(500, error.to_string());
+        }
+    };
+
+    let headers = ConnectionHeaders {
+        authorization: format!("Bearer {API_KEY_PLACEHOLDER}"),
+        x_tenant_id: ctx.tenant_id.clone(),
+        x_dataset_id: ctx.dataset_id.clone(),
+    };
+
+    let grpc_url_str = base_url_str(&public.otlp_grpc);
+    let http_url_str = base_url_str(&public.otlp_http);
+
+    let ingest = ConnectionIngest {
+        otlp_grpc: OtlpGrpcEndpoint {
+            tls: public.otlp_grpc.scheme() == "https",
+            authority: authority_of(&public.otlp_grpc),
+            url: grpc_url_str.clone(),
+            protocol: "grpc".to_string(),
+            signals: SIGNAL_READ_SCOPES
+                .iter()
+                .map(|scope| scope.strip_suffix(":read").unwrap_or(scope).to_string())
+                .collect(),
+        },
+        otlp_http: OtlpHttpEndpoint {
+            tls: public.otlp_http.scheme() == "https",
+            url: http_url_str.clone(),
+            protocol: "http/protobuf".to_string(),
+            paths: OtlpHttpPaths {
+                traces: common::endpoints::OTLP_HTTP_TRACES_PATH.to_string(),
+                logs: common::endpoints::OTLP_HTTP_LOGS_PATH.to_string(),
+                metrics: common::endpoints::OTLP_HTTP_METRICS_PATH.to_string(),
+                profiles: common::endpoints::OTLP_HTTP_PROFILES_PATH.to_string(),
+            },
+        },
+        prometheus_remote_write: format!(
+            "{http_url_str}{}",
+            common::endpoints::PROMETHEUS_REMOTE_WRITE_PATH
+        ),
+    };
+
+    let query = ConnectionQuery {
+        api_url: public.api_url,
+        query_ir: crate::QUERY_IR_PATH.to_string(),
+        openapi: crate::OPENAPI_JSON_PATH.to_string(),
+        compat: ConnectionCompat {
+            tempo: format!("{}/api", crate::TEMPO_PREFIX),
+            loki: format!("{}/api/v1", crate::LOKI_PREFIX),
+            prometheus: format!("{}/api/v1", crate::PROMETHEUS_PREFIX),
+            pyroscope: crate::PYROSCOPE_PREFIX.to_string(),
+        },
+    };
+
+    let mcp = public.mcp_url.map(|url| ConnectionMcp {
+        url,
+        transport: "streamable-http".to_string(),
+    });
+
+    let otel_env = ConnectionOtelEnv {
+        otel_exporter_otlp_endpoint: grpc_url_str,
+        otel_exporter_otlp_protocol: "grpc".to_string(),
+        otel_exporter_otlp_headers: format!(
+            "authorization={},x-tenant-id={},x-dataset-id={}",
+            headers.authorization, headers.x_tenant_id, headers.x_dataset_id
+        ),
+    };
+
+    let notes = public.notes.clone();
+
+    Json(ConnectionInfoResponse {
+        tenant_id: ctx.tenant_id.clone(),
+        dataset_id: ctx.dataset_id.clone(),
+        public_endpoints_configured: public.configured,
+        headers,
+        ingest,
+        query,
+        mcp,
+        required_scopes: ConnectionScopes {
+            ingest: INGEST_SCOPES.iter().map(|s| s.to_string()).collect(),
+            query: SIGNAL_READ_SCOPES.iter().map(|s| s.to_string()).collect(),
+        },
+        otel_env,
+        notes,
+    })
+    .into_response()
 }
 
 #[cfg(test)]
@@ -542,7 +1292,9 @@ mod tests {
     use axum::body::Body;
     use axum::http::{Request, StatusCode, header};
     use common::catalog::{Catalog, MembershipRole};
-    use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
+    use common::config::{
+        ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, OidcConfig, TenantConfig,
+    };
     use serde_json::Value;
     use tower::ServiceExt;
 
@@ -595,7 +1347,12 @@ mod tests {
         catalog.sync_config_tenants(&config.auth).await.unwrap();
         let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
         let user = catalog
-            .create_user("alice@example.com", Some("Alice"), &password_hash, true)
+            .create_user(
+                "alice@example.com",
+                Some("Alice"),
+                Some(&password_hash),
+                true,
+            )
             .await
             .unwrap();
         catalog
@@ -604,7 +1361,12 @@ mod tests {
             .unwrap();
         let viewer_hash = common::auth::hash_password("viewer password").unwrap();
         let viewer = catalog
-            .create_user("viewer@example.com", Some("Viewer"), &viewer_hash, false)
+            .create_user(
+                "viewer@example.com",
+                Some("Viewer"),
+                Some(&viewer_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog
@@ -613,7 +1375,12 @@ mod tests {
             .unwrap();
         let member_hash = common::auth::hash_password("member password").unwrap();
         let member = catalog
-            .create_user("member@example.com", Some("Member"), &member_hash, false)
+            .create_user(
+                "member@example.com",
+                Some("Member"),
+                Some(&member_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog
@@ -622,7 +1389,18 @@ mod tests {
             .unwrap();
         let orphan_hash = common::auth::hash_password("orphan password").unwrap();
         catalog
-            .create_user("orphan@example.com", Some("Orphan"), &orphan_hash, false)
+            .create_user(
+                "orphan@example.com",
+                Some("Orphan"),
+                Some(&orphan_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        // SSO-only user (change: oidc-login): no password hash to verify
+        // against, exercising the null-password short-circuit.
+        catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
             .await
             .unwrap();
         create_router(RouterAppState::new(catalog, config))
@@ -685,7 +1463,7 @@ mod tests {
         assert!(set_cookie.starts_with("signaldb_session="));
         assert!(set_cookie.contains("HttpOnly"));
         assert!(set_cookie.contains("Secure"));
-        assert!(set_cookie.contains("SameSite=Strict"));
+        assert!(set_cookie.contains("SameSite=Lax"));
         assert!(set_cookie.contains("Path=/"));
         let value = cookie_pair(&res);
         let value = value.strip_prefix("signaldb_session=").unwrap();
@@ -710,6 +1488,31 @@ mod tests {
         assert!(res.headers().get(header::SET_COOKIE).is_none());
         let body = json_body(res).await;
         assert_eq!(body["error"], "Invalid email or password");
+        assert_body_documented(&body, "SessionErrorBody");
+    }
+
+    /// A body the JSON extractor rejects still answers with the documented
+    /// `{"error"}` envelope, not axum's plain-text rejection.
+    #[tokio::test]
+    async fn create_session_with_malformed_body_is_400_with_error_envelope() {
+        let app = test_app().await;
+        for (content_type, body) in [
+            ("application/json", "not json"),
+            ("application/json", r#"{"email": "alice@example.com"}"#),
+            ("text/plain", r#"{"email": "a@b.test", "password": "x"}"#),
+        ] {
+            let request = Request::builder()
+                .method("POST")
+                .uri("/ui/session")
+                .header("content-type", content_type)
+                .body(Body::from(body))
+                .unwrap();
+            let res = app.clone().oneshot(request).await.unwrap();
+            assert_eq!(res.status(), StatusCode::BAD_REQUEST, "{body}");
+            let body = json_body(res).await;
+            assert!(body["error"].as_str().is_some_and(|e| !e.is_empty()));
+            assert_body_documented(&body, "SessionErrorBody");
+        }
     }
 
     #[tokio::test]
@@ -790,6 +1593,206 @@ mod tests {
         assert_eq!(body["user"]["is_instance_admin"], true);
         assert_eq!(body["memberships"][0]["tenant_id"], "acme");
         assert_eq!(body["memberships"][0]["role"], "admin");
+        assert_body_documented(&body, "WhoamiIdentityResponse");
+    }
+
+    /// The response matches the published schema both ways, here and in
+    /// every nested object: each serialized key is a documented property,
+    /// each `required` property is present, and `null` appears only where
+    /// the schema admits it.
+    fn assert_body_documented(body: &Value, schema: &str) {
+        static SPEC: std::sync::OnceLock<Value> = std::sync::OnceLock::new();
+        let spec = SPEC.get_or_init(|| {
+            serde_json::from_str(&crate::openapi::openapi_document().to_pretty_json().unwrap())
+                .unwrap()
+        });
+        let schemas = &spec["components"]["schemas"];
+        // Follows a `$ref`, or the `$ref` branch of a nullable `oneOf`.
+        fn resolve<'a>(schema: &'a Value, schemas: &'a Value) -> &'a Value {
+            let reference = schema.get("$ref").or_else(|| {
+                schema
+                    .get("oneOf")?
+                    .as_array()?
+                    .iter()
+                    .find_map(|v| v.get("$ref"))
+            });
+            match reference.and_then(Value::as_str) {
+                Some(r) => &schemas[r.rsplit('/').next().unwrap()],
+                None => schema,
+            }
+        }
+        fn admits_null(schema: &Value) -> bool {
+            let is_null = |t: &Value| t.as_str() == Some("null");
+            match &schema["type"] {
+                Value::Array(types) => types.iter().any(is_null),
+                t => {
+                    is_null(t)
+                        || schema["oneOf"]
+                            .as_array()
+                            .is_some_and(|variants| variants.iter().any(admits_null))
+                }
+            }
+        }
+        fn check(value: &Value, schema: &Value, schemas: &Value, at: &str) {
+            if value.is_null() {
+                assert!(admits_null(schema), "{at} is null but not nullable");
+                return;
+            }
+            let schema = resolve(schema, schemas);
+            match value {
+                Value::Object(map) => {
+                    for required in schema["required"].as_array().into_iter().flatten() {
+                        let key = required.as_str().unwrap();
+                        assert!(map.contains_key(key), "{at}.{key} is required but absent");
+                    }
+                    for (key, field) in map {
+                        let property = schema
+                            .pointer(&format!("/properties/{key}"))
+                            .unwrap_or_else(|| panic!("{at}.{key} is not in the schema"));
+                        check(field, property, schemas, &format!("{at}.{key}"));
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        check(item, &schema["items"], schemas, &format!("{at}[]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        check(body, &schemas[schema], schemas, schema);
+    }
+
+    /// Change: oidc-login, "session views count a tenant once": a user
+    /// holding a local Viewer row and a mapped Admin row in the *same*
+    /// tenant must be treated as a sole membership (at the higher role) by
+    /// both `POST /ui/session` and `GET /api/v1/whoami` — not as two.
+    #[tokio::test]
+    async fn session_views_collapse_local_and_mapped_membership_in_one_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("default", true)],
+                    Some("default"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("dual password").unwrap();
+        let user = catalog
+            .create_user(
+                "dual@example.com",
+                Some("Dual"),
+                Some(&password_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "dual@example.com",
+                "password": "dual password",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = cookie_pair(&login);
+        let login_body = json_body(login).await;
+        let session_memberships = login_body["memberships"].as_array().unwrap();
+        assert_eq!(
+            session_memberships.len(),
+            1,
+            "POST /ui/session must count the tenant once: {session_memberships:?}"
+        );
+        assert_eq!(session_memberships[0]["role"], "admin");
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        let whoami_memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(
+            whoami_memberships.len(),
+            1,
+            "whoami must count the tenant once: {whoami_memberships:?}"
+        );
+        assert_eq!(whoami_memberships[0]["role"], "admin");
+    }
+
+    /// A user with memberships in two distinct tenants must still see two —
+    /// the collapse only folds rows *within* one tenant.
+    #[tokio::test]
+    async fn session_views_keep_two_distinct_tenant_memberships_separate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![
+                    tenant("acme", "acme-key", &[("default", true)], Some("default")),
+                    tenant(
+                        "globex",
+                        "globex-key",
+                        &[("default", true)],
+                        Some("default"),
+                    ),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("multi password").unwrap();
+        let user = catalog
+            .create_user(
+                "multi@example.com",
+                Some("Multi"),
+                Some(&password_hash),
+                false,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "multi@example.com",
+                "password": "multi password"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let login_body = json_body(login).await;
+        assert_eq!(login_body["memberships"].as_array().unwrap().len(), 2);
     }
 
     #[tokio::test]
@@ -849,7 +1852,7 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/datasets")
+            .uri("/api/v1/tenants/acme/datasets")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -860,19 +1863,19 @@ mod tests {
 
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
             .body(Body::from(
-                r#"{"name":"metrics-only","dataset_id":"analytics","scopes":["metrics:write"]}"#,
+                r#"{"name":"metrics-only","dataset_ids":["analytics"],"scopes":["metrics:write"]}"#,
             ))
             .unwrap();
         let response = app.clone().oneshot(request).await.unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
         let body = json_body(response).await;
         assert!(body["key"].as_str().unwrap().starts_with("sdbk_"));
-        assert_eq!(body["dataset_id"], "analytics");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["analytics"]));
         assert_eq!(body["scopes"][0], "metrics:write");
     }
 
@@ -896,7 +1899,7 @@ mod tests {
     ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -915,7 +1918,7 @@ mod tests {
     ) -> (StatusCode, Value) {
         let request = Request::builder()
             .method("PATCH")
-            .uri(format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"))
+            .uri(format!("/api/v1/tenants/acme/api-keys/{key_id}"))
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -953,7 +1956,7 @@ mod tests {
         );
 
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1043,9 +2046,9 @@ mod tests {
 
         // Dataset restriction can be updated too; scopes preserved.
         let (status, body) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"staging"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["staging"]}"#).await;
         assert_eq!(status, StatusCode::OK, "{body}");
-        assert_eq!(body["dataset_id"], "staging");
+        assert_eq!(body["dataset_ids"], serde_json::json!(["staging"]));
         assert_eq!(body["scopes"], serde_json::json!(["metrics:read"]));
 
         // Validation errors.
@@ -1053,7 +2056,7 @@ mod tests {
             manage_patch_key(&app, &cookie, &key_id, r#"{"scopes":["schema:admin"]}"#).await;
         assert_eq!(status, StatusCode::UNPROCESSABLE_ENTITY, "{body}");
         let (status, _) =
-            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_id":"nope"}"#).await;
+            manage_patch_key(&app, &cookie, &key_id, r#"{"dataset_ids":["nope"]}"#).await;
         assert_eq!(status, StatusCode::BAD_REQUEST);
         let (status, _) =
             manage_patch_key(&app, &cookie, "missing", r#"{"scopes":["schema:read"]}"#).await;
@@ -1062,7 +2065,7 @@ mod tests {
         // Revoked keys are immutable.
         let request = Request::builder()
             .method("DELETE")
-            .uri(format!("/api/v1/manage/tenants/acme/api-keys/{key_id}"))
+            .uri(format!("/api/v1/tenants/acme/api-keys/{key_id}"))
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1119,7 +2122,7 @@ mod tests {
         let cookie = cookie_pair(&login);
         let request = Request::builder()
             .method("POST")
-            .uri("/api/v1/manage/tenants")
+            .uri("/api/v1/tenants")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .header("content-type", "application/json")
@@ -1157,7 +2160,7 @@ mod tests {
         .await;
         let cookie = cookie_pair(&login);
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/globex/api-keys")
+            .uri("/api/v1/tenants/globex/api-keys")
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1180,7 +2183,7 @@ mod tests {
         .await;
         let cookie = cookie_pair(&login);
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, &cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1202,7 +2205,7 @@ mod tests {
     async fn ingestion_api_key_cannot_use_human_management_endpoints() {
         let app = test_app().await;
         let request = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header("authorization", "Bearer acme-key")
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1236,7 +2239,7 @@ mod tests {
         );
 
         let management = Request::builder()
-            .uri("/api/v1/manage/tenants/acme/api-keys")
+            .uri("/api/v1/tenants/acme/api-keys")
             .header(header::COOKIE, cookie)
             .header("x-tenant-id", "acme")
             .body(Body::empty())
@@ -1303,6 +2306,325 @@ mod tests {
         assert_eq!(datasets[1]["is_default"], false);
         // No cross-tenant data leaks into the response.
         assert!(!body.to_string().contains("globex"));
+        assert!(body.get("dataset_ids").is_none());
+        assert_eq!(body["user_id"], "");
+        assert_body_documented(&body, "WhoamiIdentityResponse");
+    }
+
+    /// Task 3.9: a single-tenant credential's `whoami` response is
+    /// unchanged except for a new one-element `granted_tenants` array
+    /// (design: mcp-multi-tenant-oauth-grants D5).
+    #[tokio::test]
+    async fn whoami_single_tenant_credential_includes_one_element_granted_tenants() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(
+            body["granted_tenants"],
+            serde_json::json!([{"tenant_id": "acme"}])
+        );
+    }
+
+    /// Task 3.10: a multi-tenant OAuth credential with no `X-Tenant-ID` is
+    /// rejected exactly like any other tenant-scoped route — enforced by
+    /// the generic auth middleware before `whoami`'s own handler body ever
+    /// runs, so `whoami` needs no special-casing of its own here.
+    #[tokio::test]
+    async fn whoami_multi_tenant_oauth_credential_with_no_selector_is_rejected() {
+        let (app, token) = multi_tenant_oauth_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(request).await.unwrap();
+        assert_ne!(res.status(), StatusCode::OK);
+    }
+
+    /// Task 3.10: a multi-tenant OAuth credential with a valid selector
+    /// returns that tenant in both `tenant` and as one entry of
+    /// `granted_tenants`, with every other granted tenant also listed.
+    #[tokio::test]
+    async fn whoami_multi_tenant_oauth_credential_with_selector_lists_every_granted_tenant() {
+        let (app, token) = multi_tenant_oauth_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {token}"))
+            .header("x-tenant-id", "globex")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"]["id"], "globex");
+        let granted = body["granted_tenants"].as_array().unwrap();
+        assert_eq!(granted.len(), 2, "{granted:?}");
+        assert!(
+            granted
+                .iter()
+                .any(|g| g["tenant_id"] == "acme" && g["dataset_ids"].is_null()),
+            "{granted:?}"
+        );
+        assert!(
+            granted
+                .iter()
+                .any(|g| g["tenant_id"] == "globex" && g["dataset_ids"].is_null()),
+            "{granted:?}"
+        );
+    }
+
+    /// A user member of two database tenants (`acme`, `globex`) with one
+    /// OAuth access token whose grant set covers both.
+    async fn multi_tenant_oauth_app() -> (axum::Router, String) {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let token =
+            common::auth::oauth::generate_oauth_token(common::auth::oauth::TokenKind::Access);
+        catalog
+            .create_access_token(
+                &common::auth::oauth::hash_oauth_token(&token),
+                "client-1",
+                &user.id,
+                &[
+                    common::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: None,
+                    },
+                    common::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                &["traces:read".to_string()],
+                None,
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, Configuration::default()));
+        (app, token)
+    }
+
+    #[tokio::test]
+    async fn whoami_omits_dataset_ids_for_an_unrestricted_credential() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        let body = json_body(res).await;
+        assert!(
+            body.get("dataset_ids").is_none() || body["dataset_ids"].is_null(),
+            "unrestricted credential must not report a dataset_ids restriction: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn whoami_reports_the_credentials_dataset_restriction() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("restricted-key"),
+                Some("restricted"),
+                Some(&["production".to_string()]),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer restricted-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+        assert_body_documented(&body, "WhoamiIdentityResponse");
+    }
+
+    /// D10: a config-defined tenant can still be reached through a
+    /// database-backed, dataset-restricted API key (created via the
+    /// management API rather than the TOML `api_keys` list) — `whoami`'s
+    /// config-tenant branch must filter `datasets`/`default_dataset` for it
+    /// exactly as the database-tenant branch does, even though the tenant
+    /// itself is config-defined.
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_config_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true), ("staging", false)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        // Restricted to "staging" only — excludes the tenant's own default
+        // dataset ("production"), the edge case D4's resolution order
+        // requires callers to handle explicitly.
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &common::auth::Authenticator::hash_api_key("staging-only-key"),
+                Some("staging-only"),
+                Some(&["staging".to_string()]),
+                None,
+                None,
+                None,
+            )
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", "Bearer staging-only-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        // A single-element restriction resolves to that element (D4 case 3),
+        // so the credential's effective default is "staging", never the
+        // tenant's actual default ("production"), which falls outside it.
+        assert_eq!(body["default_dataset"], "staging");
+    }
+
+    /// Same as above, for the database-backed-tenant branch (a tenant not
+    /// declared in TOML config at all).
+    #[tokio::test]
+    async fn whoami_filters_datasets_and_default_for_a_restricted_key_on_a_db_tenant() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "acme")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"id":"newco","name":"New Co","default_dataset":"production"}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants/newco/datasets")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"staging"}"#))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants/newco/api-keys")
+            .header(header::COOKIE, &cookie)
+            .header("x-tenant-id", "newco")
+            .header("content-type", "application/json")
+            .body(Body::from(
+                r#"{"name":"staging-only","dataset_ids":["staging"],"scopes":["metrics:write"]}"#,
+            ))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let created = json_body(response).await;
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .uri("/api/v1/whoami")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("x-tenant-id", "newco")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        let dataset_ids: Vec<&str> = body["datasets"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|d| d["id"].as_str().unwrap())
+            .collect();
+        assert_eq!(
+            dataset_ids,
+            vec!["staging"],
+            "restricted credential must not see an unlisted dataset's name: {body}"
+        );
+        assert_eq!(body["default_dataset"], "staging");
     }
 
     #[tokio::test]
@@ -1314,6 +2636,21 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(request).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// Logout without a session cookie is a no-op that still clears the
+    /// cookie and answers 204.
+    #[tokio::test]
+    async fn logout_without_cookie_is_204() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .method("DELETE")
+            .uri("/ui/session")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::NO_CONTENT);
+        assert!(res.headers().get(header::SET_COOKIE).is_some());
     }
 
     #[tokio::test]
@@ -1346,7 +2683,23 @@ mod tests {
             .unwrap();
         assert!(set_cookie.starts_with("signaldb_session=;"));
         assert!(set_cookie.contains("Max-Age=0"));
-        assert!(set_cookie.contains("HttpOnly"));
+        // Same attributes as the login cookie, so the browser replaces it.
+        assert_eq!(
+            set_cookie.split_once(';').unwrap().1,
+            common::auth::session_cookie_header("x")
+                .split_once(';')
+                .unwrap()
+                .1
+                .replace("Max-Age=43200", "Max-Age=0")
+        );
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, &cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
 
         let request = Request::builder()
             .uri("/tempo/api/echo")
@@ -1413,6 +2766,7 @@ mod tests {
                 .iter()
                 .all(|m| m["role"] == "admin" && m["name"].as_str().is_some())
         );
+        assert_body_documented(&body, "CreateSessionResponse");
     }
 
     #[tokio::test]
@@ -1458,6 +2812,275 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn connection_info_defaults_to_localhost_with_a_note() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["tenant_id"], "acme");
+        assert_eq!(body["dataset_id"], "production");
+        assert_eq!(body["public_endpoints_configured"], false);
+        assert_eq!(body["headers"]["authorization"], "Bearer <api-key>");
+        assert_eq!(body["headers"]["x-tenant-id"], "acme");
+        assert_eq!(body["headers"]["x-dataset-id"], "production");
+
+        assert_eq!(body["ingest"]["otlp_grpc"]["url"], "http://localhost:4317");
+        assert_eq!(body["ingest"]["otlp_grpc"]["authority"], "localhost:4317");
+        assert_eq!(body["ingest"]["otlp_grpc"]["tls"], false);
+        assert_eq!(body["ingest"]["otlp_grpc"]["protocol"], "grpc");
+        assert_eq!(
+            body["ingest"]["otlp_grpc"]["signals"],
+            serde_json::json!(["traces", "logs", "metrics", "profiles"])
+        );
+        assert_eq!(body["ingest"]["otlp_http"]["url"], "http://localhost:4318");
+        assert_eq!(body["ingest"]["otlp_http"]["tls"], false);
+        assert_eq!(body["ingest"]["otlp_http"]["protocol"], "http/protobuf");
+        assert_eq!(body["ingest"]["otlp_http"]["paths"]["traces"], "/v1/traces");
+        assert_eq!(body["ingest"]["otlp_http"]["paths"]["logs"], "/v1/logs");
+        assert_eq!(
+            body["ingest"]["otlp_http"]["paths"]["metrics"],
+            "/v1/metrics"
+        );
+        assert_eq!(
+            body["ingest"]["otlp_http"]["paths"]["profiles"],
+            "/v1development/profiles"
+        );
+        assert_eq!(
+            body["ingest"]["prometheus_remote_write"],
+            "http://localhost:4318/api/v1/write"
+        );
+
+        assert_eq!(body["query"]["api_url"], "http://localhost:3000");
+        assert_eq!(body["query"]["query_ir"], "/api/v1/query");
+        assert_eq!(body["query"]["openapi"], "/api/v1/openapi.json");
+        assert_eq!(body["query"]["compat"]["tempo"], "/tempo/api");
+        assert_eq!(body["query"]["compat"]["loki"], "/loki/api/v1");
+        assert_eq!(body["query"]["compat"]["prometheus"], "/prometheus/api/v1");
+        assert_eq!(body["query"]["compat"]["pyroscope"], "/pyroscope");
+
+        assert!(body.get("mcp").is_none());
+
+        assert_eq!(
+            body["required_scopes"]["ingest"],
+            serde_json::json!([
+                "metrics:write",
+                "logs:write",
+                "traces:write",
+                "profiles:write"
+            ])
+        );
+        assert_eq!(
+            body["required_scopes"]["query"],
+            serde_json::json!(["traces:read", "logs:read", "metrics:read", "profiles:read"])
+        );
+
+        assert_eq!(
+            body["otel_env"]["OTEL_EXPORTER_OTLP_ENDPOINT"],
+            "http://localhost:4317"
+        );
+        assert_eq!(body["otel_env"]["OTEL_EXPORTER_OTLP_PROTOCOL"], "grpc");
+        assert_eq!(
+            body["otel_env"]["OTEL_EXPORTER_OTLP_HEADERS"],
+            "authorization=Bearer <api-key>,x-tenant-id=acme,x-dataset-id=production"
+        );
+
+        let notes = body["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 3);
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_grpc_url is not set")
+        );
+        assert!(
+            notes[1]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_http_url is not set")
+        );
+        assert!(
+            notes[2]
+                .as_str()
+                .unwrap()
+                .contains("public.api_url is not set")
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_partial_config_is_not_configured_and_notes_unset_otlp_fields() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                api_url: Some("https://signaldb.example.com".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["public_endpoints_configured"], false);
+        assert_eq!(body["query"]["api_url"], "https://signaldb.example.com");
+        let notes = body["notes"].as_array().unwrap();
+        assert_eq!(notes.len(), 2);
+        assert!(
+            notes[0]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_grpc_url is not set")
+        );
+        assert!(
+            notes[1]
+                .as_str()
+                .unwrap()
+                .contains("public.otlp_http_url is not set")
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_uses_configured_public_endpoints() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                otlp_grpc_url: Some("https://otlp.example.com:4317".to_string()),
+                otlp_http_url: Some("https://ingress.example.com/otlp/".to_string()),
+                api_url: Some("https://signaldb.example.com".to_string()),
+                mcp_url: Some("https://signaldb.example.com/mcp".to_string()),
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+
+        assert_eq!(body["public_endpoints_configured"], true);
+        assert_eq!(
+            body["ingest"]["otlp_grpc"]["url"],
+            "https://otlp.example.com:4317"
+        );
+        assert_eq!(
+            body["ingest"]["otlp_grpc"]["authority"],
+            "otlp.example.com:4317"
+        );
+        assert_eq!(body["ingest"]["otlp_grpc"]["tls"], true);
+        assert_eq!(body["ingest"]["otlp_http"]["tls"], true);
+        // A path-prefixed ingress keeps its prefix, minus the trailing slash.
+        assert_eq!(
+            body["ingest"]["otlp_http"]["url"],
+            "https://ingress.example.com/otlp"
+        );
+        assert_eq!(
+            body["ingest"]["prometheus_remote_write"],
+            "https://ingress.example.com/otlp/api/v1/write"
+        );
+        assert_eq!(body["query"]["api_url"], "https://signaldb.example.com");
+        assert_eq!(body["mcp"]["url"], "https://signaldb.example.com/mcp");
+        assert_eq!(body["mcp"]["transport"], "streamable-http");
+        assert_eq!(body["notes"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn connection_info_rejects_malformed_public_url_with_500() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("default", true)], None)],
+                ..Default::default()
+            },
+            public: common::config::PublicEndpointsConfig {
+                otlp_grpc_url: Some("not a url".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = crate::create_router(RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let body = json_body(response).await;
+        assert!(
+            body["error"].as_str().unwrap().contains("otlp_grpc_url"),
+            "{body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn connection_info_allows_ingest_only_scoped_key() {
+        let app = test_app().await;
+        let cookie = admin_cookie(&app).await;
+        let (status, created) = manage_create_key(
+            &app,
+            &cookie,
+            r#"{"name":"ingest-only","scopes":["traces:write","logs:write","metrics:write","profiles:write"]}"#,
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED, "{created}");
+        let secret = created["key"].as_str().unwrap().to_string();
+
+        let request = Request::builder()
+            .uri("/api/v1/connection")
+            .header("authorization", format!("Bearer {secret}"))
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = json_body(response).await;
+        assert_eq!(body["tenant_id"], "acme");
+    }
+
+    #[tokio::test]
     async fn explicit_tenant_login_still_works_and_lists_memberships() {
         let app = test_app().await;
         let res = create_session(
@@ -1477,5 +3100,728 @@ mod tests {
         let memberships = body["memberships"].as_array().unwrap();
         assert_eq!(memberships.len(), 1);
         assert_eq!(memberships[0]["role"], "viewer");
+        assert_body_documented(&body, "CreateSessionResponse");
+    }
+
+    /// An SSO-only user (`password_hash = NULL`, change: oidc-login) must
+    /// never reach `verify_password`: the generic 401 fires on the
+    /// null-password short-circuit alone, with no session cookie set and no
+    /// session row persisted (task 3.4). The handler returns from the
+    /// `let Some(password_hash) = ... else { ... }` guard before
+    /// `verify_password` or `create_user_session` are ever called, so the
+    /// zero-sessions assertion below is the closest structural proxy
+    /// available for "the verifier was never invoked" without a mock seam
+    /// on `common::auth::verify_password`.
+    #[tokio::test]
+    async fn null_password_user_gets_generic_401_and_no_cookie() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let sso_user = catalog
+            .create_user("sso@example.com", Some("SSO User"), None, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&sso_user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
+
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "sso@example.com",
+                "password": "any password at all",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        assert_eq!(body["error"], "Invalid email or password");
+        assert_eq!(
+            catalog.count_sessions_for_user(&sso_user.id).await.unwrap(),
+            0,
+            "a refused null-password login must not persist a session row"
+        );
+    }
+
+    fn oidc_with_password_disabled() -> OidcConfig {
+        OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "test-client".to_string(),
+            client_secret: "test-secret".to_string(),
+            disable_password_login: true,
+            ..OidcConfig::default()
+        }
+    }
+
+    /// Task 3.6: with `[auth.oidc].disable_password_login`, every password
+    /// login is refused with a reason distinct from "invalid email or
+    /// password" (a config switch, not a credentials failure), and no
+    /// session row is created even for otherwise-correct credentials.
+    #[tokio::test]
+    async fn password_login_refused_for_every_user_when_disabled_via_oidc_config() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let password_hash = common::auth::hash_password("correct horse battery staple").unwrap();
+        let user = catalog
+            .create_user(
+                "alice@example.com",
+                Some("Alice"),
+                Some(&password_hash),
+                true,
+            )
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+        let app = create_router(RouterAppState::new(catalog.clone(), config));
+
+        let res = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple",
+                "tenant": "acme"
+            }),
+        )
+        .await;
+
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        let message = body["error"].as_str().unwrap();
+        assert!(
+            message
+                .to_lowercase()
+                .contains("password login is disabled"),
+            "expected a named reason distinct from the generic credentials failure, got {message:?}"
+        );
+        assert_ne!(message, "Invalid email or password");
+        assert_eq!(
+            catalog.count_sessions_for_user(&user.id).await.unwrap(),
+            0,
+            "no session should be created while password login is disabled"
+        );
+    }
+
+    /// Companion to the above (task 3.6): disabling password login must not
+    /// touch API-key auth or the `admin_api_key` break-glass path — an IdP
+    /// outage combined with the switch must never lock out operators.
+    #[tokio::test]
+    async fn disabling_password_login_does_not_affect_api_keys_or_admin_api_key() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("production", true)], None)],
+                oidc: Some(oidc_with_password_disabled()),
+                admin_api_key: Some("admin-secret".to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        // Tenant-scoped API key still authenticates ordinary query routes.
+        let request = Request::builder()
+            .uri("/tempo/api/echo")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+
+        // The admin_api_key break-glass path still authenticates the
+        // operational-control (compaction) surface — the admin API itself
+        // was removed (issue #1561). No compactor is registered in this
+        // test, so a successful auth check surfaces as 503 (no compactor
+        // reachable), not 401/403.
+        let request = Request::builder()
+            .uri("/api/v1/ops/compact/status")
+            .header("authorization", "Bearer admin-secret")
+            .body(Body::empty())
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn login_config_reports_password_only() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/ui/session/config")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["password_enabled"], true);
+        assert!(body.get("oidc").is_some(), "oidc key must be present");
+        assert_eq!(body["oidc"], Value::Null);
+        assert!(body.get("demo").is_some(), "demo key must be present");
+        assert_eq!(body["demo"], Value::Null, "demo is null when disabled");
+    }
+
+    /// Builds `test_app`'s tenants/users plus a provisioned `[demo]` account
+    /// (change: demo-mode), for the demo-specific tests below.
+    async fn test_app_with_demo() -> axum::Router {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant("acme", "acme-key", &[("main", true)], Some("main"))],
+                ..Default::default()
+            },
+            demo: common::config::DemoConfig {
+                enabled: true,
+                tenant_id: "acme".to_string(),
+                dataset_id: None,
+                username: "demo".to_string(),
+                password: "demo".to_string(),
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        common::bootstrap::provision_demo_user(&catalog, &config)
+            .await
+            .unwrap();
+        create_router(RouterAppState::new(catalog, config))
+    }
+
+    #[tokio::test]
+    async fn login_config_reports_demo_credentials_when_enabled() {
+        let app = test_app_with_demo().await;
+        let request = Request::builder()
+            .uri("/ui/session/config")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        let body = json_body(res).await;
+        assert_eq!(body["demo"]["username"], "demo");
+        assert_eq!(body["demo"]["password"], "demo");
+    }
+
+    #[tokio::test]
+    async fn demo_credentials_log_in() {
+        let app = test_app_with_demo().await;
+        let res = create_session(
+            &app,
+            serde_json::json!({"email": "demo", "password": "demo"}),
+        )
+        .await;
+        assert_eq!(res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn demo_session_cannot_create_api_key() {
+        let app = test_app_with_demo().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({"email": "demo", "password": "demo"}),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/tenants/acme/api-keys")
+            .header(header::COOKIE, cookie)
+            .header("content-type", "application/json")
+            .header("x-tenant-id", "acme")
+            .body(Body::from(
+                serde_json::json!({"name": "sneaky"}).to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::FORBIDDEN);
+        let body = json_body(res).await;
+        assert_eq!(body["error"], "The demo account is read-only");
+    }
+
+    #[tokio::test]
+    async fn demo_session_can_query() {
+        let app = test_app_with_demo().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({"email": "demo", "password": "demo"}),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .method("POST")
+            .uri("/api/v1/query")
+            .header(header::COOKIE, cookie)
+            .header("content-type", "application/json")
+            .header("x-tenant-id", "acme")
+            .body(Body::from(
+                serde_json::json!({
+                    "signal": "traces",
+                    "stages": [],
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        // The demo guard must not be the thing that rejects this — a 403
+        // with the guard's own message would mean the allowlist missed it.
+        // Whatever the query engine itself returns (400/422 on a schema it
+        // doesn't recognize, 200 on an empty result) is fine.
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
+    async fn current_session_without_cookie_is_401() {
+        let app = test_app().await;
+        let request = Request::builder()
+            .uri("/ui/session")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+
+        // An API key plus X-Tenant-ID does not substitute for the cookie.
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header("authorization", "Bearer acme-key")
+            .header("x-tenant-id", "acme")
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn current_session_auto_selects_sole_membership() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "viewer@example.com",
+                "password": "viewer password"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        // A freshly logged-in session (12h TTL) is nowhere near the renewal
+        // threshold, so no cookie is reissued here.
+        assert!(res.headers().get(header::SET_COOKIE).is_none());
+        let body = json_body(res).await;
+        assert_eq!(body["user"]["email"], "viewer@example.com");
+        assert_eq!(body["user"]["is_instance_admin"], false);
+        assert_eq!(body["tenant"], "acme");
+        assert_eq!(body["dataset"], "production");
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 1);
+        assert_eq!(memberships[0]["role"], "viewer");
+    }
+
+    /// Mirrors `session_cookie_authenticates_query_route`, but for
+    /// `GET /ui/session`: a session within the renewal threshold gets its
+    /// cookie reissued with the same token (change: session-renewal).
+    #[tokio::test]
+    async fn current_session_reissues_cookie_when_session_is_renewed() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![tenant(
+                    "acme",
+                    "acme-key",
+                    &[("production", true)],
+                    Some("production"),
+                )],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let hash = common::auth::hash_password("renew password").unwrap();
+        let user = catalog
+            .create_user("renew@example.com", Some("Renew"), Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(
+                header::COOKIE,
+                format!("{}={token}", common::auth::SESSION_COOKIE),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let set_cookie = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("renewed session reissues its cookie")
+            .to_str()
+            .unwrap();
+        assert!(
+            set_cookie.starts_with(&format!("{}={token}", common::auth::SESSION_COOKIE)),
+            "{set_cookie}"
+        );
+    }
+
+    /// A user with several memberships (no tenant auto-selected) still
+    /// renews a near-expiry session on `GET /ui/session` — the fix for a bug
+    /// where the `None` branch (no tenant to resolve) skipped
+    /// `authenticate_session` entirely and so never renewed, silently
+    /// logging out a multi-tenant user or instance admin who lingers on the
+    /// tenant-selection page (change: session-renewal).
+    #[tokio::test]
+    async fn current_session_renews_even_when_no_tenant_is_auto_selected() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![
+                    tenant(
+                        "acme",
+                        "acme-key",
+                        &[("production", true)],
+                        Some("production"),
+                    ),
+                    tenant("globex", "globex-key", &[("main", true)], Some("main")),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let hash = common::auth::hash_password("multi renew password").unwrap();
+        let user = catalog
+            .create_user("multi-renew@example.com", None, Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let app = create_router(RouterAppState::new(catalog, config));
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(
+                header::COOKIE,
+                format!("{}={token}", common::auth::SESSION_COOKIE),
+            )
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let set_cookie = res
+            .headers()
+            .get(header::SET_COOKIE)
+            .expect("a near-expiry session renews even with no tenant auto-selected")
+            .to_str()
+            .unwrap()
+            .to_string();
+        assert!(
+            set_cookie.starts_with(&format!("{}={token}", common::auth::SESSION_COOKIE)),
+            "{set_cookie}"
+        );
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+    }
+
+    #[tokio::test]
+    async fn current_session_with_several_memberships_defers_choice() {
+        // A non-admin user with two explicit memberships, distinct from the
+        // instance-admin case below (which lists every tenant regardless of
+        // explicit membership).
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = Configuration {
+            auth: AuthConfig {
+                tenants: vec![
+                    tenant(
+                        "acme",
+                        "acme-key",
+                        &[("production", true)],
+                        Some("production"),
+                    ),
+                    tenant("globex", "globex-key", &[("main", true)], Some("main")),
+                ],
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        catalog.sync_config_tenants(&config.auth).await.unwrap();
+        let hash = common::auth::hash_password("multi password").unwrap();
+        let user = catalog
+            .create_user("multi@example.com", None, Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(catalog, config));
+
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "multi@example.com",
+                "password": "multi password"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        let memberships = body["memberships"].as_array().unwrap();
+        assert_eq!(memberships.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn current_session_for_instance_admin_lists_every_tenant() {
+        let app = test_app().await;
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "alice@example.com",
+                "password": "correct horse battery staple"
+            }),
+        )
+        .await;
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        let memberships = body["memberships"].as_array().unwrap();
+        let ids: Vec<&str> = memberships
+            .iter()
+            .map(|m| m["tenant_id"].as_str().unwrap())
+            .collect();
+        assert!(ids.contains(&"acme"));
+        assert!(ids.contains(&"globex"));
+        assert_eq!(memberships.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn current_session_with_no_memberships_is_200_and_empty() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let config = common::config::Configuration::default();
+        let orphan_hash = common::auth::hash_password("orphan password").unwrap();
+        let user = catalog
+            .create_user("orphan@example.com", None, Some(&orphan_hash), false)
+            .await
+            .unwrap();
+        // `POST /ui/session` refuses an orphan user with 403, so seed the
+        // session directly through the catalog (mirrors `oauth.rs`'s
+        // `seed_user_session`).
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(catalog, config));
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, format!("signaldb_session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = json_body(res).await;
+        assert_eq!(body["tenant"], Value::Null);
+        assert_eq!(body["dataset"], Value::Null);
+        assert_eq!(body["memberships"].as_array().unwrap().len(), 0);
+    }
+
+    #[tokio::test]
+    async fn current_session_fails_like_login_when_tenant_resolution_errors() {
+        // A database-defined tenant with no default dataset: `POST
+        // /ui/session` can still succeed by naming the dataset explicitly,
+        // but `GET /ui/session`'s auto-select has no way to supply one, so
+        // the shared resolution call fails exactly like a dataset-less
+        // `POST` would — and current_session must surface that failure
+        // rather than silently reporting `tenant: null`.
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_tenant("acme", "Acme", None, "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+        let hash = common::auth::hash_password("resolve password").unwrap();
+        let user = catalog
+            .create_user("resolve@example.com", None, Some(&hash), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(
+            catalog,
+            common::config::Configuration::default(),
+        ));
+
+        let login = create_session(
+            &app,
+            serde_json::json!({
+                "email": "resolve@example.com",
+                "password": "resolve password",
+                "tenant": "acme",
+                "dataset": "staging"
+            }),
+        )
+        .await;
+        assert_eq!(login.status(), StatusCode::OK);
+        let cookie = cookie_pair(&login);
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, cookie)
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn current_session_for_disabled_user_is_401() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let hash = common::auth::hash_password("locked password").unwrap();
+        let user = catalog
+            .create_user("locked@example.com", None, Some(&hash), false)
+            .await
+            .unwrap();
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() + chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        catalog.set_user_disabled(&user.id, true).await.unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(
+            catalog,
+            common::config::Configuration::default(),
+        ));
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, format!("signaldb_session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn current_session_for_expired_session_is_401() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let hash = common::auth::hash_password("expired password").unwrap();
+        let user = catalog
+            .create_user("expired@example.com", None, Some(&hash), false)
+            .await
+            .unwrap();
+        let token = common::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &common::auth::hash_session_token(&token),
+                chrono::Utc::now() - chrono::Duration::hours(1),
+            )
+            .await
+            .unwrap();
+        let app = crate::create_router(crate::RouterAppState::new(
+            catalog,
+            common::config::Configuration::default(),
+        ));
+
+        let request = Request::builder()
+            .uri("/ui/session")
+            .header(header::COOKIE, format!("signaldb_session={token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(request).await.unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 }

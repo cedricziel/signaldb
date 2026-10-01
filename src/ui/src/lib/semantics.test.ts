@@ -1,10 +1,14 @@
 import { describe, expect, it } from "vitest";
 import type { AttributeHit, AttributeResolution } from "../api/gen";
 import {
+  deprecationLabel,
+  foldSingletonGroups,
   groupBySemanticTitle,
   humanizeNamespace,
+  plainBrief,
   semanticsFromResolution,
   semanticTitle,
+  type TitledGroup,
 } from "./semantics";
 
 const hit = (over: Partial<AttributeHit> = {}): AttributeHit => ({
@@ -39,8 +43,14 @@ describe("humanizeNamespace", () => {
 describe("semanticTitle", () => {
   it("prefers the group display name", () => {
     expect(
+      semanticTitle(hit({ group_display_name: "Acme Service" })),
+    ).toBe("Acme Service");
+  });
+
+  it("strips a trailing ' Attributes' suffix", () => {
+    expect(
       semanticTitle(hit({ group_display_name: "Kubernetes Attributes" })),
-    ).toBe("Kubernetes Attributes");
+    ).toBe("Kubernetes");
   });
 
   it("falls back to the humanized namespace prefix", () => {
@@ -66,6 +76,20 @@ describe("semanticsFromResolution", () => {
     expect(sem?.alternatives.map((h) => h.namespace)).toEqual(["otel"]);
   });
 
+  it("excludes the primary from alternatives even when the server sent a distinct clone of it", () => {
+    // Mirrors the server: `primary: hits.first().cloned()` clones the first
+    // hit, so after JSON round-tripping `hits[0]` and `primary` are distinct
+    // objects with equal fields, not the same reference.
+    const primary = hit();
+    const clonedIntoHits = { ...hit() };
+    const sem = semanticsFromResolution({
+      key: "k8s.pod.uid",
+      hits: [clonedIntoHits],
+      primary,
+    });
+    expect(sem?.alternatives).toEqual([]);
+  });
+
   it("flags deprecation from any hit, preferring the primary's rename", () => {
     const primary = hit({ brief: "ours", namespace: "acme" });
     const dep = hit({
@@ -77,6 +101,75 @@ describe("semanticsFromResolution", () => {
       primary,
     });
     expect(sem?.deprecated?.renamed_to).toBe("k8s.pod.id");
+  });
+
+  it("plain-texts the primary's brief", () => {
+    const primary = hit({ brief: "Deprecated, use `db.system.name` instead." });
+    const sem = semanticsFromResolution({
+      key: "k8s.pod.uid",
+      hits: [primary],
+      primary,
+    });
+    expect(sem?.brief).toBe("Deprecated, use db.system.name instead.");
+  });
+
+  it("plain-texts the deprecation note", () => {
+    const primary = hit({
+      deprecated: {
+        renamed_to: "k8s.pod.id",
+        note: "See [the RFC](https://example.com) for details.",
+      },
+    });
+    const sem = semanticsFromResolution({
+      key: "k8s.pod.uid",
+      hits: [primary],
+      primary,
+    });
+    expect(sem?.deprecated?.note).toBe("See the RFC for details.");
+  });
+});
+
+describe("deprecationLabel", () => {
+  it("returns null when not deprecated", () => {
+    expect(deprecationLabel(null)).toBeNull();
+    expect(deprecationLabel(undefined)).toBeNull();
+  });
+
+  it("shows the replacement when the registry named one", () => {
+    expect(deprecationLabel({ renamed_to: "k8s.pod.id" })).toBe(
+      "→ k8s.pod.id",
+    );
+  });
+
+  it("falls back to the bare word when there is no replacement", () => {
+    expect(deprecationLabel({ reason: "obsolete" })).toBe("deprecated");
+  });
+});
+
+describe("plainBrief", () => {
+  it("strips a markdown link down to its label", () => {
+    expect(
+      plainBrief(
+        "[HTTP response status code](https://tools.ietf.org/html/rfc7231#section-6).",
+      ),
+    ).toBe("HTTP response status code.");
+  });
+
+  it("removes backticks, including nested runs", () => {
+    expect(plainBrief("Deprecated, use `db.system.name` instead.")).toBe(
+      "Deprecated, use db.system.name instead.",
+    );
+    expect(plainBrief("``nested`` backticks")).toBe("nested backticks");
+  });
+
+  it("collapses whitespace runs and trims", () => {
+    expect(plainBrief("  a   b\n\tc  ")).toBe("a b c");
+  });
+
+  it("returns an empty string for empty or missing input", () => {
+    expect(plainBrief("")).toBe("");
+    expect(plainBrief(null)).toBe("");
+    expect(plainBrief(undefined)).toBe("");
   });
 });
 
@@ -117,5 +210,86 @@ describe("groupBySemanticTitle", () => {
       { title: "Service", entries: [["service.name", "s"]] },
       { title: "Other", entries: [["app.order.id", "1"]] },
     ]);
+  });
+});
+
+describe("foldSingletonGroups", () => {
+  const g = <V>(title: string | null, entries: [string, V][]): TitledGroup<V> => ({
+    title,
+    entries,
+  });
+
+  it("keeps a group with two or more entries as-is", () => {
+    const groups = [
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Other", [["app.order.id", "1"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual(groups);
+  });
+
+  it("folds a singleton titled group into a new trailing Other, sorted by key", () => {
+    const groups = [
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Service", [["service.name", "s"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual([
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Other", [["service.name", "s"]]),
+    ]);
+  });
+
+  it("merges a folded singleton into an existing Other, interleaved alphabetically", () => {
+    const groups = [
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Service", [["service.name", "s"]]),
+      g("Other", [["app.order.id", "1"], ["zzz.custom", "z"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual([
+      g("Kubernetes", [
+        ["k8s.pod.uid", "p"],
+        ["k8s.pod.name", "n"],
+      ]),
+      g("Other", [
+        ["app.order.id", "1"],
+        ["service.name", "s"],
+        ["zzz.custom", "z"],
+      ]),
+    ]);
+  });
+
+  it("flattens to a single unheaded group, sorted by key, when nothing but Other remains after folding", () => {
+    const groups = [
+      g("Kubernetes", [["k8s.pod.uid", "p"]]),
+      g("Service", [["service.name", "s"]]),
+      g("Other", [["app.order.id", "1"]]),
+    ];
+    expect(foldSingletonGroups(groups)).toEqual([
+      g(null, [
+        ["app.order.id", "1"],
+        ["k8s.pod.uid", "p"],
+        ["service.name", "s"],
+      ]),
+    ]);
+  });
+
+  it("passes through the already-flat untitled group unchanged", () => {
+    const groups = [g<string>(null, [["app.order.id", "1"]])];
+    expect(foldSingletonGroups(groups)).toEqual(groups);
+  });
+
+  it("returns [] for empty input", () => {
+    expect(foldSingletonGroups([])).toEqual([]);
   });
 });

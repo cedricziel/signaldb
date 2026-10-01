@@ -2,7 +2,14 @@
 // stage objects — no dialect-string surgery in the browser. This is the seam
 // that replaces the LogQL/PromQL string compilers (lib/filters.ts,
 // features/metrics/buildPromQL.ts) for the native query surface.
-import type { QueryIrRequest } from "../../api/gen";
+import type {
+  IrAgg,
+  IrAggregate,
+  IrComparisonOp,
+  IrPredicate,
+  IrStage,
+  QueryIrRequest,
+} from "../../api/gen";
 
 export type IrSource = "logs" | "traces" | "profiles";
 export type IrResult = "rows" | "series" | "table";
@@ -10,20 +17,13 @@ export type IrResult = "rows" | "series" | "table";
 /** A structured predicate leaf, optionally negated (`not(leaf)`). */
 export interface IrFilter {
   field: string;
-  /** IR comparison op: eq | ne | gt | gte | lt | lte | contains | regex | exists | in | between */
-  op: string;
+  op: IrComparisonOp;
   value?: unknown;
   /** Wrap the leaf in `not(...)` (e.g. LogQL `!~`). */
   negate?: boolean;
 }
 
-export interface IrAgg {
-  fn: string;
-  of?: string;
-  as: string;
-}
-
-export interface IrAggregate {
+export interface IrBuilderAggregate {
   by: string[];
   aggs: IrAgg[];
   /** A time-bucket width (`"1m"`). Present → the result is a `series`. */
@@ -35,14 +35,12 @@ export interface IrBuilderState {
   range: { from: string; to: string };
   result: IrResult;
   filters: IrFilter[];
-  aggregate?: IrAggregate;
+  aggregate?: IrBuilderAggregate;
   fields?: string[];
 }
 
-type StageObject = { [key: string]: unknown };
-
-function leaf(f: IrFilter): StageObject {
-  const l: StageObject =
+function leaf(f: IrFilter): IrPredicate {
+  const l: IrPredicate =
     f.op === "exists"
       ? { field: f.field, op: f.op }
       : { field: f.field, op: f.op, value: f.value };
@@ -55,15 +53,17 @@ function leaf(f: IrFilter): StageObject {
  * optional `aggregate` — mirroring how the builder appends stages.
  */
 export function buildIrDocument(state: IrBuilderState): QueryIrRequest {
-  const pipeline: StageObject[] = [];
+  const pipeline: IrStage[] = [];
 
   if (state.filters.length > 0) {
     const leaves = state.filters.map(leaf);
-    pipeline.push({ where: leaves.length === 1 ? leaves[0] : { and: leaves } });
+    pipeline.push({
+      where: leaves.length === 1 ? leaves[0]! : { and: leaves },
+    });
   }
 
   if (state.aggregate) {
-    const agg: StageObject = {
+    const agg: IrAggregate = {
       by: state.aggregate.by,
       aggs: state.aggregate.aggs,
     };

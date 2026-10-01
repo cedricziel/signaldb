@@ -1,4 +1,4 @@
-use crate::RouterState;
+use crate::RouterAppState;
 use axum::{
     Json, Router,
     extract::{Path, State},
@@ -7,9 +7,7 @@ use axum::{
     routing::{get, post},
 };
 use common::auth::TenantContextExtractor;
-use common::tenant_api::{
-    ListTablesResponse, ListTenantsResponse, TableInfo, TenantApi, TenantInfo,
-};
+use common::tenant_api::{ListTablesResponse, TableInfo, TenantApi};
 use serde::Serialize;
 use serde_json::json;
 use utoipa::ToSchema;
@@ -31,91 +29,15 @@ pub struct AvailableSchemasResponse {
 }
 
 /// Create tenant management routes
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route("/tenants", get(list_tenants::<S>))
-        .route("/tenants/{tenant_id}", get(get_tenant::<S>))
-        .route("/tenants/{tenant_id}/tables", get(list_tenant_tables::<S>))
+        .route("/tenants/{tenant_id}/tables", get(list_tenant_tables))
         .route(
             "/tenants/{tenant_id}/tables/create",
-            post(create_tenant_tables::<S>),
+            post(create_tenant_tables),
         )
-        .route(
-            "/tenants/{tenant_id}/schemas",
-            get(list_tenant_schemas::<S>),
-        )
+        .route("/tenants/{tenant_id}/schemas", get(list_tenant_schemas))
         .route("/schemas/available", get(list_available_schemas))
-}
-
-/// GET /tenants
-///
-/// List all configured tenants
-#[utoipa::path(
-    get,
-    path = "/api/v1/tenants",
-    tag = "tenants",
-    operation_id = "list_tenants_self",
-    security(("bearerAuth" = [])),
-    responses(
-        (status = 200, description = "The caller's own tenant, as a single-entry list", body = ListTenantsResponse),
-    )
-)]
-#[tracing::instrument(skip_all)]
-pub async fn list_tenants<S: RouterState>(
-    state: State<S>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
-) -> impl IntoResponse {
-    let api = TenantApi::new(state.config().clone());
-    let mut response = api.list_tenants();
-    response
-        .tenants
-        .retain(|tenant| tenant.tenant_id == ctx.tenant_id);
-    response.default_tenant = ctx.tenant_id;
-    Json(response)
-}
-
-/// GET /tenants/:tenant_id
-///
-/// Get information about a specific tenant
-#[utoipa::path(
-    get,
-    path = "/api/v1/tenants/{tenant_id}",
-    tag = "tenants",
-    operation_id = "get_tenant_self",
-    security(("bearerAuth" = [])),
-    params(("tenant_id" = String, Path, description = "Tenant identifier (must match the authenticated tenant)")),
-    responses(
-        (status = 200, description = "Tenant information", body = TenantInfo),
-        (status = 403, description = "Requested tenant does not match the authenticated tenant"),
-        (status = 404, description = "Tenant not found"),
-    )
-)]
-#[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn get_tenant<S: RouterState>(
-    state: State<S>,
-    Path(tenant_id): Path<String>,
-    TenantContextExtractor(ctx): TenantContextExtractor,
-) -> impl IntoResponse {
-    if tenant_id != ctx.tenant_id {
-        return forbidden_tenant().into_response();
-    }
-    let api = TenantApi::new(state.config().clone());
-
-    match api.get_tenant(&tenant_id) {
-        Ok(tenant_info) => (
-            StatusCode::OK,
-            Json(serde_json::to_value(tenant_info).unwrap()),
-        )
-            .into_response(),
-        Err(e) => (
-            StatusCode::NOT_FOUND,
-            Json(json!({
-                "error": "Tenant not found",
-                "message": e.to_string()
-            })),
-        )
-            .into_response(),
-    }
 }
 
 /// GET /tenants/:tenant_id/tables
@@ -135,8 +57,8 @@ pub async fn get_tenant<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn list_tenant_tables<S: RouterState>(
-    state: State<S>,
+pub async fn list_tenant_tables(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
@@ -147,10 +69,13 @@ pub async fn list_tenant_tables<S: RouterState>(
     // with no `[[auth.tenants]]` block — resolves here too, the same as
     // `create_tenant_tables`; otherwise a listing right after provisioning
     // such a tenant would see nothing.
-    let mut api = TenantApi::new(state.config().clone())
-        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
-
-    match api.list_tables(&tenant_id).await {
+    let listing = async {
+        crate::tenant_api(&state)
+            .await?
+            .list_tables(&tenant_id)
+            .await
+    };
+    match listing.await {
         Ok(response) => (
             StatusCode::OK,
             Json(serde_json::to_value(response).unwrap()),
@@ -184,8 +109,8 @@ pub async fn list_tenant_tables<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn create_tenant_tables<S: RouterState>(
-    state: State<S>,
+pub async fn create_tenant_tables(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
@@ -201,10 +126,13 @@ pub async fn create_tenant_tables<S: RouterState>(
     }
     // Attach the SQL catalog so a tenant created through the admin API — one
     // with no `[[auth.tenants]]` block — resolves here too.
-    let mut api = TenantApi::new(state.config().clone())
-        .with_tenant_source(std::sync::Arc::new(state.catalog().clone()));
-
-    match api.create_default_tables(&tenant_id).await {
+    let created = async {
+        crate::tenant_api(&state)
+            .await?
+            .create_default_tables(&tenant_id)
+            .await
+    };
+    match created.await {
         Ok(()) => (
             StatusCode::CREATED,
             Json(CreateTenantTablesResponse {
@@ -241,8 +169,8 @@ pub async fn create_tenant_tables<S: RouterState>(
     )
 )]
 #[tracing::instrument(skip_all, fields(signaldb.tenant.id = %tenant_id))]
-pub async fn list_tenant_schemas<S: RouterState>(
-    state: State<S>,
+pub async fn list_tenant_schemas(
+    state: State<RouterAppState>,
     Path(tenant_id): Path<String>,
     TenantContextExtractor(ctx): TenantContextExtractor,
 ) -> impl IntoResponse {
@@ -302,23 +230,27 @@ mod tests {
     use axum::http::{Request, header};
     use common::catalog::{Catalog, MembershipRole};
     use common::config::{
-        ApiKeyConfig, AuthConfig, Configuration, DefaultSchemas, SchemaConfig, TenantConfig,
-        TenantSchemaConfig, TenantsConfig,
+        ApiKeyConfig, AuthConfig, Configuration, TenantConfig, TenantSchemaConfig,
+        TenantSchemaOverride, TenantsConfig,
     };
     use common::tenant_api::TenantApi;
     use std::collections::HashMap;
     use tower::ServiceExt;
+
+    /// Every signal table the deployment default enables.
+    fn all_signal_tables() -> usize {
+        common::iceberg::schemas::TableSchema::all().len()
+    }
 
     async fn create_test_state() -> RouterAppState {
         let catalog = Catalog::new("sqlite::memory:").await.unwrap();
 
         // Create configuration with test tenant
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://test".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://test".to_string()),
+                ..Default::default()
             }),
             ..TenantSchemaConfig::default()
         };
@@ -366,9 +298,8 @@ mod tests {
         let schema_names: Vec<String> = schemas.into_iter().map(|s| s.name).collect();
         assert!(schema_names.contains(&"traces".to_string()));
         assert!(schema_names.contains(&"logs".to_string()));
-        assert!(schema_names.contains(&"metrics_gauge".to_string()));
-        assert!(schema_names.contains(&"metrics_sum".to_string()));
-        assert!(schema_names.contains(&"metrics_histogram".to_string()));
+        assert!(schema_names.contains(&"metrics".to_string()));
+        assert!(schema_names.contains(&"metric_exemplars".to_string()));
     }
 
     #[tokio::test]
@@ -443,8 +374,8 @@ mod tests {
             .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(
-            json["error"],
-            "Requested tenant does not match authenticated tenant"
+            json["message"],
+            "Requested tenant does not match the authenticated tenant"
         );
     }
 
@@ -510,16 +441,7 @@ mod tests {
         tables.sort();
         assert_eq!(
             tables,
-            vec![
-                "logs",
-                "metrics_exponential_histogram",
-                "metrics_gauge",
-                "metrics_histogram",
-                "metrics_sum",
-                "metrics_summary",
-                "profiles",
-                "traces",
-            ]
+            vec!["logs", "metric_exemplars", "metrics", "profiles", "traces",]
         );
     }
 
@@ -601,7 +523,12 @@ mod tests {
             .unwrap();
         let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
 
-        assert_eq!(listed.tables.len(), 8, "{:?}", listed.tables);
+        assert_eq!(
+            listed.tables.len(),
+            all_signal_tables(),
+            "{:?}",
+            listed.tables
+        );
         assert!(listed.tables.iter().all(|t| t.dataset == "production"));
         assert!(listed.tables.iter().any(|t| t.name == "traces"));
         let profiles = listed
@@ -613,7 +540,7 @@ mod tests {
 
         assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
         assert_eq!(listed.datasets[0].dataset, "production");
-        assert_eq!(listed.datasets[0].tables.len(), 8);
+        assert_eq!(listed.datasets[0].tables.len(), all_signal_tables());
     }
 
     /// The endpoint must work for a tenant that exists ONLY in the database —
@@ -684,7 +611,7 @@ mod tests {
                 .await
                 .unwrap()
                 .len(),
-            8,
+            all_signal_tables(),
             "a database-only tenant must be provisioned too"
         );
 
@@ -703,11 +630,16 @@ mod tests {
             .await
             .unwrap();
         let listed: common::tenant_api::ListTablesResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(listed.tables.len(), 8, "{:?}", listed.tables);
+        assert_eq!(
+            listed.tables.len(),
+            all_signal_tables(),
+            "{:?}",
+            listed.tables
+        );
         assert!(listed.tables.iter().all(|t| t.dataset == "production"));
         assert_eq!(listed.datasets.len(), 1, "{:?}", listed.datasets);
         assert_eq!(listed.datasets[0].dataset, "production");
-        assert_eq!(listed.datasets[0].tables.len(), 8);
+        assert_eq!(listed.datasets[0].tables.len(), all_signal_tables());
     }
 
     /// POST /tenants/:tenant_id/tables/create requires the authenticated
@@ -737,7 +669,12 @@ mod tests {
 
         let password_hash = common::auth::hash_password("member password").unwrap();
         let member = catalog
-            .create_user("member@example.com", Some("Member"), &password_hash, false)
+            .create_user(
+                "member@example.com",
+                Some("Member"),
+                Some(&password_hash),
+                false,
+            )
             .await
             .unwrap();
         catalog

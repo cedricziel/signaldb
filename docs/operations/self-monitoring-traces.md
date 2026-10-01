@@ -11,15 +11,80 @@ sources:
 
 The spans SignalDB emits about its own operation follow the OpenTelemetry
 semantic conventions, pinned at **semconv v1.43.0** (the `schema_url` on
-every exported resource and instrumentation scope). This page is the
+every exported resource). The instrumentation scopes carry SignalDB's own
+registry URL, `https://cedricziel.github.io/signaldb/schemas/<version>`, where `<version>` is
+the SignalDB release that emitted the telemetry: `otel/registry/manifest.yaml`
+defines the `signaldb.*` attributes on top of that semconv pin, release-please
+bumps its version with each release, and the build script hands it to the
+code as `SIGNALDB_SCHEMA_URL`. This page is the
 operator-facing reference: what spans exist, what they're named, and what
 changed if you had dashboards on the old names.
 
 This page covers spans only. Counter/histogram/gauge instruments (e.g.
-`signaldb.wal.entries_written`, `signaldb.wal.corrupt_entries`) are defined
+`signaldb.wal.entries_written`, `signaldb.wal.corrupt_entries` with its
+`record=log|data` attribute, `signaldb.wal.instances`,
+`signaldb.wal.instance_cap_hits` with its `outcome=evicted|over_cap`
+attribute, `signaldb.wal.list_failures`) are defined
 in `src/common/src/self_monitoring/app_metrics.rs`; WAL-specific ones are
 documented alongside their recovery behavior in
 [WAL Persistence](wal-persistence.md#monitoring-and-alerting).
+
+The registry is no longer spans-only, though: the compactor's job counters
+(`compactor.jobs.started`/`.succeeded`/`.failed`, scraped as
+`compactor_jobs_*_total`) are declared there as `type: metric` groups, so
+their names and label sets are governed the same way. Those are rendered by
+hand on the compactor's own Prometheus endpoint rather than through the OTel
+SDK, and a test in the compactor fails the build if the two disagree — see
+[Compactor Operations](compactor/operations.md#compaction-retries).
+
+Two writer instruments are worth naming here because they are read together:
+`signaldb.writer.commit_duration` (histogram, `tenant` attribute) is how long
+one group's Iceberg commit took, and `signaldb.writer.groups_deferred` (gauge)
+is how many groups the commit-coalescing floor held back on the last cycle.
+Groups commit concurrently, so one tenant's slow commits appear as that
+tenant's latency rather than as everyone's — a p99 that rises for a single
+`tenant` value is that tenant's catalog or object store, while one that rises
+across all of them is shared infrastructure. A sustained non-zero
+`groups_deferred` alongside rising `signaldb.wal.entries_pending` means commits
+are not keeping up regardless of which.
+
+A third, related gauge: `signaldb.writer.entries_deferred_by_budget` counts WAL
+entries a WAL's backlog held past `[writer].max_drain_bytes_per_cycle` on the
+last drain cycle — left durable and unprocessed, retried on a later cycle
+rather than decoded to Arrow all at once. Distinct from `groups_deferred` (the
+commit-coalescing floor holding back _decoded_ groups): this one is entries the
+cycle never even decoded. Expect brief non-zero spikes right after a restart
+that recovers a large backlog; sustained non-zero means the backlog is larger
+than the budget drains per tick.
+
+A fourth: `signaldb.writer.commit_failures` (counter, `signaldb.tenant.id` and
+`kind` attributes) counts group commit attempts that did not land, split into
+`permanent` (a routing/schema fault or an unknown target table — the batch
+itself will never commit) and `transient` (a catalog/object-store/WAL-index
+outage, expected to clear on its own). Only `permanent` failures count toward
+an entry's dead-lettering budget; a sustained `transient` rate with no drop in
+`signaldb.wal.entries_pending` means a dependency is down, not that data is
+being lost — the affected entries stay pending and retry once it recovers.
+
+One acceptor counter pairs with those: `signaldb.acceptor.resends_dropped`
+(`signaldb.tenant.id` and `signal` attributes) counts client resends of a batch the
+same acceptor had already made durable, acknowledged without being forwarded
+again (`[acceptor].retry_dedup_window`). A resend that reaches another acceptor
+replica, or arrives after a restart, is forwarded and dropped at the writer
+instead, counted by `signaldb.writer.ingest_duplicates_dropped` alongside the
+acceptor's own forward retries. A steady `resends_dropped` rate means clients
+give up before the acceptor answers: its ingest latency exceeds their export
+timeout.
+
+`signaldb.writer.attribute_type_mismatches` (counter; `signaldb.tenant.id`,
+`signal`, `level` and `reason` attributes) counts attribute values that did not
+match their field's canonical type. With `reason=off_type`, the value was
+stored as sent in the residue: it can still be retrieved, but it can't be
+filtered as a typed value. With `reason=pin_conflict`, a
+`[[schema.attribute_types]]` pin retyped a field that data had already typed.
+Each affected key is logged once per writer process, and its running total is
+the `off_type_count` returned by `GET /api/v1/schema/attributes/{key}`. The
+metric never carries the attribute key.
 
 ## Resource identity
 
@@ -64,6 +129,15 @@ flowchart LR
   target, from service discovery); SERVER spans carry
   `network.peer.address`/`network.peer.port` (the connecting socket, from
   `tonic::Request::remote_addr()`) when available.
+- **Outbound HTTP**: CLIENT spans named `{method} {url}` for a single
+  outbound HTTP request — today the router's OIDC relying party calling its
+  provider's discovery, token, and JWKS endpoints — carrying
+  `http.request.method`, `url.full`, and `http.response.status_code` per the
+  HTTP client semantic conventions. A response `>= 400` sets span status
+  Error with `error.type` the status code; a transport failure with no status
+  records the error directly. The factory (`http_client_span`) requires the
+  `url` to be free of query-string secrets, which the OIDC endpoints it backs
+  never carry.
 - **SQL catalog**: CLIENT spans `{verb} signaldb-catalog` with
   `db.system.name` / `db.operation.name` / `db.namespace` /
   `db.query.text` (literal-sanitized, same `?`-placeholder convention as
@@ -71,7 +145,16 @@ flowchart LR
   them, so there's normally nothing to strip).
 - **Query stages**: `signaldb.query.plan` / `signaldb.query.execute`
   INTERNAL spans with `signaldb.query.rows`/`batches`; recorded query text
-  is always literal-sanitized (`… WHERE name = ?`).
+  is always literal-sanitized (`… WHERE name = ?`). A `graph` result runs
+  under a `signaldb.query.graph` INTERNAL span. It logs a warning with
+  `signaldb.graph.dropped_nodes`/`max_nodes` when the node cap drops nodes,
+  and with `signaldb.graph.max_rows` when a sub-query reaches the row cap.
+- **Discovery reads**: `discovery {kind}` INTERNAL span around
+  `describe: fields` / `describe: values` and `GET /api/v1/query/sources`,
+  with `signaldb.discovery.kind` (`fields`/`values`/`sources`),
+  `signaldb.discovery.source`, and `signaldb.discovery.cost_mode`
+  (`metadata`, or `sampled_scan` for a sampled `describe: values`, the one
+  discovery read that reaches a querier).
 - **Background jobs**: `compaction`, `retention_enforcement`,
   `orphan_cleanup` root INTERNAL spans with `signaldb.tenant.id` /
   `signaldb.dataset.id` / `signaldb.table` and affected-object counts
@@ -92,6 +175,12 @@ flowchart LR
 
 - **WAL fan-in**: the writer's batch span **links** to every distinct
   source ingest trace (one link per origin, never a parent).
+- **Telemetry processors**: the acceptor wraps applying a tenant's matching
+  OTTL processors in one INTERNAL `processors.apply` span
+  (`signaldb.tenant.id`, `signaldb.dataset.id`, `signaldb.signal`,
+  `signaldb.processors.count`), plus per-statement counters for statements
+  applied and errored and a counter of requests rejected by
+  `error_mode: propagate` — see `docs/users/processors.md`.
 - **MCP tool calls** (the `signaldb-mcp` sidecar, when its
   `[self_monitoring]` is enabled): every `tools/call` runs in one INTERNAL
   span named `tools/call {tool}` (`mcp.method.name=tools/call`,
@@ -134,10 +223,22 @@ decision. Headers are omitted when self-monitoring is disabled and on
 | span `flight_do_put`                                      | `arrow.flight.protocol.FlightService/DoPut`           |
 | span `compaction_job`                                     | `compaction`                                          |
 | field `tenant_id`                                         | `signaldb.tenant.id`                                  |
-| field `dataset_id`                                        | `signaldb.dataset.id`                                 |
+| field `dataset_id` / `dataset`                            | `signaldb.dataset.id`                                 |
 | field `table` / `table_name`                              | `signaldb.table`                                      |
 | field `entry_count`                                       | `signaldb.wal.entry_count`                            |
 | field `operation` / `data_size` / `entry_id` (WAL spans)  | `signaldb.wal.operation` / `…data_size` / `…entry_id` |
+| field `wal_dir`                                           | `signaldb.wal.dir`                                    |
+| field `address` / `addr` (listener startup)               | `signaldb.service.address`                            |
+| field `service_type` / `service_id` (bootstrap)           | `signaldb.service.type` / `service.instance.id`       |
+| field `dsn`                                               | `signaldb.catalog.dsn` (object store: `url.full`)     |
+| field `limit` (concurrent-query rejection)                | `signaldb.querier.max_concurrent_queries`             |
+| field `catalog` (querier catalog registration)            | `signaldb.catalog.name`                               |
+| field `memory_limit_mb` / `memory_pool_fraction`          | `signaldb.querier.memory_limit_mb` / `…pool_fraction` |
+| field `total_ram_bytes`                                   | `signaldb.querier.host_memory_bytes`                  |
+| field `candidates_identified` (orphan-cleanup summary)    | `signaldb.job.candidates`                             |
+| field `bytes_freed` (orphan-cleanup summary)              | `signaldb.job.bytes_reclaimed`                        |
+| field `cleanup_skipped_threshold`                         | `signaldb.job.tables_skipped`                         |
+| field `datasets_checked` / … (reconcile pass)             | `signaldb.job.datasets_checked` / …                   |
 | resource `deployment.environment` (= `"self-monitoring"`) | `deployment.environment.name` (config-sourced)        |
 
 ## Conventions registry and enforcement
@@ -164,8 +265,8 @@ whitelisted for live-check via finding filters in the repo-root
 events (stamped unconditionally by tracing-opentelemetry's event bridge),
 and the `not_stable` advice for our own `signaldb.*` attributes (the
 SignalDB registry is `development` by design). `info!`/`warn!` events
-inside instrumented spans become span events, so their fields must be
-declared in the resolved registry — `signaldb.*` for SignalDB-specific
-fields, or an upstream semconv attribute (e.g. `file.path`) where one
+become span events inside instrumented spans and OTel log records
+everywhere, so their fields must be declared in the resolved registry —
+`signaldb.*` for SignalDB-specific fields, or an upstream semconv attribute (e.g. `file.path`) where one
 fits. Per-item developer detail belongs at `debug!`, which the default
 `info` level keeps out of telemetry.

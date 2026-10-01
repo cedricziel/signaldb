@@ -18,6 +18,28 @@ pub struct RetentionTestContext {
     pub metrics: CompactionMetrics,
 }
 
+/// A table of `files` files at successive instants.
+///
+/// File `i` holds `rows_per_file` rows spread over
+/// `[base_timestamp + i * file_span_ms, base_timestamp + (i + 1) * file_span_ms)`,
+/// so no two files overlap in time and the newest rows live in the last file
+/// — the layout sequential ingest produces.
+#[derive(Debug, Clone)]
+pub struct SequentialLayout {
+    pub files: usize,
+    pub rows_per_file: usize,
+    /// Epoch millis of the first file's first row.
+    pub base_timestamp: i64,
+    pub file_span_ms: i64,
+}
+
+impl SequentialLayout {
+    /// Rows across every file of the layout.
+    pub fn total_rows(&self) -> usize {
+        self.files * self.rows_per_file
+    }
+}
+
 /// Configuration for generating test data
 #[derive(Debug, Clone)]
 pub struct DataGeneratorConfig {
@@ -79,28 +101,31 @@ pub struct TableInfo {
     pub partitions: Vec<PartitionInfo>,
 }
 
+/// The `PlannerConfig` shared by every in-memory `RetentionTestContext`
+/// constructor. Tests write data into recent hours and expect it to be
+/// compactable immediately; a production lateness allowance would defer
+/// every generated partition as still open.
+fn test_planner_config() -> PlannerConfig {
+    PlannerConfig {
+        file_count_threshold: 10,
+        max_input_file_size_bytes: 64 * 1024 * 1024,
+        target_file_size_bytes: 128 * 1024 * 1024,
+        partition_lateness: std::time::Duration::ZERO,
+        max_partition_input_bytes: 0,
+    }
+}
+
 impl RetentionTestContext {
     /// Creates a new retention test context with in-memory implementations
     pub async fn new_in_memory() -> Result<Self> {
         let catalog = CatalogTestContext::new_in_memory().await?;
         let storage = StorageTestContext::new_in_memory().await?;
-        let planner_config = PlannerConfig {
-            file_count_threshold: 10,
-            max_input_file_size_bytes: 64 * 1024 * 1024,
-            target_file_size_bytes: 128 * 1024 * 1024,
-            // Tests write data into recent hours and expect it to be
-            // compactable immediately; a production lateness allowance would
-            // defer every generated partition as still open.
-            partition_lateness: std::time::Duration::ZERO,
-            max_partition_input_bytes: 0,
-        };
-        let metrics = CompactionMetrics::new();
 
         Ok(Self {
             catalog,
             storage,
-            planner_config,
-            metrics,
+            planner_config: test_planner_config(),
+            metrics: CompactionMetrics::new(),
         })
     }
 
@@ -117,20 +142,12 @@ impl RetentionTestContext {
     pub async fn new_in_memory_with_tenant_source(tenant_source: Arc<Catalog>) -> Result<Self> {
         let catalog = CatalogTestContext::new_in_memory_with_tenant_source(tenant_source).await?;
         let storage = StorageTestContext::new_in_memory().await?;
-        let planner_config = PlannerConfig {
-            file_count_threshold: 10,
-            max_input_file_size_bytes: 64 * 1024 * 1024,
-            target_file_size_bytes: 128 * 1024 * 1024,
-            partition_lateness: std::time::Duration::ZERO,
-            max_partition_input_bytes: 0,
-        };
-        let metrics = CompactionMetrics::new();
 
         Ok(Self {
             catalog,
             storage,
-            planner_config,
-            metrics,
+            planner_config: test_planner_config(),
+            metrics: CompactionMetrics::new(),
         })
     }
 
@@ -145,9 +162,8 @@ impl RetentionTestContext {
         dataset_id: &str,
         table_name: &str,
     ) -> Result<IcebergTableWriter> {
-        let writer = IcebergTableWriter::new(
+        let writer = crate::test_support::writer_with_type_authority(
             &self.catalog.catalog_manager,
-            self.storage.object_store.clone(),
             tenant_id.to_string(),
             dataset_id.to_string(),
             table_name.to_string(),

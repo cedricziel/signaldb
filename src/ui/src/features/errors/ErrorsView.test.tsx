@@ -1,8 +1,10 @@
-import { screen, within } from "@testing-library/react";
+import { useState } from "react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { DEFAULT_STATE } from "../../lib/urlState";
-import { renderWithClient } from "../../test/render";
+import { MemoryRouter } from "react-router";
+import { DEFAULT_STATE, type ExploreState } from "../../lib/urlState";
+import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { ErrorsView } from "./ErrorsView";
 import * as errorsApi from "../../api/errors";
 import type { ErrorGroup, ErrorOccurrence } from "../../api/errors";
@@ -14,12 +16,16 @@ vi.mock("../../api/errors", async (importOriginal) => {
     fetchErrorGroups: vi.fn(),
     fetchErrorOccurrences: vi.fn(),
     fetchErrorGroupVolume: vi.fn(),
+    fetchUncoveredErrorLogCount: vi.fn(),
   };
 });
 
 const fetchErrorGroups = vi.mocked(errorsApi.fetchErrorGroups);
 const fetchErrorOccurrences = vi.mocked(errorsApi.fetchErrorOccurrences);
 const fetchErrorGroupVolume = vi.mocked(errorsApi.fetchErrorGroupVolume);
+const fetchUncoveredErrorLogCount = vi.mocked(
+  errorsApi.fetchUncoveredErrorLogCount,
+);
 
 afterEach(() => {
   vi.restoreAllMocks();
@@ -29,9 +35,11 @@ beforeEach(() => {
   fetchErrorGroups.mockReset();
   fetchErrorOccurrences.mockReset();
   fetchErrorGroupVolume.mockReset();
+  fetchUncoveredErrorLogCount.mockReset();
   fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
   fetchErrorOccurrences.mockResolvedValue([]);
   fetchErrorGroupVolume.mockResolvedValue([]);
+  fetchUncoveredErrorLogCount.mockResolvedValue(0);
 });
 
 function group(overrides: Partial<ErrorGroup> = {}): ErrorGroup {
@@ -57,18 +65,47 @@ function occurrence(overrides: Partial<ErrorOccurrence> = {}): ErrorOccurrence {
   };
 }
 
-function renderView() {
-  const update = vi.fn();
-  renderWithClient(<ErrorsView state={DEFAULT_STATE} update={update} />);
-  return update;
+/**
+ * Renders `ErrorsView` the way the real app does: `state`/`update` round-trip
+ * through a stateful wrapper standing in for the URL — the selected group and
+ * facet filters are now URL-backed (see lib/urlState.ts's `group`/`f`).
+ * `onUpdate` also records every patch, for tests asserting on the exact call.
+ */
+function renderView(
+  initial: Partial<ExploreState> = {},
+  onUpdate?: (patch: Partial<ExploreState>, opts?: { push?: boolean }) => void,
+) {
+  function Harness() {
+    const [state, setState] = useState<ExploreState>({
+      ...DEFAULT_STATE,
+      ...initial,
+    });
+    const update = (
+      patch: Partial<ExploreState>,
+      opts?: { push?: boolean },
+    ) => {
+      onUpdate?.(patch, opts);
+      setState((s) => ({ ...s, ...patch }));
+    };
+    return <ErrorsView state={state} update={update} />;
+  }
+  renderWithClient(
+    <MemoryRouter>
+      <Harness />
+    </MemoryRouter>,
+  );
 }
 
 describe("ErrorsView", () => {
   it("shows an empty state when there are no captured exceptions", async () => {
     renderView();
     expect(
-      await screen.findByText(/No exceptions captured/),
+      await screen.findByText(/No exceptions in this range/),
     ).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "Send data" })).toHaveAttribute(
+      "href",
+      "/instrumentation",
+    );
   });
 
   it("lists exception groups ranked by count, across both sources", async () => {
@@ -113,6 +150,26 @@ describe("ErrorsView", () => {
       name: /View trace/,
     });
     expect(links).toHaveLength(2);
+  });
+
+  it("titles the page Errors", async () => {
+    renderView();
+    expect(await screen.findByText("Errors")).toHaveClass("catalog-title");
+    expect(screen.queryByText(/Exceptions/)).not.toBeInTheDocument();
+  });
+
+  it("links a selected group's service to its catalog entry", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group({ serviceName: "checkout" })],
+      truncated: false,
+    });
+    renderView({ tenant: "acme", dataset: "prod" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    const link = await screen.findByRole("link", { name: "checkout" });
+    expect(link.getAttribute("href")).toMatch(
+      /^\/catalog\/service\/checkout\?.*tenant=acme/,
+    );
   });
 
   it("selects a group via keyboard (focus + Enter on its type button)", async () => {
@@ -184,6 +241,33 @@ describe("ErrorsView", () => {
     expect(await screen.findByText(/at foo/)).toBeInTheDocument();
   });
 
+  it("offers View source for a frame line once GitHub is linked", async () => {
+    stubFetchRoutes([
+      {
+        match: "/source-context",
+        method: "GET",
+        body: { configured: true, linked: true },
+      },
+    ]);
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group()],
+      truncated: false,
+    });
+    fetchErrorOccurrences.mockResolvedValue([
+      occurrence({ stacktrace: "boom\n    at src/handler.rs:42:9\n    at ?" }),
+    ]);
+    renderView({ tenant: "acme" });
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    await user.click(await screen.findByTestId("occurrence-row-0"));
+
+    const triggers = await screen.findAllByRole("button", {
+      name: "View source",
+    });
+    expect(triggers).toHaveLength(1);
+    expect(triggers[0]).toHaveAttribute("title", "src/handler.rs:42");
+  });
+
   it("clicking a trace link navigates without expanding the row", async () => {
     fetchErrorGroups.mockResolvedValue({
       groups: [group()],
@@ -192,15 +276,16 @@ describe("ErrorsView", () => {
     fetchErrorOccurrences.mockResolvedValue([
       occurrence({ traceId: "abc123", stacktrace: "at foo" }),
     ]);
-    const update = renderView();
+    const patches: [unknown, unknown][] = [];
+    renderView({}, (p, opts) => patches.push([p, opts]));
     const user = userEvent.setup();
     await user.click(await screen.findByText("std::io::Error"));
     const link = await screen.findByRole("button", { name: /View trace/ });
     await user.click(link);
-    expect(update).toHaveBeenCalledWith(
+    expect(patches).toContainEqual([
       { signal: "traces", trace: "abc123" },
       { push: true },
-    );
+    ]);
     // The row itself did not also toggle open from the same click.
     expect(screen.queryByText(/at foo/)).not.toBeInTheDocument();
   });
@@ -294,5 +379,192 @@ describe("ErrorsView", () => {
       expect.anything(),
       expect.any(String),
     );
+  });
+
+  // The selected group's encoding is a JSON tuple of its identity fields
+  // (see ErrorsView.tsx's groupKey/decodeGroupKey) — mirrored here rather
+  // than imported, since it's private to the view.
+  function keyFor(g: ErrorGroup): string {
+    return JSON.stringify([
+      g.source,
+      g.exceptionType,
+      g.exceptionMessage,
+      g.serviceName,
+      g.escaped,
+    ]);
+  }
+
+  it("reloading with ?group= set restores the selected group and re-queries its occurrences immediately", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchErrorOccurrences.mockResolvedValue([occurrence()]);
+    renderView({ group: keyFor(group()) });
+
+    // Queried immediately from the decoded key — before the group list has
+    // even loaded — with the pinning fields the query actually needs; count/
+    // first/last aren't in the key and are never read from it.
+    expect(fetchErrorOccurrences).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: "traces",
+        exceptionType: "std::io::Error",
+        exceptionMessage: "boom",
+        serviceName: "signaldb",
+        escaped: null,
+      }),
+      expect.anything(),
+    );
+    await waitFor(() => {
+      const row = screen
+        .getAllByText("std::io::Error")
+        .map((el) => el.closest("tr"))
+        .find((tr): tr is HTMLTableRowElement => tr !== null);
+      expect(row).toHaveAttribute("aria-selected", "true");
+    });
+  });
+
+  it("reloading with ?f= set restores the active facet filters", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [
+        group({ exceptionType: "std::io::Error", serviceName: "signaldb" }),
+        group({ exceptionType: "ValueError", serviceName: "signaldb-ui" }),
+      ],
+      truncated: false,
+    });
+    renderView({
+      filters: [{ label: "serviceName", op: "=", value: "signaldb-ui" }],
+    });
+
+    expect(await screen.findByText("ValueError")).toBeInTheDocument();
+    expect(screen.queryByText("std::io::Error")).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", {
+        name: /Remove filter serviceName = signaldb-ui/,
+      }),
+    ).toBeInTheDocument();
+  });
+
+  it("ignores a facet filter whose op is not equality", async () => {
+    // `?f=serviceName|!=|api` must not become an equality filter on "api" —
+    // errorFiltersFromState has no way to express "not equal", so it must
+    // drop the filter rather than silently mis-narrow the list.
+    fetchErrorGroups.mockResolvedValue({
+      groups: [
+        group({ exceptionType: "std::io::Error", serviceName: "api" }),
+        group({ exceptionType: "ValueError", serviceName: "signaldb-ui" }),
+      ],
+      truncated: false,
+    });
+    renderView({
+      filters: [{ label: "serviceName", op: "!=", value: "api" }],
+    });
+
+    expect(await screen.findByText("std::io::Error")).toBeInTheDocument();
+    expect(await screen.findByText("ValueError")).toBeInTheDocument();
+  });
+
+  it("ignores a ?group= tuple with invalid field shapes", async () => {
+    // A non-string/non-null field (here an object for exceptionType) must
+    // not be coerced into an ErrorGroup — decodeGroupKey should reject it.
+    fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
+    renderView({ group: JSON.stringify(["traces", {}, null, null, null]) });
+
+    await screen.findByText(/No exceptions in this range/);
+    expect(
+      screen.queryByText(/individual occurrences/),
+    ).not.toBeInTheDocument();
+    expect(fetchErrorOccurrences).not.toHaveBeenCalled();
+  });
+
+  it("ignores a ?group= tuple with an invalid escaped value", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [], truncated: false });
+    renderView({
+      group: JSON.stringify(["traces", "E", "m", "svc", "maybe"]),
+    });
+
+    await screen.findByText(/No exceptions in this range/);
+    expect(fetchErrorOccurrences).not.toHaveBeenCalled();
+  });
+
+  it("the back-to-all-groups control clears the selection", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchErrorOccurrences.mockResolvedValue([occurrence()]);
+    renderView();
+    const user = userEvent.setup();
+    await user.click(await screen.findByText("std::io::Error"));
+    await user.click(
+      await screen.findByRole("button", { name: "← all groups" }),
+    );
+    expect(
+      screen.queryByText(/individual occurrences/),
+    ).not.toBeInTheDocument();
+  });
+
+  it("formats the count column with the num class and locale grouping", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group({ count: 12345 })],
+      truncated: false,
+    });
+    renderView();
+    const cell = await screen.findByText("12,345");
+    expect(cell.tagName).toBe("TD");
+    expect(cell).toHaveClass("num");
+  });
+
+  it("prefixes first/last seen with the date on a multi-day range", async () => {
+    fetchErrorGroups.mockResolvedValue({
+      groups: [group({ lastNs: "1700000100000000000" })],
+      truncated: false,
+    });
+    renderView({ range: { type: "relative", seconds: 7 * 86400 } });
+    const matches = await screen.findAllByText(
+      /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}/,
+    );
+    expect(matches.length).toBeGreaterThan(0);
+  });
+
+  it("shows a note linking to Logs when ERROR+ logs have no exception.type", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchUncoveredErrorLogCount.mockResolvedValue(52);
+    const patches: [unknown, unknown][] = [];
+    renderView({}, (p, opts) => patches.push([p, opts]));
+    await screen.findByText("std::io::Error");
+
+    const note = await screen.findByText(/52 error logs have no/);
+    expect(note).toBeInTheDocument();
+    const link = screen.getByRole("button", { name: /view them in Logs/ });
+    await userEvent.setup().click(link);
+    expect(patches).toContainEqual([
+      {
+        signal: "logs",
+        filters: [
+          {
+            label: "severity_text",
+            op: "=~",
+            value: "(?i)error|fatal|critical",
+          },
+        ],
+      },
+      { push: true },
+    ]);
+  });
+
+  it("hides the uncovered-error-logs note when the count is zero", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchUncoveredErrorLogCount.mockResolvedValue(0);
+    renderView();
+    await screen.findByText("std::io::Error");
+    expect(screen.queryByText(/have no/)).not.toBeInTheDocument();
+  });
+
+  it("wraps the groups and occurrences tables in a scrollable container", async () => {
+    fetchErrorGroups.mockResolvedValue({ groups: [group()], truncated: false });
+    fetchErrorOccurrences.mockResolvedValue([occurrence()]);
+    renderView();
+    const groupCell = await screen.findByText("std::io::Error");
+    expect(groupCell.closest(".table-scroll")).not.toBeNull();
+
+    const user = userEvent.setup();
+    await user.click(groupCell);
+    const occurrenceRow = await screen.findByTestId("occurrence-row-0");
+    expect(occurrenceRow.closest(".table-scroll")).not.toBeNull();
   });
 });

@@ -38,6 +38,7 @@ sources:
 - Periodic heartbeats maintain liveness via `last_seen` timestamp updates
 - Other services query the catalog for active service endpoints, filtering out rows whose `last_seen` is older than the discovery TTL
 - Graceful shutdown deletes the row (`deregister_ingester`); crashed services never deregister, so a background reaper (`reap_stale_ingesters`, issue #555) deletes rows whose heartbeat is 2x TTL stale
+- Monolithic mode opens one `Catalog` (one `SqlitePool`) per service against the same on-disk file, so an on-disk SQLite catalog caps its pool at `SQLITE_CATALOG_MAX_CONNECTIONS` (8) and retries `SQLITE_BUSY`/`SQLITE_LOCKED` with short backoff (`retry_on_sqlite_busy`) on the heartbeat, reap, and compaction-lease renew/expire writes, on top of the `journal_mode = wal` + `busy_timeout = 10s` already set on every connection; a failure logs at WARN and escalates to ERROR only once it has persisted past the registration/lease TTL (issue #1495)
 
 **Current Service Registry Schema** (PostgreSQL flavor; SQLite uses TEXT columns):
 
@@ -76,14 +77,24 @@ match is exhaustive so the compiler forces it.
 
 The same catalog database also holds the multi-tenancy tables (`tenants`,
 `api_keys` — including each key's explicit `scopes` list and optional
-`dataset_id` restriction, updatable in place via
-`Catalog::update_api_key_scopes` — `datasets`), the user-identity tables (`users`,
-`tenant_memberships`, `user_sessions` — see the users-tenant-membership
-ADR), the `compactor_leases` table, and the advisory
+`dataset_ids`/`allowed_origins` set restrictions, updatable in place via
+`Catalog::update_api_key_scopes` — `datasets`), the user-identity tables (`users`
+— whose `password_hash` is now nullable, with `oidc_issuer`/`oidc_subject` for
+SSO-linked identities; `tenant_memberships` — keyed by `(user_id, tenant_id,
+granted_by)` so a `local` grant and an `oidc_mapping` grant coexist as separate
+rows (change: oidc-login, additive migration); `user_sessions` — see the
+users-tenant-membership ADR), the `compactor_leases` table, and the advisory
 `attribute_stats` table (per-attribute-key presence and cardinality written
 by the compactor's analyzer, plus query-demand hit counters flushed
 periodically by the querier, and a `promote_streak` hysteresis column for
-the auto-promotion decision pass — see the attribute-explorability ADR), and
+the auto-promotion decision pass — see the attribute-explorability ADR), the
+`attribute_value_stats` table (a bounded per-key sketch of the most frequent
+values with their counts, written by the same analyzer pass and replaced
+wholesale each time, which is what lets query discovery suggest values without
+reading signal data), the `attribute_types` table (the one canonical type per
+tenant, dataset, signal, attribute level and key; the first write wins
+atomically and later data never retypes it, while off-type occurrences are
+only counted — change: otel-native-schema), and
 the `schema_registries` table (tenant-scoped custom semantic-convention
 registries — the uploaded Weaver-model document and its cached resolution;
 the bundled `otel`/`signaldb` registries are embedded in the binary, not
@@ -124,8 +135,9 @@ sequenceDiagram
 
 ```rust
 // Registers with the catalog, spawns the heartbeat task and the stale-row
-// reaper internally. The service id is a generated UUID.
-let bootstrap = ServiceBootstrap::new(config, ServiceType::Querier, address).await?;
+// reaper internally. The service id is a generated UUID. The registered
+// address is QUERIER_ADVERTISE_ADDR when set, else the bind address.
+let bootstrap = ServiceBootstrap::from_bind_addr(config, ServiceType::Querier, bind).await?;
 ```
 
 ### 2. Health Monitoring
@@ -212,7 +224,7 @@ poll_interval = "60s"
 ttl = "300s"
 ```
 
-There is no `[service]` config section: the service address is passed programmatically to `ServiceBootstrap::new()`, and the service id is a generated UUID.
+There is no `[service]` config section. Services pass their bind address to `ServiceBootstrap::from_bind_addr()`, which registers the `<SERVICE>_ADVERTISE_ADDR` override when set (`ServiceType::advertise_env_var`), else the bind address; see [Advertised addresses](../operations/binaries.md#advertised-addresses). `ServiceBootstrap::new()` takes the registered address verbatim. The service id is a generated UUID.
 
 ## Integration Patterns
 

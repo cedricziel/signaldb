@@ -1,7 +1,8 @@
 use anyhow::Result;
+use common::testing::start_container_with_retry;
 use testcontainers_modules::minio::MinIO;
+use testcontainers_modules::testcontainers::ContainerAsync;
 use testcontainers_modules::testcontainers::core::ExecCommand;
-use testcontainers_modules::testcontainers::{ContainerAsync, runners::AsyncRunner};
 use url::Url;
 
 pub struct MinioTestContext {
@@ -12,8 +13,7 @@ pub struct MinioTestContext {
 impl MinioTestContext {
     pub async fn new() -> Result<Self> {
         // Start MinIO container
-        let minio = MinIO::default();
-        let container = minio.start().await?;
+        let container = start_container_with_retry(MinIO::default).await;
 
         // Get connection details
         let host_port = container.get_host_port_ipv4(9000).await?;
@@ -55,4 +55,19 @@ async fn create_test_bucket(container: &ContainerAsync<MinIO>, bucket: &str) -> 
 
     tracing::info!("Created test bucket: {bucket}");
     Ok(())
+}
+
+/// The writer's WAL configuration, derived from the acceptor's.
+///
+/// Both services lay out a `{tenant}/{dataset}/{signal}` tree under their WAL
+/// directory, so they must not share one: pointed at the same base directory,
+/// the writer's processor drains the acceptor's entries as well as its own and
+/// commits every batch twice. In production they are separated by
+/// `WalConfig::wal_dir_for_service` (`{wal_dir}/acceptor` vs `{wal_dir}/writer`);
+/// tests build one config and derive the writer's from it the same way.
+pub fn writer_wal_config(acceptor_wal: &common::wal::WalConfig) -> common::wal::WalConfig {
+    common::wal::WalConfig {
+        wal_dir: acceptor_wal.wal_dir.join("writer"),
+        ..acceptor_wal.clone()
+    }
 }

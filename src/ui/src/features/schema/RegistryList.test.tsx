@@ -1,7 +1,10 @@
-import { screen, within } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { useState } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { MemoryRouter, Route, Routes } from "react-router";
+import { MemoryRouter, Outlet, Route, Routes } from "react-router";
+import { setTenantContext } from "../../api/http";
+import { DEFAULT_STATE } from "../../lib/urlState";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
 import { RegistryList } from "./RegistryList";
 import {
@@ -9,29 +12,36 @@ import {
   K8S_POD_ENTITY_RESOLUTION,
   REGISTRIES,
   SERVICE_NAME_RESOLUTION,
+  shellOutlet,
   WHOAMI_MEMBER,
   WHOAMI_TENANT_ADMIN,
 } from "./testFixtures";
 
-function renderList() {
+function renderList(tenant = "acme") {
+  setTenantContext({ tenant, dataset: "" });
   return renderWithClient(
     <MemoryRouter initialEntries={["/schema/conventions"]}>
       <Routes>
-        <Route path="/schema/conventions" element={<RegistryList />} />
-        <Route
-          path="/schema/conventions/new"
-          element={<div>Editor page</div>}
-        />
-        <Route
-          path="/schema/conventions/:ns/:version"
-          element={<div>Browser page</div>}
-        />
+        <Route element={shellOutlet(tenant)}>
+          <Route path="/schema/conventions" element={<RegistryList />} />
+          <Route
+            path="/schema/conventions/new"
+            element={<div>Editor page</div>}
+          />
+          <Route
+            path="/schema/conventions/:ns/:version"
+            element={<div>Browser page</div>}
+          />
+        </Route>
       </Routes>
     </MemoryRouter>,
   );
 }
 
-afterEach(() => vi.unstubAllGlobals());
+afterEach(() => {
+  vi.unstubAllGlobals();
+  setTenantContext({ tenant: "", dataset: "" });
+});
 
 describe("RegistryList", () => {
   it("lists registries with source, counts and read-only marker on bundled", async () => {
@@ -56,6 +66,79 @@ describe("RegistryList", () => {
     expect(screen.getByText(/Precedence:/)).toHaveTextContent(
       "acme → signaldb → otel",
     );
+  });
+
+  it("refetches registries and whoami when the active tenant changes", async () => {
+    // Mimics the shell: a top-bar tenant switch rewrites the outlet state
+    // (and the imperative header context) without unmounting the page.
+    function Harness() {
+      const [tenant, setTenant] = useState("acme-corp");
+      return (
+        <Routes>
+          <Route
+            element={
+              <Outlet
+                context={{
+                  state: { ...DEFAULT_STATE, tenant, dataset: "" },
+                  update: vi.fn(),
+                }}
+              />
+            }
+          >
+            <Route
+              path="/schema/conventions"
+              element={
+                <>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setTenantContext({ tenant: "globex", dataset: "" });
+                      setTenant("globex");
+                    }}
+                  >
+                    switch tenant
+                  </button>
+                  <RegistryList />
+                </>
+              }
+            />
+          </Route>
+        </Routes>
+      );
+    }
+    setTenantContext({ tenant: "acme-corp", dataset: "" });
+    const fetchMock = stubFetchRoutes([
+      { match: "/api/v1/whoami", body: WHOAMI_MEMBER },
+      { match: "/api/v1/schema/registries", body: REGISTRIES },
+    ]);
+    renderWithClient(
+      <MemoryRouter initialEntries={["/schema/conventions"]}>
+        <Harness />
+      </MemoryRouter>,
+    );
+    const user = userEvent.setup();
+    await screen.findByText("otel");
+    const registryCalls = () =>
+      fetchMock.mock.calls.filter(
+        ([input]) =>
+          input instanceof Request &&
+          input.url.includes("/api/v1/schema/registries"),
+      ).length;
+    const before = registryCalls();
+
+    await user.click(screen.getByRole("button", { name: "switch tenant" }));
+
+    // A new tenant is an unseen query key: it refetches at once instead of
+    // reusing the previous tenant's 60s-fresh cache entry.
+    await waitFor(() => expect(registryCalls()).toBeGreaterThan(before));
+    const lastCall = fetchMock.mock.calls
+      .filter(
+        ([input]) =>
+          input instanceof Request &&
+          input.url.includes("/api/v1/schema/registries"),
+      )
+      .at(-1)![0] as Request;
+    expect(lastCall.headers.get("X-Tenant-ID")).toBe("globex");
   });
 
   it("hides mutation actions from non-admins and shows them to tenant admins", async () => {

@@ -74,6 +74,7 @@ async fn serve_router() -> (String, common::testing::TempCatalog, common::Catalo
             &Authenticator::hash_api_key(KEY),
             Some("cli-test"),
             None,
+            None,
             Some(&["traces:write".to_string()]),
             None,
         )

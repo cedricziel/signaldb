@@ -6,12 +6,13 @@
 //! - Dry-run mode for testing
 //! - Rate limiting between batches
 
+use crate::iceberg::LiveFileSet;
 use crate::orphan::config::OrphanCleanupConfig;
 use crate::orphan::detector::{OrphanCandidate, OrphanDetector};
 use anyhow::{Context, Result};
 use object_store::path::Path as ObjectPath;
 use object_store::{ObjectStore, ObjectStoreExt};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::sync::Arc;
 
 /// Result of a deletion operation.
@@ -271,7 +272,7 @@ impl OrphanCleaner {
         // candidates the data-file set across all retained snapshots. `None`
         // marks a set that could not be built (bad identifier or load
         // failure): its candidates are skipped, never deleted blind.
-        let mut live_sets: HashMap<(&str, bool), Option<HashSet<String>>> = HashMap::new();
+        let mut live_sets: HashMap<(&str, bool), Option<LiveFileSet>> = HashMap::new();
         for candidate in batch {
             let identifier = candidate.table_identifier.as_str();
             let is_metadata = candidate.path.contains("/metadata/");

@@ -4,12 +4,17 @@ type: explanation
 status: living
 sources:
   - src/router/src/openapi.rs
-  - src/router/src/endpoints/admin.rs
+  - src/signaldb-sdk/src/ir.rs
+  - src/query-ir/src/openapi.rs
+  - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/tenant.rs
   - src/signaldb-api/src/**
   - src/common/src/tenant_api.rs
   - xtask/src/main.rs
+  - src/ui/eslint.config.js
+  - src/ui/src/api/session.ts
+  - xtask/src/tempopb.rs
   - src/ui/openapi-ts.config.ts
   - api/signaldb-api.json
 ---
@@ -34,18 +39,25 @@ flowchart LR
 ## Source of truth
 
 - **DTOs** live in [`signaldb-api`](../../src/signaldb-api/src/schemas.rs) as
-  hand-written structs deriving `utoipa::ToSchema` (admin surface) and, for the
-  management surface (tenant-admin session or `tenant:manage` key), in
-  `src/router/src/endpoints/management.rs`. Field names and serde attributes
-  define the JSON wire format; `ToSchema` makes each struct an OpenAPI
-  component.
+  hand-written structs deriving `utoipa::ToSchema` (the instance-admin
+  tenant/user DTOs under `/api/v1`) and, for the management
+  surface (tenant-admin session, `tenant:manage` key, or the break-glass
+  admin key with no tenant), in `src/router/src/endpoints/management.rs`.
+  Field names and serde attributes define the JSON wire format; `ToSchema`
+  makes each struct an OpenAPI component. `TenantResponse`,
+  `ListTenantsResponse`, and `CreateTenantRequest` are handler-local structs
+  defined directly in `endpoints/tenants.rs`, distinct from the DTOs
+  `signaldb-api` exports.
 - **Operations** are declared with `#[utoipa::path(...)]` on the handlers in
-  `endpoints/admin.rs` (`/api/v1/admin/...`, including the API-key
-  `POST`/`PATCH` bodies with their required `scopes`), `endpoints/management.rs`
-  (`/api/v1/manage/...`), `endpoints/tempo.rs` (the Tempo-compatible trace
+  `endpoints/tenants.rs` (`/api/v1/...`, instance-admin
+  tenant/user management — reachable by an instance-admin session or the
+  break-glass admin key with no tenant), `endpoints/management.rs`
+  (`/api/v1/...`, including the API-key `POST`/`PATCH` bodies with
+  their required `scopes`), `endpoints/tempo.rs` (the Tempo-compatible trace
   query endpoints under `/tempo/api/...`, whose DTOs live in `tempo-api`),
   `endpoints/query.rs` (the native Query IR endpoint `POST /api/v1/query`, whose
-  request/response DTOs are defined in that module), the PromQL/LogQL
+  request/response DTOs — including the response envelope's `QueryWarning`
+  entries — are defined in that module), the PromQL/LogQL
   instant and range query endpoints plus their label-discovery endpoints in
   `endpoints/promql.rs` (`/prometheus/api/v1/query{,_range}`, `/labels`,
   `/label/{name}/values`) and `endpoints/logql.rs`
@@ -53,23 +65,47 @@ flowchart LR
   `endpoints/ops.rs` (`/api/v1/ops/compact{,/status,/dry-run}`, admin-authenticated,
   proxied to the compactor's Flight `do_action` surface), `endpoints/oauth.rs`
   (the session-authed OAuth consent surface the explore-UI consumes —
-  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`), and
+  `GET /oauth/consent/context` and `POST /oauth/authorize/decision`),
+  `endpoints/session.rs` and `endpoints/oidc.rs` (the login page's
+  surface — the unauthenticated `GET /ui/session/config` and
+  `POST /ui/session` (login), the cookie-only `GET /ui/session`, and
+  `DELETE /ui/session` (logout, cookie optional), with their nullable
+  fields marked `required` so the generated clients type them as
+  `T | null` rather than optional — plus the SSO redirect endpoints
+  `GET /ui/session/oidc/{start,callback}`, so the UI reads the SSO
+  offering and the `granted_by` membership source through generated
+  types — change: oidc-login; and `GET /api/v1/whoami`, whose
+  `WhoamiIdentityResponse` is the handler's own response type, so it lists
+  every field served, `user`/`memberships`/`datasets`/`default_dataset`
+  included), `endpoints/github.rs` (the GitHub App
+  installation surface — `start_github_link`,
+  `list_github_installations`, `remove_github_installation`,
+  `attach_github_installation` (attaches an installation that already
+  exists on GitHub directly, for when a second tenant on the same GitHub
+  account can't complete the OAuth install flow — change:
+  github-installation-direct-attach) under
+  `/api/v1/tenants/{id}/github-installations`, plus the
+  unauthenticated `GET /ui/github/callback` install redirect declared with an
+  empty security requirement — change: github-app-source-context),
+  `endpoints/source_context.rs` (the stack-frame source lookup —
+  `source_context` on `POST /api/v1/tenants/{id}/source-context`, always
+  `200` with an available/unavailable status, and its `GET` sibling
+  `source_context_availability`; the tenant self-service prefix, not the
+  management one, since any signal reader may call it), and
   `endpoints/schema.rs` (the schema registry: `/api/v1/schema/registries`
   CRUD + `:validate`, and attribute/entity/metric resolution and prefix search
   under `/api/v1/schema/{attributes,entities,metrics}`; its resolved-definition
   DTOs derive `ToSchema` in `common::schema_registry` and `schema-model`, and
   the raw registry document is typed as an opaque object), and
-  `endpoints/tenant.rs` (the tenant self-service surface: `GET /api/v1/tenants{,/{id}}`,
+  `endpoints/tenant.rs` (tenant tables and schemas:
   `GET`/`POST /api/v1/tenants/{id}/tables{,/create}`, `GET /api/v1/tenants/{id}/schemas`,
   `GET /api/v1/schemas/available`, response DTOs in `common::tenant_api`,
   including `DatasetTables` for `ListTablesResponse`'s per-dataset grouping).
-  Paths are absolute; operationIds on the
-  management handlers are prefixed `manage_*` and their colliding component
-  schemas aliased `Manage*` (via `#[schema(as = ...)]`) so admin and manage
-  names don't clash — `tenant.rs`'s `list_tenants`/`get_tenant` collide with
-  `admin.rs`'s the same way and are aliased `list_tenants_self`/`get_tenant_self`,
-  and `common::tenant_api::ListTenantsResponse` collides with
-  `signaldb_api::ListTenantsResponse` and is aliased `TenantSelfListResponse`.
+  Paths are absolute, and operationIds are plain `<verb>_<resource>` names
+  (`list_tenants`, `create_dataset`); `endpoints/tenants.rs` owns the merged
+  tenant and user handlers. A few management DTOs that would collide with
+  `signaldb_api` types by bare name are aliased `Manage*` via
+  `#[schema(as = ...)]`.
   The same technique disambiguates the Tempo v1/v2 tag
   types in `tempo-api` (`tempo_api::TagSearchResponse` vs.
   `tempo_api::v2::TagSearchResponse`, …): utoipa registers schemas by bare
@@ -94,10 +130,8 @@ for the modules whose `router()` is a plain list of `.route(...)` calls under
 one fixed mount prefix, and diff them against a hand-maintained
 `KNOWN_ROUTES`/`ALLOWLISTED_ROUTES` pair — catching both directions of drift
 (a route added to source without an OpenAPI operation, or a stale list
-entry). `admin.rs` (assembled inline in `lib.rs::create_router`, not through
-a standalone `router()` fn) and public/infra routes (`/health`, the spec
-endpoint itself, session, OAuth) are trusted by inspection instead of
-extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
+entry). Public/infra routes (`/health`, the spec endpoint itself, the
+`/ui/session` routes, OAuth) are trusted by inspection instead of extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
 and Prometheus `label_stats`/`series` routes are `ALLOWLISTED_ROUTES` (not yet
 in the OpenAPI contract, tracked separately) rather than annotated.
 
@@ -118,10 +152,30 @@ UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date
 # CI runs the same test without the env var, so a stale spec fails the build.
 ```
 
+## What xtask generates
+
+`cargo xtask generate` produces every committed generated artifact;
+`cargo xtask check` verifies they are current and is what CI gates on. Two
+groups, sharing one `write_or_check` contract — generate to a scratch
+location, then either write the file or fail with a diff:
+
+| Artifact                                                           | From                                                                    |
+| ------------------------------------------------------------------ | ----------------------------------------------------------------------- |
+| Rust SDK (`signaldb-sdk`)                                          | `api/signaldb-api.json`                                                 |
+| TypeScript client (`src/ui/src/api/gen`)                           | `api/signaldb-api.json`                                                 |
+| `tempo-api` protobuf bindings (`src/tempo-api/src/generated/*.rs`) | `src/tempo-api/proto/tempo.proto` + the `opentelemetry-proto` submodule |
+
+The protobuf half lives here rather than in a build script because a build
+script may only write into `OUT_DIR`, and these outputs are committed. The
+previous `src/tempo-api/build.rs` wrote into the package directory and read a
+submodule outside the crate root, which meant `tempo-api` could never package
+at all; see `xtask/src/tempopb.rs`. Regenerating it needs
+`git submodule update --init opentelemetry-proto` and `protoc`, neither of
+which an ordinary `cargo build` requires any more.
+
 ## Downstream clients
 
-`cargo xtask generate` reads `api/signaldb-api.json` and regenerates both
-clients; `cargo xtask check` verifies they are current (used in CI):
+The two OpenAPI-derived clients:
 
 - **Rust SDK** (`signaldb-sdk`, consumed by `signaldb-cli` and `mcp-server`)
   via progenitor. xtask sets `with_inner_type(crate::retry::RetryPolicy)`, so
@@ -161,12 +215,16 @@ surface-parity check (`client-surface-parity` spec): every operation must
 have a CLI command and an MCP tool, or a reviewed entry in that test's
 `EXCLUDED` list explaining why not.
 
-xtask also owns one non-OpenAPI generation task: `cargo xtask vendor-semconv`
+xtask also owns two non-OpenAPI vendoring tasks. `cargo xtask vendor-semconv`
 copies the OpenTelemetry semantic-conventions `model/` tree at the version
 pinned by `common::self_monitoring::SEMCONV_SCHEMA_URL` into
 `vendor/otel-semconv/` (the source of the bundled `otel` schema registry). It
 is run by hand when the pin is bumped; a `common` test fails if the vendored
-`VERSION` and the pin disagree.
+`VERSION` and the pin disagree. `cargo xtask vendor-semconv-genai <commit>`
+does the same for the GenAI conventions (`vendor/otel-semconv-genai/`, the
+bundled `otel-genai` registry) at a full commit SHA, since that repository has
+no release tag yet, and repins `otel/registry-genai/manifest.yaml` to the
+same commit; the build fails if the two ever differ.
 
 Because the annotated paths are absolute, generated client URLs are absolute
 too — the CLI's admin client and the UI client are both configured with the
@@ -178,9 +236,19 @@ router root as their base URL.
    handler; register new paths/schemas in `router::openapi::ApiDoc`.
 2. `UPDATE_OPENAPI=1 cargo test -p router openapi_spec_is_up_to_date` to refresh
    `api/signaldb-api.json`.
-3. `cargo xtask generate` to regenerate the Rust and TypeScript clients.
+3. `cargo xtask generate` to regenerate the Rust and TypeScript clients. The
+   TypeScript half shells out to `@hey-api/openapi-ts` through pnpm, so a
+   fresh worktree needs `pnpm install --frozen-lockfile` run once at the
+   repository root before this step works (otherwise `run_openapi_ts` fails
+   fast with a message naming the missing `node_modules` directory and the
+   fix, rather than pnpm's opaque `ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL`).
 4. Consume the endpoint through the generated clients — the UI must not issue
-   raw HTTP against the API (see the DoD in `openspec/config.yaml`).
+   raw HTTP against the API (see the DoD in `openspec/config.yaml`). The UI's
+   ESLint config enforces this: a bare `fetch()`, `window.fetch()`, or
+   `globalThis.fetch()` outside `src/api/gen/**` fails
+   `pnpm --filter ./src/ui lint`. The few real transports (the generated
+   client's `retryingFetch`, the service worker) disable the rule inline with
+   a reason.
 5. Commit the code, the spec, and the regenerated clients together.
 
 CI enforces all of this: the golden test gates spec-vs-code in the Test Suite
@@ -188,6 +256,21 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 
 ## Known gaps
 
+- **The Query IR stages are typed, with caveats.** The `/api/v1/query`
+  request's `pipeline` is a list of `IrStage`, and the stage grammar is
+  published as typed `Ir*` components (`IrStage`, `IrPredicate`,
+  `IrAggregate`, …), derived from the `query-ir` types under its `openapi`
+  feature, with every variant closed to unknown keys. The router still
+  takes the stages as raw JSON and the querier validates them, so a client
+  built from an older document sees a new stage rejected client-side, not by
+  the server. `IrMatch.spansets` key order is significant (declaration
+  order), which a generated `HashMap` loses: `cargo xtask generate`
+  substitutes the hand-written `signaldb_sdk::ir::IrMatch` for progenitor's,
+  so there is no generated `types::IrMatch` (or `builder::IrMatch`), and
+  fails if the spec loses the `IrMatch` schema or the output stops using
+  the replacement.
+  `IrPredicate`'s leaf/`and`/`or`/`not` shape is hand-written because
+  `Predicate` has custom serde.
 - **A nullable `$ref` (struct or enum) used to break the Rust SDK
   generator.** `Option<T>` where `T` derives `ToSchema` makes utoipa emit
   `"oneOf": [{"type": "null"}, {"$ref": "..."}]`, which progenitor's

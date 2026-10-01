@@ -109,7 +109,7 @@ Each component implements a Flight service:
 - **Acceptor**: no Flight server; acts as a Flight client forwarding data to the Writer
 - **IcebergWriterFlightService**: Receives data from Acceptor and writes to Iceberg tables
 - **QuerierFlightService**: Executes queries against storage and returns results
-- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight
+- **SignalDBFlightService** (Router): Exposes HTTP API and forwards requests to Querier via Flight. It also writes uploaded eval results (`POST /api/v1/evals/results`) to a Writer as logs batches, through the same `common::flight::forward::forward_batch_to_writer` `DoPut` the Acceptor uses; unlike the Acceptor it keeps no WAL, so the upload is durable once the Writer acks
 - **CompactorFlightService**: Admin-only `DoAction` interface for compaction management
 
 ### 4.3 External Flight Interface
@@ -157,21 +157,36 @@ Any other `do_get` ticket (including `find_trace:...`, `search_traces:...`, and 
 
 **Querier** (`parse_ticket` in `src/querier/src/flight.rs`) -- `do_get` tickets use this grammar:
 
-| Ticket                                                                       | Description                                                                                                                                                                                                                                                                                   |
-| ---------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]`         | Single trace lookup; the optional trailing segments are unix-second time hints (either may be empty) that prune the scanned range. Routers only append them when a hint is present, so the 3-part form remains valid. A missing trace yields a Flight `not_found` status, not an empty stream |
-| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}`                   | Trace search (`SearchQueryParams` as JSON; unknown fields are ignored on deserialization)                                                                                                                                                                                                     |
-| `trace_tags:{tenant_slug}:{dataset_slug}:{params_json}`                      | Trace tag-name discovery (`TraceTagsParams` as JSON: nanosecond start/end, optional `scope`). Returns keys observed in the window (resource/span) plus the fixed intrinsics, grouped by scope (#1073)                                                                                         |
-| `trace_tag_values:{tenant_slug}:{dataset_slug}:{tag}:{params_json}`          | Distinct values of one (unscoped) trace tag in the window (`TraceTagValuesParams` as JSON: nanosecond start/end). `status`/`kind` return their static enum; an unknown tag returns an empty list, never an error (#1073)                                                                      |
-| `query_logs:{tenant_slug}:{dataset_slug}:{params_json}`                      | LogQL log query (`LogQueryParams` as JSON: LogQL string, nanosecond start/end, limit, direction). Returns the projected log columns ordered by timestamp                                                                                                                                      |
-| `query_logs_labels:{tenant_slug}:{dataset_slug}:{start}:{end}`               | Log label names in the nanosecond window                                                                                                                                                                                                                                                      |
-| `query_logs_label_values:{tenant_slug}:{dataset_slug}:{label}:{start}:{end}` | Distinct values of one log label in the window                                                                                                                                                                                                                                                |
-| `query_logs_series:{tenant_slug}:{dataset_slug}:{params_json}`               | Series (label sets) matching a stream selector (`LogSeriesParams` as JSON)                                                                                                                                                                                                                    |
-| `query_logs_detected_fields:{tenant_slug}:{dataset_slug}:{params_json}`      | Attribute-field discovery: sampled keys with inferred type and approximate cardinality (`DetectedFieldsParams` as JSON)                                                                                                                                                                       |
-| `query_metric:{tenant_slug}:{dataset_slug}:{params_json}`                    | LogQL metric query (`MetricQueryParams` as JSON: LogQL string, nanosecond start/end, step). Returns a matrix bucketed by `date_bin(step)`                                                                                                                                                     |
-| `query_promql:{tenant_slug}:{dataset_slug}:{params_json}`                    | PromQL query (`PromQlQueryParams` as JSON: PromQL string, nanosecond start/end, step). Returns a matrix over the metrics tables                                                                                                                                                               |
-| `query_ir:{tenant_slug}:{dataset_slug}:{params_json}`                        | Native Query IR (`IrQueryParams` as JSON: a versioned IR `document` plus the server-stamped `now_ns` for deterministic relative-time resolution). The querier validates and lowers the single-signal IR to a DataFusion plan; returns the declared `rows`/`series`/`table` envelope           |
-| anything else                                                                | Treated as a raw SQL query executed via DataFusion                                                                                                                                                                                                                                            |
+| Ticket                                                                       | Description                                                                                                                                                                                                                                                                                                                                                                   |
+| ---------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `find_trace:{tenant_slug}:{dataset_slug}:{trace_id}[:{start}:{end}]`         | Single trace lookup; the optional trailing segments are unix-second time hints (either may be empty) that prune the scanned range. Routers only append them when a hint is present, so the 3-part form remains valid. A missing trace yields a Flight `not_found` status, not an empty stream                                                                                 |
+| `search_traces:{tenant_slug}:{dataset_slug}:{params_json}`                   | Trace search (`SearchQueryParams` as JSON; unknown fields are ignored on deserialization)                                                                                                                                                                                                                                                                                     |
+| `trace_tags:{tenant_slug}:{dataset_slug}:{params_json}`                      | Trace tag-name discovery (`TraceTagsParams` as JSON: nanosecond start/end, optional `scope`). Returns keys observed in the window (resource/span) plus the fixed intrinsics, grouped by scope (#1073)                                                                                                                                                                         |
+| `trace_tag_values:{tenant_slug}:{dataset_slug}:{tag}:{params_json}`          | Distinct values of one (unscoped) trace tag in the window (`TraceTagValuesParams` as JSON: nanosecond start/end). `status`/`kind` return their static enum; an unknown tag returns an empty list, never an error (#1073)                                                                                                                                                      |
+| `query_logs:{tenant_slug}:{dataset_slug}:{params_json}`                      | LogQL log query (`LogQueryParams` as JSON: LogQL string, nanosecond start/end, limit, direction). Returns the projected log columns ordered by timestamp                                                                                                                                                                                                                      |
+| `query_logs_labels:{tenant_slug}:{dataset_slug}:{start}:{end}`               | Log label names in the nanosecond window                                                                                                                                                                                                                                                                                                                                      |
+| `query_logs_label_values:{tenant_slug}:{dataset_slug}:{label}:{start}:{end}` | Distinct values of one log label in the window                                                                                                                                                                                                                                                                                                                                |
+| `query_logs_series:{tenant_slug}:{dataset_slug}:{params_json}`               | Series (label sets) matching a stream selector (`LogSeriesParams` as JSON)                                                                                                                                                                                                                                                                                                    |
+| `query_logs_detected_fields:{tenant_slug}:{dataset_slug}:{params_json}`      | Attribute-field discovery: sampled keys with inferred type and approximate cardinality (`DetectedFieldsParams` as JSON)                                                                                                                                                                                                                                                       |
+| `query_metric:{tenant_slug}:{dataset_slug}:{params_json}`                    | LogQL metric query (`MetricQueryParams` as JSON: LogQL string, nanosecond start/end, step). Returns a matrix bucketed by `date_bin(step)`                                                                                                                                                                                                                                     |
+| `query_ir:{tenant_slug}:{dataset_slug}:{params_json}`                        | Native Query IR (`IrQueryParams` as JSON: a versioned IR `document` plus the server-stamped `now_ns` for deterministic relative-time resolution). The querier validates and lowers the single-signal IR to a DataFusion plan; returns the declared `rows`/`series`/`table` envelope, or a one-row `flamegraph_json`/`graph_json` batch for the `flamegraph`/`graph` envelopes |
+| anything else                                                                | Treated as a raw SQL query executed via DataFusion                                                                                                                                                                                                                                                                                                                            |
+
+Whichever ticket a query arrives on, it executes in a session built by
+`querier::session_config_from` from `[querier.datafusion]`. Those options are
+not merely a tuning surface: `split_file_groups_by_statistics` is what allows an
+ordered scan over files that attest the table's
+[declared sort order](storage-layout.md#declared-sort-order) to skip a sort it
+would otherwise have to perform. Whether that ordering survives from the scan to
+the physical plan depends on the options and optimizer rules actually in force,
+so the function is public and the ordering tests plan against it rather than
+against a session of their own — a rule that quietly dropped the ordering would
+break no result, it would only make queries slow again. The same section also
+carries the query's scan shape (`batch_size`, `target_partitions`,
+`sort_spill_reservation_mb`) — the shared
+`common::datafusion_runtime::ScanShape` the compactor applies too, so a
+sort's unspillable per-batch reservation stays inside whatever memory pool
+the querier is running under (#1359).
 
 The standalone querier binary additionally serves Tempo's `tempopb.Querier`
 gRPC protocol on the same port as Flight (see the
@@ -184,8 +199,8 @@ There is no `trace_by_id?id=...` ticket form at the Querier; that command exists
 
 The `query_ir` ticket is lowered by `src/querier/src/query/ir_planner.rs` into a DataFusion `DataFrame`; see [the Query IR reference](../users/querying-ir.md) for the document shape. A few lowering details are worth knowing before touching that planner:
 
-- **Multi-table sources union via a provider, not a projection.** `SourcePlan` scans a list of physical tables (`tables`, not a single `table`) — e.g. `metrics` unions `metrics_gauge` + `metrics_sum` — and unions them onto `row_defaults` when there is more than one. When the tables disagree on a column's physical type (legacy JSON-string attribute container vs. typed `Map`), the mismatching table's scan is wrapped in a `CoercedTableProvider` (JSON→Map via the `ir_json_to_map` UDF, or a cast) _before_ the union, rather than as a projection expression: DataFusion 54's `optimize_projections` mis-orders pushed-down projections under a `UNION` whose inputs mix columns and expressions (upstream issue, tracked as #1206).
-- **`metrics_histogram` breaks the lazy `DataFrame` chain.** Its terminal `histogram_quantile` stage merges bucket-array columns element-wise, which isn't expressible as a DataFusion aggregate, so it `.collect()`s the filtered/bucketed rows, reuses the bucket-merge/interpolation functions the PromQL `histogram_quantile()` path calls (`querier::query::histogram`, shared so both surfaces return identical percentiles), and reinjects the small aggregated result as a fresh in-memory `DataFrame` shaped like `aggregate`'s `step` output — so every downstream stage and the response builder need no histogram-specific handling.
+- **Metric Series reduce through `metric_ops`, shared with PromQL.** `histogram_quantile`/`histogram_fraction` plan through `metric_ops::histogram_series` and the range functions (`rate`, `increase`, `irate`, `*_over_time`) through `metric_ops::range_series` (`src/querier/src/query/metric_ops/`), the same planners the Prometheus endpoints use, so both surfaces return identical values. Each series, keyed by `coalesce(series_id, fingerprint)`, is reduced at evaluation instants `t = from + k·step` as a DataFusion aggregate before any `by` grouping folds series together.
+- **Result columns are aliased through `safe_ident` and referenced as literal identifiers.** `common::query_ir::safe_ident` (`src/query-ir/src/alias.rs`) is shared with the router, which reads the columns back out of the batches by the same alias. Never reference them with `col()`: it lowercases an unquoted identifier, which used to 500 a mixed-case group key (#1070).
 - **Exception attributes on traces resolve via a dedicated UDF, not a span attribute.** Per the exceptions-on-spans convention, `exception.type`/`.message`/`.stacktrace`/`.escaped` on the `traces` source resolve through a new `Resolved::EventAttribute` variant: the `ir_event_attr` DataFusion UDF parses the span's stored `events` JSON array (`common::model::span::parse_span_events`), finds the first event named `exception`, and extracts the key from its own attributes. A span with no such event resolves the field absent, even when `status.code = Error`. Logs need no equivalent — per exceptions-on-logs semconv, the same four names are ordinary LogRecord attributes there.
 - **Physical column names stay unaddressable.** The resolver's `is_physical_name` check (backed by the logical schema's physical-name set, which replaced an earlier static `STORAGE_DENYLIST`) rejects any field name that would address Iceberg storage directly, in predicates, grouping, ordering, and projections alike.
 
@@ -212,7 +227,8 @@ convention of its own, so it is modeled as plain gRPC: spans are named by the
 fully-qualified logical method, disambiguated by a low-cardinality detail
 segment where one exists —
 `arrow.flight.protocol.FlightService/DoGet query_ir` (Querier, ticket verb),
-`…/DoPut` (Writer), `…/DoAction compact_dry_run` (Compactor, action type) —
+`…/DoPut` (Writer), `…/DoAction flush` (Writer, action type),
+`…/DoAction compact_dry_run` (Compactor, action type) —
 and carry `rpc.system.name = grpc`, `rpc.method`, and the string
 `rpc.response.status_code`. Status mapping follows the RPC semconv asymmetry:
 a server span is marked failed only for server-fault gRPC codes (`UNKNOWN`,
@@ -240,6 +256,35 @@ metadata:
 | gRPC request metadata headers                         | Router → Querier `do_get`               | inject / extract      |
 | HTTP request headers                                  | external caller → Router query APIs     | extract (server side) |
 | Span links                                            | WAL batch fan-in (background processor) | link                  |
+
+The same `do_put` `app_metadata` JSON also carries `ingest_id`, a content
+fingerprint of the batch: an xxh3-128 hash of tenant, dataset, WAL operation
+and the Arrow IPC bytes, formatted as a uuid (`retry_dedup::batch_fingerprint`
+in the acceptor). The handler stores it in the acceptor WAL entry's metadata
+next to the routing fields, so the hot path and the WAL retry consumer forward
+the entry under the same id. Two entries holding byte-identical batches share
+an `ingest_id`, which is what lets the writer drop a client's resend (an OTLP
+exporter retrying after its own timeout) even when it lands in a different
+acceptor WAL entry, at another acceptor replica, or after an acceptor restart.
+Acceptor WAL entries written before the field existed carry no stored id, and
+the retry consumer forwards those under their WAL entry id.
+
+The acceptor picks the destination writer for a `do_put` by rendezvous
+(highest random weight) hashing on `ingest_id` instead of round-robin, so every
+copy of a batch reaches the same writer as long as the writer set is
+unchanged; see `InMemoryFlightTransport::get_client_for_capability_keyed`. That
+writer remembers each id for `[writer].ingest_dedup_window` (default 1h) and
+rebuilds the cache from its own WAL at startup; a repeat is acked and its WAL
+entries marked processed, so it is never committed. `ingest_id` is absent for
+acceptors that predate the field, which fall back to non-deduped behavior; a
+present-but-unparseable id is rejected with `invalid_argument`.
+
+Each acceptor also keeps a per-process cache of the fingerprints it flushed in
+the last `[acceptor].retry_dedup_window` (default 5m). It is a cheap first
+line: a resend that returns to the same acceptor is acked and retired without
+a Flight round trip or a second writer WAL append. `0s` disables that cache
+only; the writer's dedup still applies. Both caches live in
+`common::ingest_dedup`.
 
 **Write path.** At `do_put` the Writer records the active span's context into
 the WAL entry metadata alongside the routing fields. Because the background
@@ -300,7 +345,7 @@ sequenceDiagram
     A->>A: convert to Arrow (otlp_traces_to_arrow)
     A->>A: append to Acceptor WAL + flush
     A->>W: Flight DoPut (Arrow batches)
-    W->>W: transform v1 to physical-v3, append to Writer WAL
+    W->>W: transform v1 to physical-v4, append to Writer WAL
     W-->>A: confirm
     A->>A: mark WAL entry processed
     A-->>C: acknowledge
@@ -312,9 +357,11 @@ sequenceDiagram
 2. Acceptor converts OTLP to Arrow format using `otlp_traces_to_arrow`
 3. Acceptor appends the batch to its WAL and flushes for durability
 4. Acceptor uses Flight `DoPut` to send Arrow data to Writer (Storage capability)
-5. Writer transforms to the physical-v3 storage schema (function name says "v2" for historical reasons; the target version is a hardcoded literal bumped alongside `schemas.toml`'s `current_trace_version`, not resolved dynamically) and appends to its own WAL. This transform resolves a materialization plan once per schema version (`compiled-schema-materializer`) rather than dispatching per field per batch — see the `flight-schemas` skill.
+5. Writer transforms to the physical-v4 intermediate storage shape (function name says "v2" for historical reasons; it resolves a fixed `"physical-v4"` literal, same as the logs transform's `"physical-v3"` — **not** `SCHEMA_DEFINITIONS.current_trace_version()`, now `physical-v5`, the typed attribute layout: this transform's only job is bridging the wire's v1 shape to the last pre-typed version, and the typed-container splitting that carries a batch from there to whatever the table's actual current schema is happens generically afterward, in `IcebergTableWriter::append_batches_with_marker`) and appends to its own WAL — the WAL of the batch's own tenant/dataset/signal, one instance per combination, so a poisoned segment or a slow flush on the append path does not block another tenant's `do_put` (the background drain over those WALs commits groups concurrently, so a tenant whose Iceberg round trip is slow no longer delays another tenant's commit in the same cycle). This transform resolves a materialization plan once per schema version (`compiled-schema-materializer`) rather than dispatching per field per batch — see the `flight-schemas` skill.
 6. Writer confirms after its WAL flush (it does **not** block the confirm on the Iceberg commit); Acceptor marks its WAL entry as processed
 7. Writer's `WalProcessor` asynchronously commits WAL entries to Iceberg (Parquet in the object store), **coalescing** pending entries per `(tenant, dataset, table)` — a group commits when `[writer].commit_interval` elapses or its rows reach `[writer].max_uncommitted_rows`. This caps the Iceberg snapshot / catalog-metadata write rate independent of ingest rate.
+
+Steps 5 and 7 route the same batch at different times — once to pick its WAL, once to pick its Iceberg table — so both call the writer's single `routing::route`. It trims the metadata tenant/dataset ids, substitutes the deployment default for a blank or absent one, and validates the result; the commit path falls back to the ids of the WAL the entry lives in, which are what routing already returned on ingest. Before this was shared (#1319), a padded or empty metadata tenant landed in one WAL and committed under a different Iceberg tenant, so a row's destination depended on whether it was committed live or replayed after a restart. Signal-to-table mapping lives in the same function: one table per signal, except metrics, which honour the metadata's `target_table` and otherwise fall back to `metrics` (the wide table). A target naming one of the five legacy per-type tables (an entry written before the cutover, committed after) is redirected to `metrics`.
 
 Because the commit is asynchronous, ingested data is queryable only once committed (bounded by `commit_interval`). A caller needing read-your-writes forces an immediate commit with the Writer Flight `do_action("flush")` (advertised via `list_actions`). The action is **tenant-scoped**: the scope is taken from the request's `x-tenant-id` (required) and `x-dataset-id` (optional) gRPC metadata — the same tenant identity the ingest path carries — and it force-commits only that tenant's (optionally that dataset's) pending groups. A request without `x-tenant-id` is rejected, so a caller can neither flush every tenant nor a tenant it names only in the payload. Tests use `common::testing::flush_storage_writers(transport, tenant, dataset)` for a deterministic barrier.
 
@@ -339,6 +386,32 @@ sequenceDiagram
 3. Querier executes query using DataFusion against Parquet files
 4. Results streamed back to client via Flight → HTTP
 
+**Query report trailer.** Some outcomes of a Query IR query are known only
+once its stream has run: a `correlate` stage's row or fan-out cap, its target
+scan window, and the traces a `match` stage found cut by the range. The
+querier sends them after the last batch in one data-free `FlightData` message
+whose `app_metadata` is `correlate_report:` followed by the JSON of
+`common::flight::QueryReport` (`correlate_report_trailer`). The router strips
+that message from the stream and turns the report into `QueryWarning`s.
+Every member is optional and unknown members are ignored, so a router and a
+querier from adjacent releases understand each other in either rollout
+order: a member the reader does not know only loses its warning.
+
+**Parquet footer caching.** Step 3 is dominated by _opening_ candidate Parquet
+files rather than by reading them: pruning (partition, statistics, bloom)
+already reduces a point lookup to a handful of bytes, while every candidate
+file's footer still has to be fetched and decoded, one object-store round-trip
+each. The querier's session therefore installs
+`common::parquet_metadata_cache::CacheParquetMetadata`, a physical optimizer
+rule that makes every Parquet scan read footers through the shared
+`RuntimeEnv`'s metadata cache. DataFusion only wires that cache up on its own
+`ListingTable` path, so scans from the Iceberg table provider would otherwise
+re-read every footer on every query. The cache is sized by
+`[querier].parquet_metadata_cache_mb` (`0` disables it), lives on the one
+`RuntimeEnv` shared by every per-request session, and is safe because Iceberg
+data files are immutable — DataFusion still revalidates each hit against the
+current object metadata.
+
 ### 5.2 Schema Design ✅ **Implemented**
 
 Flight schemas are defined in `src/common/src/flight/schema.rs` with conversions for:
@@ -355,14 +428,29 @@ substitute it when they re-derive `service_name` from `resource_json` —
 because the Iceberg `service_name` column is non-nullable and a missing
 attribute must not dead-letter the batch.
 Metric values that JSON cannot carry — NaN (Prometheus's staleness marker,
-`0/0` rates) and ±Inf — travel in the v1 `data_json` as the strings `"NaN"`,
+`0/0` rates) and ±Inf — travel in the wire `data_json` as the strings `"NaN"`,
 `"+Inf"`, `"-Inf"` (`common::flight::conversion::f64_to_json` /
 `json_to_f64`), never as `null`; the writer maps them back to the same
-non-finite doubles, and a data point with no value at all lands as NaN. This
-keeps the non-nullable `value` columns of `metrics_gauge`/`metrics_sum`
-satisfiable, so one such point can no longer make the writer reject a whole
-batch and pin its WAL entry forever (#1061). Histogram `explicit_bounds` keep
-a `+Inf` bound for the same reason.
+non-finite doubles, distinct from a JSON `null`, which lands as a null
+`metrics.value` (nullable in `physical-v4`). This distinction means a NaN or
+Inf reading can no longer make the writer reject a whole batch and pin its
+WAL entry forever (#1061). Histogram `explicit_bounds` keep a `+Inf` bound
+for the same reason.
+The reverse direction, OTLP → Prometheus series
+(`conversion_prometheus::from_otel`), downsamples exponential histograms to
+classic `_bucket`/`_count`/`_sum` series: bucket `i` of scale `s` gets upper
+bound `base^(i+1)` with `base = 2^(2^-s)` (negative buckets `-base^i`), and
+the zero bucket folds into the lowest bound (#748).
+A related isolation applies one step later, at the Iceberg commit itself:
+`IcebergTableWriter::append_batches_with_marker` prepares (transforms and
+coerces) every WAL entry in a commit group independently and returns a
+`CommitOutcome { committed, rejected }` rather than failing the whole group
+on the first entry it cannot shape into the table. A rejected entry retires
+immediately via `Wal::dead_letter_rejected`; its healthy same-cycle
+neighbours still commit together in one all-or-nothing Iceberg transaction.
+One poison entry can therefore no longer block its neighbours from
+committing, or make a caller's `do_action("flush")` fail once the poison
+entry is retired (W2, writer review 2026-08-23).
 The writer's per-`do_put` "Received data" line is `DEBUG`; per-request
 handler lines on the acceptor are `DEBUG` too — steady-state `INFO` shows WAL
 batch commits, not individual requests.
@@ -390,10 +478,10 @@ written — the failure mode `dropped_*_count` fell into silently before
 issue #1208. `transform_trace_v1_to_v2`, `transform_logs_v1_to_iceberg`, and
 `transform_profiles_v1_to_iceberg` additionally self-check this at runtime,
 each iterating its own resolved schema's field list with an exhaustive
-match that errors on an unhandled name. The five metrics transforms build
-columns positionally against their own hand-written
-`create_metrics_*_arrow_schema()` functions with no such runtime check, so
-the test-level check is these five tables' only guard.
+match that errors on an unhandled name. `transform_metrics_to_wide` and
+`transform_metric_exemplars` build columns positionally against their resolved
+`metrics.physical-v4`/`metric_exemplars.physical-v4` schemas with no such
+runtime check, so the test-level check is these two tables' only guard.
 
 ### 5.3 Service Discovery Integration ✅ **Implemented**
 
@@ -531,4 +619,4 @@ Current implementation provides:
 
 The Flight-based architecture with WAL integration provides a solid, production-ready foundation for observability data processing at scale.
 
-> The writer's `do_put` v1→storage transformation resolves materialized-label allowlists per tenant (a tenant schema override replaces the global set).
+> The writer's `do_put` v1→storage transformation resolves materialized-label allowlists per tenant (a list set in the tenant's schema block replaces that signal's global list).

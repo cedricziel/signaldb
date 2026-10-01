@@ -10,16 +10,54 @@ pub mod password;
 pub mod session;
 pub mod validation;
 
-pub use authenticator::Authenticator;
+pub use authenticator::{Authenticator, SESSION_TTL};
 pub use middleware::{TenantContextExtractor, admin_auth_middleware, auth_middleware};
 pub use password::{
     PasswordError, SESSION_TOKEN_PREFIX, generate_session_token, hash_password, hash_session_token,
     verify_password,
 };
-pub use session::{SESSION_COOKIE, session_token_from_headers};
-pub use validation::{
-    ValidationError, validate_dataset_id, validate_id, validate_scopes, validate_tenant_id,
+pub use session::{
+    SESSION_COOKIE, cleared_session_cookie_header, renewed_cookie_header, session_cookie_header,
+    session_token_from_headers,
 };
+pub use validation::{
+    ValidationError, parse_bearer_token, validate_dataset_id, validate_id, validate_scopes,
+    validate_tenant_id,
+};
+
+/// Hash a high-entropy credential (API key, session token, OAuth token) with
+/// SHA-256, returning lowercase hex. Shared by [`Authenticator::hash_api_key`],
+/// [`password::hash_session_token`], and [`oauth::hash_oauth_token`], which
+/// all hash server-generated random values the same deterministic way so a
+/// presented credential can be looked up by hashing it.
+pub fn sha256_hex(credential: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(credential.as_bytes());
+    hex::encode(hasher.finalize())
+}
+
+/// Mint a prefixed, high-entropy opaque credential: `prefix` followed by
+/// `n_bytes` of OS randomness, URL-safe base64 without padding. Shared by
+/// [`password::generate_session_token`], [`oauth::generate_oauth_token`] and
+/// the router's GitHub link-flow state tokens.
+///
+/// # Panics
+///
+/// Panics if the OS random number generator fails — a predictable credential
+/// would be a security vulnerability, and RNG failure is not recoverable here.
+pub fn generate_prefixed_token(prefix: &str, n_bytes: usize) -> String {
+    use base64::Engine;
+    use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+    use rand::TryRng;
+
+    let mut bytes = vec![0u8; n_bytes];
+    if let Err(error) = rand::rngs::SysRng.try_fill_bytes(&mut bytes) {
+        panic!("OS random number generator failed while generating {prefix} token: {error}");
+    }
+    let encoded = URL_SAFE_NO_PAD.encode(bytes);
+    format!("{prefix}{encoded}")
+}
 
 /// Scope granting read access to the schema registry (registries, attribute /
 /// entity / metric lookups). A read scope: OAuth grants it by default.
@@ -31,6 +69,28 @@ pub const SCHEMA_WRITE_SCOPE: &str = "schema:write";
 /// Both schema-registry scopes.
 pub const SCHEMA_SCOPES: [&str; 2] = [SCHEMA_READ_SCOPE, SCHEMA_WRITE_SCOPE];
 
+/// Scope granting read access to tenant OTTL processors (list/get/validate/
+/// test). A read scope: OAuth grants it by default.
+pub const PROCESSORS_READ_SCOPE: &str = "processors:read";
+
+/// Scope granting mutation of tenant OTTL processors (create/replace/
+/// delete). Never OAuth-grantable.
+pub const PROCESSORS_WRITE_SCOPE: &str = "processors:write";
+
+/// Both processor scopes.
+pub const PROCESSORS_SCOPES: [&str; 2] = [PROCESSORS_READ_SCOPE, PROCESSORS_WRITE_SCOPE];
+
+/// Scope granting read access to eval sets (list/get). A read scope: OAuth
+/// grants it by default.
+pub const EVALS_READ_SCOPE: &str = "evals:read";
+
+/// Scope granting mutation of eval sets (create/replace/delete/append).
+/// Never OAuth-grantable.
+pub const EVALS_WRITE_SCOPE: &str = "evals:write";
+
+/// Both eval scopes.
+pub const EVALS_SCOPES: [&str; 2] = [EVALS_READ_SCOPE, EVALS_WRITE_SCOPE];
+
 /// Per-signal ingest scopes enforced by the acceptor; a key carrying
 /// `<signal>:write` may ingest that signal (see [`TenantContext::can_ingest`]).
 pub const INGEST_SCOPES: [&str; 4] = [
@@ -40,16 +100,27 @@ pub const INGEST_SCOPES: [&str; 4] = [
     "profiles:write",
 ];
 
+/// Per-signal read scopes, in the traces/logs/metrics/profiles order
+/// `GET /api/v1/connection` and the MCP `connection_info` tool present to
+/// callers (a different order from [`INGEST_SCOPES`], which is
+/// metrics/logs/traces/profiles). Also the source of
+/// `router::endpoints::session::OtlpGrpcEndpoint::signals`, stripped of the
+/// `:read` suffix.
+pub const SIGNAL_READ_SCOPES: [&str; 4] =
+    ["traces:read", "logs:read", "metrics:read", "profiles:read"];
+
 /// Read scopes granted over the query surface (e.g. the MCP read tools) and
 /// grantable through OAuth consent. A token or key carrying `<signal>:read`
 /// may read that signal (see [`TenantContext::can_read`]); `schema:read`
 /// covers the schema registry.
-pub const READ_SCOPES: [&str; 5] = [
-    "traces:read",
-    "logs:read",
-    "metrics:read",
-    "profiles:read",
+pub const READ_SCOPES: [&str; 7] = [
+    SIGNAL_READ_SCOPES[0],
+    SIGNAL_READ_SCOPES[1],
+    SIGNAL_READ_SCOPES[2],
+    SIGNAL_READ_SCOPES[3],
     SCHEMA_READ_SCOPE,
+    PROCESSORS_READ_SCOPE,
+    EVALS_READ_SCOPE,
 ];
 
 /// Scope granting an API key self-management of the tenant it belongs to
@@ -60,10 +131,10 @@ pub const READ_SCOPES: [&str; 5] = [
 pub const TENANT_MANAGE_SCOPE: &str = "tenant:manage";
 
 /// The complete API-key scope vocabulary: `INGEST_SCOPES ∪ READ_SCOPES ∪
-/// SCHEMA_SCOPES ∪ {TENANT_MANAGE_SCOPE}`. Every key-management surface
+/// SCHEMA_SCOPES ∪ PROCESSORS_SCOPES ∪ EVALS_SCOPES ∪ {TENANT_MANAGE_SCOPE}`. Every key-management surface
 /// (admin API, management API, CLI, MCP, UI) accepts exactly these; see
 /// [`validate_scopes`].
-pub const API_KEY_SCOPES: [&str; 11] = [
+pub const API_KEY_SCOPES: [&str; 15] = [
     "metrics:write",
     "logs:write",
     "traces:write",
@@ -74,6 +145,10 @@ pub const API_KEY_SCOPES: [&str; 11] = [
     "profiles:read",
     SCHEMA_READ_SCOPE,
     SCHEMA_WRITE_SCOPE,
+    PROCESSORS_READ_SCOPE,
+    PROCESSORS_WRITE_SCOPE,
+    EVALS_READ_SCOPE,
+    EVALS_WRITE_SCOPE,
     TENANT_MANAGE_SCOPE,
 ];
 
@@ -102,8 +177,21 @@ pub struct TenantContext {
     /// Explicit API-key scopes. `None` denotes a legacy unrestricted key or
     /// a human session; `Some` is always enforced.
     pub api_key_scopes: Option<Vec<String>>,
-    /// Dataset restriction carried by a database-backed API key.
-    pub api_key_dataset_id: Option<String>,
+    /// Dataset-set restriction carried by a database-backed API key or OAuth
+    /// grant (D1). `None` is unrestricted; `Some` names the exact set the
+    /// credential may access — see [`dataset_allowed`].
+    pub api_key_dataset_ids: Option<Vec<String>>,
+    /// The resolved OAuth access token's complete grant set (every tenant,
+    /// not just the one this request selected), for callers that need to
+    /// enumerate it (e.g. `whoami`'s `granted_tenants`, change:
+    /// mcp-multi-tenant-oauth-grants D4/D5). `None` for an API key or a
+    /// browser session — those credential kinds have no OAuth grant.
+    pub oauth_tenant_grants: Option<Vec<crate::catalog::TenantGrant>>,
+    /// Allowed-origin restriction carried by a database-backed API key for
+    /// browser CORS enforcement. `None` (or an empty set) is unrestricted;
+    /// `Some` non-empty names the exact set of `Origin` values the credential
+    /// may be used from — see [`origin_allowed`].
+    pub api_key_allowed_origins: Option<Vec<String>>,
     /// Human user ID when the request was authenticated with a user session.
     pub user_id: Option<String>,
     /// Tenant role when the request was authenticated with a user session.
@@ -133,7 +221,9 @@ impl TenantContext {
             dataset_slug,
             api_key_name,
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -142,14 +232,25 @@ impl TenantContext {
         }
     }
 
-    /// Attach authorization restrictions from a database-backed API key.
+    /// Attach authorization restrictions from a database-backed API key or
+    /// OAuth grant.
     pub fn with_api_key_restrictions(
         mut self,
         scopes: Option<Vec<String>>,
-        dataset_id: Option<String>,
+        dataset_ids: Option<Vec<String>>,
+        allowed_origins: Option<Vec<String>>,
     ) -> Self {
         self.api_key_scopes = scopes;
-        self.api_key_dataset_id = dataset_id;
+        self.api_key_dataset_ids = dataset_ids;
+        self.api_key_allowed_origins = allowed_origins;
+        self
+    }
+
+    /// Attach an OAuth access token's complete grant set (change:
+    /// mcp-multi-tenant-oauth-grants D4/D5). Set for every OAuth-resolved
+    /// context, single-tenant or multi-tenant alike.
+    pub fn with_oauth_tenant_grants(mut self, grants: Vec<crate::catalog::TenantGrant>) -> Self {
+        self.oauth_tenant_grants = Some(grants);
         self
     }
 
@@ -216,10 +317,7 @@ impl TenantContext {
         if !self.can_write() {
             return false;
         }
-        let required = format!("{signal}:write");
-        self.api_key_scopes
-            .as_ref()
-            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+        self.has_scope_or_unrestricted(&format!("{signal}:write"))
     }
 
     /// Whether this principal may read a particular telemetry signal.
@@ -229,27 +327,54 @@ impl TenantContext {
     /// matching `<signal>:read` scope is required — write scopes do not grant
     /// read. This mirrors [`can_ingest`](Self::can_ingest) on the query side.
     pub fn can_read(&self, signal: &str) -> bool {
-        let required = format!("{signal}:read");
-        self.api_key_scopes
-            .as_ref()
-            .is_none_or(|scopes| scopes.iter().any(|scope| scope == &required))
+        self.has_scope_or_unrestricted(&format!("{signal}:read"))
     }
 
     /// Whether this principal may read the schema registry.
-    ///
-    /// Any membership role may read; a legacy key with no explicit scopes is
-    /// unrestricted; explicit scopes must contain [`SCHEMA_READ_SCOPE`].
     pub fn can_read_schema(&self) -> bool {
-        self.has_scope_or_unrestricted(SCHEMA_READ_SCOPE)
+        self.can_read_resource(SCHEMA_READ_SCOPE)
     }
 
     /// Whether this principal may create, replace, validate, or delete custom
     /// schema registries.
-    ///
-    /// Sessions need tenant Admin or instance-admin; keys follow the same
-    /// shape as [`can_ingest`](Self::can_ingest) with [`SCHEMA_WRITE_SCOPE`].
     pub fn can_write_schema(&self) -> bool {
-        self.can_manage_tenant() && self.has_scope_or_unrestricted(SCHEMA_WRITE_SCOPE)
+        self.can_write_resource(SCHEMA_WRITE_SCOPE)
+    }
+
+    /// Whether this principal may read tenant OTTL processors.
+    pub fn can_read_processors(&self) -> bool {
+        self.can_read_resource(PROCESSORS_READ_SCOPE)
+    }
+
+    /// Whether this principal may create, replace, validate, or delete
+    /// tenant OTTL processors.
+    pub fn can_write_processors(&self) -> bool {
+        self.can_write_resource(PROCESSORS_WRITE_SCOPE)
+    }
+
+    /// Whether this principal may read eval sets.
+    pub fn can_read_evals(&self) -> bool {
+        self.can_read_resource(EVALS_READ_SCOPE)
+    }
+
+    /// Whether this principal may create, replace, delete, or append to
+    /// eval sets.
+    pub fn can_write_evals(&self) -> bool {
+        self.can_write_resource(EVALS_WRITE_SCOPE)
+    }
+
+    /// Read access to a tenant resource: any membership role may read; a
+    /// legacy key with no explicit scopes is unrestricted; explicit scopes
+    /// must contain `scope`.
+    fn can_read_resource(&self, scope: &str) -> bool {
+        self.has_scope_or_unrestricted(scope)
+    }
+
+    /// Write access to a tenant resource: sessions need tenant Admin or
+    /// instance-admin ([`can_manage_tenant`](Self::can_manage_tenant)), and
+    /// keys must be unrestricted or carry `scope`.
+    fn can_write_resource(&self, scope: &str) -> bool {
+        self.can_manage_tenant() && self.has_scope_or_unrestricted(scope)
     }
 
     fn has_scope_or_unrestricted(&self, required: &str) -> bool {
@@ -277,6 +402,165 @@ impl std::fmt::Display for TenantSource {
     }
 }
 
+/// Whether `requested` is permitted under a credential's dataset-set
+/// restriction (D3). `None` is unrestricted — every dataset is allowed;
+/// `Some` only allows the datasets it names.
+pub fn dataset_allowed(restriction: Option<&[String]>, requested: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(ids) => ids.iter().any(|d| d == requested),
+    }
+}
+
+/// Whether `requested` (a browser `Origin` header value) is permitted under
+/// a credential's allowed-origins restriction. `None`, or an empty set, is
+/// unrestricted — every origin is allowed; `Some` non-empty only allows the
+/// exact origins it names.
+pub fn origin_allowed(restriction: Option<&[String]>, requested: &str) -> bool {
+    match restriction {
+        None => true,
+        Some(origins) => origins.is_empty() || origins.iter().any(|o| o == requested),
+    }
+}
+
+/// Error resolving a dataset against a credential's dataset-set restriction
+/// when the request itself supplied no explicit dataset (D4).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DatasetRestrictionError {
+    /// The explicitly requested dataset is outside the restriction.
+    NotAllowed,
+    /// No explicit dataset was requested and the restriction names two or
+    /// more datasets, so there is no principled default to fall back to.
+    Ambiguous,
+}
+
+impl std::fmt::Display for DatasetRestrictionError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            DatasetRestrictionError::NotAllowed => {
+                write!(
+                    f,
+                    "requested dataset is outside the credential's restriction"
+                )
+            }
+            DatasetRestrictionError::Ambiguous => write!(
+                f,
+                "credential is restricted to multiple datasets; a dataset must be specified explicitly"
+            ),
+        }
+    }
+}
+
+impl std::error::Error for DatasetRestrictionError {}
+
+/// Resolve which dataset a request should use given a credential's
+/// dataset-set restriction (D3/D4).
+///
+/// 1. An explicit request dataset is always checked against the
+///    restriction via [`dataset_allowed`]; outside the set is
+///    [`DatasetRestrictionError::NotAllowed`], regardless of how many
+///    elements the restriction has.
+/// 2. No explicit request dataset, no restriction: `Ok(None)`, telling the
+///    caller to fall through to the tenant default exactly as today.
+/// 3. No explicit request dataset, a single-element restriction: resolves
+///    to that element — today's exact behavior for a single-`dataset_id`
+///    bound key, preserved so a legacy key (migrated to a one-element set)
+///    keeps working identically without a header.
+/// 4. No explicit request dataset, a restriction naming two or more
+///    datasets: [`DatasetRestrictionError::Ambiguous`] — there is no
+///    principled default among several allowed datasets.
+pub fn resolve_dataset_restriction(
+    restriction: Option<&[String]>,
+    requested: Option<&str>,
+) -> Result<Option<String>, DatasetRestrictionError> {
+    if let Some(requested) = requested {
+        return if dataset_allowed(restriction, requested) {
+            Ok(Some(requested.to_string()))
+        } else {
+            Err(DatasetRestrictionError::NotAllowed)
+        };
+    }
+    match restriction {
+        None => Ok(None),
+        Some([single]) => Ok(Some(single.clone())),
+        Some(_) => Err(DatasetRestrictionError::Ambiguous),
+    }
+}
+
+#[cfg(test)]
+mod dataset_restriction_tests {
+    use super::*;
+
+    #[test]
+    fn dataset_allowed_is_unrestricted_when_none() {
+        assert!(dataset_allowed(None, "x"));
+    }
+
+    #[test]
+    fn dataset_allowed_checks_membership() {
+        let restriction = vec!["a".to_string(), "b".to_string()];
+        assert!(dataset_allowed(Some(&restriction), "a"));
+        assert!(!dataset_allowed(Some(&restriction), "c"));
+    }
+
+    #[test]
+    fn origin_allowed_is_unrestricted_when_none_or_empty() {
+        assert!(origin_allowed(None, "https://example.com"));
+        assert!(origin_allowed(Some(&[]), "https://example.com"));
+    }
+
+    #[test]
+    fn origin_allowed_checks_membership() {
+        let restriction = vec![
+            "https://a.example".to_string(),
+            "https://b.example".to_string(),
+        ];
+        assert!(origin_allowed(Some(&restriction), "https://a.example"));
+        assert!(!origin_allowed(Some(&restriction), "https://c.example"));
+    }
+
+    #[test]
+    fn resolve_with_explicit_dataset_checks_restriction_regardless_of_size() {
+        let restriction = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&restriction), Some("a")),
+            Ok(Some("a".to_string()))
+        );
+        assert_eq!(
+            resolve_dataset_restriction(Some(&restriction), Some("c")),
+            Err(DatasetRestrictionError::NotAllowed)
+        );
+        let single = vec!["a".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&single), Some("b")),
+            Err(DatasetRestrictionError::NotAllowed)
+        );
+    }
+
+    #[test]
+    fn resolve_with_no_restriction_and_no_explicit_dataset_falls_through() {
+        assert_eq!(resolve_dataset_restriction(None, None), Ok(None));
+    }
+
+    #[test]
+    fn resolve_with_single_element_restriction_and_no_explicit_dataset_resolves_to_it() {
+        let single = vec!["production".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&single), None),
+            Ok(Some("production".to_string()))
+        );
+    }
+
+    #[test]
+    fn resolve_with_multi_element_restriction_and_no_explicit_dataset_is_ambiguous() {
+        let restriction = vec!["a".to_string(), "b".to_string()];
+        assert_eq!(
+            resolve_dataset_restriction(Some(&restriction), None),
+            Err(DatasetRestrictionError::Ambiguous)
+        );
+    }
+}
+
 #[cfg(test)]
 mod scoped_authorization_tests {
     use super::*;
@@ -290,7 +574,7 @@ mod scoped_authorization_tests {
             Some("collector".into()),
             TenantSource::Database,
         )
-        .with_api_key_restrictions(scopes, Some("production".into()))
+        .with_api_key_restrictions(scopes, Some(vec!["production".into()]), None)
     }
 
     #[test]
@@ -473,6 +757,138 @@ mod scoped_authorization_tests {
     }
 
     #[test]
+    fn processors_read_scope_allows_only_processors_reads() {
+        let reader = context(Some(vec![PROCESSORS_READ_SCOPE.into()]));
+        assert!(reader.can_read_processors());
+        assert!(!reader.can_write_processors());
+        assert!(!reader.can_read("traces"));
+    }
+
+    #[test]
+    fn processors_write_scope_allows_writes_but_not_reads() {
+        let writer = context(Some(vec![PROCESSORS_WRITE_SCOPE.into()]));
+        assert!(writer.can_write_processors());
+        assert!(!writer.can_read_processors());
+    }
+
+    #[test]
+    fn ingest_only_key_cannot_touch_processors() {
+        let ingest = context(Some(vec!["traces:write".into()]));
+        assert!(!ingest.can_read_processors());
+        assert!(!ingest.can_write_processors());
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_have_full_processors_access() {
+        let legacy = context(None);
+        assert!(legacy.can_read_processors());
+        assert!(legacy.can_write_processors());
+    }
+
+    #[test]
+    fn sessions_read_processors_with_any_role_and_write_only_as_admin() {
+        use crate::catalog::MembershipRole;
+        for (role, may_write) in [
+            (MembershipRole::Viewer, false),
+            (MembershipRole::Member, false),
+            (MembershipRole::Admin, true),
+        ] {
+            let session =
+                context(None).with_user("user-1".into(), role, false, Some("session-1".into()));
+            assert!(
+                session.can_read_processors(),
+                "{role:?} must read processors"
+            );
+            assert_eq!(session.can_write_processors(), may_write, "{role:?} write");
+        }
+        let instance_admin = context(None).with_user(
+            "root".into(),
+            MembershipRole::Viewer,
+            true,
+            Some("session-2".into()),
+        );
+        assert!(instance_admin.can_read_processors());
+        assert!(instance_admin.can_write_processors());
+    }
+
+    #[test]
+    fn processors_read_is_a_read_scope_but_processors_write_is_not() {
+        assert!(READ_SCOPES.contains(&PROCESSORS_READ_SCOPE));
+        assert!(!READ_SCOPES.contains(&PROCESSORS_WRITE_SCOPE));
+        assert_eq!(
+            PROCESSORS_SCOPES,
+            [PROCESSORS_READ_SCOPE, PROCESSORS_WRITE_SCOPE]
+        );
+    }
+
+    #[test]
+    fn evals_read_scope_allows_only_eval_reads() {
+        let reader = context(Some(vec![EVALS_READ_SCOPE.into()]));
+        assert!(reader.can_read_evals());
+        assert!(!reader.can_write_evals());
+        assert!(!reader.can_read("traces"));
+        assert!(!reader.can_read_processors());
+    }
+
+    #[test]
+    fn evals_write_scope_allows_writes_but_not_reads() {
+        let writer = context(Some(vec![EVALS_WRITE_SCOPE.into()]));
+        assert!(writer.can_write_evals());
+        assert!(!writer.can_read_evals());
+    }
+
+    #[test]
+    fn other_scopes_do_not_reach_evals() {
+        let other = context(Some(vec![
+            "traces:read".into(),
+            PROCESSORS_WRITE_SCOPE.into(),
+        ]));
+        assert!(!other.can_read_evals());
+        assert!(!other.can_write_evals());
+    }
+
+    #[test]
+    fn legacy_unscoped_keys_have_full_evals_access() {
+        let legacy = context(None);
+        assert!(legacy.can_read_evals());
+        assert!(legacy.can_write_evals());
+    }
+
+    #[test]
+    fn sessions_read_evals_with_any_role_and_write_only_as_admin() {
+        use crate::catalog::MembershipRole;
+        for (role, may_write) in [
+            (MembershipRole::Viewer, false),
+            (MembershipRole::Member, false),
+            (MembershipRole::Admin, true),
+        ] {
+            let session =
+                context(None).with_user("user-1".into(), role, false, Some("session-1".into()));
+            assert!(session.can_read_evals(), "{role:?} must read evals");
+            assert_eq!(session.can_write_evals(), may_write, "{role:?} write");
+        }
+        let instance_admin = context(None).with_user(
+            "root".into(),
+            MembershipRole::Viewer,
+            true,
+            Some("session-2".into()),
+        );
+        assert!(instance_admin.can_read_evals());
+        assert!(instance_admin.can_write_evals());
+    }
+
+    #[test]
+    fn evals_read_is_a_read_scope_but_evals_write_is_not() {
+        assert!(READ_SCOPES.contains(&EVALS_READ_SCOPE));
+        assert!(!READ_SCOPES.contains(&EVALS_WRITE_SCOPE));
+        assert_eq!(EVALS_SCOPES, [EVALS_READ_SCOPE, EVALS_WRITE_SCOPE]);
+        for scope in EVALS_SCOPES {
+            assert!(API_KEY_SCOPES.contains(&scope));
+            assert_eq!(validate_scopes(&[scope.to_string()]), Ok(()));
+        }
+    }
+
+    #[test]
     fn tenant_manage_is_a_key_scope_but_never_oauth_grantable() {
         assert!(API_KEY_SCOPES.contains(&TENANT_MANAGE_SCOPE));
         assert!(!READ_SCOPES.contains(&TENANT_MANAGE_SCOPE));
@@ -514,6 +930,8 @@ mod scoped_authorization_tests {
             .iter()
             .chain(READ_SCOPES.iter())
             .chain(SCHEMA_SCOPES.iter())
+            .chain(PROCESSORS_SCOPES.iter())
+            .chain(EVALS_SCOPES.iter())
             .chain(std::iter::once(&TENANT_MANAGE_SCOPE))
         {
             assert!(API_KEY_SCOPES.contains(scope), "{scope} missing");
@@ -523,6 +941,8 @@ mod scoped_authorization_tests {
                 INGEST_SCOPES.contains(&scope)
                     || READ_SCOPES.contains(&scope)
                     || SCHEMA_SCOPES.contains(&scope)
+                    || PROCESSORS_SCOPES.contains(&scope)
+                    || EVALS_SCOPES.contains(&scope)
                     || scope == TENANT_MANAGE_SCOPE,
                 "{scope} is not in any family"
             );

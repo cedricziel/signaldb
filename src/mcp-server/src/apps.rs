@@ -52,6 +52,9 @@ pub const TRACE_APP_URI: &str = "ui://signaldb/trace";
 /// URI of the single-profile flamegraph app rendered for `get_profile`.
 pub const PROFILE_APP_URI: &str = "ui://signaldb/profile";
 
+/// URI of the service-map app rendered for `get_service_map`.
+pub const SERVICE_MAP_APP_URI: &str = "ui://signaldb/service-map";
+
 /// A UI resource this server can serve.
 struct UiApp {
     /// `ui://` URI the tool's `_meta.ui.resourceUri` points at.
@@ -88,6 +91,16 @@ const APPS: &[UiApp] = &[
                       values across the call stack.",
         html: include_str!("../ui/profile.html"),
         tool_name: "get_profile",
+    },
+    UiApp {
+        uri: SERVICE_MAP_APP_URI,
+        name: "service-map",
+        title: "Service map",
+        description: "Interactive service dependency graph: nodes for each service and external \
+                      dependency, edges for the calls between them, sized by traffic and colored \
+                      by error rate.",
+        html: include_str!("../ui/service-map.html"),
+        tool_name: "get_service_map",
     },
 ];
 
@@ -389,5 +402,78 @@ mod tests {
         for needle in ["flamegraph.names", "flamegraph.levels", "offsetDelta"] {
             assert!(html.contains(needle), "app must decode `{needle}`");
         }
+    }
+
+    #[test]
+    fn service_map_app_is_listed_with_the_apps_mime_type() {
+        let resources = ui_resources();
+        let service_map = resources
+            .iter()
+            .find(|r| r.uri == SERVICE_MAP_APP_URI)
+            .expect("service map app is listed");
+        assert_eq!(service_map.mime_type.as_deref(), Some(UI_MIME_TYPE));
+        assert_eq!(service_map.name, "service-map");
+        assert!(service_map.size.is_some_and(|size| size > 0));
+    }
+
+    #[test]
+    fn reading_the_service_map_app_returns_the_html_document() {
+        let contents = read_ui_resource(SERVICE_MAP_APP_URI).expect("service map app is readable");
+        let ResourceContents::TextResourceContents {
+            uri,
+            mime_type,
+            text,
+            ..
+        } = contents
+        else {
+            panic!("UI resources are served as text, not blobs");
+        };
+        assert_eq!(uri, SERVICE_MAP_APP_URI);
+        assert_eq!(mime_type.as_deref(), Some(UI_MIME_TYPE));
+        assert!(
+            text.starts_with("<!doctype html>"),
+            "must be an HTML5 document"
+        );
+    }
+
+    /// The app is useless if it never completes the host handshake or never
+    /// listens for the payload it renders.
+    #[test]
+    fn service_map_app_speaks_the_ui_dialect() {
+        let html = read_ui_resource(SERVICE_MAP_APP_URI)
+            .and_then(|contents| match contents {
+                ResourceContents::TextResourceContents { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("service map app is readable");
+        for method in [
+            "ui/initialize",
+            "ui/notifications/initialized",
+            "ui/notifications/tool-result",
+            "ui/notifications/size-changed",
+        ] {
+            assert!(html.contains(method), "app must handle `{method}`");
+        }
+    }
+
+    /// The tool result is `{"graph": {"nodes": [...], "edges": [...]},
+    /// "summary": "..."}` (see `service_map_summary` in `server.rs`) — the
+    /// app must decode that shape, not just parrot bridge boilerplate.
+    #[test]
+    fn service_map_app_renders_the_graph_shape() {
+        let html = read_ui_resource(SERVICE_MAP_APP_URI)
+            .and_then(|contents| match contents {
+                ResourceContents::TextResourceContents { text, .. } => Some(text),
+                _ => None,
+            })
+            .expect("service map app is readable");
+        for needle in ["graph.nodes", "graph.edges", ".source", ".target"] {
+            assert!(html.contains(needle), "app must decode `{needle}`");
+        }
+    }
+
+    #[test]
+    fn tool_ui_uri_maps_get_service_map_to_the_service_map_app() {
+        assert_eq!(tool_ui_uri("get_service_map"), Some(SERVICE_MAP_APP_URI));
     }
 }

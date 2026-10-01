@@ -1,0 +1,11 @@
+file_format: definition/2
+metrics:
+  - name: widget.production.count
+    instrument: counter
+    unit: "{widget}"
+    brief: The number of widgets produced.
+    stability: development
+    entity_associations:
+      - widget
+    attributes:
+      - ref_group: widget.common

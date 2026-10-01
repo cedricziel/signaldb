@@ -1,10 +1,18 @@
 #!/usr/bin/env bash
 # check-doc-freshness.sh — map a code diff to the docs that claim to describe it.
 #
-# Scans docs/**/*.md for frontmatter with a
+# Scans docs/**/*.md and .claude/skills/*/SKILL.md for frontmatter with a
 # `sources:` list. If a changed file matches one of a doc's source globs and the
 # doc itself was not touched in the same diff, the doc is reported as possibly
 # stale. Docs with `status: record` (decision records) are exempt.
+#
+# A doc that would otherwise be reported stale can be individually acknowledged
+# via the DOC_FRESHNESS_ACK environment variable: a newline- or comma-separated
+# list of repo-relative doc paths, exactly as this script prints them. An
+# acknowledged doc that would have been stale is reported as ACK instead of
+# failing the gate. An acknowledged path that isn't a real doc (a typo) fails as
+# INVALID, so acks can't rot silently. An ack for a doc that wasn't flagged is
+# ignored.
 #
 # Usage:
 #   check-doc-freshness.sh <diff-range>   # e.g. origin/main...HEAD (CI)
@@ -14,6 +22,13 @@
 # Exit 0 if no doc debt found, 1 otherwise. Report lines go to stdout.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
+
+known_docs=$(find docs .claude/skills -name '*.md' -type f 2>/dev/null | sort)
+acked_docs=$(
+    printf '%s' "${DOC_FRESHNESS_ACK:-}" |
+        tr ',' '\n' |
+        sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//' -e '/^$/d'
+)
 
 if [[ $# -ge 1 && -n "$1" ]]; then
     changed=$(git diff --name-only "$1")
@@ -81,7 +96,7 @@ while IFS= read -r doc; do
 done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
 
 # --- Sources validation ------------------------------------------------------
-# Every `sources:` glob in every doc frontmatter must match at least one
+# Every `sources:` glob in every doc/skill frontmatter must match at least one
 # existing file; a dead glob silently opts the doc out of freshness tracking.
 while IFS= read -r doc; do
     fm=$(awk 'NR==1 && $0!="---"{exit} /^---$/{n++; next} n==1{print} n>=2{exit}' "$doc")
@@ -100,7 +115,18 @@ while IFS= read -r doc; do
             errors=1
         fi
     done <<<"$globs"
-done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
+done <<<"$known_docs"
+
+# --- Acknowledgement validation ----------------------------------------------
+# Every path in DOC_FRESHNESS_ACK must be a real doc; a typo would otherwise
+# silently fail to acknowledge anything.
+while IFS= read -r ack; do
+    [[ -z "$ack" ]] && continue
+    if ! grep -qxF "$ack" <<<"$known_docs"; then
+        echo "INVALID $ack: acknowledged via DOC_FRESHNESS_ACK but is not a known doc"
+        errors=1
+    fi
+done <<<"$acked_docs"
 
 # --- Freshness: changed sources without a doc update ------------------------
 stale=0
@@ -134,10 +160,14 @@ while IFS= read -r doc; do
     done <<<"$globs"
 
     if [[ -n "$hits" ]]; then
+        if grep -qxF "$doc" <<<"$acked_docs"; then
+            echo "ACK $doc — sources changed: $hits"
+            continue
+        fi
         echo "$doc — sources changed: $hits"
         stale=1
     fi
-done < <(find docs -name '*.md' -type f 2>/dev/null | sort)
+done <<<"$known_docs"
 
 [[ $stale -eq 1 || $errors -eq 1 ]] && exit 1
 exit 0

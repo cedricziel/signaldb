@@ -16,6 +16,7 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use common::CatalogManager;
@@ -35,6 +36,9 @@ pub struct ReconcilePassSummary {
     pub tables_created: usize,
     /// Tables that could not be provisioned; retried on the next pass.
     pub tables_failed: usize,
+    /// Legacy per-type metric tables dropped this pass (otel-native-schema
+    /// layer 7, D10 cutover).
+    pub legacy_metric_tables_dropped: usize,
 }
 
 /// Converges datasets on their enabled signal tables.
@@ -47,6 +51,14 @@ pub struct ReconcilePassSummary {
 pub struct TableReconciler {
     catalog_manager: Arc<CatalogManager>,
     ensured: Mutex<HashSet<(String, String, String)>>,
+    /// `(tenant, dataset)` pairs whose legacy metric purge fully succeeded,
+    /// so later passes skip its per-table catalog loads.
+    legacy_purged: Mutex<HashSet<(String, String)>>,
+    /// Retention for the dormant-table marker sweep (see
+    /// [`Self::retire_stale_markers`]). Zero disables it, same
+    /// convention as the writer's own commit-path sweep.
+    wal_marker_retention: Duration,
+    started_at: Instant,
 }
 
 impl TableReconciler {
@@ -54,7 +66,22 @@ impl TableReconciler {
         Self {
             catalog_manager,
             ensured: Mutex::new(HashSet::new()),
+            legacy_purged: Mutex::new(HashSet::new()),
+            wal_marker_retention: Duration::ZERO,
+            started_at: Instant::now(),
         }
+    }
+
+    /// Enable the dormant-table marker sweep (#1345): every registered
+    /// tenant/dataset table is walked here regardless of whether any cached
+    /// [`crate::storage::IcebergTableWriter`] still commits to it, so a table
+    /// that has gone dormant still has its stale WAL idempotency markers
+    /// retired. Cadence comes from the reconcile pass itself
+    /// (`[writer].table_reconcile_interval`); there is no separate sweep
+    /// interval to throttle.
+    pub fn with_marker_retention(mut self, retention: Duration) -> Self {
+        self.wal_marker_retention = retention;
+        self
     }
 
     /// Run one pass over the tenant registry.
@@ -70,33 +97,130 @@ impl TableReconciler {
             .context("Failed to enumerate tenants for table reconciliation")?;
 
         let mut summary = ReconcilePassSummary::default();
+        let mut sweep_targets: Vec<(String, String, Vec<String>)> = Vec::new();
         for tenant in tenants {
             let expected = self.catalog_manager.enabled_table_names(&tenant.id);
 
             for dataset in datasets_of(&tenant) {
+                sweep_targets.push((tenant.id.clone(), dataset.clone(), expected.clone()));
+
                 if self.is_converged(&tenant.id, &dataset, &expected).await {
                     summary.datasets_skipped += 1;
-                    continue;
+                } else {
+                    summary.datasets_checked += 1;
+                    let report = self
+                        .catalog_manager
+                        .ensure_dataset_tables(&tenant.id, &dataset)
+                        .await;
+
+                    summary.tables_created += report.created.len();
+                    summary.tables_failed += report.failed.len();
+                    record_provisioning_metrics(&tenant.id, &dataset, &report);
+
+                    let mut ensured = self.ensured.lock().await;
+                    for table in report.created.iter().chain(report.already_present.iter()) {
+                        ensured.insert((tenant.id.clone(), dataset.clone(), table.clone()));
+                    }
                 }
 
-                summary.datasets_checked += 1;
-                let report = self
+                summary.legacy_metric_tables_dropped +=
+                    self.purge_legacy_metric_tables(&tenant.id, &dataset).await;
+            }
+        }
+
+        self.retire_stale_markers(&sweep_targets).await;
+
+        Ok(summary)
+    }
+
+    /// Retire stale WAL idempotency markers on every table named in
+    /// `targets`.
+    ///
+    /// This is the dormant-table counterpart to
+    /// `WalProcessor::retire_stale_markers_if_due`, which only sweeps tables
+    /// this process still has a cached [`crate::storage::IcebergTableWriter`]
+    /// for. A table nothing writes to anymore never gets a cached writer, so
+    /// it is only ever reachable here, by walking the tenant/dataset registry
+    /// directly (#1345).
+    ///
+    /// The reconciler holds no WAL writer id of its own to protect, so
+    /// nothing is exempted by id — only the retention/undated-marker rules in
+    /// `stale_marker_keys` decide what is safe to remove. Failures are
+    /// logged and never abort the pass; an unretired marker just stays until
+    /// the next one.
+    async fn retire_stale_markers(&self, targets: &[(String, String, Vec<String>)]) {
+        if self.wal_marker_retention.is_zero() {
+            return;
+        }
+
+        let process_outlived_retention = self.started_at.elapsed() >= self.wal_marker_retention;
+        let own_writer_ids = HashSet::new();
+        let mut retired = 0usize;
+
+        for (tenant_id, dataset_id, tables) in targets {
+            for table_name in tables {
+                let table = match self
                     .catalog_manager
-                    .ensure_dataset_tables(&tenant.id, &dataset)
-                    .await;
+                    .ensure_table(tenant_id, dataset_id, table_name)
+                    .await
+                {
+                    Ok(table) => table,
+                    Err(e) => {
+                        tracing::debug!(
+                            tenant_id = %tenant_id,
+                            dataset_id = %dataset_id,
+                            table = %table_name,
+                            error = %e,
+                            "Could not load table to sweep its WAL markers this pass"
+                        );
+                        continue;
+                    }
+                };
 
-                summary.tables_created += report.created.len();
-                summary.tables_failed += report.failed.len();
-                record_provisioning_metrics(&tenant.id, &dataset, &report);
-
-                let mut ensured = self.ensured.lock().await;
-                for table in report.created.iter().chain(report.already_present.iter()) {
-                    ensured.insert((tenant.id.clone(), dataset.clone(), table.clone()));
+                match crate::storage::retire_stale_markers_on(
+                    self.catalog_manager.catalog(),
+                    &table,
+                    &own_writer_ids,
+                    self.wal_marker_retention,
+                    process_outlived_retention,
+                )
+                .await
+                {
+                    Ok(count) => retired += count,
+                    Err(e) => tracing::debug!(
+                        tenant_id = %tenant_id,
+                        dataset_id = %dataset_id,
+                        table = %table_name,
+                        error = %e,
+                        "Could not retire stale WAL markers this pass; they stay until the next one"
+                    ),
                 }
             }
         }
 
-        Ok(summary)
+        if retired > 0 {
+            tracing::info!(
+                retired,
+                "Retired WAL idempotency markers from dormant tables during a reconcile pass"
+            );
+        }
+    }
+
+    /// Drop this dataset's legacy metric tables unless an earlier pass already
+    /// did so without a failure. Returns how many were dropped.
+    async fn purge_legacy_metric_tables(&self, tenant_id: &str, dataset_id: &str) -> usize {
+        let key = (tenant_id.to_string(), dataset_id.to_string());
+        if self.legacy_purged.lock().await.contains(&key) {
+            return 0;
+        }
+        let report = self
+            .catalog_manager
+            .purge_legacy_metric_tables(tenant_id, dataset_id)
+            .await;
+        if report.failed.is_empty() {
+            self.legacy_purged.lock().await.insert(key);
+        }
+        report.dropped.len()
     }
 
     /// Whether every enabled table for this dataset was already confirmed.
@@ -204,7 +328,7 @@ mod tests {
     }
 
     fn all_signal_tables() -> usize {
-        8
+        common::iceberg::schemas::TableSchema::all().len()
     }
 
     // Task 4.1 — the reconciler must see database-created tenants, not only
@@ -395,8 +519,108 @@ mod tests {
                 datasets_skipped: 1,
                 tables_created: 0,
                 tables_failed: 0,
+                legacy_metric_tables_dropped: 0,
             },
             "a converged dataset must not be re-checked against the catalog"
+        );
+    }
+
+    // A dataset converged by an earlier pass whose legacy purge failed still
+    // has that purge retried, and only until one purge succeeds.
+    #[tokio::test]
+    async fn a_converged_dataset_retries_its_legacy_metric_purge_until_it_succeeds() {
+        let manager = Arc::new(
+            CatalogManager::new(config_with(vec![config_tenant("acme", &["production"])]))
+                .await
+                .unwrap(),
+        );
+        let reconciler = TableReconciler::new(manager.clone());
+        manager.ensure_dataset_tables("acme", "production").await;
+        {
+            let mut ensured = reconciler.ensured.lock().await;
+            for table in manager.enabled_table_names("acme") {
+                ensured.insert(("acme".to_string(), "production".to_string(), table));
+            }
+        }
+        common::testing::create_legacy_metric_table(
+            &manager,
+            "acme",
+            "production",
+            "metrics_gauge",
+        )
+        .await
+        .unwrap();
+
+        let retry = reconciler.run_pass().await.unwrap();
+        assert_eq!(retry.datasets_skipped, 1);
+        assert_eq!(retry.legacy_metric_tables_dropped, 1);
+        assert!(
+            !tables_in(&manager, "acme", "production")
+                .await
+                .contains(&"metrics_gauge".to_string())
+        );
+
+        common::testing::create_legacy_metric_table(&manager, "acme", "production", "metrics_sum")
+            .await
+            .unwrap();
+        let later = reconciler.run_pass().await.unwrap();
+        assert_eq!(
+            later.legacy_metric_tables_dropped, 0,
+            "a dataset whose purge succeeded is not purged again"
+        );
+    }
+
+    // Issue #1345 — a table that no live `IcebergTableWriter` commits to
+    // anymore (a dormant tenant/dataset) is still walked by the reconciler,
+    // so its stale markers are retired even though nothing ever writes to it
+    // again.
+    #[tokio::test]
+    async fn retires_stale_markers_on_a_table_no_writer_commits_to_anymore() {
+        use crate::storage::WAL_MARKER_PREFIX;
+        use iceberg_rust::catalog::commit::{CommitTable, TableUpdate};
+
+        let manager = Arc::new(
+            CatalogManager::new(config_with(vec![config_tenant("dormant", &["production"])]))
+                .await
+                .unwrap(),
+        );
+
+        let retention = Duration::from_secs(30 * 24 * 3600);
+        let reconciler = TableReconciler::new(manager.clone()).with_marker_retention(retention);
+        reconciler.run_pass().await.unwrap();
+
+        let identifier = manager.build_table_identifier("dormant", "production", "traces");
+        let now = common::wal::unix_now_secs();
+        let ancient = now - 60 * 24 * 3600;
+        manager
+            .catalog()
+            .update_table(CommitTable {
+                identifier: identifier.clone(),
+                requirements: Vec::new(),
+                updates: vec![TableUpdate::SetProperties {
+                    updates: std::collections::HashMap::from([
+                        (format!("{WAL_MARKER_PREFIX}gone"), format!("t={ancient}:")),
+                        (format!("{WAL_MARKER_PREFIX}live"), format!("t={now}:")),
+                    ]),
+                }],
+            })
+            .await
+            .unwrap();
+
+        reconciler.run_pass().await.unwrap();
+
+        let tabular = manager.catalog().load_tabular(&identifier).await.unwrap();
+        let iceberg_rust::catalog::tabular::Tabular::Table(table) = tabular else {
+            panic!("expected a table");
+        };
+        let properties = &table.metadata().properties;
+        assert!(
+            !properties.contains_key(&format!("{WAL_MARKER_PREFIX}gone")),
+            "a stale marker on a dormant table must be retired by the reconciler"
+        );
+        assert!(
+            properties.contains_key(&format!("{WAL_MARKER_PREFIX}live")),
+            "a marker committed within the window is still idempotency evidence"
         );
     }
 
@@ -404,6 +628,22 @@ mod tests {
     // names declared in the `registry.signaldb.tenancy` semconv group
     // (`signaldb.tenant.id` / `signaldb.dataset.id`), not bare `tenant` /
     // `dataset`, or `weaver registry live-check` flags them as unregistered.
+    // The purge itself is exercised in `common::catalog_manager`'s
+    // `purge_legacy_metric_tables` tests; this proves the reconciler's pass
+    // reports zero drops when a dataset holds no legacy tables.
+    #[tokio::test]
+    async fn run_pass_drops_no_legacy_metric_tables_when_none_exist() {
+        let manager = Arc::new(
+            CatalogManager::new(config_with(vec![config_tenant("acme", &["production"])]))
+                .await
+                .unwrap(),
+        );
+
+        let summary = TableReconciler::new(manager).run_pass().await.unwrap();
+
+        assert_eq!(summary.legacy_metric_tables_dropped, 0);
+    }
+
     #[test]
     fn provisioning_attrs_uses_registry_attribute_names() {
         let attrs = provisioning_attrs("acme", "production");

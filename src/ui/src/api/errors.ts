@@ -11,10 +11,10 @@
  * aggregate independently and merges client-side, ranked by count — the
  * same pattern as `api/dependencyBreakdown.ts`'s multi-query combine.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
-import type { VolumeSeries } from "../features/explore/SignalHistogram";
+import type { VolumeSeries } from "../components/SignalHistogram";
 
 export type ErrorSource = "traces" | "logs";
 
@@ -74,6 +74,12 @@ function timeField(source: ErrorSource): string {
 export function buildErrorGroupDoc(
   source: ErrorSource,
   range: ResolvedRange,
+  /** Pins the group query to one service — the entity detail page's own
+   * "Error groups" section (`EntityErrorGroups`), unlike the standalone
+   * Errors tab which shows every service at once. */
+  serviceName?: string,
+  /** Extra `where` stages — the Overview's environment scope. */
+  scope: IrStage[] = [],
 ): QueryIrRequest {
   return {
     irVersion: 1,
@@ -82,6 +88,12 @@ export function buildErrorGroupDoc(
     result: "table",
     pipeline: [
       { where: { field: "exception.type", op: "exists" } },
+      ...(serviceName != null
+        ? ([
+            { where: { field: "service.name", op: "eq", value: serviceName } },
+          ] satisfies IrStage[])
+        : []),
+      ...scope,
       {
         aggregate: {
           by: GROUP_DIMENSIONS,
@@ -129,10 +141,12 @@ function groupsFromResponse(
 
 export async function fetchErrorGroups(
   range: ResolvedRange,
+  serviceName?: string,
+  scope: IrStage[] = [],
 ): Promise<ErrorGroupResult> {
   const [tracesRes, logsRes] = await Promise.all([
-    runIrQuery(buildErrorGroupDoc("traces", range)),
-    runIrQuery(buildErrorGroupDoc("logs", range)),
+    runIrQuery(buildErrorGroupDoc("traces", range, serviceName, scope)),
+    runIrQuery(buildErrorGroupDoc("logs", range, serviceName, scope)),
   ]);
   const groups = [
     ...groupsFromResponse(tracesRes, "traces"),
@@ -149,7 +163,7 @@ export async function fetchErrorGroups(
  * left unconstrained. An omitted pin would let occurrence/volume queries
  * for a "no service" group match records from *any* service instead of
  * only those genuinely missing one. */
-function pin(field: string, value: string | null): Record<string, unknown> {
+function pin(field: string, value: string | null): IrStage {
   return {
     where:
       value == null
@@ -158,7 +172,7 @@ function pin(field: string, value: string | null): Record<string, unknown> {
   };
 }
 
-function pinnedWhere(group: ErrorGroup): Record<string, unknown>[] {
+function pinnedWhere(group: ErrorGroup): IrStage[] {
   return [
     {
       where: {
@@ -273,4 +287,47 @@ export async function fetchErrorGroupVolume(
 ): Promise<VolumeSeries[]> {
   const res = await runIrQuery(buildErrorGroupVolumeDoc(group, range, step));
   return volumeFromResponse(res);
+}
+
+/** `severity_number` at and above this threshold is `ERROR` per OTel's
+ * severity number ranges (17 = ERROR2, but the whole ERROR..FATAL band
+ * starts at 17) — the same cutoff `docs/users/querying-ir.md` uses. */
+const ERROR_SEVERITY_NUMBER = 17;
+
+/**
+ * The IR document counting error-or-worse log records that carry no
+ * `exception.type` attribute — the coverage gap this tab can't group,
+ * since grouping is keyed on `exception.type` (see `buildErrorGroupDoc`).
+ */
+export function buildUncoveredErrorLogCountDoc(
+  range: ResolvedRange,
+): QueryIrRequest {
+  return {
+    irVersion: 1,
+    from: "logs",
+    range: rangeDoc(range),
+    result: "table",
+    pipeline: [
+      {
+        where: {
+          field: "severity_number",
+          op: "gte",
+          value: ERROR_SEVERITY_NUMBER,
+        },
+      },
+      { where: { not: { field: "exception.type", op: "exists" } } },
+      { aggregate: { by: [], aggs: [{ fn: "count", as: "n" }] } },
+    ],
+  };
+}
+
+/** How many ERROR-or-worse log records in range aren't represented by any
+ * group on this page (see {@link buildUncoveredErrorLogCountDoc}). */
+export async function fetchUncoveredErrorLogCount(
+  range: ResolvedRange,
+): Promise<number> {
+  const res = await runIrQuery(buildUncoveredErrorLogCountDoc(range));
+  const row = res.rows?.[0] as unknown[] | undefined;
+  const n = row?.[0];
+  return typeof n === "number" ? n : 0;
 }

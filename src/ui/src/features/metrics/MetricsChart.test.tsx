@@ -1,7 +1,7 @@
 import { act, render, screen, within } from "@testing-library/react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { MetricsChart, rowsForCursorIndex } from "./MetricsChart";
-import type { PromSeries } from "../../api/prom";
+import type { PromSeries } from "../../api/ir/metrics";
 import { formatTimestamp } from "../../lib/vizFormat";
 
 // uPlot needs a real <canvas> 2D context, which jsdom doesn't implement.
@@ -10,19 +10,50 @@ import { formatTimestamp } from "../../lib/vizFormat";
 // uPlot(...)` requires a real constructor function (an arrow function can't
 // be `new`-ed), and returning an object from it overrides `this` per normal
 // JS `new` semantics — so the mock instance is exactly `{ destroy }`.
-const { destroy, uPlotCtor } = vi.hoisted(() => {
+const { destroy, setSize, uPlotCtor } = vi.hoisted(() => {
   const destroy = vi.fn();
+  const setSize = vi.fn();
   const uPlotCtor = vi.fn(function uPlotMock(
     _opts: unknown,
     _data: unknown,
     _host: unknown,
   ) {
-    return { destroy };
+    return { destroy, setSize };
   });
-  return { destroy, uPlotCtor };
+  return { destroy, setSize, uPlotCtor };
 });
 vi.mock("uplot", () => ({ default: uPlotCtor }));
 vi.mock("uplot/dist/uPlot.min.css", () => ({}));
+
+/**
+ * A controllable `ResizeObserver` stand-in — unlike the global stub in
+ * `src/test/setup.ts` (which fires once, synchronously, from `observe()`),
+ * this only reports a size when the test calls `trigger()`, so debouncing
+ * and "only redraw on an actual change" behavior can be asserted directly.
+ */
+class ManualResizeObserver implements ResizeObserver {
+  static instances: ManualResizeObserver[] = [];
+  private readonly cb: ResizeObserverCallback;
+  disconnected = false;
+
+  constructor(cb: ResizeObserverCallback) {
+    this.cb = cb;
+    ManualResizeObserver.instances.push(this);
+  }
+
+  observe() {}
+  unobserve() {}
+  disconnect() {
+    this.disconnected = true;
+  }
+
+  trigger(width: number) {
+    this.cb(
+      [{ contentRect: { width } } as ResizeObserverEntry],
+      this as unknown as ResizeObserver,
+    );
+  }
+}
 
 const SERIES: PromSeries[] = [
   {
@@ -37,6 +68,8 @@ const SERIES: PromSeries[] = [
 afterEach(() => {
   uPlotCtor.mockClear();
   destroy.mockClear();
+  setSize.mockClear();
+  ManualResizeObserver.instances = [];
 });
 
 describe("MetricsChart", () => {
@@ -55,6 +88,83 @@ describe("MetricsChart", () => {
       'http_requests_total{service_name="router"}',
     );
     expect(data).toBeInstanceOf(Array);
+  });
+
+  it("draws the grid and ticks from the theme's border/dim colours, not uPlot defaults", () => {
+    render(<MetricsChart series={SERIES} />);
+    const [opts] = uPlotCtor.mock.calls[0]! as unknown as [
+      { axes: { stroke?: string; grid?: { stroke?: string } }[] },
+    ];
+    // jsdom has no real CSS cascade for custom properties, so the resolved
+    // value is the `cssColor` fallback — the point is that it's *resolved*
+    // (present, not `undefined`/a uPlot default), not which colour it is.
+    expect(opts.axes[0]?.stroke).toBeTruthy();
+    expect(opts.axes[0]?.grid?.stroke).toBeTruthy();
+  });
+
+  it("routes the y-axis ticks through the unit-aware formatter", () => {
+    render(<MetricsChart series={SERIES} unit="By" />);
+    const [opts] = uPlotCtor.mock.calls[0]! as unknown as [
+      {
+        axes: {
+          values?: (
+            u: unknown,
+            splits: (number | null)[],
+          ) => (string | null)[];
+        }[];
+      },
+    ];
+    const values = opts.axes[1]?.values;
+    expect(values).toBeTypeOf("function");
+    expect(values!(null, [0, 2_097_152, null])).toEqual([
+      "0 B",
+      "2 MB",
+      null,
+    ]);
+  });
+
+  it("widens the y-axis gutter to fit the series' longest formatted label", () => {
+    const wide: PromSeries[] = [
+      { labels: {}, points: [[0, 536_870_912]] }, // "512 MB"
+    ];
+    const narrow: PromSeries[] = [{ labels: {}, points: [[0, 1]] }]; // "1"
+    render(<MetricsChart series={narrow} unit="By" />);
+    const narrowSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    uPlotCtor.mockClear();
+    render(<MetricsChart series={wide} unit="By" />);
+    const wideSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    expect(wideSize).toBeGreaterThan(narrowSize!);
+  });
+
+  // The gutter was sized from `compactCount` of the *magnitude* alone, so a
+  // negative tick's leading "-" (e.g. "-1.5K" vs "1.5K") had no room budgeted
+  // for it and could clip.
+  it("widens the y-axis gutter to fit a negative tick's leading sign", () => {
+    const positive: PromSeries[] = [{ labels: {}, points: [[0, 1500]] }]; // "1.5K"
+    const negative: PromSeries[] = [{ labels: {}, points: [[0, -1500]] }]; // "-1.5K"
+    render(<MetricsChart series={positive} />);
+    const positiveSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    uPlotCtor.mockClear();
+    render(<MetricsChart series={negative} />);
+    const negativeSize = (
+      uPlotCtor.mock.calls[0]![0] as { axes: { size?: number }[] }
+    ).axes[1]?.size;
+    expect(negativeSize).toBeGreaterThan(positiveSize!);
+  });
+
+  it("rebuilds the chart when the theme changes", async () => {
+    render(<MetricsChart series={SERIES} />);
+    expect(uPlotCtor).toHaveBeenCalledTimes(1);
+
+    document.documentElement.setAttribute("data-theme", "dark");
+    await vi.waitFor(() => expect(uPlotCtor).toHaveBeenCalledTimes(2));
+    document.documentElement.removeAttribute("data-theme");
   });
 
   it("destroys the chart on unmount", () => {
@@ -87,6 +197,61 @@ function fakePlot(idx: number | null) {
   };
 }
 
+describe("MetricsChart container resize", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.stubGlobal("ResizeObserver", ManualResizeObserver);
+  });
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  });
+
+  it("resizes the plot in place when its own container changes size, without a window resize", () => {
+    render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+
+    observer.trigger(640);
+    vi.runAllTimers();
+
+    expect(setSize).toHaveBeenCalledWith({ width: 640, height: 260 });
+    // Resized in place, not torn down and rebuilt.
+    expect(uPlotCtor).toHaveBeenCalledTimes(1);
+    expect(destroy).not.toHaveBeenCalled();
+  });
+
+  it("debounces rapid container size changes into a single resize", () => {
+    render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+
+    observer.trigger(500);
+    observer.trigger(550);
+    observer.trigger(600);
+    vi.runAllTimers();
+
+    expect(setSize).toHaveBeenCalledTimes(1);
+    expect(setSize).toHaveBeenCalledWith({ width: 600, height: 260 });
+  });
+
+  it("skips a no-op resize report at the same width", () => {
+    render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+
+    observer.trigger(1200); // matches host.clientWidth used at construction
+    vi.runAllTimers();
+
+    expect(setSize).not.toHaveBeenCalled();
+  });
+
+  it("disconnects the observer on unmount", () => {
+    const { unmount } = render(<MetricsChart series={SERIES} />);
+    const observer = ManualResizeObserver.instances[0]!;
+    unmount();
+    expect(observer.disconnected).toBe(true);
+  });
+});
+
 describe("rowsForCursorIndex", () => {
   it("names the timestamp and lists every series with swatch and value", () => {
     const { title, rows } = rowsForCursorIndex(fakePlot(2), 2, "req/s");
@@ -106,6 +271,82 @@ describe("rowsForCursorIndex", () => {
       muted: true,
     });
     expect(rows[1]?.value).toBe("2.25");
+  });
+
+  it("caps at 10 rows, largest first, summarizing the rest in a footer", () => {
+    const seriesCount = 14;
+    const plot = {
+      data: [
+        [0],
+        // Series i's value is i — series 13 (the largest) must survive the
+        // cap; series 0 (the smallest) must not.
+        ...Array.from({ length: seriesCount }, (_, i) => [i]),
+      ],
+      series: [
+        {},
+        ...Array.from({ length: seriesCount }, (_, i) => ({
+          label: `s${i}`,
+          stroke: "red",
+        })),
+      ],
+      cursor: { idx: 0, left: 0, top: 0 },
+      over: document.createElement("div"),
+    };
+    const { rows, footer } = rowsForCursorIndex(plot, 0);
+    expect(rows).toHaveLength(10);
+    expect(rows[0]?.label).toBe("s13");
+    expect(rows.map((r) => r.label)).not.toContain("s0");
+    expect(footer).toBe("+4 more");
+  });
+
+  it("caps by magnitude, not raw value, so a large negative outlier survives the cut", () => {
+    const seriesCount = 12;
+    const plot = {
+      data: [
+        [0],
+        // Series 0 is a large-magnitude negative (e.g. a delta) — sorting by
+        // raw value descending would put it last; sorting by magnitude keeps
+        // it near the top alongside the largest positive series.
+        [-1000],
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => [i + 1]),
+      ],
+      series: [
+        {},
+        { label: "big-negative", stroke: "red" },
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => ({
+          label: `s${i + 1}`,
+          stroke: "blue",
+        })),
+      ],
+      cursor: { idx: 0, left: 0, top: 0 },
+      over: document.createElement("div"),
+    };
+    const { rows } = rowsForCursorIndex(plot, 0);
+    expect(rows.map((r) => r.label)).toContain("big-negative");
+  });
+
+  it("still ranks a missing sample last under magnitude sorting, not first", () => {
+    const seriesCount = 12;
+    const plot = {
+      data: [
+        [0],
+        [null], // a gap — must not out-rank real values just because
+        // `Math.abs` of its sentinel could otherwise look huge.
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => [i + 1]),
+      ],
+      series: [
+        {},
+        { label: "gap", stroke: "red" },
+        ...Array.from({ length: seriesCount - 1 }, (_, i) => ({
+          label: `s${i + 1}`,
+          stroke: "blue",
+        })),
+      ],
+      cursor: { idx: 0, left: 0, top: 0 },
+      over: document.createElement("div"),
+    };
+    const { rows } = rowsForCursorIndex(plot, 0);
+    expect(rows.map((r) => r.label)).not.toContain("gap");
   });
 });
 

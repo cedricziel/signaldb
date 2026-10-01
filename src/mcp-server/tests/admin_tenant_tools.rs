@@ -5,46 +5,15 @@
 //! clean access-denied on an unauthorized management call, and key material
 //! appearing exactly once.
 
-use axum::body::Body;
-use axum::http::{HeaderMap, Request, StatusCode};
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
-use futures::StreamExt;
-use rmcp::{ClientHandler, ServiceExt, model::ClientInfo, service::RunningService};
 use std::time::Duration;
 
+mod common;
+
+use common::{connect, mcp_request_with_key, read_jsonrpc_response, spawn_router};
 use mcp_server::server::McpServer;
 use mcp_server::{McpAppState, mcp_http_router};
-
-// ---------------------------------------------------------------------------
-// Lightweight in-process client (no HTTP layer) — for registration/schema
-// checks that never dispatch a tool call.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-struct TestClient;
-
-impl ClientHandler for TestClient {
-    fn get_info(&self) -> ClientInfo {
-        ClientInfo::default()
-    }
-}
-
-async fn connect() -> RunningService<rmcp::RoleClient, TestClient> {
-    let (server_transport, client_transport) = tokio::io::duplex(64 * 1024);
-    tokio::spawn(async move {
-        let server = McpServer::new(
-            "http://router.invalid".to_string(),
-            std::time::Duration::from_secs(5),
-        );
-        if let Ok(running) = server.serve(server_transport).await {
-            let _ = running.waiting().await;
-        }
-    });
-    TestClient
-        .serve(client_transport)
-        .await
-        .expect("client connects to the in-memory server")
-}
 
 const PLATFORM_ADMIN_TOOLS: &[&str] = &[
     "list_tenants",
@@ -76,11 +45,21 @@ const TENANT_SELF_TOOLS: &[&str] = &[
     "tenant_create_tables",
     "tenant_list_table_schemas",
     "list_available_table_schemas",
+    "tenant_start_github_link",
+    "tenant_attach_github_installation",
+    "tenant_list_github_installations",
+    "tenant_remove_github_installation",
 ];
 
 /// The tenant tools that wrap the `authorize_tenant`-gated management API:
 /// reachable by a human session with the tenant-admin role or by an API key
-/// carrying `tenant:manage`.
+/// carrying `tenant:manage`. `tenant_attach_github_installation` is
+/// deliberately excluded: unlike every other tool here, it requires
+/// instance-admin, not just `tenant:manage` (see its own tool description
+/// and `router::endpoints::github::attach_github_installation`'s doc
+/// comment for why), so it does not belong to the group this list's own
+/// test (`tenant_manage_tools_name_the_scope_and_drop_the_human_session_caveat`)
+/// asserts a uniform `tenant:manage` description contract for.
 const TENANT_MANAGE_TOOLS: &[&str] = &[
     "tenant_list_datasets",
     "tenant_create_dataset",
@@ -93,6 +72,9 @@ const TENANT_MANAGE_TOOLS: &[&str] = &[
     "tenant_upsert_membership",
     "tenant_remove_membership",
     "tenant_get_schema",
+    "tenant_start_github_link",
+    "tenant_list_github_installations",
+    "tenant_remove_github_installation",
 ];
 
 const SCHEMA_EXTRA_TOOLS: &[&str] = &["get_schema_registry", "validate_schema_registry"];
@@ -120,6 +102,7 @@ async fn destructive_and_read_only_tools_carry_the_right_annotations() {
         "tenant_delete_dataset",
         "tenant_revoke_api_key",
         "tenant_remove_membership",
+        "tenant_remove_github_installation",
     ];
     let read_only = [
         "list_tenants",
@@ -134,6 +117,7 @@ async fn destructive_and_read_only_tools_carry_the_right_annotations() {
         "tenant_list_table_schemas",
         "list_available_table_schemas",
         "get_schema_registry",
+        "tenant_list_github_installations",
     ];
 
     for name in destructive {
@@ -255,14 +239,18 @@ async fn whoami() -> Response {
         "user_id": "user-a",
         "tenant": {"id": "acme", "slug": "acme", "name": "Acme"},
         "dataset": "production",
+        "memberships": [],
+        "datasets": [],
+        "default_dataset": null,
+        "granted_tenants": [{"tenant_id": "acme"}],
     }))
     .into_response()
 }
 
 /// Behaves per path: management API-key list/create endpoints return
 /// realistic bodies (list has no key material, create does); everything
-/// under `/api/v1/manage/` with tenant `denied` returns 403; anything else
-/// gets a generic empty-success body.
+/// under `/api/v1/tenants/{tenant_id}/...` with tenant `denied` returns 403;
+/// anything else gets a generic empty-success body.
 async fn behaviour(
     headers: HeaderMap,
     uri: axum::http::Uri,
@@ -271,13 +259,17 @@ async fn behaviour(
     let path = uri.path();
     if path == "/api/v1/tenants/acme" && method == axum::http::Method::GET {
         return axum::Json(serde_json::json!({
-            "tenant_id": "acme", "enabled": true, "schema": null
+            "id": "acme",
+            "name": "Acme",
+            "source": "config",
+            "created_at": "2024-01-01T00:00:00Z",
+            "updated_at": "2024-01-01T00:00:00Z",
         }))
         .into_response();
     }
     // Scope enforcement stand-in for `authorize_tenant`: only the key that
     // carries `tenant:manage` may create a dataset.
-    if path == "/api/v1/manage/tenants/acme/datasets" && method == axum::http::Method::POST {
+    if path == "/api/v1/tenants/acme/datasets" && method == axum::http::Method::POST {
         let bearer = headers
             .get("authorization")
             .and_then(|v| v.to_str().ok())
@@ -298,10 +290,30 @@ async fn behaviour(
                 .into_response()
         };
     }
-    if path.contains("/manage/tenants/denied/") {
+    if path.contains("/tenants/denied/") {
         return (
             StatusCode::FORBIDDEN,
             axum::Json(serde_json::json!({"error": "forbidden"})),
+        )
+            .into_response();
+    }
+    // GitHub endpoints, mirroring the real router's behaviour with no
+    // `[github]` section configured: list always answers 200 with
+    // `configured: false`; start-link and remove answer 404 (see
+    // `router::endpoints::github`).
+    if path.ends_with("/github-installations") && method == axum::http::Method::GET {
+        return axum::Json(serde_json::json!({
+            "configured": false, "app_slug": null, "installations": []
+        }))
+        .into_response();
+    }
+    if (path.ends_with("/github-installations/link") && method == axum::http::Method::POST)
+        || (path.ends_with("/github-installations/attach") && method == axum::http::Method::POST)
+        || (path.contains("/github-installations/") && method == axum::http::Method::DELETE)
+    {
+        return (
+            StatusCode::NOT_FOUND,
+            axum::Json(serde_json::json!({"error": "GitHub integration is not configured"})),
         )
             .into_response();
     }
@@ -349,61 +361,7 @@ async fn spawn_mock_router() -> String {
     let app = axum::Router::new()
         .route("/api/v1/whoami", axum::routing::get(whoami))
         .fallback(behaviour);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind mock router");
-    let addr = listener.local_addr().expect("mock router address");
-    tokio::spawn(async move {
-        axum::serve(listener, app)
-            .await
-            .expect("mock router serves");
-    });
-    format!("http://{addr}")
-}
-
-fn mcp_request_with_key(
-    api_key: &str,
-    session_id: Option<&str>,
-    body: serde_json::Value,
-) -> Request<Body> {
-    let mut builder = Request::builder()
-        .method("POST")
-        .uri("/mcp")
-        .header("host", "localhost")
-        .header("authorization", format!("Bearer {api_key}"))
-        .header("x-tenant-id", "acme")
-        .header("content-type", "application/json")
-        .header("accept", "application/json, text/event-stream");
-    if let Some(session_id) = session_id {
-        builder = builder.header("mcp-session-id", session_id);
-    }
-    builder
-        .body(Body::from(body.to_string()))
-        .expect("build MCP request")
-}
-
-async fn read_jsonrpc_response(response: Response, id: u64) -> serde_json::Value {
-    let mut stream = response.into_body().into_data_stream();
-    let mut buffered = String::new();
-    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
-    loop {
-        let chunk = tokio::time::timeout_at(deadline, stream.next())
-            .await
-            .expect("response arrives before the deadline");
-        let Some(chunk) = chunk else {
-            panic!("response stream ended without a reply for id {id}: {buffered}");
-        };
-        let chunk = chunk.expect("read response chunk");
-        buffered.push_str(&String::from_utf8_lossy(&chunk));
-        for line in buffered.lines() {
-            let candidate = line.strip_prefix("data:").map(str::trim).unwrap_or(line);
-            if let Ok(value) = serde_json::from_str::<serde_json::Value>(candidate)
-                && value.get("id").and_then(|v| v.as_u64()) == Some(id)
-            {
-                return value;
-            }
-        }
-    }
+    spawn_router(app).await
 }
 
 struct McpSession {
@@ -540,6 +498,21 @@ async fn destructive_tool_without_matching_confirm_is_refused() {
         tool_is_error(&reply),
         "mismatched confirm must be refused: {reply}"
     );
+
+    let reply = session
+        .call_tool(
+            "tenant_remove_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42, "confirm": "7"}),
+        )
+        .await;
+    assert!(
+        tool_is_error(&reply),
+        "mismatched confirm must be refused: {reply}"
+    );
+    assert!(
+        tool_error_message(&reply).contains("confirm"),
+        "error must name the confirm requirement: {reply}"
+    );
 }
 
 #[tokio::test]
@@ -648,8 +621,111 @@ async fn tenant_info_returns_the_callers_tenant() {
         .await;
     assert!(!tool_is_error(&reply), "tenant_info succeeds: {reply}");
     let text = tool_error_message(&reply);
-    assert!(text.contains("\"tenant_id\""), "{text}");
+    assert!(text.contains("\"id\""), "{text}");
     assert!(text.contains("acme"), "{text}");
+}
+
+/// `tenant_list_github_installations` always succeeds, even with GitHub
+/// integration unconfigured, reporting `configured: false` rather than an
+/// error (mirrors the real router: `router::endpoints::github::list_github_installations`).
+#[tokio::test]
+async fn tenant_list_github_installations_reports_unconfigured() {
+    let mut session = McpSession::open(app().await).await;
+    let reply = session
+        .call_tool(
+            "tenant_list_github_installations",
+            serde_json::json!({"tenant_id": "acme"}),
+        )
+        .await;
+    assert!(!tool_is_error(&reply), "list succeeds: {reply}");
+    let text = tool_error_message(&reply);
+    assert!(text.contains("\"configured\":false"), "{text}");
+    assert!(text.contains("\"installations\":[]"), "{text}");
+}
+
+/// `tenant_start_github_link`, `tenant_attach_github_installation` and
+/// `tenant_remove_github_installation` all 404 when GitHub integration is
+/// not configured, which surfaces as a resource-not-found tool error
+/// (`map_sdk_err`'s generic 404 mapping — unlike a 403, this isn't
+/// special-cased by `map_manage_err`).
+#[tokio::test]
+async fn github_tools_surface_the_routers_not_configured_404() {
+    let mut session = McpSession::open(app().await).await;
+
+    let reply = session
+        .call_tool(
+            "tenant_start_github_link",
+            serde_json::json!({"tenant_id": "acme"}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+
+    let reply = session
+        .call_tool(
+            "tenant_attach_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+
+    let reply = session
+        .call_tool(
+            "tenant_remove_github_installation",
+            serde_json::json!({"tenant_id": "acme", "installation_id": 42, "confirm": "42"}),
+        )
+        .await;
+    assert!(tool_is_error(&reply), "404 must surface: {reply}");
+    assert!(tool_error_message(&reply).contains("not found"), "{reply}");
+}
+
+/// `tenant_attach_github_installation` is gated the same as every other
+/// tenant-management tool at the MCP-wrapper level: a 403 from the router
+/// surfaces as a tool error rather than succeeding silently. (The mock
+/// router here stands in for `authorize_tenant`'s generic denial and does
+/// not model the tool's stricter instance-admin requirement — that is
+/// exercised against the real router in
+/// `router::endpoints::github::tests::attach_tenant_admin_without_instance_admin_is_forbidden`
+/// and `..._api_key_without_instance_admin_is_forbidden`.)
+#[tokio::test]
+async fn tenant_attach_github_installation_is_manage_gated() {
+    let mut session = McpSession::open(app().await).await;
+    let reply = session
+        .call_tool(
+            "tenant_attach_github_installation",
+            serde_json::json!({"tenant_id": "denied", "installation_id": 42}),
+        )
+        .await;
+    assert!(
+        tool_is_error(&reply),
+        "a 403 from the router must surface as a tool error: {reply}"
+    );
+}
+
+/// Unlike every other tool in [`TENANT_MANAGE_TOOLS`], this tool's
+/// description must not claim `tenant:manage` alone is sufficient — it
+/// requires instance-admin (see `attach_github_installation`'s doc
+/// comment in the router for why a lower grant is a cross-tenant
+/// disclosure risk here specifically).
+#[tokio::test]
+async fn tenant_attach_github_installation_names_instance_admin_requirement() {
+    let client = connect().await;
+    let tools = client.list_tools(None).await.expect("tools/list succeeds");
+    let tool = tools
+        .tools
+        .iter()
+        .find(|t| t.name == "tenant_attach_github_installation")
+        .expect("tenant_attach_github_installation listed");
+    let description = tool.description.as_deref().unwrap_or_default();
+    assert!(
+        description.contains("instance-admin"),
+        "must name the instance-admin requirement: {description}"
+    );
+    assert!(
+        description.contains("NOT enough"),
+        "must say tenant:manage alone is not enough: {description}"
+    );
 }
 
 #[tokio::test]

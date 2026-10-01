@@ -1,0 +1,24 @@
+# Published to crates.io as `traceql-parser` because a bare `traceql` is the
+# name a consumer would guess, but the *import* path stays `traceql` so no
+# call site spells the package name. See openspec design D1.
+[package]
+name = "traceql-parser"
+version = "0.2.0"
+edition = "2024"
+description = "TraceQL lexer and parser"
+# Grafana Tempo, whose language this implements, is AGPL-3.0. See design D2.
+license = "AGPL-3.0"
+repository = "https://github.com/cedricziel/signaldb"
+readme = "README.md"
+documentation = "https://docs.rs/traceql-parser"
+keywords = ["traceql", "tempo", "parser", "observability", "tracing"]
+categories = ["parser-implementations", "development-tools"]
+
+[lib]
+name = "traceql"
+
+[dependencies]
+thiserror.workspace = true
+
+[lints]
+workspace = true

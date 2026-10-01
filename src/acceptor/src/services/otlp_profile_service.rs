@@ -1,13 +1,19 @@
+//! gRPC `ProfilesService` implementation — see `services` module docs for
+//! the shared shape every OTLP signal's gRPC service follows.
+
 use opentelemetry_proto::tonic::collector::profiles::v1development::{
     ExportProfilesServiceRequest, ExportProfilesServiceResponse,
     profiles_service_server::ProfilesService,
 };
 use tonic::{Request, Response, Status};
 
+use crate::handler::IngestError;
 use crate::handler::otlp_profiles_handler::ProfileHandler;
 use crate::middleware::get_tenant_context;
+use crate::type_warning::WithOffTypeWarning;
 use common::auth::TenantContext;
 use common::ratelimit::TenantRateLimiter;
+use common::schema::type_authority::TypeSnapshots;
 use common::storage_usage::StorageUsageTracker;
 use prost::Message;
 use std::sync::Arc;
@@ -18,7 +24,7 @@ pub trait ProfileHandlerTrait {
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()>;
+    ) -> Result<(), IngestError>;
 }
 
 #[async_trait::async_trait]
@@ -27,7 +33,7 @@ impl ProfileHandlerTrait for ProfileHandler {
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_profiles(tenant_context, request)
             .await
     }
@@ -37,6 +43,7 @@ pub struct ProfileAcceptorService<H: ProfileHandlerTrait> {
     handler: H,
     rate_limiter: Option<Arc<TenantRateLimiter>>,
     storage_quota: Option<Arc<StorageUsageTracker>>,
+    type_snapshots: Option<Arc<TypeSnapshots>>,
 }
 
 impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
@@ -45,6 +52,7 @@ impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
             handler,
             rate_limiter: None,
             storage_quota: None,
+            type_snapshots: None,
         }
     }
 
@@ -57,6 +65,14 @@ impl<H: ProfileHandlerTrait> ProfileAcceptorService<H> {
     /// Enforce per-tenant storage quotas on this service.
     pub fn with_storage_quota(mut self, storage_quota: Arc<StorageUsageTracker>) -> Self {
         self.storage_quota = Some(storage_quota);
+        self
+    }
+
+    /// Surface off-type attribute warnings (resource/scope only — see
+    /// `type_warning::profiles_warning`) via `partial_success`. Read-only:
+    /// this service never places values or writes `attribute_types`.
+    pub fn with_type_snapshots(mut self, type_snapshots: Arc<TypeSnapshots>) -> Self {
+        self.type_snapshots = Some(type_snapshots);
         self
     }
 }
@@ -107,6 +123,14 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
             .sum();
         let rpc_start = std::time::Instant::now();
 
+        // Computed before the handler takes ownership of the request.
+        let off_type_warning = crate::type_warning::off_type_warning(
+            self.type_snapshots.as_ref(),
+            &tenant_context,
+            "profiles",
+            &request_inner,
+        );
+
         // Anti-loop guard: processing the _system tenant's own telemetry must
         // not generate more self-monitoring telemetry.
         let handle = self
@@ -119,14 +143,25 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
                 handle.await
             };
 
-        // Reject the export if the data was not durably accepted, so the
-        // client retries instead of dropping its copy (OTLP treats
-        // UNAVAILABLE as retryable).
+        // Classify the failure (finding M3): a deterministic conversion
+        // failure is INVALID_ARGUMENT, while a WAL/durability failure
+        // stays UNAVAILABLE so the client retries instead of dropping its
+        // copy. Profile conversion is currently infallible, so this branch
+        // is exercised only by durability failures today, but the
+        // classification stays consistent with the other three signals.
         if let Err(e) = result {
-            tracing::error!(error = %e, "Failed to durably accept profiles export");
-            return Err(Status::unavailable(format!(
-                "failed to durably accept profiles export: {e:#}"
-            )));
+            return Err(match e {
+                IngestError::Invalid(err) => {
+                    tracing::warn!(error = %err, "Rejecting profiles export: invalid payload");
+                    Status::invalid_argument(format!("invalid profiles payload: {err:#}"))
+                }
+                IngestError::Unavailable(err) => {
+                    tracing::error!(error = %err, "Failed to durably accept profiles export");
+                    Status::unavailable(format!(
+                        "failed to durably accept profiles export: {err:#}"
+                    ))
+                }
+            });
         }
 
         // Anti-loop guard: _system traffic is SignalDB's own telemetry and
@@ -154,7 +189,9 @@ impl<H: ProfileHandlerTrait + Send + Sync + 'static> ProfilesService for Profile
             )],
         );
 
-        Ok(Response::new(ExportProfilesServiceResponse::default()))
+        Ok(Response::new(
+            ExportProfilesServiceResponse::with_off_type_warning(off_type_warning),
+        ))
     }
 }
 
@@ -165,7 +202,7 @@ impl ProfileHandlerTrait for crate::handler::otlp_profiles_handler::MockProfileH
         &self,
         tenant_context: &TenantContext,
         request: ExportProfilesServiceRequest,
-    ) -> anyhow::Result<()> {
+    ) -> Result<(), IngestError> {
         self.handle_grpc_otlp_profiles(tenant_context, request)
             .await
     }
@@ -181,8 +218,7 @@ mod tests {
 
     #[tokio::test]
     async fn test_profile_acceptor_service() {
-        let mut mock_handler = MockProfileHandler::new();
-        mock_handler.expect_handle_grpc_otlp_profiles();
+        let mock_handler = MockProfileHandler::new();
 
         let service = ProfileAcceptorService::new(mock_handler);
 
@@ -212,7 +248,9 @@ mod tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,
@@ -253,7 +291,9 @@ mod tests {
             dataset_slug: "test-dataset".to_string(),
             api_key_name: Some("test-key".to_string()),
             api_key_scopes: None,
-            api_key_dataset_id: None,
+            api_key_dataset_ids: None,
+            oauth_tenant_grants: None,
+            api_key_allowed_origins: None,
             user_id: None,
             role: None,
             is_instance_admin: false,

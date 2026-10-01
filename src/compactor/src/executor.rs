@@ -255,7 +255,9 @@ impl CompactionExecutor {
         ParquetRewriter::warn_on_incoherent_memory_config(&catalog_manager.config().compactor);
 
         let committer = IcebergCommitter::new(catalog_manager.clone());
-        let rewriter = ParquetRewriter::new(catalog_manager);
+        let value_sketch_size = catalog_manager.config().compactor.value_sketch_size;
+        let mut rewriter = ParquetRewriter::new(catalog_manager);
+        rewriter.set_value_sketch_size(value_sketch_size);
 
         Self {
             committer,
@@ -367,7 +369,7 @@ impl CompactionExecutor {
 
     /// Execute a compaction job, retrying conflicts and transient failures
     async fn execute_job_with_retry(&self, job: CompactionJob) -> Result<CompactionResult> {
-        self.metrics.record_job_start();
+        self.metrics.record_job_start(&job_scope(&job));
         self.run_with_retry(&job, |_attempt| self.execute_job(&job))
             .await
     }
@@ -409,6 +411,7 @@ impl CompactionExecutor {
                     }
 
                     self.metrics.record_job_success(
+                        &job_scope(job),
                         result.input_files_count,
                         result.output_files_count,
                         result.bytes_before,
@@ -461,7 +464,8 @@ impl CompactionExecutor {
                         );
                     }
 
-                    self.metrics.record_job_failure();
+                    self.metrics
+                        .record_job_failure(&job_scope(job), class.label());
 
                     return Ok(CompactionResult {
                         job_id: job.job_id.clone(),
@@ -649,6 +653,11 @@ impl CompactionExecutor {
     pub fn metrics(&self) -> &CompactionMetrics {
         &self.metrics
     }
+}
+
+/// The label set a job's metrics are counted under.
+fn job_scope(job: &CompactionJob) -> crate::metrics::JobScope {
+    crate::metrics::JobScope::new(&job.tenant_id, &job.dataset_id, &job.table_name)
 }
 
 #[cfg(test)]

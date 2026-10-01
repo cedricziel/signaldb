@@ -84,13 +84,13 @@ async fn setup_logs_test() -> (axum::Router, Arc<WalManager>, TempDir) {
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {
@@ -111,6 +111,7 @@ async fn setup_logs_test() -> (axum::Router, Arc<WalManager>, TempDir) {
             schema_config: None,
             limits: None,
         }],
+        dataset_restriction_rollout_complete: false,
     };
 
     let service_bootstrap = ServiceBootstrap::new(
@@ -140,9 +141,17 @@ async fn setup_logs_test() -> (axum::Router, Arc<WalManager>, TempDir) {
     let storage_usage =
         Arc::new(common::storage_usage::StorageUsageTracker::from_auth_config(&auth_config));
 
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(auth_config, catalog));
 
-    let log_handler = Arc::new(LogHandler::new(flight_transport, wal_manager.clone()));
+    let log_handler = Arc::new(LogHandler::new(
+        flight_transport,
+        wal_manager.clone(),
+        processor_registry,
+    ));
 
     let app = logs_http_router(authenticator, log_handler, rate_limiter, storage_usage);
 

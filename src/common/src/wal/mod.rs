@@ -1,7 +1,17 @@
+pub mod dead_letter;
+pub mod framing;
+pub mod manager;
+pub mod rlimit;
+
 use anyhow::{Context, Result};
 use datafusion::arrow::record_batch::RecordBatch;
+use framing::{
+    DATA_RECORD_HEADER_LEN, LOG_RECORD_HEADER_LEN, SEGMENT_HEADER_LEN, SegmentFormat,
+    data_record_header, detect_segment_format, log_record_header, parse_log_record_header,
+    segment_header, validate_data_record,
+};
 use serde::{Deserialize, Serialize};
-use std::collections::VecDeque;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -63,6 +73,21 @@ impl WalOperation {
             WalOperation::Flush => "flush",
         }
     }
+
+    /// The inverse of [`Self::signal`]: the write operation for an ingest
+    /// signal name, for a caller that only has the string (the `wal
+    /// dead-letter replay` subcommand's `--signal` flag). `None` for
+    /// anything that is not a write signal, including `"flush"` — a
+    /// dead-lettered entry is always a write, never a flush marker.
+    pub fn from_signal(signal: &str) -> Option<Self> {
+        match signal {
+            "traces" => Some(WalOperation::WriteTraces),
+            "logs" => Some(WalOperation::WriteLogs),
+            "metrics" => Some(WalOperation::WriteMetrics),
+            "profiles" => Some(WalOperation::WriteProfiles),
+            _ => None,
+        }
+    }
 }
 
 /// WAL segment containing multiple entries
@@ -95,30 +120,44 @@ pub struct WalSegment {
     /// into an O(1) lookup; without it those scans dominated CPU on hosts
     /// with large, not-yet-compacted segments (issue #1112).
     entry_index: rustc_hash::FxHashMap<Uuid, usize>,
+    /// On-disk layout of this segment (see [`framing`]). Only [`SegmentFormat::V1`]
+    /// segments accept appends; legacy segments are read-only survivors that
+    /// compaction rewrites into v1.
+    format: SegmentFormat,
 }
 
 impl WalSegment {
+    /// The `.log`/`.data`/`.index` file paths for a segment id in `wal_dir`.
+    fn segment_paths(wal_dir: &Path, segment_id: u64) -> (PathBuf, PathBuf, PathBuf) {
+        (
+            wal_dir.join(format!("wal-{segment_id:010}.log")),
+            wal_dir.join(format!("wal-{segment_id:010}.data")),
+            wal_dir.join(format!("wal-{segment_id:010}.index")),
+        )
+    }
+
     /// Create a new WAL segment
     pub async fn new(wal_dir: &Path, segment_id: u64) -> Result<Self> {
         create_dir_all(wal_dir).await?;
 
-        let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
-        let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
-        let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
+        let (path, data_path, index_path) = Self::segment_paths(wal_dir, segment_id);
 
         // Opened for writing without O_APPEND: `append` seeks to the entry's
         // authoritative offset before writing (see `append`), so O_APPEND —
         // which forces every write to the physical EOF regardless of the
         // recorded offset — must not be set (issue #865).
-        let file = Some(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&path)
-                .await
-                .context("Failed to create WAL segment file")?,
-        );
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .await
+            .context("Failed to create WAL segment file")?;
+        // Every v1 segment opens with the format header so a later `load`
+        // can tell it apart from a legacy (unframed) segment.
+        file.seek(SeekFrom::Start(0)).await?;
+        file.write_all(&segment_header()).await?;
+        file.flush().await?;
 
         let data_file = Some(
             OpenOptions::new()
@@ -135,20 +174,24 @@ impl WalSegment {
             path,
             data_path,
             index_path,
-            file,
+            file: Some(file),
             data_file,
-            size: 0,
+            size: SEGMENT_HEADER_LEN as u64,
             data_size: 0,
             entries: Vec::new(),
             entry_index: rustc_hash::FxHashMap::default(),
+            format: SegmentFormat::V1,
         })
+    }
+
+    /// On-disk layout of this segment.
+    pub fn format(&self) -> SegmentFormat {
+        self.format
     }
 
     /// Load an existing WAL segment from disk
     pub async fn load(wal_dir: &Path, segment_id: u64) -> Result<Self> {
-        let path = wal_dir.join(format!("wal-{segment_id:010}.log"));
-        let data_path = wal_dir.join(format!("wal-{segment_id:010}.data"));
-        let index_path = wal_dir.join(format!("wal-{segment_id:010}.index"));
+        let (path, data_path, index_path) = Self::segment_paths(wal_dir, segment_id);
 
         if !path.exists() {
             return Self::new(wal_dir, segment_id).await;
@@ -160,10 +203,32 @@ impl WalSegment {
         let mut buffer = Vec::new();
         file.read_to_end(&mut buffer).await?;
 
-        let mut offset = 0;
+        let format = detect_segment_format(&buffer)
+            .with_context(|| format!("Failed to classify WAL segment {}", path.display()))?;
+        if format == SegmentFormat::Legacy {
+            tracing::warn!(
+                segment_id,
+                path = %path.display(),
+                "WAL segment uses the legacy unframed format (pre-#946); it is read on \
+                 the legacy layout, sealed against new appends, and rewritten into the \
+                 framed format on compaction"
+            );
+        }
+        let mut is_empty_v1 = false;
+        let mut offset = match format {
+            SegmentFormat::Legacy => 0,
+            SegmentFormat::V1 if buffer.is_empty() => {
+                is_empty_v1 = true;
+                0
+            }
+            SegmentFormat::V1 => SEGMENT_HEADER_LEN,
+        };
+        let record_header_len = match format {
+            SegmentFormat::Legacy => 8,
+            SegmentFormat::V1 => LOG_RECORD_HEADER_LEN,
+        };
         while offset < buffer.len() {
-            // Read entry length (8 bytes)
-            if offset + 8 > buffer.len() {
+            if offset + record_header_len > buffer.len() {
                 tracing::warn!(
                     segment_id,
                     offset,
@@ -173,15 +238,27 @@ impl WalSegment {
                 );
                 break;
             }
-            let entry_len = u64::from_le_bytes(
-                buffer[offset..offset + 8]
-                    .try_into()
-                    .context("Failed to read entry length")?,
-            );
-            offset += 8;
+            // v1 records carry a CRC of the payload; legacy records only a
+            // u64 length. `expected_crc = None` means "nothing to verify".
+            let (entry_len, expected_crc) = match format {
+                SegmentFormat::Legacy => (
+                    u64::from_le_bytes(
+                        buffer[offset..offset + 8]
+                            .try_into()
+                            .context("Failed to read entry length")?,
+                    ) as usize,
+                    None,
+                ),
+                SegmentFormat::V1 => {
+                    let (len, crc) = parse_log_record_header(&buffer[offset..])
+                        .context("Failed to read entry record header")?;
+                    (len, Some(crc))
+                }
+            };
+            offset += record_header_len;
 
             // Read entry data
-            if offset + entry_len as usize > buffer.len() {
+            if offset + entry_len > buffer.len() {
                 tracing::warn!(
                     segment_id,
                     offset,
@@ -192,8 +269,18 @@ impl WalSegment {
                 );
                 break;
             }
-            let entry_data = &buffer[offset..offset + entry_len as usize];
-            match bincode::deserialize::<WalEntry>(entry_data) {
+            let entry_data = &buffer[offset..offset + entry_len];
+            let decoded = match expected_crc {
+                Some(expected) if framing::checksum(entry_data) != expected => {
+                    Err(anyhow::anyhow!(
+                        "entry record CRC mismatch (stored {expected:#010x}, computed {:#010x})",
+                        framing::checksum(entry_data)
+                    ))
+                }
+                _ => bincode::deserialize::<WalEntry>(entry_data)
+                    .map_err(|e| anyhow::anyhow!("entry record failed to deserialize: {e}")),
+            };
+            match decoded {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     // Framing is intact (the length prefix matched a
@@ -210,12 +297,12 @@ impl WalSegment {
                         offset,
                         entry_len,
                         error = %e,
-                        "WAL entry failed to deserialize during replay; \
+                        "WAL entry record corrupt during replay; \
                          skipping and quarantining it, replay continues"
                     );
                     crate::self_monitoring::app_metrics()
                         .wal_corrupt_entries
-                        .add(1, &[]);
+                        .add(1, &[opentelemetry::KeyValue::new("record", "log")]);
                     if let Err(quarantine_err) =
                         Self::quarantine_corrupt_entry(wal_dir, segment_id, offset, entry_data)
                             .await
@@ -234,7 +321,7 @@ impl WalSegment {
                     }
                 }
             }
-            offset += entry_len as usize;
+            offset += entry_len;
         }
 
         // Load processed state from index file if it exists
@@ -268,14 +355,22 @@ impl WalSegment {
         // Reopened for writing without O_APPEND, matching `new` — appends seek
         // to the tracked offset (issue #865). `data_size`/`size` are reseeded
         // from the on-disk lengths below, so writes resume at the true EOF.
-        let file = Some(
-            OpenOptions::new()
-                .create(true)
-                .write(true)
-                .truncate(false)
-                .open(&path)
-                .await?,
-        );
+        let mut file = OpenOptions::new()
+            .create(true)
+            .write(true)
+            .truncate(false)
+            .open(&path)
+            .await?;
+        // An empty v1 file (crash between create and header write) gets its
+        // header now so the next `load` classifies it correctly.
+        let size = if is_empty_v1 {
+            file.seek(SeekFrom::Start(0)).await?;
+            file.write_all(&segment_header()).await?;
+            file.flush().await?;
+            SEGMENT_HEADER_LEN as u64
+        } else {
+            size
+        };
 
         let data_file = Some(
             OpenOptions::new()
@@ -291,12 +386,13 @@ impl WalSegment {
             path,
             data_path,
             index_path,
-            file,
+            file: Some(file),
             data_file,
             size,
             data_size,
             entries,
             entry_index,
+            format,
         })
     }
 
@@ -342,6 +438,16 @@ impl WalSegment {
         Ok(path)
     }
 
+    /// This segment's own copy of `entry_id`, resolved through `entry_index`
+    /// (O(1), the lookup #1112 introduced) rather than by scanning entries.
+    ///
+    /// This is the authoritative copy: compaction rewrites a segment and
+    /// moves surviving entries to new offsets, so a caller's older clone of
+    /// the same entry can carry a stale `data_offset`.
+    fn entry_by_id(&self, entry_id: &Uuid) -> Option<&WalEntry> {
+        self.entries.get(*self.entry_index.get(entry_id)?)
+    }
+
     /// Append an entry to the WAL segment
     pub async fn append(
         &mut self,
@@ -352,13 +458,36 @@ impl WalSegment {
         dataset_id: &str,
         metadata: Option<String>,
     ) -> Result<Uuid> {
-        // A clock before the epoch yields timestamp 0 rather than a panic
-        // on the hot write path.
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        self.append_at(
+            entry_id,
+            unix_now_secs(),
+            operation,
+            data,
+            tenant_id,
+            dataset_id,
+            metadata,
+        )
+        .await
+    }
 
+    /// Append an entry carrying an explicit creation `timestamp`.
+    ///
+    /// Only compaction ([`Wal::cleanup`]) uses this: a rewritten segment must
+    /// re-append its surviving entries with the timestamps they were first
+    /// written with. Stamping them "now" would reset the entry age the
+    /// acceptor's retry loop gates on, so every cleanup pass would postpone
+    /// the retry of the entries it just rewrote.
+    #[allow(clippy::too_many_arguments)]
+    async fn append_at(
+        &mut self,
+        entry_id: Uuid,
+        timestamp: u64,
+        operation: WalOperation,
+        data: &[u8],
+        tenant_id: &str,
+        dataset_id: &str,
+        metadata: Option<String>,
+    ) -> Result<Uuid> {
         // Write the payload to the data file at its authoritative offset.
         //
         // `data_offset` is recorded on the entry and later drives the read
@@ -370,13 +499,33 @@ impl WalSegment {
         // to the same offset and overwrites the debris instead of landing
         // past it. With O_APPEND a single short write permanently shifted every
         // subsequent entry, corrupting the Arrow framing (issue #865).
+        if self.format != SegmentFormat::V1 {
+            anyhow::bail!(
+                "WAL segment {} uses the legacy unframed format and is read-only",
+                self.id
+            );
+        }
+        // A closed segment has had its handles taken. Writing through the
+        // `if let Some(..)` arms below would then skip the bytes but still
+        // advance the offsets and record the entry — durability claimed for
+        // data never written, and every later offset pointing past a hole.
+        // Refuse instead: the caller (rotation, compaction, idle eviction)
+        // must open a fresh segment.
+        if self.file.is_none() || self.data_file.is_none() {
+            anyhow::bail!(
+                "WAL segment {} is closed and cannot accept appends",
+                self.id
+            );
+        }
         let data_offset = self.data_size;
+        let data_header = data_record_header(data)?;
         if let Some(ref mut data_file) = self.data_file {
             data_file.seek(SeekFrom::Start(data_offset)).await?;
+            data_file.write_all(&data_header).await?;
             data_file.write_all(data).await?;
             data_file.flush().await?;
         }
-        self.data_size += data.len() as u64;
+        self.data_size += (DATA_RECORD_HEADER_LEN + data.len()) as u64;
 
         // Create WAL entry
         let entry = WalEntry {
@@ -399,15 +548,15 @@ impl WalSegment {
         // short log write leaves `self.size` unadvanced so the next append
         // overwrites the partial record rather than appending past it, which
         // would otherwise wedge recovery with a mid-file garbage record.
+        let log_header = log_record_header(&entry_data)?;
         if let Some(ref mut file) = self.file {
-            let entry_len = entry_data.len() as u64;
             file.seek(SeekFrom::Start(self.size)).await?;
-            file.write_all(&entry_len.to_le_bytes()).await?;
+            file.write_all(&log_header).await?;
             file.write_all(&entry_data).await?;
             file.flush().await?;
         }
 
-        self.size += 8 + entry_data.len() as u64;
+        self.size += (LOG_RECORD_HEADER_LEN + entry_data.len()) as u64;
         self.entries.push(entry);
         self.entry_index.insert(entry_id, self.entries.len() - 1);
 
@@ -416,28 +565,39 @@ impl WalSegment {
 
     /// Read data for a specific entry.
     ///
-    /// Validates the entry's `[data_offset, data_offset + data_size)` range
-    /// against the actual data-file length before reading. A range that runs
-    /// past the file (truncated/partial write, stale offset bookkeeping, or a
-    /// corrupt index) yields a clear, attributable bounds error here rather
-    /// than an opaque `read_exact` "failed to fill whole buffer" or, worse,
-    /// in-bounds garbage that the Arrow reader later rejects as
-    /// `RangeOutOfBounds`. The caller's dead-letter path then records which
-    /// tenant/dataset/signal was affected.
+    /// Validates the entry's byte range against the actual data-file length
+    /// before reading. A range that runs past the file (truncated/partial
+    /// write, stale offset bookkeeping, or a corrupt index) yields a clear,
+    /// attributable bounds error here rather than an opaque `read_exact`
+    /// "failed to fill whole buffer" or, worse, in-bounds garbage that the
+    /// Arrow reader later rejects as `RangeOutOfBounds`.
+    ///
+    /// On a v1 segment the record header is then verified (magic, length,
+    /// payload CRC). A record that fails is corruption at rest — a bit flip
+    /// or torn write that survived the bounds check — so the raw bytes are
+    /// quarantined to `<wal_dir>/dead-letter/<entry_id>.corrupt.bin`, a
+    /// structured warning names the tenant/dataset/signal/offset,
+    /// `signaldb.wal.corrupt_entries{record="data"}` is incremented, and an
+    /// error is returned. Neighbouring records are unaffected: the caller
+    /// retires this entry (see [`Wal::dead_letter_unreadable`]) and moves on.
     pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
         let data_len = tokio::fs::metadata(&self.data_path)
             .await
             .with_context(|| format!("Failed to stat WAL data file {}", self.data_path.display()))?
             .len();
-        let end = entry
-            .data_offset
-            .checked_add(entry.data_size)
-            .with_context(|| {
-                format!(
-                    "WAL entry {} data range overflows u64 (offset={}, size={})",
-                    entry.id, entry.data_offset, entry.data_size
-                )
-            })?;
+        let record_len = match self.format {
+            SegmentFormat::Legacy => entry.data_size,
+            SegmentFormat::V1 => entry
+                .data_size
+                .checked_add(DATA_RECORD_HEADER_LEN as u64)
+                .with_context(|| format!("WAL entry {} data size overflows u64", entry.id))?,
+        };
+        let end = entry.data_offset.checked_add(record_len).with_context(|| {
+            format!(
+                "WAL entry {} data range overflows u64 (offset={}, size={})",
+                entry.id, entry.data_offset, entry.data_size
+            )
+        })?;
         if end > data_len {
             anyhow::bail!(
                 "WAL entry {} data out of bounds: [{}, {}) exceeds data file length {} (segment {})",
@@ -452,10 +612,80 @@ impl WalSegment {
         let mut data_file = File::open(&self.data_path).await?;
         data_file.seek(SeekFrom::Start(entry.data_offset)).await?;
 
-        let mut buffer = vec![0u8; entry.data_size as usize];
+        let mut buffer = vec![0u8; record_len as usize];
         data_file.read_exact(&mut buffer).await?;
 
-        Ok(buffer)
+        if self.format == SegmentFormat::Legacy {
+            return Ok(buffer);
+        }
+
+        match validate_data_record(&buffer, entry.data_size) {
+            Ok(payload) => Ok(payload.to_vec()),
+            Err(e) => {
+                tracing::warn!(
+                    entry_id = %entry.id,
+                    tenant_id = %entry.tenant_id,
+                    dataset_id = %entry.dataset_id,
+                    signal = entry.operation.signal(),
+                    segment_id = self.id,
+                    data_offset = entry.data_offset,
+                    data_size = entry.data_size,
+                    error = %e,
+                    "WAL data record failed integrity check; quarantining its bytes, \
+                     neighbouring records remain readable"
+                );
+                crate::self_monitoring::app_metrics()
+                    .wal_corrupt_entries
+                    .add(
+                        1,
+                        &[
+                            opentelemetry::KeyValue::new("record", "data"),
+                            opentelemetry::KeyValue::new("signal", entry.operation.signal()),
+                        ],
+                    );
+                if let Some(wal_dir) = self.path.parent()
+                    && let Err(quarantine_err) =
+                        Self::quarantine_corrupt_payload(wal_dir, entry.id, &buffer).await
+                {
+                    tracing::error!(
+                        entry_id = %entry.id,
+                        error = %quarantine_err,
+                        "Failed to quarantine corrupt WAL data record bytes"
+                    );
+                }
+                Err(anyhow::anyhow!(
+                    "WAL entry {} data record corrupt at offset {} (segment {}): {e}",
+                    entry.id,
+                    entry.data_offset,
+                    self.id
+                ))
+            }
+        }
+    }
+
+    /// Preserve the raw bytes (header included) of a `.data` record that
+    /// failed its integrity check, as
+    /// `<wal_dir>/dead-letter/<entry_id>.corrupt.bin`. Unlike
+    /// [`Self::quarantine_corrupt_entry`] the entry id *is* known here — the
+    /// `.log` record decoded fine, only its payload is damaged — so the file
+    /// is keyed by it like every other dead-letter artefact.
+    async fn quarantine_corrupt_payload(
+        wal_dir: &Path,
+        entry_id: Uuid,
+        record: &[u8],
+    ) -> Result<PathBuf> {
+        let dir = wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        let path = dir.join(format!("{}.corrupt.bin", entry_id.simple()));
+        let mut file = File::create(&path)
+            .await
+            .with_context(|| format!("Failed to create quarantine file {}", path.display()))?;
+        file.write_all(record).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .context("Failed to fsync quarantined WAL data record")?;
+        Ok(path)
     }
 
     /// Durably persist appended entries and data to disk (fsync)
@@ -616,6 +846,12 @@ pub struct WalConfig {
     /// How long to keep processed entries before cleanup (in seconds)
     pub retention_secs: u64,
     /// Interval for running cleanup operations (in seconds)
+    ///
+    /// A [`crate::wal::manager::WalManager`] sweep covers every cached WAL at
+    /// once, so it paces itself by the **smallest** `cleanup_interval_secs`
+    /// among its four per-signal configs. Raising this for one signal alone
+    /// therefore has no effect; lowering it speeds up the sweep for all of
+    /// them.
     pub cleanup_interval_secs: u64,
     /// Threshold percentage (0.0-1.0) of processed entries before compacting a segment
     pub compaction_threshold: f64,
@@ -656,14 +892,9 @@ impl WalConfig {
     pub fn for_tenant_dataset(&self, tenant: &str, dataset: &str, signal_type: &str) -> WalConfig {
         WalConfig {
             wal_dir: self.get_wal_path(tenant, dataset, signal_type),
-            max_segment_size: self.max_segment_size,
-            max_buffer_entries: self.max_buffer_entries,
-            flush_interval_secs: self.flush_interval_secs,
             tenant_id: tenant.to_string(),
             dataset_id: dataset.to_string(),
-            retention_secs: self.retention_secs,
-            cleanup_interval_secs: self.cleanup_interval_secs,
-            compaction_threshold: self.compaction_threshold,
+            ..self.clone()
         }
     }
 }
@@ -677,6 +908,15 @@ impl Default for WalConfig {
 /// Type alias for WAL buffer entries (entry_id, operation, data, optional_metadata)
 type WalBuffer = Arc<RwLock<VecDeque<(Uuid, WalOperation, Vec<u8>, Option<String>)>>>;
 
+/// Seconds since the Unix epoch. A clock before the epoch yields 0 rather
+/// than a panic — this is called on the write path.
+pub fn unix_now_secs() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0)
+}
+
 /// WAL directory identities (`writer.id`) whose recovered backlog has already
 /// been seeded into `signaldb.wal.entries_pending` by this process.
 ///
@@ -685,20 +925,104 @@ static PENDING_SEED_CLAIMS: std::sync::LazyLock<
     std::sync::Mutex<std::collections::HashSet<String>>,
 > = std::sync::LazyLock::new(Default::default);
 
+/// Per-directory (`writer_id`, like [`PENDING_SEED_CLAIMS`]) cell holding the
+/// last value `signaldb.wal.entries_pending` was told for that WAL.
+///
+/// The gauge itself is maintained incrementally (seed on recovery, `+1` per
+/// [`Wal::append`], `-n` per [`Wal::mark_processed_many`]), which only stays
+/// faithful if *every* path that adds or removes a pending entry touches it —
+/// a future path that forgets is exactly how issue #1493 (23.3k phantom
+/// pending entries, flat for 53h with commits flowing) could go unnoticed.
+/// [`Wal::reconcile_pending_gauge`] closes that class structurally: it
+/// compares this belief against a fresh on-disk count and corrects any
+/// difference, so drift from an as-yet-undiscovered unbalanced path self-heals
+/// within one reconciliation pass instead of persisting until a restart.
+///
+/// Registered process-globally (keyed by `writer_id`) for the same reason as
+/// `PENDING_SEED_CLAIMS`: the cell must survive `WalManager::clear_cache`
+/// dropping and later recreating the `Wal` instance for a directory that
+/// still has entries pending. Once looked up, a `Wal` holds its own `Arc`
+/// clone (see the `belief` field) so `append`/`mark_processed_many` — both
+/// per-request hot paths — update it with one atomic op, never a lock.
+static PENDING_GAUGE_BELIEF: std::sync::LazyLock<
+    std::sync::Mutex<HashMap<String, Arc<std::sync::atomic::AtomicI64>>>,
+> = std::sync::LazyLock::new(Default::default);
+
+/// Look up (or create) the [`PENDING_GAUGE_BELIEF`] cell for a WAL directory.
+/// The registry lock is held only for this one map operation — never on the
+/// hot path — because every caller keeps the returned `Arc` for as long as it
+/// needs to update the cell.
+fn pending_gauge_belief_cell(writer_id: &str) -> Arc<std::sync::atomic::AtomicI64> {
+    PENDING_GAUGE_BELIEF
+        .lock()
+        .map(|mut cells| {
+            cells
+                .entry(writer_id.to_string())
+                .or_insert_with(|| Arc::new(std::sync::atomic::AtomicI64::new(0)))
+                .clone()
+        })
+        // A poisoned lock means another thread panicked mid-update. A fresh,
+        // unregistered cell under-tracks belief for this open (the next
+        // `reconcile_pending_gauge` call self-heals it against the true
+        // on-disk count) rather than propagating the panic.
+        .unwrap_or_else(|_| Arc::new(std::sync::atomic::AtomicI64::new(0)))
+}
+
 /// Write-Ahead Log implementation for durability
 pub struct Wal {
     config: WalConfig,
     current_segment: Arc<Mutex<WalSegment>>,
     next_segment_id: Arc<Mutex<u64>>,
     buffer: WalBuffer,
-    flush_handle: Option<tokio::task::JoinHandle<()>>,
-    cleanup_handle: Option<tokio::task::JoinHandle<()>>,
+    /// Handle to the background flush task, behind a lock because
+    /// [`Wal::close`] must stop it through a shared `Arc<Wal>` — the only
+    /// shape the manager ever hands out.
+    ///
+    /// Aborting is not optional: the task holds clones of `buffer`,
+    /// `current_segment` and `segments`, so dropping the `Arc<Wal>` alone
+    /// neither stops the timer nor releases the segments' file descriptors.
+    flush_handle: std::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
     /// All segments including current (for cleanup operations)
     segments: Arc<Mutex<Vec<Arc<Mutex<WalSegment>>>>>,
+    /// Unix seconds of the last append, for idle eviction. Monotonic clocks
+    /// are not used because the value is only ever compared against `now` on
+    /// the same process.
+    last_append: std::sync::atomic::AtomicU64,
     /// Stable identity of this WAL directory, persisted in `writer.id`.
     /// Survives restarts so downstream consumers can key idempotency
     /// markers to the WAL whose entries they process.
     writer_id: String,
+    /// `"acceptor"` | `"writer"` for the `signaldb.wal.entries_pending`
+    /// `role` attribute. Set by [`Self::with_gauge_attribution`];
+    /// `"unknown"` for a `Wal` built without it (chiefly tests).
+    role: &'static str,
+    /// Signal type (`"traces"` | `"logs"` | `"metrics"` | `"profiles"`) for
+    /// the gauge's `signal` attribute. Set by
+    /// [`Self::with_gauge_attribution`]; empty for a `Wal` built without it.
+    signal_type: String,
+    /// Attribute set for every `signaldb.wal.entries_pending` data point this
+    /// WAL contributes: tenant, dataset, signal, role. Built once (rebuilt by
+    /// [`Self::with_gauge_attribution`] once role/signal are known) instead
+    /// of allocating fresh `KeyValue`s on every hot-path `append` /
+    /// `mark_processed_many` call.
+    gauge_attrs: [opentelemetry::KeyValue; 4],
+    /// This WAL directory's [`PENDING_GAUGE_BELIEF`] cell. Held as an `Arc`
+    /// clone so every update is one atomic op, not a registry lookup.
+    belief: Arc<std::sync::atomic::AtomicI64>,
+    /// Backlog recovered from disk at open, not yet reflected in
+    /// `signaldb.wal.entries_pending` — `0` if this identity's seed was
+    /// already claimed by an earlier open in this process (see
+    /// [`Self::claim_pending_seed`]).
+    recovered_pending: usize,
+    /// Guards [`Self::flush_recovered_seed`] running exactly once, and not
+    /// until whichever of {`with_gauge_attribution`, the first real
+    /// gauge-touching call} runs first — so the seed's one-time emission
+    /// always carries this WAL's final role/signal attribution rather than
+    /// the placeholder it starts with. `with_gauge_attribution` runs
+    /// synchronously right after construction and before the `Wal` is ever
+    /// shared, so by the time any concurrent caller could reach the flush,
+    /// attribution (if any) has already landed.
+    seed_flush: tokio::sync::OnceCell<()>,
 }
 
 impl Wal {
@@ -754,11 +1078,26 @@ impl Wal {
             all_segments.push(segment);
         }
 
+        // A legacy (unframed) segment is read-only: if the newest segment on
+        // disk is one, rotate onto a fresh framed segment so appends have
+        // somewhere to go. Its pending entries stay replayable and it is
+        // reclaimed like any sealed segment once processed.
+        let last_is_legacy = match all_segments.last() {
+            Some(segment) => segment.lock().await.format() == SegmentFormat::Legacy,
+            None => false,
+        };
+        let mut next_id = max_segment_id + 1;
+
         // Load or create current segment if no segments exist
         let current_segment = if segment_ids.is_empty() {
             let segment = Arc::new(Mutex::new(
                 WalSegment::new(&config.wal_dir, max_segment_id).await?,
             ));
+            all_segments.push(segment.clone());
+            segment
+        } else if last_is_legacy {
+            let segment = Arc::new(Mutex::new(WalSegment::new(&config.wal_dir, next_id).await?));
+            next_id += 1;
             all_segments.push(segment.clone());
             segment
         } else {
@@ -770,7 +1109,7 @@ impl Wal {
                 .clone()
         };
 
-        // Seed the pending gauge with the backlog recovered from disk.
+        // Count (but do not yet report) the backlog recovered from disk.
         //
         // `signaldb.wal.entries_pending` is an UpDownCounter: `append`
         // increments as an entry enters the pending set, `mark_processed_many`
@@ -781,11 +1120,19 @@ impl Wal {
         // (a pending count below zero is impossible by construction, which
         // makes the metric useless as a backlog alarm).
         //
-        // Seeding is once per WAL directory per process, keyed on the
+        // Recovery is once per WAL directory per process, keyed on the
         // directory's stable `writer_id`. Only the first open can encounter
         // entries this process did not count: anything still pending at a
-        // later open was either seeded by that first open or incremented by an
-        // `append` here, so seeding again would double-count it.
+        // later open was either recovered by that first open or incremented by
+        // an `append` here, so counting it again would double-count it.
+        //
+        // The actual gauge emission is deferred to [`Self::flush_recovered_seed`]
+        // — called lazily by the first real gauge-touching method — rather than
+        // done here, because `role`/`signal_type` are not known yet:
+        // `with_gauge_attribution` only runs once this constructor returns. An
+        // immediate emission here would carry a placeholder role, creating a
+        // second, orphaned metric series that never gets corrected once real
+        // traffic switches to the real role attribution.
         let mut recovered_pending: usize = 0;
         if Self::claim_pending_seed(&writer_id) {
             for segment_arc in &all_segments {
@@ -793,28 +1140,97 @@ impl Wal {
                 recovered_pending += segment.entries.iter().filter(|e| !e.processed).count();
             }
         }
-        if recovered_pending > 0 {
-            tracing::info!(
-                signaldb.wal.recovered_pending = recovered_pending as i64,
-                "Recovered unprocessed WAL entries from disk"
-            );
-            crate::self_monitoring::app_metrics()
-                .wal_entries_pending
-                .add(recovered_pending as i64, &[]);
-        }
+
+        let belief = pending_gauge_belief_cell(&writer_id);
+        let role = "unknown";
+        let signal_type = String::new();
+        let gauge_attrs = Self::build_gauge_attrs(&config, role, &signal_type);
 
         let wal = Self {
             config: config.clone(),
             current_segment,
-            next_segment_id: Arc::new(Mutex::new(max_segment_id + 1)),
+            next_segment_id: Arc::new(Mutex::new(next_id)),
             buffer: Arc::new(RwLock::new(VecDeque::new())),
-            flush_handle: None,
-            cleanup_handle: None,
+            flush_handle: std::sync::Mutex::new(None),
             segments: Arc::new(Mutex::new(all_segments)),
+            last_append: std::sync::atomic::AtomicU64::new(unix_now_secs()),
             writer_id,
+            role,
+            signal_type,
+            gauge_attrs,
+            belief,
+            recovered_pending,
+            seed_flush: tokio::sync::OnceCell::new(),
         };
 
         Ok(wal)
+    }
+
+    /// Attach this WAL's role (`"acceptor"` | `"writer"`) and signal type for
+    /// the `signaldb.wal.entries_pending` attributes. Called by
+    /// [`crate::wal::manager::WalManager`] right after construction, before
+    /// the `Wal` is wrapped in an `Arc` and shared — so it always completes
+    /// before any concurrent caller could reach
+    /// [`Self::flush_recovered_seed`]. A `Wal` built directly (chiefly tests)
+    /// keeps the `"unknown"` role and empty signal set in [`Self::new`].
+    pub fn with_gauge_attribution(
+        mut self,
+        role: &'static str,
+        signal_type: impl Into<String>,
+    ) -> Self {
+        self.role = role;
+        self.signal_type = signal_type.into();
+        self.gauge_attrs = Self::build_gauge_attrs(&self.config, self.role, &self.signal_type);
+        self
+    }
+
+    /// Build the attribute set for `signaldb.wal.entries_pending` data points:
+    /// tenant, dataset, signal, and role.
+    fn build_gauge_attrs(
+        config: &WalConfig,
+        role: &'static str,
+        signal_type: &str,
+    ) -> [opentelemetry::KeyValue; 4] {
+        [
+            opentelemetry::KeyValue::new("signaldb.tenant.id", config.tenant_id.clone()),
+            opentelemetry::KeyValue::new("signaldb.dataset.id", config.dataset_id.clone()),
+            opentelemetry::KeyValue::new("signal", signal_type.to_string()),
+            opentelemetry::KeyValue::new("role", role),
+        ]
+    }
+
+    /// Emit this WAL's recovered-on-open backlog to
+    /// `signaldb.wal.entries_pending`, exactly once, using whatever
+    /// attribution (`role`/`signal_type`) is current by the time this first
+    /// runs. Called at the top of every real gauge-touching method
+    /// (`append`, `mark_processed_many`, `reconcile_pending_gauge`) so it is
+    /// never missed regardless of whether — or in what order relative to
+    /// `with_gauge_attribution` — the caller reaches this `Wal` first.
+    async fn flush_recovered_seed(&self) {
+        self.seed_flush
+            .get_or_init(|| async {
+                if self.recovered_pending > 0 {
+                    // Every use below re-casts rather than sharing one `let`:
+                    // the registry-pins test statically greps this call
+                    // site's own `as i64` text (see registry_pins.rs) to pin
+                    // int-typed attributes against the tracing→OTel bridge
+                    // exporting an un-cast u64/usize as a string.
+                    tracing::info!(
+                        signaldb.wal.recovered_pending = self.recovered_pending as i64,
+                        signal = %self.signal_type,
+                        role = %self.role,
+                        "Recovered unprocessed WAL entries from disk"
+                    );
+                    crate::self_monitoring::app_metrics()
+                        .wal_entries_pending
+                        .add(self.recovered_pending as i64, &self.gauge_attrs);
+                    self.belief.fetch_add(
+                        self.recovered_pending as i64,
+                        std::sync::atomic::Ordering::Relaxed,
+                    );
+                }
+            })
+            .await;
     }
 
     /// Claim the one-time pending-gauge seed for a WAL directory identity,
@@ -847,11 +1263,109 @@ impl Wal {
         if let Ok(mut claimed) = PENDING_SEED_CLAIMS.lock() {
             claimed.clear();
         }
+        if let Ok(mut belief) = PENDING_GAUGE_BELIEF.lock() {
+            belief.clear();
+        }
     }
 
     /// Stable identity of this WAL directory (see the `writer_id` field).
     pub fn writer_id(&self) -> &str {
         &self.writer_id
+    }
+
+    /// True count of unprocessed entries across every segment, without
+    /// cloning them (unlike [`Self::get_unprocessed_entries`]) — cheap enough
+    /// to call on every reconciliation pass.
+    pub async fn pending_count(&self) -> usize {
+        let segments = self.segments.lock().await;
+        let mut count = 0;
+        for segment_arc in segments.iter() {
+            let segment = segment_arc.lock().await;
+            count += segment.entries.iter().filter(|e| !e.processed).count();
+        }
+        count
+    }
+
+    /// Correct any drift between `signaldb.wal.entries_pending` and this
+    /// WAL's true on-disk backlog (see [`PENDING_GAUGE_BELIEF`]).
+    ///
+    /// Re-scans this WAL's segments; prefer
+    /// [`Self::reconcile_pending_gauge_with_count`] when the caller already
+    /// has a fresh count on hand (the writer's drain loop and the acceptor's
+    /// retry consumer both list every WAL's unprocessed entries every cycle
+    /// anyway).
+    pub async fn reconcile_pending_gauge(&self) {
+        let true_pending = self.pending_count().await;
+        self.reconcile_pending_gauge_with_count(true_pending).await;
+    }
+
+    /// Same correction as [`Self::reconcile_pending_gauge`], but for a caller
+    /// that already computed this WAL's true unprocessed-entry count this
+    /// cycle — skips the extra segment scan.
+    ///
+    /// `segment_pending` must count only entries already in a segment (what
+    /// [`Self::get_unprocessed_entries`] / [`Self::pending_count`] return),
+    /// not buffered ones — this adds [`Self::buffered_entry_count`] itself.
+    /// `append` increments `belief` as soon as an entry is buffered, before
+    /// it is ever flushed into a segment, so a caller whose count skipped the
+    /// buffer would see `believed > segment_pending` for any WAL with
+    /// unflushed entries and "correct" that phantom gap by subtracting real,
+    /// still-pending entries from the gauge.
+    ///
+    /// A non-zero delta means some path changed the pending set without
+    /// telling the gauge; that is logged and corrected every time it happens,
+    /// not just the first.
+    pub async fn reconcile_pending_gauge_with_count(&self, segment_pending: usize) {
+        self.flush_recovered_seed().await;
+        let true_pending = (segment_pending + self.buffered_entry_count().await) as i64;
+        let believed = self.belief.load(std::sync::atomic::Ordering::Relaxed);
+        let delta = true_pending - believed;
+        if delta != 0 {
+            tracing::warn!(
+                signaldb.wal.writer_id = %self.writer_id,
+                signaldb.tenant.id = %self.config.tenant_id,
+                signaldb.dataset.id = %self.config.dataset_id,
+                signal = %self.signal_type,
+                role = %self.role,
+                believed_pending = believed,
+                true_pending,
+                delta,
+                "signaldb.wal.entries_pending drifted from the true WAL backlog; correcting"
+            );
+            crate::self_monitoring::app_metrics()
+                .wal_entries_pending
+                .add(delta, &self.gauge_attrs);
+            self.belief
+                .fetch_add(delta, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+
+    /// Test-only: mark an entry processed on disk *without* touching
+    /// `signaldb.wal.entries_pending` or [`PENDING_GAUGE_BELIEF`].
+    ///
+    /// Every real path that removes an entry from the pending set
+    /// (`mark_processed_many`, and everything built on it —
+    /// `dead_letter`/`dead_letter_rejected`/`dead_letter_unreadable`) keeps
+    /// the gauge and the belief map in lockstep by construction, so there is
+    /// no legitimate way to reach this state through the public API. This
+    /// exists to simulate the defect class issue #1493 is about — a future
+    /// path (bulk retirement, a new adoption route, whatever) that changes
+    /// the true pending set without telling the gauge — so
+    /// [`Self::reconcile_pending_gauge`]'s correcting behaviour has a test.
+    #[cfg(any(test, feature = "testing"))]
+    pub async fn mark_processed_bypassing_gauge_for_test(&self, entry_id: Uuid) -> Result<()> {
+        let segments = self.segments.lock().await;
+        for segment_arc in segments.iter() {
+            let mut segment = segment_arc.lock().await;
+            if let Some(&idx) = segment.entry_index.get(&entry_id) {
+                if !segment.entries[idx].processed {
+                    segment.entries[idx].processed = true;
+                    segment.save_index().await?;
+                }
+                return Ok(());
+            }
+        }
+        anyhow::bail!("WAL entry {entry_id} not found in any segment")
     }
 
     /// Retire an entry whose payload cannot be read at all.
@@ -870,15 +1384,9 @@ impl Wal {
     ///
     /// Returns the marker file path.
     pub async fn dead_letter_unreadable(&self, entry_id: Uuid, reason: &str) -> Result<PathBuf> {
-        let entry = self
-            .get_entries()
-            .await?
-            .into_iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let entry = self.find_entry(entry_id).await?;
 
-        let dir = self.config.wal_dir.join("dead-letter");
-        create_dir_all(&dir).await?;
+        let dir = self.dead_letter_dir().await?;
         let path = dir.join(format!("{}.unreadable.json", entry_id.simple()));
 
         let marker = serde_json::json!({
@@ -893,18 +1401,7 @@ impl Wal {
             "note": "payload was unreadable; no bytes could be preserved",
         });
         let body = serde_json::to_vec_pretty(&marker)?;
-
-        let mut file = File::create(&path).await.with_context(|| {
-            format!(
-                "Failed to create unreadable-entry marker {}",
-                path.display()
-            )
-        })?;
-        file.write_all(&body).await?;
-        file.flush().await?;
-        file.sync_all()
-            .await
-            .context("Failed to fsync unreadable-entry marker")?;
+        Self::write_fsynced(&path, &body, "unreadable-entry marker").await?;
 
         self.mark_processed(entry_id).await?;
         Ok(path)
@@ -917,25 +1414,12 @@ impl Wal {
     ///
     /// Returns the dead-letter file path.
     pub async fn dead_letter(&self, entry_id: Uuid) -> Result<PathBuf> {
-        let entry = self
-            .get_entries()
-            .await?
-            .into_iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let entry = self.find_entry(entry_id).await?;
         let data = self.read_entry_data(&entry).await?;
 
-        let dir = self.config.wal_dir.join("dead-letter");
-        create_dir_all(&dir).await?;
+        let dir = self.dead_letter_dir().await?;
         let path = dir.join(format!("{}.bin", entry_id.simple()));
-        let mut file = File::create(&path)
-            .await
-            .with_context(|| format!("Failed to create dead-letter file {}", path.display()))?;
-        file.write_all(&data).await?;
-        file.flush().await?;
-        file.sync_all()
-            .await
-            .context("Failed to fsync dead-letter file")?;
+        Self::write_fsynced(&path, &data, "dead-letter file").await?;
 
         self.mark_processed(entry_id).await?;
         Ok(path)
@@ -954,26 +1438,12 @@ impl Wal {
     ///
     /// Returns the path of the preserved payload.
     pub async fn dead_letter_rejected(&self, entry_id: Uuid, reason: &str) -> Result<PathBuf> {
-        let entry = self
-            .get_entries()
-            .await?
-            .into_iter()
-            .find(|e| e.id == entry_id)
-            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))?;
+        let entry = self.find_entry(entry_id).await?;
         let data = self.read_entry_data(&entry).await?;
 
-        let dir = self.config.wal_dir.join("dead-letter");
-        create_dir_all(&dir).await?;
-
+        let dir = self.dead_letter_dir().await?;
         let path = dir.join(format!("{}.bin", entry_id.simple()));
-        let mut file = File::create(&path)
-            .await
-            .with_context(|| format!("Failed to create dead-letter file {}", path.display()))?;
-        file.write_all(&data).await?;
-        file.flush().await?;
-        file.sync_all()
-            .await
-            .context("Failed to fsync dead-letter file")?;
+        Self::write_fsynced(&path, &data, "dead-letter file").await?;
 
         let marker_path = path.with_extension("rejected.json");
         let marker = serde_json::json!({
@@ -986,21 +1456,41 @@ impl Wal {
             "note": "writer rejected this batch; payload is intact and replayable once the cause is fixed",
         });
         let body = serde_json::to_vec_pretty(&marker)?;
-        let mut marker_file = File::create(&marker_path).await.with_context(|| {
-            format!(
-                "Failed to create rejection marker {}",
-                marker_path.display()
-            )
-        })?;
-        marker_file.write_all(&body).await?;
-        marker_file.flush().await?;
-        marker_file
-            .sync_all()
-            .await
-            .context("Failed to fsync rejection marker")?;
+        Self::write_fsynced(&marker_path, &body, "rejection marker").await?;
 
         self.mark_processed(entry_id).await?;
         Ok(path)
+    }
+
+    /// Look up a WAL entry by id, for the dead-letter paths above.
+    async fn find_entry(&self, entry_id: Uuid) -> Result<WalEntry> {
+        self.get_entries()
+            .await?
+            .into_iter()
+            .find(|e| e.id == entry_id)
+            .ok_or_else(|| anyhow::anyhow!("WAL entry {entry_id} not found"))
+    }
+
+    /// The dead-letter directory, created if missing.
+    async fn dead_letter_dir(&self) -> Result<PathBuf> {
+        let dir = self.config.wal_dir.join("dead-letter");
+        create_dir_all(&dir).await?;
+        Ok(dir)
+    }
+
+    /// Write `data` to `path`, flushing and fsyncing before returning.
+    /// `what` names the file in the create/fsync error context (e.g.
+    /// "dead-letter file", "rejection marker").
+    async fn write_fsynced(path: &Path, data: &[u8], what: &str) -> Result<()> {
+        let mut file = File::create(path)
+            .await
+            .with_context(|| format!("Failed to create {what} {}", path.display()))?;
+        file.write_all(data).await?;
+        file.flush().await?;
+        file.sync_all()
+            .await
+            .with_context(|| format!("Failed to fsync {what}"))?;
+        Ok(())
     }
 
     /// Load the persisted writer id from `writer.id`, creating (and
@@ -1070,7 +1560,10 @@ impl Wal {
             }
         });
 
-        self.flush_handle = Some(handle);
+        *self
+            .flush_handle
+            .lock()
+            .expect("flush handle mutex poisoned") = Some(handle);
     }
 
     /// Add an entry to the WAL
@@ -1090,7 +1583,11 @@ impl Wal {
         data: Vec<u8>,
         metadata: Option<String>,
     ) -> Result<Uuid> {
+        self.flush_recovered_seed().await;
+
         let entry_id = Uuid::new_v4();
+        self.last_append
+            .store(unix_now_secs(), std::sync::atomic::Ordering::Relaxed);
 
         {
             let metrics = crate::self_monitoring::app_metrics();
@@ -1099,7 +1596,9 @@ impl Wal {
                 format!("{operation:?}"),
             )];
             metrics.wal_entries_written.add(1, &attrs);
-            metrics.wal_entries_pending.add(1, &[]);
+            metrics.wal_entries_pending.add(1, &self.gauge_attrs);
+            self.belief
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
 
         // Add to buffer first for batching, checking the flush threshold
@@ -1237,6 +1736,51 @@ impl Wal {
         result
     }
 
+    /// Unix seconds of this WAL's last append. The LRU key
+    /// [`crate::wal::manager::WalManager`]'s instance cap sorts eviction
+    /// candidates by; [`Self::idle_for`] is defined in terms of it.
+    pub fn last_append_secs(&self) -> u64 {
+        self.last_append.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// How long since this WAL last accepted an append.
+    ///
+    /// Drives idle eviction. A WAL created and never written to counts as idle
+    /// from its creation, which is what makes a discovered-but-quiet WAL from a
+    /// previous run evictable once its backlog is drained.
+    pub fn idle_for(&self) -> std::time::Duration {
+        std::time::Duration::from_secs(unix_now_secs().saturating_sub(self.last_append_secs()))
+    }
+
+    /// Number of entries buffered in memory but not yet flushed into a
+    /// segment.
+    ///
+    /// [`Self::get_unprocessed_entries`] only scans segments, so an entry
+    /// still sitting in the buffer is invisible to it — a WAL judged
+    /// "drained" by that check alone could still lose buffered entries if
+    /// closed, since [`Self::close`] flushes them into a segment belonging to
+    /// an instance no eviction-driven drain loop iterates again.
+    pub async fn buffered_entry_count(&self) -> usize {
+        self.buffer.read().await.len()
+    }
+
+    /// Force this WAL's last-append timestamp, for deterministic
+    /// LRU-ordering tests. Production code only ever advances it from
+    /// [`Self::append`].
+    #[cfg(any(test, feature = "testing"))]
+    pub fn set_last_append_secs(&self, secs: u64) {
+        self.last_append
+            .store(secs, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Number of segments this WAL currently holds, including the open one.
+    ///
+    /// Sealed segments are only reclaimed by [`Self::cleanup`], so this is the
+    /// direct read on whether reclamation is keeping up.
+    pub async fn segment_count(&self) -> usize {
+        self.segments.lock().await.len()
+    }
+
     /// Get all entries from WAL for recovery, across all segments
     #[tracing::instrument(level = "debug", skip_all)]
     pub async fn get_entries(&self) -> Result<Vec<WalEntry>> {
@@ -1253,12 +1797,19 @@ impl Wal {
     ///
     /// Locates the segment that contains the entry (offsets are relative to
     /// each segment's own data file) and reads from there.
+    ///
+    /// The read uses the segment's **own** copy of the entry, not the caller's:
+    /// [`Self::cleanup`] compacts sealed segments, which moves surviving
+    /// entries to new offsets, so a consumer that listed entries before a
+    /// compaction still holds stale offsets. Honouring those verbatim would
+    /// read another entry's bytes — the offset-desync class behind the hive
+    /// WAL corruption (#865/#883). Only the id is taken from the caller.
     pub async fn read_entry_data(&self, entry: &WalEntry) -> Result<Vec<u8>> {
         let segments = self.segments.lock().await;
         for segment_arc in segments.iter() {
             let segment = segment_arc.lock().await;
-            if segment.entry_index.contains_key(&entry.id) {
-                return segment.read_entry_data(entry).await;
+            if let Some(authoritative) = segment.entry_by_id(&entry.id) {
+                return segment.read_entry_data(authoritative).await;
             }
         }
         anyhow::bail!(
@@ -1268,20 +1819,33 @@ impl Wal {
         )
     }
 
-    /// Shutdown the WAL and cleanup resources
-    pub async fn shutdown(mut self) -> Result<()> {
-        // Stop background tasks
-        if let Some(handle) = self.flush_handle.take() {
-            handle.abort();
-        }
-        if let Some(handle) = self.cleanup_handle.take() {
+    /// Stop this WAL's background flush task, flush what is buffered, and
+    /// close every segment's file handles.
+    ///
+    /// Takes `&self` so it is callable through the `Arc<Wal>` the manager
+    /// hands out — that is the whole point. Aborting the flush task is what
+    /// actually releases the resources: it holds clones of `buffer`,
+    /// `current_segment` and `segments`, so dropping the last `Arc<Wal>`
+    /// without this leaves the timer running and the descriptors open.
+    ///
+    /// After this the WAL is inert: its segments refuse appends
+    /// ([`WalSegment::append`] fails rather than silently dropping bytes), so
+    /// a caller holding a stale clone gets an error, never silent data loss.
+    /// Reads still work.
+    pub async fn close(&self) -> Result<()> {
+        if let Some(handle) = self
+            .flush_handle
+            .lock()
+            .expect("flush handle mutex poisoned")
+            .take()
+        {
             handle.abort();
         }
 
-        // Flush any remaining entries
+        // Flush after aborting, so the abort cannot land mid-write and the
+        // buffered entries are made durable exactly once, here.
         self.flush().await?;
 
-        // Close all segments
         let segments = self.segments.lock().await;
         for segment_arc in segments.iter() {
             let mut segment = segment_arc.lock().await;
@@ -1289,6 +1853,11 @@ impl Wal {
         }
 
         Ok(())
+    }
+
+    /// Shutdown the WAL and cleanup resources
+    pub async fn shutdown(self) -> Result<()> {
+        self.close().await
     }
 
     /// Mark a WAL entry as processed and persist the state to disk
@@ -1320,6 +1889,7 @@ impl Wal {
         if entry_ids.is_empty() {
             return Ok(());
         }
+        self.flush_recovered_seed().await;
 
         // Count only unprocessed -> processed transitions so repeated calls
         // don't skew the metrics.
@@ -1370,7 +1940,11 @@ impl Wal {
             metrics
                 .wal_entries_processed
                 .add(newly_processed as u64, &[]);
-            metrics.wal_entries_pending.add(-newly_processed, &[]);
+            metrics
+                .wal_entries_pending
+                .add(-newly_processed, &self.gauge_attrs);
+            self.belief
+                .fetch_sub(newly_processed, std::sync::atomic::Ordering::Relaxed);
         }
 
         if !remaining.is_empty() {
@@ -1495,11 +2069,13 @@ impl Wal {
         // Create new compacted segment
         let mut new_segment = WalSegment::new(&config.wal_dir, temp_segment_id).await?;
 
-        // Write unprocessed entries to new segment
+        // Write unprocessed entries to new segment, each keeping the
+        // timestamp it was originally written with.
         for (entry, data) in entries_with_data {
             new_segment
-                .append(
+                .append_at(
                     entry.id,
+                    entry.timestamp,
                     entry.operation,
                     &data,
                     &entry.tenant_id,
@@ -1524,8 +2100,17 @@ impl Wal {
         Ok(true)
     }
 
-    /// Run cleanup: delete fully-processed segments and compact others
-    async fn cleanup(&self) -> Result<()> {
+    /// Reclaim WAL disk: delete sealed segments whose entries are all
+    /// processed, and compact the rest past `compaction_threshold`.
+    ///
+    /// **Call this from the same task that drains the WAL, between passes.**
+    /// Compaction rewrites a segment and moves its surviving entries to new
+    /// offsets. [`Self::read_entry_data`] re-resolves offsets so a stale entry
+    /// copy still reads correctly, but running cleanup concurrently with a
+    /// drain would still have it rewriting segments under a consumer that is
+    /// mid-pass. [`crate::wal::manager::WalManager::cleanup_all`] is the
+    /// sweep both services call at the end of a pass.
+    pub async fn cleanup(&self) -> Result<()> {
         // Delete fully-processed old segments
         self.delete_fully_processed_segments().await?;
 
@@ -1542,43 +2127,23 @@ impl Wal {
 
         Ok(())
     }
+}
 
-    /// Start background cleanup task
-    pub fn start_background_cleanup(&mut self) {
-        let config = self.config.clone();
-        let buffer = self.buffer.clone();
-        let current_segment = self.current_segment.clone();
-        let next_segment_id = self.next_segment_id.clone();
-        let segments = self.segments.clone();
-        let writer_id = self.writer_id.clone();
+/// Fixtures shared by the WAL tests in this module and in
+/// [`crate::wal::manager`], which exercise the same seal-a-few-segments setup.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::WalConfig;
+    use std::path::Path;
 
-        let handle = tokio::spawn(async move {
-            let mut interval = tokio::time::interval(tokio::time::Duration::from_secs(
-                config.cleanup_interval_secs,
-            ));
-
-            loop {
-                interval.tick().await;
-
-                // Create a temporary Wal instance for cleanup (reuses existing segments)
-                let wal = Wal {
-                    config: config.clone(),
-                    current_segment: current_segment.clone(),
-                    next_segment_id: next_segment_id.clone(),
-                    buffer: buffer.clone(),
-                    flush_handle: None,
-                    cleanup_handle: None,
-                    segments: segments.clone(),
-                    writer_id: writer_id.clone(),
-                };
-
-                if let Err(e) = wal.cleanup().await {
-                    tracing::error!("Failed to run WAL cleanup: {e}");
-                }
-            }
-        });
-
-        self.cleanup_handle = Some(handle);
+    /// A WAL config tuned so a handful of small appends seal several segments,
+    /// which is what makes segment reclamation observable in a fast test.
+    pub(crate) fn rotating_config(dir: &Path) -> WalConfig {
+        let mut config = WalConfig::with_defaults(dir.to_path_buf());
+        config.max_segment_size = 1024;
+        config.max_buffer_entries = 1;
+        config.flush_interval_secs = 3600;
+        config
     }
 }
 
@@ -1620,6 +2185,7 @@ pub fn bytes_to_record_batch(bytes: &[u8]) -> Result<RecordBatch> {
 
 #[cfg(test)]
 mod tests {
+    use super::test_support::rotating_config;
     use super::*;
     use datafusion::arrow::array::Int64Array;
     use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1637,6 +2203,23 @@ mod tests {
         assert_eq!(WalOperation::WriteMetrics.signal(), "metrics");
         assert_eq!(WalOperation::WriteProfiles.signal(), "profiles");
         assert_eq!(WalOperation::Flush.signal(), "flush");
+    }
+
+    #[test]
+    fn wal_operation_from_signal_round_trips_with_signal() {
+        // The `signaldb wal dead-letter replay` subcommand maps a
+        // `--signal` string back to the operation to re-append with; it must
+        // agree with `signal()` in the other direction.
+        for signal in ["traces", "logs", "metrics", "profiles"] {
+            let op = WalOperation::from_signal(signal)
+                .unwrap_or_else(|| panic!("{signal} must map to an operation"));
+            assert_eq!(op.signal(), signal);
+        }
+        assert!(
+            WalOperation::from_signal("flush").is_none(),
+            "flush is not a signal an entry can be replayed as"
+        );
+        assert!(WalOperation::from_signal("bogus").is_none());
     }
 
     #[tokio::test]
@@ -1686,6 +2269,56 @@ mod tests {
         };
         let data = segment.read_entry_data(&good).await.unwrap();
         assert_eq!(data, payload);
+    }
+
+    #[tokio::test]
+    async fn a_closed_segment_refuses_appends_instead_of_dropping_them() {
+        // `close()` takes the file handles out of the segment. Appending after
+        // that used to be silently lossy: the write was skipped because the
+        // handle was `None`, but the offsets still advanced and the entry was
+        // still recorded — so the WAL claimed durability for bytes that were
+        // never written, and every later offset pointed past a hole. Idle
+        // eviction closes segments while the manager may still hand out the
+        // instance, so this has to fail loudly.
+        let temp_dir = TempDir::new().unwrap();
+        let mut segment = WalSegment::new(temp_dir.path(), 0).await.unwrap();
+
+        let payload = record_batch_to_bytes(&make_batch()).unwrap();
+        segment
+            .append(
+                Uuid::new_v4(),
+                WalOperation::WriteTraces,
+                &payload,
+                "t",
+                "d",
+                None,
+            )
+            .await
+            .unwrap();
+        let entries_before = segment.entries.len();
+
+        segment.close().await.unwrap();
+
+        let err = segment
+            .append(
+                Uuid::new_v4(),
+                WalOperation::WriteTraces,
+                &payload,
+                "t",
+                "d",
+                None,
+            )
+            .await
+            .expect_err("appending to a closed segment must fail, not silently drop the payload");
+        assert!(
+            err.to_string().contains("closed"),
+            "expected a closed-segment error, got: {err}"
+        );
+        assert_eq!(
+            segment.entries.len(),
+            entries_before,
+            "a refused append must not record an entry"
+        );
     }
 
     #[tokio::test]
@@ -1776,6 +2409,279 @@ mod tests {
 
     fn make_batch() -> RecordBatch {
         make_batch_val(1)
+    }
+
+    /// Flip one byte inside the payload of `entry` in the segment's `.data`
+    /// file, leaving its record header intact.
+    async fn flip_payload_byte(data_path: &Path, entry: &WalEntry) {
+        let mut bytes = tokio::fs::read(data_path).await.unwrap();
+        let idx = entry.data_offset as usize + DATA_RECORD_HEADER_LEN + 2;
+        bytes[idx] ^= 0x01;
+        tokio::fs::write(data_path, &bytes).await.unwrap();
+    }
+
+    #[tokio::test]
+    async fn framed_records_round_trip_through_reopen() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let payloads: Vec<Vec<u8>> = (0..5)
+            .map(|i| record_batch_to_bytes(&make_batch_val(i)).unwrap())
+            .collect();
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let mut ids = Vec::new();
+        for p in &payloads {
+            ids.push(
+                wal.append(WalOperation::WriteTraces, p.clone(), None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log = tokio::fs::read(temp_dir.path().join("wal-0000000000.log"))
+            .await
+            .unwrap();
+        assert_eq!(&log[..SEGMENT_HEADER_LEN], &segment_header());
+
+        let reopened = Wal::new(config).await.unwrap();
+        for (id, p) in ids.iter().zip(&payloads) {
+            let entry = reopened
+                .get_entries()
+                .await
+                .unwrap()
+                .into_iter()
+                .find(|e| e.id == *id)
+                .unwrap();
+            assert_eq!(entry.data_size, p.len() as u64);
+            assert_eq!(&reopened.read_entry_data(&entry).await.unwrap(), p);
+        }
+    }
+
+    #[tokio::test]
+    async fn flipped_payload_byte_is_detected_quarantined_and_neighbours_still_read() {
+        // The #946 promise: a bit flip inside one record's payload is caught
+        // by the record CRC, attributed to that entry, and does not disturb
+        // the entries around it.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let wal = Wal::new(config.clone()).await.unwrap();
+
+        let payloads: Vec<Vec<u8>> = (0..3)
+            .map(|i| record_batch_to_bytes(&make_batch_val(i)).unwrap())
+            .collect();
+        let mut ids = Vec::new();
+        for p in &payloads {
+            ids.push(
+                wal.append(WalOperation::WriteTraces, p.clone(), None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+        let entries = wal.get_entries().await.unwrap();
+        let victim = entries.iter().find(|e| e.id == ids[1]).unwrap().clone();
+
+        flip_payload_byte(&temp_dir.path().join("wal-0000000000.data"), &victim).await;
+
+        let err = wal
+            .read_entry_data(&victim)
+            .await
+            .expect_err("a flipped payload byte must fail the CRC");
+        assert!(
+            err.to_string().contains("CRC mismatch"),
+            "expected a CRC error, got: {err}"
+        );
+
+        // Bytes preserved for forensics, keyed by entry id.
+        let quarantined = temp_dir
+            .path()
+            .join("dead-letter")
+            .join(format!("{}.corrupt.bin", victim.id.simple()));
+        let bytes = tokio::fs::read(&quarantined).await.unwrap();
+        assert_eq!(bytes.len(), DATA_RECORD_HEADER_LEN + payloads[1].len());
+
+        // Neighbours are unaffected.
+        for i in [0usize, 2] {
+            let e = entries.iter().find(|e| e.id == ids[i]).unwrap();
+            assert_eq!(&wal.read_entry_data(e).await.unwrap(), &payloads[i]);
+        }
+
+        // Also after a reopen: the log records are intact, only the payload
+        // is damaged, so the entry is still listed and still refuses to read.
+        drop(wal);
+        let reopened = Wal::new(config).await.unwrap();
+        let entries = reopened.get_entries().await.unwrap();
+        assert_eq!(entries.len(), 3);
+        assert!(reopened.read_entry_data(&victim).await.is_err());
+        let last = entries.iter().find(|e| e.id == ids[2]).unwrap();
+        assert_eq!(&reopened.read_entry_data(last).await.unwrap(), &payloads[2]);
+    }
+
+    #[tokio::test]
+    async fn truncated_data_tail_fails_only_the_torn_record() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let first = record_batch_to_bytes(&make_batch_val(1)).unwrap();
+        let second = record_batch_to_bytes(&make_batch_val(2)).unwrap();
+        let first_id = wal
+            .append(WalOperation::WriteTraces, first.clone(), None)
+            .await
+            .unwrap();
+        let second_id = wal
+            .append(WalOperation::WriteTraces, second.clone(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let data_path = temp_dir.path().join("wal-0000000000.data");
+        let mut bytes = tokio::fs::read(&data_path).await.unwrap();
+        let torn = bytes.len() - 5;
+        bytes.truncate(torn);
+        tokio::fs::write(&data_path, &bytes).await.unwrap();
+
+        let reopened = Wal::new(config).await.unwrap();
+        let entries = reopened.get_entries().await.unwrap();
+        let first_entry = entries.iter().find(|e| e.id == first_id).unwrap();
+        let second_entry = entries.iter().find(|e| e.id == second_id).unwrap();
+        assert_eq!(reopened.read_entry_data(first_entry).await.unwrap(), first);
+        let err = reopened.read_entry_data(second_entry).await.unwrap_err();
+        assert!(err.to_string().contains("out of bounds"), "{err}");
+    }
+
+    #[tokio::test]
+    async fn corrupt_log_record_crc_is_skipped_and_neighbours_survive() {
+        // A single flipped bit in a `.log` record payload no longer has to
+        // wait for bincode to choke on it: the record CRC catches it, and
+        // replay resyncs onto the next record exactly as before.
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let wal = Wal::new(config.clone()).await.unwrap();
+        let mut ids = Vec::new();
+        for i in 0..3u8 {
+            ids.push(
+                wal.append(WalOperation::WriteTraces, vec![i; 16], None)
+                    .await
+                    .unwrap(),
+            );
+        }
+        wal.flush().await.unwrap();
+        drop(wal);
+
+        let log_path = temp_dir.path().join("wal-0000000000.log");
+        let mut buffer = tokio::fs::read(&log_path).await.unwrap();
+        // Second record: skip file header, first record header + payload.
+        let (first_len, _) = parse_log_record_header(&buffer[SEGMENT_HEADER_LEN..]).unwrap();
+        let second_payload =
+            SEGMENT_HEADER_LEN + LOG_RECORD_HEADER_LEN + first_len + LOG_RECORD_HEADER_LEN;
+        buffer[second_payload + 20] ^= 0x01;
+        tokio::fs::write(&log_path, &buffer).await.unwrap();
+
+        let reopened = Wal::new(config).await.unwrap();
+        let surviving: Vec<Uuid> = reopened
+            .get_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+        assert_eq!(surviving, vec![ids[0], ids[2]]);
+    }
+
+    /// Hand-write a segment in the pre-#946 layout: `.log` = `[u64 len][bincode]`
+    /// records with no file header, `.data` = raw concatenated payloads.
+    async fn write_legacy_segment(dir: &Path, payloads: &[Vec<u8>]) -> Vec<Uuid> {
+        let mut log = Vec::new();
+        let mut data = Vec::new();
+        let mut ids = Vec::new();
+        for p in payloads {
+            let entry = WalEntry {
+                id: Uuid::new_v4(),
+                timestamp: 0,
+                operation: WalOperation::WriteTraces,
+                data_size: p.len() as u64,
+                data_offset: data.len() as u64,
+                processed: false,
+                tenant_id: "test-tenant".to_string(),
+                dataset_id: "test-dataset".to_string(),
+                metadata: None,
+            };
+            ids.push(entry.id);
+            data.extend_from_slice(p);
+            let bytes = bincode::serialize(&entry).unwrap();
+            log.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
+            log.extend_from_slice(&bytes);
+        }
+        tokio::fs::write(dir.join("wal-0000000000.log"), &log)
+            .await
+            .unwrap();
+        tokio::fs::write(dir.join("wal-0000000000.data"), &data)
+            .await
+            .unwrap();
+        ids
+    }
+
+    #[tokio::test]
+    async fn legacy_unframed_segment_is_readable_sealed_and_rotated_past() {
+        let temp_dir = TempDir::new().unwrap();
+        let config = wal_test_config(temp_dir.path().to_path_buf());
+        let payloads = vec![b"legacy one".to_vec(), b"legacy two".to_vec()];
+        let legacy_ids = write_legacy_segment(temp_dir.path(), &payloads).await;
+
+        let wal = Wal::new(config.clone()).await.unwrap();
+
+        // Legacy entries are listed and read on the legacy layout.
+        let entries = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(entries.len(), 2);
+        for (entry, payload) in entries.iter().zip(&payloads) {
+            assert_eq!(
+                entry.id,
+                legacy_ids[entries.iter().position(|e| e.id == entry.id).unwrap()]
+            );
+            assert_eq!(&wal.read_entry_data(entry).await.unwrap(), payload);
+        }
+
+        // New appends land in a fresh framed segment, not the legacy one.
+        let new_id = wal
+            .append(WalOperation::WriteTraces, b"framed".to_vec(), None)
+            .await
+            .unwrap();
+        wal.flush().await.unwrap();
+        assert!(temp_dir.path().join("wal-0000000001.log").exists());
+        let legacy_log = tokio::fs::read(temp_dir.path().join("wal-0000000000.log"))
+            .await
+            .unwrap();
+        assert_ne!(
+            &legacy_log[..4],
+            &framing::SEGMENT_MAGIC,
+            "legacy log must stay untouched"
+        );
+        {
+            let segments = wal.segments.lock().await;
+            assert_eq!(segments[0].lock().await.format(), SegmentFormat::Legacy);
+            assert_eq!(segments[1].lock().await.format(), SegmentFormat::V1);
+        }
+
+        // Everything is still readable after a reopen, and the reopen does
+        // not keep rotating (the current segment is already framed).
+        drop(wal);
+        let reopened = Wal::new(config).await.unwrap();
+        assert!(!temp_dir.path().join("wal-0000000002.log").exists());
+        let entries = reopened.get_unprocessed_entries().await.unwrap();
+        assert_eq!(entries.len(), 3);
+        let new_entry = entries.iter().find(|e| e.id == new_id).unwrap();
+        assert_eq!(
+            reopened.read_entry_data(new_entry).await.unwrap(),
+            b"framed"
+        );
+        let legacy_entry = entries.iter().find(|e| e.id == legacy_ids[1]).unwrap();
+        assert_eq!(
+            reopened.read_entry_data(legacy_entry).await.unwrap(),
+            payloads[1]
+        );
     }
 
     fn make_batch_val(v: i64) -> RecordBatch {
@@ -1971,29 +2877,28 @@ mod tests {
 
     /// Corrupt the payload bytes of the `target_index`-th entry (0-based, in
     /// append order) in a single-segment WAL log file on disk, leaving the
-    /// entry's 8-byte length prefix — and every other entry — untouched.
+    /// entry's record header — and every other entry — untouched.
     /// Overwrites with `0xFF` rather than flipping a byte or two: a small
     /// flip can still deserialize into garbage bincode, which would not
     /// exercise the deserialize-failure path this helper exists to trigger.
     ///
     /// Returns `(entry_payload_offset, entry_payload_len)` of the corrupted
-    /// entry — the byte range inside the `.log` file, after its length
-    /// prefix — so callers can assert on the quarantine file name/contents.
+    /// entry — the byte range inside the `.log` file, after its record
+    /// header — so callers can assert on the quarantine file name/contents.
     async fn corrupt_nth_log_entry_payload(log_path: &Path, target_index: usize) -> (usize, usize) {
         let mut buffer = tokio::fs::read(log_path).await.unwrap();
 
         // Walk the file exactly like `WalSegment::load` does, to find the
         // byte range of the target entry's payload.
-        let mut offset = 0usize;
+        let mut offset = SEGMENT_HEADER_LEN;
         let mut index = 0usize;
         loop {
             assert!(
-                offset + 8 <= buffer.len(),
+                offset + LOG_RECORD_HEADER_LEN <= buffer.len(),
                 "ran out of entries before reaching index {target_index}"
             );
-            let entry_len =
-                u64::from_le_bytes(buffer[offset..offset + 8].try_into().unwrap()) as usize;
-            offset += 8;
+            let (entry_len, _) = parse_log_record_header(&buffer[offset..]).unwrap();
+            offset += LOG_RECORD_HEADER_LEN;
             assert!(offset + entry_len <= buffer.len(), "entry runs past EOF");
 
             if index == target_index {
@@ -2744,5 +3649,158 @@ mod tests {
             compressed.len(),
             uncompressed.len()
         );
+    }
+
+    /// Append `count` Arrow payloads, flushing each so segments seal as the
+    /// size cap is crossed. Returns the entry ids in append order.
+    async fn append_rotating(wal: &Wal, count: usize) -> Vec<Uuid> {
+        let mut ids = Vec::new();
+        for i in 0..count {
+            let bytes = record_batch_to_bytes(&make_batch_val(i as i64)).unwrap();
+            ids.push(
+                wal.append(WalOperation::WriteTraces, bytes, None)
+                    .await
+                    .unwrap(),
+            );
+            wal.flush().await.unwrap();
+        }
+        ids
+    }
+
+    #[tokio::test]
+    async fn cleanup_deletes_sealed_segments_whose_entries_are_all_processed() {
+        // `Wal::cleanup` is the only path that reclaims WAL disk, and it had
+        // no caller in any service (#1305): sealed segments accumulated
+        // forever and were re-read into memory at every start.
+        let temp_dir = TempDir::new().unwrap();
+        let wal = Wal::new(rotating_config(temp_dir.path())).await.unwrap();
+
+        let ids = append_rotating(&wal, 12).await;
+        let sealed_before = wal.segment_count().await;
+        assert!(
+            sealed_before > 1,
+            "test needs several segments, got {sealed_before}"
+        );
+
+        // Everything is processed, so every sealed segment is reclaimable.
+        for id in &ids {
+            wal.mark_processed(*id).await.unwrap();
+        }
+
+        wal.cleanup().await.unwrap();
+
+        assert_eq!(
+            wal.segment_count().await,
+            1,
+            "only the current segment should survive a full cleanup"
+        );
+        let on_disk = std::fs::read_dir(temp_dir.path())
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|e| {
+                e.path()
+                    .extension()
+                    .is_some_and(|ext| ext == "log" || ext == "data" || ext == "index")
+            })
+            .count();
+        assert_eq!(
+            on_disk, 3,
+            "deleted segments must not leave .log/.data/.index files behind"
+        );
+    }
+
+    #[tokio::test]
+    async fn compaction_preserves_unprocessed_payloads_and_their_timestamps() {
+        // Compaction rewrites a sealed segment without its processed entries.
+        // The survivors must read back byte-identical, and keep their original
+        // timestamps: the acceptor's retry loop gates on entry age, so a
+        // refreshed timestamp would silently postpone a retry every time
+        // cleanup ran.
+        let temp_dir = TempDir::new().unwrap();
+        let wal = Wal::new(rotating_config(temp_dir.path())).await.unwrap();
+
+        let ids = append_rotating(&wal, 12).await;
+        let before = wal.get_entries().await.unwrap();
+        let mut payloads: std::collections::HashMap<Uuid, Vec<u8>> = Default::default();
+        for entry in &before {
+            payloads.insert(entry.id, wal.read_entry_data(entry).await.unwrap());
+        }
+        let timestamps: std::collections::HashMap<Uuid, u64> =
+            before.iter().map(|e| (e.id, e.timestamp)).collect();
+
+        // Process every second entry: sealed segments cross the 50% threshold
+        // without becoming fully reclaimable.
+        for id in ids.iter().step_by(2) {
+            wal.mark_processed(*id).await.unwrap();
+        }
+
+        // WAL timestamps have second granularity, so a compaction that ran in
+        // the same wall-clock second as the appends would re-stamp entries
+        // without the assertion below noticing. Cross a second boundary so a
+        // re-stamped entry is provably distinguishable from a preserved one.
+        tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+
+        wal.cleanup().await.unwrap();
+
+        let survivors = wal.get_unprocessed_entries().await.unwrap();
+        assert_eq!(
+            survivors.len(),
+            ids.len() - ids.iter().step_by(2).count(),
+            "compaction must keep every unprocessed entry"
+        );
+        for entry in &survivors {
+            assert_eq!(
+                wal.read_entry_data(entry).await.unwrap(),
+                payloads[&entry.id],
+                "payload for {} changed across compaction",
+                entry.id
+            );
+            assert_eq!(
+                entry.timestamp, timestamps[&entry.id],
+                "compaction reset the timestamp of {}",
+                entry.id
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn read_entry_data_resolves_offsets_against_the_live_segment() {
+        // Compaction moves surviving entries to new offsets. A consumer that
+        // listed entries before the compaction still holds the old offsets —
+        // reading those verbatim is the offset-desync class that corrupted
+        // hive's WAL (#865/#883), so the read must resolve the entry's
+        // location from the segment itself, not from the caller's copy.
+        let temp_dir = TempDir::new().unwrap();
+        let wal = Wal::new(rotating_config(temp_dir.path())).await.unwrap();
+
+        let ids = append_rotating(&wal, 12).await;
+        let stale: Vec<WalEntry> = wal.get_entries().await.unwrap();
+        let mut payloads: std::collections::HashMap<Uuid, Vec<u8>> = Default::default();
+        for entry in &stale {
+            payloads.insert(entry.id, wal.read_entry_data(entry).await.unwrap());
+        }
+
+        for id in ids.iter().step_by(2) {
+            wal.mark_processed(*id).await.unwrap();
+        }
+        wal.cleanup().await.unwrap();
+
+        let survivors: std::collections::HashSet<Uuid> = wal
+            .get_unprocessed_entries()
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|e| e.id)
+            .collect();
+
+        // Read using the PRE-compaction entry copies.
+        for entry in stale.iter().filter(|e| survivors.contains(&e.id)) {
+            assert_eq!(
+                wal.read_entry_data(entry).await.unwrap(),
+                payloads[&entry.id],
+                "stale entry copy for {} read the wrong bytes after compaction",
+                entry.id
+            );
+        }
     }
 }

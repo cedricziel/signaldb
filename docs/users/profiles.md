@@ -212,7 +212,7 @@ per-verb parameters.
 
 Agent sessions reach the same surface through dedicated tools:
 `discover_profile_types` (profile types with data), `discover_attributes`
-with `signal: "profiles"` (label names, or values with `tag`),
+with `signal: "profiles"` (field names, or values with `tag`, via the Query IR),
 `search_profiles` (selector + range → the aggregated flame graph, subject to
 the same payload cap and `truncated` flag as the other query tools),
 `compare_profiles` (two ranges → the diff flame graph), and

@@ -1,5 +1,77 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.4.0...signaldb-bin-v0.4.1) (2026-09-23)
+
+
+### Features
+
+* demo mode and a TrueNAS demo app with a trimmed OpenTelemetry Demo ([#1632](https://github.com/cedricziel/signaldb/issues/1632)) ([d6da0cf](https://github.com/cedricziel/signaldb/commit/d6da0cfb53d79b8167d92e0c3689aea65323d97b))
+* per-API-key allowed origins for browser (CORS) ingestion ([#1548](https://github.com/cedricziel/signaldb/issues/1548)) ([6e966dd](https://github.com/cedricziel/signaldb/commit/6e966ddaf2740e3648583223828c6af715b6d331))
+* per-tenant, per-dataset OTTL telemetry processors ([#1603](https://github.com/cedricziel/signaldb/issues/1603)) ([2fc1022](https://github.com/cedricziel/signaldb/commit/2fc102232b1d925418b02e68393af8917184016e))
+
+
+### Bug Fixes
+
+* **querier:** bound the scan batch, spill reservation and monolith memory pool ([#1602](https://github.com/cedricziel/signaldb/issues/1602)) ([edc1947](https://github.com/cedricziel/signaldb/commit/edc19477c0dc49d8b09ac54934e55cb153d6f9da))
+
+
+### Code Refactoring
+
+* **router:** replace single-impl RouterState trait with RouterAppState ([#1669](https://github.com/cedricziel/signaldb/issues/1669)) ([2af7b7a](https://github.com/cedricziel/signaldb/commit/2af7b7acbc08a605255676cdf7c0cc388e0c097a))
+* **writer:** drop unused object_store from WalProcessor ([#1665](https://github.com/cedricziel/signaldb/issues/1665)) ([b34a85d](https://github.com/cedricziel/signaldb/commit/b34a85d14c584bfd2c3215c78fe78f0ad3484b35))
+
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.3.0...signaldb-bin-v0.4.0) (2026-09-12)
+
+
+### Features
+
+* self-serve connection details for agents ([public] config, /api/v1/connection, MCP connection_info) ([#1474](https://github.com/cedricziel/signaldb/issues/1474)) ([ad78cd1](https://github.com/cedricziel/signaldb/commit/ad78cd1981282426b65b7dcac50ddc38eeea7f80))
+
+
+### Bug Fixes
+
+* **acceptor:** accept gzip/zstd OTLP/HTTP bodies and cap request size ([#1383](https://github.com/cedricziel/signaldb/issues/1383)) ([f90b163](https://github.com/cedricziel/signaldb/commit/f90b163185cd903d085351359b338f35d668a423))
+* **wal:** add signaldb wal dead-letter replay/list/purge ([#1526](https://github.com/cedricziel/signaldb/issues/1526)) ([e57dc2d](https://github.com/cedricziel/signaldb/commit/e57dc2df331221133942c0ecc3563dd8ebf5a4fc)), closes [#1494](https://github.com/cedricziel/signaldb/issues/1494)
+* **wal:** cap concurrently active WAL instances against RLIMIT_NOFILE ([#1437](https://github.com/cedricziel/signaldb/issues/1437)) ([2c14e7e](https://github.com/cedricziel/signaldb/commit/2c14e7e203c114572bd786a835802512ac7e1067))
+* **wal:** self-heal entries_pending gauge drift with per-directory attribution ([#1523](https://github.com/cedricziel/signaldb/issues/1523)) ([586889d](https://github.com/cedricziel/signaldb/commit/586889d2f16e3b5eddb2a7f990c8a347e19394c2))
+* **writer:** give each tenant its own WAL instead of one global WAL ([#1299](https://github.com/cedricziel/signaldb/issues/1299)) ([830900e](https://github.com/cedricziel/signaldb/commit/830900ebaddf46dff5ac9eb0748d8fb63e7b35b2))
+
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/signaldb-bin-v0.1.3...signaldb-bin-v0.3.0) (2026-08-17)
+
+> **Note:** this release jumps `signaldb-bin` from the `0.1.x` line straight to `0.3.0`. `signaldb-bin` now versions in lockstep with the other core crates (`signaldb-cli`, `acceptor`, `router`, `writer`, `querier`, `compactor`, `common`) through a release-please `linked-versions` group named `signaldb-core`, so it adopted the group's highest version. The jump is pure harmonization — there is no additional feature scope behind the skipped `0.2.x` line.
+
+
+### Features
+
+* **api:** code-first OpenAPI — generate spec + Rust/TS clients from annotations ([#856](https://github.com/cedricziel/signaldb/issues/856)) ([e34fbfb](https://github.com/cedricziel/signaldb/commit/e34fbfbd094034416f78597c59b306975dd97271))
+* **mcp:** audit, trace, meter, and bound every tool call ([#1255](https://github.com/cedricziel/signaldb/issues/1255)) ([6627df0](https://github.com/cedricziel/signaldb/commit/6627df0f3f2fc0cff97692d3e465c23bc640e5c2))
+* one signaldb binary with the services as subcommands ([#1204](https://github.com/cedricziel/signaldb/issues/1204)) ([77f3278](https://github.com/cedricziel/signaldb/commit/77f3278ca445ac9b28bf955b0e482d4366a27c07))
+* **self-monitoring:** runtime-configurable browser telemetry export ([#842](https://github.com/cedricziel/signaldb/issues/842)) ([343b928](https://github.com/cedricziel/signaldb/commit/343b92877d1291406de25923e671ab2a54a98028))
+* source-agnostic tenant registry (admin-API tenants queryable without restart) ([#853](https://github.com/cedricziel/signaldb/issues/853)) ([c685935](https://github.com/cedricziel/signaldb/commit/c6859353a739fefcdc45f56cc0c7899193a6086a))
+* **writer:** coalesce Iceberg commits with a per-table floor + force-commit primitive ([#891](https://github.com/cedricziel/signaldb/issues/891)) ([ad47bb6](https://github.com/cedricziel/signaldb/commit/ad47bb6867dd5cf622701b5778ef9f94e7b60923))
+* zero-config first boot — auto-provision default tenant and print API key once ([#995](https://github.com/cedricziel/signaldb/issues/995)) ([5116c8d](https://github.com/cedricziel/signaldb/commit/5116c8d9f22950447373f74c99b17488900db00d)), closes [#796](https://github.com/cedricziel/signaldb/issues/796)
+
+
+### Bug Fixes
+
+* **build:** stop jemalloc heap profiling from crashing musl images ([#1126](https://github.com/cedricziel/signaldb/issues/1126)) ([98b2996](https://github.com/cedricziel/signaldb/commit/98b299660ef31b56d73e079a2477166b415e736e))
+* **flight:** set explicit gRPC message-size limits and chunk oversized batches ([#990](https://github.com/cedricziel/signaldb/issues/990)) ([6499175](https://github.com/cedricziel/signaldb/commit/6499175d0e6402e1350ad28803d0b08954e43fe1))
+* **monolith:** run the full compactor lifecycle loop, not just planning ([#1005](https://github.com/cedricziel/signaldb/issues/1005)) ([2e751fb](https://github.com/cedricziel/signaldb/commit/2e751fb5849ce596f3dca7366624ee65e4def3ac))
+* provision signal tables for every registered dataset, and read an absent one as empty ([#1074](https://github.com/cedricziel/signaldb/issues/1074)) ([9a50ffa](https://github.com/cedricziel/signaldb/commit/9a50ffaa7e404a96cb80d7d3b0cc0850ede00f49))
+* **router:** materialize a tenant's default dataset as a real row ([#1085](https://github.com/cedricziel/signaldb/issues/1085)) ([9443244](https://github.com/cedricziel/signaldb/commit/94432445328a0489bfd0476aaaba12ba937a2561))
+
+
+### Performance Improvements
+
+* CPU target features and jemalloc allocator for release builds ([#970](https://github.com/cedricziel/signaldb/issues/970)) ([766e2d1](https://github.com/cedricziel/signaldb/commit/766e2d1c82dad65a674184edaf2e8d67cb4083dd))
+* **flight,wal:** compress Flight IPC payloads and WAL entries ([#945](https://github.com/cedricziel/signaldb/issues/945)) ([#998](https://github.com/cedricziel/signaldb/issues/998)) ([efb5ef4](https://github.com/cedricziel/signaldb/commit/efb5ef4bc85e2e77483f4546255b50c564015827))
+
+
+### Code Refactoring
+
+* **logging:** forbid log:: macros in favor of tracing:: ([#1006](https://github.com/cedricziel/signaldb/issues/1006)) ([071ebb4](https://github.com/cedricziel/signaldb/commit/071ebb47d02f2d6e43ccfb60380c00e3be929248))
+* **signaldb-bin:** derive-Clone AcceptorResources instead of field-by-field, drop duplicate flight_addr ([#1187](https://github.com/cedricziel/signaldb/issues/1187)) ([3fff739](https://github.com/cedricziel/signaldb/commit/3fff7395b33baae3f0197fa56abfe1083adffb0d))
+
 ## [0.1.3](https://github.com/cedricziel/signaldb/compare/v0.1.2...v0.1.3) (2026-07-30)
 
 ## [0.1.2](https://github.com/cedricziel/signaldb/compare/v0.1.1...v0.1.2) (2026-07-30)

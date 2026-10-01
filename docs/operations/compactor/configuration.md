@@ -24,7 +24,7 @@ Complete reference for configuring SignalDB Compactor retention and lifecycle ma
 
 ## Configuration Overview
 
-Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels).
+Compactor lifecycle configuration is located in the `[compactor]` section of `signaldb.toml` or via environment variables with the `SIGNALDB__COMPACTOR__` prefix (double underscores separate nesting levels). This reference covers the `[compactor*]` sections only; unrelated top-level sections that share the same `signaldb.toml` and config struct file — authentication (including `[auth.oidc]` SSO, see [Setting up SSO / OIDC login](../oidc-sso.md)), storage, discovery, and `[wal]` (including its instance cap, see [WAL Persistence](../wal-persistence.md#instance-cap)) — are documented separately.
 
 **Configuration Precedence:**
 
@@ -46,21 +46,24 @@ Compactor lifecycle configuration is located in the `[compactor]` section of `si
 
 Controls compaction planning: which files are merged into larger ones and when a table qualifies.
 
-| Field                      | Type            | Default          | Description                                                                                                                                                                                    |
-| -------------------------- | --------------- | ---------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                  | `bool`          | `true`           | Enable the compactor service                                                                                                                                                                   |
-| `tick_interval`            | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                                                                                    |
-| `target_file_size_mb`      | integer (MB)    | `128`            | Target output file size after compaction                                                                                                                                                       |
-| `file_count_threshold`     | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                                                                                     |
-| `max_input_file_size_kb`   | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone                                                             |
-| `partition_lateness`       | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted                                                                         |
-| `memory_limit_mb`          | integer (MB)    | `512`            | Budget for the rewrite's **DataFusion operators** (the sort above all), which spill to disk past it. Not a total: see the caveat below                                                         |
-| `target_partitions`        | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget            |
-| `max_partition_input_mb`   | integer (MB)    | `2048`           | Upper bound on the summed size of a partition's eligible input files. Partitions above it are declined with a warning and counted, rather than attempted and failed every cycle (`0` = no cap) |
-| `max_candidates_per_cycle` | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                            |
-| `max_per_tenant`           | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                                      |
-| `lease_ttl_seconds`        | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                                                                                        |
-| `metrics_addr`             | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled)                                                                                                                                                  |
+| Field                       | Type            | Default          | Description                                                                                                                                                                                                        |
+| --------------------------- | --------------- | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `enabled`                   | `bool`          | `true`           | Enable the compactor service                                                                                                                                                                                       |
+| `tick_interval`             | duration string | `"5m"`           | Interval between compaction planning cycles                                                                                                                                                                        |
+| `target_file_size_mb`       | integer (MB)    | `128`            | Target output file size after compaction                                                                                                                                                                           |
+| `file_count_threshold`      | integer         | `10`             | Minimum number of _small_ files (see below) required to trigger compaction                                                                                                                                         |
+| `max_input_file_size_kb`    | integer (KB)    | `65536` (64 MB)  | Maximum input file size considered for compaction. Files at or above this size are treated as already compacted and are left alone                                                                                 |
+| `partition_lateness`        | duration string | `"10m"`          | How long an hour partition stays open for late-arriving data after its hour ends; only closed partitions are compacted                                                                                             |
+| `memory_limit_mb`           | integer (MB)    | `512`            | Budget for the rewrite's **DataFusion operators** (the sort above all), which spill to disk past it. Not a total: see the caveat below                                                                             |
+| `target_partitions`         | integer         | `1`              | DataFusion partition fan-out for the rewrite (`0` = available parallelism). Each partition sorts independently and they share `memory_limit_mb`, so raising this divides the budget                                |
+| `max_partition_input_mb`    | integer (MB)    | `2048`           | Upper bound on the summed size of a partition's eligible input files. Partitions above it are declined with a warning and counted, rather than attempted and failed every cycle (`0` = no cap)                     |
+| `scan_batch_size`           | integer (rows)  | `1024`           | Rows per batch the rewrite reads into the sort (`0` = DataFusion's default of 8192). The sort reserves roughly twice a batch's **bytes** before it holds anything spillable, so wide rows need a smaller row count |
+| `sort_spill_reservation_mb` | integer (MB)    | `10`             | Memory each spilling sort holds back so its spill merge can run. Taken **out of** `memory_limit_mb`, not added to it                                                                                               |
+| `value_sketch_size`         | integer         | `100`            | Values kept per attribute key as a suggestion sketch for query discovery, most frequent first (`0` = keep none). The analyzer already reads every value, so this bounds only what is stored                        |
+| `max_candidates_per_cycle`  | integer         | `20`             | Maximum candidates processed per scheduling cycle (`0` = unlimited)                                                                                                                                                |
+| `max_per_tenant`            | integer         | `5`              | Maximum candidates per tenant per cycle (`0` = unlimited)                                                                                                                                                          |
+| `lease_ttl_seconds`         | integer         | `300`            | How long a compaction lease stays valid without renewal                                                                                                                                                            |
+| `metrics_addr`              | `string`        | `"0.0.0.0:9091"` | Observability HTTP endpoint (`""` = disabled). Job counters served here are labelled by tenant, dataset and table, and failures by `error_type` — see [Operations](operations.md#compaction-retries)               |
 
 **How the cadences interact:** each lifecycle cycle runs on its own task, so
 these intervals are independent of one another — a compaction pass that runs
@@ -93,15 +96,18 @@ a task that wakes up and returns.
 
 Jobs are restricted to **closed** partitions: an hour partition becomes eligible once its hour has ended and `partition_lateness` has elapsed. The partition still receiving writes is exactly the one whose files would change under a running rewrite, so leaving it alone is what lets compaction and ingest coexist. Raise `partition_lateness` if your sources deliver data well after the fact; it is a late-data allowance, not a commit-cadence knob.
 
-**Sizing a compactor's memory.** The three knobs interact, so tune them together:
+**Sizing a compactor's memory.** The knobs interact, so tune them together:
 
 ```
 peak job memory  ≈  memory_limit_mb  +  target_file_size_mb  +  small fixed overhead
 per-sorter share  =  memory_limit_mb / max(target_partitions, 1)
+sort headroom     =  sort_spill_reservation_mb, taken out of that share
+one batch's claim ≈  2 × scan_batch_size × average row bytes
 ```
 
 - `memory_limit_mb` is the accounted half: DataFusion's operators spill past it.
 - `target_file_size_mb` is the unaccounted half: the chunker accumulates one output file outside the pool. Keep it comfortably **below** `memory_limit_mb`, or the part the pool does not control dominates the part it does.
+- `sort_spill_reservation_mb` is headroom carved out of that share so a sort that spills has room to merge its runs back. It cannot hold data, so a large value makes the sort spill sooner, not later.
 - The per-sorter share must stay above roughly **64 MB**. Below that a spilling sort has no room for a batch plus the reservation its spill merge needs, so it fails instead of spilling — the #1064 failure in miniature. With the default `target_partitions = 1` the share is the whole pool.
 
 The compactor logs a warning at startup for either incoherent combination rather than refusing to start: an operator who has measured their workload may want an unusual ratio, and a background service should say so loudly rather than not run.
@@ -114,6 +120,10 @@ The defaults (512 MB pool, 128 MB target, fan-out 1) put peak job memory around 
 
 **What `memory_limit_mb` actually bounds:** the pool covers the rewrite's **DataFusion operators** — the partition sort above all — which spill to disk rather than growing past it. The rewrite streams its partition rather than collecting it, so the memory outside the pool is bounded too: the chunker holds at most one output file's worth of batches, and the attribute-statistics pass holds per-key state capped by cardinality. Neither grows with the size of the partition. Peak process memory for a job is therefore roughly the pool plus one `target_file_size_mb`, not the pool plus the whole partition.
 
+**Why the scan's batch size is a memory setting:** `ExternalSorter` reserves roughly twice an incoming batch's bytes the moment the batch arrives, and that first reservation cannot spill — nothing has accumulated yet, so there is nothing to write out. Either it fits the pool or the job fails outright. The reservation is bounded in bytes while the batch size is counted in **rows**, so DataFusion's 8192-row default is safe only for narrow rows. A profiles table carrying pprof payloads of tens of KB per row turned that default into a single 506 MB request against a 512 MB pool, and every compaction of the partition failed terminally until it went into cooldown. `scan_batch_size = 1024` keeps that first claim proportionate on wide tables; lower it further if a table's rows run to hundreds of KB, raise it toward 8192 for narrow tables where per-batch overhead matters more than the ceiling.
+
+**What the rewrite sorts by (not configurable):** the table's own declared sort order — time-leading, one key per signal (see [Storage Layout](../../architecture/storage-layout.md#declared-sort-order)). There is deliberately no compactor setting for it: the declaration is what the query engine is told about the data, so a second knob here could only make the two disagree. Output files record the order they were written in, which is how a partition of pre-declaration files becomes fully attested.
+
 **Example:**
 
 ```toml
@@ -125,6 +135,9 @@ file_count_threshold = 10
 max_input_file_size_kb = 65536  # 64 MB; files >= this are left alone
 partition_lateness = "10m"      # only compact hours that closed 10m ago
 memory_limit_mb = 512           # rewrites spill past this instead of growing the heap
+scan_batch_size = 1024          # rows per batch into the sort; bounds the unspillable
+                                # first reservation on wide rows
+sort_spill_reservation_mb = 10  # headroom for the spill merge, taken out of the pool
 ```
 
 > **Removed setting (breaking change, issue #925):**
@@ -195,7 +208,7 @@ profiles = "14d"
 
 - `traces` → `traces` table
 - `logs` → `logs` table
-- `metrics` → any table whose name starts with `metrics_` (`metrics_gauge`, `metrics_sum`, `metrics_histogram` by default)
+- `metrics` → the `metrics` and `metric_exemplars` tables, plus any legacy table whose name starts with `metrics_`
 - `profiles` → `profiles` table
 
 This mapping is the single predicate deciding which catalog tables the
@@ -451,6 +464,7 @@ max_live_files_threshold = 500000   # Skip huge tables instead of OOMing
 - **Small batches** (100-500): More frequent progress checkpoints, better resumability, higher overhead
 - **Large batches** (1000-5000): Faster processing, less overhead, coarser checkpoints
 - **Live-file threshold**: If cleanup is skipped for a table, run snapshot expiration and compaction first to reduce file counts before raising or disabling the cap
+- **What the cap actually bounds**: detection holds one 64-bit fingerprint per live file plus one entry per orphan candidate — it does not hold the object-store listing or the decoded manifest entries, and a manifest shared by several retained snapshots is read once. At the default cap a table therefore costs single-digit megabytes, so raising it is reasonable on a compactor with memory to spare; see [How detection scales](operations.md#how-detection-scales)
 
 ### Complete Orphan Cleanup Example
 
@@ -478,7 +492,7 @@ max_live_files_threshold = 500000
 
 ### `[compactor.attr_promotion]`
 
-Attribute auto-promotion (epic #737) turns frequently queried attribute keys into materialized `label_<key>` columns at compaction time. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the persisted statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite.
+Attribute promotion copies frequently queried attributes into typed per-level `attr_<level>_<key>` columns at compaction time, and demotes them again when they go cold. Keys of every scalar canonical type (`String`, `Int64`, `Float64`, `Bool`) are eligible. Every rewrite already runs a read-only attribute-statistics pass; when this section is enabled, a decision pass scores the per-level statistics (query demand x row presence) against guardrails and — with `dry_run = false` — acts on the result during the same rewrite. See [Attribute Promotion](operations.md#attribute-promotion).
 
 ```toml
 [compactor.attr_promotion]
@@ -489,26 +503,28 @@ min_presence = 0.005
 min_query_hits = 1
 promote_streak = 3
 max_promotions_per_cycle = 4
+demote_after_idle = "7d"
 ```
 
-| Setting                    | Type    | Default | Description                                                                                                                       |
-| -------------------------- | ------- | ------- | --------------------------------------------------------------------------------------------------------------------------------- |
-| `enabled`                  | boolean | `false` | Run the promotion decision pass on each rewrite                                                                                   |
-| `dry_run`                  | boolean | `true`  | Log decisions only; never change schemas or data                                                                                  |
-| `max_labels_per_table`     | integer | `32`    | Schema-width budget: maximum materialized `label_<key>` columns per table, pinned `[schema.materialized_labels]` entries included |
-| `min_presence`             | float   | `0.005` | Minimum fraction of rows a key must appear in to be promotable                                                                    |
-| `min_query_hits`           | integer | `1`     | Minimum accumulated query-demand hits for a key to be promotable                                                                  |
-| `promote_streak`           | integer | `3`     | Consecutive over-threshold cycles before promotion (hysteresis)                                                                   |
-| `max_promotions_per_cycle` | integer | `4`     | Maximum promotions per rewrite cycle                                                                                              |
+| Setting                    | Type     | Default | Description                                                                                                                   |
+| -------------------------- | -------- | ------- | ----------------------------------------------------------------------------------------------------------------------------- |
+| `enabled`                  | boolean  | `false` | Run the promotion decision pass on each rewrite                                                                               |
+| `dry_run`                  | boolean  | `true`  | Log decisions only; never change schemas or data                                                                              |
+| `max_labels_per_table`     | integer  | `32`    | Schema-width budget per table, shared by promoted `attr_*` columns and `label_<key>` columns (pins included)                  |
+| `min_presence`             | float    | `0.005` | Minimum fraction of rows a (level, key) must appear in to be promotable                                                       |
+| `min_query_hits`           | integer  | `1`     | Minimum accumulated query-demand hits for a (level, key) to be promotable                                                     |
+| `promote_streak`           | integer  | `3`     | Consecutive over-threshold cycles before promotion (hysteresis)                                                               |
+| `max_promotions_per_cycle` | integer  | `4`     | Maximum promotions per rewrite cycle                                                                                          |
+| `demote_after_idle`        | duration | `7d`    | Demote a promoted column not queried within this window; `0s` disables idle demotion (over-budget LRU demotion still applies) |
 
 **`dry_run` semantics:**
 
-- `dry_run = true` (default): the pass only logs an `Attribute promotion decision` line per table. No schema or data changes.
-- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds the promoted columns through a metadata-only commit), backfills the column values from the attributes map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](operations.md#attribute-promotion) for the observable sequence.
+- `dry_run = true` (default): the pass only logs `Typed attribute promotion decision` and `Typed attribute demotion decision` lines per table. No schema or data changes.
+- `dry_run = false`: the compactor **acts** on promote decisions at the next rewrite of each table. It evolves the table schema (adds or drops promoted columns through a metadata-only commit), backfills each promoted column from its level's typed map while rewriting the files, and commits the rewrite through the normal replace path. See the [operations guide](operations.md#attribute-promotion) for the observable sequence.
 
-The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched. Demotion (dropping unqueried auto-promoted columns) is decided and logged but not yet acted on.
+The guardrails live in the decision engine and apply in both modes: machine-generated keys (embedded UUIDs, long hex or digit runs) are never promoted, keys whose distinct-value tracking hit the analyzer cap are rejected, a key must qualify for `promote_streak` consecutive cycles, and the schema-width budget caps the total number of promoted and label columns. Pinned `[schema.materialized_labels]` entries are never demoted or otherwise touched.
 
-**Recommendation:** run with `dry_run = true` for several compaction cycles and review the `Attribute promotion decision` log lines. Flip to `false` only once the keys they announce are ones you want as columns.
+**Recommendation:** run with `dry_run = true` for several compaction cycles and review the `Typed attribute promotion decision` log lines. Flip to `false` only once the keys they announce are ones you want as columns.
 
 ## Environment Variables
 
@@ -535,6 +551,15 @@ SIGNALDB__COMPACTOR__MEMORY_LIMIT_MB=512
 ```
 
 `SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB` and `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB` no longer exist (see [Compaction Settings](#compaction-settings)).
+
+### Network Environment Variables
+
+The standalone compactor (`signaldb compactor`) reads its Flight addresses from these variables rather than from `signaldb.toml`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `COMPACTOR_FLIGHT_ADDR` | `0.0.0.0:50055` | Socket the Flight server binds. Must be an IP address and port. |
+| `COMPACTOR_ADVERTISE_ADDR` | the bind address | Address registered in service discovery, which the router dials for the ops endpoints (`/api/v1/ops/compact*`). May be a hostname, e.g. `compactor-1:50055`. |
 
 ### Retention Environment Variables
 
@@ -764,4 +789,4 @@ Invalid retention configuration for tenant 'acme': Invalid retention period for 
 - [Troubleshooting Guide](troubleshooting.md)
 - [Compactor README](https://github.com/cedricziel/signaldb/blob/main/src/compactor/README.md)
 
-> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass requires no configuration and changes no table data. The promotion decision pass built on those statistics is configured via [`[compactor.attr_promotion]`](#attribute-promotion-configuration).
+> Note: every compaction rewrite also runs a read-only attribute-statistics pass that logs per-key presence, approximate cardinality, and advisory materialization candidates (`Attribute-stats analyzer` log line), and persists the per-key statistics to the service catalog's `attribute_stats` table (joined there with query-demand counters flushed by the querier). This statistics pass also records a bounded per-key **value sketch** — the most frequent values with their counts, sized by `value_sketch_size` — into `attribute_value_stats`, which is what lets query discovery suggest values without reading data. A key whose distinct values exceed the analyzer's cardinality cap keeps no sketch: a partial list of a runaway key would be a confident wrong answer, so discovery reports it as uncovered instead. Apart from `value_sketch_size` this pass requires no configuration and changes no table data. The promotion decision pass built on those statistics is configured via [`[compactor.attr_promotion]`](#attribute-promotion-configuration).

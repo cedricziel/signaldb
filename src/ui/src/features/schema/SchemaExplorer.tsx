@@ -1,8 +1,12 @@
 import { useQuery } from "@tanstack/react-query";
 import { Navigate } from "react-router";
 import { getSchema, type ManagedSchema } from "../../api/management";
-import { whoami } from "../../api/session";
+import { whoamiQueryError } from "../../components/QueryError";
+import { useOutletState } from "../../lib/outletState";
+import { useWhoami } from "../../lib/useWhoami";
+import { CONVENTIONS } from "./paths";
 import "./SchemaExplorer.css";
+import { toErrorMessage } from "../../api/http";
 
 type LogicalField = ManagedSchema["logical"][number];
 type PhysicalSchema = ManagedSchema["physical"][number];
@@ -25,28 +29,38 @@ function qualifiedName(field: LogicalField): string {
 }
 
 export function SchemaExplorer() {
-  const { data: who, isLoading: whoLoading } = useQuery({
-    queryKey: ["whoami"],
-    queryFn: () => whoami(),
-    staleTime: 60_000,
-    retry: false,
-  });
+  // A subscription to the shell's outlet state (rather than the imperative
+  // `getTenantContext`), so a tenant switch re-renders this page — it has no
+  // route params of its own to otherwise pick up a navigation.
+  const { state } = useOutletState();
+  const {
+    data: who,
+    isLoading: whoLoading,
+    isError: whoamiIsError,
+    error: whoamiError,
+  } = useWhoami(state);
 
   const schema = useQuery({
-    queryKey: ["schema"],
+    queryKey: ["schema", state.tenant, state.dataset],
     queryFn: () => getSchema(),
     enabled: !!who?.user?.is_instance_admin,
     staleTime: 60_000,
   });
 
-  if (whoLoading) return null;
+  // `useWhoami` disables its query while `state.tenant === ""` (no tenant
+  // resolved yet), which settles it as `isLoading: false` with no data —
+  // indistinguishable from "loaded, and not an admin" and, left unguarded,
+  // redirects to the conventions tab before the tenant even resolves. See
+  // `useSchemaSession`'s identical guard.
+  if (state.tenant === "" || whoLoading) return null;
+  if (whoamiIsError) return whoamiQueryError("schema", whoamiError);
   if (!who?.user?.is_instance_admin) {
-    return <Navigate to="/logs" replace />;
+    return <Navigate to={CONVENTIONS} replace />;
   }
 
   return (
     <div className="schema-explorer-page">
-      <h2 className="schema-explorer-title">Storage schema</h2>
+      <h1 className="schema-title">Storage schema</h1>
       <p className="schema-explorer-subtitle">
         The registered logical (query-facing) field model and the resolved
         physical (storage) schema for every signal source.
@@ -61,11 +75,11 @@ export function SchemaExplorer() {
 
       {schema.isPending && <p className="schema-explorer-note">Loading…</p>}
       {schema.isError && (
-        <p className="schema-explorer-note schema-explorer-error">
-          Failed to load schema:{" "}
-          {schema.error instanceof Error
-            ? schema.error.message
-            : String(schema.error)}
+        <p
+          className="schema-explorer-note error-text"
+          role="alert"
+        >
+          Could not load schema: {toErrorMessage(schema.error)}
         </p>
       )}
 
@@ -81,53 +95,59 @@ export function SchemaExplorer() {
               prefix (or unprefixed, by priority).
             </p>
             {groupBySource(schema.data.logical).map(([source, fields]) => (
-              <details key={source} className="schema-source" open>
+              <details key={source} className="schema-source-card" open>
                 <summary>
                   {source}{" "}
                   <span className="schema-source-count">
                     {fields.length} field{fields.length === 1 ? "" : "s"}
                   </span>
                 </summary>
-                <table className="schema-table">
-                  <thead>
-                    <tr>
-                      <th>Field</th>
-                      <th>Level</th>
-                      <th>Type</th>
-                      <th>Kind</th>
-                      <th>Filterable</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {[...fields]
-                      .sort((a, b) =>
-                        qualifiedName(a).localeCompare(qualifiedName(b)),
-                      )
-                      .map((field) => (
-                        <tr key={`${field.level ?? ""}.${field.name}`}>
-                          <td>
-                            <code>{qualifiedName(field)}</code>
-                            {field.non_native && (
-                              <span
-                                className="schema-badge"
-                                title="Not addressable via the raw OTel name — a SignalDB-defined field"
-                              >
-                                signaldb
-                              </span>
-                            )}
-                          </td>
-                          <td className="schema-dim">{field.level ?? "—"}</td>
-                          <td className="schema-dim">{field.value_type}</td>
-                          <td className="schema-dim">{field.kind}</td>
-                          <td className="schema-dim">
-                            {field.filterability === "filterable"
-                              ? "yes"
-                              : "retrieval only"}
-                          </td>
-                        </tr>
-                      ))}
-                  </tbody>
-                </table>
+                <div className="table-scroll">
+                  <table className="schema-explorer-table">
+                    <thead>
+                      <tr>
+                        <th>Field</th>
+                        <th>Level</th>
+                        <th>Type</th>
+                        <th>Kind</th>
+                        <th>Filterable</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {[...fields]
+                        .sort((a, b) =>
+                          qualifiedName(a).localeCompare(qualifiedName(b)),
+                        )
+                        .map((field) => (
+                          <tr key={`${field.level ?? ""}.${field.name}`}>
+                            <td>
+                              <code>{qualifiedName(field)}</code>
+                              {field.non_native && (
+                                <span
+                                  className="schema-explorer-badge"
+                                  title="Not addressable via the raw OTel name — a SignalDB-defined field"
+                                >
+                                  signaldb
+                                </span>
+                              )}
+                            </td>
+                            <td className="schema-dim">
+                              {field.level ?? "—"}
+                            </td>
+                            <td className="schema-dim">
+                              {field.value_type}
+                            </td>
+                            <td className="schema-dim">{field.kind}</td>
+                            <td className="schema-dim">
+                              {field.filterability === "filterable"
+                                ? "yes"
+                                : "retrieval only"}
+                            </td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
+                </div>
               </details>
             ))}
           </section>
@@ -159,11 +179,11 @@ export function SchemaExplorer() {
 
 function PhysicalVersion({ schema }: { schema: PhysicalSchema }) {
   return (
-    <details className="schema-source" open={schema.is_current}>
+    <details className="schema-source-card" open={schema.is_current}>
       <summary>
         {schema.version}
         {schema.is_current && (
-          <span className="schema-badge">current</span>
+          <span className="schema-explorer-badge">current</span>
         )}{" "}
         <span className="schema-source-count">
           {schema.fields.length} field{schema.fields.length === 1 ? "" : "s"}
@@ -175,32 +195,34 @@ function PhysicalVersion({ schema }: { schema: PhysicalSchema }) {
           Partitioned by <code>{schema.partition_by.join(", ")}</code>
         </p>
       )}
-      <table className="schema-table">
-        <thead>
-          <tr>
-            <th>Column</th>
-            <th>Type</th>
-            <th>Required</th>
-            <th>Computed</th>
-            <th>Physical only</th>
-          </tr>
-        </thead>
-        <tbody>
-          {schema.fields.map((field) => (
-            <tr key={field.name}>
-              <td>
-                <code>{field.name}</code>
-              </td>
-              <td className="schema-dim">{field.field_type}</td>
-              <td className="schema-dim">{field.required ? "yes" : "no"}</td>
-              <td className="schema-dim">{field.computed ?? "—"}</td>
-              <td className="schema-dim">
-                {field.physical_only ? "yes" : "no"}
-              </td>
+      <div className="table-scroll">
+        <table className="schema-explorer-table">
+          <thead>
+            <tr>
+              <th>Column</th>
+              <th>Type</th>
+              <th>Required</th>
+              <th>Computed</th>
+              <th>Physical only</th>
             </tr>
-          ))}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {schema.fields.map((field) => (
+              <tr key={field.name}>
+                <td>
+                  <code>{field.name}</code>
+                </td>
+                <td className="schema-dim">{field.field_type}</td>
+                <td className="schema-dim">{field.required ? "yes" : "no"}</td>
+                <td className="schema-dim">{field.computed ?? "—"}</td>
+                <td className="schema-dim">
+                  {field.physical_only ? "yes" : "no"}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </details>
   );
 }

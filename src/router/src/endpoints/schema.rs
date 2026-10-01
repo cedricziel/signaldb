@@ -8,6 +8,8 @@
 //! [`can_write_schema`](common::auth::TenantContext::can_write_schema)).
 //! Bundled registries additionally refuse mutation with `409`.
 
+use std::sync::Arc;
+
 use axum::{
     Extension, Json, Router,
     body::Bytes,
@@ -16,38 +18,36 @@ use axum::{
     response::{IntoResponse, Response},
     routing::{get, post},
 };
-use common::auth::TenantContext;
+use common::auth::{TenantContext, dataset_allowed};
+use common::schema::type_authority::AttributeTypeRecord;
 use common::schema_registry::{
     AttributeHit, EntityHit, MetricHit, RegistrySummary, Resolution, StoreError, ValidationReport,
 };
-use schema_model::{RegistryDocument, ValidationError};
+use schema_model::{ParseError, RegistryDocument, ValidationError};
 use serde::{Deserialize, Serialize};
 
-use crate::RouterState;
+use crate::RouterAppState;
 
 /// Upper bound on `limit` for prefix searches.
 pub const MAX_SEARCH_LIMIT: usize = 200;
 const DEFAULT_SEARCH_LIMIT: usize = 50;
 
-pub fn router<S: RouterState>() -> Router<S> {
+pub fn router() -> Router<RouterAppState> {
     Router::new()
-        .route(
-            "/registries",
-            get(list_registries::<S>).post(create_registry::<S>),
-        )
-        .route("/registries:validate", post(validate_registry::<S>))
+        .route("/registries", get(list_registries).post(create_registry))
+        .route("/registries:validate", post(validate_registry))
         .route(
             "/registries/{namespace}/{version}",
-            get(get_registry::<S>)
-                .put(replace_registry::<S>)
-                .delete(delete_registry::<S>),
+            get(get_registry)
+                .put(replace_registry)
+                .delete(delete_registry),
         )
-        .route("/attributes", get(search_attributes::<S>))
-        .route("/attributes/{key}", get(resolve_attribute::<S>))
-        .route("/entities", get(search_entities::<S>))
-        .route("/entities/{name}", get(resolve_entity::<S>))
-        .route("/metrics", get(search_metrics::<S>))
-        .route("/metrics/{name}", get(resolve_metric::<S>))
+        .route("/attributes", get(search_attributes))
+        .route("/attributes/{key}", get(resolve_attribute))
+        .route("/entities", get(search_entities))
+        .route("/entities/{name}", get(resolve_entity))
+        .route("/metrics", get(search_metrics))
+        .route("/metrics/{name}", get(resolve_metric))
 }
 
 // ---- DTOs -----------------------------------------------------------------
@@ -74,7 +74,7 @@ pub struct RegistryResponse {
     /// The registry document in the OpenTelemetry Weaver semantic-convention
     /// model (`name`, `version`, `schema_url`, `dependencies`, `groups`).
     #[schema(value_type = Object)]
-    pub document: RegistryDocument,
+    pub document: Arc<RegistryDocument>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -93,6 +93,9 @@ pub struct EntitySearchResponse {
 #[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct MetricSearchResponse {
     pub hits: Vec<MetricHit>,
+    /// Present when `keys=` was given: one resolution per requested name.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub resolutions: Vec<MetricResolution>,
 }
 
 /// Every definition of one attribute key across the visible registries, in
@@ -103,6 +106,12 @@ pub struct AttributeResolution {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub primary: Option<AttributeHit>,
     pub hits: Vec<AttributeHit>,
+    /// The canonical type the type authority committed for this key, per
+    /// dataset/signal/level it has been observed in, and how many values
+    /// arrived with a different type (kept, but not typed-queryable). Absent
+    /// when no type has been established yet.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub canonical_types: Vec<AttributeTypeRecord>,
 }
 
 #[derive(Debug, Serialize, utoipa::ToSchema)]
@@ -127,6 +136,7 @@ impl From<Resolution<AttributeHit>> for AttributeResolution {
             key: r.key,
             primary: r.primary,
             hits: r.hits,
+            canonical_types: Vec::new(),
         }
     }
 }
@@ -149,7 +159,9 @@ impl From<Resolution<MetricHit>> for MetricResolution {
     }
 }
 
-/// Query parameters for prefix search / batch resolution.
+/// Query parameters for prefix search / batch resolution (attributes and
+/// metrics — see [`EntitySearchParams`] for entities, which do not resolve
+/// an exact key set).
 #[derive(Debug, Deserialize, utoipa::IntoParams)]
 pub struct SearchParams {
     /// Name prefix (empty lists from the top).
@@ -157,8 +169,21 @@ pub struct SearchParams {
     pub prefix: String,
     /// Maximum hits (default 50, max 200).
     pub limit: Option<usize>,
-    /// Comma-separated exact keys to resolve in one call (attributes only).
+    /// Comma-separated exact keys to resolve in one call (attributes and
+    /// metrics only).
     pub keys: Option<String>,
+}
+
+/// Query parameters for entity prefix search. Entities have no `keys=`
+/// batch-resolution parameter: unlike attributes and metrics, there is no
+/// endpoint support for resolving an exact entity-type name set in one call.
+#[derive(Debug, Deserialize, utoipa::IntoParams)]
+pub struct EntitySearchParams {
+    /// Name prefix (empty lists from the top).
+    #[serde(default)]
+    pub prefix: String,
+    /// Maximum hits (default 50, max 200).
+    pub limit: Option<usize>,
 }
 
 // ---- helpers --------------------------------------------------------------
@@ -239,8 +264,14 @@ fn parse_document(headers: &HeaderMap, body: &Bytes) -> Result<RegistryDocument,
         RegistryDocument::from_json(text)
     };
     parsed.map_err(|e| {
+        let status = match e {
+            ParseError::UnsupportedFileFormat { .. } | ParseError::RefGroupCycle { .. } => {
+                StatusCode::UNPROCESSABLE_ENTITY
+            }
+            _ => StatusCode::BAD_REQUEST,
+        };
         Box::new(error(
-            StatusCode::BAD_REQUEST,
+            status,
             format!("cannot parse registry document: {e}"),
         ))
     })
@@ -250,6 +281,17 @@ fn clamp_limit(limit: Option<usize>) -> usize {
     limit
         .unwrap_or(DEFAULT_SEARCH_LIMIT)
         .clamp(1, MAX_SEARCH_LIMIT)
+}
+
+/// Split a `keys=` query value into trimmed, non-empty names, capped at
+/// [`MAX_SEARCH_LIMIT`]. `None` when the value is absent or blank.
+fn split_keys(raw: &Option<String>) -> Option<impl Iterator<Item = &str>> {
+    raw.as_deref().filter(|k| !k.trim().is_empty()).map(|keys| {
+        keys.split(',')
+            .map(str::trim)
+            .filter(|k| !k.is_empty())
+            .take(MAX_SEARCH_LIMIT)
+    })
 }
 
 // ---- registries -----------------------------------------------------------
@@ -266,8 +308,8 @@ fn clamp_limit(limit: Option<usize>) -> usize {
     ),
     security(("bearer" = []))
 )]
-pub async fn list_registries<S: RouterState>(
-    State(state): State<S>,
+pub async fn list_registries(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
@@ -284,19 +326,19 @@ pub async fn list_registries<S: RouterState>(
     path = "/api/v1/schema/registries",
     tag = "schema",
     operation_id = "schema_create_registry",
-    request_body(content = Object, description = "Registry document (Weaver semantic-convention model) as JSON, or YAML with a yaml content type", content_type = "application/json"),
+    request_body(content = Object, description = "Registry document (Weaver semantic-convention model, in the `groups` or `file_format: definition/2` layout) as JSON, or YAML with a yaml content type; definition/2 documents are stored in the `groups` form", content_type = "application/json"),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 201, description = "Registry created", body = RegistrySummary),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
         (status = 409, description = "Registry already exists", body = SchemaError),
-        (status = 422, description = "Invalid document (errors carry paths)", body = SchemaError),
+        (status = 422, description = "Invalid document (errors carry paths) or unsupported file_format", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
-pub async fn create_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn create_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     headers: HeaderMap,
     body: Bytes,
@@ -322,17 +364,18 @@ pub async fn create_registry<S: RouterState>(
     path = "/api/v1/schema/registries:validate",
     tag = "schema",
     operation_id = "schema_validate_registry",
-    request_body(content = Object, description = "Registry document to validate (JSON, or YAML with a yaml content type); nothing is stored", content_type = "application/json"),
+    request_body(content = Object, description = "Registry document to validate, in the `groups` or `file_format: definition/2` layout (JSON, or YAML with a yaml content type); nothing is stored", content_type = "application/json"),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Validation outcome (errors with paths, or resulting counts)", body = ValidationReport),
         (status = 400, description = "Unparseable document", body = SchemaError),
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
+        (status = 422, description = "Unsupported file_format", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
-pub async fn validate_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn validate_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     headers: HeaderMap,
     body: Bytes,
@@ -364,8 +407,8 @@ pub async fn validate_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn get_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn get_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path((namespace, version)): Path<(String, String)>,
 ) -> Response {
@@ -394,7 +437,7 @@ pub async fn get_registry<S: RouterState>(
     tag = "schema",
     operation_id = "schema_replace_registry",
     params(("namespace" = String, Path, description = "Registry namespace"), ("version" = String, Path, description = "Registry version")),
-    request_body(content = Object, description = "Replacement registry document; its name/version must match the path", content_type = "application/json"),
+    request_body(content = Object, description = "Replacement registry document, in the `groups` or `file_format: definition/2` layout; its name/version must match the path", content_type = "application/json"),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Registry replaced", body = RegistrySummary),
@@ -402,12 +445,12 @@ pub async fn get_registry<S: RouterState>(
         (status = 403, description = "Missing schema:write scope", body = SchemaError),
         (status = 404, description = "No such custom registry", body = SchemaError),
         (status = 409, description = "Registry is bundled and read-only", body = SchemaError),
-        (status = 422, description = "Invalid document or identity mismatch", body = SchemaError),
+        (status = 422, description = "Invalid document, identity mismatch, or unsupported file_format", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
-pub async fn replace_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn replace_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path((namespace, version)): Path<(String, String)>,
     headers: HeaderMap,
@@ -448,8 +491,8 @@ pub async fn replace_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn delete_registry<S: RouterState>(
-    State(state): State<S>,
+pub async fn delete_registry(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path((namespace, version)): Path<(String, String)>,
 ) -> Response {
@@ -473,6 +516,35 @@ pub async fn delete_registry<S: RouterState>(
     }
 }
 
+// ---- type authority ---------------------------------------------------------
+
+/// The canonical types the type authority has committed for `key`, filtered
+/// to the datasets `ctx`'s credential may see. `Err` is a ready-to-return
+/// error response (a store failure, mapped to `500`).
+async fn canonical_types(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    key: &str,
+) -> Result<Vec<AttributeTypeRecord>, Box<Response>> {
+    match state
+        .catalog()
+        .list_attribute_types(&ctx.tenant_id, key)
+        .await
+    {
+        Ok(records) => Ok(records
+            .into_iter()
+            .filter(|r| dataset_allowed(ctx.api_key_dataset_ids.as_deref(), &r.dataset))
+            .collect()),
+        Err(e) => {
+            tracing::error!(error = %e, "attribute type authority lookup failed");
+            Err(Box::new(error(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "attribute type authority lookup failed",
+            )))
+        }
+    }
+}
+
 // ---- resolution / search ---------------------------------------------------
 
 #[utoipa::path(
@@ -488,8 +560,8 @@ pub async fn delete_registry<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn search_attributes<S: RouterState>(
-    State(state): State<S>,
+pub async fn search_attributes(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Query(params): Query<SearchParams>,
 ) -> Response {
@@ -497,18 +569,22 @@ pub async fn search_attributes<S: RouterState>(
         return *r;
     }
     let resolver = state.schema_resolver();
-    if let Some(keys) = params.keys.as_deref().filter(|k| !k.trim().is_empty()) {
+    if let Some(keys) = split_keys(&params.keys) {
         let mut resolutions = Vec::new();
-        for key in keys
-            .split(',')
-            .map(str::trim)
-            .filter(|k| !k.is_empty())
-            .take(MAX_SEARCH_LIMIT)
-        {
-            match resolver.resolve_attribute(&ctx.tenant_id, key).await {
-                Ok(r) => resolutions.push(r.into()),
+        for key in keys {
+            let (resolved, types) = tokio::join!(
+                resolver.resolve_attribute(&ctx.tenant_id, key),
+                canonical_types(&state, &ctx, key)
+            );
+            let mut resolution: AttributeResolution = match resolved {
+                Ok(r) => r.into(),
                 Err(e) => return store_error(e),
-            }
+            };
+            resolution.canonical_types = match types {
+                Ok(records) => records,
+                Err(resp) => return *resp,
+            };
+            resolutions.push(resolution);
         }
         return Json(AttributeSearchResponse {
             hits: Vec::new(),
@@ -542,22 +618,28 @@ pub async fn search_attributes<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn resolve_attribute<S: RouterState>(
-    State(state): State<S>,
+pub async fn resolve_attribute(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(key): Path<String>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
         return *r;
     }
-    match state
-        .schema_resolver()
-        .resolve_attribute(&ctx.tenant_id, &key)
-        .await
-    {
-        Ok(r) => Json(AttributeResolution::from(r)).into_response(),
-        Err(e) => store_error(e),
-    }
+    let resolver = state.schema_resolver();
+    let (resolved, types) = tokio::join!(
+        resolver.resolve_attribute(&ctx.tenant_id, &key),
+        canonical_types(&state, &ctx, &key)
+    );
+    let mut resolution = match resolved {
+        Ok(r) => AttributeResolution::from(r),
+        Err(e) => return store_error(e),
+    };
+    resolution.canonical_types = match types {
+        Ok(records) => records,
+        Err(resp) => return *resp,
+    };
+    Json(resolution).into_response()
 }
 
 #[utoipa::path(
@@ -565,7 +647,7 @@ pub async fn resolve_attribute<S: RouterState>(
     path = "/api/v1/schema/entities",
     tag = "schema",
     operation_id = "schema_search_entities",
-    params(SearchParams),
+    params(EntitySearchParams),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
         (status = 200, description = "Entity types whose name starts with the prefix", body = EntitySearchResponse),
@@ -573,10 +655,10 @@ pub async fn resolve_attribute<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn search_entities<S: RouterState>(
-    State(state): State<S>,
+pub async fn search_entities(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
-    Query(params): Query<SearchParams>,
+    Query(params): Query<EntitySearchParams>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
         return *r;
@@ -604,8 +686,8 @@ pub async fn search_entities<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn resolve_entity<S: RouterState>(
-    State(state): State<S>,
+pub async fn resolve_entity(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
 ) -> Response {
@@ -630,25 +712,43 @@ pub async fn resolve_entity<S: RouterState>(
     params(SearchParams),
     responses(
         (status = 429, response = crate::endpoints::api_error::RateLimited),
-        (status = 200, description = "Metrics whose name starts with the prefix", body = MetricSearchResponse),
+        (status = 200, description = "Prefix hits (and per-name resolutions when keys= is given)", body = MetricSearchResponse),
         (status = 403, description = "Missing schema:read scope", body = SchemaError),
     ),
     security(("bearer" = []))
 )]
-pub async fn search_metrics<S: RouterState>(
-    State(state): State<S>,
+pub async fn search_metrics(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Query(params): Query<SearchParams>,
 ) -> Response {
     if let Err(r) = require_read(&ctx) {
         return *r;
     }
-    match state
-        .schema_resolver()
+    let resolver = state.schema_resolver();
+    if let Some(keys) = split_keys(&params.keys) {
+        let mut resolutions = Vec::new();
+        for name in keys {
+            match resolver.resolve_metric(&ctx.tenant_id, name).await {
+                Ok(r) => resolutions.push(r.into()),
+                Err(e) => return store_error(e),
+            }
+        }
+        return Json(MetricSearchResponse {
+            hits: Vec::new(),
+            resolutions,
+        })
+        .into_response();
+    }
+    match resolver
         .search_metrics(&ctx.tenant_id, &params.prefix, clamp_limit(params.limit))
         .await
     {
-        Ok(hits) => Json(MetricSearchResponse { hits }).into_response(),
+        Ok(hits) => Json(MetricSearchResponse {
+            hits,
+            resolutions: Vec::new(),
+        })
+        .into_response(),
         Err(e) => store_error(e),
     }
 }
@@ -666,8 +766,8 @@ pub async fn search_metrics<S: RouterState>(
     ),
     security(("bearer" = []))
 )]
-pub async fn resolve_metric<S: RouterState>(
-    State(state): State<S>,
+pub async fn resolve_metric(
+    State(state): State<RouterAppState>,
     Extension(ctx): Extension<TenantContext>,
     Path(name): Path<String>,
 ) -> Response {
@@ -691,12 +791,34 @@ mod tests {
     use common::auth::Authenticator;
     use common::catalog::{Catalog, MembershipRole};
     use common::config::{ApiKeyConfig, AuthConfig, Configuration, DatasetConfig, TenantConfig};
+    use common::schema::logical::{AttributeLevel, LogicalFieldId};
+    use common::schema::type_authority::{CanonicalType, Resolution, TypeSource};
     use serde_json::{Value, json};
     use tower::ServiceExt;
 
     use crate::{RouterAppState, create_router};
 
     const ACME: &str = include_str!("../../../schema-model/tests/fixtures/acme.yaml");
+
+    /// The record-level attribute field the canonical-types tests establish
+    /// a type for.
+    fn order_id_field() -> LogicalFieldId {
+        LogicalFieldId {
+            source: "traces".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "acme.order.id".to_string(),
+        }
+    }
+
+    /// An `Observed`-sourced resolution, the type authority's default
+    /// outcome when neither config nor a semconv hint decided the type.
+    fn observed(canonical: CanonicalType) -> Resolution<'static> {
+        Resolution {
+            canonical,
+            source: TypeSource::Observed,
+            hint_schema_url: None,
+        }
+    }
 
     fn tenant(id: &str, key: &str) -> TenantConfig {
         TenantConfig {
@@ -747,6 +869,7 @@ mod tests {
                     &Authenticator::hash_api_key(key),
                     Some(key),
                     None,
+                    None,
                     Some(&scopes),
                     None,
                 )
@@ -755,7 +878,7 @@ mod tests {
         }
         let hash = common::auth::hash_password("pw").unwrap();
         let alice = catalog
-            .create_user("alice@example.com", Some("Alice"), &hash, false)
+            .create_user("alice@example.com", Some("Alice"), Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -763,7 +886,7 @@ mod tests {
             .await
             .unwrap();
         let vera = catalog
-            .create_user("vera@example.com", Some("Vera"), &hash, false)
+            .create_user("vera@example.com", Some("Vera"), Some(&hash), false)
             .await
             .unwrap();
         catalog
@@ -1155,6 +1278,105 @@ mod tests {
         assert_eq!(status, 403);
     }
 
+    #[tokio::test]
+    async fn definition_v2_uploads_are_stored_as_groups() {
+        const ACME_V2: &str = include_str!("../../../schema-model/tests/fixtures/acme-v2.yaml");
+        let (app, _) = app().await;
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries",
+            Some(("application/yaml", ACME_V2.to_string())),
+        )
+        .await;
+        assert_eq!(status, 201, "{body}");
+        assert_eq!(body["entity_count"], 2);
+        assert_eq!(body["metric_count"], 1);
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("acme-key", "acme"),
+            "GET",
+            "/api/v1/schema/registries/acme/1.0.0",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200);
+        assert!(body["document"].get("file_format").is_none(), "{body}");
+        assert!(
+            body["document"]["groups"]
+                .as_array()
+                .is_some_and(|g| !g.is_empty())
+        );
+
+        // The CLI sends YAML files converted to JSON.
+        let v2_json = json!({
+            "file_format": "definition/2",
+            "name": "widgets",
+            "version": "1.0.0",
+            "attributes": [{"key": "widget.id", "type": "string", "stability": "development", "brief": "Widget id.", "examples": ["w-1"]}],
+            "entities": [{"name": "widget", "stability": "development", "brief": "A widget.", "attributes": [{"ref": "widget.id", "role": "identifying"}]}],
+        });
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries:validate",
+            Some(("application/json", v2_json.to_string())),
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["errors"].as_array().map(Vec::len), Some(0), "{body}");
+        assert_eq!(body["entity_count"], 1);
+
+        for (content_type, text) in [
+            (
+                "application/yaml",
+                ACME_V2.replace("definition/2", "definition/3"),
+            ),
+            (
+                "application/json",
+                v2_json.to_string().replace("definition/2", "definition/3"),
+            ),
+        ] {
+            let (status, body) = call(
+                &app,
+                Auth::Key("sk-write", "acme"),
+                "PUT",
+                "/api/v1/schema/registries/acme/1.0.0",
+                Some((content_type, text)),
+            )
+            .await;
+            assert_eq!(status, 422, "{body}");
+            assert!(
+                body["error"]
+                    .as_str()
+                    .is_some_and(|e| e.contains("definition/3")),
+                "{body}"
+            );
+        }
+
+        let cycle = json!({
+            "file_format": "definition/2",
+            "name": "loop",
+            "version": "1.0.0",
+            "attribute_groups": [
+                {"id": "a", "attributes": [{"ref_group": "b"}]},
+                {"id": "b", "attributes": [{"ref_group": "a"}]},
+            ],
+        });
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-write", "acme"),
+            "POST",
+            "/api/v1/schema/registries:validate",
+            Some(("application/json", cycle.to_string())),
+        )
+        .await;
+        assert_eq!(status, 422, "{body}");
+    }
+
     // ---- 5.2 resolve / search --------------------------------------------
 
     #[tokio::test]
@@ -1321,6 +1543,23 @@ mod tests {
         assert_eq!(status, 200);
         assert_eq!(body["hits"][0]["name"], "acme.checkout.latency");
 
+        // batch keys= on metrics
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/metrics?keys=k8s.pod.cpu.time,acme.checkout.latency,no.such",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let res = body["resolutions"].as_array().unwrap();
+        assert_eq!(res.len(), 3);
+        assert_eq!(res[0]["key"], "k8s.pod.cpu.time");
+        assert_eq!(res[0]["primary"]["namespace"], "otel");
+        assert_eq!(res[1]["primary"]["namespace"], "acme");
+        assert!(res[2]["hits"].as_array().unwrap().is_empty());
+
         // ingest-only key is refused on reads
         let (status, _) = call(
             &app,
@@ -1343,5 +1582,414 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), 401);
+    }
+
+    // ---- canonical types (type authority discoverability) ----------------
+
+    #[tokio::test]
+    async fn resolve_attribute_includes_canonical_types_when_established() {
+        let (app, catalog) = app().await;
+        // an unestablished key omits the field entirely
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/no.type.established",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert!(
+            body.get("canonical_types").is_none(),
+            "no canonical_types field when nothing established: {body}"
+        );
+
+        let field = order_id_field();
+        catalog
+            .establish_attribute_type(
+                "acme",
+                "production",
+                &field,
+                observed(CanonicalType::String),
+            )
+            .await
+            .unwrap();
+        catalog
+            .record_off_type("acme", "production", &field, 4)
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/acme.order.id",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let types = body["canonical_types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["dataset"], "production");
+        assert_eq!(types[0]["signal"], "traces");
+        assert_eq!(types[0]["level"], "record");
+        assert_eq!(types[0]["canonical_type"], "string");
+        assert_eq!(types[0]["source"], "observed");
+        assert_eq!(types[0]["off_type_count"], 4);
+    }
+
+    #[tokio::test]
+    async fn resolve_attribute_canonical_types_respects_dataset_restriction() {
+        let (app, catalog) = app().await;
+
+        let field = order_id_field();
+        catalog
+            .establish_attribute_type(
+                "acme",
+                "production",
+                &field,
+                observed(CanonicalType::String),
+            )
+            .await
+            .unwrap();
+        catalog
+            .establish_attribute_type("acme", "staging", &field, observed(CanonicalType::Int64))
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &Authenticator::hash_api_key("sk-staging-only"),
+                Some("staging-only"),
+                Some(&["staging".to_string()]),
+                None,
+                Some(&["schema:read".to_string()]),
+                None,
+            )
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-staging-only", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/acme.order.id",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let types = body["canonical_types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["dataset"], "staging");
+
+        // the unrestricted key still sees both datasets
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes/acme.order.id",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        assert_eq!(body["canonical_types"].as_array().unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn search_attributes_batch_keys_includes_canonical_types() {
+        let (app, catalog) = app().await;
+        let field = order_id_field();
+        catalog
+            .establish_attribute_type(
+                "acme",
+                "production",
+                &field,
+                observed(CanonicalType::String),
+            )
+            .await
+            .unwrap();
+
+        let (status, body) = call(
+            &app,
+            Auth::Key("sk-read", "acme"),
+            "GET",
+            "/api/v1/schema/attributes?keys=acme.order.id,no.such",
+            None,
+        )
+        .await;
+        assert_eq!(status, 200, "{body}");
+        let res = body["resolutions"].as_array().unwrap();
+        assert_eq!(res[0]["key"], "acme.order.id");
+        let types = res[0]["canonical_types"].as_array().unwrap();
+        assert_eq!(types.len(), 1);
+        assert_eq!(types[0]["dataset"], "production");
+        assert!(
+            res[1].get("canonical_types").is_none(),
+            "no canonical_types field for an unestablished key: {res:?}"
+        );
+    }
+}
+
+// ── Logical/physical schema introspection (`GET /api/v1/schema`) ──────────
+//
+// Global, read-only, not tenant-scoped: the registered logical (OTel-native)
+// schema and the resolved physical (storage) schema for every version of
+// every signal source. Readable by any authenticated tenant credential.
+
+/// One logical (client-visible, OTel-native) field, as registered in
+/// [`common::schema::logical::LogicalSchema`].
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct LogicalField {
+    source: String,
+    /// `resource` | `scope` | `record`, absent when the field isn't
+    /// attribute-scoped (a plain `String` here, not `Option<AttributeLevel>`
+    /// — utoipa emits a nullable `$ref` enum as `oneOf: [{type: null}, ref]`,
+    /// which the progenitor-generated Rust SDK client can't parse).
+    level: Option<String>,
+    name: String,
+    value_type: common::schema::logical::LogicalType,
+    filterability: common::schema::logical::Filterability,
+    kind: common::schema::logical::LogicalFieldKind,
+    non_native: bool,
+}
+
+fn attribute_level_str(level: Option<common::schema::logical::AttributeLevel>) -> Option<String> {
+    level.map(|level| {
+        match level {
+            common::schema::logical::AttributeLevel::Resource => "resource",
+            common::schema::logical::AttributeLevel::Scope => "scope",
+            common::schema::logical::AttributeLevel::Record => "record",
+        }
+        .to_string()
+    })
+}
+
+/// One physical (storage) column, as resolved from `schemas.toml`.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PhysicalField {
+    name: String,
+    field_type: String,
+    required: bool,
+    computed: Option<String>,
+    physical_only: bool,
+}
+
+/// One resolved table-schema version for one signal source.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct PhysicalSchema {
+    source: String,
+    version: String,
+    is_current: bool,
+    description: String,
+    partition_by: Vec<String>,
+    fields: Vec<PhysicalField>,
+}
+
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub(crate) struct SchemaResponse {
+    logical_schema_version: String,
+    logical: Vec<LogicalField>,
+    physical: Vec<PhysicalSchema>,
+}
+
+fn physical_schemas_for_source(
+    source: &str,
+    versions: &std::collections::HashMap<
+        String,
+        common::schema::schema_parser::TableSchemaDefinition,
+    >,
+    current_version: &str,
+) -> Vec<PhysicalSchema> {
+    use common::schema::SCHEMA_DEFINITIONS;
+    let mut names: Vec<&String> = versions.keys().collect();
+    names.sort();
+    names
+        .into_iter()
+        .filter_map(|version| {
+            SCHEMA_DEFINITIONS
+                .resolve_table_schema(versions, version)
+                .ok()
+                .map(|resolved| PhysicalSchema {
+                    source: source.to_string(),
+                    version: resolved.version.clone(),
+                    is_current: resolved.version == current_version,
+                    description: resolved.description,
+                    partition_by: resolved.partition_by,
+                    fields: resolved
+                        .fields
+                        .into_iter()
+                        .map(|f| PhysicalField {
+                            name: f.name,
+                            field_type: f.field_type,
+                            required: f.required,
+                            computed: f.computed,
+                            physical_only: f.physical_only,
+                        })
+                        .collect(),
+                })
+        })
+        .collect()
+}
+
+/// GET /api/v1/schema
+///
+/// The registered logical (OTel-native, client-visible) schema and the
+/// resolved physical (storage) schema for every version of every signal
+/// source — read-only and not tenant-scoped (the schema is global, not
+/// per-tenant). Readable by any authenticated tenant credential.
+#[utoipa::path(
+    get,
+    path = "/api/v1/schema",
+    tag = "schema",
+    operation_id = "get_schema",
+    summary = "Get the registered logical and physical schema for every signal source",
+    responses(
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 200, description = "Logical and physical schema", body = SchemaResponse),
+        (status = 401, description = "Missing or invalid credentials"),
+    )
+)]
+pub(crate) async fn get_schema(Extension(_ctx): Extension<TenantContext>) -> Response {
+    use common::iceberg::schemas::TYPED_METRIC_VERSION;
+    use common::schema::SCHEMA_DEFINITIONS;
+    use common::schema::logical::LogicalSchema;
+
+    let mut logical: Vec<LogicalField> = LogicalSchema::core()
+        .fields()
+        .map(|field| LogicalField {
+            source: field.id.source.clone(),
+            level: attribute_level_str(field.id.level),
+            name: field.id.name.clone(),
+            value_type: field.value_type,
+            filterability: field.filterability,
+            kind: field.kind,
+            non_native: field.non_native,
+        })
+        .collect();
+    logical.sort_by(|a, b| (&a.source, &a.name).cmp(&(&b.source, &b.name)));
+
+    let mut physical = Vec::new();
+    physical.extend(physical_schemas_for_source(
+        "traces",
+        &SCHEMA_DEFINITIONS.traces,
+        SCHEMA_DEFINITIONS.current_trace_version(),
+    ));
+    physical.extend(physical_schemas_for_source(
+        "logs",
+        &SCHEMA_DEFINITIONS.logs,
+        &SCHEMA_DEFINITIONS.metadata.current_log_version,
+    ));
+    let metrics_sources: [(&str, &_, &str); 2] = [
+        ("metrics", &SCHEMA_DEFINITIONS.metrics, TYPED_METRIC_VERSION),
+        (
+            "metric_exemplars",
+            &SCHEMA_DEFINITIONS.metric_exemplars,
+            TYPED_METRIC_VERSION,
+        ),
+    ];
+    for (source, versions, current_version) in metrics_sources {
+        physical.extend(physical_schemas_for_source(
+            source,
+            versions,
+            current_version,
+        ));
+    }
+
+    Json(SchemaResponse {
+        logical_schema_version: SCHEMA_DEFINITIONS.logical_schema_version().to_string(),
+        logical,
+        physical,
+    })
+    .into_response()
+}
+
+#[cfg(test)]
+mod core_schema_tests {
+    use super::*;
+    use common::schema::SCHEMA_DEFINITIONS;
+    use common::schema::logical::LogicalSchema;
+
+    #[test]
+    fn physical_schemas_for_source_resolves_every_version_sorted_and_flags_current() {
+        let schemas = physical_schemas_for_source(
+            "traces",
+            &SCHEMA_DEFINITIONS.traces,
+            SCHEMA_DEFINITIONS.current_trace_version(),
+        );
+
+        // schemas.toml registers physical-v1, physical-v2, physical-v3
+        // (#1208: span_kind_number/status_code_number/dropped counts),
+        // physical-v4 (#1340: resource_identity), and the current
+        // physical-v5 (typed attribute layout, one-shot cutover) for
+        // traces.
+        let versions: Vec<&str> = schemas.iter().map(|s| s.version.as_str()).collect();
+        assert_eq!(
+            versions,
+            vec![
+                "physical-v1",
+                "physical-v2",
+                "physical-v3",
+                "physical-v4",
+                "physical-v5"
+            ],
+            "sorted by version name"
+        );
+
+        let current: Vec<&str> = schemas
+            .iter()
+            .filter(|s| s.is_current)
+            .map(|s| s.version.as_str())
+            .collect();
+        assert_eq!(current, vec![SCHEMA_DEFINITIONS.current_trace_version()]);
+
+        for schema in &schemas {
+            assert_eq!(schema.source, "traces");
+            assert!(!schema.fields.is_empty());
+            assert!(schema.fields.iter().any(|f| f.name == "trace_id"));
+        }
+    }
+
+    // The wide metrics/metric_exemplars tables resolve at TYPED_METRIC_VERSION,
+    // the version `get_schema`'s metrics_sources loop uses for them.
+    #[test]
+    fn wide_metrics_tables_resolve_at_the_typed_version() {
+        use common::iceberg::schemas::TYPED_METRIC_VERSION;
+
+        let metrics = physical_schemas_for_source(
+            "metrics",
+            &SCHEMA_DEFINITIONS.metrics,
+            TYPED_METRIC_VERSION,
+        );
+        assert!(metrics.iter().any(|s| s.version == TYPED_METRIC_VERSION));
+
+        let exemplars = physical_schemas_for_source(
+            "metric_exemplars",
+            &SCHEMA_DEFINITIONS.metric_exemplars,
+            TYPED_METRIC_VERSION,
+        );
+        assert!(exemplars.iter().any(|s| s.version == TYPED_METRIC_VERSION));
+    }
+
+    #[test]
+    fn get_schema_dto_covers_every_signal_source() {
+        let logical: Vec<LogicalField> = LogicalSchema::core()
+            .fields()
+            .map(|field| LogicalField {
+                source: field.id.source.clone(),
+                level: attribute_level_str(field.id.level),
+                name: field.id.name.clone(),
+                value_type: field.value_type,
+                filterability: field.filterability,
+                kind: field.kind,
+                non_native: field.non_native,
+            })
+            .collect();
+
+        let sources: std::collections::HashSet<&str> =
+            logical.iter().map(|f| f.source.as_str()).collect();
+        assert!(sources.contains("traces"));
+        assert!(sources.contains("logs"));
     }
 }

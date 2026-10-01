@@ -1,10 +1,18 @@
 [package]
 name = "loki-api"
-version = "0.1.1"
+version = "0.1.3"
 edition = "2024"
-description = "Loki-compatible API types for SignalDB"
+description = "Loki-compatible HTTP API types"
 license = "AGPL-3.0"
 
 [dependencies]
 serde.workspace = true
 serde_json.workspace = true
+workspace-hack = { version = "0.1", path = "../../workspace-hack" }
+
+[package.metadata.cargo-machete]
+# workspace-hack is managed by `cargo hakari` (see workspace-hack/README.md)
+ignored = ["workspace-hack"]
+
+[lints]
+workspace = true

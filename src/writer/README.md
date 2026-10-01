@@ -10,8 +10,8 @@ columnar storage.
 
 ## Endpoint
 
-| Protocol | Port | Purpose |
-|----------|------|---------|
+| Protocol      | Port  | Purpose                                        |
+| ------------- | ----- | ---------------------------------------------- |
 | Flight (gRPC) | 50061 | `do_put` ingestion of trace/log/metric batches |
 
 The writer registers itself in the catalog with the `Storage` capability so
@@ -66,10 +66,9 @@ use writer::IcebergTableWriter;
 
 let mut writer = IcebergTableWriter::new(
     &catalog_manager,
-    object_store,
     "my_tenant".to_string(),
     "my_dataset".to_string(),
-    "metrics_gauge".to_string(),
+    "metrics".to_string(),
 )
 .await?;
 
@@ -84,19 +83,9 @@ writer
 let committed = writer.load_committed_marker("wal-writer-id").await?;
 ```
 
-### Retry configuration
-
-```rust
-use std::time::Duration;
-use writer::RetryConfig;
-
-writer.set_retry_config(RetryConfig {
-    max_attempts: 5,
-    initial_delay: Duration::from_millis(200),
-    max_delay: Duration::from_secs(10),
-    backoff_multiplier: 2.5,
-});
-```
+Retries on commit failure use `RetryConfig::default()` (3 attempts,
+100ms initial delay, 5s max delay, 2x backoff) — there is currently no way
+to override it per writer.
 
 ## Configuration
 
@@ -106,8 +95,9 @@ The writer is configured through the shared SignalDB configuration
 ```toml
 [schema]
 catalog_type = "sql"
-# Only SQLite catalog URIs are supported (create_sql_catalog_with_builder
-# rejects everything else).
+# SQLite or PostgreSQL catalog URIs are supported (create_sql_catalog_with_builder
+# in src/common/src/iceberg/mod.rs). SQLite is single-node/dev only; PostgreSQL
+# is required once writer, querier, and compactor commit against the same catalog.
 catalog_uri = "sqlite:///.data/catalog.db"
 
 [storage]
@@ -157,7 +147,7 @@ Watch for these log signals in production:
 - `Iceberg commit reported an error but the marker landed` — an ambiguous
   commit resolved as success by verification; harmless but worth tracking.
 - `Iceberg commit reported success but the marker is absent (catalog CAS
-  silently lost)` — a concurrent commit won the race; the writer retries with
+silently lost)` — a concurrent commit won the race; the writer retries with
   fresh metadata. Sustained occurrences indicate commit contention on a table.
 
 ```bash

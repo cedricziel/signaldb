@@ -26,7 +26,7 @@ use common::catalog::Catalog;
 use common::config::{Configuration, QuerierConfig, WriterConfig};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use futures::{StreamExt, TryStreamExt};
 use object_store::ObjectStore;
 use opentelemetry_proto::tonic::{
@@ -44,7 +44,6 @@ use tokio::net::TcpListener;
 use tokio::time::{sleep, timeout};
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 const DB_TENANT: &str = "gamma-tenant";
 const DB_DATASET: &str = "production";
@@ -161,13 +160,16 @@ async fn setup_services() -> TestServices {
 
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
-    let writer_service = IcebergWriterFlightService::new(
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
         writer_wal,
         &WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _writer_bg = writer_service.start_background_processing();
     tokio::spawn(
         Server::builder()
@@ -215,7 +217,11 @@ async fn setup_services() -> TestServices {
         wal_config.clone(),
         wal_config,
     ));
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager);
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(Catalog::new("sqlite::memory:").await.unwrap()),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager, processor_registry);
     let log_acceptor_service = LogAcceptorService::new(log_handler);
     let acceptor_service_with_auth =
         LogsServiceServer::with_interceptor(log_acceptor_service, |mut req: tonic::Request<()>| {
@@ -226,7 +232,9 @@ async fn setup_services() -> TestServices {
                 dataset_slug: DB_DATASET.to_string(),
                 api_key_name: Some("test-key".to_string()),
                 api_key_scopes: None,
-                api_key_dataset_id: None,
+                api_key_dataset_ids: None,
+                oauth_tenant_grants: None,
+                api_key_allowed_origins: None,
                 user_id: None,
                 role: None,
                 is_instance_admin: false,
@@ -431,11 +439,12 @@ async fn database_tenant_log_round_trips_through_matching_namespace() {
 
     use datafusion::arrow::array::Array;
 
-    // The `body` column stores the log body's `AnyValue` as a JSON-encoded
+    // The `body` column *stores* the log body's `AnyValue` as a JSON-encoded
     // string (see conversion_logs.rs) so any value type round-trips through a
-    // single Utf8 column; a plain string body is therefore JSON-quoted.
-    let expected_body_json = serde_json::to_string(LOG_BODY).unwrap();
-
+    // single Utf8 column, but this query goes through the querier's Flight
+    // `query_logs` path (`shape_log_query`), which decodes a string-typed
+    // body on the way out (issue #1410) — the value observed here is the
+    // plain, unquoted text.
     let mut found_body = false;
     let mut found_service = false;
     for batch in &batches {
@@ -444,7 +453,7 @@ async fn database_tenant_log_round_trips_through_matching_namespace() {
                 .as_any()
                 .downcast_ref::<datafusion::arrow::array::StringArray>()
         {
-            found_body |= (0..array.len()).any(|i| array.value(i) == expected_body_json);
+            found_body |= (0..array.len()).any(|i| array.value(i) == LOG_BODY);
         }
         if let Some(service_col) = batch.column_by_name("service_name")
             && let Some(array) = service_col

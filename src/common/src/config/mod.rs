@@ -9,6 +9,9 @@ use figment::{
     providers::{Env, Format, Serialized, Toml},
 };
 
+use crate::schema::logical::{AttributeLevel, LogicalFieldId};
+use crate::schema::type_authority::CanonicalType;
+
 use once_cell::sync::OnceCell;
 
 pub static CONFIG: OnceCell<Configuration> = OnceCell::new();
@@ -130,6 +133,16 @@ pub struct AttrPromotionConfig {
     /// Maximum promotions per rewrite cycle.
     #[serde(default = "default_attr_promotion_max_per_cycle")]
     pub max_promotions_per_cycle: usize,
+
+    /// How long a promoted `attr_<level>_<key>` column may go unqueried
+    /// before it's demoted (folded back into the typed map on the next
+    /// compaction). `0s` disables idle demotion; over-budget demotion still
+    /// applies regardless of this setting.
+    #[serde(
+        with = "humantime_serde",
+        default = "default_attr_promotion_demote_after_idle"
+    )]
+    pub demote_after_idle: Duration,
 }
 
 impl Default for AttrPromotionConfig {
@@ -142,6 +155,7 @@ impl Default for AttrPromotionConfig {
             min_query_hits: default_attr_promotion_min_query_hits(),
             promote_streak: default_attr_promotion_promote_streak(),
             max_promotions_per_cycle: default_attr_promotion_max_per_cycle(),
+            demote_after_idle: default_attr_promotion_demote_after_idle(),
         }
     }
 }
@@ -164,6 +178,10 @@ fn default_attr_promotion_promote_streak() -> i64 {
 
 fn default_attr_promotion_max_per_cycle() -> usize {
     4
+}
+
+fn default_attr_promotion_demote_after_idle() -> Duration {
+    Duration::from_secs(7 * 24 * 3600) // 7 days
 }
 
 /// Orphan file cleanup configuration for compactor (Phase 3).
@@ -231,8 +249,20 @@ fn default_compactor_target_partitions() -> usize {
     1
 }
 
+fn default_value_sketch_size() -> usize {
+    100
+}
+
 fn default_max_partition_input_mb() -> u64 {
     2048
+}
+
+fn default_compactor_scan_batch_size() -> usize {
+    1024
+}
+
+fn default_sort_spill_reservation_mb() -> u64 {
+    10
 }
 
 fn default_max_per_tenant() -> usize {
@@ -339,6 +369,47 @@ pub struct WalConfig {
     pub flush_interval: Duration,
     /// Maximum size in bytes to buffer before flushing to object store
     pub max_buffer_size_bytes: usize,
+    /// Soft cap on WAL instances the [`crate::wal::manager::WalManager`]
+    /// cache holds at once, per service. On a cache miss the manager tries
+    /// to evict its least-recently-appended, fully drained, unreferenced WAL
+    /// to make room; if nothing qualifies the write proceeds over the cap
+    /// rather than failing. `0` disables the cap (unbounded).
+    ///
+    /// Sized against descriptor cost: each open WAL holds 3 file
+    /// descriptors, so the default of 256 implies 256 × 3 + 128 (reserved
+    /// for listeners, the object store, the catalog, Flight connections) =
+    /// 896, comfortably under the common 1024 `RLIMIT_NOFILE` soft limit. On
+    /// a raised limit, a reasonable cap is `(soft_limit − 128) / 3`.
+    ///
+    /// Environment: `SIGNALDB__WAL__MAX_INSTANCES`.
+    #[serde(default = "default_wal_max_instances")]
+    pub max_instances: usize,
+    /// How long a dead-lettered entry (`<wal_dir>/.../dead-letter/`) is kept
+    /// before the retention sweep deletes its marker and payload. `0s`
+    /// disables the sweep.
+    ///
+    /// A dead-letter pair is not a live-data retention concern — those are
+    /// governed by `[compactor.retention]` once a batch actually lands in a
+    /// table — it is an unclaimed backlog that grows without bound until an
+    /// operator notices (#1494: 45k rejected entries, 493 MB, sat for a month
+    /// with nothing reporting or expiring them). The default matches the
+    /// signal retention default so a schema-rejection burst does not outlive
+    /// the data it would have produced.
+    ///
+    /// Environment: `SIGNALDB__WAL__DEAD_LETTER_RETENTION`.
+    #[serde(with = "humantime_serde", default = "default_dead_letter_retention")]
+    pub dead_letter_retention: Duration,
+}
+
+fn default_wal_max_instances() -> usize {
+    crate::wal::manager::WalManager::DEFAULT_MAX_INSTANCES
+}
+
+/// Default for [`WalConfig::dead_letter_retention`] and the fallback used by
+/// callers that read `[wal]` off the process-global `CONFIG` (which may be
+/// unset in a test or an early-startup code path).
+pub fn default_dead_letter_retention() -> Duration {
+    Duration::from_secs(30 * 24 * 3600) // 30 days
 }
 
 impl WalConfig {
@@ -368,6 +439,47 @@ impl Default for WalConfig {
             max_buffer_entries: 1000,
             flush_interval: Duration::from_secs(30),
             max_buffer_size_bytes: 128 * 1024 * 1024, // 128MB
+            max_instances: default_wal_max_instances(),
+            dead_letter_retention: default_dead_letter_retention(),
+        }
+    }
+}
+
+/// Acceptor transport limits (change: acceptor-transport-hardening).
+///
+/// Both the OTLP/HTTP body limit and the OTLP/gRPC decode limit are driven
+/// from this single value, so raising it for large payloads (e.g. profiles)
+/// is one decision rather than two limits that can drift apart. Axum's
+/// undocumented 2 MiB default and tonic's 4 MiB default are both too small
+/// for the WAL's own segment tuning (`[wal]`), which expects up to 256 MiB
+/// profile segments; this makes the ceiling explicit instead of inherited.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct AcceptorConfig {
+    /// Maximum decoded request body size, in bytes, accepted on any OTLP/HTTP
+    /// or Prometheus remote_write ingest route, and the equivalent
+    /// `max_decoding_message_size` applied to every OTLP/gRPC service. This
+    /// limit applies to the *decoded* body — see the gzip/zstd decompression
+    /// note on the OTLP/HTTP routers for why.
+    /// Env: SIGNALDB__ACCEPTOR__MAX_REQUEST_BODY_BYTES
+    pub max_request_body_bytes: u64,
+    /// How long this acceptor remembers a durably accepted batch so a
+    /// client's byte-identical resend (an exporter retrying after its own
+    /// timeout) returning to it is retired without forwarding it; see the
+    /// acceptor's `retry_dedup` module. A cheap first line only: the writer
+    /// dedups resends across acceptors and restarts
+    /// (`[writer].ingest_dedup_window`). Default 5m, the OpenTelemetry
+    /// Collector's retry horizon. `0s` disables this cache.
+    /// Env: SIGNALDB__ACCEPTOR__RETRY_DEDUP_WINDOW
+    #[serde(with = "humantime_serde")]
+    pub retry_dedup_window: Duration,
+}
+
+impl Default for AcceptorConfig {
+    fn default() -> Self {
+        Self {
+            max_request_body_bytes: 64 * 1024 * 1024, // 64MB
+            retry_dedup_window: Duration::from_secs(300),
         }
     }
 }
@@ -446,6 +558,45 @@ pub struct CompactorConfig {
     #[serde(default = "default_compactor_target_partitions")]
     pub target_partitions: usize,
 
+    /// Row count of the batches the compaction scan feeds to the sort.
+    ///
+    /// `ExternalSorter` reserves roughly twice a batch's bytes the moment
+    /// the batch arrives, and that reservation cannot spill: with nothing
+    /// accumulated yet there is nothing to write out, so a batch too big
+    /// for the pool fails the job instead of degrading to disk. The
+    /// reservation is bounded in *bytes*, but DataFusion's batch size is
+    /// counted in *rows*, so the default of 8192 is only safe for narrow
+    /// rows. On a profiles table — pprof payloads, tens of KB per row —
+    /// 8192 rows asked for 506 MB against a 512 MB pool and every
+    /// compaction of that partition failed terminally.
+    ///
+    /// A smaller batch trades per-batch overhead, which a background job
+    /// can afford, for a per-batch reservation that fits the pool with
+    /// room to accumulate and spill.
+    ///
+    /// `0` restores DataFusion's default (8192 rows).
+    ///
+    /// Default: 1024.
+    /// Env: SIGNALDB__COMPACTOR__SCAN_BATCH_SIZE
+    #[serde(default = "default_compactor_scan_batch_size")]
+    pub scan_batch_size: usize,
+
+    /// Memory in MB each spilling sort holds back so its spill merge can
+    /// run (`datafusion.execution.sort_spill_reservation_bytes`).
+    ///
+    /// This is headroom taken out of `memory_limit_mb`, not added to it:
+    /// raise it when a sort fails *while* merging its spilled runs, lower
+    /// it to give the sort more room to accumulate before spilling.
+    /// DataFusion's own out-of-memory message names this knob, so the
+    /// compactor exposes it rather than leaving the advice unactionable.
+    ///
+    /// `0` means no headroom at all, which DataFusion permits.
+    ///
+    /// Default: 10 MB (DataFusion's default).
+    /// Env: SIGNALDB__COMPACTOR__SORT_SPILL_RESERVATION_MB
+    #[serde(default = "default_sort_spill_reservation_mb")]
+    pub sort_spill_reservation_mb: u64,
+
     /// Upper bound, in MB, on the compaction inputs a single job will take
     /// on — the summed size of the partition's *eligible* (small) files.
     ///
@@ -468,6 +619,23 @@ pub struct CompactorConfig {
     /// Env: SIGNALDB__COMPACTOR__MAX_PARTITION_INPUT_MB
     #[serde(default = "default_max_partition_input_mb")]
     pub max_partition_input_mb: u64,
+
+    /// How many values per attribute key the analyzer keeps as a suggestion
+    /// sketch, for query discovery to serve without reading data.
+    ///
+    /// The analyzer already walks every attribute value to compute presence
+    /// and cardinality, so counting them costs the pass nothing extra; this
+    /// bounds only what is *persisted* — the top N values by frequency per
+    /// key. A key whose distinct values exceed the analyzer's cardinality cap
+    /// keeps no sketch at all: a partial list of a runaway key would be a
+    /// misleading suggestion, and discovery says "nothing covers this" instead.
+    ///
+    /// `0` disables value sketches entirely.
+    ///
+    /// Default: 100.
+    /// Env: SIGNALDB__COMPACTOR__VALUE_SKETCH_SIZE
+    #[serde(default = "default_value_sketch_size")]
+    pub value_sketch_size: usize,
 
     /// Retention enforcement configuration (Phase 3)
     /// Env: SIGNALDB__COMPACTOR__RETENTION__*
@@ -542,6 +710,9 @@ impl Default for CompactorConfig {
             memory_limit_mb: default_compactor_memory_limit_mb(),
             target_partitions: default_compactor_target_partitions(),
             max_partition_input_mb: default_max_partition_input_mb(),
+            scan_batch_size: default_compactor_scan_batch_size(),
+            sort_spill_reservation_mb: default_sort_spill_reservation_mb(),
+            value_sketch_size: default_value_sketch_size(),
             retention: RetentionConfig::default(),
             orphan_cleanup: OrphanCleanupConfig::default(),
             attr_promotion: AttrPromotionConfig::default(),
@@ -605,6 +776,122 @@ pub struct MaterializedLabels {
     pub profiles: Vec<String>,
 }
 
+/// A signal type an attribute-type override may target. Kept distinct from
+/// `LogicalFieldId::source` (a free string) so an unknown signal in
+/// `[[schema.attribute_types]]` fails config parsing rather than silently
+/// never matching a field.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AttributeTypeSignal {
+    Logs,
+    Traces,
+    Metrics,
+    Profiles,
+}
+
+impl AttributeTypeSignal {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            AttributeTypeSignal::Logs => "logs",
+            AttributeTypeSignal::Traces => "traces",
+            AttributeTypeSignal::Metrics => "metrics",
+            AttributeTypeSignal::Profiles => "profiles",
+        }
+    }
+}
+
+/// An operator-pinned canonical type for one attribute key, optionally
+/// scoped to a single dataset. See `[[schema.attribute_types]]` in
+/// `signaldb.dist.toml`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AttributeTypeOverride {
+    pub signal: AttributeTypeSignal,
+    pub level: AttributeLevel,
+    pub key: String,
+    #[serde(rename = "type")]
+    pub canonical_type: CanonicalType,
+    /// Restricts the override to one dataset; omitted applies it to every
+    /// dataset of the tenant.
+    #[serde(default)]
+    pub dataset: Option<String>,
+}
+
+/// Opt-in per-table warm derived containment index config (epic task 4.3,
+/// `spike/warm-index.md`): a bloom-filtered `List<Binary>` column over the
+/// typed attribute layout's home columns, for "does this file contain
+/// `key=value`" checks without one bloom filter per key. Off by default
+/// (`signals` empty) -- a table only gets the column when its signal is
+/// listed here, its dataset (if `datasets` is set) matches, and its
+/// resolved schema version is the typed attribute layout. A tenant's schema
+/// block overrides it per field ([`WarmIndexOverride`]).
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct WarmIndexConfig {
+    /// Signals to build the warm index for. Empty disables it everywhere.
+    #[serde(default)]
+    pub signals: Vec<AttributeTypeSignal>,
+    /// Restricts the index to these datasets; `None` applies it to every
+    /// dataset of an opted-in signal.
+    #[serde(default)]
+    pub datasets: Option<Vec<String>>,
+    /// False-positive probability for the index's bloom filter.
+    #[serde(default = "default_warm_index_fpp")]
+    pub fpp: f64,
+    /// Rows written per Parquet row group -- one factor (with
+    /// `attrs_per_row`) in the bloom filter's expected distinct-value count.
+    /// `spike/results.md`: NDV must be set explicitly, never inferred from
+    /// row count alone.
+    #[serde(default = "default_warm_index_rows_per_row_group")]
+    pub rows_per_row_group: u64,
+    /// Typed attributes carried per row, the other NDV factor.
+    #[serde(default = "default_warm_index_attrs_per_row")]
+    pub attrs_per_row: u64,
+    /// Upper bound on the computed NDV, so a misconfigured row-group size
+    /// cannot blow the filter past a sane byte budget.
+    #[serde(default = "default_warm_index_max_bloom_ndv")]
+    pub max_bloom_ndv: u64,
+}
+
+fn default_warm_index_fpp() -> f64 {
+    0.01
+}
+
+fn default_warm_index_rows_per_row_group() -> u64 {
+    10_000
+}
+
+fn default_warm_index_attrs_per_row() -> u64 {
+    16
+}
+
+fn default_warm_index_max_bloom_ndv() -> u64 {
+    2_000_000
+}
+
+impl Default for WarmIndexConfig {
+    fn default() -> Self {
+        Self {
+            signals: Vec::new(),
+            datasets: None,
+            fpp: default_warm_index_fpp(),
+            rows_per_row_group: default_warm_index_rows_per_row_group(),
+            attrs_per_row: default_warm_index_attrs_per_row(),
+            max_bloom_ndv: default_warm_index_max_bloom_ndv(),
+        }
+    }
+}
+
+impl WarmIndexConfig {
+    /// Whether `signal`'s tables in `dataset_id` should carry the warm
+    /// index, per this (already tenant-resolved) config.
+    pub fn applies_to(&self, signal: AttributeTypeSignal, dataset_id: &str) -> bool {
+        self.signals.contains(&signal)
+            && self
+                .datasets
+                .as_ref()
+                .is_none_or(|datasets| datasets.iter().any(|d| d == dataset_id))
+    }
+}
+
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct SchemaConfig {
     /// Type of catalog backend (sql, memory)
@@ -617,6 +904,13 @@ pub struct SchemaConfig {
     /// Attribute keys promoted to dedicated columns per signal type.
     #[serde(default)]
     pub materialized_labels: MaterializedLabels,
+    /// Operator-pinned canonical types for individual attribute keys. See
+    /// `[[schema.attribute_types]]` in `signaldb.dist.toml`.
+    #[serde(default)]
+    pub attribute_types: Vec<AttributeTypeOverride>,
+    /// Opt-in warm derived containment index. See [`WarmIndexConfig`].
+    #[serde(default)]
+    pub warm_index: WarmIndexConfig,
 }
 
 impl Default for SchemaConfig {
@@ -626,18 +920,171 @@ impl Default for SchemaConfig {
             catalog_uri: "sqlite::memory:".to_string(),
             default_schemas: DefaultSchemas::default(),
             materialized_labels: MaterializedLabels::default(),
+            attribute_types: Vec::new(),
+            warm_index: WarmIndexConfig::default(),
         }
+    }
+}
+
+impl SchemaConfig {
+    /// The config-pinned canonical type for `field` in `dataset_id`, if any.
+    /// A dataset-specific override wins over one with no `dataset` (applies
+    /// tenant-wide); ties keep the first match.
+    pub fn attribute_type_override(
+        &self,
+        dataset_id: &str,
+        field: &LogicalFieldId,
+    ) -> Option<CanonicalType> {
+        let level = field.level?;
+        let matches = |o: &&AttributeTypeOverride| {
+            o.signal.as_str() == field.source && o.level == level && o.key == field.name
+        };
+
+        self.attribute_types
+            .iter()
+            .find(|o| matches(o) && o.dataset.as_deref() == Some(dataset_id))
+            .or_else(|| {
+                self.attribute_types
+                    .iter()
+                    .find(|o| matches(o) && o.dataset.is_none())
+            })
+            .map(|o| o.canonical_type)
+    }
+}
+
+/// A tenant's `[tenants.tenants.<id>.schema]` block, merged field by field
+/// over the global [`SchemaConfig`] by [`Self::merged_over`]: anything the
+/// block leaves unset keeps the global value.
+///
+/// - Scalars and booleans replace the global value when set.
+/// - `materialized_labels.<signal>` replaces that signal's global list when
+///   set; `[]` clears it. Unset signals keep the global list.
+/// - `default_schemas.custom_schemas` merges per table name, tenant wins.
+/// - `attribute_types`: a tenant pin replaces the global pins on the same
+///   (signal, level, key) that it covers: all of them when the tenant pin has
+///   no `dataset`, otherwise only the one for that dataset. Other global pins
+///   still apply.
+/// - Unknown keys are rejected, so a misspelt field cannot silently fall back
+///   to the global value.
+/// - `warm_index` merges per field. `datasets` can narrow the global
+///   allowlist but not reset it to "every dataset".
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TenantSchemaOverride {
+    pub catalog_type: Option<String>,
+    pub catalog_uri: Option<String>,
+    pub default_schemas: DefaultSchemasOverride,
+    pub materialized_labels: MaterializedLabelsOverride,
+    pub attribute_types: Vec<AttributeTypeOverride>,
+    pub warm_index: WarmIndexOverride,
+}
+
+/// The [`DefaultSchemas`] fields a tenant block may override.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct DefaultSchemasOverride {
+    pub traces_enabled: Option<bool>,
+    pub logs_enabled: Option<bool>,
+    pub metrics_enabled: Option<bool>,
+    pub profiles_enabled: Option<bool>,
+    pub custom_schemas: HashMap<String, serde_json::Value>,
+}
+
+/// The [`MaterializedLabels`] lists a tenant block may override.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct MaterializedLabelsOverride {
+    pub logs: Option<Vec<String>>,
+    pub traces: Option<Vec<String>>,
+    pub metrics: Option<Vec<String>>,
+    pub profiles: Option<Vec<String>>,
+}
+
+/// The [`WarmIndexConfig`] fields a tenant block may override.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct WarmIndexOverride {
+    pub signals: Option<Vec<AttributeTypeSignal>>,
+    pub datasets: Option<Vec<String>>,
+    pub fpp: Option<f64>,
+    pub rows_per_row_group: Option<u64>,
+    pub attrs_per_row: Option<u64>,
+    pub max_bloom_ndv: Option<u64>,
+}
+
+fn override_with<T: Clone>(target: &mut T, value: &Option<T>) {
+    if let Some(value) = value {
+        *target = value.clone();
+    }
+}
+
+impl TenantSchemaOverride {
+    /// `global` with every field this block sets applied over it.
+    pub fn merged_over(&self, global: &SchemaConfig) -> SchemaConfig {
+        let mut merged = global.clone();
+        override_with(&mut merged.catalog_type, &self.catalog_type);
+        override_with(&mut merged.catalog_uri, &self.catalog_uri);
+
+        let schemas = &self.default_schemas;
+        let target = &mut merged.default_schemas;
+        override_with(&mut target.traces_enabled, &schemas.traces_enabled);
+        override_with(&mut target.logs_enabled, &schemas.logs_enabled);
+        override_with(&mut target.metrics_enabled, &schemas.metrics_enabled);
+        override_with(&mut target.profiles_enabled, &schemas.profiles_enabled);
+        target.custom_schemas.extend(schemas.custom_schemas.clone());
+
+        let labels = &self.materialized_labels;
+        let target = &mut merged.materialized_labels;
+        override_with(&mut target.logs, &labels.logs);
+        override_with(&mut target.traces, &labels.traces);
+        override_with(&mut target.metrics, &labels.metrics);
+        override_with(&mut target.profiles, &labels.profiles);
+
+        let pinned_by_tenant = |global_pin: &AttributeTypeOverride| {
+            self.attribute_types.iter().any(|pin| {
+                pin.signal == global_pin.signal
+                    && pin.level == global_pin.level
+                    && pin.key == global_pin.key
+                    && (pin.dataset.is_none() || pin.dataset == global_pin.dataset)
+            })
+        };
+        merged.attribute_types = self
+            .attribute_types
+            .iter()
+            .chain(
+                global
+                    .attribute_types
+                    .iter()
+                    .filter(|pin| !pinned_by_tenant(pin)),
+            )
+            .cloned()
+            .collect();
+
+        let warm = &self.warm_index;
+        let target = &mut merged.warm_index;
+        override_with(&mut target.signals, &warm.signals);
+        if warm.datasets.is_some() {
+            target.datasets.clone_from(&warm.datasets);
+        }
+        override_with(&mut target.fpp, &warm.fpp);
+        override_with(&mut target.rows_per_row_group, &warm.rows_per_row_group);
+        override_with(&mut target.attrs_per_row, &warm.attrs_per_row);
+        override_with(&mut target.max_bloom_ndv, &warm.max_bloom_ndv);
+
+        merged
     }
 }
 
 /// Configuration for tenant-specific schema overrides
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct TenantSchemaConfig {
-    /// Schema configuration that overrides global settings
-    pub schema: Option<SchemaConfig>,
+    /// Fields that override the global `[schema]`, merged over it by
+    /// [`Configuration::get_tenant_schema_config`].
+    pub schema: Option<TenantSchemaOverride>,
     /// Custom schema definitions for this tenant
     pub custom_schemas: Option<HashMap<String, String>>,
     /// Whether this tenant is enabled
+    #[serde(default = "default_true")]
     pub enabled: bool,
 }
 
@@ -797,6 +1244,28 @@ pub struct AuthConfig {
     /// network.
     #[serde(default)]
     pub internal_service_key: Option<String>,
+    /// Single-provider OIDC relying-party configuration (change:
+    /// oidc-login). Absent by default: no OIDC surface is exposed and
+    /// password login is the only door.
+    #[serde(default)]
+    pub oidc: Option<OidcConfig>,
+    /// Operational gate for the multi-dataset-key-restriction rollout (D2).
+    ///
+    /// While `false` (the default, safe-by-default for a fresh deploy and
+    /// every existing deployment upgrading into this feature), the server
+    /// rejects at the request boundary any API-key create/update naming two
+    /// or more datasets in `dataset_ids`, and any OAuth consent decision
+    /// naming a non-empty `dataset_ids`. Single-element and unrestricted API
+    /// keys, and "all datasets" OAuth consent, are unaffected either way.
+    ///
+    /// Set to `true` only once every node that will authenticate that
+    /// credential type is confirmed running a binary new enough to enforce a
+    /// multi-element dataset restriction — this is an operational
+    /// attestation the server cannot verify automatically. See
+    /// `docs/users/authentication.md` for the full mixed-version rollout
+    /// constraint.
+    #[serde(default)]
+    pub dataset_restriction_rollout_complete: bool,
 }
 
 fn default_storage_usage_refresh_interval() -> Duration {
@@ -811,7 +1280,346 @@ impl Default for AuthConfig {
             tenants: Vec::new(),
             admin_api_key: None,
             internal_service_key: None,
+            oidc: None,
+            dataset_restriction_rollout_complete: false,
         }
+    }
+}
+
+/// One IdP-group-to-membership mapping rule (change: oidc-login).
+///
+/// Applied at every SSO login (design decision 6): a user whose token
+/// carries `group` is granted `role` in `tenant` via
+/// `Catalog::sync_oidc_memberships`, as a `granted_by = 'oidc_mapping'`
+/// row that never overwrites a locally-granted membership for the same
+/// tenant.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct GroupMapping {
+    /// The IdP group name as it appears in the configured `group_claim`.
+    pub group: String,
+    /// The tenant the mapped membership is granted in.
+    pub tenant: String,
+    /// The role granted. An unknown role name fails config loading with a
+    /// serde error naming the value.
+    pub role: crate::catalog::MembershipRole,
+}
+
+/// Single-provider OIDC relying-party configuration, parsed from
+/// `[auth.oidc]` (change: oidc-login).
+///
+/// `issuer_url`/`client_id`/`client_secret` are plain (not `Option`)
+/// strings that default to empty so a section that sets only
+/// `disable_password_login` still parses — [`OidcConfig::validate`] turns
+/// the resulting empty provider fields into a startup error naming the
+/// setting, rather than a generic missing-field error.
+#[derive(Clone, Default, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OidcConfig {
+    /// The OIDC issuer URL; provider endpoints are resolved from its
+    /// `.well-known/openid-configuration` document, never configured
+    /// endpoint-by-endpoint.
+    pub issuer_url: String,
+    /// OAuth client ID registered with the IdP.
+    pub client_id: String,
+    /// OAuth client secret registered with the IdP.
+    pub client_secret: String,
+    /// Overrides the callback URL the start endpoint otherwise derives from
+    /// `[public].api_url` (`{api_url}/ui/session/oidc/callback`). Needed
+    /// when SignalDB sits behind a reverse proxy that changes the
+    /// externally-visible scheme/host from what `[public].api_url` states.
+    /// Request headers (`Host`, `X-Forwarded-*`) are never used to build the
+    /// callback, whether or not this is set.
+    pub redirect_url: Option<String>,
+    /// Label shown on the login page's SSO button. Defaults to the issuer
+    /// host when unset (cosmetic, resolved at the RP layer).
+    pub display_name: Option<String>,
+    /// Just-in-time provisioning allowlist: a verified email whose domain
+    /// is not in this list is refused rather than creating a user. Unset
+    /// means every verified identity may be provisioned.
+    pub allowed_email_domains: Option<Vec<String>>,
+    /// Name of the ID-token/userinfo claim carrying the user's IdP groups.
+    /// Required for `group_mappings` to have any effect.
+    pub group_claim: Option<String>,
+    /// IdP-group-to-tenant-role mapping rules, applied at every login.
+    #[serde(default)]
+    pub group_mappings: Vec<GroupMapping>,
+    /// Disables password login for every user when `true`. Only honoured
+    /// when this section also configures a valid provider (design decision
+    /// 7) — see [`OidcConfig::validate`].
+    #[serde(default)]
+    pub disable_password_login: bool,
+}
+
+/// Manual `Debug`: redacts `client_secret` so it can never leak via `{:?}`
+/// logging (e.g. a config dump at startup); every other field is plain
+/// config, not a secret.
+impl std::fmt::Debug for OidcConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("OidcConfig")
+            .field("issuer_url", &self.issuer_url)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("redirect_url", &self.redirect_url)
+            .field("display_name", &self.display_name)
+            .field("allowed_email_domains", &self.allowed_email_domains)
+            .field("group_claim", &self.group_claim)
+            .field("group_mappings", &self.group_mappings)
+            .field("disable_password_login", &self.disable_password_login)
+            .finish()
+    }
+}
+
+impl OidcConfig {
+    /// Validate a configured `[auth.oidc]` section.
+    ///
+    /// Called whenever the section is present; an absent section (`auth.oidc
+    /// = None`) needs no validation since it exposes no OIDC surface at all.
+    /// Returns a message naming the offending setting on failure, per the
+    /// "Invalid configuration fails hard" scenario.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.issuer_url.trim().is_empty() {
+            if self.disable_password_login {
+                return Err(
+                    "[auth.oidc].disable_password_login is set but issuer_url is empty: \
+                     disabling password login requires a configured OIDC provider"
+                        .to_string(),
+                );
+            }
+            return Err("[auth.oidc].issuer_url must not be empty".to_string());
+        }
+        url::Url::parse(&self.issuer_url)
+            .map_err(|e| format!("[auth.oidc].issuer_url is not a valid URL: {e}"))?;
+        if self.client_id.trim().is_empty() {
+            return Err("[auth.oidc].client_id must not be empty".to_string());
+        }
+        if self.client_secret.trim().is_empty() {
+            return Err("[auth.oidc].client_secret must not be empty".to_string());
+        }
+        if let Some(redirect_url) = &self.redirect_url {
+            url::Url::parse(redirect_url)
+                .map_err(|e| format!("[auth.oidc].redirect_url is not a valid URL: {e}"))?;
+        }
+        if !self.group_mappings.is_empty() && self.group_claim.is_none() {
+            return Err(
+                "[auth.oidc].group_mappings is set but group_claim is empty: group mapping \
+                 requires group_claim to name the ID-token/userinfo claim carrying groups"
+                    .to_string(),
+            );
+        }
+        Ok(())
+    }
+}
+
+/// GitHub App integration, parsed from `[github]` (change:
+/// github-app-source-context). Absent by default: no GitHub surface is
+/// exposed, `GET /ui/github/callback` and the tenant-management
+/// installation endpoints answer 404.
+///
+/// One GitHub App identity serves the whole deployment (design decision
+/// "one shared GitHub App identity, many tenant-scoped installations"); what
+/// is tenant-scoped — the installation ids and their covered repos — lives
+/// in the catalog. The private key and OAuth client secret are the two
+/// deploy-time secrets: SignalDB never persists a GitHub access token.
+///
+/// `app_id`/`app_slug`/`client_id`/`client_secret` default to empty so a
+/// partially filled section still parses — [`GitHubAppConfig::validate`]
+/// turns the gaps into a startup error naming the setting.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct GitHubAppConfig {
+    /// The App's numeric id (GitHub → Settings → Developer settings →
+    /// GitHub Apps → *App ID*). Signs the app-level JWT.
+    pub app_id: u64,
+    /// The App's URL slug (the `<slug>` in `https://github.com/apps/<slug>`).
+    /// Builds the install URL a tenant admin is sent to.
+    pub app_slug: String,
+    /// The App's private key, PEM-encoded (the `.pem` GitHub generates).
+    /// Alternatively point `private_key_path` at the file; exactly one of
+    /// the two must be set.
+    pub private_key: String,
+    /// Path to the PEM private key file, read once at startup. Convenient
+    /// for a mounted secret; mutually exclusive with `private_key`.
+    pub private_key_path: Option<String>,
+    /// The App's OAuth client id (*Client ID* on the App's settings page).
+    /// Exchanges the callback `code` for a user-to-server token so the
+    /// returned installation can be verified against the authorizing
+    /// GitHub user.
+    pub client_id: String,
+    /// The App's OAuth client secret (generate one on the App's settings
+    /// page). Keep it out of the TOML file in production and pass
+    /// `SIGNALDB__GITHUB__CLIENT_SECRET` instead.
+    pub client_secret: String,
+    /// GitHub REST API base URL. Override for GitHub Enterprise Server
+    /// (`https://ghe.example.com/api/v3`).
+    pub api_url: String,
+    /// GitHub web base URL: the install page and the OAuth token endpoint
+    /// hang off it. Override for GitHub Enterprise Server
+    /// (`https://ghe.example.com`).
+    pub web_url: String,
+    /// How long a link-flow state token stays valid between "Connect" and
+    /// GitHub's redirect back to the callback.
+    #[serde(with = "humantime_serde")]
+    pub link_state_ttl: Duration,
+    /// How long a fetched source-context snippet (change:
+    /// github-app-source-context) stays cached before it is re-fetched from
+    /// GitHub. Applies uniformly to ref- and SHA-keyed lookups (see the
+    /// design's "Snippet cache" decision).
+    #[serde(with = "humantime_serde")]
+    pub snippet_cache_ttl: Duration,
+    /// Maximum number of distinct *files* (not line-windows — the cache
+    /// keys on `(installation, repo, ref, path)` and slices whatever window
+    /// a request asks for out of the cached file) cached at once,
+    /// independent of `snippet_cache_ttl`. Exceeding this evicts the
+    /// least-recently-used entry. Each entry is at most `MAX_FILE_BYTES`
+    /// (512 KiB) of source text.
+    pub snippet_cache_capacity: usize,
+}
+
+impl Default for GitHubAppConfig {
+    fn default() -> Self {
+        Self {
+            app_id: 0,
+            app_slug: String::new(),
+            private_key: String::new(),
+            private_key_path: None,
+            client_id: String::new(),
+            client_secret: String::new(),
+            api_url: "https://api.github.com".to_string(),
+            web_url: "https://github.com".to_string(),
+            link_state_ttl: Duration::from_secs(10 * 60),
+            snippet_cache_ttl: Duration::from_secs(10 * 60),
+            snippet_cache_capacity: 1_000,
+        }
+    }
+}
+
+/// Manual `Debug`: redacts the private key and client secret so neither can
+/// leak via `{:?}` logging (e.g. a config dump at startup).
+impl std::fmt::Debug for GitHubAppConfig {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("GitHubAppConfig")
+            .field("app_id", &self.app_id)
+            .field("app_slug", &self.app_slug)
+            .field("private_key", &"[redacted]")
+            .field("private_key_path", &self.private_key_path)
+            .field("client_id", &self.client_id)
+            .field("client_secret", &"[redacted]")
+            .field("api_url", &self.api_url)
+            .field("web_url", &self.web_url)
+            .field("link_state_ttl", &self.link_state_ttl)
+            .field("snippet_cache_ttl", &self.snippet_cache_ttl)
+            .field("snippet_cache_capacity", &self.snippet_cache_capacity)
+            .finish()
+    }
+}
+
+impl GitHubAppConfig {
+    /// Validate a configured `[github]` section. Called whenever the section
+    /// is present; an absent section needs no validation since it exposes
+    /// no GitHub surface at all. Returns a message naming the offending
+    /// setting on failure (bad configuration fails startup; only the
+    /// reachability of GitHub itself is deferred to request time).
+    pub fn validate(&self) -> Result<(), String> {
+        if self.app_id == 0 {
+            return Err("[github].app_id must be set to the GitHub App's numeric id".to_string());
+        }
+        if self.app_slug.is_empty()
+            || !self
+                .app_slug
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
+        {
+            return Err(
+                "[github].app_slug must be the App's URL slug (letters, digits, '-', '_', '.')"
+                    .to_string(),
+            );
+        }
+        let has_inline = !self.private_key.trim().is_empty();
+        let has_path = self
+            .private_key_path
+            .as_deref()
+            .is_some_and(|p| !p.trim().is_empty());
+        match (has_inline, has_path) {
+            (false, false) => {
+                return Err(
+                    "[github].private_key or [github].private_key_path must be set".to_string(),
+                );
+            }
+            (true, true) => {
+                return Err(
+                    "[github].private_key and [github].private_key_path are mutually exclusive"
+                        .to_string(),
+                );
+            }
+            _ => {}
+        }
+        if has_inline && !self.private_key.contains("-----BEGIN") {
+            return Err("[github].private_key must be a PEM-encoded private key".to_string());
+        }
+        {
+            use rsa::pkcs1::DecodeRsaPrivateKey;
+            use rsa::pkcs8::DecodePrivateKey;
+            let pem = self.private_key_pem()?;
+            rsa::RsaPrivateKey::from_pkcs1_pem(&pem)
+                .or_else(|_| rsa::RsaPrivateKey::from_pkcs8_pem(&pem))
+                .map_err(|e| format!("[github].private_key is not a valid RSA private key: {e}"))?;
+        }
+        if self.client_id.trim().is_empty() {
+            return Err("[github].client_id must not be empty".to_string());
+        }
+        if self.client_secret.trim().is_empty() {
+            return Err("[github].client_secret must not be empty".to_string());
+        }
+        for (name, value) in [("api_url", &self.api_url), ("web_url", &self.web_url)] {
+            url::Url::parse(value)
+                .map_err(|e| format!("[github].{name} is not a valid URL: {e}"))?;
+        }
+        if self.link_state_ttl.is_zero() {
+            return Err("[github].link_state_ttl must be greater than zero".to_string());
+        }
+        if self.snippet_cache_ttl.is_zero() {
+            return Err("[github].snippet_cache_ttl must be greater than zero".to_string());
+        }
+        if self.snippet_cache_capacity == 0 {
+            return Err("[github].snippet_cache_capacity must be greater than zero".to_string());
+        }
+        Ok(())
+    }
+
+    /// The PEM private key: the inline value, else the contents of
+    /// `private_key_path`. Only meaningful after [`Self::validate`].
+    pub fn private_key_pem(&self) -> Result<String, String> {
+        if !self.private_key.trim().is_empty() {
+            return Ok(self.private_key.clone());
+        }
+        let path = self
+            .private_key_path
+            .as_deref()
+            .ok_or_else(|| "[github].private_key_path is not set".to_string())?;
+        std::fs::read_to_string(path)
+            .map_err(|e| format!("[github].private_key_path: cannot read {path}: {e}"))
+    }
+
+    /// `api_url` without a trailing slash, ready for path joining.
+    pub fn api_base(&self) -> &str {
+        self.api_url.trim_end_matches('/')
+    }
+
+    /// `web_url` without a trailing slash, ready for path joining.
+    pub fn web_base(&self) -> &str {
+        self.web_url.trim_end_matches('/')
+    }
+
+    /// The GitHub page that installs the App, carrying `state` so the
+    /// callback can tie the returned installation to the admin and tenant
+    /// that started the flow.
+    pub fn install_url(&self, state: &str) -> String {
+        let state: String = url::form_urlencoded::byte_serialize(state.as_bytes()).collect();
+        format!(
+            "{}/apps/{}/installations/new?state={state}",
+            self.web_base(),
+            self.app_slug
+        )
     }
 }
 
@@ -869,8 +1677,10 @@ fn default_frontend_service_name() -> String {
 /// `api_key` is delivered to the browser and is therefore world-readable to
 /// anyone who can load the UI. Use an **ingest-only** key scoped to
 /// `tenant_id`, never an admin key. The browser posts cross-origin to the
-/// acceptor, so its origin must be listed in `allowed_origins` (or leave that
-/// empty to allow any origin, acceptable on a trusted homelab network).
+/// acceptor; CORS for that key's origin is controlled per-key via
+/// `allowed_origins` on the API key itself (see
+/// `docs/users/authentication.md#origin-restriction-browsercors-ingestion`),
+/// not by a setting here.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct FrontendMonitoringConfig {
     /// Export browser spans to `endpoint`. When false the UI still runs its
@@ -897,10 +1707,6 @@ pub struct FrontendMonitoringConfig {
     /// `service.name` on exported browser spans.
     #[serde(default = "default_frontend_service_name")]
     pub service_name: String,
-    /// Origins the acceptor accepts browser exports from (CORS). Empty allows
-    /// any origin.
-    #[serde(default)]
-    pub allowed_origins: Vec<String>,
 }
 
 impl Default for FrontendMonitoringConfig {
@@ -912,7 +1718,6 @@ impl Default for FrontendMonitoringConfig {
             tenant_id: default_self_monitoring_tenant(),
             dataset_id: default_self_monitoring_dataset(),
             service_name: default_frontend_service_name(),
-            allowed_origins: Vec::new(),
         }
     }
 }
@@ -1060,8 +1865,7 @@ impl From<IcebergConfig> for SchemaConfig {
         Self {
             catalog_type: iceberg_config.catalog_type, // Preserve original catalog_type
             catalog_uri: iceberg_config.catalog_uri,
-            default_schemas: DefaultSchemas::default(),
-            materialized_labels: MaterializedLabels::default(),
+            ..Default::default()
         }
     }
 }
@@ -1099,9 +1903,301 @@ pub struct Configuration {
     /// Writer commit-coalescing policy
     #[serde(default)]
     pub writer: WriterConfig,
+    /// Acceptor transport limits (request body / gRPC decode size)
+    #[serde(default)]
+    pub acceptor: AcceptorConfig,
     /// MCP (Model Context Protocol) server configuration
     #[serde(default)]
     pub mcp: McpConfig,
+    /// Public-facing endpoints for this deployment, as reached from outside
+    /// (used to answer `GET /api/v1/connection` and the MCP `connection_info`
+    /// tool). All fields are optional; unset ones fall back to localhost
+    /// defaults suitable only for local development.
+    #[serde(default)]
+    pub public: PublicEndpointsConfig,
+    /// GitHub App integration (change: github-app-source-context). Absent
+    /// by default: no GitHub surface is exposed.
+    #[serde(default)]
+    pub github: Option<GitHubAppConfig>,
+    /// Tenant OTTL processor limits and reload cadence (change:
+    /// tenant-ottl-processors).
+    #[serde(default)]
+    pub processors: ProcessorsConfig,
+    /// Public read-only demo account (change: demo-mode). Disabled by
+    /// default; when enabled, the router provisions a Viewer-only user and
+    /// an HTTP middleware refuses every non-read request from it.
+    #[serde(default)]
+    pub demo: DemoConfig,
+}
+
+/// Public read-only demo account (change: demo-mode).
+///
+/// When `enabled`, the router provisions (at startup, and idempotently on
+/// every restart) a local user with email `username` whose password is
+/// re-hashed from `password` and whose only tenant membership is a `local`
+/// Viewer row on `tenant_id`. An HTTP middleware then refuses every
+/// non-read request the demo session sends, on top of the ordinary
+/// `MembershipRole::Viewer` write denial — see `docs/operations/demo-mode.md`.
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct DemoConfig {
+    pub enabled: bool,
+    /// Tenant the demo user is a Viewer of. Required when `enabled`.
+    pub tenant_id: String,
+    /// Dataset the Explore UI pre-selects for the demo user, if any.
+    pub dataset_id: Option<String>,
+    pub username: String,
+    pub password: String,
+}
+
+impl Default for DemoConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tenant_id: String::new(),
+            dataset_id: None,
+            username: "demo@example.com".to_string(),
+            password: "demo".to_string(),
+        }
+    }
+}
+
+impl DemoConfig {
+    /// `enabled` without a `tenant_id` is a startup error: the middleware
+    /// and provisioning both need a tenant to scope the account to.
+    pub fn validate(&self) -> Result<(), String> {
+        if self.enabled && self.tenant_id.trim().is_empty() {
+            return Err("[demo].tenant_id is required when [demo].enabled is true".to_string());
+        }
+        Ok(())
+    }
+}
+
+/// Tenant OTTL processor limits and the `ProcessorRegistry` reload cadence
+/// (change: tenant-ottl-processors, design D5/D3).
+#[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
+#[serde(default)]
+pub struct ProcessorsConfig {
+    /// How often a stale per-tenant `ProcessorRegistry` cache entry is
+    /// refreshed from the catalog. Also the cross-process propagation bound
+    /// for a processor write, surfaced to callers as
+    /// `applies_within_seconds`.
+    #[serde(with = "humantime_serde")]
+    pub reload_interval: Duration,
+    /// Maximum payload size accepted by `POST /api/v1/processors:test`.
+    pub test_payload_max_bytes: usize,
+    /// Maximum number of OTTL statements a single processor may carry.
+    pub max_statements: usize,
+    /// Maximum length of a regex literal in an OTTL statement, enforced at
+    /// compile time.
+    pub max_regex_len: usize,
+}
+
+impl Default for ProcessorsConfig {
+    fn default() -> Self {
+        Self {
+            reload_interval: Duration::from_secs(30),
+            test_payload_max_bytes: 1024 * 1024,
+            max_statements: 200,
+            max_regex_len: 2048,
+        }
+    }
+}
+
+/// Public-facing endpoint URLs for this deployment, as reached from outside
+/// the cluster (e.g. through a load balancer or reverse proxy). Distinct from
+/// the bind addresses in `[acceptor]`/`[router]`/`[mcp]`, which describe what
+/// a service listens on locally.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(default)]
+pub struct PublicEndpointsConfig {
+    /// Public OTLP/gRPC endpoint, e.g. `https://otlp.example.com:4317`.
+    /// Env: SIGNALDB__PUBLIC__OTLP_GRPC_URL
+    pub otlp_grpc_url: Option<String>,
+    /// Public OTLP/HTTP endpoint base URL, e.g. `https://otlp.example.com:4318`.
+    /// Signal paths (`/v1/traces`, etc.) are appended by consumers.
+    /// Env: SIGNALDB__PUBLIC__OTLP_HTTP_URL
+    pub otlp_http_url: Option<String>,
+    /// Public base URL of the router's HTTP API, e.g.
+    /// `https://signaldb.example.com`.
+    /// Env: SIGNALDB__PUBLIC__API_URL
+    pub api_url: Option<String>,
+    /// Public URL of the MCP Streamable HTTP endpoint, e.g.
+    /// `https://signaldb.example.com/mcp`. Falls back to
+    /// `[mcp.oauth].resource_url` when unset.
+    /// Env: SIGNALDB__PUBLIC__MCP_URL
+    pub mcp_url: Option<String>,
+}
+
+/// `configured`, trailing-slash-trimmed, else `default` verbatim.
+fn resolved(configured: &Option<String>, default: &str) -> String {
+    configured
+        .as_deref()
+        .map(|v| v.trim_end_matches('/'))
+        .unwrap_or(default)
+        .to_string()
+}
+
+/// The local-development fallback URL for a `[public]` field bound to `port`.
+fn localhost_default(port: u16) -> String {
+    format!("http://localhost:{port}")
+}
+
+/// This deployment's public endpoints as resolved, effective values: parsed
+/// URLs for the two OTLP endpoints (rejecting a malformed `[public]` entry up
+/// front, rather than at every consumer), and the plain strings/`Option` the
+/// router API URL and MCP URL need. Built by [`PublicEndpointsConfig::resolve`].
+#[derive(Clone, Debug)]
+pub struct PublicEndpoints {
+    pub otlp_grpc: url::Url,
+    pub otlp_http: url::Url,
+    pub api_url: String,
+    pub mcp_url: Option<String>,
+    /// Whether every required `[public]` field (`otlp_grpc_url`,
+    /// `otlp_http_url`, `api_url`) has been explicitly set. `mcp_url` is
+    /// optional and does not count. `false` means at least one of the
+    /// required URLs above is a localhost fallback, unlikely to be reachable
+    /// from outside this machine — see `notes` for which.
+    pub configured: bool,
+    /// One entry per unset required `[public]` field, naming the field and
+    /// the localhost default it falls back to. Empty when `configured` is
+    /// true.
+    pub notes: Vec<String>,
+}
+
+/// Why a `[public]` URL was rejected.
+#[derive(Debug, thiserror::Error)]
+pub enum PublicEndpointsErrorReason {
+    #[error("{0}")]
+    Parse(#[from] url::ParseError),
+    #[error("scheme must be http or https, got {0:?}")]
+    UnsupportedScheme(String),
+    #[error("URL has no host")]
+    MissingHost,
+}
+
+/// A `[public]` URL failed validation. Carries the offending field name so
+/// the message is actionable without the caller re-deriving it.
+#[derive(Debug, thiserror::Error)]
+#[error("invalid public.{field} URL {value:?}: {reason}")]
+pub struct PublicEndpointsError {
+    field: &'static str,
+    value: String,
+    #[source]
+    reason: PublicEndpointsErrorReason,
+}
+
+/// Parses `value` and requires an `http`/`https` scheme and a host, so every
+/// `[public]` URL fails startup with a clear, field-named message instead of
+/// misbehaving at a random consumer (a host-less `file:///…` or a
+/// non-network scheme like `ftp://`).
+fn validate_public_url(
+    value: String,
+    field: &'static str,
+) -> Result<url::Url, PublicEndpointsError> {
+    let err = |reason: PublicEndpointsErrorReason| PublicEndpointsError {
+        field,
+        value: value.clone(),
+        reason,
+    };
+    let url = url::Url::parse(&value).map_err(|source| err(source.into()))?;
+    if url.scheme() != "http" && url.scheme() != "https" {
+        return Err(err(PublicEndpointsErrorReason::UnsupportedScheme(
+            url.scheme().to_string(),
+        )));
+    }
+    if url.host_str().is_none() {
+        return Err(err(PublicEndpointsErrorReason::MissingHost));
+    }
+    Ok(url)
+}
+
+/// The getters below (`otlp_grpc_url`, `otlp_http_url`, `api_url`, `mcp_url`)
+/// each return the effective value for one `[public]` field: the configured
+/// value (trailing slash trimmed), or a `localhost` fallback suitable only
+/// for local development. Prefer [`PublicEndpointsConfig::resolve`], which
+/// parses and validates all of them together.
+impl PublicEndpointsConfig {
+    /// True when every required public endpoint (`otlp_grpc_url`,
+    /// `otlp_http_url`, `api_url`) has been explicitly configured. `mcp_url`
+    /// is optional and does not count: it has no localhost fallback to warn
+    /// about, only a `None` absence.
+    pub fn is_configured(&self) -> bool {
+        self.otlp_grpc_url.is_some() && self.otlp_http_url.is_some() && self.api_url.is_some()
+    }
+
+    pub fn otlp_grpc_url(&self) -> String {
+        resolved(
+            &self.otlp_grpc_url,
+            &localhost_default(crate::endpoints::DEFAULT_OTLP_GRPC_PORT),
+        )
+    }
+
+    pub fn otlp_http_url(&self) -> String {
+        resolved(
+            &self.otlp_http_url,
+            &localhost_default(crate::endpoints::DEFAULT_OTLP_HTTP_PORT),
+        )
+    }
+
+    pub fn api_url(&self) -> String {
+        resolved(
+            &self.api_url,
+            &localhost_default(crate::endpoints::DEFAULT_ROUTER_HTTP_PORT),
+        )
+    }
+
+    /// This section's `mcp_url`, else the OAuth resource URL the MCP surface
+    /// is bound to, else `None` (no MCP endpoint is known).
+    pub fn mcp_url(&self, oauth: &OAuthConfig) -> Option<String> {
+        self.mcp_url
+            .as_deref()
+            .or(oauth.resource_url.as_deref())
+            .map(|v| v.trim_end_matches('/').to_string())
+    }
+
+    /// Parses and validates every `[public]` URL — requiring an `http`/`https`
+    /// scheme and a host on all four fields — and returns the effective
+    /// values consumers need. Called once at config load so a malformed URL
+    /// fails startup with a clear message instead of a 500 on first request.
+    pub fn resolve(&self, oauth: &OAuthConfig) -> Result<PublicEndpoints, PublicEndpointsError> {
+        let otlp_grpc_value = self.otlp_grpc_url();
+        let otlp_http_value = self.otlp_http_url();
+        let api_url_value = self.api_url();
+        let otlp_grpc = validate_public_url(otlp_grpc_value.clone(), "otlp_grpc_url")?;
+        let otlp_http = validate_public_url(otlp_http_value.clone(), "otlp_http_url")?;
+        validate_public_url(api_url_value.clone(), "api_url")?;
+        let mcp_url = self.mcp_url(oauth);
+        if let Some(url) = mcp_url.as_ref() {
+            validate_public_url(url.clone(), "mcp_url")?;
+        }
+
+        let mut notes = Vec::new();
+        if self.otlp_grpc_url.is_none() {
+            notes.push(format!(
+                "public.otlp_grpc_url is not set; falling back to {otlp_grpc_value}"
+            ));
+        }
+        if self.otlp_http_url.is_none() {
+            notes.push(format!(
+                "public.otlp_http_url is not set; falling back to {otlp_http_value}"
+            ));
+        }
+        if self.api_url.is_none() {
+            notes.push(format!(
+                "public.api_url is not set; falling back to {api_url_value}"
+            ));
+        }
+
+        Ok(PublicEndpoints {
+            otlp_grpc,
+            otlp_http,
+            api_url: api_url_value,
+            mcp_url,
+            configured: self.is_configured(),
+            notes,
+        })
+    }
 }
 
 /// Configuration for the standalone `signaldb-mcp` server.
@@ -1124,6 +2220,11 @@ pub struct McpConfig {
     /// it is resolved via service discovery like any other downstream call.
     #[serde(default)]
     pub router_url: Option<String>,
+    /// Base URL of the SignalDB UI (e.g. `https://signaldb.example.com`). When
+    /// set, tool results that map to a UI view carry a `_links.ui` deep link;
+    /// unset, no such link is added.
+    #[serde(default)]
+    pub ui_base_url: Option<String>,
     /// Overall timeout, in seconds, for HTTP requests the MCP server forwards
     /// to the router. Guards MCP tool calls against a hung router.
     /// Env: SIGNALDB__MCP__ROUTER_TIMEOUT
@@ -1224,6 +2325,7 @@ impl Default for McpConfig {
             enabled: false,
             bind_address: Self::default_bind(),
             router_url: None,
+            ui_base_url: None,
             router_timeout: Self::default_router_timeout(),
             max_concurrent_tool_calls: Self::default_max_concurrent_tool_calls(),
             oauth: OAuthConfig::default(),
@@ -1252,7 +2354,12 @@ impl Default for Configuration {
             compactor: CompactorConfig::default(),
             querier: QuerierConfig::default(),
             writer: WriterConfig::default(),
+            acceptor: AcceptorConfig::default(),
             mcp: McpConfig::default(),
+            public: PublicEndpointsConfig::default(),
+            github: None,
+            processors: ProcessorsConfig::default(),
+            demo: DemoConfig::default(),
         }
     }
 }
@@ -1294,11 +2401,62 @@ pub struct WriterConfig {
     /// A pass always runs at startup; this governs only the periodic re-run.
     /// Set to `0s` to disable periodic passes.
     ///
-    /// Lives under `[writer]` rather than `[schema]` on purpose: a tenant's
-    /// `SchemaConfig` overrides the global one wholesale, which would make a
-    /// per-tenant reconcile interval meaningless.
+    /// Lives under `[writer]` rather than `[schema]` on purpose: a schema
+    /// field could be overridden per tenant, and a per-tenant reconcile
+    /// interval is meaningless.
     #[serde(with = "humantime_serde")]
     pub table_reconcile_interval: Duration,
+    /// How long a WAL idempotency marker left by *another* writer id is kept
+    /// on a table before it is deleted. `0s` disables retirement.
+    ///
+    /// Each marker is a permanent table property, and a new writer id appears
+    /// whenever a WAL directory is created or wiped, so without retirement the
+    /// property set grows forever and every entry is paid for in
+    /// `metadata.json` on every read and commit (#1307).
+    ///
+    /// A marker is live evidence that its writer committed rows it may not
+    /// have marked processed yet, so this must comfortably exceed the longest
+    /// a writer could be down while still holding undrained WAL entries.
+    /// Retiring one too early makes that writer re-insert those rows as
+    /// duplicates when it returns.
+    #[serde(with = "humantime_serde")]
+    pub wal_marker_retention: Duration,
+    /// Byte budget for how much WAL backlog one drain cycle decodes from a
+    /// single WAL, oldest entries first. `0` disables the budget (decode
+    /// everything pending, the legacy behavior).
+    ///
+    /// Without a budget, replaying a multi-GB backlog after an outage
+    /// deserializes the entire thing to Arrow in one tick — 2-3x the
+    /// on-disk size once transform and Parquet encode buffers are counted —
+    /// which OOM-kills the writer and restarts into the same backlog
+    /// (crash loop). Entries left out by the budget stay durable and
+    /// unprocessed in the WAL; later cycles pick up where this one stopped.
+    /// A `Flush` marker is always included regardless of the budget, so a
+    /// scoped flush request is never starved by an unrelated backlog.
+    pub max_drain_bytes_per_cycle: u64,
+    /// Wall-clock budget for one group's commit attempt (table-writer
+    /// creation, idempotency-marker load, and the Iceberg/catalog append),
+    /// applied per group via `tokio::time::timeout`.
+    ///
+    /// Without this, a stalled catalog or object-store call on one group
+    /// hangs that group's future forever, which stalls the whole cycle's
+    /// drain and — because `do_action("flush")` waits on the processor lock
+    /// as part of its own budget — every other tenant's forced flush too.
+    /// Expiry is classified as a transient commit failure (same handling as
+    /// #1399's catalog/object-store outages): the group's entries stay
+    /// pending and are retried next cycle, never dead-lettered.
+    #[serde(with = "humantime_serde")]
+    pub group_commit_timeout: Duration,
+    /// How long an ingest id (the batch content fingerprint carried in
+    /// `do_put`'s `app_metadata`) is remembered so a copy of a batch that
+    /// reaches this writer again -- an acceptor retry, or a client's resend
+    /// through any acceptor -- is deduped instead of re-inserted (issue
+    /// #1734 step 2). Sized for roughly one writer restart plus the
+    /// clients' and acceptor's retry horizon, not for long-term storage:
+    /// the cache is in-memory only, rebuilt at startup from ingest ids
+    /// still present in this writer's own WAL entries within the window.
+    #[serde(with = "humantime_serde")]
+    pub ingest_dedup_window: Duration,
 }
 
 impl WriterConfig {
@@ -1316,6 +2474,22 @@ impl Default for WriterConfig {
             max_uncommitted_rows: 100_000,
             metadata_previous_versions_max: 100,
             table_reconcile_interval: Duration::from_secs(300),
+            // 30 days: long enough that a writer down that long with undrained
+            // entries is an operational incident rather than a retention
+            // question, short enough that a fleet recreating WAL directories
+            // does not carry an unbounded marker set.
+            wal_marker_retention: Duration::from_secs(30 * 24 * 3600),
+            // 256 MiB: generous for a homelab-scale writer while still
+            // keeping a multi-GB post-outage backlog from being decoded to
+            // Arrow in one tick.
+            max_drain_bytes_per_cycle: 256 * 1024 * 1024,
+            // 120s: generous for a slow catalog/object-store round trip
+            // under normal contention, short enough that a genuinely stalled
+            // dependency does not hold up a whole drain cycle indefinitely.
+            group_commit_timeout: Duration::from_secs(120),
+            // 1h: roughly 43k ids / a few MB at hive's rate (see #1734's
+            // design comment), comfortably longer than a writer restart.
+            ingest_dedup_window: Duration::from_secs(3600),
         }
     }
 }
@@ -1328,12 +2502,29 @@ impl Default for WriterConfig {
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(default)]
 pub struct QuerierConfig {
-    /// Maximum memory the query engine may use, in MiB. When unset the
-    /// memory pool is unbounded and the querier logs a startup warning.
+    /// Maximum memory the query engine may use, in MiB. Three cases:
+    ///
+    /// - `Some(n)` with `n > 0`: bounded to `n` MiB.
+    /// - `Some(0)`: explicitly unbounded (an operator opt-out), in either
+    ///   deployment mode.
+    /// - `None`: the standalone querier binary stays unbounded (with a
+    ///   startup warning) — same as `Some(0)`. The monolith instead
+    ///   resolves `None` to a bounded default before constructing the
+    ///   querier (`QuerierConfig::resolve_monolith_memory_limit`, #1359),
+    ///   because an unbounded query pool there can OOM ingest running in
+    ///   the same process, not just itself.
     pub memory_limit_mb: Option<u64>,
     /// Fraction of `memory_limit_mb` usable by query operators before
     /// they spill or fail (0.0–1.0).
     pub memory_pool_fraction: f64,
+    /// Memory budget for the Parquet file-metadata (footer) cache, in MiB.
+    ///
+    /// A point lookup is dominated by opening candidate Parquet files, not by
+    /// scanning them; the footers are immutable, so caching them makes a
+    /// repeated lookup skip the reads entirely. `0` disables footer caching.
+    /// This budget is separate from `memory_limit_mb`, which bounds query
+    /// operators.
+    pub parquet_metadata_cache_mb: u64,
     /// Wall-clock timeout applied to each Flight query.
     #[serde(with = "humantime_serde")]
     pub query_timeout: Duration,
@@ -1348,6 +2539,77 @@ pub struct QuerierConfig {
     /// DataFusion scan/pushdown tuning for the query engine. See
     /// `[querier.datafusion]` in `signaldb.dist.toml`.
     pub datafusion: QuerierDataFusionConfig,
+    /// Row cap on a Query IR `correlate` stage's joined output (`irVersion`
+    /// 8's span-to-parent join). A span has at most one parent, so the join
+    /// itself can't fan out beyond the child side except for duplicate
+    /// `span_id`s; this bounds that pathological case. Reaching the cap
+    /// truncates the result rather than failing the query, reported through
+    /// the response's warnings.
+    pub correlate_max_rows: usize,
+    /// Row cap on the source relation a signal-target `correlate` stage
+    /// materializes before scanning its target (`irVersion` 11). A larger
+    /// source fails the query with a resource error instead of running
+    /// unbounded; narrow the source (`topk`/`limit`/`where`) to fit. Must be
+    /// greater than zero.
+    pub correlate_max_source_rows: usize,
+    /// Span cap on one trace a Query IR `match` stage evaluates
+    /// (`irVersion` 12). A larger trace fails the query naming the trace;
+    /// it is never truncated. Must be greater than zero.
+    pub match_max_trace_spans: usize,
+    /// Byte budget on one trace a `match` stage buffers (the value bytes of
+    /// its rows). A larger trace fails the query naming the trace. Must be
+    /// greater than zero.
+    pub match_max_trace_bytes: usize,
+    /// Node cap on a Query IR `graph` result. Past it the graph keeps the
+    /// `focus` node, then the highest-traffic nodes, and reports how many
+    /// it dropped in a warning.
+    pub graph_max_nodes: usize,
+    /// Rows (or traces) per Query IR page when a document's `page.size` is
+    /// omitted.
+    pub page_default_size: u32,
+    /// Largest `page.size` a document may request; above it is a 400.
+    pub page_max_size: u32,
+    /// Byte budget of one page: past it the page ends early at a sort-key
+    /// boundary and still carries a cursor.
+    pub page_max_bytes: usize,
+    /// Rows that may share one full sort key at a page boundary; a larger
+    /// tie group fails the page (add an `order` key).
+    pub page_max_tie_rows: usize,
+    /// Rows (or traces) one cursor chain may walk; the page past it fails.
+    pub page_max_walk_rows: u64,
+    /// Lifetime of a page cursor from issue; an older one is a 410.
+    #[serde(with = "humantime_serde")]
+    pub page_cursor_ttl: Duration,
+    /// Warm-tier containment-index prefilter tuning. See
+    /// `[querier.warm_index]` in `signaldb.dist.toml`.
+    pub warm_index: WarmIndexQuerierConfig,
+}
+
+impl QuerierConfig {
+    /// Resolve an unset `memory_limit_mb` to a bounded default for
+    /// monolithic mode, where an unbounded query pool is worse than in the
+    /// standalone querier: the same process also runs ingest, so a heavy
+    /// query can OOM ingest along with itself (#1359).
+    ///
+    /// `Some(_)` — bounded, or the explicit `Some(0)` unbounded opt-out — is
+    /// an operator choice and is left untouched; only `None` is resolved.
+    /// The standalone querier binary never calls this, so `None` there still
+    /// means unbounded (with the usual startup warning).
+    ///
+    /// The default is `min(50% of total_ram_bytes, 4096 MiB)`, floored at
+    /// 256 MiB so a small host still gets a working pool. Takes the host's
+    /// total RAM as a parameter (rather than reading it via `sysinfo`
+    /// itself) so the resolution is unit-testable without mocking the OS.
+    pub fn resolve_monolith_memory_limit(&mut self, total_ram_bytes: u64) {
+        if self.memory_limit_mb.is_some() {
+            return;
+        }
+        const MIB: u64 = 1024 * 1024;
+        const MAX_DEFAULT_MB: u64 = 4096;
+        const FLOOR_MB: u64 = 256;
+        let half_ram_mb = (total_ram_bytes / MIB) / 2;
+        self.memory_limit_mb = Some(half_ram_mb.clamp(FLOOR_MB, MAX_DEFAULT_MB));
+    }
 }
 
 impl Default for QuerierConfig {
@@ -1355,11 +2617,60 @@ impl Default for QuerierConfig {
         Self {
             memory_limit_mb: None,
             memory_pool_fraction: 0.8,
+            parquet_metadata_cache_mb: 128,
             query_timeout: Duration::from_secs(60),
             max_sql_rows: 1_000_000,
             max_search_limit: 1_000,
             max_concurrent_queries_per_tenant: None,
             datafusion: QuerierDataFusionConfig::default(),
+            correlate_max_rows: 5_000_000,
+            correlate_max_source_rows: 10_000,
+            match_max_trace_spans: 100_000,
+            match_max_trace_bytes: 64 * 1024 * 1024,
+            graph_max_nodes: 200,
+            page_default_size: 1_000,
+            page_max_size: 10_000,
+            page_max_bytes: 16 * 1024 * 1024,
+            page_max_tie_rows: 10_000,
+            page_max_walk_rows: 1_000_000,
+            page_cursor_ttl: Duration::from_secs(15 * 60),
+            warm_index: WarmIndexQuerierConfig::default(),
+        }
+    }
+}
+
+/// Selectivity/cost knobs for the warm containment-index scan prefilter (see
+/// `openspec/changes/archive/2026-09-30-otel-native-schema`, spec `typed-attribute-storage`,
+/// "Warm tier"). Has no effect on a table that wasn't written with the warm
+/// index (`[schema].warm_index` on the writer); this only tunes whether and
+/// how aggressively an opted-in table's scans are pruned by it.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(default)]
+pub struct WarmIndexQuerierConfig {
+    /// Whether the querier probes the warm containment index at all.
+    pub enabled: bool,
+    /// Fewer candidate files than this and probing isn't worth the I/O.
+    pub min_files: usize,
+    /// Files to sample before committing to a full probe.
+    pub sample_files: usize,
+    /// Sample keep ratio above which the predicate isn't selective enough
+    /// to be worth a full probe.
+    pub max_keep_ratio: f64,
+    /// Bound on in-flight per-file probes.
+    pub probe_concurrency: usize,
+}
+
+impl Default for WarmIndexQuerierConfig {
+    fn default() -> Self {
+        // Mirrors querier::query::warm_index::WarmIndexGate::default(); kept
+        // here as plain values since the gate type itself lives in the
+        // querier crate, downstream of this one.
+        Self {
+            enabled: true,
+            min_files: 4,
+            sample_files: 16,
+            max_keep_ratio: 0.5,
+            probe_concurrency: 16,
         }
     }
 }
@@ -1387,6 +2698,49 @@ pub struct QuerierDataFusionConfig {
     /// Reorder pushed-down filters so cheap, selective predicates are
     /// evaluated first. Only meaningful when `pushdown_filters` is enabled.
     pub reorder_filters: bool,
+
+    /// Row count of the batches a query scan feeds downstream (e.g. into a
+    /// sort).
+    ///
+    /// The querier sorts over the same wide-row tables the compactor
+    /// compacts — see [`CompactorConfig::scan_batch_size`] for why an
+    /// unbounded row count turns a wide-row batch into a multi-gigabyte,
+    /// unspillable `ExternalSorter` reservation (issue #1359, the querier
+    /// analogue of #1064).
+    ///
+    /// `0` restores DataFusion's default (8192 rows).
+    ///
+    /// Default: 1024.
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__BATCH_SIZE
+    pub batch_size: usize,
+
+    /// DataFusion partition fan-out for the query scan.
+    ///
+    /// Unlike the compactor, queries are latency-sensitive interactive
+    /// requests, so the default leaves DataFusion's own fan-out
+    /// (available parallelism) in place rather than trading it away for a
+    /// smaller memory ceiling. Lower it to bound how many concurrent
+    /// `ExternalSorter`s divide a single query's share of `memory_limit_mb`,
+    /// mirroring `[compactor].target_partitions`.
+    ///
+    /// `0` restores DataFusion's default (available parallelism).
+    ///
+    /// Default: 0.
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__TARGET_PARTITIONS
+    pub target_partitions: usize,
+
+    /// Memory in MB each spilling sort holds back so its spill merge can run
+    /// (`datafusion.execution.sort_spill_reservation_bytes`).
+    ///
+    /// This is headroom taken out of `memory_limit_mb`, not added to it; see
+    /// [`CompactorConfig::sort_spill_reservation_mb`] for the same knob on
+    /// the compaction side.
+    ///
+    /// `0` means no headroom at all, which DataFusion permits.
+    ///
+    /// Default: 10 MB (DataFusion's default).
+    /// Env: SIGNALDB__QUERIER__DATAFUSION__SORT_SPILL_RESERVATION_MB
+    pub sort_spill_reservation_mb: u64,
 }
 
 impl Default for QuerierDataFusionConfig {
@@ -1395,6 +2749,9 @@ impl Default for QuerierDataFusionConfig {
             split_file_groups_by_statistics: true,
             pushdown_filters: true,
             reorder_filters: true,
+            batch_size: 1024,
+            target_partitions: 0,
+            sort_spill_reservation_mb: default_sort_spill_reservation_mb(),
         }
     }
 }
@@ -1409,35 +2766,94 @@ impl Error for Configuration {}
 
 impl Configuration {
     pub fn load() -> Result<Self, Box<figment::Error>> {
-        let mut config: Configuration =
-            Figment::from(Serialized::defaults(Configuration::default()))
-                .merge(Toml::file("signaldb.toml"))
-                // Support both single-underscore (legacy) and double-underscore (new) env vars
-                // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
-                .merge(Env::prefixed("SIGNALDB_").split("_"))
-                // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
-                .merge(Env::prefixed("SIGNALDB__").split("__"))
-                .extract()
-                .map_err(Box::new)?;
-
-        config.ensure_self_monitoring_tenant();
-        Ok(config)
+        Self::load_from_path(std::path::Path::new("signaldb.toml"))
     }
 
     pub fn load_from_path(path: &std::path::Path) -> Result<Self, Box<figment::Error>> {
-        let mut config: Configuration =
-            Figment::from(Serialized::defaults(Configuration::default()))
-                .merge(Toml::file(path))
-                // Support both single-underscore (legacy) and double-underscore (new) env vars
-                // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
-                .merge(Env::prefixed("SIGNALDB_").split("_"))
-                // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
-                .merge(Env::prefixed("SIGNALDB__").split("__"))
-                .extract()
-                .map_err(Box::new)?;
+        let figment = Figment::from(Serialized::defaults(Configuration::default()))
+            .merge(Toml::file(path))
+            // Support both single-underscore (legacy) and double-underscore (new) env vars
+            // Single underscore for simple configs: SIGNALDB_DATABASE_DSN
+            .merge(Env::prefixed("SIGNALDB_").split("_"))
+            // Double underscore for fields with underscores: SIGNALDB__COMPACTOR__TICK_INTERVAL
+            .merge(Env::prefixed("SIGNALDB__").split("__"));
+
+        // `[self_monitoring.frontend].allowed_origins` used to drive the
+        // acceptor's (instance-wide) CORS layer; that layer is now per-API-key
+        // (`allowed_origins` on the key itself). `FrontendMonitoringConfig` no
+        // longer has this field, so Figment would otherwise silently drop it —
+        // and a key with no restriction of its own becomes reachable from any
+        // browser origin, the opposite of what this setting used to guarantee.
+        // Reject startup instead, the same way a legacy `dataset_id` field is
+        // rejected rather than silently ignored.
+        if figment
+            .find_value("self_monitoring.frontend.allowed_origins")
+            .is_ok()
+        {
+            return Err(Box::new(figment::Error::from(
+                "[self_monitoring.frontend].allowed_origins is no longer supported: CORS for \
+                 browser ingest is now enforced per API key, via that key's own \
+                 `allowed_origins` restriction, not by one instance-wide list. Remove this field; \
+                 if you relied on it to restrict which origins the frontend's ingest key could be \
+                 used from, set `allowed_origins` on that key instead (see \
+                 docs/users/authentication.md#origin-restriction-browsercors-ingestion)."
+                    .to_string(),
+            )));
+        }
+
+        let mut config: Configuration = figment.extract().map_err(Box::new)?;
 
         config.ensure_self_monitoring_tenant();
+        config
+            .validate()
+            .map_err(|e| Box::new(figment::Error::from(e)))?;
+        // Fail fast on a malformed `[public]` URL rather than 500ing the
+        // first `GET /api/v1/connection` call after startup.
+        config
+            .public
+            .resolve(&config.mcp.oauth)
+            .map_err(|error| Box::new(figment::Error::from(error.to_string())))?;
         Ok(config)
+    }
+
+    /// Configuration-wide invariants that must hold before a service starts,
+    /// beyond what serde's field-level deserialization already checks.
+    /// `[auth.oidc]` (change: oidc-login, see [`OidcConfig::validate`]) and
+    /// `[github]` (change: github-app-source-context, see
+    /// [`GitHubAppConfig::validate`]), and the `[querier]` bounds a zero
+    /// value would turn into "reject every query".
+    pub fn validate(&self) -> Result<(), String> {
+        if let Some(oidc) = &self.auth.oidc {
+            oidc.validate()?;
+        }
+        if let Some(github) = &self.github {
+            github.validate()?;
+        }
+        self.demo.validate()?;
+        if self.querier.correlate_max_source_rows == 0 {
+            return Err(
+                "[querier].correlate_max_source_rows must be greater than zero".to_string(),
+            );
+        }
+        if self.querier.match_max_trace_spans == 0 {
+            return Err("[querier].match_max_trace_spans must be greater than zero".to_string());
+        }
+        if self.querier.match_max_trace_bytes == 0 {
+            return Err("[querier].match_max_trace_bytes must be greater than zero".to_string());
+        }
+        let q = &self.querier;
+        if q.page_default_size == 0 || q.page_default_size > q.page_max_size {
+            return Err(
+                "[querier].page_default_size must be between 1 and page_max_size".to_string(),
+            );
+        }
+        if q.page_max_bytes == 0 || q.page_max_tie_rows == 0 || q.page_max_walk_rows == 0 {
+            return Err(
+                "[querier].page_max_bytes, page_max_tie_rows and page_max_walk_rows must be greater than zero"
+                    .to_string(),
+            );
+        }
+        Ok(())
     }
 
     /// Validate this configuration for a standalone (distributed) service.
@@ -1563,16 +2979,19 @@ impl Configuration {
         });
     }
 
-    /// Get the effective schema configuration for a given tenant
+    /// The effective schema configuration for a tenant: the global
+    /// `[schema]` with the tenant's own schema block, if any, merged over it
+    /// (see [`TenantSchemaOverride`]).
     pub fn get_tenant_schema_config(&self, tenant_id: &str) -> SchemaConfig {
-        if let Some(tenant_config) = self.tenants.tenants.get(tenant_id)
-            && let Some(ref tenant_schema) = tenant_config.schema
+        match self
+            .tenants
+            .tenants
+            .get(tenant_id)
+            .and_then(|tenant| tenant.schema.as_ref())
         {
-            return tenant_schema.clone();
+            Some(tenant_schema) => tenant_schema.merged_over(&self.schema),
+            None => self.schema.clone(),
         }
-
-        // Fall back to global schema config
-        self.schema.clone()
     }
 
     /// Check if a tenant is enabled
@@ -1626,6 +3045,19 @@ impl Configuration {
             .unwrap_or_else(|| tenant_id.to_string())
     }
 
+    /// Get the tenant ID for a given tenant slug.
+    ///
+    /// Returns the tenant's id if a config tenant has that slug, otherwise
+    /// returns the slug as-is (database tenants use their id as their slug).
+    pub fn get_tenant_id_by_slug(&self, tenant_slug: &str) -> String {
+        self.auth
+            .tenants
+            .iter()
+            .find(|t| t.slug == tenant_slug)
+            .map(|t| t.id.clone())
+            .unwrap_or_else(|| tenant_slug.to_string())
+    }
+
     /// Get the dataset slug for a given tenant and dataset ID.
     ///
     /// Returns the dataset's slug if found, otherwise returns the dataset_id as-is.
@@ -1637,6 +3069,20 @@ impl Configuration {
             .and_then(|t| t.datasets.iter().find(|d| d.id == dataset_id))
             .map(|d| d.slug.clone())
             .unwrap_or_else(|| dataset_id.to_string())
+    }
+
+    /// Get the dataset ID for a given tenant and dataset slug.
+    ///
+    /// Returns the dataset's id if a config tenant has that slug, otherwise
+    /// returns the slug as-is (database datasets use their id as their slug).
+    pub fn get_dataset_id_by_slug(&self, tenant_id: &str, dataset_slug: &str) -> String {
+        self.auth
+            .tenants
+            .iter()
+            .find(|t| t.id == tenant_id)
+            .and_then(|t| t.datasets.iter().find(|d| d.slug == dataset_slug))
+            .map(|d| d.id.clone())
+            .unwrap_or_else(|| dataset_slug.to_string())
     }
 }
 
@@ -1681,6 +3127,11 @@ mod tests {
         assert_eq!(config.querier.query_timeout, Duration::from_secs(60));
         assert_eq!(config.querier.max_sql_rows, 1_000_000);
         assert_eq!(config.querier.max_search_limit, 1_000);
+        assert_eq!(config.querier.correlate_max_rows, 5_000_000);
+        assert_eq!(config.querier.correlate_max_source_rows, 10_000);
+        assert_eq!(config.querier.match_max_trace_spans, 100_000);
+        assert_eq!(config.querier.match_max_trace_bytes, 67_108_864);
+        assert_eq!(config.querier.graph_max_nodes, 200);
 
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -1692,6 +3143,13 @@ mod tests {
                 query_timeout = "5s"
                 max_sql_rows = 1000
                 max_search_limit = 50
+                correlate_max_rows = 2000
+                correlate_max_source_rows = 300
+                match_max_trace_spans = 70
+                match_max_trace_bytes = 4096
+                graph_max_nodes = 50
+                page_max_size = 500
+                page_cursor_ttl = "2m"
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -1703,6 +3161,13 @@ mod tests {
             assert_eq!(config.querier.query_timeout, Duration::from_secs(5));
             assert_eq!(config.querier.max_sql_rows, 1000);
             assert_eq!(config.querier.max_search_limit, 50);
+            assert_eq!(config.querier.correlate_max_rows, 2000);
+            assert_eq!(config.querier.correlate_max_source_rows, 300);
+            assert_eq!(config.querier.match_max_trace_spans, 70);
+            assert_eq!(config.querier.match_max_trace_bytes, 4096);
+            assert_eq!(config.querier.graph_max_nodes, 50);
+            assert_eq!(config.querier.page_max_size, 500);
+            assert_eq!(config.querier.page_cursor_ttl, Duration::from_secs(120));
             Ok(())
         });
     }
@@ -1719,6 +3184,19 @@ mod tests {
     }
 
     #[test]
+    fn querier_datafusion_scan_shape_defaults() {
+        // batch_size mirrors the compactor's own default (1024, below
+        // DataFusion's 8192) since the querier sorts the same wide-row
+        // tables; target_partitions stays at DataFusion's own default (0)
+        // because queries are latency-sensitive, unlike background
+        // compaction.
+        let config = Configuration::default();
+        assert_eq!(config.querier.datafusion.batch_size, 1024);
+        assert_eq!(config.querier.datafusion.target_partitions, 0);
+        assert_eq!(config.querier.datafusion.sort_spill_reservation_mb, 10);
+    }
+
+    #[test]
     fn querier_datafusion_options_parse_from_toml() {
         Jail::expect_with(|jail| {
             jail.create_file(
@@ -1728,6 +3206,9 @@ mod tests {
                 split_file_groups_by_statistics = false
                 pushdown_filters = false
                 reorder_filters = false
+                batch_size = 256
+                target_partitions = 4
+                sort_spill_reservation_mb = 32
                 "#,
             )?;
             let config: Configuration = Figment::new()
@@ -1737,6 +3218,9 @@ mod tests {
             assert!(!config.querier.datafusion.split_file_groups_by_statistics);
             assert!(!config.querier.datafusion.pushdown_filters);
             assert!(!config.querier.datafusion.reorder_filters);
+            assert_eq!(config.querier.datafusion.batch_size, 256);
+            assert_eq!(config.querier.datafusion.target_partitions, 4);
+            assert_eq!(config.querier.datafusion.sort_spill_reservation_mb, 32);
             Ok(())
         });
     }
@@ -1750,6 +3234,7 @@ mod tests {
             );
             jail.set_env("SIGNALDB__QUERIER__DATAFUSION__PUSHDOWN_FILTERS", "false");
             jail.set_env("SIGNALDB__QUERIER__DATAFUSION__REORDER_FILTERS", "false");
+            jail.set_env("SIGNALDB__QUERIER__DATAFUSION__BATCH_SIZE", "256");
             let config: Configuration = Figment::new()
                 .merge(Serialized::defaults(Configuration::default()))
                 .merge(Env::prefixed("SIGNALDB__").split("__"))
@@ -1757,8 +3242,59 @@ mod tests {
             assert!(!config.querier.datafusion.split_file_groups_by_statistics);
             assert!(!config.querier.datafusion.pushdown_filters);
             assert!(!config.querier.datafusion.reorder_filters);
+            assert_eq!(config.querier.datafusion.batch_size, 256);
             Ok(())
         });
+    }
+
+    /// Table-driven over the three bands `resolve_monolith_memory_limit`
+    /// treats differently: below the floor, in range (half RAM), and above
+    /// the cap.
+    #[test]
+    fn querier_resolve_monolith_memory_limit_bands() {
+        let cases: &[(u64, u64)] = &[
+            // A tiny 256 MiB host: half (128 MiB) is below the floor.
+            (256 * 1024 * 1024, 256),
+            // An 8 GiB host: half is 4096 MiB, exactly the cap.
+            (8 * 1024 * 1024 * 1024, 4096),
+            // A 64 GiB host: half (32768 MiB) is well past the cap.
+            (64 * 1024 * 1024 * 1024, 4096),
+        ];
+        for &(total_ram_bytes, expected_mb) in cases {
+            let mut config = QuerierConfig::default();
+            assert_eq!(config.memory_limit_mb, None);
+            config.resolve_monolith_memory_limit(total_ram_bytes);
+            assert_eq!(
+                config.memory_limit_mb,
+                Some(expected_mb),
+                "total_ram_bytes={total_ram_bytes} should resolve to {expected_mb} MiB"
+            );
+        }
+    }
+
+    #[test]
+    fn querier_resolve_monolith_memory_limit_leaves_explicit_values_untouched() {
+        let mut config = QuerierConfig {
+            memory_limit_mb: Some(777),
+            ..QuerierConfig::default()
+        };
+        config.resolve_monolith_memory_limit(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            config.memory_limit_mb,
+            Some(777),
+            "an operator-set bounded limit must not be overridden"
+        );
+
+        let mut config = QuerierConfig {
+            memory_limit_mb: Some(0),
+            ..QuerierConfig::default()
+        };
+        config.resolve_monolith_memory_limit(64 * 1024 * 1024 * 1024);
+        assert_eq!(
+            config.memory_limit_mb,
+            Some(0),
+            "the explicit unbounded opt-out must not be overridden"
+        );
     }
 
     #[test]
@@ -1814,6 +3350,242 @@ mod tests {
             );
             Ok(())
         });
+    }
+
+    #[test]
+    fn public_endpoints_default_to_localhost_and_are_not_configured() {
+        let config = Configuration::default();
+        assert!(!config.public.is_configured());
+        assert_eq!(config.public.otlp_grpc_url(), "http://localhost:4317");
+        assert_eq!(config.public.otlp_http_url(), "http://localhost:4318");
+        assert_eq!(config.public.api_url(), "http://localhost:3000");
+        assert_eq!(config.public.mcp_url(&config.mcp.oauth), None);
+    }
+
+    #[test]
+    fn public_endpoints_parse_from_toml_and_trim_trailing_slashes() {
+        let toml = r#"
+            [public]
+            otlp_grpc_url = "https://otlp.example.com:4317"
+            otlp_http_url = "https://otlp.example.com:4318/"
+            api_url = "https://signaldb.example.com/"
+            mcp_url = "https://signaldb.example.com/mcp"
+        "#;
+        Jail::expect_with(|jail| {
+            jail.create_file("signaldb.toml", toml)?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+            assert!(config.public.is_configured());
+            assert_eq!(
+                config.public.otlp_grpc_url(),
+                "https://otlp.example.com:4317"
+            );
+            assert_eq!(
+                config.public.otlp_http_url(),
+                "https://otlp.example.com:4318"
+            );
+            assert_eq!(config.public.api_url(), "https://signaldb.example.com");
+            assert_eq!(
+                config.public.mcp_url(&config.mcp.oauth),
+                Some("https://signaldb.example.com/mcp".to_string())
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_endpoints_env_override_flows_through_figment() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__PUBLIC__OTLP_GRPC_URL",
+                "https://otlp.example.com:4317",
+            );
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract()?;
+            // Only one of the three required fields is set via env, so this
+            // is still a partial (not fully "configured") deployment.
+            assert!(!config.public.is_configured());
+            assert_eq!(
+                config.public.otlp_grpc_url(),
+                "https://otlp.example.com:4317"
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn public_endpoints_mcp_url_falls_back_to_oauth_resource_url() {
+        let mut config = Configuration::default();
+        config.mcp.oauth.resource_url = Some("https://signaldb.example.com/mcp/".to_string());
+        assert_eq!(
+            config.public.mcp_url(&config.mcp.oauth),
+            Some("https://signaldb.example.com/mcp".to_string())
+        );
+    }
+
+    #[test]
+    fn public_endpoints_resolve_succeeds_with_the_localhost_defaults() {
+        let config = Configuration::default();
+        let resolved = config.public.resolve(&config.mcp.oauth).unwrap();
+        assert!(!resolved.configured);
+        assert_eq!(resolved.otlp_grpc.as_str(), "http://localhost:4317/");
+        assert_eq!(resolved.otlp_http.as_str(), "http://localhost:4318/");
+        assert_eq!(resolved.api_url, "http://localhost:3000");
+        assert_eq!(resolved.mcp_url, None);
+    }
+
+    #[test]
+    fn public_endpoints_resolve_rejects_a_malformed_url() {
+        let mut config = Configuration::default();
+        config.public.otlp_grpc_url = Some("not a url".to_string());
+        let error = config
+            .public
+            .resolve(&config.mcp.oauth)
+            .expect_err("malformed URL must be rejected");
+        assert!(error.to_string().contains("otlp_grpc_url"));
+    }
+
+    #[test]
+    fn public_endpoints_resolve_rejects_a_non_http_scheme() {
+        let mut config = Configuration::default();
+        config.public.api_url = Some("ftp://files.example.com".to_string());
+        let error = config
+            .public
+            .resolve(&config.mcp.oauth)
+            .expect_err("non-http(s) scheme must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("api_url"), "{message}");
+        assert!(message.contains("scheme"), "{message}");
+    }
+
+    // Exercises `validate_public_url` directly rather than through
+    // `resolve`: `resolved()` trims every trailing `/`, and the WHATWG URL
+    // spec makes `http`/`https` "special" schemes that already fail to parse
+    // with an empty host (`http://` alone), so there is no config value that
+    // reaches this check via the public API. Kept as a direct defense
+    // against a future URL crate or scheme-list change.
+    #[test]
+    fn validate_public_url_rejects_a_host_less_url() {
+        let error = validate_public_url("http://".to_string(), "otlp_http_url")
+            .expect_err("host-less URL must be rejected");
+        let message = error.to_string();
+        assert!(message.contains("otlp_http_url"), "{message}");
+        assert!(message.contains("host"), "{message}");
+    }
+
+    #[test]
+    fn public_endpoints_resolve_partial_config_reports_unset_fields_as_notes() {
+        let mut config = Configuration::default();
+        config.public.api_url = Some("https://signaldb.example.com".to_string());
+        let resolved = config.public.resolve(&config.mcp.oauth).unwrap();
+        assert!(!resolved.configured);
+        assert_eq!(resolved.notes.len(), 2);
+        assert!(
+            resolved.notes[0].contains("public.otlp_grpc_url")
+                && resolved.notes[0].contains("http://localhost:4317")
+        );
+        assert!(
+            resolved.notes[1].contains("public.otlp_http_url")
+                && resolved.notes[1].contains("http://localhost:4318")
+        );
+    }
+
+    #[test]
+    fn load_from_path_fails_startup_on_a_malformed_public_url() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                    [public]
+                    otlp_grpc_url = "not a url"
+                "#,
+            )?;
+            let error = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .expect_err("malformed public.otlp_grpc_url must fail startup");
+            assert!(error.to_string().contains("otlp_grpc_url"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_from_path_rejects_the_legacy_frontend_allowed_origins_field() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                    [self_monitoring.frontend]
+                    enabled = true
+                    allowed_origins = ["http://signaldb.example:3000"]
+                "#,
+            )?;
+            let error = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .expect_err("the removed self_monitoring.frontend.allowed_origins field must fail startup, not be silently dropped");
+            assert!(error.to_string().contains("self_monitoring.frontend"));
+            assert!(error.to_string().contains("allowed_origins"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn wal_config_toml_without_max_instances_uses_the_default() {
+        // `WalConfig` has no struct-level `#[serde(default)]` (see the
+        // comment above `max_instances`'s field-level one), so this proves
+        // that annotation, not Figment's defaults-first merge, is what keeps
+        // a `[wal]` block written before this field existed parseable.
+        let toml = r#"
+            wal_dir = ".data/wal"
+            max_segment_size = 67108864
+            max_buffer_entries = 1000
+            flush_interval = "30s"
+            max_buffer_size_bytes = 134217728
+        "#;
+        let wal: WalConfig =
+            toml::from_str(toml).expect("a [wal] block without max_instances must still parse");
+        assert_eq!(
+            wal.max_instances,
+            crate::wal::manager::WalManager::DEFAULT_MAX_INSTANCES
+        );
+    }
+
+    #[test]
+    fn wal_config_toml_without_dead_letter_retention_uses_the_thirty_day_default() {
+        // Same forward-compatibility guarantee as the `max_instances` test
+        // above: a `[wal]` block written before this key existed must still
+        // parse, defaulting to 30 days.
+        let toml = r#"
+            wal_dir = ".data/wal"
+            max_segment_size = 67108864
+            max_buffer_entries = 1000
+            flush_interval = "30s"
+            max_buffer_size_bytes = 134217728
+        "#;
+        let wal: WalConfig = toml::from_str(toml)
+            .expect("a [wal] block without dead_letter_retention must still parse");
+        assert_eq!(
+            wal.dead_letter_retention,
+            std::time::Duration::from_secs(30 * 24 * 3600)
+        );
+    }
+
+    #[test]
+    fn wal_config_toml_parses_go_style_dead_letter_retention() {
+        let toml = r#"
+            wal_dir = ".data/wal"
+            max_segment_size = 67108864
+            max_buffer_entries = 1000
+            flush_interval = "30s"
+            max_buffer_size_bytes = 134217728
+            dead_letter_retention = "14d"
+        "#;
+        let wal: WalConfig = toml::from_str(toml).expect("14d must parse as a duration");
+        assert_eq!(
+            wal.dead_letter_retention,
+            std::time::Duration::from_secs(14 * 24 * 3600)
+        );
     }
 
     #[test]
@@ -2091,6 +3863,26 @@ mod tests {
     }
 
     #[test]
+    fn mcp_ui_base_url_defaults_to_none() {
+        let config = McpConfig::default();
+        assert_eq!(config.ui_base_url, None);
+    }
+
+    #[test]
+    fn mcp_ui_base_url_round_trips_through_toml() {
+        let toml = r#"
+            router_url = "http://localhost:3000"
+            ui_base_url = "https://signaldb.example.com"
+        "#;
+        let config: McpConfig =
+            toml::from_str(toml).expect("ui_base_url must parse as a plain string");
+        assert_eq!(
+            config.ui_base_url,
+            Some("https://signaldb.example.com".to_string())
+        );
+    }
+
+    #[test]
     fn mcp_router_timeout_env_var_overrides_default() {
         Jail::expect_with(|jail| {
             jail.set_env("SIGNALDB__MCP__ROUTER_TIMEOUT", "45");
@@ -2113,12 +3905,14 @@ mod tests {
         assert_eq!(writer.commit_interval, Duration::from_secs(5));
         assert_eq!(writer.max_uncommitted_rows, 100_000);
         assert_eq!(writer.metadata_previous_versions_max, 100);
+        assert_eq!(writer.max_drain_bytes_per_cycle, 256 * 1024 * 1024);
 
         // Present on the top-level Configuration with the same defaults.
         let config = Configuration::default();
         assert_eq!(config.writer.commit_interval, Duration::from_secs(5));
         assert_eq!(config.writer.max_uncommitted_rows, 100_000);
         assert_eq!(config.writer.metadata_previous_versions_max, 100);
+        assert_eq!(config.writer.max_drain_bytes_per_cycle, 256 * 1024 * 1024);
     }
 
     #[test]
@@ -2135,6 +3929,41 @@ mod tests {
 
             assert_eq!(config.writer.commit_interval, Duration::from_secs(30));
             assert_eq!(config.writer.max_uncommitted_rows, 250_000);
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn test_processors_config_defaults() {
+        let processors = ProcessorsConfig::default();
+        assert_eq!(processors.reload_interval, Duration::from_secs(30));
+        assert_eq!(processors.test_payload_max_bytes, 1024 * 1024);
+        assert_eq!(processors.max_statements, 200);
+        assert_eq!(processors.max_regex_len, 2048);
+
+        // Present on the top-level Configuration with the same defaults.
+        let config = Configuration::default();
+        assert_eq!(config.processors.reload_interval, Duration::from_secs(30));
+        assert_eq!(config.processors.test_payload_max_bytes, 1024 * 1024);
+        assert_eq!(config.processors.max_statements, 200);
+        assert_eq!(config.processors.max_regex_len, 2048);
+    }
+
+    #[test]
+    fn test_processors_config_env_vars() {
+        Jail::expect_with(|jail| {
+            jail.set_env("SIGNALDB__PROCESSORS__RELOAD_INTERVAL", "10s");
+            jail.set_env("SIGNALDB__PROCESSORS__MAX_STATEMENTS", "50");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            assert_eq!(config.processors.reload_interval, Duration::from_secs(10));
+            assert_eq!(config.processors.max_statements, 50);
 
             Ok(())
         });
@@ -2241,11 +4070,10 @@ mod tests {
     #[test]
     fn test_tenant_configuration_with_custom_tenant() {
         let tenant_config = TenantSchemaConfig {
-            schema: Some(SchemaConfig {
-                catalog_type: "memory".to_string(),
-                catalog_uri: "memory://tenant".to_string(),
-                default_schemas: DefaultSchemas::default(),
-                materialized_labels: Default::default(),
+            schema: Some(TenantSchemaOverride {
+                catalog_type: Some("memory".to_string()),
+                catalog_uri: Some("memory://tenant".to_string()),
+                ..Default::default()
             }),
             custom_schemas: Some({
                 let mut schemas = HashMap::new();
@@ -2289,6 +4117,316 @@ mod tests {
             custom_schemas.unwrap().get("traces"),
             Some(&"custom_traces_schema".to_string())
         );
+    }
+
+    #[test]
+    fn warm_index_applies_to_checks_signal_and_optional_dataset_allowlist() {
+        let unrestricted = WarmIndexConfig {
+            signals: vec![AttributeTypeSignal::Logs],
+            datasets: None,
+            ..WarmIndexConfig::default()
+        };
+        assert!(unrestricted.applies_to(AttributeTypeSignal::Logs, "any-dataset"));
+        assert!(!unrestricted.applies_to(AttributeTypeSignal::Traces, "any-dataset"));
+
+        let dataset_scoped = WarmIndexConfig {
+            signals: vec![AttributeTypeSignal::Logs],
+            datasets: Some(vec!["prod".to_string()]),
+            ..WarmIndexConfig::default()
+        };
+        assert!(dataset_scoped.applies_to(AttributeTypeSignal::Logs, "prod"));
+        assert!(!dataset_scoped.applies_to(AttributeTypeSignal::Logs, "staging"));
+    }
+
+    fn config_with_tenant(schema: Option<TenantSchemaOverride>) -> Configuration {
+        let mut config = Configuration::default();
+        config.tenants.tenants.insert(
+            "tenant1".to_string(),
+            TenantSchemaConfig {
+                schema,
+                ..TenantSchemaConfig::default()
+            },
+        );
+        config
+    }
+
+    fn pin(
+        key: &str,
+        canonical_type: CanonicalType,
+        dataset: Option<&str>,
+    ) -> AttributeTypeOverride {
+        AttributeTypeOverride {
+            signal: AttributeTypeSignal::Logs,
+            level: AttributeLevel::Record,
+            key: key.to_string(),
+            canonical_type,
+            dataset: dataset.map(str::to_string),
+        }
+    }
+
+    #[test]
+    fn tenant_schema_block_overrides_only_the_fields_it_sets() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride {
+            materialized_labels: MaterializedLabelsOverride {
+                traces: Some(vec!["http.route".to_string()]),
+                ..MaterializedLabelsOverride::default()
+            },
+            ..TenantSchemaOverride::default()
+        }));
+        config.schema.catalog_uri = "sqlite://global.db".to_string();
+        config.schema.materialized_labels.logs = vec!["service.name".to_string()];
+        config.schema.default_schemas.profiles_enabled = false;
+        config.schema.attribute_types = vec![pin("retry.count", CanonicalType::Int64, None)];
+        config.schema.warm_index.signals = vec![AttributeTypeSignal::Logs];
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(effective.materialized_labels.traces, vec!["http.route"]);
+        assert_eq!(effective.materialized_labels.logs, vec!["service.name"]);
+        assert_eq!(effective.catalog_uri, "sqlite://global.db");
+        assert_eq!(effective.catalog_type, config.schema.catalog_type);
+        assert!(!effective.default_schemas.profiles_enabled);
+        assert_eq!(effective.attribute_types, config.schema.attribute_types);
+        assert_eq!(
+            effective.warm_index.signals,
+            vec![AttributeTypeSignal::Logs]
+        );
+    }
+
+    #[test]
+    fn tenant_schema_block_merges_lists_and_maps() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride {
+            default_schemas: DefaultSchemasOverride {
+                metrics_enabled: Some(false),
+                custom_schemas: HashMap::from([
+                    ("shared".to_string(), serde_json::json!("tenant")),
+                    ("mine".to_string(), serde_json::json!("tenant")),
+                ]),
+                ..DefaultSchemasOverride::default()
+            },
+            // An empty list is set, not unset: it clears the global labels.
+            materialized_labels: MaterializedLabelsOverride {
+                logs: Some(Vec::new()),
+                ..MaterializedLabelsOverride::default()
+            },
+            attribute_types: vec![pin("retry.count", CanonicalType::String, None)],
+            warm_index: WarmIndexOverride {
+                datasets: Some(vec!["prod".to_string()]),
+                ..WarmIndexOverride::default()
+            },
+            ..TenantSchemaOverride::default()
+        }));
+        config.schema.default_schemas.custom_schemas = HashMap::from([
+            ("shared".to_string(), serde_json::json!("global")),
+            ("theirs".to_string(), serde_json::json!("global")),
+        ]);
+        config.schema.materialized_labels.logs = vec!["service.name".to_string()];
+        config.schema.materialized_labels.metrics = vec!["host.name".to_string()];
+        config.schema.attribute_types = vec![
+            pin("retry.count", CanonicalType::Int64, None),
+            pin("retry.count", CanonicalType::Int64, Some("prod")),
+            pin("http.status", CanonicalType::Int64, None),
+        ];
+        config.schema.warm_index.signals = vec![AttributeTypeSignal::Traces];
+        config.schema.warm_index.fpp = 0.05;
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert!(!effective.default_schemas.metrics_enabled);
+        assert!(effective.default_schemas.traces_enabled);
+        assert_eq!(
+            effective.default_schemas.custom_schemas,
+            HashMap::from([
+                ("shared".to_string(), serde_json::json!("tenant")),
+                ("mine".to_string(), serde_json::json!("tenant")),
+                ("theirs".to_string(), serde_json::json!("global")),
+            ])
+        );
+        assert!(effective.materialized_labels.logs.is_empty());
+        assert_eq!(effective.materialized_labels.metrics, vec!["host.name"]);
+        // A tenant pin replaces every global pin on the same
+        // (signal, level, key), dataset-scoped ones included; other global
+        // pins stay.
+        assert_eq!(
+            effective.attribute_types,
+            vec![
+                pin("retry.count", CanonicalType::String, None),
+                pin("http.status", CanonicalType::Int64, None),
+            ]
+        );
+        assert_eq!(
+            effective.warm_index.signals,
+            vec![AttributeTypeSignal::Traces]
+        );
+        assert_eq!(
+            effective.warm_index.datasets,
+            Some(vec!["prod".to_string()])
+        );
+        assert_eq!(effective.warm_index.fpp, 0.05);
+    }
+
+    #[test]
+    fn tenant_without_a_schema_block_gets_the_global_config() {
+        let mut config = config_with_tenant(None);
+        config.schema.materialized_labels.logs = vec!["service.name".to_string()];
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(effective.materialized_labels.logs, vec!["service.name"]);
+        assert_eq!(effective.catalog_uri, config.schema.catalog_uri);
+    }
+
+    #[test]
+    fn partial_tenant_schema_block_loads_from_toml_and_env() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [schema.materialized_labels]
+                logs = ["service.name"]
+
+                [tenants.tenants.acme]
+                enabled = true
+
+                [tenants.tenants.acme.schema.materialized_labels]
+                traces = ["http.route"]
+
+                [[tenants.tenants.acme.schema.attribute_types]]
+                signal = "logs"
+                level = "record"
+                key = "retry.count"
+                type = "int64"
+                "#,
+            )?;
+            jail.set_env(
+                "SIGNALDB__TENANTS__TENANTS__ACME__SCHEMA__CATALOG_URI",
+                "sqlite://acme.db",
+            );
+            let config = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .map_err(|e| *e)?;
+
+            let effective = config.get_tenant_schema_config("acme");
+            assert_eq!(effective.materialized_labels.traces, vec!["http.route"]);
+            assert_eq!(effective.materialized_labels.logs, vec!["service.name"]);
+            assert_eq!(effective.catalog_uri, "sqlite://acme.db");
+            assert_eq!(effective.catalog_type, config.schema.catalog_type);
+            assert_eq!(
+                effective.attribute_types,
+                vec![pin("retry.count", CanonicalType::Int64, None)]
+            );
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn dataset_scoped_tenant_pin_keeps_the_global_pin_for_other_datasets() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride {
+            attribute_types: vec![pin("retry.count", CanonicalType::String, Some("prod"))],
+            ..TenantSchemaOverride::default()
+        }));
+        config.schema.attribute_types = vec![
+            pin("retry.count", CanonicalType::Int64, None),
+            pin("retry.count", CanonicalType::Float64, Some("prod")),
+        ];
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(
+            effective.attribute_types,
+            vec![
+                pin("retry.count", CanonicalType::String, Some("prod")),
+                pin("retry.count", CanonicalType::Int64, None),
+            ]
+        );
+        let field = LogicalFieldId {
+            source: "logs".to_string(),
+            level: Some(AttributeLevel::Record),
+            name: "retry.count".to_string(),
+        };
+        assert_eq!(
+            effective.attribute_type_override("prod", &field),
+            Some(CanonicalType::String)
+        );
+        assert_eq!(
+            effective.attribute_type_override("staging", &field),
+            Some(CanonicalType::Int64)
+        );
+    }
+
+    #[test]
+    fn tenant_schema_block_without_custom_schemas_keeps_the_global_ones() {
+        let mut config = config_with_tenant(Some(TenantSchemaOverride::default()));
+        config.schema.default_schemas.custom_schemas =
+            HashMap::from([("mine".to_string(), serde_json::json!("global"))]);
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(
+            effective.default_schemas.custom_schemas,
+            config.schema.default_schemas.custom_schemas
+        );
+    }
+
+    #[test]
+    fn tenant_schema_block_overrides_a_warm_index_number() {
+        let config = config_with_tenant(Some(TenantSchemaOverride {
+            warm_index: WarmIndexOverride {
+                fpp: Some(0.001),
+                ..WarmIndexOverride::default()
+            },
+            ..TenantSchemaOverride::default()
+        }));
+
+        let effective = config.get_tenant_schema_config("tenant1");
+
+        assert_eq!(effective.warm_index.fpp, 0.001);
+        assert_eq!(
+            effective.warm_index.rows_per_row_group,
+            config.schema.warm_index.rows_per_row_group
+        );
+    }
+
+    #[test]
+    fn env_only_tenant_schema_block_loads_without_enabled() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__TENANTS__TENANTS__ACME__SCHEMA__CATALOG_URI",
+                "sqlite://acme.db",
+            );
+            let config = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .map_err(|e| *e)?;
+
+            assert!(config.is_tenant_enabled("acme"));
+            assert_eq!(
+                config.get_tenant_schema_config("acme").catalog_uri,
+                "sqlite://acme.db"
+            );
+            Ok(())
+        });
+    }
+
+    /// A misspelt key must fail loudly; ignored, the tenant would silently
+    /// inherit the global value it meant to override.
+    #[test]
+    fn misspelt_tenant_schema_key_is_rejected() {
+        for block in [
+            "[tenants.tenants.acme.schema]\nmaterialised_labels = {}",
+            "[tenants.tenants.acme.schema.materialized_labels]\nlog = [\"team\"]",
+            "[tenants.tenants.acme.schema.default_schemas]\nmetric_enabled = false",
+            "[tenants.tenants.acme.schema.warm_index]\nsignal = [\"logs\"]",
+        ] {
+            Jail::expect_with(|jail| {
+                jail.create_file(
+                    "signaldb.toml",
+                    &format!("[tenants.tenants.acme]\nenabled = true\n{block}"),
+                )?;
+                assert!(
+                    Configuration::load_from_path(std::path::Path::new("signaldb.toml")).is_err(),
+                    "{block}"
+                );
+                Ok(())
+            });
+        }
     }
 
     #[test]
@@ -2347,7 +4485,6 @@ mod tests {
         assert_eq!(sm.frontend.tenant_id, "_system");
         assert_eq!(sm.frontend.dataset_id, "_monitoring");
         assert_eq!(sm.frontend.service_name, "signaldb-ui");
-        assert!(sm.frontend.allowed_origins.is_empty());
     }
 
     #[test]
@@ -2357,7 +4494,6 @@ mod tests {
             enabled = true
             endpoint = "http://signaldb.example:4318"
             api_key = "sk-ingest-key"
-            allowed_origins = ["http://signaldb.example:3000"]
         "#;
         let sm: SelfMonitoringConfig = toml::from_str(toml).expect("parse");
         assert!(sm.frontend.enabled);
@@ -2366,10 +4502,6 @@ mod tests {
         // Unset fields keep their defaults.
         assert_eq!(sm.frontend.tenant_id, "_system");
         assert_eq!(sm.frontend.service_name, "signaldb-ui");
-        assert_eq!(
-            sm.frontend.allowed_origins,
-            vec!["http://signaldb.example:3000".to_string()]
-        );
     }
 
     #[test]
@@ -2452,11 +4584,542 @@ mod tests {
     }
 
     #[test]
+    fn get_dataset_id_by_slug_resolves_a_config_datasets_slug_and_falls_back_to_the_slug_as_is() {
+        let mut config = Configuration::default();
+        config.auth.tenants.push(TenantConfig {
+            id: "acme".to_string(),
+            slug: "acme".to_string(),
+            name: "Acme".to_string(),
+            default_dataset: None,
+            datasets: vec![DatasetConfig {
+                id: "production".to_string(),
+                slug: "prod".to_string(),
+                is_default: false,
+                storage: None,
+            }],
+            api_keys: vec![],
+            schema_config: None,
+            limits: None,
+        });
+
+        assert_eq!(config.get_dataset_id_by_slug("acme", "prod"), "production");
+        // A database dataset (or an unmatched slug) uses its slug as its id.
+        assert_eq!(config.get_dataset_id_by_slug("acme", "archive"), "archive");
+        assert_eq!(config.get_dataset_id_by_slug("unknown", "prod"), "prod");
+    }
+
+    #[test]
     fn self_monitoring_tenant_not_provisioned_when_disabled() {
         let mut config = Configuration::default();
         config.auth.admin_api_key = Some("admin-key".to_string());
 
         config.ensure_self_monitoring_tenant();
         assert!(config.auth.tenants.is_empty());
+    }
+
+    #[test]
+    fn oidc_config_absent_by_default() {
+        let config = Configuration::default();
+        assert!(config.auth.oidc.is_none());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn a_zero_correlate_source_row_cap_is_rejected() {
+        let mut config = Configuration::default();
+        config.querier.correlate_max_source_rows = 0;
+        let error = config.validate().expect_err("must be rejected");
+        assert!(error.contains("correlate_max_source_rows"), "{error}");
+    }
+
+    #[test]
+    fn zero_match_trace_bounds_are_rejected() {
+        let mut config = Configuration::default();
+        config.querier.match_max_trace_spans = 0;
+        let error = config.validate().expect_err("must be rejected");
+        assert!(error.contains("match_max_trace_spans"), "{error}");
+        let mut config = Configuration::default();
+        config.querier.match_max_trace_bytes = 0;
+        let error = config.validate().expect_err("must be rejected");
+        assert!(error.contains("match_max_trace_bytes"), "{error}");
+    }
+
+    #[test]
+    fn github_config_absent_by_default() {
+        let config = Configuration::default();
+        assert!(config.github.is_none());
+        assert!(config.validate().is_ok());
+    }
+
+    #[test]
+    fn github_config_parses_from_toml_and_builds_install_url() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                &format!(
+                    r#"
+                [github]
+                app_id = 12345
+                app_slug = "signaldb-dev"
+                private_key = '''{TEST_PEM}'''
+                client_id = "Iv1.abc"
+                client_secret = "s3cret"
+                web_url = "https://ghe.example.com/"
+                api_url = "https://ghe.example.com/api/v3"
+                link_state_ttl = "5m"
+                snippet_cache_ttl = "15m"
+                snippet_cache_capacity = 500
+                "#
+                ),
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+
+            let github = config.github.clone().expect("[github] parsed");
+            assert_eq!(github.app_id, 12345);
+            assert_eq!(github.app_slug, "signaldb-dev");
+            assert_eq!(github.client_id, "Iv1.abc");
+            assert_eq!(github.link_state_ttl, Duration::from_secs(300));
+            assert_eq!(github.snippet_cache_ttl, Duration::from_secs(15 * 60));
+            assert_eq!(github.snippet_cache_capacity, 500);
+            assert_eq!(github.api_base(), "https://ghe.example.com/api/v3");
+            assert_eq!(
+                github.install_url("st-1"),
+                "https://ghe.example.com/apps/signaldb-dev/installations/new?state=st-1"
+            );
+            assert_eq!(config.validate(), Ok(()));
+            let dump = format!("{github:?}");
+            assert!(dump.contains("[redacted]"));
+            assert!(!dump.contains("s3cret"));
+            assert!(!dump.contains("BEGIN RSA"));
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn github_config_defaults_point_at_github_com() {
+        let github = GitHubAppConfig::default();
+        assert_eq!(github.api_url, "https://api.github.com");
+        assert_eq!(github.web_url, "https://github.com");
+        assert_eq!(github.link_state_ttl, Duration::from_secs(600));
+        assert_eq!(github.snippet_cache_ttl, Duration::from_secs(600));
+        assert_eq!(github.snippet_cache_capacity, 1_000);
+    }
+
+    use crate::testing::GITHUB_TEST_PEM as TEST_PEM;
+
+    #[test]
+    fn github_config_validation_names_the_offending_setting() {
+        let valid = GitHubAppConfig {
+            app_id: 1,
+            app_slug: "signaldb".to_string(),
+            private_key: TEST_PEM.to_string(),
+            client_id: "Iv1.abc".to_string(),
+            client_secret: "secret".to_string(),
+            ..GitHubAppConfig::default()
+        };
+        assert_eq!(valid.validate(), Ok(()));
+
+        let cases: Vec<(GitHubAppConfig, &str)> = vec![
+            (
+                GitHubAppConfig {
+                    app_id: 0,
+                    ..valid.clone()
+                },
+                "[github].app_id",
+            ),
+            (
+                GitHubAppConfig {
+                    app_slug: String::new(),
+                    ..valid.clone()
+                },
+                "[github].app_slug",
+            ),
+            (
+                GitHubAppConfig {
+                    app_slug: "my app/../x".to_string(),
+                    ..valid.clone()
+                },
+                "[github].app_slug",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key: String::new(),
+                    ..valid.clone()
+                },
+                "[github].private_key or [github].private_key_path",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key_path: Some("/run/secrets/key.pem".to_string()),
+                    ..valid.clone()
+                },
+                "mutually exclusive",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key: "not a pem".to_string(),
+                    ..valid.clone()
+                },
+                "PEM-encoded",
+            ),
+            (
+                GitHubAppConfig {
+                    private_key:
+                        "-----BEGIN RSA PRIVATE KEY-----\nabc\n-----END RSA PRIVATE KEY-----"
+                            .to_string(),
+                    ..valid.clone()
+                },
+                "not a valid RSA private key",
+            ),
+            (
+                GitHubAppConfig {
+                    client_id: String::new(),
+                    ..valid.clone()
+                },
+                "[github].client_id",
+            ),
+            (
+                GitHubAppConfig {
+                    client_secret: String::new(),
+                    ..valid.clone()
+                },
+                "[github].client_secret",
+            ),
+            (
+                GitHubAppConfig {
+                    api_url: "not a url".to_string(),
+                    ..valid.clone()
+                },
+                "[github].api_url",
+            ),
+            (
+                GitHubAppConfig {
+                    link_state_ttl: Duration::ZERO,
+                    ..valid.clone()
+                },
+                "[github].link_state_ttl",
+            ),
+            (
+                GitHubAppConfig {
+                    snippet_cache_ttl: Duration::ZERO,
+                    ..valid.clone()
+                },
+                "[github].snippet_cache_ttl",
+            ),
+            (
+                GitHubAppConfig {
+                    snippet_cache_capacity: 0,
+                    ..valid.clone()
+                },
+                "[github].snippet_cache_capacity",
+            ),
+        ];
+        for (config, expected) in cases {
+            let error = config.validate().expect_err("must be rejected");
+            assert!(
+                error.contains(expected),
+                "expected {expected:?} in {error:?}"
+            );
+        }
+
+        // A configured `[github]` section is validated as part of the whole
+        // configuration, so a bad one fails startup.
+        let config = Configuration {
+            github: Some(GitHubAppConfig { app_id: 0, ..valid }),
+            ..Configuration::default()
+        };
+        assert!(config.validate().is_err());
+    }
+
+    #[test]
+    fn oidc_config_parses_from_toml() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth.oidc]
+                issuer_url = "https://idp.example.com"
+                client_id = "signaldb"
+                client_secret = "s3cret"
+                redirect_url = "https://signaldb.example.com/ui/session/oidc/callback"
+                display_name = "Acme SSO"
+                allowed_email_domains = ["example.com"]
+                group_claim = "groups"
+                disable_password_login = true
+
+                [[auth.oidc.group_mappings]]
+                group = "observability-admins"
+                tenant = "acme"
+                role = "admin"
+                "#,
+            )?;
+            let config: Configuration = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract()?;
+
+            let oidc = config.auth.oidc.expect("[auth.oidc] parsed");
+            assert_eq!(oidc.issuer_url, "https://idp.example.com");
+            assert_eq!(oidc.client_id, "signaldb");
+            assert_eq!(oidc.client_secret, "s3cret");
+            assert_eq!(
+                oidc.redirect_url.as_deref(),
+                Some("https://signaldb.example.com/ui/session/oidc/callback")
+            );
+            assert_eq!(oidc.display_name.as_deref(), Some("Acme SSO"));
+            assert_eq!(
+                oidc.allowed_email_domains,
+                Some(vec!["example.com".to_string()])
+            );
+            assert_eq!(oidc.group_claim.as_deref(), Some("groups"));
+            assert!(oidc.disable_password_login);
+            assert_eq!(oidc.group_mappings.len(), 1);
+            assert_eq!(oidc.group_mappings[0].group, "observability-admins");
+            assert_eq!(oidc.group_mappings[0].tenant, "acme");
+            assert_eq!(
+                oidc.group_mappings[0].role,
+                crate::catalog::MembershipRole::Admin
+            );
+            assert!(oidc.validate().is_ok());
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn oidc_config_env_var_overrides() {
+        Jail::expect_with(|jail| {
+            jail.set_env(
+                "SIGNALDB__AUTH__OIDC__ISSUER_URL",
+                "https://idp.example.com",
+            );
+            jail.set_env("SIGNALDB__AUTH__OIDC__CLIENT_ID", "signaldb");
+            jail.set_env("SIGNALDB__AUTH__OIDC__CLIENT_SECRET", "s3cret");
+
+            let config = Figment::from(Serialized::defaults(Configuration::default()))
+                .merge(Env::prefixed("SIGNALDB_").split("_"))
+                .merge(Env::prefixed("SIGNALDB__").split("__"))
+                .extract::<Configuration>()
+                .unwrap();
+
+            let oidc = config.auth.oidc.expect("[auth.oidc] set via env vars");
+            assert_eq!(oidc.issuer_url, "https://idp.example.com");
+            assert_eq!(oidc.client_id, "signaldb");
+            assert_eq!(oidc.client_secret, "s3cret");
+            assert!(oidc.validate().is_ok());
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn oidc_disable_password_login_without_provider_is_a_config_error() {
+        let config = OidcConfig {
+            disable_password_login: true,
+            ..OidcConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("disable_password_login"),
+            "error should name the offending setting: {err}"
+        );
+    }
+
+    #[test]
+    fn oidc_group_mappings_without_group_claim_is_a_config_error() {
+        let config = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "s3cret".to_string(),
+            group_mappings: vec![GroupMapping {
+                group: "observability-admins".to_string(),
+                tenant: "acme".to_string(),
+                role: crate::catalog::MembershipRole::Admin,
+            }],
+            ..OidcConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(
+            err.contains("group_claim") && err.contains("group_mappings"),
+            "error should name both offending settings: {err}"
+        );
+    }
+
+    #[test]
+    fn oidc_missing_client_id_or_secret_is_a_config_error() {
+        let missing_client_id = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_secret: "s3cret".to_string(),
+            ..OidcConfig::default()
+        };
+        assert!(
+            missing_client_id
+                .validate()
+                .unwrap_err()
+                .contains("client_id")
+        );
+
+        let missing_secret = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            ..OidcConfig::default()
+        };
+        assert!(
+            missing_secret
+                .validate()
+                .unwrap_err()
+                .contains("client_secret")
+        );
+    }
+
+    #[test]
+    fn oidc_malformed_redirect_url_is_a_config_error() {
+        let config = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "s3cret".to_string(),
+            redirect_url: Some("not a url".to_string()),
+            ..OidcConfig::default()
+        };
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("redirect_url"), "{err}");
+    }
+
+    #[test]
+    fn oidc_config_debug_redacts_client_secret() {
+        let config = OidcConfig {
+            issuer_url: "https://idp.example.com".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "super-secret-value".to_string(),
+            ..OidcConfig::default()
+        };
+        let debug = format!("{config:?}");
+        assert!(
+            !debug.contains("super-secret-value"),
+            "Debug output leaked the client secret: {debug}"
+        );
+        assert!(debug.contains("[redacted]"));
+        // Non-secret fields stay visible for debugging.
+        assert!(debug.contains("https://idp.example.com"));
+        assert!(debug.contains("signaldb"));
+    }
+
+    #[test]
+    fn oidc_malformed_issuer_url_is_a_config_error() {
+        let config = OidcConfig {
+            issuer_url: "not a url".to_string(),
+            client_id: "signaldb".to_string(),
+            client_secret: "s3cret".to_string(),
+            ..OidcConfig::default()
+        };
+        assert!(config.validate().unwrap_err().contains("issuer_url"));
+    }
+
+    #[test]
+    fn oidc_unknown_role_in_group_mapping_fails_to_load() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth.oidc]
+                issuer_url = "https://idp.example.com"
+                client_id = "signaldb"
+                client_secret = "s3cret"
+
+                [[auth.oidc.group_mappings]]
+                group = "owners"
+                tenant = "acme"
+                role = "owner"
+                "#,
+            )?;
+            let result: Result<Configuration, _> = Figment::new()
+                .merge(Serialized::defaults(Configuration::default()))
+                .merge(figment::providers::Toml::file("signaldb.toml"))
+                .extract();
+            assert!(result.is_err(), "an unknown role must fail to parse");
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn load_from_path_fails_hard_when_password_login_disabled_without_provider() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [auth.oidc]
+                disable_password_login = true
+                "#,
+            )?;
+            let result = Configuration::load_from_path(std::path::Path::new("signaldb.toml"));
+            let err = result.expect_err("a flag without a provider must fail startup");
+            assert!(err.to_string().contains("disable_password_login"));
+
+            Ok(())
+        });
+    }
+
+    #[test]
+    fn configuration_validate_surfaces_invalid_oidc_section() {
+        let mut config = Configuration::default();
+        config.auth.oidc = Some(OidcConfig {
+            disable_password_login: true,
+            ..OidcConfig::default()
+        });
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("disable_password_login"));
+    }
+
+    #[test]
+    fn demo_disabled_by_default() {
+        assert!(!DemoConfig::default().enabled);
+        assert!(Configuration::default().validate().is_ok());
+    }
+
+    #[test]
+    fn demo_enabled_without_tenant_id_fails_validation() {
+        let mut config = Configuration::default();
+        config.demo.enabled = true;
+        let err = config.validate().unwrap_err();
+        assert!(err.contains("tenant_id"));
+    }
+
+    #[test]
+    fn demo_enabled_with_tenant_id_validates() {
+        let mut config = Configuration::default();
+        config.demo.enabled = true;
+        config.demo.tenant_id = "demo".to_string();
+        assert!(config.validate().is_ok());
+        assert_eq!(config.demo.username, "demo@example.com");
+        assert_eq!(config.demo.password, "demo");
+    }
+
+    #[test]
+    fn demo_config_parses_from_toml() {
+        Jail::expect_with(|jail| {
+            jail.create_file(
+                "signaldb.toml",
+                r#"
+                [demo]
+                enabled = true
+                tenant_id = "demo"
+                dataset_id = "otel-demo"
+                username = "visitor"
+                password = "letmein"
+                "#,
+            )?;
+            let config = Configuration::load_from_path(std::path::Path::new("signaldb.toml"))
+                .expect("valid demo config must load");
+            assert!(config.demo.enabled);
+            assert_eq!(config.demo.tenant_id, "demo");
+            assert_eq!(config.demo.dataset_id.as_deref(), Some("otel-demo"));
+            assert_eq!(config.demo.username, "visitor");
+            assert_eq!(config.demo.password, "letmein");
+            Ok(())
+        });
     }
 }

@@ -1,9 +1,9 @@
 import { useState } from "react";
-import { screen, waitFor } from "@testing-library/react";
+import { screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { renderWithClient, stubFetchRoutes } from "../../test/render";
-import { buildPromQL, emptyQuery, type MetricQuery } from "./buildPromQL";
+import { emptyQuery, type MetricQuery } from "./metricQuery";
 import { QueryRow } from "./QueryRow";
 
 const RANGE = { fromMs: 1_000_000, toMs: 2_000_000 };
@@ -12,47 +12,167 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-/** QueryRow is controlled; hold its state and surface the compiled PromQL. */
+/** QueryRow is controlled; hold its state and surface it as JSON so
+ * assertions can check the structured query the row produced. */
 function Harness() {
   const [query, setQuery] = useState<MetricQuery>(emptyQuery("a"));
   return (
     <>
       <QueryRow query={query} range={RANGE} onChange={setQuery} />
-      <output data-testid="promql">{buildPromQL(query)}</output>
+      <output data-testid="query">{JSON.stringify(query)}</output>
     </>
   );
 }
 
+function metadataWindow() {
+  return { result: "metadata", window: { start_ns: 0, end_ns: 0 } };
+}
+
+function valuesBody(values: string[]) {
+  return {
+    ...metadataWindow(),
+    metadata: {
+      kind: "values",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      values: values.map((v) => ({ value: v, origin: "registry" })),
+    },
+  };
+}
+
+function fieldsBody(
+  entries: Array<{
+    name: string;
+    cardinality?: { estimate: number; at_least: boolean } | null;
+  }>,
+) {
+  return {
+    ...metadataWindow(),
+    metadata: {
+      kind: "fields",
+      truncated: false,
+      cost: {
+        mode: "metadata",
+        window_scoped: false,
+        sampled: false,
+        approximate: false,
+      },
+      fields: entries.map((e) => ({
+        name: e.name,
+        type: "string",
+        filterable: true,
+        origin: "declared",
+        cardinality: e.cardinality ?? null,
+      })),
+    },
+  };
+}
+
+/** Every Query IR document QueryRow submits is a POST to the same
+ * `/api/v1/query` URL, so discovery routes match on the pipeline shape. */
+function isDescribeFields(body: unknown): boolean {
+  const b = body as { pipeline?: Array<{ describe?: { target?: string } }> };
+  return b.pipeline?.[0]?.describe?.target === "fields";
+}
+function isDescribeValues(field: string, from?: string) {
+  return (body: unknown): boolean => {
+    const b = body as {
+      from?: string;
+      pipeline?: Array<{ describe?: { target?: string; field?: string } }>;
+    };
+    return (
+      b.pipeline?.[0]?.describe?.target === "values" &&
+      b.pipeline[0]?.describe?.field === field &&
+      (from === undefined || b.from === from)
+    );
+  };
+}
+
+function isNonScalarNamesQuery(body: unknown): boolean {
+  return (body as { result?: string }).result === "table";
+}
+
 function stubMetadata() {
   stubFetchRoutes([
-    { match: /label\/__name__\/values/, body: metaBody(["http_reqs", "up"]) },
-    { match: /\/labels\?/, body: metaBody(["service", "host"]) },
-    { match: /label\/service\/values/, body: metaBody(["checkout"]) },
     {
-      match: /label_stats/,
-      body: {
-        status: "success",
-        data: [
-          {
-            name: "service",
-            distinct_estimate: 12,
-            presence: 1,
-            capped: false,
-          },
-          {
-            name: "k8s.pod",
-            distinct_estimate: 10000,
-            presence: 0.9,
-            capped: true,
-          },
-        ],
-      },
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name"),
+      body: valuesBody(["http_reqs", "up"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isNonScalarNamesQuery,
+      body: { ...metadataWindow(), result: "table", rows: [] },
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([
+        { name: "service", cardinality: { estimate: 12, at_least: false } },
+        {
+          name: "k8s.pod",
+          cardinality: { estimate: 10000, at_least: true },
+        },
+        { name: "host", cardinality: null },
+      ]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("service"),
+      body: valuesBody(["checkout"]),
     },
   ]);
 }
 
-const metaBody = (data: string[]) => ({ status: "success", data });
-const promql = () => screen.getByTestId("promql").textContent;
+/** Like `stubMetadata`, but one name only has histogram rows — the
+ * disabled-suggestion case. */
+function stubMetadataWithHistogramOnlyMetric() {
+  stubFetchRoutes([
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name", "metrics"),
+      body: valuesBody(["http_reqs", "up", "http.server.duration"]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isNonScalarNamesQuery,
+      body: {
+        ...metadataWindow(),
+        result: "table",
+        rows: [["http.server.duration", 3]],
+      },
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([]),
+    },
+  ]);
+}
+
+/** Every name reported has no matches at all — the empty-state case. */
+function stubMetadataWithNoMetrics() {
+  stubFetchRoutes([
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeValues("metric.name"),
+      body: valuesBody([]),
+    },
+    {
+      match: "/api/v1/query",
+      bodyMatch: isDescribeFields,
+      body: fieldsBody([]),
+    },
+  ]);
+}
+
+const query = (): MetricQuery =>
+  JSON.parse(screen.getByTestId("query").textContent ?? "{}") as MetricQuery;
 
 describe("QueryRow", () => {
   it("builds a query step by step from the visual controls", async () => {
@@ -61,20 +181,69 @@ describe("QueryRow", () => {
     const user = userEvent.setup();
 
     await user.type(screen.getByLabelText("Metric"), "http_reqs");
-    expect(promql()).toBe("http_reqs");
+    expect(query().metric).toBe("http_reqs");
 
     await user.click(screen.getByRole("button", { name: "Add filter" }));
     await user.type(screen.getByLabelText("Filter label"), "service");
     await user.type(screen.getByLabelText("Filter value"), "checkout");
-    expect(promql()).toBe('http_reqs{service="checkout"}');
+    expect(query().filters).toEqual([
+      { label: "service", op: "=", value: "checkout" },
+    ]);
 
     await user.selectOptions(screen.getByLabelText("Aggregation"), "sum");
     await user.type(screen.getByLabelText("Group by"), "service");
-    expect(promql()).toBe('sum by (service)(http_reqs{service="checkout"})');
+    expect(query().agg).toEqual({ op: "sum", by: ["service"] });
 
     await user.selectOptions(screen.getByLabelText("Function"), "rate");
-    expect(promql()).toBe(
-      'sum by (service)(rate(http_reqs{service="checkout"}[5m]))',
+    expect(query().range).toEqual({ fn: "rate" });
+  });
+
+  it("a selected range function exposes window and across, and clearing the function drops them", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+
+    await user.selectOptions(screen.getByLabelText("Function"), "rate");
+    await user.type(screen.getByLabelText("Window"), "5m");
+    await user.selectOptions(screen.getByLabelText("Across"), "avg");
+    expect(query().range).toEqual({ fn: "rate", window: "5m", across: "avg" });
+
+    await user.selectOptions(screen.getByLabelText("Function"), "");
+    expect(query().range).toBeUndefined();
+    expect(screen.queryByLabelText("Window")).not.toBeInTheDocument();
+  });
+
+  it("switching between range functions keeps window/across", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.selectOptions(screen.getByLabelText("Function"), "rate");
+    await user.type(screen.getByLabelText("Window"), "1m");
+    await user.selectOptions(screen.getByLabelText("Function"), "irate");
+    expect(query().range).toEqual({ fn: "irate", window: "1m" });
+  });
+
+  it("carries the full metric and group-by text in a title, for when either overflows", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    const longMetric = "http_server_request_duration_seconds_bucket_total";
+    await user.type(screen.getByLabelText("Metric"), longMetric);
+    expect(screen.getByLabelText("Metric")).toHaveAttribute(
+      "title",
+      longMetric,
+    );
+
+    await user.selectOptions(screen.getByLabelText("Aggregation"), "sum");
+    const longGroupBy = "deployment.environment.name";
+    await user.type(screen.getByLabelText("Group by"), longGroupBy);
+    expect(screen.getByLabelText("Group by")).toHaveAttribute(
+      "title",
+      longGroupBy,
     );
   });
 
@@ -87,21 +256,114 @@ describe("QueryRow", () => {
     await user.click(screen.getByRole("button", { name: "Add filter" }));
     await user.type(screen.getByLabelText("Filter label"), "service");
     await user.type(screen.getByLabelText("Filter value"), "checkout");
-    expect(promql()).toBe('up{service="checkout"}');
+    expect(query().filters).toEqual([
+      { label: "service", op: "=", value: "checkout" },
+    ]);
 
     await user.click(screen.getByRole("button", { name: "Remove filter" }));
-    expect(promql()).toBe("up");
+    expect(query().filters).toEqual([]);
   });
 
-  it("populates the metric picker from the __name__ endpoint", async () => {
+  it("shows metric suggestions on focus, before typing anything", async () => {
     stubMetadata();
     renderWithClient(<Harness />);
-    // Datalist <option>s aren't exposed as ARIA options; assert via the DOM.
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    expect(
+      await screen.findByRole("option", { name: "http_reqs" }),
+    ).toBeInTheDocument();
+    expect(screen.getByRole("option", { name: "up" })).toBeInTheDocument();
+  });
+
+  it("filters metric suggestions as the user types", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.type(screen.getByLabelText("Metric"), "http");
     await waitFor(() =>
       expect(
-        document.querySelector('datalist option[value="http_reqs"]'),
-      ).not.toBeNull(),
+        screen.getByRole("option", { name: "http_reqs" }),
+      ).toBeInTheDocument(),
     );
+    expect(
+      screen.queryByRole("option", { name: "up" }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("selecting a metric suggestion fills the input and closes the list", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    const option = await screen.findByRole("option", { name: "http_reqs" });
+    await user.click(option);
+
+    expect(screen.getByLabelText("Metric")).toHaveValue("http_reqs");
+    expect(query().metric).toBe("http_reqs");
+    expect(screen.queryByRole("listbox")).not.toBeInTheDocument();
+  });
+
+  it("navigates metric suggestions with arrow keys and Enter", async () => {
+    stubMetadata();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    const input = screen.getByLabelText("Metric");
+    await user.click(input);
+    await screen.findByRole("option", { name: "http_reqs" });
+
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("option", { name: "http_reqs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    await user.keyboard("{ArrowDown}{Enter}");
+
+    expect(query().metric).toBe("up");
+  });
+
+  it("renders a histogram-only metric name as a disabled, non-pickable option", async () => {
+    stubMetadataWithHistogramOnlyMetric();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    const disabled = await screen.findByRole("option", {
+      name: /http\.server\.duration/,
+    });
+    expect(disabled).toHaveAttribute("aria-disabled", "true");
+    expect(disabled).toHaveTextContent("histogram · not chartable yet");
+
+    // Clicking it does nothing.
+    await user.click(disabled);
+    expect(query().metric).toBe("");
+    expect(screen.getByLabelText("Metric")).toHaveFocus();
+
+    // Arrow-key nav skips it entirely, landing on the one selectable option.
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("option", { name: "http_reqs" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(disabled).toHaveAttribute("aria-selected", "false");
+    await user.keyboard("{Enter}");
+    expect(query().metric).toBe("http_reqs");
+  });
+
+  it("shows a muted empty-state row when there are no metrics in range", async () => {
+    stubMetadataWithNoMetrics();
+    renderWithClient(<Harness />);
+    const user = userEvent.setup();
+
+    await user.click(screen.getByLabelText("Metric"));
+    const empty = await screen.findByText("No metrics in this range");
+    expect(empty).toHaveAttribute("aria-disabled");
+    expect(
+      within(screen.getByRole("listbox")).queryByRole("option"),
+    ).not.toBeInTheDocument();
   });
 
   it("warns when grouping by a high-cardinality label", async () => {

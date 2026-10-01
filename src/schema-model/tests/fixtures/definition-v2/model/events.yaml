@@ -1,0 +1,10 @@
+file_format: definition/2
+events:
+  - name: widget.produced
+    brief: Emitted when a widget is produced.
+    stability: development
+    attributes:
+      - ref: widget.id
+        requirement_level: required
+      - ref: widget.color
+        requirement_level: recommended

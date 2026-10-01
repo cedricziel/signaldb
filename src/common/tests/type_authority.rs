@@ -1,0 +1,488 @@
+//! [`TypeAuthority`]/[`SignalScope`]: the cached read of the type-authority
+//! precedence (config > semconv > observed) tying the catalog, config, and
+//! semconv resolver together.
+
+use std::sync::Arc;
+use std::time::Duration;
+
+use common::catalog::Catalog;
+use common::config::{AttributeTypeOverride, AttributeTypeSignal, Configuration};
+use common::schema::logical::{AttributeLevel, LogicalFieldId};
+use common::schema::type_authority::{
+    CanonicalType, ObservedKind, Placement, Resolution, SchemaUrls, SignalScope, TypeAuthority,
+    TypeSource, place,
+};
+use common::schema_registry::SchemaResolver;
+use common::self_monitoring::SEMCONV_SCHEMA_URL;
+use schema_model::RegistryDocument;
+
+const STATUS_CODE: &str = "http.response.status_code";
+const NO_URL: SchemaUrls<'static> = SchemaUrls {
+    resource: None,
+    scope: None,
+};
+
+fn urls_for(schema_url: &str) -> SchemaUrls<'static> {
+    // Leak once per test process; fine for a handful of short-lived test urls.
+    let leaked: &'static str = Box::leak(schema_url.to_string().into_boxed_str());
+    SchemaUrls {
+        resource: None,
+        scope: Some(leaked),
+    }
+}
+
+fn record_field(source: &str, key: &str) -> LogicalFieldId {
+    LogicalFieldId {
+        source: source.to_string(),
+        level: Some(AttributeLevel::Record),
+        name: key.to_string(),
+    }
+}
+
+fn override_for(
+    signal: AttributeTypeSignal,
+    key: &str,
+    canonical: CanonicalType,
+) -> AttributeTypeOverride {
+    AttributeTypeOverride {
+        signal,
+        level: AttributeLevel::Record,
+        key: key.to_string(),
+        canonical_type: canonical,
+        dataset: None,
+    }
+}
+
+async fn authority(config: Configuration) -> TypeAuthority {
+    authority_with_catalog(config).await.0
+}
+
+async fn authority_with_catalog(config: Configuration) -> (TypeAuthority, Catalog) {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let resolver = SchemaResolver::new(catalog.clone());
+    (
+        TypeAuthority::new(catalog.clone(), resolver, Arc::new(config)),
+        catalog,
+    )
+}
+
+async fn canon(
+    scope: &SignalScope,
+    key: &str,
+    urls: SchemaUrls<'_>,
+    observed: ObservedKind,
+) -> Option<CanonicalType> {
+    scope
+        .canonical(AttributeLevel::Record, key, urls, observed)
+        .await
+        .expect("canonical")
+}
+
+#[tokio::test]
+async fn precedence_end_to_end_through_the_authority() {
+    let mut config = Configuration::default();
+    config.schema.attribute_types.push(override_for(
+        AttributeTypeSignal::Traces,
+        "retry.count",
+        CanonicalType::String,
+    ));
+    let authority = authority(config).await;
+    let scope = authority.scope("t1", "d1", "traces").await.expect("scope");
+    let semconv_url = urls_for(SEMCONV_SCHEMA_URL);
+
+    let cases = [
+        // A real OTel int-typed key resolves from semconv over the observed kind.
+        (
+            STATUS_CODE,
+            semconv_url,
+            ObservedKind::String,
+            CanonicalType::Int64,
+        ),
+        // A config override wins over the same semconv hint for a different key.
+        (
+            "retry.count",
+            semconv_url,
+            ObservedKind::String,
+            CanonicalType::String,
+        ),
+        // A key unknown to semconv falls through to the observed kind.
+        (
+            "acme.widget.spin",
+            semconv_url,
+            ObservedKind::Bool,
+            CanonicalType::Bool,
+        ),
+        // A missing schema_url still resolves from the observed kind, no error.
+        (
+            "no.schema.url",
+            NO_URL,
+            ObservedKind::Float64,
+            CanonicalType::Float64,
+        ),
+    ];
+    for (key, urls, observed, expected) in cases {
+        assert_eq!(
+            canon(&scope, key, urls, observed).await,
+            Some(expected),
+            "{key}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn tenants_are_isolated_through_the_authority() {
+    let authority = authority(Configuration::default()).await;
+    let a = authority
+        .scope("tenant-a", "d", "logs")
+        .await
+        .expect("scope a");
+    let b = authority
+        .scope("tenant-b", "d", "logs")
+        .await
+        .expect("scope b");
+
+    assert_eq!(
+        canon(&a, "custom.new.key", NO_URL, ObservedKind::Int64).await,
+        Some(CanonicalType::Int64)
+    );
+    assert_eq!(
+        canon(&b, "custom.new.key", NO_URL, ObservedKind::String).await,
+        Some(CanonicalType::String)
+    );
+}
+
+#[tokio::test]
+async fn monotonic_through_the_authority() {
+    let authority = authority(Configuration::default()).await;
+    let scope = authority.scope("t", "d", "metrics").await.expect("scope");
+
+    assert_eq!(
+        canon(&scope, "queue.depth", NO_URL, ObservedKind::Int64).await,
+        Some(CanonicalType::Int64)
+    );
+    let second = canon(&scope, "queue.depth", NO_URL, ObservedKind::String).await;
+    assert_eq!(
+        second,
+        Some(CanonicalType::Int64),
+        "monotonic: first seen wins"
+    );
+    assert_eq!(
+        place(second, ObservedKind::String),
+        Placement::Residue { off_type: true }
+    );
+}
+
+#[tokio::test]
+async fn first_observed_non_scalar_establishes_nothing_later_scalar_wins() {
+    let (authority, catalog) = authority_with_catalog(Configuration::default()).await;
+    let scope = authority.scope("t", "d", "logs").await.expect("scope");
+
+    assert_eq!(
+        canon(&scope, "body.attrs", NO_URL, ObservedKind::KvList).await,
+        None
+    );
+
+    let stored = catalog
+        .get_attribute_type("t", "d", &record_field("logs", "body.attrs"))
+        .await
+        .expect("get");
+    assert!(
+        stored.is_none(),
+        "non-scalar first observation stores nothing"
+    );
+
+    assert_eq!(
+        canon(&scope, "body.attrs", NO_URL, ObservedKind::Int64).await,
+        Some(CanonicalType::Int64)
+    );
+}
+
+#[tokio::test]
+async fn cached_scope_is_reused_within_the_ttl() {
+    let authority = authority(Configuration::default()).await;
+    let first = authority.scope("t", "d", "traces").await.expect("scope");
+    let second = authority.scope("t", "d", "traces").await.expect("scope");
+    assert!(Arc::ptr_eq(&first, &second));
+}
+
+#[tokio::test]
+async fn an_expired_scope_picks_up_a_direct_retype() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let authority = writer_authority(&catalog, Duration::ZERO);
+    let scope = authority.scope("t", "d", "traces").await.expect("scope");
+    let field = record_field("traces", "span.attempt");
+
+    assert_eq!(
+        canon(&scope, "span.attempt", NO_URL, ObservedKind::Int64).await,
+        Some(CanonicalType::Int64)
+    );
+
+    // Simulates another process/operator retyping the row directly.
+    catalog
+        .override_attribute_type("t", "d", &field, CanonicalType::String)
+        .await
+        .expect("direct override");
+
+    // The already-held scope still serves the old, now-stale value.
+    assert_eq!(
+        canon(&scope, "span.attempt", NO_URL, ObservedKind::Int64).await,
+        Some(CanonicalType::Int64)
+    );
+
+    let fresh_scope = authority.scope("t", "d", "traces").await.expect("scope");
+    let fresh = canon(&fresh_scope, "span.attempt", NO_URL, ObservedKind::Int64).await;
+    assert_eq!(
+        fresh,
+        Some(CanonicalType::String),
+        "an expired scope picks up the retype"
+    );
+}
+
+const ACME_URL: &str = "https://acme.example/schemas/1.0.0";
+
+fn acme_registry(count_type: &str) -> RegistryDocument {
+    RegistryDocument::from_yaml(&format!(
+        r#"
+name: acme
+version: 1.0.0
+schema_url: {ACME_URL}
+description: Acme registry for type-authority staleness tests.
+dependencies:
+  - name: otel
+    registry_path: https://github.com/open-telemetry/semantic-conventions@v1.43.0[model]
+groups:
+  - id: registry.acme.thing
+    type: attribute_group
+    display_name: Acme Thing Attributes
+    brief: Attributes describing an Acme thing.
+    attributes:
+      - id: acme.thing.count
+        type: {count_type}
+        stability: development
+        brief: Number of things.
+"#
+    ))
+    .expect("acme registry parses")
+}
+
+/// The router serves schema-registry writes through its own
+/// `SchemaResolver`; the writer's authority holds another one, in the same
+/// process (monolith) or not (microservices). A replace must still reach the
+/// writer's next scope once the TTL lapses.
+#[tokio::test]
+async fn schema_registry_replace_reaches_the_next_scope_after_the_ttl() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let router = SchemaResolver::new(catalog.clone());
+    router
+        .create("t", &acme_registry("string"))
+        .await
+        .expect("create");
+
+    let authority = writer_authority(&catalog, Duration::ZERO);
+    authority.scope("t", "d", "traces").await.expect("scope");
+
+    router
+        .replace("t", "acme", "1.0.0", &acme_registry("int"))
+        .await
+        .expect("replace");
+
+    let scope = authority.scope("t", "d", "traces").await.expect("scope");
+    assert_eq!(
+        canon(
+            &scope,
+            "acme.thing.count",
+            urls_for(ACME_URL),
+            ObservedKind::String
+        )
+        .await,
+        Some(CanonicalType::Int64),
+        "the replaced registry's int hint beats the observed string"
+    );
+}
+
+fn writer_authority(catalog: &Catalog, ttl: Duration) -> TypeAuthority {
+    TypeAuthority::new(
+        catalog.clone(),
+        SchemaResolver::new(catalog.clone()),
+        Arc::new(Configuration::default()),
+    )
+    .with_scope_ttl(ttl)
+}
+
+/// Long enough that two back-to-back calls land inside it.
+const SHORT_TTL: Duration = Duration::from_millis(100);
+
+async fn drop_registry_table(catalog: &Catalog) {
+    let drop = "DROP TABLE schema_registries";
+    match catalog {
+        Catalog::Sqlite(pool) => {
+            sqlx::query(drop).execute(pool).await.expect("drop table");
+        }
+        Catalog::Postgres(pool) => {
+            sqlx::query(drop).execute(pool).await.expect("drop table");
+        }
+    }
+}
+
+#[tokio::test]
+async fn schema_registry_delete_reaches_the_next_scope_after_the_ttl() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let router = SchemaResolver::new(catalog.clone());
+    router
+        .create("t", &acme_registry("int"))
+        .await
+        .expect("create");
+    let authority = writer_authority(&catalog, Duration::ZERO);
+    authority.scope("t", "d", "traces").await.expect("scope");
+
+    assert!(router.delete("t", "acme", "1.0.0").await.expect("delete"));
+
+    let scope = authority.scope("t", "d", "traces").await.expect("scope");
+    assert_eq!(
+        canon(
+            &scope,
+            "acme.thing.count",
+            urls_for(ACME_URL),
+            ObservedKind::String
+        )
+        .await,
+        Some(CanonicalType::String),
+        "with the registry gone, the observed type wins"
+    );
+}
+
+/// A catalog blip while rebuilding an expired scope must not fail ingest:
+/// the previous scope keeps serving.
+#[tokio::test]
+async fn failed_rebuild_keeps_serving_the_previous_scope() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let authority = writer_authority(&catalog, Duration::ZERO);
+    let first = authority.scope("t", "d", "traces").await.expect("scope");
+
+    drop_registry_table(&catalog).await;
+
+    let served = authority
+        .scope("t", "d", "traces")
+        .await
+        .expect("stale scope served despite the failed rebuild");
+    assert!(Arc::ptr_eq(&first, &served));
+}
+
+/// The first call past expiry rebuilds; the rebuilt entry then serves the
+/// calls that follow instead of each rebuilding again.
+#[tokio::test]
+async fn an_expired_scope_is_rebuilt_once_then_reused() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let router = SchemaResolver::new(catalog.clone());
+    router
+        .create("t", &acme_registry("string"))
+        .await
+        .expect("create");
+    let authority = writer_authority(&catalog, SHORT_TTL);
+    let first = authority.scope("t", "d", "traces").await.expect("scope");
+    router
+        .replace("t", "acme", "1.0.0", &acme_registry("int"))
+        .await
+        .expect("replace");
+
+    tokio::time::sleep(SHORT_TTL * 2).await;
+    let rebuilt = authority.scope("t", "d", "traces").await.expect("scope");
+    let again = authority.scope("t", "d", "traces").await.expect("scope");
+
+    assert!(!Arc::ptr_eq(&first, &rebuilt));
+    assert!(Arc::ptr_eq(&rebuilt, &again));
+    assert_eq!(
+        canon(
+            &rebuilt,
+            "acme.thing.count",
+            urls_for(ACME_URL),
+            ObservedKind::String
+        )
+        .await,
+        Some(CanonicalType::Int64)
+    );
+}
+
+/// A failed rebuild claims the entry for another TTL, so an outage costs one
+/// attempt (and one warning) per TTL rather than one per call.
+#[tokio::test]
+async fn a_failed_rebuild_is_not_retried_within_the_ttl() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let authority = writer_authority(&catalog, SHORT_TTL);
+    let first = authority.scope("t", "d", "traces").await.expect("scope");
+    drop_registry_table(&catalog).await;
+    tokio::time::sleep(SHORT_TTL * 2).await;
+
+    let (warnings, _guard) =
+        common::testing::WarnCapture::install("failed to rebuild the attribute type scope");
+    for _ in 0..2 {
+        let served = authority
+            .scope("t", "d", "traces")
+            .await
+            .expect("stale scope");
+        assert!(Arc::ptr_eq(&first, &served));
+    }
+    assert_eq!(warnings.messages().len(), 1, "{:?}", warnings.messages());
+}
+
+#[tokio::test]
+async fn off_type_warning_is_not_repeated_by_a_rebuilt_scope() {
+    let catalog = Catalog::new_in_memory().await.expect("catalog");
+    let authority = writer_authority(&catalog, Duration::ZERO);
+    let (warnings, _guard) = common::testing::WarnCapture::install(
+        "attribute value sent under a different type than the field's canonical",
+    );
+
+    for _ in 0..2 {
+        let scope = authority.scope("t", "d", "traces").await.expect("scope");
+        scope
+            .record_off_type(
+                AttributeLevel::Record,
+                "span.attempt",
+                CanonicalType::Int64,
+                ObservedKind::String,
+                1,
+            )
+            .await;
+    }
+
+    assert_eq!(warnings.messages().len(), 1, "{:?}", warnings.messages());
+}
+
+#[tokio::test]
+async fn config_pin_retypes_an_already_established_field_and_warns() {
+    let field = record_field("logs", "retry.count");
+    let seed_catalog = Catalog::new_in_memory().await.expect("catalog");
+    seed_catalog
+        .establish_attribute_type(
+            "t",
+            "d",
+            &field,
+            Resolution {
+                canonical: CanonicalType::Int64,
+                source: TypeSource::Observed,
+                hint_schema_url: None,
+            },
+        )
+        .await
+        .expect("establish");
+
+    let mut config = Configuration::default();
+    config.schema.attribute_types.push(override_for(
+        AttributeTypeSignal::Logs,
+        "retry.count",
+        CanonicalType::String,
+    ));
+    let authority = TypeAuthority::new(
+        seed_catalog.clone(),
+        SchemaResolver::new(seed_catalog),
+        Arc::new(config),
+    );
+
+    let (warnings, _guard) =
+        common::testing::WarnCapture::install("retyped an already-established attribute field");
+    let scope = authority.scope("t", "d", "logs").await.expect("scope");
+    let pinned = canon(&scope, "retry.count", NO_URL, ObservedKind::Int64).await;
+    assert_eq!(pinned, Some(CanonicalType::String));
+    assert_eq!(warnings.messages().len(), 1, "{:?}", warnings.messages());
+}

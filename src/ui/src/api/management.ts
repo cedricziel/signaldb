@@ -1,35 +1,35 @@
 // Tenant management API, layered over the generated OpenAPI SDK. The exported
 // function names and signatures are the stable surface the management UI
-// depends on; internally each call delegates to a generated `manage*`
-// operation and unwraps the result envelope back into the historical
-// contract: the response data on success, an `ApiError` carrying the HTTP
-// status on failure (so `isAuthError` keeps working on 401).
+// depends on; internally each call delegates to a generated operation and
+// unwraps the result envelope back into the historical contract: the
+// response data on success, an `ApiError` carrying the HTTP status on
+// failure (so `isAuthError` keeps working on 401).
 import "./client";
 
 import {
+  createApiKey as generatedCreateApiKey,
+  createDataset as generatedCreateDataset,
+  createTenant as generatedCreateTenant,
   createTenantTables,
+  deleteDataset as generatedDeleteDataset,
+  getSchema as generatedGetSchema,
+  listApiKeys as generatedListApiKeys,
+  listMemberships as generatedListMemberships,
   listTenantTables,
-  manageCreateApiKey,
-  manageCreateDataset,
-  manageCreateTenant,
-  manageDeleteDataset,
-  manageGetSchema,
-  manageListApiKeys,
-  manageListMemberships,
-  manageRemoveMembership,
-  manageRevokeApiKey,
-  manageUpdateApiKey,
-  manageUpsertMembership,
+  removeMembership as generatedRemoveMembership,
+  revokeApiKey as generatedRevokeApiKey,
+  updateApiKey as generatedUpdateApiKey,
+  upsertMembership as generatedUpsertMembership,
+  type CreateTenantResponse,
   type CreateTenantTablesResponse,
+  type GetSchemaResponse,
   type ListTablesResponse,
   type ManageApiKeyResponse,
   type ManageCreatedApiKey,
-  type ManageCreatedTenant,
   type ManageDatasetResponse,
-  type ManageSchemaResponse,
   type MembershipResponse,
 } from "./gen";
-import { ApiError, retryAfterMsFrom } from "./http";
+import { type SdkResult, unwrapErrorEnvelope } from "./http";
 
 /** Ingestion scopes an API key may be granted. */
 export type IngestScope =
@@ -38,6 +38,12 @@ export type IngestScope =
 /** Schema-registry scopes an API key may be granted. */
 export type SchemaScope = "schema:read" | "schema:write";
 
+/** Tenant OTTL processor scopes an API key may be granted. */
+export type ProcessorScope = "processors:read" | "processors:write";
+
+/** Eval-set scopes an API key may be granted. */
+export type EvalScope = "evals:read" | "evals:write";
+
 /** Tenant self-management scope: the key may call the management API for
  * its own tenant. Explicit only — a legacy unscoped key never gains it. */
 export type ManagementScope = "tenant:manage";
@@ -45,7 +51,12 @@ export type ManagementScope = "tenant:manage";
 /** Every scope selectable on the management UI. Narrower than the generated
  * `string[]`, this drives the scope picker; the vocabulary mirrors
  * `common::auth::API_KEY_SCOPES` (the read scopes are OAuth-only). */
-export type ApiKeyScope = IngestScope | SchemaScope | ManagementScope;
+export type ApiKeyScope =
+  | IngestScope
+  | SchemaScope
+  | ProcessorScope
+  | EvalScope
+  | ManagementScope;
 
 /** Scope picker groups with one-line descriptions, in display order. */
 export const SCOPE_GROUPS: ReadonlyArray<{
@@ -73,6 +84,28 @@ export const SCOPE_GROUPS: ReadonlyArray<{
         scope: "schema:write",
         description: "Create, replace, validate, and delete custom registries",
       },
+      {
+        scope: "processors:read",
+        description:
+          "Read tenant OTTL processors: list, get, validate, and dry-run test",
+      },
+      {
+        scope: "processors:write",
+        description: "Create, replace, and delete tenant OTTL processors",
+      },
+    ],
+  },
+  {
+    name: "Evals",
+    scopes: [
+      {
+        scope: "evals:read",
+        description: "Read eval sets and their cases",
+      },
+      {
+        scope: "evals:write",
+        description: "Create, replace, delete, and append cases to eval sets",
+      },
     ],
   },
   {
@@ -92,60 +125,67 @@ export const ALL_SCOPES: ReadonlyArray<ApiKeyScope> = SCOPE_GROUPS.flatMap(
   (group) => group.scopes.map((entry) => entry.scope),
 );
 
+/** The Ingestion group's scopes: a key without at least one of these can't
+ * ingest any OTLP signal, so the create form pre-checks all of them. */
+export const INGEST_SCOPES: ReadonlyArray<ApiKeyScope> =
+  SCOPE_GROUPS.find((group) => group.name === "Ingestion")?.scopes.map(
+    (entry) => entry.scope,
+  ) ?? [];
+
 /** API key as returned by the management API. Structurally the generated
  * wire type (scopes surface as `string[]`). */
 export type ManagedApiKey = ManageApiKeyResponse;
 
-/** Tenant membership as returned by the management API. */
+/** Tenant membership as returned by the management API. `granted_by` is
+ * `"local"` (granted via this API/CLI/MCP) or `"oidc_mapping"` (synced from
+ * an OIDC group claim) — a local and a mapped row can coexist for the same
+ * user, so callers must key lists on `user_id` + `granted_by`, not
+ * `user_id` alone, and only offer removal for `"local"` rows (mapped rows
+ * are managed by the IdP). */
 export type ManagedMembership = MembershipResponse;
 
 /** Logical + physical schema, as returned by the management API. */
-export type ManagedSchema = ManageSchemaResponse;
+export type ManagedSchema = GetSchemaResponse;
 
-/** Result envelope produced by the generated SDK (`RequestResult` with the
- * default `fields` response style). */
-interface SdkResult<T> {
-  data?: T;
-  error?: unknown;
-  response?: Response;
-}
-
-/** Unwrap a generated SDK result, preserving the error contract callers rely
- * on. The SDK does not throw by default: it returns `error` set (and
- * `response` unset on a network/URL error) instead. Re-throw as `ApiError`
- * with the HTTP status so `isAuthError(401)` keeps working. */
-function unwrap<T>(result: SdkResult<T>): T {
-  const { error, response } = result;
-  if (error !== undefined || !response?.ok) {
-    const status = response?.status ?? 0;
-    const message =
-      (error as { error?: string } | undefined)?.error ??
-      `Management request failed (${status})`;
-    throw new ApiError(message, status, retryAfterMsFrom(response));
-  }
-  return result.data as T;
-}
+const unwrap = <T>(result: SdkResult<T>): T =>
+  unwrapErrorEnvelope(result, "Management");
 
 export const listApiKeys = async (tenant: string): Promise<ManagedApiKey[]> =>
-  unwrap(await manageListApiKeys({ path: { tenant_id: tenant } }));
+  unwrap(await generatedListApiKeys({ path: { tenant_id: tenant } }));
 
 export const createApiKey = async (
   tenant: string,
-  input: { name?: string; dataset_id?: string; scopes: ApiKeyScope[] },
+  input: {
+    name?: string;
+    dataset_ids?: string[];
+    allowed_origins?: string[];
+    scopes: ApiKeyScope[];
+  },
 ): Promise<ManageCreatedApiKey> =>
   unwrap(
-    await manageCreateApiKey({ path: { tenant_id: tenant }, body: input }),
+    await generatedCreateApiKey({ path: { tenant_id: tenant }, body: input }),
   );
 
-/** Change a live key's scopes and/or dataset restriction without rotating
- * its secret; absent fields are left untouched. Revoked keys are rejected. */
+/** Change a live key's scopes, dataset restriction, and/or allowed-origins
+ * restriction without rotating its secret; absent fields are left
+ * untouched. Revoked keys are rejected. `dataset_ids` replaces the dataset
+ * restriction with exactly that set; `clear_dataset_restriction` clears it
+ * back to unrestricted — the two are mutually exclusive (D1a), enforced
+ * server-side. `allowed_origins`/`clear_allowed_origins` do the same for the
+ * browser-origin (CORS) restriction. */
 export const updateApiKey = async (
   tenant: string,
   keyId: string,
-  input: { scopes?: ApiKeyScope[]; dataset_id?: string },
+  input: {
+    scopes?: ApiKeyScope[];
+    dataset_ids?: string[];
+    clear_dataset_restriction?: boolean;
+    allowed_origins?: string[];
+    clear_allowed_origins?: boolean;
+  },
 ): Promise<ManagedApiKey> =>
   unwrap(
-    await manageUpdateApiKey({
+    await generatedUpdateApiKey({
       path: { tenant_id: tenant, key_id: keyId },
       body: input,
     }),
@@ -156,7 +196,7 @@ export const revokeApiKey = async (
   keyId: string,
 ): Promise<void> => {
   unwrap(
-    await manageRevokeApiKey({ path: { tenant_id: tenant, key_id: keyId } }),
+    await generatedRevokeApiKey({ path: { tenant_id: tenant, key_id: keyId } }),
   );
 };
 
@@ -165,7 +205,7 @@ export const createDataset = async (
   name: string,
 ): Promise<ManageDatasetResponse> =>
   unwrap(
-    await manageCreateDataset({ path: { tenant_id: tenant }, body: { name } }),
+    await generatedCreateDataset({ path: { tenant_id: tenant }, body: { name } }),
   );
 
 export const deleteDataset = async (
@@ -173,7 +213,7 @@ export const deleteDataset = async (
   name: string,
 ): Promise<void> => {
   unwrap(
-    await manageDeleteDataset({
+    await generatedDeleteDataset({
       path: { tenant_id: tenant, dataset_name: name },
     }),
   );
@@ -183,31 +223,31 @@ export const createTenant = async (input: {
   id: string;
   name: string;
   default_dataset?: string;
-}): Promise<ManageCreatedTenant> =>
-  unwrap(await manageCreateTenant({ body: input }));
+}): Promise<CreateTenantResponse> =>
+  unwrap(await generatedCreateTenant({ body: input }));
 
 export const listMemberships = async (
   tenant: string,
 ): Promise<ManagedMembership[]> =>
-  unwrap(await manageListMemberships({ path: { tenant_id: tenant } }));
+  unwrap(await generatedListMemberships({ path: { tenant_id: tenant } }));
 
 export const upsertMembership = async (
   tenant: string,
   input: { email: string; role: ManagedMembership["role"] },
 ): Promise<ManagedMembership> =>
   unwrap(
-    await manageUpsertMembership({ path: { tenant_id: tenant }, body: input }),
+    await generatedUpsertMembership({ path: { tenant_id: tenant }, body: input }),
   );
 
 export const getSchema = async (): Promise<ManagedSchema> =>
-  unwrap(await manageGetSchema());
+  unwrap(await generatedGetSchema());
 
 export const removeMembership = async (
   tenant: string,
   userId: string,
 ): Promise<void> => {
   unwrap(
-    await manageRemoveMembership({
+    await generatedRemoveMembership({
       path: { tenant_id: tenant, user_id: userId },
     }),
   );

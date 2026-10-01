@@ -45,7 +45,7 @@ export function ErrorFacets({
               >
                 <span>{errorFacetLabel(field)}</span>
                 {active.length > 0 && (
-                  <span className="facet-active">{active.length}</span>
+                  <span className="facet-active chip">{active.length}</span>
                 )}
               </button>
               {open === field && (
@@ -80,7 +80,7 @@ function FacetValues({
 }) {
   const values = errorFacetValues(groups, field, filters);
   if (values.length === 0) {
-    return <div className="fieldvals-note">No values in range</div>;
+    return <div className="fieldvals-note">No values in this window</div>;
   }
 
   const isActive = (value: string) =>

@@ -1,4 +1,4 @@
-use crate::{RouterAppState, RouterState, create_flight_service, create_router};
+use crate::{RouterAppState, create_flight_service, create_router};
 use anyhow::{Context, Result};
 use clap::Subcommand;
 use common::cli::{CommonArgs, CommonCommands, utils};
@@ -88,7 +88,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
 
     // Initialize router service bootstrap for catalog-based discovery
     let router_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Router, flight_addr)
             .await
             .context("Failed to initialize router service bootstrap")?;
 
@@ -116,6 +116,15 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
             count = materialized,
             "Materialized missing default dataset rows"
         );
+    }
+
+    // Provision/reconcile the read-only demo account (change: demo-mode), if
+    // configured. Runs after tenant sync so `[demo].tenant_id` exists.
+    // Failure logs and continues rather than blocking startup.
+    if let Err(error) =
+        common::bootstrap::provision_demo_user(router_bootstrap.catalog(), &config).await
+    {
+        tracing::error!(error = %error, "Failed to provision demo account");
     }
 
     // Create router state with catalog access and configuration
@@ -159,6 +168,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
             "Flight port is UNAUTHENTICATED ([auth].internal_service_key is not set); \
              it must be restricted to a trusted network"
         );
+        warn_unsigned_cursors();
     }
     let flight_service = create_flight_service(state);
     let flight_handle = tokio::spawn(async move {
@@ -217,4 +227,13 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     tracing::info!("Router service stopped gracefully");
 
     Ok(())
+}
+
+/// The startup warning that, without `[auth].internal_service_key`, Query IR
+/// page and tail cursors are only checksummed, not signed.
+pub fn warn_unsigned_cursors() {
+    tracing::warn!(
+        "Query IR page and tail cursors are unsigned ([auth].internal_service_key is \
+         not set); a client can edit one to reset its walk budget or lifetime"
+    );
 }

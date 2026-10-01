@@ -1,20 +1,48 @@
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .catalog {
   display: flex;
   flex: 1;
   min-height: 0;
 }
 
+/* Once the main column is 720px or narrower the entity-type sidebar and
+   the RED table fight over ~375px of width and both lose — hide the sidebar behind the
+   MobileFiltersToggle/MobileSidebarDrawer instead (see CatalogView.tsx),
+   same mechanism Logs/Traces/Errors use for their facet sidebars. */
+@container app-main (max-width: 720px) {
+  .catalog .sidebar {
+    display: none;
+  }
+}
+
 .catalog-main {
   flex: 1;
   min-width: 0;
   overflow: auto;
-  padding: 16px 20px;
+  padding: 16px var(--gutter);
+}
+
+/* Wraps the List | Map switch and whichever of EntityTable/CatalogServiceMap
+   is showing — both render their own `.catalog-main`, so this pane only
+   needs to claim the row's remaining width. */
+.catalog-list-pane {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+@container app-main (max-width: 600px) {
+  .catalog-main {
+    padding: 12px;
+  }
 }
 
 .catalog-headline {
   display: flex;
+  flex-wrap: wrap;
   align-items: baseline;
-  gap: 12px;
+  gap: 8px 12px;
   margin-bottom: 12px;
 }
 
@@ -28,6 +56,24 @@
 .catalog-sub {
   font-size: 12px;
   color: var(--faint);
+}
+
+/* Pushes a headline's trailing control(s) — the List | Map switch on
+   EntityTable's own headline, or the switch plus the Catalog Map's
+   hide-external toggle — to the row's far end, compact rather than the
+   full-width bar a plain flex child would stretch to (`.catalog-headline`
+   has no `align-items: stretch` of its own to fight, but its parent,
+   `.catalog-list-pane`, does). */
+.catalog-headline-switch,
+.catalog-headline-actions {
+  margin-left: auto;
+  align-self: center;
+}
+
+.catalog-headline-actions {
+  display: flex;
+  align-items: center;
+  gap: 16px;
 }
 
 .catalog-row-drillable {
@@ -72,7 +118,7 @@
 }
 
 .catalog-breadcrumb button {
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .catalog-breadcrumb button:hover {
@@ -87,44 +133,66 @@
   color: var(--dim);
 }
 
-.entity-kpis {
-  display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(100px, 1fr));
-  gap: 12px;
+.entity-detail-title {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  min-width: 0;
+}
+
+.entity-detail-actions {
+  display: flex;
+  gap: 8px;
+  flex-shrink: 0;
+}
+
+.entity-detail .kpi-strip {
+  margin-bottom: 6px;
+}
+
+.entity-last-seen {
   margin: 0 0 20px;
-  padding: 14px 16px;
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  background: var(--surface);
-}
-
-.entity-kpis dt {
-  font-size: 10.5px;
-  text-transform: uppercase;
-  letter-spacing: 0.06em;
+  font-size: 12px;
   color: var(--faint);
-  margin-bottom: 3px;
 }
 
-.entity-kpis dd {
-  margin: 0;
-  font-family: var(--mono);
-  font-size: 15px;
-  font-weight: 600;
-  color: var(--text);
+/* Provenance for the entity-type list: how fresh the metadata behind it is,
+   or that nothing has been analyzed yet. Quiet by design — it qualifies the
+   nav rather than competing with it. */
+.sidebar-note {
+  padding: 8px 10px;
+  border-top: 1px solid var(--border);
+  font-size: 10.5px;
+  line-height: 1.4;
+  color: var(--faint);
 }
 
-.entity-kpis dd.err-rate {
-  color: var(--err);
+/* Which signals cover an entity. Deliberately unquantified — see `Observed`
+   in CatalogView.tsx — so these read as labels, not measurements, and are
+   sized down from the numeric KPIs beside them. */
+.entity-observed {
+  display: inline-flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.entity-signal {
+  padding: 1px 6px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--bg);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--faint);
 }
 
 /* ---------- dependency-type breakdown ---------- */
+/* The bar itself is the shared `ShareBar`; these override its layout for the
+   taller, bordered look this view uses. */
 
-.dep-bar {
-  display: flex;
+.dep-breakdown .share-bar {
   height: 20px;
   border-radius: 4px;
-  overflow: hidden;
   border: 1px solid var(--border);
 }
 
@@ -162,6 +230,11 @@
   font-variant-numeric: tabular-nums;
 }
 
+/* The legend's own small swatch — a colored dot before the label, not a
+   full-block background behind it (that was the ShareBar segment's look,
+   `.dep-<key>`, bleeding into the legend because the `dt` used to carry
+   that same class). Color comes from `--kind-color`, set inline from
+   `DEP_COLORS`, mirroring `DependencyTable`'s `.dep-table-kind`. */
 .dep-swatch {
   display: flex;
   align-items: center;
@@ -173,32 +246,243 @@
 .dep-swatch::before {
   content: "";
   display: inline-block;
-  width: 9px;
-  height: 9px;
+  width: 8px;
+  height: 8px;
   border-radius: 2px;
+  background: var(--kind-color);
 }
 
-.dep-database,
-.dep-swatch.dep-database::before {
-  background: var(--svc-a);
+.dep-database {
+  background: var(--svc-i);
 }
 
-.dep-http,
-.dep-swatch.dep-http::before {
+.dep-http {
   background: var(--svc-b);
 }
 
-.dep-rpc,
-.dep-swatch.dep-rpc::before {
+.dep-rpc {
   background: var(--svc-c);
 }
 
-.dep-messaging,
-.dep-swatch.dep-messaging::before {
-  background: var(--svc-d);
+.dep-messaging {
+  background: var(--svc-g);
 }
 
-.dep-other,
-.dep-swatch.dep-other::before {
+.dep-other {
   background: var(--faint);
+}
+
+/* Entity metrics panel — a tile grid that stays legible from two tiles to the
+   cap, so a process page and a host page read the same way. */
+.metric-tiles {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 12px;
+  margin: 8px 0;
+}
+
+.metric-tile {
+  margin: 0;
+  padding: 8px;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  min-width: 0;
+}
+
+.metric-tile figcaption {
+  display: flex;
+  justify-content: space-between;
+  align-items: baseline;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.metric-tile-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Instrument and unit: what keeps a cumulative counter from reading as a
+   rate while the IR has no range stage. Fixed-size (not `flex-shrink`'s
+   default proportional squeeze) so the metric name above gives up its own
+   space first; only truncates once even 40% of the tile isn't enough for it. */
+.metric-tile-meta {
+  flex: none;
+  max-width: 40%;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--dim);
+}
+
+/* Sparkline column — a shape at cell size, deliberately without axes or
+   legend; the entity's own page carries the readable chart. */
+.entity-sparkline-cell {
+  width: 88px;
+  padding-top: 2px;
+  padding-bottom: 2px;
+}
+
+/* "Time by dependency" and the service map sit side by side on a wide
+   detail page, stacking on tablet/mobile same as the rest of the page. */
+.entity-service-maps {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  align-items: start;
+}
+
+/* A grid item's automatic minimum size is its content's min-content width
+   by default — for the service map that is its unscaled layout width, wide
+   enough to defeat the column's own `1fr` and force the row wider than the
+   page. Without this the graph never gets a real container width to fit
+   itself to (see ServiceGraph's `useContainerWidth`), so it renders at full
+   size and clips instead of scaling down. */
+.entity-service-maps > * {
+  min-width: 0;
+}
+
+@container app-main (max-width: 720px) {
+  .entity-service-maps {
+    grid-template-columns: 1fr;
+  }
+}
+
+/* A bordered card with a header — the frame both service maps (this one,
+   and the Catalog Map) render inside, matching the side panel's own frame. */
+.catalog-main.map-card {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+}
+
+/* Service page neighbourhood map's Table view — callers and dependencies
+   side by side, same left/right sense as the Map view they switch with. */
+.neighbourhood-table-view {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 24px;
+  margin-top: 8px;
+}
+
+.neighbourhood-col-head {
+  font-weight: 600;
+  margin-bottom: 6px;
+}
+
+/* `table-layout: fixed` with explicit column widths, not `auto`: a narrow
+   host (the Catalog Map's 320px side panel) otherwise lets each column
+   claim whatever its widest unbreakable value needs (a service name, "190
+   ms"), summing past the table's own 100% and clipping at the panel's
+   edge instead of fitting it. */
+.neighbourhood-table {
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 12.5px;
+}
+
+.neighbourhood-table col.nt-service {
+  width: 40%;
+}
+
+.neighbourhood-table col.nt-figure {
+  width: 20%;
+}
+
+.neighbourhood-table th,
+.neighbourhood-table td {
+  padding: 4px 6px;
+  border-bottom: 1px solid var(--border);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.neighbourhood-table th {
+  text-align: left;
+  color: var(--dim);
+  font-weight: 500;
+}
+
+/* Catalog Map view — the graph and, once a node is selected, its side
+   panel side by side. */
+.catalog-map-layout {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 16px;
+}
+
+.catalog-map-layout.with-panel {
+  /* A fixed track, not `minmax(0, 320px)`: the panel's own children
+     (`.neighbourhood-table`, the KPI grid) get `min-width: 0` instead, so
+     this stays a real, predictable 320px rather than a size that still
+     depends on what's rendered inside it. */
+  grid-template-columns: 1fr 320px;
+}
+
+/* A `1fr` track's item still defaults to its content's min-content width —
+   for the graph that is its unscaled layout width, which can exceed the
+   track and force the whole row wider than the page (`ServiceGraph`'s own
+   `useContainerWidth` fit-to-width never gets a real width to fit without
+   this). */
+.catalog-map-graph-col {
+  min-width: 0;
+}
+
+.catalog-map-hide-external {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--dim);
+}
+
+.catalog-map-warning {
+  padding: 6px 10px;
+  border-radius: 4px;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.catalog-map-panel {
+  width: 320px;
+  min-width: 0;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 14px 16px;
+  align-self: start;
+}
+
+.catalog-map-panel-stats {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+  margin: 8px 0 16px;
+}
+
+.catalog-map-panel-stats dt {
+  color: var(--dim);
+  font-size: 11px;
+}
+
+.catalog-map-panel-stats dd {
+  margin: 0;
+  font-size: 14px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@container app-main (max-width: 720px) {
+  .catalog-map-layout.with-panel {
+    grid-template-columns: 1fr;
+  }
 }

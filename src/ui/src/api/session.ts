@@ -1,13 +1,57 @@
 // Client for the router's UI session endpoints (/ui/session) and the
-// tenant-scoped whoami endpoint (/api/v1/whoami). The session cookie is
-// HttpOnly — browser code never reads it; it only creates and clears it.
+// tenant-scoped whoami endpoint (/api/v1/whoami), all through the generated
+// OpenAPI client (`import "./client"` registers its shared config). The
+// session cookie is HttpOnly — browser code never reads it; it only creates
+// and clears it.
+import "./client";
 
 import {
-  ApiError,
-  retryAfterMsFrom,
-  retryingFetch,
-  tenantHeaders,
-} from "./http";
+  type CreateSessionResponse,
+  createSession as createSessionSdk,
+  type CurrentSessionResponse,
+  currentSession as currentSessionSdk,
+  deleteSession as deleteSessionSdk,
+  type LoginConfigResponse,
+  loginConfig as loginConfigSdk,
+  type OidcLoginConfig,
+  type SessionMembership,
+  type SessionUser,
+  type WhoamiDataset,
+  type WhoamiIdentityResponse,
+  whoami as whoamiSdk,
+} from "./gen";
+import { errorEnvelopeMessage, unwrapSdkResult } from "./http";
+
+/** `GET /ui/session/config`: which credentials the login page may offer.
+ * Unauthenticated; throws `ApiError` on a non-2xx response (a 404 from an
+ * older router, a 5xx). */
+export async function loginConfig(): Promise<LoginConfigResponse> {
+  return unwrapSdkResult(
+    await loginConfigSdk(),
+    (status) => `Request failed (${status})`,
+  );
+}
+
+/** `GET /ui/session`: the signed-in user, their memberships, and the
+ * auto-selected tenant/dataset — authenticated by the session cookie alone.
+ * Throws `ApiError(401)` without a valid session. */
+export async function currentSession(): Promise<CurrentSessionResponse> {
+  return unwrapSdkResult(
+    await currentSessionSdk(),
+    (status) => `Request failed (${status})`,
+  );
+}
+
+export type {
+  CreateSessionResponse,
+  CurrentSessionResponse,
+  LoginConfigResponse,
+  OidcLoginConfig,
+  SessionMembership,
+  SessionUser,
+  WhoamiDataset,
+  WhoamiIdentityResponse,
+};
 
 export interface SessionCredentials {
   email: string;
@@ -18,97 +62,43 @@ export interface SessionCredentials {
   dataset?: string;
 }
 
-export interface SessionMembership {
-  tenant_id: string;
-  name: string;
-  role: "admin" | "member" | "viewer";
-}
-
-export interface SessionResult {
-  /** Null when the user must still pick a tenant from `memberships`. */
-  tenant: string | null;
-  dataset: string | null;
-  memberships: SessionMembership[];
-}
-
-export interface WhoamiDataset {
-  id: string;
-  slug: string;
-  is_default: boolean;
-}
-
-export interface WhoamiResponse {
-  user?: {
-    id: string;
-    email: string;
-    display_name: string | null;
-    is_instance_admin: boolean;
-  };
-  memberships: Array<{
-    tenant_id: string;
-    role: "admin" | "member" | "viewer";
-  }>;
-  tenant: { id: string; slug: string; name: string };
-  datasets: WhoamiDataset[];
-  default_dataset: string | null;
-}
-
 /** Create a session: the server validates the credentials and sets the
  * HttpOnly session cookie. Throws `ApiError` with the server's message on
  * invalid credentials. */
 export async function createSession(
   creds: SessionCredentials,
-): Promise<SessionResult> {
-  const res = await retryingFetch("/ui/session", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      email: creds.email,
-      password: creds.password,
-      ...(creds.tenant ? { tenant: creds.tenant } : {}),
-      ...(creds.dataset ? { dataset: creds.dataset } : {}),
+): Promise<CreateSessionResponse> {
+  return unwrapSdkResult(
+    await createSessionSdk({
+      body: {
+        email: creds.email,
+        password: creds.password,
+        ...(creds.tenant ? { tenant: creds.tenant } : {}),
+        ...(creds.dataset ? { dataset: creds.dataset } : {}),
+      },
     }),
-  });
-  if (!res.ok) {
-    const body = (await res.json().catch(() => null)) as {
-      error?: string;
-    } | null;
-    throw new ApiError(
-      body?.error ?? `Login failed (${res.status})`,
-      res.status,
-      retryAfterMsFrom(res),
-    );
-  }
-  return (await res.json()) as SessionResult;
+    (status) => `Login failed (${status})`,
+    errorEnvelopeMessage,
+  );
 }
 
 /** Log out: the server clears the session cookie. */
 export async function deleteSession(): Promise<void> {
-  const res = await retryingFetch("/ui/session", { method: "DELETE" });
-  if (!res.ok) {
-    throw new ApiError(
-      `Logout failed (${res.status})`,
-      res.status,
-      retryAfterMsFrom(res),
-    );
-  }
+  unwrapSdkResult(
+    await deleteSessionSdk(),
+    (status) => `Logout failed (${status})`,
+  );
 }
 
 /** Fetch the authenticated tenant and its datasets. Throws `ApiError`
  * (404 on servers without the endpoint, 401 when unauthenticated). Pass
  * `tenant` to scope the lookup to a specific tenant (e.g. right after
  * picking one at login) instead of the current tenant context. */
-export async function whoami(tenant?: string): Promise<WhoamiResponse> {
-  const headers = tenant
-    ? { Accept: "application/json", "X-Tenant-ID": tenant }
-    : tenantHeaders();
-  const res = await retryingFetch("/api/v1/whoami", { headers });
-  if (!res.ok) {
-    throw new ApiError(
-      `whoami failed (${res.status})`,
-      res.status,
-      retryAfterMsFrom(res),
-    );
-  }
-  return (await res.json()) as WhoamiResponse;
+export async function whoami(tenant?: string): Promise<WhoamiIdentityResponse> {
+  return unwrapSdkResult(
+    await whoamiSdk(
+      tenant ? { headers: { "X-Tenant-ID": tenant } } : undefined,
+    ),
+    (status) => `whoami failed (${status})`,
+  );
 }

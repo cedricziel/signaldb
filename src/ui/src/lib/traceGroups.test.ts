@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { TraceSummary } from "../api/tempo";
+import type { TraceSummary } from "../api/traceTypes";
 import {
   compositeKey,
   DEFAULT_GROUP_BY,

@@ -106,9 +106,6 @@ pub enum PrometheusMetricType {
 pub(crate) struct DetectedMetricInfo {
     pub base_name: String,
     pub metric_type: PrometheusMetricType,
-    /// Suffix detected from metric name (e.g., "total", "bucket", "count")
-    #[allow(dead_code)]
-    pub suffix: Option<String>,
 }
 
 // ============================================================================

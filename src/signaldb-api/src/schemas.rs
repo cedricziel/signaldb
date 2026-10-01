@@ -6,6 +6,7 @@
 //! attributes define the JSON wire format exactly — optional fields are omitted
 //! from responses via `skip_serializing_if`, matching the documented schema.
 
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
@@ -63,10 +64,10 @@ pub struct TenantResponse {
     pub default_dataset: Option<String>,
     /// Source of the tenant record (config or database).
     pub source: String,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
-    /// ISO 8601 last-updated timestamp.
-    pub updated_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// RFC 3339 last-updated timestamp.
+    pub updated_at: DateTime<Utc>,
 }
 
 /// Response containing a list of tenants.
@@ -81,30 +82,70 @@ pub struct ListTenantsResponse {
 /// `scopes` is required and non-empty: a key's permissions are always
 /// explicit. The vocabulary is `metrics:write`, `logs:write`, `traces:write`,
 /// `profiles:write`, `traces:read`, `logs:read`, `metrics:read`,
-/// `profiles:read`, `schema:read`, `schema:write`.
+/// `profiles:read`, `schema:read`, `schema:write`, `processors:read`,
+/// `processors:write`, `evals:read`, `evals:write`, `tenant:manage`.
+///
+/// The legacy singular `dataset_id` field is not accepted here (removed in
+/// the multi-dataset-key-restriction change): a request body carrying it is
+/// rejected with a validation error rather than silently ignored, since
+/// dropping it would create an unrestricted key when the caller asked for a
+/// restricted one.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct CreateApiKeyRequest {
     /// Optional human-readable name for the key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub name: Option<String>,
     /// Scopes the key carries (required, at least one).
     pub scopes: Vec<String>,
-    /// Optional dataset the key is restricted to.
+    /// Dataset set the key is restricted to. Omitted or `null` creates an
+    /// unrestricted key; a non-empty array restricts it to exactly that set.
+    /// An explicit empty array, or a duplicate name within the set, is
+    /// rejected.
+    #[schema(min_items = 1)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
+    pub dataset_ids: Option<Vec<String>>,
+    /// Browser origins the key is restricted to for CORS checks. Omitted or
+    /// `null` creates an unrestricted key; a non-empty array restricts it to
+    /// exactly that set. An explicit empty array, or a duplicate entry
+    /// within the set, is rejected.
+    #[schema(min_items = 1)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
 }
 
 /// Request body for updating a live API key's scopes and/or dataset restriction.
 ///
-/// Absent fields are left untouched. Revoked keys cannot be updated.
+/// Absent fields are left untouched. Revoked keys cannot be updated. The
+/// legacy singular `dataset_id` field is not accepted (see
+/// [`CreateApiKeyRequest`]).
 #[derive(Debug, Clone, Default, Serialize, Deserialize, ToSchema)]
+#[serde(deny_unknown_fields)]
 pub struct UpdateApiKeyRequest {
     /// New scope list (replaces the current one; must be non-empty).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
-    /// New dataset restriction.
+    /// Replacement dataset set (non-empty; an explicit empty array is
+    /// rejected). Omitted/`null` leaves the current restriction unchanged.
+    /// Mutually exclusive with `clear_dataset_restriction: true`.
+    #[schema(min_items = 1)]
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
+    pub dataset_ids: Option<Vec<String>>,
+    /// Clear an existing dataset restriction back to unrestricted. Must not
+    /// be combined with a non-empty `dataset_ids` in the same request.
+    #[serde(default)]
+    pub clear_dataset_restriction: bool,
+    /// Replacement allowed-origins set (non-empty; an explicit empty array
+    /// is rejected). Omitted/`null` leaves the current restriction
+    /// unchanged. Mutually exclusive with `clear_allowed_origins: true`.
+    #[schema(min_items = 1)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
+    /// Clear an existing allowed-origins restriction back to unrestricted.
+    /// Must not be combined with a non-empty `allowed_origins` in the same
+    /// request.
+    #[serde(default)]
+    pub clear_allowed_origins: bool,
 }
 
 /// Response returned when a new API key is created (includes the raw key).
@@ -119,11 +160,15 @@ pub struct CreateApiKeyResponse {
     pub name: Option<String>,
     /// Scopes the key carries.
     pub scopes: Vec<String>,
-    /// Dataset the key is restricted to, if any.
+    /// Dataset set the key is restricted to, if any; `null` is unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
+    pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin set the key is restricted to, if any; `null` is
+    /// unrestricted.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub allowed_origins: Option<Vec<String>>,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
 }
 
 /// API key information (without the raw key).
@@ -137,14 +182,18 @@ pub struct ApiKeyResponse {
     /// Scopes the key carries; `null` for a legacy unrestricted key.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scopes: Option<Vec<String>>,
-    /// Dataset the key is restricted to, if any.
+    /// Dataset set the key is restricted to, if any; `null` is unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_id: Option<String>,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
-    /// ISO 8601 revocation timestamp (if revoked).
+    pub dataset_ids: Option<Vec<String>>,
+    /// Allowed-origin set the key is restricted to, if any; `null` is
+    /// unrestricted.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub revoked_at: Option<String>,
+    pub allowed_origins: Option<Vec<String>>,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
+    /// RFC 3339 revocation timestamp (if revoked).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub revoked_at: Option<DateTime<Utc>>,
 }
 
 /// Response containing a list of API keys.
@@ -170,8 +219,8 @@ pub struct DatasetResponse {
     pub name: String,
     /// Tenant that owns this dataset.
     pub tenant_id: String,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
 }
 
 /// Response containing a list of datasets.
@@ -217,6 +266,6 @@ pub struct UserResponse {
     pub display_name: Option<String>,
     /// Whether the user is an instance administrator.
     pub instance_admin: bool,
-    /// ISO 8601 creation timestamp.
-    pub created_at: String,
+    /// RFC 3339 creation timestamp.
+    pub created_at: DateTime<Utc>,
 }

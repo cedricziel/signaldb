@@ -1,0 +1,230 @@
+/**
+ * Entity types, derived from the tenant's schema registries rather than a
+ * hand-written list.
+ *
+ * The registry declares what an entity type *is* — its name and the
+ * attributes that identify one. It cannot declare how we choose to present
+ * it (nav label, which second dimension to break down by, whether a query
+ * must be scoped to server-kind spans): those are statements about
+ * SignalDB's UI and query surface, not about the OTel entity, and belong in
+ * `entityTypes.ts`'s curated list. So the two are merged, curated first.
+ *
+ * Two facts about the real registry shape this merge, and both would bite a
+ * simpler "just read the registry" implementation:
+ *
+ * 1. **`host` and `container` declare no identifying attributes at all.**
+ *    In OTel 1.43 every attribute they carry — `host.name`, `container.name`
+ *    — is *descriptive*. Filtering to entities with an identifying attribute
+ *    therefore deletes two entity types that work today. Where we curate an
+ *    identity, it stands in.
+ *
+ * 2. **The registry's identity is often not the useful one.** A pod is
+ *    identified by `k8s.pod.uid`: correct (names repeat across namespaces
+ *    and restarts) but opaque, and absent from a lot of real telemetry.
+ *    The curated identity — name plus namespace — is what a person reads and
+ *    what the data actually carries. Curated identity wins where it exists;
+ *    the registry's is used for every type we have not curated.
+ *
+ * The result is that adding an entity type still needs no code change — a
+ * tenant's own registry contributes its types on the same terms as the
+ * bundled one — while none of the eight curated types regress.
+ */
+import { toLokiLabel } from "../../lib/labelSuggestions";
+import {
+  ENTITY_TYPES,
+  RESOURCE_SOURCES,
+  type EntityTypeDef,
+} from "./entityTypes";
+
+/**
+ * How many entity types the nav will render, and therefore fan out queries
+ * over.
+ *
+ * The nav issues one query per entity type per source that type is observed
+ * in. A hand-written list bounded that by construction; a registry does not —
+ * it is served with a limit of 200, so a tenant with a broad custom registry
+ * could otherwise turn one page paint into hundreds of concurrent requests.
+ * The budget restores the ceiling.
+ *
+ * Set well above what any real deployment shows (a live one surfaces nine)
+ * so that truncation is a backstop against a pathological registry, not a
+ * limit a user meets in normal use.
+ */
+export const ENTITY_TYPE_BUDGET = 40;
+
+/** A registry entity definition, narrowed to what deriving a type needs. */
+export interface RegistryEntity {
+  /** Entity type name, dotted (`k8s.pod`). */
+  name: string;
+  /** Attributes the registry declares as identifying, in declared order. */
+  identifying: string[];
+  /**
+   * Attributes the registry declares as descriptive, in declared order.
+   *
+   * These are the fallback identity. OTel 1.43 declares 28 entity types with
+   * no identifying attribute at all — `host` and `container` among them,
+   * where `host.name` and `container.name` are merely descriptive — so
+   * without a fallback those types cannot be catalogued from the registry
+   * and each needs a hand-written identity instead.
+   */
+  descriptive: string[];
+}
+
+/** Route ids are underscored; registry names are dotted. */
+const idOf = toLokiLabel;
+
+/** "telemetry.sdk" -> "Telemetry sdks" / "telemetry sdk". A registry-only
+ * type has no curated label, and its own name is a better fallback than a
+ * placeholder: it is exactly what the user would search the schema hub for. */
+function labelOf(name: string): { label: string; singular: string } {
+  const singular = name.replace(/[._]/g, " ");
+  return {
+    label: singular.charAt(0).toUpperCase() + singular.slice(1) + "s",
+    singular,
+  };
+}
+
+/**
+ * Merge the curated entity types with everything else the registry declares.
+ *
+ * Curated types keep their position and every curated field; a registry
+ * entity matching one by id contributes nothing, because the curated entry
+ * is strictly more specific. Registry-only entities follow, in registry
+ * order, identified by their declared identifying attributes.
+ *
+ * An entity with neither a curated identity nor a declared one is dropped:
+ * with nothing to group by there is no instance to list.
+ */
+/**
+ * The curated types, each tagged with the registry entity it *is*.
+ *
+ * Split out from {@link deriveEntityTypes} because it needs only the
+ * registry: what a registry entity is called, and therefore what the registry
+ * says measures it, does not depend on which fields compaction has indexed.
+ * The unanalyzed path uses this too, so a deployment whose metadata has not
+ * landed still gets everything the registry alone can answer.
+ */
+export function withRegistryNames(
+  curated: EntityTypeDef[],
+  registry: RegistryEntity[],
+): EntityTypeDef[] {
+  const registryNames = new Map(registry.map((e) => [idOf(e.name), e.name]));
+  return curated.map((e) => {
+    const registryEntity = registryNames.get(e.id);
+    return registryEntity ? { ...e, registryEntity } : e;
+  });
+}
+
+export function deriveEntityTypes(
+  registry: RegistryEntity[],
+  curated: EntityTypeDef[] = ENTITY_TYPES,
+): EntityTypeDef[] {
+  const byId = new Map(curated.map((e) => [e.id, e]));
+  const derived: EntityTypeDef[] = withRegistryNames(curated, registry);
+
+  for (const entity of registry) {
+    const id = idOf(entity.name);
+    if (byId.has(id)) continue;
+    const candidates = [...entity.identifying, ...entity.descriptive];
+    if (candidates.length === 0) continue;
+    derived.push({
+      id,
+      registryEntity: entity.name,
+      ...labelOf(entity.name),
+      // Declared identity first, descriptive as fallback. Which of these the
+      // data actually carries is not knowable here — `observedEntityTypes`
+      // resolves it against the field metadata.
+      identity: entity.identifying,
+      identityFallback: entity.descriptive,
+      // A registry entity is a resource entity: its identifying attributes
+      // ride on every signal the SDK emits, so it is discoverable from all
+      // of them. `observedEntityTypes` narrows this to the sources that
+      // actually carry the attribute.
+      sources: RESOURCE_SOURCES,
+    });
+  }
+
+  return derived;
+}
+
+/**
+ * The identity to group this entity type by, given what the data carries.
+ *
+ * Declared identity wins where the data carries it, dropping any declared
+ * attribute that is absent — a source with `process.pid` but no
+ * `process.creation.time` still knows about processes, just more coarsely,
+ * and grouping by the absent one would put every instance in a single null
+ * bucket.
+ *
+ * When *no* declared attribute is carried, the first carried descriptive
+ * attribute stands in. That is what makes `host` and `container` catalogable
+ * at all — OTel declares neither with an identifying attribute — and what
+ * keeps a type whose declared identity is a uid nobody sends (a pod's
+ * `k8s.pod.uid`) usable rather than dropped.
+ *
+ * A catalog-supplied identity is never rewritten: where the catalog names one
+ * it is adding a scoping attribute the registry cannot express — a pid is
+ * unique only within a host, a service name only within a namespace — and
+ * that is a correctness fix, not a preference.
+ */
+function resolveIdentity(
+  type: EntityTypeDef,
+  carried: (field: string) => boolean,
+): string[] {
+  if (type.identityFallback === undefined) return type.identity;
+  const declared = type.identity.filter(carried);
+  if (declared.length > 0) return declared;
+  const fallback = type.identityFallback.find(carried);
+  return fallback === undefined ? [] : [fallback];
+}
+
+/**
+ * Keep the entity types some signal actually carries, and narrow each one to
+ * the sources that carry it.
+ *
+ * Both halves matter. Without the filter, registry breadth turns the nav
+ * into dozens of empty tabs — the OTel registry alone declares 36 types with
+ * an identity, and a deployment carries a handful. Without the narrowing,
+ * every type queries every source, so listing processes costs four round
+ * trips against signals that cannot match plus the one that can.
+ *
+ * Presence is judged on the *primary* identity attribute only: a source
+ * carrying `process.pid` but not `process.creation.time` still knows about
+ * processes, just with a coarser identity.
+ *
+ * Each carrying source also gets its own degraded identity in
+ * `identityBySource`: a source can carry the primary attribute while missing
+ * a secondary one (a metrics pipeline that reports `process.pid` but not
+ * `host.name`), and grouping that source's listing query by the full tuple
+ * would put every one of its instances in a single null-valued bucket. See
+ * `buildEntitySourceDoc` in `api/catalog.ts`, the only reader of this field.
+ */
+export function observedEntityTypes(
+  types: EntityTypeDef[],
+  fieldsBySource: Map<string, Set<string>>,
+): EntityTypeDef[] {
+  const observed: EntityTypeDef[] = [];
+  const anySourceCarries = (field: string) =>
+    [...fieldsBySource.values()].some((fields) => fields.has(field));
+
+  for (const type of types) {
+    const identity = resolveIdentity(type, anySourceCarries);
+    const primary = identity[0];
+    if (primary === undefined) continue;
+    const declared = type.sources ?? ["traces"];
+    const carrying = declared.filter((source) =>
+      fieldsBySource.get(source)?.has(primary),
+    );
+    if (carrying.length === 0) continue;
+    const identityBySource: Record<string, string[]> = {};
+    for (const source of carrying) {
+      const fields = fieldsBySource.get(source);
+      identityBySource[source] = identity.filter((f) => fields?.has(f));
+    }
+    observed.push({ ...type, identity, sources: carrying, identityBySource });
+  }
+
+  // Curated types lead the list, so truncation drops the registry-derived
+  // tail rather than the pages that carry presentation work.
+  return observed.slice(0, ENTITY_TYPE_BUDGET);
+}

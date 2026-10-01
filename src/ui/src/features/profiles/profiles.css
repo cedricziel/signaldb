@@ -1,3 +1,4 @@
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .profilesview {
   display: flex;
   flex-direction: column;
@@ -8,7 +9,7 @@
 .profiles-controls {
   display: flex;
   gap: 16px;
-  padding: 12px 16px;
+  padding: 12px var(--gutter);
   border-bottom: 1px solid var(--border);
   flex-wrap: wrap;
 }
@@ -30,25 +31,28 @@
   color: var(--text);
 }
 
-.profiles-note {
-  color: var(--faint);
-  padding: 14px 16px;
-  font-size: 12px;
-}
-
-.profiles-note code {
-  font-family: var(--mono);
-  font-size: 11px;
-  color: var(--dim);
-}
-
 .profiles-compare-toggle {
   margin-left: auto;
   cursor: pointer;
 }
 
-.profiles-compare-ranges {
-  border-top: none;
+@container app-main (max-width: 600px) {
+  .profiles-controls {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .profiles-field {
+    width: 100%;
+  }
+
+  .profiles-field select {
+    flex: 1;
+  }
+
+  .profiles-compare-toggle {
+    margin-left: 0;
+  }
 }
 
 .profiles-compare {
@@ -69,12 +73,30 @@
   border-right: none;
 }
 
+/* Side by side panes each squeeze their own toolbar (view toggle, collapse
+   selector, search box) into unreadable, overlapping slivers well before the
+   page itself runs out of width — stack baseline above comparison instead. */
+@container app-main (max-width: 720px) {
+  .profiles-compare {
+    grid-template-columns: 1fr;
+  }
+
+  .profiles-compare-pane {
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .profiles-compare-pane:last-child {
+    border-bottom: none;
+  }
+}
+
 .profiles-compare-pane .flame-title {
-  padding: 8px 16px 0;
+  padding: 8px var(--gutter) 0;
 }
 
 .profiles-compare-pane .flamegraph {
-  padding: 8px 16px 12px;
+  padding: 8px var(--gutter) 12px;
 }
 
 /* ---------- flame graph ---------- */
@@ -82,7 +104,7 @@
 .flamegraph {
   display: flex;
   flex-direction: column;
-  padding: 8px 16px 12px;
+  padding: 8px var(--gutter) 12px;
   gap: 6px;
   /* Flex items default to min-width:auto, which lets a wide child (the
    * top-functions table) force this container — and its ancestors —
@@ -93,6 +115,7 @@
 .flame-toolbar {
   display: flex;
   align-items: center;
+  flex-wrap: wrap;
   gap: 10px;
   min-height: 24px;
 }
@@ -110,8 +133,14 @@
 
 .flame-matched {
   font-size: 11px;
-  color: var(--accent);
+  color: var(--accent-text);
   font-variant-numeric: tabular-nums;
+}
+
+@container app-main (max-width: 600px) {
+  .flame-search {
+    flex: 1 1 100%;
+  }
 }
 
 .flame-view-toggle {
@@ -165,15 +194,25 @@
   align-items: center;
   gap: 4px;
   font-size: 11px;
-  overflow: hidden;
+  max-width: 100%;
+  /* The collapsed form (root › … › parent › current) handles most deep
+     zooms; horizontal scroll is the fallback for what's still too long
+     (unusually long frame names). */
+  overflow-x: auto;
+  overflow-y: hidden;
   white-space: nowrap;
 }
 
 .flame-crumb {
-  color: var(--accent);
+  color: var(--accent-text);
   overflow: hidden;
   text-overflow: ellipsis;
   max-width: 160px;
+  flex: none;
+}
+
+.flame-crumb-ellipsis {
+  max-width: none;
 }
 
 .flame-crumb:last-child {
@@ -219,11 +258,9 @@
   font-family: var(--mono);
   font-size: 10.5px;
   color: var(--text);
-  opacity: 0.92;
 }
 
 .flame-frame:hover {
-  opacity: 1;
   filter: brightness(1.08);
 }
 
@@ -256,61 +293,6 @@
   color: var(--dim);
 }
 
-/* Rich hover tooltip: pure CSS show/hide off the wrapper, positioned above
-   the frame. A short transition-delay avoids flashing one in on every
-   quick mouse pass across a dense row. */
-.flame-tooltip {
-  position: absolute;
-  bottom: 100%;
-  left: 0;
-  z-index: 20;
-  display: flex;
-  flex-direction: column;
-  gap: 2px;
-  margin-bottom: 4px;
-  padding: 6px 8px;
-  min-width: 160px;
-  max-width: 420px;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  background: var(--surface2);
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.3);
-  font-size: 11px;
-  line-height: 1.4;
-  color: var(--dim);
-  opacity: 0;
-  pointer-events: none;
-  transition:
-    opacity 0.15s ease 0.4s,
-    visibility 0.15s ease 0.4s;
-  visibility: hidden;
-  white-space: normal;
-  word-break: break-word;
-}
-
-.flame-frame-wrap:hover .flame-tooltip,
-.flame-frame-wrap:focus-within .flame-tooltip,
-.flame-top-name-wrap:hover .flame-tooltip,
-.flame-top-name-wrap:focus-within .flame-tooltip {
-  opacity: 1;
-  visibility: visible;
-}
-
-.flame-tooltip-name {
-  color: var(--text);
-  font-family: var(--mono);
-  font-weight: 600;
-}
-
-.flame-tooltip-row {
-  font-variant-numeric: tabular-nums;
-}
-
-.flame-top-name-wrap {
-  position: relative;
-  display: inline-block;
-}
-
 .flame-label {
   display: block;
   overflow: hidden;
@@ -329,6 +311,8 @@
 }
 
 .flame-detail-name {
+  flex: 1 1 auto;
+  min-width: 0;
   font-family: var(--mono);
   color: var(--text);
   overflow: hidden;
@@ -351,48 +335,6 @@
 .flame-top-table {
   border-collapse: collapse;
   width: 100%;
-  font-size: 12px;
-}
-
-.flame-top-table th {
-  text-align: left;
-  font-size: 10px;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: var(--faint);
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--border);
-  font-weight: 650;
-}
-
-.flame-top-table th.num,
-.flame-top-table td.num {
-  text-align: right;
-  font-variant-numeric: tabular-nums;
-}
-
-.flame-top-table .th-sort {
-  font: inherit;
-  color: inherit;
-  text-transform: inherit;
-  letter-spacing: inherit;
-  cursor: pointer;
-}
-
-.flame-top-table .th-sort:hover {
-  color: var(--text);
-}
-
-.flame-top-table th[aria-sort] .th-sort {
-  color: var(--text);
-}
-
-.flame-top-table th[aria-sort="ascending"] .th-sort::after {
-  content: " ↑";
-}
-
-.flame-top-table th[aria-sort="descending"] .th-sort::after {
-  content: " ↓";
 }
 
 .flame-top-table td {
@@ -417,7 +359,7 @@
   white-space: nowrap;
   vertical-align: bottom;
   font-weight: 550;
-  color: var(--accent);
+  color: var(--accent-text);
 }
 
 .flame-top-count {

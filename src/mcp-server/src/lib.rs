@@ -8,19 +8,24 @@
 //! SDK, it is always a separate service (a sidecar), never an in-process route on
 //! the router.
 //!
-//! It validates each caller credential with the router, pins each MCP session to
-//! that identity, and forwards the original request headers to the router on
-//! every downstream call. The router is the sole authority on whether the
-//! credential is valid and what it may access; rejected credentials become an
-//! HTTP `401` so MCP clients can refresh them.
+//! It validates each caller credential with the router on every request and
+//! forwards the original request headers to the router on every downstream
+//! call. A session may accumulate several distinct, independently
+//! router-authenticated identities (different tenants and/or credentials
+//! across calls), bounded by a per-session cap. The router is the sole
+//! authority on whether the credential is valid and what it may access;
+//! rejected credentials become an HTTP `401` so MCP clients can refresh them.
 //!
 //! MCP is served over Streamable HTTP at `/mcp` on this service's own port.
 
 pub mod apps;
 pub mod audit;
 pub mod cli;
+pub mod docs;
 pub mod prompts;
 pub mod server;
+mod trace_view;
+pub mod ui_links;
 
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
@@ -105,14 +110,31 @@ impl OAuthResource {
     }
 }
 
-/// The stable identity a session is pinned to. API keys remain tied to their
-/// exact credential, while OAuth access-token refreshes preserve the router-
-/// resolved user and tenant.
-#[derive(Clone, PartialEq, Eq)]
+/// One identity resolved for a request on a session. API keys are keyed by
+/// their exact credential, while OAuth access-token refreshes collapse onto
+/// the same entry via the router-resolved user (and, for a single-tenant
+/// grant, tenant). A multi-tenant OAuth grant (design D4) has no single
+/// tenant to bind to at session-establishment time — `tenant_id: None` binds
+/// the session to the credential alone, so later calls on the same session
+/// may each independently select any tenant from that credential's own
+/// granted set (see `mcp-server` spec).
+#[derive(Clone, PartialEq, Eq, Hash)]
 enum SessionBinding {
-    ApiKey { tenant_id: String, token_hash: u64 },
-    OAuth { user_id: String, tenant_id: String },
+    ApiKey {
+        tenant_id: String,
+        token_hash: u64,
+    },
+    OAuth {
+        user_id: String,
+        tenant_id: Option<String>,
+    },
 }
+
+/// Bounds how many distinct tenant/credential identities one `mcp-session-id`
+/// may accumulate. This is a light safety net against unbounded per-session
+/// growth, not a real security control — every identity still has to
+/// independently pass router auth before it is added.
+const MAX_IDENTITIES_PER_MCP_SESSION: usize = 16;
 
 /// Shared state for the MCP HTTP surface. Holds no credential of its own —
 /// only the router URL it forwards to and the per-session identity bindings.
@@ -120,12 +142,18 @@ enum SessionBinding {
 pub struct McpAppState {
     /// Base URL of the router HTTP API downstream calls are forwarded to.
     pub router_base_url: String,
+    /// Base URL of the SignalDB UI. When set, tool results that map to a UI
+    /// view carry a `_links.ui` deep link; unset (the default), no such link
+    /// is added.
+    pub ui_base_url: Option<String>,
     /// Overall timeout for each downstream request to the router.
     pub router_timeout: Duration,
-    /// Pins each MCP session (keyed by `mcp-session-id`) to the identity seen
-    /// on its first request, so a session cannot be reused under a different
-    /// tenant or credential mid-stream.
-    session_bindings: Arc<DashMap<String, SessionBinding>>,
+    /// The set of distinct identities seen so far on each MCP session (keyed
+    /// by `mcp-session-id`). A session may accumulate several independently
+    /// router-authenticated identities (different tenants and/or
+    /// credentials) up to [`MAX_IDENTITIES_PER_MCP_SESSION`]; this is
+    /// bookkeeping for that cap, not a tenant-pinning mechanism.
+    session_bindings: Arc<DashMap<String, std::collections::HashSet<SessionBinding>>>,
     /// OAuth resource metadata to advertise, when the deployment enables OAuth.
     oauth: Option<OAuthResource>,
     /// Per-session bound on tool calls in flight (`[mcp].max_concurrent_tool_calls`).
@@ -141,6 +169,7 @@ impl McpAppState {
     pub fn new(router_base_url: String) -> Self {
         Self {
             router_base_url,
+            ui_base_url: None,
             router_timeout: DEFAULT_ROUTER_TIMEOUT,
             session_bindings: Arc::new(DashMap::new()),
             oauth: None,
@@ -152,6 +181,13 @@ impl McpAppState {
     /// Override the per-session bound on tool calls in flight.
     pub fn with_max_concurrent_tool_calls(mut self, limit: usize) -> Self {
         self.max_concurrent_tool_calls = limit;
+        self
+    }
+
+    /// Set the base URL of the SignalDB UI (default: unset). When set, tool
+    /// results that map to a UI view carry a `_links.ui` deep link.
+    pub fn with_ui_base_url(mut self, ui_base_url: Option<String>) -> Self {
+        self.ui_base_url = ui_base_url;
         self
     }
 
@@ -196,6 +232,7 @@ impl McpAppState {
 pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
     let session_manager = Arc::new(LocalSessionManager::default());
     let base_url = state.router_base_url.clone();
+    let ui_base_url = state.ui_base_url.clone();
     let router_timeout = state.router_timeout;
     let max_concurrent_tool_calls = state.max_concurrent_tool_calls;
     let tool_call_deadline = state.tool_call_deadline;
@@ -218,7 +255,8 @@ pub fn mcp_http_router(state: McpAppState, allowed_hosts: &[String]) -> Router {
                 router_timeout,
                 max_concurrent_tool_calls,
             )
-            .with_tool_call_deadline(tool_call_deadline))
+            .with_tool_call_deadline(tool_call_deadline)
+            .with_ui_base_url(ui_base_url.clone()))
         },
         session_manager,
         config,
@@ -297,9 +335,11 @@ fn unauthorized_challenge(state: &McpAppState, message: &'static str) -> Respons
 }
 
 /// Require a router-validated bearer token before the request reaches the MCP
-/// transport, then pin the session to the presented identity. A router-rejected
-/// credential becomes an HTTP `401` with a discovery challenge, allowing MCP
-/// clients to refresh it before a JSON-RPC response is produced.
+/// transport, then record the presented identity against the session (up to
+/// [`MAX_IDENTITIES_PER_MCP_SESSION`] distinct identities per session). A
+/// router-rejected credential becomes an HTTP `401` with a discovery
+/// challenge, allowing MCP clients to refresh it before a JSON-RPC response
+/// is produced.
 ///
 /// An OAuth access token (recognized by its prefix) carries its own tenant, so
 /// `X-Tenant-ID` is not required for it. An API key still requires the tenant
@@ -339,71 +379,139 @@ async fn mcp_auth_middleware(
         tenant_id
     };
 
-    let validation_client =
-        match sdk_client_for(&parts, &state.router_base_url, None, state.router_timeout) {
+    // Resolve the credential's identity. An OAuth bearer goes through the
+    // authorization server's introspection endpoint (design D4): it reports
+    // the token's *full* tenant grant set up front, which `whoami()` cannot
+    // — a multi-tenant grant has no single tenant for `whoami()` to resolve
+    // without a selector the middleware does not have yet (it runs before
+    // the JSON-RPC body, and therefore the tool call's own `tenant`
+    // argument, is parsed). Every other credential (API keys) keeps using
+    // `whoami()` exactly as before.
+    let binding = if is_oauth {
+        let grants = match introspect_oauth_token(&state, &token).await {
+            Ok(Some(grants)) => grants,
+            Ok(None) => return unauthorized_challenge(&state, "credential rejected by router"),
+            Err(response) => return *response,
+        };
+        if grants.user_id.is_empty() {
+            tracing::error!("router returned no user ID for an OAuth credential");
+            return (StatusCode::BAD_GATEWAY, "credential identity unavailable").into_response();
+        }
+        match grants.tenants.as_slice() {
+            [] => {
+                tracing::error!(
+                    "router reported an active OAuth credential with an empty grant set"
+                );
+                return (StatusCode::BAD_GATEWAY, "credential identity unavailable")
+                    .into_response();
+            }
+            [single] => {
+                // Single-tenant grant: identical extensions to the API-key
+                // path below, and to this branch before this change.
+                parts
+                    .extensions
+                    .insert(audit::CallerTenant(single.tenant_id.clone()));
+                parts
+                    .extensions
+                    .insert(audit::CallerDatasetIds(single.dataset_ids.clone()));
+                SessionBinding::OAuth {
+                    user_id: grants.user_id,
+                    tenant_id: Some(single.tenant_id.clone()),
+                }
+            }
+            many => {
+                // Multi-tenant grant: no single tenant to bind to yet — each
+                // tool call selects its own from this set (see
+                // `check_tenant_scope`/`scoped_router_client` in server.rs).
+                parts.extensions.insert(audit::CallerTenants(many.to_vec()));
+                SessionBinding::OAuth {
+                    user_id: grants.user_id,
+                    tenant_id: None,
+                }
+            }
+        }
+    } else {
+        let validation_client = match sdk_client_for(
+            &parts,
+            &state.router_base_url,
+            None,
+            None,
+            state.router_timeout,
+        ) {
             Ok(client) => client,
             Err(error) => {
                 tracing::error!(%error, "failed to construct router validation client");
                 return (StatusCode::BAD_GATEWAY, "failed to validate credential").into_response();
             }
         };
-    let identity = match validation_client.whoami().send().await {
-        Ok(response) => response.into_inner(),
-        Err(error) => match error.status().map(|status| status.as_u16()) {
-            Some(401) => return unauthorized_challenge(&state, "credential rejected by router"),
-            Some(403) => {
-                return (StatusCode::FORBIDDEN, "credential denied by router").into_response();
-            }
-            _ => {
-                tracing::warn!(%error, "router credential validation failed");
-                return (StatusCode::BAD_GATEWAY, "credential validation unavailable")
-                    .into_response();
-            }
-        },
+        let identity = match validation_client.whoami().send().await {
+            Ok(response) => response.into_inner(),
+            Err(error) => match error.status().map(|status| status.as_u16()) {
+                Some(401) => {
+                    return unauthorized_challenge(&state, "credential rejected by router");
+                }
+                Some(403) => {
+                    return (StatusCode::FORBIDDEN, "credential denied by router").into_response();
+                }
+                _ => {
+                    tracing::warn!(%error, "router credential validation failed");
+                    return (StatusCode::BAD_GATEWAY, "credential validation unavailable")
+                        .into_response();
+                }
+            },
+        };
+        // The router-resolved tenant travels with the request so the
+        // tool-call audit names it.
+        parts
+            .extensions
+            .insert(audit::CallerTenant(identity.tenant.id.clone()));
+        // Likewise the credential's own dataset-set restriction (D10): tools
+        // that list datasets/tables filter their result against this rather
+        // than assuming every dataset the router knows about is reachable.
+        parts
+            .extensions
+            .insert(audit::CallerDatasetIds(identity.dataset_ids.clone()));
+        SessionBinding::ApiKey {
+            tenant_id: bound_tenant,
+            token_hash: token_hash(&token),
+        }
     };
 
-    // The router-resolved tenant travels with the request so the tool-call
-    // audit names it even for OAuth credentials (no `X-Tenant-ID` header).
-    parts
-        .extensions
-        .insert(audit::CallerTenant(identity.tenant.id.clone()));
-
-    // Pin the session to this identity. A request that carries an established
-    // `mcp-session-id` but resolves to a different tenant or credential is a
-    // session-reuse attempt and is refused.
+    // Record this identity against the session. A session may accumulate
+    // several distinct, independently router-authenticated identities
+    // (different tenants and/or credentials) up to the per-session cap;
+    // beyond that the request is refused.
     if let Some(session_id) = parts
         .headers
         .get("mcp-session-id")
         .and_then(|v| v.to_str().ok())
         .map(str::to_owned)
     {
-        let binding = if is_oauth {
-            if identity.user_id.is_empty() {
-                tracing::error!("router returned no user ID for an OAuth credential");
-                return (StatusCode::BAD_GATEWAY, "credential identity unavailable")
-                    .into_response();
+        // Fast path: a read lock and no allocation for the overwhelmingly
+        // common case of an identity already recorded on this session. Only
+        // the cold path (a new session, or a new identity for it — at most
+        // `MAX_IDENTITIES_PER_MCP_SESSION` times per session) takes the
+        // per-shard write lock.
+        let already_known = state
+            .session_bindings
+            .get(&session_id)
+            .is_some_and(|identities| identities.contains(&binding));
+        if !already_known {
+            let mut identities = state
+                .session_bindings
+                .entry(session_id.clone())
+                .or_default();
+            if !identities.contains(&binding) {
+                if identities.len() >= MAX_IDENTITIES_PER_MCP_SESSION {
+                    tracing::warn!(%session_id, "MCP session identity limit reached — refusing new identity");
+                    return (
+                        StatusCode::FORBIDDEN,
+                        "session has reached its distinct-identity limit",
+                    )
+                        .into_response();
+                }
+                identities.insert(binding);
             }
-            SessionBinding::OAuth {
-                user_id: identity.user_id,
-                tenant_id: identity.tenant.id,
-            }
-        } else {
-            SessionBinding::ApiKey {
-                tenant_id: bound_tenant,
-                token_hash: token_hash(&token),
-            }
-        };
-        if let Some(existing) = state.session_bindings.get(&session_id) {
-            if *existing != binding {
-                tracing::warn!(%session_id, "MCP session identity mismatch — refusing reuse");
-                return (
-                    StatusCode::FORBIDDEN,
-                    "session is bound to a different identity",
-                )
-                    .into_response();
-            }
-        } else {
-            state.session_bindings.insert(session_id, binding);
         }
     }
 
@@ -415,6 +523,13 @@ async fn mcp_auth_middleware(
 /// headers copied from the incoming request), so the router enforces tenant
 /// isolation and quotas exactly as for any HTTP caller. The MCP server injects
 /// no credential of its own.
+///
+/// `tenant_override` sets `X-Tenant-ID` for a multi-tenant OAuth credential's
+/// tool call, which selects its own tenant from the credential's granted set
+/// (the inbound request carries no `X-Tenant-ID` for OAuth at all); when
+/// `None`, the caller's incoming `X-Tenant-ID` (present for an API key,
+/// absent for a single-tenant OAuth grant, which the router resolves from the
+/// credential alone) is used.
 ///
 /// `dataset_override` sets `X-Dataset-ID` for tools that accept an explicit
 /// dataset argument; when `None`, the caller's incoming `X-Dataset-ID` (or the
@@ -432,6 +547,7 @@ async fn mcp_auth_middleware(
 pub fn sdk_client_for(
     parts: &Parts,
     router_base_url: &str,
+    tenant_override: Option<&str>,
     dataset_override: Option<&str>,
     timeout: Duration,
 ) -> anyhow::Result<signaldb_sdk::Client> {
@@ -445,11 +561,17 @@ pub fn sdk_client_for(
         if name == "x-dataset-id" && dataset_override.is_some() {
             continue;
         }
+        if name == "x-tenant-id" && tenant_override.is_some() {
+            continue;
+        }
         if let Some(value) = parts.headers.get(name)
             && let Ok(value) = value.to_str()
         {
             builder = builder.header(name, value);
         }
+    }
+    if let Some(tenant) = tenant_override {
+        builder = builder.tenant(tenant);
     }
     if let Some(dataset) = dataset_override {
         builder = builder.dataset(dataset);
@@ -457,6 +579,91 @@ pub fn sdk_client_for(
     builder
         .build()
         .context("Failed to build router HTTP client")
+}
+
+/// The token introspection response body (RFC 7662 §2.2 shape), deserialized
+/// from `POST /oauth/introspect`. Mirrors the router's own `IntrospectResponse`
+/// (`src/router/src/endpoints/oauth.rs`); kept local since `/oauth/introspect`
+/// is deliberately excluded from the generated OpenAPI spec (design D4).
+#[derive(Debug, serde::Deserialize)]
+struct IntrospectResponse {
+    active: bool,
+    #[serde(default)]
+    user_id: Option<String>,
+    #[serde(default)]
+    tenants: Option<Vec<audit::GrantedTenant>>,
+}
+
+/// An active OAuth credential's identity and full tenant grant set, as
+/// reported by `POST /oauth/introspect`.
+struct OAuthGrants {
+    user_id: String,
+    tenants: Vec<audit::GrantedTenant>,
+}
+
+/// Call the router's `POST /oauth/introspect` (RFC 7662-shaped, design D4) to
+/// learn an OAuth bearer token's identity and full tenant grant set, before
+/// any one tenant is selected. Not exposed via `signaldb_sdk` (see
+/// [`IntrospectResponse`]), so this makes the request directly.
+///
+/// Returns `Ok(None)` for an inactive (invalid/expired/revoked) token — the
+/// same outcome `whoami()`'s `401` previously produced for OAuth. `Err`
+/// carries a ready-to-return `Response` (boxed: `clippy::result_large_err`)
+/// for a transport or parse failure, so callers do not need their own
+/// mapping for that case.
+async fn introspect_oauth_token(
+    state: &McpAppState,
+    token: &str,
+) -> Result<Option<OAuthGrants>, Box<Response>> {
+    // `/oauth/introspect` has no generated SDK operation (see
+    // `IntrospectResponse`), but the HTTP client itself still comes from the
+    // SDK's `ClientBuilder` (`client-surface-parity`) rather than a bare
+    // `reqwest::Client` — `ClientInfo::client()` exposes the one it built.
+    let sdk_client = signaldb_sdk::ClientBuilder::new(&state.router_base_url)
+        .connect_timeout(ROUTER_CONNECT_TIMEOUT)
+        .timeout(state.router_timeout)
+        .build()
+        .map_err(|error| {
+            tracing::error!(%error, "failed to construct router introspection client");
+            Box::new((StatusCode::BAD_GATEWAY, "failed to validate credential").into_response())
+        })?;
+    let request = signaldb_sdk::ClientInfo::client(&sdk_client)
+        .post(format!("{}/oauth/introspect", state.router_base_url))
+        .form(&[("token", token)])
+        .build()
+        .map_err(|error| {
+            tracing::error!(%error, "failed to build router introspection request");
+            Box::new((StatusCode::BAD_GATEWAY, "failed to validate credential").into_response())
+        })?;
+    // Route through the SDK's shared retry-on-throttle policy (`429` is
+    // retried regardless of method; see `signaldb_sdk::retry`) rather than a
+    // raw `.send()` — the same treatment every other POST operation on this
+    // client gets. This call now runs for every OAuth request, so it needs
+    // the same throttle resilience `whoami()` got before it.
+    let response = signaldb_sdk::retry::execute(
+        signaldb_sdk::ClientInfo::client(&sdk_client),
+        signaldb_sdk::ClientInfo::inner(&sdk_client),
+        request,
+        &signaldb_sdk::retry::OperationInfo {
+            operation_id: "oauth_introspect",
+        },
+    )
+    .await
+    .map_err(|error| {
+        tracing::warn!(%error, "router introspection request failed");
+        Box::new((StatusCode::BAD_GATEWAY, "credential validation unavailable").into_response())
+    })?;
+    let body: IntrospectResponse = response.json().await.map_err(|error| {
+        tracing::warn!(%error, "failed to parse router introspection response");
+        Box::new((StatusCode::BAD_GATEWAY, "credential validation unavailable").into_response())
+    })?;
+    if !body.active {
+        return Ok(None);
+    }
+    Ok(Some(OAuthGrants {
+        user_id: body.user_id.unwrap_or_default(),
+        tenants: body.tenants.unwrap_or_default(),
+    }))
 }
 
 #[cfg(test)]
@@ -493,7 +700,7 @@ mod tests {
                     }
                 }
                 let body = if status == "200 OK" {
-                    b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\"}".as_slice()
+                    b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\",\"memberships\":[],\"datasets\":[],\"default_dataset\":null,\"granted_tenants\":[{\"tenant_id\":\"acme\"}]}".as_slice()
                 } else {
                     b"".as_slice()
                 };
@@ -515,10 +722,72 @@ mod tests {
         (format!("http://{addr}"), handle)
     }
 
-    async fn spawn_oauth_identity_router(
-        identities: Vec<(&'static str, &'static str, &'static str)>,
+    /// Read one full HTTP/1.1 request (headers + body, sized by
+    /// `Content-Length`) from a freshly accepted mock-server connection.
+    async fn read_http_request(socket: &mut tokio::net::TcpStream) -> (String, String) {
+        use tokio::io::AsyncReadExt;
+
+        let mut buffer = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        loop {
+            let read = socket.read(&mut chunk).await.expect("read request");
+            if read == 0 {
+                break;
+            }
+            buffer.extend_from_slice(&chunk[..read]);
+            let Some(header_end) = buffer.windows(4).position(|window| window == b"\r\n\r\n")
+            else {
+                continue;
+            };
+            let headers = String::from_utf8_lossy(&buffer[..header_end]).to_string();
+            let content_length: usize = headers
+                .lines()
+                .find_map(|line| {
+                    line.to_ascii_lowercase()
+                        .strip_prefix("content-length:")
+                        .map(|v| v.trim().to_string())
+                })
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(0);
+            let body_start = header_end + 4;
+            if buffer.len() >= body_start + content_length {
+                let body =
+                    String::from_utf8_lossy(&buffer[body_start..body_start + content_length])
+                        .to_string();
+                return (headers, body);
+            }
+        }
+        (String::from_utf8_lossy(&buffer).to_string(), String::new())
+    }
+
+    /// Write a `200 OK` JSON response to a mock-server connection.
+    async fn write_json_response(socket: &mut tokio::net::TcpStream, body: &str) {
+        use tokio::io::AsyncWriteExt;
+
+        socket
+            .write_all(
+                format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                    body.len()
+                )
+                .as_bytes(),
+            )
+            .await
+            .expect("write response headers");
+        socket
+            .write_all(body.as_bytes())
+            .await
+            .expect("write response body");
+    }
+
+    /// Spawn a one-shot mock router serving `POST /oauth/introspect`: for
+    /// each `(token, response_body)` pair, accepts one connection (in
+    /// order), asserts the request targets `/oauth/introspect` with the
+    /// expected form-encoded `token`, and replies with `response_body`
+    /// verbatim.
+    async fn spawn_introspect_router(
+        responses: Vec<(String, String)>,
     ) -> (String, tokio::task::JoinHandle<()>) {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
         use tokio::net::TcpListener;
 
         let listener = TcpListener::bind("127.0.0.1:0")
@@ -526,45 +795,40 @@ mod tests {
             .expect("bind mock router");
         let addr = listener.local_addr().expect("mock router address");
         let handle = tokio::spawn(async move {
-            for (token, user_id, tenant_id) in identities {
+            for (token, response_body) in responses {
                 let (mut socket, _) = listener.accept().await.expect("accept request");
-                let mut request = Vec::new();
-                let mut buffer = [0_u8; 4096];
-                loop {
-                    let read = socket.read(&mut buffer).await.expect("read request");
-                    if read == 0 {
-                        break;
-                    }
-                    request.extend_from_slice(&buffer[..read]);
-                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request = String::from_utf8(request).expect("request is UTF-8");
+                let (headers, body) = read_http_request(&mut socket).await;
                 assert!(
-                    request.contains(&format!("authorization: Bearer {token}")),
-                    "unexpected router request: {request}"
+                    headers.starts_with("POST /oauth/introspect "),
+                    "expected an introspect request, got: {headers}"
                 );
-                let body = format!(
-                    "{{\"user_id\":\"{user_id}\",\"tenant\":{{\"id\":\"{tenant_id}\",\"slug\":\"{tenant_id}\",\"name\":\"{tenant_id}\"}},\"dataset\":\"production\"}}"
+                assert_eq!(
+                    body,
+                    format!("token={token}"),
+                    "unexpected introspect request body"
                 );
-                socket
-                    .write_all(
-                        format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            body.len()
-                        )
-                        .as_bytes(),
-                    )
-                    .await
-                    .expect("write response headers");
-                socket
-                    .write_all(body.as_bytes())
-                    .await
-                    .expect("write response body");
+                write_json_response(&mut socket, &response_body).await;
             }
         });
         (format!("http://{addr}"), handle)
+    }
+
+    /// Spawn a mock router serving `POST /oauth/introspect` for a sequence
+    /// of distinct single-tenant OAuth identities, one per accepted
+    /// connection, in order.
+    async fn spawn_oauth_identity_router(
+        identities: Vec<(String, String, String)>,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let responses = identities
+            .into_iter()
+            .map(|(token, user_id, tenant_id)| {
+                let body = format!(
+                    "{{\"active\":true,\"user_id\":\"{user_id}\",\"tenants\":[{{\"tenant_id\":\"{tenant_id}\",\"dataset_ids\":null}}]}}"
+                );
+                (token, body)
+            })
+            .collect();
+        spawn_introspect_router(responses).await
     }
 
     fn test_state() -> McpAppState {
@@ -634,7 +898,11 @@ mod tests {
 
     #[tokio::test]
     async fn router_rejected_bearer_is_an_http_401_with_oauth_challenge() {
-        let (router_url, router) = spawn_whoami_router("401 Unauthorized", 1).await;
+        let (router_url, router) = spawn_introspect_router(vec![(
+            "sdb_at_expired".to_string(),
+            r#"{"active":false}"#.to_string(),
+        )])
+        .await;
         let state = McpAppState::new(router_url).with_oauth(
             "https://signaldb.example.com/mcp".to_string(),
             "https://signaldb.example.com".to_string(),
@@ -708,12 +976,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn oauth_session_allows_token_rotation_only_for_the_same_resolved_identity() {
+    async fn oauth_session_allows_multiple_resolved_identities() {
+        // A session may accumulate several distinct, independently
+        // router-authenticated identities: token rotation for the same
+        // identity, a different user, and a different tenant are all
+        // accepted on the same `mcp-session-id`.
         let (router_url, router) = spawn_oauth_identity_router(vec![
-            ("sdb_at_original", "user-a", "acme"),
-            ("sdb_at_refreshed", "user-a", "acme"),
-            ("sdb_at_other_user", "user-b", "acme"),
-            ("sdb_at_other_tenant", "user-a", "globex"),
+            (
+                "sdb_at_original".to_string(),
+                "user-a".to_string(),
+                "acme".to_string(),
+            ),
+            (
+                "sdb_at_refreshed".to_string(),
+                "user-a".to_string(),
+                "acme".to_string(),
+            ),
+            (
+                "sdb_at_other_user".to_string(),
+                "user-b".to_string(),
+                "acme".to_string(),
+            ),
+            (
+                "sdb_at_other_tenant".to_string(),
+                "user-a".to_string(),
+                "globex".to_string(),
+            ),
         ])
         .await;
         let app = mcp_http_router(McpAppState::new(router_url), &[]);
@@ -746,19 +1034,76 @@ mod tests {
             .oneshot(request("sdb_at_other_user"))
             .await
             .expect("MCP response");
-        assert_eq!(other_user.status(), StatusCode::FORBIDDEN);
+        assert_ne!(other_user.status(), StatusCode::FORBIDDEN);
 
         let other_tenant = app
             .oneshot(request("sdb_at_other_tenant"))
             .await
             .expect("MCP response");
-        assert_eq!(other_tenant.status(), StatusCode::FORBIDDEN);
+        assert_ne!(other_tenant.status(), StatusCode::FORBIDDEN);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn session_identity_cap_rejects_beyond_the_limit() {
+        // Drive MAX_IDENTITIES_PER_MCP_SESSION distinct identities through the
+        // same session id — all accepted — then one more, which must be
+        // rejected once the cap is reached.
+        let identities: Vec<(String, String, String)> = (0..MAX_IDENTITIES_PER_MCP_SESSION + 1)
+            .map(|i| {
+                (
+                    format!("sdb_at_user{i}"),
+                    format!("user-{i}"),
+                    format!("tenant-{i}"),
+                )
+            })
+            .collect();
+        let (router_url, router) = spawn_oauth_identity_router(identities.clone()).await;
+        let app = mcp_http_router(McpAppState::new(router_url), &[]);
+        let request = |token: &str| {
+            RequestBuilder::new()
+                .method("POST")
+                .uri("/mcp")
+                .header("authorization", format!("Bearer {token}"))
+                .header("mcp-session-id", "capped-session")
+                .body(Body::empty())
+                .expect("build request")
+        };
+
+        for (token, _, _) in identities.iter().take(MAX_IDENTITIES_PER_MCP_SESSION) {
+            let response = app
+                .clone()
+                .oneshot(request(token))
+                .await
+                .expect("MCP response");
+            assert_ne!(
+                response.status(),
+                StatusCode::FORBIDDEN,
+                "identity {token} should be within the cap"
+            );
+        }
+
+        let (last_token, _, _) = &identities[MAX_IDENTITIES_PER_MCP_SESSION];
+        let over_cap = app
+            .oneshot(request(last_token))
+            .await
+            .expect("MCP response");
+        assert_eq!(
+            over_cap.status(),
+            StatusCode::FORBIDDEN,
+            "identity beyond the cap must be refused"
+        );
         router.await.expect("mock router task panicked");
     }
 
     #[tokio::test]
     async fn oauth_bearer_does_not_require_tenant_header() {
-        let (router_url, router) = spawn_whoami_router("200 OK", 1).await;
+        let (router_url, router) = spawn_introspect_router(vec![(
+            "sdb_at_sometoken".to_string(),
+            r#"{"active":true,"user_id":"user-a","tenants":[{"tenant_id":"acme","dataset_ids":null}]}"#
+                .to_string(),
+        )])
+        .await;
         let app = mcp_http_router(
             McpAppState::new(router_url).with_oauth(
                 "https://signaldb.example.com/mcp".to_string(),
@@ -784,6 +1129,45 @@ mod tests {
             .await
             .unwrap();
         assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        router.await.expect("mock router task panicked");
+    }
+
+    #[tokio::test]
+    async fn oauth_multi_tenant_session_is_not_locked_to_one_tenant_at_establishment() {
+        // A credential whose grant covers two tenants must not be forced to
+        // name one at session establishment (design D4, task 5.1): the
+        // introspect response reports both, and the request reaches the
+        // transport with no `X-Tenant-ID` at all.
+        let (router_url, router) = spawn_introspect_router(vec![(
+            "sdb_at_multitenant".to_string(),
+            r#"{"active":true,"user_id":"user-a","tenants":[{"tenant_id":"acme","dataset_ids":null},{"tenant_id":"globex","dataset_ids":null}]}"#
+                .to_string(),
+        )])
+        .await;
+        let app = mcp_http_router(
+            McpAppState::new(router_url).with_oauth(
+                "https://signaldb.example.com/mcp".to_string(),
+                "https://signaldb.example.com".to_string(),
+            ),
+            &[],
+        );
+        let res = app
+            .oneshot(
+                RequestBuilder::new()
+                    .method("POST")
+                    .uri("/mcp")
+                    .header("authorization", "Bearer sdb_at_multitenant")
+                    .header("content-type", "application/json")
+                    .header("accept", "application/json, text/event-stream")
+                    .body(Body::from(
+                        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-03-26","capabilities":{},"clientInfo":{"name":"test","version":"0"}}}"#,
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_ne!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_ne!(res.status(), StatusCode::FORBIDDEN);
         router.await.expect("mock router task panicked");
     }
 
@@ -865,9 +1249,11 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn session_bound_to_first_identity() {
-        // A session pinned to tenant `acme` cannot be reused by a different
-        // identity (tenant `other`, different token) on the same session id.
+    async fn session_allows_a_second_api_key_identity() {
+        // A session that has already seen one API key identity (tenant
+        // `acme`) may be reused by a different, independently
+        // router-authenticated identity (tenant `other`, different token) on
+        // the same session id — each is validated by the router on its own.
         let (router_url, router) = spawn_whoami_router("200 OK", 2).await;
         let app = mcp_http_router(McpAppState::new(router_url), &[]);
 
@@ -900,7 +1286,7 @@ mod tests {
             )
             .await
             .unwrap();
-        assert_eq!(reused.status(), StatusCode::FORBIDDEN);
+        assert_ne!(reused.status(), StatusCode::FORBIDDEN);
         router.await.expect("mock router task panicked");
     }
 
@@ -1035,6 +1421,7 @@ mod tests {
             &parts,
             &format!("http://{addr}"),
             None,
+            None,
             std::time::Duration::from_millis(200),
         )
         .expect("build forwarding client");
@@ -1110,8 +1497,14 @@ mod tests {
             .0;
 
         let (addr, handle) = spawn_header_capturing_server().await;
-        let client = sdk_client_for(&parts, &format!("http://{addr}"), None, ROUTER_TIMEOUT)
-            .expect("build forwarding client");
+        let client = sdk_client_for(
+            &parts,
+            &format!("http://{addr}"),
+            None,
+            None,
+            ROUTER_TIMEOUT,
+        )
+        .expect("build forwarding client");
         client
             .list_tenants()
             .send()
@@ -1150,6 +1543,7 @@ mod tests {
         let client = sdk_client_for(
             &parts,
             &format!("http://{addr}"),
+            None,
             Some("prod"),
             ROUTER_TIMEOUT,
         )
@@ -1170,6 +1564,109 @@ mod tests {
         assert!(
             !lower.contains("x-dataset-id: staging"),
             "expected dataset_override to replace the caller's x-dataset-id, got request:\n{received_request}"
+        );
+    }
+
+    /// A multi-tenant OAuth tool call's `tenant_override` reaches the router
+    /// as an explicit `X-Tenant-ID`, since the inbound OAuth request carries
+    /// none (task 5.6).
+    #[tokio::test]
+    async fn sdk_client_forwards_tenant_override_header() {
+        let parts = RequestBuilder::new()
+            .method("POST")
+            .uri("/mcp")
+            .header("authorization", "Bearer sdb_at_multitenant")
+            .body(())
+            .unwrap()
+            .into_parts()
+            .0;
+
+        let (addr, handle) = spawn_header_capturing_server().await;
+        let client = sdk_client_for(
+            &parts,
+            &format!("http://{addr}"),
+            Some("globex"),
+            None,
+            ROUTER_TIMEOUT,
+        )
+        .expect("build forwarding client");
+        client
+            .list_tenants()
+            .send()
+            .await
+            .expect("mock server responds to list_tenants");
+
+        let received_request = handle.await.expect("mock server task panicked");
+        assert!(
+            received_request
+                .to_lowercase()
+                .contains("x-tenant-id: globex"),
+            "expected tenant_override to set x-tenant-id, got request:\n{received_request}"
+        );
+    }
+
+    /// `introspect_oauth_token` runs through the SDK's shared
+    /// retry-on-throttle policy: a `429` (with `Retry-After: 0`, so the test
+    /// stays fast) is retried rather than surfaced immediately, mirroring
+    /// `signaldb-sdk/tests/retry.rs`'s own `throttled_post_is_retried_too`.
+    #[tokio::test]
+    async fn introspect_oauth_token_retries_a_throttled_response() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::net::TcpListener;
+
+        let listener = TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind mock router");
+        let addr = listener.local_addr().expect("mock router address");
+        let handle = tokio::spawn(async move {
+            let mut request_count = 0;
+            for attempt in 1..=2 {
+                let (mut socket, _) = listener.accept().await.expect("accept request");
+                let mut buffer = [0_u8; 4096];
+                let _ = socket.read(&mut buffer).await.expect("read request");
+                request_count += 1;
+                let (status_line, extra_header, body) = if attempt == 1 {
+                    (
+                        "429 Too Many Requests",
+                        "Retry-After: 0\r\n",
+                        r#"{"error":"rate_limited"}"#,
+                    )
+                } else {
+                    (
+                        "200 OK",
+                        "",
+                        r#"{"active":true,"user_id":"user-a","tenants":[{"tenant_id":"acme","dataset_ids":null}]}"#,
+                    )
+                };
+                socket
+                    .write_all(
+                        format!(
+                            "HTTP/1.1 {status_line}\r\nContent-Type: application/json\r\n{extra_header}Content-Length: {}\r\nConnection: close\r\n\r\n",
+                            body.len()
+                        )
+                        .as_bytes(),
+                    )
+                    .await
+                    .expect("write response headers");
+                socket.write_all(body.as_bytes()).await.expect("write body");
+            }
+            request_count
+        });
+
+        let state = McpAppState::new(format!("http://{addr}"));
+        let grants = match introspect_oauth_token(&state, "sdb_at_throttled").await {
+            Ok(Some(grants)) => grants,
+            Ok(None) => panic!("router reported the token inactive"),
+            Err(_) => panic!("introspect failed instead of retrying the throttled response"),
+        };
+        assert_eq!(grants.user_id, "user-a");
+        assert_eq!(grants.tenants.len(), 1);
+        assert_eq!(grants.tenants[0].tenant_id, "acme");
+
+        let request_count = handle.await.expect("mock router task panicked");
+        assert_eq!(
+            request_count, 2,
+            "expected the throttled first attempt to be retried exactly once"
         );
     }
 }

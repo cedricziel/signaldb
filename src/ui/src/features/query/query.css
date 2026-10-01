@@ -1,0 +1,80 @@
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
+
+.query-ir {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+}
+
+.query-ir-builder {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  padding: 12px var(--gutter);
+  border-bottom: 1px solid var(--border);
+}
+
+.query-ir-builder label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  color: var(--dim);
+}
+
+.query-ir-builder select {
+  border: 1px solid var(--border);
+  background: var(--surface2);
+  border-radius: 6px;
+  padding: 4px 8px;
+  font-size: 12px;
+  color: var(--text);
+}
+
+.query-ir-result {
+  padding: 14px var(--gutter);
+  overflow-x: auto;
+}
+
+.query-ir-warnings {
+  color: var(--warn-text);
+  font-size: 12px;
+  margin: 0 0 10px;
+}
+
+.query-ir-warnings p {
+  margin: 0 0 4px;
+}
+
+.ir-rows,
+.ir-topn {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.ir-rows td,
+.ir-topn td {
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  font-family: var(--mono);
+}
+
+.ir-series {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+@container app-main (max-width: 600px) {
+  .query-ir-builder {
+    flex-direction: column;
+    align-items: stretch;
+  }
+
+  .query-ir-result {
+    padding: 10px 12px;
+  }
+}

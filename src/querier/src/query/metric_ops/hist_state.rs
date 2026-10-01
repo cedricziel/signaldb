@@ -1,0 +1,592 @@
+//! Typed parsing of histogram argument columns into rows, and the accumulator's list-state encoding.
+
+use std::sync::Arc;
+
+use datafusion::arrow::array::{
+    Array, ArrayRef, ArrowPrimitiveType, AsArray, ListArray, ListBuilder, PrimitiveBuilder,
+    StringBuilder,
+};
+use datafusion::arrow::compute::cast;
+use datafusion::arrow::datatypes::{DataType, Field, Float64Type, Int32Type, Int64Type};
+use datafusion::error::{DataFusionError, Result};
+use datafusion::scalar::ScalarValue;
+
+use super::exp_histogram::{Buckets, ExpHistogram};
+use super::hist_math::{HistPoint, HistPt};
+use super::instants::{as_ns, invalid};
+
+/// Number of UDAF arguments: 18 per-point columns plus the evaluation `instant`.
+pub(super) const ARGS: usize = 19;
+
+pub(super) fn list_of(t: DataType) -> DataType {
+    DataType::List(Arc::new(Field::new_list_field(t, true)))
+}
+
+/// Element types of the 18 per-point columns (everything before `instant`).
+pub(super) fn column_types() -> [DataType; ARGS - 1] {
+    use DataType::*;
+    [
+        Utf8,
+        Int64,
+        Int64,
+        Int32,
+        Utf8,
+        list_of(Float64),
+        list_of(Int64),
+        Int64,
+        Float64,
+        Int32,
+        Int64,
+        Float64,
+        Int32,
+        list_of(Int64),
+        Int32,
+        list_of(Int64),
+        Float64,
+        Float64,
+    ]
+}
+
+/// One accepted histogram / exponential-histogram row, as stored.
+#[derive(Debug, Clone)]
+pub(super) struct Row {
+    pub(super) series: String,
+    ts: i64,
+    start: i64,
+    temporality: Option<i32>,
+    exp: bool,
+    bounds: Vec<f64>,
+    bucket_counts: Vec<i64>,
+    count: Option<i64>,
+    sum: Option<f64>,
+    scale: Option<i32>,
+    zero_count: Option<i64>,
+    zero_threshold: Option<f64>,
+    pos_offset: Option<i32>,
+    pos_counts: Vec<i64>,
+    neg_offset: Option<i32>,
+    neg_counts: Vec<i64>,
+    min: Option<f64>,
+    max: Option<f64>,
+}
+
+impl Row {
+    /// Validate and convert; malformed stored data is `InvalidInput` naming the column.
+    pub(super) fn point(&self) -> Result<HistPt> {
+        let count = |name: &str, v: i64| {
+            u64::try_from(v).map_err(|_| invalid(format!("{name} must not be negative")))
+        };
+        let counts = |name: &str, v: &[i64]| {
+            v.iter()
+                .map(|&c| count(name, c))
+                .collect::<Result<Vec<_>>>()
+        };
+        let h = if self.exp {
+            let scale = self
+                .scale
+                .ok_or_else(|| invalid("scale is required on exponential histograms"))?;
+            let buckets = |name: &str, offset: Option<i32>, v: &[i64]| {
+                if offset.is_none() && !v.is_empty() {
+                    return Err(invalid(format!(
+                        "{name}_offset is required with {name}_bucket_counts"
+                    )));
+                }
+                counts(&format!("{name}_bucket_counts"), v)?;
+                Buckets::from_stored(offset.unwrap_or(0), v)
+                    .ok_or_else(|| invalid(format!("{name}_bucket_counts span is too large")))
+            };
+            let exp = ExpHistogram::from_stored(
+                scale,
+                self.zero_count.unwrap_or(0),
+                self.zero_threshold.unwrap_or(0.0),
+                buckets("positive", self.pos_offset, &self.pos_counts)?,
+                buckets("negative", self.neg_offset, &self.neg_counts)?,
+                self.min,
+                self.max,
+            )
+            .ok_or_else(|| {
+                invalid("scale, zero_count or zero_threshold is out of range on an exponential histogram")
+            })?;
+            HistPoint::Exp(exp, self.sum)
+        } else {
+            if self.bounds.iter().any(|b| b.is_nan()) || !self.bounds.is_sorted_by(|a, b| a < b) {
+                return Err(invalid(
+                    "explicit_bounds must be strictly increasing, without NaN",
+                ));
+            }
+            let total = self.count.map(|c| count("count", c)).transpose()?;
+            // No bounds and no buckets: one bucket holding every observation.
+            let counts = if self.bounds.is_empty() && self.bucket_counts.is_empty() {
+                vec![total.unwrap_or(0)]
+            } else if self.bucket_counts.len() == self.bounds.len() + 1 {
+                counts("bucket_counts", &self.bucket_counts)?
+            } else {
+                return Err(invalid(
+                    "bucket_counts must have one more entry than explicit_bounds",
+                ));
+            };
+            let sum = counts.iter().fold(0u64, |a, &c| a.saturating_add(c));
+            HistPoint::Explicit {
+                bounds: self.bounds.clone(),
+                counts,
+                sum: self.sum,
+                count: total.unwrap_or(sum),
+            }
+        };
+        Ok(HistPt {
+            ts: self.ts,
+            start: self.start,
+            temporality: self.temporality,
+            h,
+        })
+    }
+
+    /// Total order for deterministic evaluation regardless of arrival order.
+    pub(super) fn sort_key(&self) -> impl Ord + '_ {
+        let total = [&self.bucket_counts, &self.pos_counts, &self.neg_counts]
+            .into_iter()
+            .flatten()
+            .fold(0i64, |a, &c| a.saturating_add(c));
+        (
+            self.series.as_str(),
+            self.ts,
+            self.start,
+            self.count.unwrap_or(total),
+            self.sum.map_or(0, f64::to_bits),
+            self.bucket_counts.as_slice(),
+            self.pos_counts.as_slice(),
+            self.neg_counts.as_slice(),
+        )
+    }
+
+    pub(super) fn heap(&self) -> usize {
+        self.series.capacity()
+            + 8 * (self.bounds.capacity()
+                + self.bucket_counts.capacity()
+                + self.pos_counts.capacity()
+                + self.neg_counts.capacity())
+    }
+}
+
+fn as_list(a: &ArrayRef, item: DataType) -> Result<ListArray> {
+    Ok(cast(a, &list_of(item))?.as_list::<i32>().clone())
+}
+
+fn list_values<T: ArrowPrimitiveType>(
+    l: &ListArray,
+    i: usize,
+    name: &str,
+) -> Result<Vec<T::Native>> {
+    if l.is_null(i) {
+        return Ok(Vec::new());
+    }
+    let v = l.value(i);
+    if v.null_count() > 0 {
+        return Err(invalid(format!("{name} must not contain nulls")));
+    }
+    Ok(v.as_primitive::<T>().values().to_vec())
+}
+
+/// Parse 18 per-point columns (the UDAF arguments, or flattened state lists) into rows.
+pub(super) fn parse_rows(cols: &[ArrayRef]) -> Result<Vec<Row>> {
+    parse_rows_for("histogram functions", cols)
+}
+
+/// [`parse_rows`], naming `function` when a summary point is rejected. A
+/// malformed row (see [`Row::point`]) is skipped.
+pub(super) fn parse_rows_for(function: &str, cols: &[ArrayRef]) -> Result<Vec<Row>> {
+    Ok(parse_rows_checked(function, cols)?
+        .into_iter()
+        .filter_map(Result::ok)
+        .collect())
+}
+
+/// Every histogram row of `cols`, or why it is malformed. A summary or
+/// unknown metric type fails the whole batch.
+fn parse_rows_checked(function: &str, cols: &[ArrayRef]) -> Result<Vec<Result<Row>>> {
+    let mut rows = Vec::new();
+    let [
+        series,
+        ts,
+        start,
+        temp,
+        kind,
+        bounds,
+        bcounts,
+        count,
+        sum,
+        scale,
+        zero_count,
+        zt,
+        po,
+        pc,
+        no,
+        nc,
+        min,
+        max,
+    ] = cols
+    else {
+        return Err(DataFusionError::Internal(
+            "histogram accumulator expects 18 point columns".into(),
+        ));
+    };
+    let series = cast(series, &DataType::Utf8)?;
+    let series = series.as_string::<i32>();
+    let (ts, start) = (as_ns(ts)?, as_ns(start)?);
+    let temp = cast(temp, &DataType::Int32)?;
+    let temp = temp.as_primitive::<Int32Type>();
+    let kind = cast(kind, &DataType::Utf8)?;
+    let kind = kind.as_string::<i32>();
+    let (bounds, bcounts) = (
+        as_list(bounds, DataType::Float64)?,
+        as_list(bcounts, DataType::Int64)?,
+    );
+    let (pc, nc) = (as_list(pc, DataType::Int64)?, as_list(nc, DataType::Int64)?);
+    let i64s = |a: &ArrayRef| cast(a, &DataType::Int64);
+    let f64s = |a: &ArrayRef| cast(a, &DataType::Float64);
+    let i32s = |a: &ArrayRef| cast(a, &DataType::Int32);
+    let (count, zero_count) = (i64s(count)?, i64s(zero_count)?);
+    let (sum, zt, min, max) = (f64s(sum)?, f64s(zt)?, f64s(min)?, f64s(max)?);
+    let (scale, po, no) = (i32s(scale)?, i32s(po)?, i32s(no)?);
+    let (count, zero_count) = (
+        count.as_primitive::<Int64Type>(),
+        zero_count.as_primitive::<Int64Type>(),
+    );
+    let (sum, zt) = (
+        sum.as_primitive::<Float64Type>(),
+        zt.as_primitive::<Float64Type>(),
+    );
+    let (min, max) = (
+        min.as_primitive::<Float64Type>(),
+        max.as_primitive::<Float64Type>(),
+    );
+    let (scale, po, no) = (
+        scale.as_primitive::<Int32Type>(),
+        po.as_primitive::<Int32Type>(),
+        no.as_primitive::<Int32Type>(),
+    );
+    for i in 0..series.len() {
+        let exp = match kind.is_valid(i).then(|| kind.value(i)) {
+            Some("histogram") => false,
+            Some("exponential_histogram") => true,
+            Some("summary") => {
+                return Err(invalid(format!(
+                    "{function} is not supported on summary metrics"
+                )));
+            }
+            Some("gauge" | "sum") | None => continue,
+            Some(other) => return Err(invalid(format!("unknown metric_type {other:?}"))),
+        };
+        if !series.is_valid(i) || !ts.is_valid(i) {
+            continue;
+        }
+        let row = || -> Result<Row> {
+            let row = Row {
+                series: series.value(i).to_owned(),
+                ts: ts.value(i),
+                start: if start.is_valid(i) { start.value(i) } else { 0 },
+                temporality: temp.is_valid(i).then(|| temp.value(i)),
+                exp,
+                bounds: list_values::<Float64Type>(&bounds, i, "explicit_bounds")?,
+                bucket_counts: list_values::<Int64Type>(&bcounts, i, "bucket_counts")?,
+                count: count.is_valid(i).then(|| count.value(i)),
+                sum: sum.is_valid(i).then(|| sum.value(i)),
+                scale: scale.is_valid(i).then(|| scale.value(i)),
+                zero_count: zero_count.is_valid(i).then(|| zero_count.value(i)),
+                zero_threshold: zt.is_valid(i).then(|| zt.value(i)),
+                pos_offset: po.is_valid(i).then(|| po.value(i)),
+                pos_counts: list_values::<Int64Type>(&pc, i, "positive_bucket_counts")?,
+                neg_offset: no.is_valid(i).then(|| no.value(i)),
+                neg_counts: list_values::<Int64Type>(&nc, i, "negative_bucket_counts")?,
+                min: min.is_valid(i).then(|| min.value(i)),
+                max: max.is_valid(i).then(|| max.value(i)),
+            };
+            row.point()?;
+            Ok(row)
+        };
+        rows.push(row());
+    }
+    Ok(rows)
+}
+/// A one-element list scalar holding `vals`.
+fn prim<T: ArrowPrimitiveType>(vals: impl Iterator<Item = Option<T::Native>>) -> ScalarValue {
+    let mut b = ListBuilder::new(PrimitiveBuilder::<T>::new());
+    b.values().extend(vals);
+    b.append(true);
+    ScalarValue::List(Arc::new(b.finish()))
+}
+
+/// A one-element list scalar holding one list per row.
+fn nested<'a, T: ArrowPrimitiveType>(rows: impl Iterator<Item = &'a [T::Native]>) -> ScalarValue {
+    let mut b = ListBuilder::new(ListBuilder::new(PrimitiveBuilder::<T>::new()));
+    for v in rows {
+        b.values().values().append_slice(v);
+        b.values().append(true);
+    }
+    b.append(true);
+    ScalarValue::List(Arc::new(b.finish()))
+}
+
+pub(super) fn encode(r: &[Row], instant: Option<i64>) -> Vec<ScalarValue> {
+    let mut kinds = ListBuilder::new(StringBuilder::new());
+    let mut series = ListBuilder::new(StringBuilder::new());
+    for x in r {
+        series.values().append_value(&x.series);
+        kinds.values().append_value(if x.exp {
+            "exponential_histogram"
+        } else {
+            "histogram"
+        });
+    }
+    series.append(true);
+    kinds.append(true);
+    vec![
+        ScalarValue::List(Arc::new(series.finish())),
+        prim::<Int64Type>(r.iter().map(|x| Some(x.ts))),
+        prim::<Int64Type>(r.iter().map(|x| Some(x.start))),
+        prim::<Int32Type>(r.iter().map(|x| x.temporality)),
+        ScalarValue::List(Arc::new(kinds.finish())),
+        nested::<Float64Type>(r.iter().map(|x| x.bounds.as_slice())),
+        nested::<Int64Type>(r.iter().map(|x| x.bucket_counts.as_slice())),
+        prim::<Int64Type>(r.iter().map(|x| x.count)),
+        prim::<Float64Type>(r.iter().map(|x| x.sum)),
+        prim::<Int32Type>(r.iter().map(|x| x.scale)),
+        prim::<Int64Type>(r.iter().map(|x| x.zero_count)),
+        prim::<Float64Type>(r.iter().map(|x| x.zero_threshold)),
+        prim::<Int32Type>(r.iter().map(|x| x.pos_offset)),
+        nested::<Int64Type>(r.iter().map(|x| x.pos_counts.as_slice())),
+        prim::<Int32Type>(r.iter().map(|x| x.neg_offset)),
+        nested::<Int64Type>(r.iter().map(|x| x.neg_counts.as_slice())),
+        prim::<Float64Type>(r.iter().map(|x| x.min)),
+        prim::<Float64Type>(r.iter().map(|x| x.max)),
+        ScalarValue::Int64(instant),
+    ]
+}
+
+/// Decode partial states (18 list columns plus `instant`) into rows and the instant.
+pub(super) fn decode(states: &[ArrayRef]) -> Result<(Vec<Row>, Option<i64>)> {
+    if states.len() != ARGS {
+        return Err(DataFusionError::Internal(format!(
+            "histogram accumulator expects {ARGS} state columns"
+        )));
+    }
+    let bad = || DataFusionError::Internal("histogram accumulator state has the wrong type".into());
+    let lists: Vec<&ListArray> = states[..ARGS - 1]
+        .iter()
+        .map(|s| s.as_list_opt::<i32>().ok_or_else(bad))
+        .collect::<Result<_>>()?;
+    let instant = states[ARGS - 1]
+        .as_primitive_opt::<Int64Type>()
+        .ok_or_else(bad)?;
+    let mut rows = Vec::new();
+    let mut first = None;
+    for row in 0..instant.len() {
+        if instant.is_valid(row) && first.is_none() {
+            first = Some(instant.value(row));
+        }
+        if lists[0].is_valid(row) {
+            let cols: Vec<ArrayRef> = lists.iter().map(|l| l.value(row)).collect();
+            rows.extend(parse_rows(&cols)?);
+        }
+    }
+    Ok((rows, first))
+}
+
+#[cfg(test)]
+mod tests {
+    use datafusion::arrow::array::{Float64Array, Int32Array, Int64Array, StringArray};
+    use datafusion::arrow::datatypes::Float64Type as F64;
+    use datafusion::arrow::datatypes::Int64Type as I64;
+
+    use super::*;
+    use crate::query::error::QuerierError;
+
+    /// 18 columns for `n` identical rows of the given kind.
+    fn cols(kind: &str, n: usize, bounds: Option<Vec<f64>>, counts: Vec<i64>) -> Vec<ArrayRef> {
+        let exp = kind == "exponential_histogram";
+        let lf = |v: Option<Vec<f64>>| {
+            Arc::new(ListArray::from_iter_primitive::<F64, _, _>((0..n).map(
+                |_| {
+                    v.clone()
+                        .map(|v| v.into_iter().map(Some).collect::<Vec<_>>())
+                },
+            ))) as ArrayRef
+        };
+        let li = |v: Option<Vec<i64>>| {
+            Arc::new(ListArray::from_iter_primitive::<I64, _, _>((0..n).map(
+                |_| {
+                    v.clone()
+                        .map(|v| v.into_iter().map(Some).collect::<Vec<_>>())
+                },
+            ))) as ArrayRef
+        };
+        let i32s = |v: Option<i32>| Arc::new(Int32Array::from(vec![v; n])) as ArrayRef;
+        let i64s = |v: Option<i64>| Arc::new(Int64Array::from(vec![v; n])) as ArrayRef;
+        let f64s = |v: Option<f64>| Arc::new(Float64Array::from(vec![v; n])) as ArrayRef;
+        vec![
+            Arc::new(StringArray::from(vec!["s"; n])),
+            i64s(Some(20)),
+            i64s(Some(5)),
+            i32s(Some(2)),
+            Arc::new(StringArray::from(vec![kind; n])),
+            lf(bounds),
+            li((!exp).then(|| counts.clone())),
+            i64s(None),
+            f64s(Some(1.5)),
+            i32s(exp.then_some(0)),
+            i64s(exp.then_some(0)),
+            f64s(exp.then_some(0.0)),
+            i32s(exp.then_some(0)),
+            li(exp.then(|| counts.clone())),
+            i32s(None),
+            li(None),
+            f64s(None),
+            f64s(None),
+        ]
+    }
+
+    fn points(rows: &[Row]) -> Vec<HistPoint> {
+        rows.iter().map(|r| r.point().unwrap().h).collect()
+    }
+
+    fn state_arrays(rows: &[Row], instant: Option<i64>) -> Vec<ArrayRef> {
+        encode(rows, instant)
+            .iter()
+            .map(|s| s.to_array().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn state_round_trips_through_arrays() {
+        let rows = parse_rows(&cols("histogram", 2, Some(vec![1.0, 2.0]), vec![1, 2, 3])).unwrap();
+        let states = state_arrays(&rows, Some(7));
+        assert_eq!(states.len(), ARGS);
+        let (back, instant) = decode(&states).unwrap();
+        assert_eq!(instant, Some(7));
+        assert_eq!(back.len(), 2);
+        assert_eq!(points(&back), points(&rows));
+    }
+
+    #[test]
+    fn sort_key_is_total_and_state_matches_column_types() {
+        let mut rows = parse_rows(&cols("histogram", 2, Some(vec![1.0]), vec![1, 2])).unwrap();
+        rows[0].bucket_counts = vec![2, 2];
+        rows.reverse();
+        rows.sort_by(|a, b| a.sort_key().cmp(&b.sort_key()));
+        assert_eq!(rows[0].bucket_counts, vec![1, 2]);
+        assert!(rows[0].heap() > 0);
+        let types = column_types();
+        let scalars = encode(&rows, None);
+        for (s, t) in scalars.iter().zip(types) {
+            assert_eq!(s.data_type(), list_of(t));
+        }
+    }
+
+    /// The reason the first row of `cols` is rejected; `parse_rows` skips it.
+    fn invalid_msg(cols: Vec<ArrayRef>) -> String {
+        let err = match parse_rows_checked("histogram functions", &cols) {
+            Ok(rows) => {
+                assert!(
+                    parse_rows(&cols).unwrap().is_empty(),
+                    "malformed rows are skipped"
+                );
+                rows.into_iter()
+                    .find_map(Result::err)
+                    .expect("a rejected row")
+            }
+            Err(err) => err,
+        };
+        match QuerierError::from(err) {
+            QuerierError::InvalidInput(m) => m,
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn malformed_points_are_invalid_input_naming_the_column() {
+        let m = invalid_msg(cols("histogram", 1, Some(vec![1.0]), vec![1, 2, 3]));
+        assert!(m.contains("bucket_counts"), "{m}");
+        let m = invalid_msg(cols("histogram", 1, Some(vec![1.0]), vec![1, -2]));
+        assert!(m.contains("bucket_counts") && m.contains("negative"), "{m}");
+        let m = invalid_msg(cols("exponential_histogram", 1, None, vec![1, -2]));
+        assert!(m.contains("positive_bucket_counts"), "{m}");
+        assert!(invalid_msg(cols("mystery", 1, None, vec![])).contains("metric_type"));
+        for bounds in [vec![f64::NAN], vec![2.0, 1.0], vec![1.0, 1.0]] {
+            let n = bounds.len() + 1;
+            let m = invalid_msg(cols("histogram", 1, Some(bounds), vec![1; n]));
+            assert!(m.contains("strictly increasing"), "{m}");
+        }
+    }
+
+    /// Prometheus-converted histograms may carry a `+Inf` top bound.
+    #[test]
+    fn an_infinite_top_bound_parses() {
+        let c = cols(
+            "histogram",
+            1,
+            Some(vec![1.0, f64::INFINITY]),
+            vec![1, 2, 0],
+        );
+        assert_eq!(parse_rows(&c).unwrap().len(), 1);
+    }
+
+    #[test]
+    fn null_elements_offsets_and_scale_are_rejected() {
+        let mut c = cols("histogram", 1, Some(vec![1.0]), vec![1, 2]);
+        c[6] = Arc::new(ListArray::from_iter_primitive::<I64, _, _>([Some(vec![
+            Some(1),
+            None,
+        ])]));
+        assert!(invalid_msg(c).contains("nulls"));
+        let mut c = cols("exponential_histogram", 1, None, vec![1, 2]);
+        c[12] = Arc::new(Int32Array::from(vec![None::<i32>]));
+        assert!(invalid_msg(c).contains("positive_offset"));
+        let mut c = cols("exponential_histogram", 1, None, vec![1, 2]);
+        c[9] = Arc::new(Int32Array::from(vec![Some(99)]));
+        assert!(invalid_msg(c).contains("scale"));
+        let mut c = cols("exponential_histogram", 1, None, vec![1, 2]);
+        c[9] = Arc::new(Int32Array::from(vec![None::<i32>]));
+        assert!(invalid_msg(c).contains("scale"));
+    }
+
+    #[test]
+    fn empty_bounds_and_buckets_is_one_bucket_holding_the_count() {
+        let mut c = cols("histogram", 1, None, vec![]);
+        c[7] = Arc::new(Int64Array::from(vec![Some(9)]));
+        let rows = parse_rows(&c).unwrap();
+        assert!(matches!(
+            &points(&rows)[0],
+            HistPoint::Explicit { bounds, counts, count: 9, .. } if bounds.is_empty() && counts == &[9]
+        ));
+    }
+
+    #[test]
+    fn decode_checks_the_state_width() {
+        assert!(decode(&[]).is_err());
+    }
+
+    #[test]
+    fn parses_explicit_and_exponential_rows_and_skips_other_kinds() {
+        let rows = parse_rows(&cols("histogram", 2, Some(vec![1.0, 2.0]), vec![1, 2, 3])).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert!(matches!(
+            &points(&rows)[0],
+            HistPoint::Explicit { count: 6, .. }
+        ));
+        let rows = parse_rows(&cols("exponential_histogram", 1, None, vec![4, 5])).unwrap();
+        assert!(matches!(&points(&rows)[0], HistPoint::Exp(h, Some(_)) if h.count() == 9));
+        assert!(
+            parse_rows(&cols("gauge", 3, None, vec![]))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn exponential_state_round_trips() {
+        let exp = parse_rows(&cols("exponential_histogram", 1, None, vec![4, 5])).unwrap();
+        let (back, instant) = decode(&state_arrays(&exp, None)).unwrap();
+        assert_eq!(instant, None);
+        assert_eq!(points(&back), points(&exp));
+    }
+}

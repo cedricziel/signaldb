@@ -1,9 +1,10 @@
+/* Breakpoints: see docs/contributing/ui-page-stories.md#breakpoints */
 .select-tenant {
   display: flex;
   justify-content: center;
   align-items: flex-start;
   min-height: 100%;
-  padding-top: 32px;
+  padding: 32px var(--gutter);
 }
 
 .select-tenant-panel {
@@ -16,9 +17,19 @@
   margin: 0 auto;
 }
 
+@container app-main (max-width: 600px) {
+  .select-tenant {
+    padding: 16px var(--gutter);
+  }
+
+  .select-tenant-panel {
+    padding: 12px;
+  }
+}
+
 .select-tenant h2 {
   margin: 0 0 8px;
-  font-size: 18px;
+  font-size: var(--text-title);
   font-weight: 600;
   color: var(--text);
 }
@@ -69,7 +80,7 @@
 .tenant-role {
   font-family: var(--mono);
   font-size: 11px;
-  color: var(--faint);
+  color: var(--dim);
   background: var(--surface2);
   border-radius: 4px;
   padding: 2px 6px;
@@ -79,6 +90,27 @@
   display: grid;
   gap: 2px;
   margin-top: 4px;
+}
+
+.dataset-loading {
+  padding: 8px 14px 8px 28px;
+  color: var(--dim);
+  font-size: 12px;
+}
+
+.dataset-error {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px 8px 28px;
+}
+
+.dataset-error p {
+  margin: 0;
+}
+
+.dataset-error button {
+  flex: none;
 }
 
 .dataset-row {
@@ -105,5 +137,5 @@
 
 .dataset-default {
   font-size: 10px;
-  color: var(--faint);
+  color: var(--dim);
 }

@@ -139,6 +139,67 @@ groups:
         brief: >
           Files an orphan-cleanup pass failed to delete. Non-zero means the
           reclaim is incomplete and will be retried next cycle.
+      - id: signaldb.job.tables_skipped
+        type: int
+        stability: development
+        brief: >
+          Tables an orphan-cleanup pass skipped because their estimated live
+          files exceeded `signaldb.job.live_files_threshold`.
+      - id: signaldb.job.datasets_checked
+        type: int
+        stability: development
+        brief: Datasets a signal-table reconcile pass examined.
+      - id: signaldb.job.datasets_skipped
+        type: int
+        stability: development
+        brief: Datasets a signal-table reconcile pass skipped because an earlier pass already confirmed all their enabled tables.
+      - id: signaldb.job.tables_created
+        type: int
+        stability: development
+        brief: Signal tables a reconcile pass created because they were missing for an enabled dataset.
+      - id: signaldb.job.tables_failed
+        type: int
+        stability: development
+        brief: Signal tables a reconcile pass failed to create; retried on the next pass.
+      - id: signaldb.job.attempt
+        type: int
+        stability: development
+        brief: The 1-based attempt number of a commit being retried after a conflict.
+      - id: signaldb.job.files_committed
+        type: int
+        stability: development
+        brief: >
+          Data files in a commit's resulting file set. Not all of them were
+          necessarily written by this commit — a partition-drop replace
+          commits the still-live files it kept alongside any it added.
+      - id: signaldb.job.snapshot_id
+        type: int
+        stability: development
+        brief: The Iceberg snapshot id a commit produced.
+      - id: signaldb.job.partition_hours
+        type: int
+        stability: development
+        brief: The partition (integer hours since epoch) a delta commit targets.
+      - id: signaldb.job.input_file_count
+        type: int
+        stability: development
+        brief: Input files a delta commit re-validates as still live before committing.
+      - id: signaldb.job.deferred_open_partition_files
+        type: int
+        stability: development
+        brief: Files a compaction planning pass deferred because their partition is still open.
+      - id: signaldb.job.unclassifiable_files
+        type: int
+        stability: development
+        brief: Files a compaction planning pass excluded because they could not be classified into a partition.
+      - id: signaldb.job.partition_value
+        type: string
+        stability: development
+        brief: >
+          Debug-formatted manifest partition value for a field whose type
+          didn't match what the reader expected (e.g. `timestamp_hour` stored
+          as something other than an int).
+        examples: ['String("2024-01-15-10")']
 
   - id: registry.signaldb.wal
     type: attribute_group
@@ -169,6 +230,78 @@ groups:
         brief: >
           Number of unprocessed WAL entries recovered from disk at startup,
           seeded into signaldb.wal.entries_pending.
+      - id: signaldb.wal.writer_id
+        type: string
+        stability: development
+        brief: >
+          Stable identity of a WAL directory, persisted in its writer.id
+          file. Names which directory's signaldb.wal.entries_pending gauge a
+          drift correction applies to.
+        examples: ["3f9c2b1a7e4d4c8a9b0f1a2b3c4d5e6f"]
+      - id: signaldb.wal.dir
+        type: string
+        stability: development
+        brief: The root directory a WAL manager was initialized against.
+        examples: [".data/wal/acceptor"]
+
+  - id: registry.signaldb.service
+    type: attribute_group
+    display_name: SignalDB Service Attributes
+    brief: >
+      Service identity and network address, logged at service bootstrap,
+      discovery registration, and listener startup.
+    attributes:
+      - id: signaldb.service.type
+        type: string
+        stability: development
+        brief: The SignalDB service kind registering with or reachable through the catalog.
+        examples: ["acceptor", "writer", "querier"]
+      - id: signaldb.service.address
+        type: string
+        stability: development
+        brief: The network address a service listens on or registers for discovery.
+        examples: ["0.0.0.0:4317", "127.0.0.1:50051"]
+
+  - id: registry.signaldb.catalog
+    type: attribute_group
+    display_name: SignalDB Catalog Attributes
+    brief: SQL catalog connection and DataFusion catalog naming.
+    attributes:
+      - id: signaldb.catalog.dsn
+        type: string
+        stability: development
+        brief: >
+          The catalog database DSN, with any embedded credentials redacted
+          (see common::config::redact_dsn).
+        examples:
+          ["sqlite://.data/signaldb.db", "postgres://***@db:5432/signaldb"]
+      - id: signaldb.catalog.name
+        type: string
+        stability: development
+        brief: The DataFusion catalog name registered for a tenant, i.e. the tenant slug.
+        examples: ["acme"]
+
+  - id: registry.signaldb.querier
+    type: attribute_group
+    display_name: SignalDB Querier Attributes
+    brief: Querier memory-pool sizing decisions.
+    attributes:
+      - id: signaldb.querier.memory_limit_mb
+        type: int
+        stability: development
+        brief: The resolved querier memory pool limit, in megabytes.
+      - id: signaldb.querier.memory_pool_fraction
+        type: double
+        stability: development
+        brief: Fraction of the querier memory limit that query operators may use before they spill or fail.
+      - id: signaldb.querier.host_memory_bytes
+        type: int
+        stability: development
+        brief: Total system memory detected on the host, in bytes, used to resolve the default monolith memory limit.
+      - id: signaldb.querier.max_concurrent_queries
+        type: int
+        stability: development
+        brief: The per-tenant concurrent-query limit a rejected query ran into.
 
   - id: registry.signaldb.query
     type: attribute_group
@@ -190,6 +323,45 @@ groups:
           The query text with all literals replaced by placeholders
           (see common::self_monitoring::sanitize) — never raw user SQL.
         examples: ["SELECT * FROM t WHERE name = ?"]
+
+  - id: registry.signaldb.graph
+    type: attribute_group
+    display_name: SignalDB Service Graph Attributes
+    brief: Bounds hit while assembling a Query IR graph result.
+    attributes:
+      - id: signaldb.graph.dropped_nodes
+        type: int
+        stability: development
+        brief: Nodes the graph node cap dropped.
+      - id: signaldb.graph.max_nodes
+        type: int
+        stability: development
+        brief: The configured graph node cap ([querier].graph_max_nodes).
+      - id: signaldb.graph.max_rows
+        type: int
+        stability: development
+        brief: The row cap a graph sub-query reached ([querier].correlate_max_rows).
+
+  - id: registry.signaldb.discovery
+    type: attribute_group
+    display_name: SignalDB Discovery Attributes
+    brief: Metadata-tier discovery reads (describe fields/values, query sources).
+    attributes:
+      - id: signaldb.discovery.kind
+        type: string
+        stability: development
+        brief: Which discovery question was asked.
+        examples: ["fields", "values", "sources"]
+      - id: signaldb.discovery.source
+        type: string
+        stability: development
+        brief: The signal source the question was asked about; absent for a sources listing.
+        examples: ["traces", "logs"]
+      - id: signaldb.discovery.cost_mode
+        type: string
+        stability: development
+        brief: The cost tier that produced the answer.
+        examples: ["metadata", "sampled_scan", "none"]
 
   # MCP tool-call attributes. The pinned upstream semconv snapshot (1.43)
   # moved the MCP and GenAI conventions to the GenAI conventions repository
@@ -242,3 +414,71 @@ groups:
           Audit outcome of an MCP tool call, as recorded on the
           `signaldb.mcp.tool_calls` counter.
         examples: ["ok", "denied"]
+
+  # --- Metrics ----------------------------------------------------------
+  # The compactor exposes these on its own Prometheus endpoint
+  # (`[compactor] metrics_addr`), rendered by `compactor::http`, rather than
+  # through the OTel SDK. They are declared here so the names and their label
+  # sets are governed by the same registry as the spans, and `registry_pins`
+  # fails the build if the exporter drifts from this file. Prometheus renders
+  # a dot-separated name as underscores with a `_total` suffix, so
+  # `compactor.jobs.failed` is scraped as `compactor_jobs_failed_total`.
+
+  - id: metric.compactor.jobs.started
+    type: metric
+    metric_name: compactor.jobs.started
+    stability: development
+    brief: Compaction jobs started, per table.
+    instrument: counter
+    unit: "{job}"
+    attributes:
+      - ref: signaldb.tenant.id
+      - ref: signaldb.dataset.id
+      - ref: signaldb.table
+
+  - id: metric.compactor.jobs.succeeded
+    type: metric
+    metric_name: compactor.jobs.succeeded
+    stability: development
+    brief: Compaction jobs that committed successfully, per table.
+    instrument: counter
+    unit: "{job}"
+    attributes:
+      - ref: signaldb.tenant.id
+      - ref: signaldb.dataset.id
+      - ref: signaldb.table
+
+  - id: metric.compactor.jobs.failed
+    type: metric
+    metric_name: compactor.jobs.failed
+    stability: development
+    brief: >
+      Compaction jobs that failed, per table and error type. A single global
+      total cannot say which table is failing, nor whether the failure is one
+      that resolves itself: a commit conflict means another actor won the
+      race, while a resource error means the job cannot succeed as configured
+      and the partition will be held in cooldown.
+    instrument: counter
+    unit: "{job}"
+    attributes:
+      - ref: signaldb.tenant.id
+      - ref: signaldb.dataset.id
+      - ref: signaldb.table
+      - ref: error.type
+        brief: The compactor's retry classification of the failure.
+        examples: ["conflict", "resource_exhausted", "validation"]
+
+  - id: registry.signaldb.processors
+    type: attribute_group
+    display_name: SignalDB Telemetry Processor Attributes
+    brief: Per-tenant OTTL processor application at ingest.
+    attributes:
+      - id: signaldb.signal
+        type: string
+        stability: development
+        brief: The OTLP signal a processor set was applied to.
+        examples: ["traces", "logs", "metrics"]
+      - id: signaldb.processors.count
+        type: int
+        stability: development
+        brief: Number of processors matched and applied to the request.

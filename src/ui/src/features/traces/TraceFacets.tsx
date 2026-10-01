@@ -3,7 +3,9 @@ import { useState } from "react";
 import { fetchFacet, type FacetValue } from "../../api/traceFacets";
 import { SemanticInfo } from "../../components/SemanticKey";
 import { SidebarResizer } from "../../components/SidebarResizer";
+import { sidebarWidth } from "../../lib/sidebarWidth";
 import { useSemantics } from "../../hooks/useSemantics";
+import { toggleInSet } from "../../lib/collections";
 import type { ResolvedRange } from "../../lib/time";
 import {
   FACET_FIELDS,
@@ -18,6 +20,9 @@ const NUM = new Intl.NumberFormat();
  * nothing and simply carry no info glyph). */
 const FACET_KEYS = FACET_FIELDS.map((f) => f.field);
 
+/** The filter the errors-only toggle adds: the root span's OTel status. */
+const ERRORS_ONLY: TraceFilter = { field: "status", value: "Error" };
+
 interface Props {
   range: ResolvedRange;
   /** Cache scope: window plus tenant context. */
@@ -25,6 +30,12 @@ interface Props {
   filters: TraceFilter[];
   onAddFilter: (filter: TraceFilter) => void;
   onRemoveFilter: (filter: TraceFilter) => void;
+  /** TanStack Query's `refetchInterval` (see `lib/live.ts`'s
+   * `liveRefetchInterval`) for every facet's value-count query — so the
+   * sidebar keeps pace with the group list, volume chart, and member list
+   * it sits beside in live mode instead of freezing at the values seen when
+   * the tab loaded. */
+  refetchInterval?: number | false;
 }
 
 /**
@@ -40,30 +51,60 @@ export function TraceFacets({
   filters,
   onAddFilter,
   onRemoveFilter,
+  refetchInterval = false,
 }: Props) {
-  const [open, setOpen] = useState<string | null>(null);
+  // Facets with a filter set sit at the top and start expanded; the user can
+  // still collapse one (`collapsed`) or expand an inactive one (`opened`).
+  const [opened, setOpened] = useState<ReadonlySet<string>>(new Set());
+  const [collapsed, setCollapsed] = useState<ReadonlySet<string>>(new Set());
   const semantics = useSemantics(FACET_KEYS);
+  const isActive = (field: string) => filters.some((f) => f.field === field);
+  const isOpen = (field: string) =>
+    isActive(field) ? !collapsed.has(field) : opened.has(field);
+  const toggle = (field: string) => {
+    const set = isActive(field) ? setCollapsed : setOpened;
+    set((prev) => toggleInSet(prev, field));
+  };
+  const ordered = [
+    ...FACET_FIELDS.filter((f) => isActive(f.field)),
+    ...FACET_FIELDS.filter((f) => !isActive(f.field)),
+  ];
+  // "Errors only" is the status facet's Error value as a one-click toggle;
+  // going through the same filter keeps groups, list, volume, and facet
+  // counts in step.
+  const errorsOnly = filters.some(
+    (f) => f.field === ERRORS_ONLY.field && f.value === ERRORS_ONLY.value,
+  );
 
   return (
     <aside className="sidebar" aria-label="Facets">
-      <SidebarResizer />
+      <SidebarResizer panel={sidebarWidth} />
       <div className="sidebar-head">Facets</div>
+      <label className="sidebar-toggle">
+        <input
+          type="checkbox"
+          checked={errorsOnly}
+          onChange={() =>
+            errorsOnly ? onRemoveFilter(ERRORS_ONLY) : onAddFilter(ERRORS_ONLY)
+          }
+        />
+        Errors only
+      </label>
       <div className="fieldlist">
-        {FACET_FIELDS.map((facet) => {
+        {ordered.map((facet) => {
           const active = filters.filter((f) => f.field === facet.field);
+          const expanded = isOpen(facet.field);
           return (
             <div key={facet.field}>
               <div className="field-row">
                 <button
-                  className={`field ${open === facet.field ? "open" : ""}`}
-                  aria-expanded={open === facet.field}
-                  onClick={() =>
-                    setOpen(open === facet.field ? null : facet.field)
-                  }
+                  className={`field ${expanded ? "open" : ""}`}
+                  aria-expanded={expanded}
+                  onClick={() => toggle(facet.field)}
                 >
                   <span>{facet.label}</span>
                   {active.length > 0 && (
-                    <span className="facet-active">{active.length}</span>
+                    <span className="facet-active chip">{active.length}</span>
                   )}
                 </button>
                 <SemanticInfo
@@ -71,7 +112,7 @@ export function TraceFacets({
                   semantics={semantics.get(facet.field)}
                 />
               </div>
-              {open === facet.field && (
+              {expanded && (
                 <FacetValues
                   facet={facet}
                   range={range}
@@ -79,6 +120,7 @@ export function TraceFacets({
                   filters={filters}
                   onAddFilter={onAddFilter}
                   onRemoveFilter={onRemoveFilter}
+                  refetchInterval={refetchInterval}
                 />
               )}
             </div>
@@ -96,6 +138,7 @@ function FacetValues({
   filters,
   onAddFilter,
   onRemoveFilter,
+  refetchInterval,
 }: {
   facet: FacetField;
   range: ResolvedRange;
@@ -103,6 +146,7 @@ function FacetValues({
   filters: TraceFilter[];
   onAddFilter: (filter: TraceFilter) => void;
   onRemoveFilter: (filter: TraceFilter) => void;
+  refetchInterval: number | false;
 }) {
   // Other facets' filters narrow the counts; this facet's own do not, so its
   // alternatives stay visible and switchable.
@@ -116,7 +160,59 @@ function FacetValues({
     ],
     queryFn: () => fetchFacet(facet.irField, range, narrowing),
     staleTime: 30_000,
+    refetchInterval,
   });
+
+  const isActive = (v: FacetValue) =>
+    v.value !== null &&
+    filters.some((f) => f.field === facet.field && f.value === v.value);
+
+  // A multi facet with a fixed value set always offers every value — as
+  // checkboxes, so several can be on at once — with the counts the data
+  // has for them. A failed query shows "–", never 0, so it can't read as
+  // an empty window.
+  if (facet.multi && facet.values) {
+    const placeholder = result.isPending ? "…" : result.isError ? "–" : null;
+    const counts = new Map(
+      (result.data?.values ?? []).map((v) => [v.value, v.count]),
+    );
+    return (
+      <div className="fieldvals">
+        {facet.values.map((value) => {
+          const active = filters.some(
+            (f) => f.field === facet.field && f.value === value,
+          );
+          const count = counts.get(value);
+          return (
+            <label
+              className="fieldval facet-val facet-check"
+              data-testid="facet-value"
+              key={value}
+            >
+              <input
+                type="checkbox"
+                aria-label={value}
+                checked={active}
+                onChange={() =>
+                  (active ? onRemoveFilter : onAddFilter)({
+                    field: facet.field,
+                    value,
+                  })
+                }
+              />
+              <span className="facet-val-name">{value}</span>
+              <span className="facet-val-count">
+                {placeholder ?? NUM.format(count ?? 0)}
+              </span>
+            </label>
+          );
+        })}
+        {result.isError && (
+          <div className="fieldvals-note">Could not load counts</div>
+        )}
+      </div>
+    );
+  }
 
   if (result.isPending) return <div className="fieldvals-note">Loading…</div>;
   if (result.isError) {
@@ -126,12 +222,8 @@ function FacetValues({
     return <div className="fieldvals-note">Values not available yet</div>;
   }
   if (result.data.values.length === 0) {
-    return <div className="fieldvals-note">No values in range</div>;
+    return <div className="fieldvals-note">No values in this window</div>;
   }
-
-  const isActive = (v: FacetValue) =>
-    v.value !== null &&
-    filters.some((f) => f.field === facet.field && f.value === v.value);
 
   return (
     <div className="fieldvals">

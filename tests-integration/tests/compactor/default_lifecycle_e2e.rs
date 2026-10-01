@@ -35,13 +35,11 @@ use compactor::{
 use iceberg_rust::catalog::tabular::Tabular;
 use iceberg_rust::table::Table;
 use object_store::ObjectStoreExt;
-use object_store::memory::InMemory;
 use object_store::path::Path as ObjectPath;
 use std::collections::HashSet;
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
-use writer::IcebergTableWriter;
 
 const MILLIS_PER_HOUR: i64 = 3_600 * 1_000;
 
@@ -141,25 +139,9 @@ async fn default_config_compacts_and_reclaims_end_to_end() -> Result<()> {
     config.compactor.retention.snapshots_to_keep = Some(1);
 
     let catalog_manager = Arc::new(CatalogManager::new(config.clone()).await?);
-    // `IcebergTableWriter::new` requires an `Arc<dyn ObjectStore>` argument,
-    // but it is dead weight for the actual write path: `self.object_store`
-    // is stored on the writer and never read again anywhere in
-    // `src/writer/src/storage/iceberg.rs`. Real data/metadata I/O goes
-    // through the `Table` handle the catalog resolves internally
-    // (`catalog_manager.ensure_table(...)` -> `table.object_store()`), which
-    // is a *different* `InMemory` instance from whatever is passed here.
-    // Every other test in this suite that verifies physical file state
-    // (`orphan_cleanup.rs`'s `idle_table_live_files_are_never_orphan_candidates`
-    // and `files_replaced_by_compaction_stay_protected_while_snapshots_retained`)
-    // re-derives the real store via `load_tabular(...)` ->
-    // `Tabular::Table(t) => t.object_store()` rather than trusting this
-    // constructor argument, and this test follows the same pattern below
-    // once the table exists.
-    let placeholder_object_store: Arc<dyn object_store::ObjectStore> = Arc::new(InMemory::new());
 
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         &catalog_manager,
-        placeholder_object_store,
         tenant_id.to_string(),
         dataset_id.to_string(),
         table_name.to_string(),

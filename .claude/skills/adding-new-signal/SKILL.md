@@ -1,89 +1,198 @@
 ---
 name: adding-new-signal
-description: Step-by-step guide for adding a new signal type or table to SignalDB - schema definition, Flight schema, OTLP conversion, WAL operation, acceptor/writer/querier/router updates, and testing. Use when adding new signal types, metric types, or tables.
+description: Step-by-step guide for adding a new signal type or table to SignalDB - logical schema declaration, schemas.toml physical realization, attribute type authority, typed attribute containers, OTLP conversion, WAL operation, writer/acceptor/querier/router updates, IR source registration, and testing. Use when adding new signal types, metric types, or tables.
+sources:
+  - schemas.toml
+  - src/common/src/schema/logical.rs
+  - src/common/src/schema/schema_parser.rs
+  - src/common/src/schema/typed_attributes.rs
+  - src/common/src/schema/type_authority.rs
+  - src/common/src/schema/type_authority/**
+  - src/common/src/schema/mod.rs
+  - src/common/src/iceberg/schemas.rs
+  - src/common/src/iceberg/table_manager.rs
+  - src/common/src/discovery.rs
+  - src/writer/src/schema_transform.rs
+  - src/writer/src/routing.rs
+  - src/writer/src/storage/iceberg.rs
+  - src/acceptor/src/type_warning.rs
+  - src/query-ir/src/source.rs
+  - src/querier/src/query/ir_planner.rs
 ---
 
 # Guide: Adding a New Signal Type or Table
 
-Adding a new signal type or table requires changes across multiple crates. Follow this checklist.
+A signal has one client-visible shape (the **logical schema**) and one storage
+shape (the **physical schema**, `physical-vN` in `schemas.toml`). Queries,
+dialects and ingest bind to the logical shape; only the writer and the planner
+know the physical one. Do steps 1 and 2 first: their tests fail until the
+logical and physical halves agree. The three version axes (Flight wire,
+`physical-vN`, logical) are explained in the `flight-schemas` skill.
 
-## Step 1: Define the Schema
+## Step 1: Declare the logical schema
 
-For **traces/logs** (TOML-based schemas):
-- Edit `schemas.toml` at the repository root
-- Add a new `[signal_type.v1]` section with field definitions
-- Update `[metadata]` to set `current_{signal}_version`
+Edit `LogicalSchema::core()` in `src/common/src/schema/logical.rs`:
 
-For **metrics** (hardcoded schemas):
-- Edit `src/common/src/iceberg/schemas.rs`
-- Add a new schema function returning `iceberg_rust::spec::Schema`
-- Add an entry to the `TableSchema` enum
-- Add partition spec (always `Hour(timestamp)`)
+- Record metadata: `LogicalField::record_metadata(source, name, LogicalType)`
+  with OTel field names (dotted where OTel dots them). Add `.retrieval_only()` for values that can be read
+  but not filtered (arrays, kvlists, bags).
+- Join keys: `LogicalField::join_key(source, name)` for ids other signals join
+  on (`trace_id`/`span_id`; `trace.id`/`span.id` on exemplars). One key has one
+  type and filterability everywhere it appears.
+- Resource identity: `LogicalField::signaldb_resource_identity(source)` when
+  the signal carries the `resource_identity` digest (flagged `non_native`).
+- Attribute levels: `LogicalField::attribute(source, AttributeLevel, name, ..)`
+  for the resource and scope fields the signal exposes.
 
-## Step 2: Define the Flight Schema (Wire Format)
+Every physical column must be a logical field (by its own name or an alias), an
+attribute container, or `physical_only`. `src/common/tests/schema_realization.rs`
+enforces this against each signal's current `physical-vN`; add entries to
+`alias_table()` and `containers()` there, and to `known_gap()` only for a
+documented pre-existing gap.
 
-- Edit `src/common/src/flight/schema.rs`
-- Add a new Arrow `Schema` definition for the OTLP->Arrow conversion
-- This is the v1 (wire) format -- may differ from Iceberg storage format
+Bump `LogicalSchema::VERSION` and `logical_schema_version` in `schemas.toml`
+together. `logical_schema_fingerprint_is_pinned` fails until you do, and
+reports the new `FIELD_SET_FINGERPRINT` to paste in.
 
-## Step 3: Add OTLP->Arrow Conversion
+## Step 2: Realize it physically in `schemas.toml`
 
-- Add conversion in `src/common/src/flight/conversion/`
-- Implement `otlp_{signal}_to_arrow()` function
-- Convert OTLP protobuf structures to Arrow RecordBatches using the Flight schema
+Every built-in table, `metrics` and `metric_exemplars` included, is resolved
+from `schemas.toml`. There are no hand-written schema functions.
 
-## Step 4: Add WAL Operation
+- Add a `[{table}.physical-v1]` section and point `[metadata]`
+  `current_{signal}_version` at it. Later versions use `inherits` with renames,
+  additions and removals. Version names carry no order; only `inherits` does.
+- Declare each attribute container (`resource_attributes`, `scope_attributes`,
+  the record-level one, `filtered_attributes`, ...) with the `typed_attributes`
+  field type. The parser expands it into `{container}_str/_int/_double/_bool`
+  typed maps plus a binary `{container}_residue`. A new table starts in this
+  layout, so there is nothing to evolve from.
+- Computed and partition columns become `physical_only` automatically.
+- In `schema_parser.rs` add the table's map to `SchemaDefinitions` (and a
+  `current_{signal}_version` to `SchemaMetadata` if it follows the normal
+  scheme). The two metrics tables are the exception: they are pinned by
+  `TYPED_METRIC_VERSION` in `iceberg/schemas.rs`, not `current_metric_version`.
+- In `src/common/src/iceberg/schemas.rs` add a `TableSchema` variant and wire
+  it into `resolved_schema()`, `schema()`, `partition_spec()`,
+  `from_table_name()`, `table_name()`, `all()`, `all_from_config()`,
+  `materialized_labels_of()` and `attribute_type_signal()`.
+- Add the table to `schema_target_for()` in `iceberg/table_manager.rs` so an
+  existing table is evolved to the current version, and to the admin schema
+  listing in `src/router/src/endpoints/schema.rs`. Add `create_{table}_schema_with()` (it calls
+  `to_iceberg_schema_with_labels` on the resolved schema) and
+  `create_{table}_partition_spec()` (hour on `timestamp`).
+- `sort_key_columns()` is the sort order every producer (writer, compactor)
+  honours; give the table a time-leading key.
+- Bloom filters: `bloom_filter_properties_for_table()` in
+  `src/common/src/schema/mod.rs` decides which columns get one (label columns
+  on every table, `trace_id`/`span_id` on traces and logs). Add the table there
+  if it has a point-lookup id.
 
-- Edit `src/common/src/wal/mod.rs`
-- Add a new variant to `WalOperation` enum (e.g., `WriteNewSignal`)
-- Ensure serialization/deserialization works (bincode)
+## Step 3: Give attributes a type authority
 
-## Step 5: Update Acceptor
+The attribute type authority (`src/common/src/schema/type_authority.rs` and
+`type_authority/`) holds one canonical type per tenant, dataset, signal, level
+and key. Precedence and scoping are described once, in
+[Canonical types](../../../docs/users/schema-registry.md#canonical-types).
 
-- Edit `src/acceptor/src/`
-- Add handler for the new OTLP signal type (gRPC + HTTP)
-- Configure WalManager flush settings for the new signal type
-- Forward to Writer via Flight `do_put`
+- The writer's scope signal comes from `common::discovery::signal_for_source`
+  (`src/common/src/discovery.rs`); add the new table's source name there (the
+  two metrics tables both map to `metrics`).
+- Add the signal to `AttributeTypeSignal` in `src/common/src/config/mod.rs` so
+  `[[schema.attribute_types]]` pins and `[schema.warm_index]` parse for it.
+  `TableSchema::attribute_type_signal()` only decides whether a table gets the
+  warm index.
+- Decide each container's level. `typed_attributes::container_level()` treats
+  `resource_attributes` and `scope_attributes` as resource and scope level and
+  every other container as record level.
 
-## Step 6: Update Writer
+## Step 4: Wire format, OTLP conversion, acceptor
 
-- Edit `src/writer/src/flight_iceberg.rs` (IcebergWriterFlightService) -- handle new signal in `do_put`
-- If schema differs between Flight v1 and Iceberg v2:
-  - Add transformation in `src/writer/src/schema_transform.rs`
-- Edit `src/writer/src/processor.rs` -- handle new WalOperation in WalProcessor
-- Edit `src/writer/src/storage/iceberg.rs` -- map table name to schema
+- Flight wire schema: `src/common/src/flight/schema.rs`. Attributes stay
+  JSON-in-Utf8 on the wire and the WAL stays byte-unchanged; typing happens in
+  the writer.
+- OTLP to Arrow conversion in `src/common/src/flight/conversion/`. Go through
+  `extract_value` in `conversion_common.rs` so `AnyValue` fidelity is kept
+  (bytes stay bytes) rather than stringifying.
+- Acceptor: add the OTLP service under `src/acceptor/src/services/` and the
+  HTTP handler under `handler/`. Pass it the shared `TypeSnapshots` with
+  `with_type_snapshots()` and build the warning through `type_warning.rs`. The
+  acceptor only reads a cached type snapshot and reports off-type values to the
+  sender in OTLP `partial_success`; it rejects nothing and writes no types.
 
-## Step 7: Update Querier
+## Step 5: WAL operation and routing
 
-- Edit `src/querier/src/flight.rs` -- add new query types for the signal
-- Add Flight ticket format: `{query_type}:{tenant}:{dataset}:{params}`
+- Add a variant to `WalOperation` in `src/common/src/wal/mod.rs`, and to
+  `signal()` and `from_signal()`.
+- `src/writer/src/routing.rs` turns a batch's metadata into its `(tenant,
+dataset, table)` destination. Both `do_put` and the WAL processor call it, so
+  add the variant's `target_table` routing there and nowhere else. A
+  one-table signal needs no `target_table`; today only metrics honour it.
 
-## Step 8: Update Router (API)
+## Step 6: Writer
 
-- Add HTTP endpoints in `src/router/src/endpoints/tempo.rs` or a new module under `src/router/src/endpoints/`
-- Add Flight forwarding for new query types
+- `src/writer/src/schema_transform.rs`: transform the wire batch to the
+  physical shape (renames, casts, computed columns), and add the table to the
+  `schema_consistency` tests' touched-field sets.
+- Typed attributes: `src/writer/src/storage/iceberg.rs` splits each container
+  into the typed layout. It resolves each distinct key once per batch with
+  `SignalScope::canonical` and places each value with `place()`. A value of the
+  canonical type goes to its typed home; an off-type scalar, array, kvlist or
+  bytes value goes to the residue, as does an empty or null value (including a
+  non-finite double). Only a scalar of the wrong type counts as off-type.
+  Nothing is coerced.
+- `src/writer/src/flight_iceberg.rs` (`do_put`) and `processor.rs` handle the
+  new operation.
+- Tables are provisioned by the writer's table reconciler
+  (`src/writer/src/reconcile.rs`: startup pass, then every
+  `[writer].table_reconcile_interval`), so a dataset is queryable before its
+  first write. The ingest path still load-or-creates on demand as a fallback.
+  The reconciler takes its table set from `all_from_config()`, gated by
+  `default_schemas.{signal}_enabled`. See
+  `docs/operations/table-provisioning.md`.
 
-## Step 9: Update Configuration
+## Step 7: Querier, IR, dialects
 
-- If needed, add schema toggle in `[schema.default_schemas]` config
-- Update `src/common/src/config/mod.rs`
+- Register the IR source in `SourceRegistry::core()`
+  (`src/query-ir/src/source.rs`: name, grain, whether `extract` is legal) and
+  add a `SourcePlan` in `src/querier/src/query/ir_planner.rs` (table, time
+  column, containers, prefixes, aliases). Queries use logical names only; the
+  planner rejects physical column names. If the IR cannot express something,
+  extend the IR rather than adding a dialect-only path.
+- TraceQL, LogQL and PromQL are projections onto the same logical schema, lowered
+  to IR documents in `src/ql-ir/`. Add lowering there if a dialect must reach
+  the new signal.
+- Flight ticket handling, if the signal needs its own: `src/querier/src/flight.rs`.
 
-## Step 10: Tests
+## Step 8: Router and configuration
 
-- Unit tests in each modified crate
-- Integration test in `tests-integration/` for end-to-end flow
-- Verify: OTLP ingest -> WAL -> Iceberg -> Query roundtrip
+- HTTP endpoints under `src/router/src/endpoints/`. First-party readers use
+  `POST /api/v1/query` (Query IR); compatibility endpoints are for external
+  clients.
+- Signal toggle in `[schema.default_schemas]` (`src/common/src/config/mod.rs`).
 
-## Key Patterns to Follow
+## Step 9: Tests
 
-- **Partition by Hour(timestamp)** -- all tables use this
-- **Namespace = [tenant_slug, dataset_slug]** -- all tables are tenant-isolated
-- **Table creation is lazy** -- happens on first write in WalProcessor
-- **Arrow IPC for WAL data** -- RecordBatches serialized with StreamWriter
-- **JSON for complex nested types** in Iceberg -- List<Struct> gets serialized to JSON strings
+- Unit tests in each modified crate, including the fingerprint and realization
+  tests from steps 1 and 2.
+- Integration test in `tests-integration/`: OTLP ingest -> WAL -> Iceberg -> IR
+  query, with an off-type value that must land in the residue.
 
-## Reference: Existing Signal Implementations
+## Key patterns
 
-- **Traces**: Most complete. Look at the full write path from `src/acceptor/` through `src/writer/` to `src/querier/`.
-- **Logs**: Similar to traces but simpler -- no schema version bump (still v1), though wire batches still pass through `transform_logs_v1_to_iceberg` for Iceberg type conversion (`src/writer/src/schema_transform.rs`).
-- **Metrics**: Multiple table types from single signal. Table routing via WAL entry `metadata.target_table`.
+- Partition by `Hour(timestamp)`; namespace is `[tenant_slug, dataset_slug]`.
+- The logical schema is the only surface a query sees. Typed maps, promoted
+  `attr_<level>_<key>` columns and the warm index never appear in a query.
+- Arrow IPC for WAL data; `List<Struct>` values (events, links) are stored as
+  JSON strings.
+
+## Reference: existing signals
+
+- **Traces**: the most complete write path, `src/acceptor/` through
+  `src/writer/` to `src/querier/`.
+- **Logs**: same shape; `body` is an `AnyValue`.
+- **Metrics**: one signal, two tables. `transform_metrics_to_wide` writes the
+  wide `metrics` table and `transform_metric_exemplars` writes
+  `metric_exemplars`; one WAL entry commits to both, each with its own
+  idempotency marker. The IR exposes them as the `metrics` and `exemplars`
+  sources.

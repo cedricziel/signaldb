@@ -173,6 +173,10 @@ async fn whoami() -> Response {
         "user_id": "user-a",
         "tenant": {"id": "acme", "slug": "acme", "name": "Acme"},
         "dataset": "production",
+        "memberships": [],
+        "datasets": [],
+        "default_dataset": null,
+        "granted_tenants": [{"tenant_id": "acme"}],
     }))
     .into_response()
 }
@@ -187,7 +191,13 @@ async fn behaviour(
         .and_then(|v| v.to_str().ok())
         .unwrap_or("production");
     match dataset {
-        "deny" => (StatusCode::FORBIDDEN, "forbidden").into_response(),
+        "deny" => (
+            StatusCode::FORBIDDEN,
+            axum::Json(
+                serde_json::json!({"error": "forbidden", "errorType": "forbidden", "status": "error"}),
+            ),
+        )
+            .into_response(),
         "boom" => (StatusCode::INTERNAL_SERVER_ERROR, "boom").into_response(),
         "throttle" => (StatusCode::TOO_MANY_REQUESTS, "slow down").into_response(),
         "throttle-once" => {
@@ -228,6 +238,15 @@ async fn behaviour(
 fn ok_body(path: &str, big: bool) -> Response {
     let body = if path.starts_with("/tempo/api/search") {
         serde_json::json!({"metrics": {}, "traces": []})
+    } else if path == "/api/v1/query" {
+        serde_json::json!({
+            "result": "metadata",
+            "window": {"start_ns": 0, "end_ns": 1},
+            "metadata": {
+                "kind": "values", "values": [], "truncated": false,
+                "cost": {"mode": "none", "window_scoped": false, "sampled": false, "approximate": false}
+            }
+        })
     } else if big {
         // Well past the 256 KiB tool-result cap.
         serde_json::json!({"status": "success", "data": {"resultType": "streams", "result": [{"stream": {}, "values": [["1", "x".repeat(300 * 1024)]]}]}})
@@ -378,7 +397,22 @@ impl McpSession {
     }
 
     /// Build a `tools/call` request without sending it (for concurrent sends).
-    fn tool_request(&mut self, tool: &str, arguments: serde_json::Value) -> (u64, Request<Body>) {
+    /// Every test in this file authenticates as the mock's one tenant
+    /// (`acme`) and, absent a behaviour-selecting dataset, gets the mock's
+    /// default (`production`) response — so `tenant`/`dataset` are filled in
+    /// here when the caller's `arguments` doesn't already set them, rather
+    /// than repeating `"tenant": "acme"` at every call site.
+    fn tool_request(
+        &mut self,
+        tool: &str,
+        mut arguments: serde_json::Value,
+    ) -> (u64, Request<Body>) {
+        if let Some(args) = arguments.as_object_mut() {
+            args.entry("tenant")
+                .or_insert_with(|| serde_json::json!("acme"));
+            args.entry("dataset")
+                .or_insert_with(|| serde_json::json!("production"));
+        }
         let id = self.next_id;
         self.next_id += 1;
         let request = mcp_request(
@@ -445,8 +479,9 @@ async fn successful_call_is_audited_once_at_info_with_identity_and_duration() {
     assert_eq!(event.field("outcome"), Some("ok"));
     assert!(event.field("duration_ms").is_some(), "{event:?}");
     assert_eq!(event.field("error.type"), None);
-    // No explicit dataset argument and no X-Dataset-ID header: none recorded.
-    assert_eq!(event.field("dataset"), None);
+    // `dataset` is now a required tool argument (defaulted by `tool_request`
+    // to `production`), so it is always recorded.
+    assert_eq!(event.field("dataset"), Some("production"));
 }
 
 #[tokio::test]

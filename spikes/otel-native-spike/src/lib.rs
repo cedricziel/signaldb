@@ -15,7 +15,7 @@
 //!   %, footer/metadata overhead on small flush files, residue parse cost, and
 //!   per-attribute registry-lookup cost.
 //!
-//! Results are recorded in `openspec/changes/otel-native-schema/spike/`.
+//! Results are recorded in `openspec/changes/archive/2026-09-30-otel-native-schema/spike/`.
 
 pub mod bench;
 pub mod coexistence;

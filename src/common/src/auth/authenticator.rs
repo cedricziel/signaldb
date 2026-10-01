@@ -7,9 +7,59 @@ use super::oauth::hash_oauth_token;
 use super::{AuthError, TenantContext, TenantSource, UserContext, hash_session_token};
 use crate::catalog::{Catalog, MembershipRole, UserRecord};
 use crate::config::{AuthConfig, TenantConfig};
-use sha2::{Digest, Sha256};
+use chrono::{DateTime, Duration, Utc};
 use std::collections::HashMap;
 use std::sync::Arc;
+
+/// Total lifetime granted to a browser session: the TTL `create_session` in
+/// `router::endpoints::session` uses when minting a fresh session and its
+/// cookie's `Max-Age`, and the amount [`Authenticator::authenticate_session`]
+/// extends an about-to-expire session by (sliding TTL). The one shared
+/// constant so the two can't drift out of sync.
+pub const SESSION_TTL: Duration = Duration::hours(12);
+
+/// How close to expiry a session must be before [`Authenticator::authenticate_session`]
+/// renews it. Half of [`SESSION_TTL`], so an active user's session is
+/// refreshed roughly once per TTL window rather than on every request.
+const SESSION_RENEWAL_THRESHOLD: Duration = Duration::hours(6);
+
+/// Absolute ceiling on a session's total lifetime since it was first created,
+/// independent of activity. Sliding renewal alone would let a session — and
+/// by extension a stolen cookie — stay valid forever as long as some request
+/// arrives at least once per [`SESSION_RENEWAL_THRESHOLD`]; this forces a
+/// full re-login at least this often regardless of how active the session
+/// is.
+const SESSION_MAX_LIFETIME: Duration = Duration::days(30);
+
+/// Translate a [`super::DatasetRestrictionError`] into the [`AuthError`] a
+/// caller should return, given which kind of credential produced it.
+/// `credential_kind` is `"access token"` for an OAuth grant or `"API key"`
+/// for a database API key; the two credentials point callers at different
+/// mechanisms for naming a dataset explicitly, so the `Ambiguous` hint
+/// differs accordingly.
+fn dataset_restriction_error(
+    err: super::DatasetRestrictionError,
+    credential_kind: &str,
+    dataset_id: Option<&str>,
+    tenant_id: &str,
+) -> AuthError {
+    match err {
+        super::DatasetRestrictionError::NotAllowed => AuthError::forbidden(format!(
+            "{credential_kind} is not permitted to access dataset '{}'",
+            dataset_id.unwrap_or_default()
+        )),
+        super::DatasetRestrictionError::Ambiguous => {
+            let hint = if credential_kind == "access token" {
+                "specify a dataset explicitly"
+            } else {
+                "specify X-Dataset-ID"
+            };
+            AuthError::bad_request(format!(
+                "{credential_kind} is restricted to multiple datasets in tenant '{tenant_id}'; {hint}"
+            ))
+        }
+    }
+}
 
 /// Core authenticator for multi-tenant API key validation
 pub struct Authenticator {
@@ -99,8 +149,11 @@ impl Authenticator {
                 .get(tenant_id)
                 .ok_or_else(|| AuthError::unauthorized("Tenant configuration not found"))?;
 
-            // Resolve dataset
-            let resolved_dataset = self.resolve_dataset(tenant_config, dataset_id)?;
+            // Resolve dataset, falling back to a runtime (catalog-only)
+            // dataset when it isn't in tenant_config.datasets.
+            let resolved_dataset = self
+                .resolve_config_dataset(tenant_id, tenant_config, dataset_id)
+                .await?;
 
             // Resolve slugs from config
             let tenant_slug = tenant_config.slug.clone();
@@ -127,13 +180,20 @@ impl Authenticator {
     }
 
     /// Authenticate an opaque browser session and resolve its requested
-    /// tenant/dataset through the user's tenant membership.
+    /// tenant/dataset through the user's tenant membership. The returned
+    /// `bool` reports whether this call renewed the session (sliding TTL,
+    /// see [`SESSION_TTL`]) — the caller (middleware, `GET /ui/session`)
+    /// uses it to decide whether to reissue the session cookie. It travels
+    /// as a return value rather than a [`TenantContext`] field so that every
+    /// other credential kind `TenantContext` also represents (API key,
+    /// OAuth) isn't made to carry a concern that only ever applies to this
+    /// one.
     pub async fn authenticate_session(
         &self,
         token: &str,
         tenant_id: &str,
         dataset_id: Option<&str>,
-    ) -> Result<TenantContext, AuthError> {
+    ) -> Result<(TenantContext, bool), AuthError> {
         let session = self
             .catalog
             .get_valid_session(&hash_session_token(token))
@@ -148,15 +208,56 @@ impl Authenticator {
             .ok_or_else(|| AuthError::unauthorized("Session user not found"))?;
         let role = self.resolve_role(&user, tenant_id).await?;
 
-        self.resolve_user_tenant(
+        // Run concurrently with tenant resolution below: the two are
+        // independent, so there's no reason to serialize their database
+        // round-trips. `session_id` is cloned so the `renew` future doesn't
+        // hold a borrow of `session` across the `Some(session.id)` move a
+        // few lines down.
+        let session_id = session.id.clone();
+        let renew = self.renew_session(&session_id, session.expires_at, session.created_at);
+        let resolve = self.resolve_user_tenant(
             tenant_id,
             dataset_id,
             user.id,
             role,
             user.is_instance_admin,
             Some(session.id),
-        )
-        .await
+        );
+        let (renewed, ctx) = tokio::join!(renew, resolve);
+        Ok((ctx?, renewed))
+    }
+
+    /// Slide a session's expiry forward if it's within
+    /// [`SESSION_RENEWAL_THRESHOLD`] of lapsing, so a user who keeps using
+    /// the UI never hits the hard cliff — independent of resolving any
+    /// tenant, so callers that authenticate a session without one (`GET
+    /// /ui/session` when no tenant is auto-selected) can still renew it.
+    /// Capped at [`SESSION_MAX_LIFETIME`] since `created_at`: the renewed
+    /// expiry is never pushed past that absolute ceiling, so an old (or
+    /// stolen) session eventually forces a full re-login instead of
+    /// renewing forever on activity alone. A renewal failure is never fatal
+    /// to the caller — the session is still valid until its original
+    /// expiry, so this just logs and reports no renewal.
+    pub async fn renew_session(
+        &self,
+        session_id: &str,
+        expires_at: DateTime<Utc>,
+        created_at: DateTime<Utc>,
+    ) -> bool {
+        let now = Utc::now();
+        let due_for_renewal =
+            expires_at - now < SESSION_RENEWAL_THRESHOLD && now - created_at < SESSION_MAX_LIFETIME;
+        if !due_for_renewal {
+            return false;
+        }
+        let new_expiry = std::cmp::min(now + SESSION_TTL, created_at + SESSION_MAX_LIFETIME);
+        match self.catalog.extend_session(session_id, new_expiry).await {
+            Ok(()) => true,
+            Err(error) => {
+                tracing::warn!(session_id, %error, "failed to renew session");
+                false
+            }
+        }
     }
 
     /// Resolve a user's role within a tenant: their explicit membership role,
@@ -181,18 +282,28 @@ impl Authenticator {
         }
     }
 
-    /// Authenticate an opaque OAuth 2.1 access token (change: mcp-oauth-dcr).
+    /// Authenticate an opaque OAuth 2.1 access token (change: mcp-oauth-dcr;
+    /// generalized to a multi-tenant grant set by
+    /// mcp-multi-tenant-oauth-grants D4).
     ///
-    /// The tenant and scopes come from the **token record**, never from an
-    /// `X-Tenant-ID` header or a tool argument — an OAuth session cannot be
-    /// pointed at a tenant it was not granted. `expected_resource` is this
-    /// deployment's configured MCP resource URL; when both it and the token's
-    /// recorded audience are present they must match (RFC 8707), so a token
-    /// minted for another resource is rejected. An expired or revoked token
-    /// is not found and surfaces as unauthorized.
+    /// The reachable tenant(s) and scopes come from the **token record**,
+    /// never from a tool argument — an OAuth session cannot be pointed at a
+    /// tenant it was not granted. `tenant_selector` is the request's
+    /// `X-Tenant-ID` header, if present: for a token whose grant set names
+    /// exactly one tenant it is ignored entirely (that one tenant always
+    /// resolves, with or without a selector); for a token granting more than
+    /// one tenant, a selector is required, must name a tenant in the grant
+    /// set, and that tenant must still exist in the tenant registry — a
+    /// missing selector, one naming a tenant outside the set, or one naming
+    /// a tenant that no longer exists are all rejected. `expected_resource`
+    /// is this deployment's configured MCP resource URL; when both it and
+    /// the token's recorded audience are present they must match (RFC 8707),
+    /// so a token minted for another resource is rejected. An expired or
+    /// revoked token is not found and surfaces as unauthorized.
     pub async fn authenticate_oauth_token(
         &self,
         access_token: &str,
+        tenant_selector: Option<&str>,
         dataset_id: Option<&str>,
         expected_resource: Option<&str>,
     ) -> Result<TenantContext, AuthError> {
@@ -226,22 +337,67 @@ impl Authenticator {
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
             .ok_or_else(|| AuthError::unauthorized("Access token user not found"))?;
 
-        // Tenant is fixed by the token; the user's role in that tenant still
-        // gates what the token may do.
-        let role = self.resolve_role(&user, &record.tenant_id).await?;
+        // A grant set is always non-empty (catalog::validate_tenant_grants).
+        // Select which grant entry this request resolves against (D4): a
+        // single-tenant grant ignores any selector and always resolves its
+        // one tenant; a multi-tenant grant requires a selector naming one of
+        // its tenants.
+        let selected_grant = match record.tenant_grants.as_slice() {
+            [only] => only.clone(),
+            many => {
+                let selector = tenant_selector.ok_or_else(|| {
+                    AuthError::bad_request(
+                        "access token grants more than one tenant; X-Tenant-ID header is required to select one",
+                    )
+                })?;
+                many.iter()
+                    .find(|grant| grant.tenant_id == selector)
+                    .cloned()
+                    .ok_or_else(|| {
+                        AuthError::forbidden(format!(
+                            "access token grant does not include tenant '{selector}'"
+                        ))
+                    })?
+            }
+        };
+
+        // The user's role in the selected tenant still gates what the token
+        // may do. A grant entry naming a tenant that no longer exists in the
+        // registry fails to resolve here (no membership row survives a
+        // tenant's deletion) or in `resolve_user_tenant` below (D3).
+        let role = self.resolve_role(&user, &selected_grant.tenant_id).await?;
+
+        // Resolve dataset against the selected grant's own restriction
+        // (D3/D4), same order as a database API key.
+        let effective_dataset =
+            super::resolve_dataset_restriction(selected_grant.dataset_ids.as_deref(), dataset_id)
+                .map_err(|err| {
+                dataset_restriction_error(
+                    err,
+                    "access token",
+                    dataset_id,
+                    &selected_grant.tenant_id,
+                )
+            })?;
 
         let context = self
             .resolve_user_tenant(
-                &record.tenant_id,
-                dataset_id,
+                &selected_grant.tenant_id,
+                effective_dataset.as_deref(),
                 user.id,
                 role,
                 user.is_instance_admin,
                 None,
             )
             .await?;
-        // The OAuth grant's scopes are enforced exactly like API-key scopes.
-        Ok(context.with_api_key_restrictions(Some(record.scopes), None))
+        // The OAuth grant's scopes and dataset restriction are enforced
+        // exactly like a database-backed API key's; the full grant set is
+        // also attached for callers that need to enumerate it (D4/D5).
+        // OAuth grants carry no allowed-origins restriction (D1's origin
+        // equivalent is a credential-only concept so far).
+        Ok(context
+            .with_api_key_restrictions(Some(record.scopes), selected_grant.dataset_ids, None)
+            .with_oauth_tenant_grants(record.tenant_grants))
     }
 
     /// Resolve an instance administrator from an opaque browser session.
@@ -284,26 +440,9 @@ impl Authenticator {
         session_id: Option<String>,
     ) -> Result<TenantContext, AuthError> {
         if let Some(tenant_config) = self.config_tenants.get(tenant_id) {
-            let resolved_dataset = match self.resolve_dataset(tenant_config, dataset_id) {
-                Ok(dataset) => dataset,
-                Err(error) if dataset_id.is_some() => {
-                    let requested = dataset_id.expect("guarded by is_some");
-                    let catalog_datasets = self
-                        .catalog
-                        .get_datasets(tenant_id)
-                        .await
-                        .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
-                    if catalog_datasets
-                        .iter()
-                        .any(|dataset| dataset.name == requested)
-                    {
-                        requested.to_string()
-                    } else {
-                        return Err(error);
-                    }
-                }
-                Err(error) => return Err(error),
-            };
+            let resolved_dataset = self
+                .resolve_config_dataset(tenant_id, tenant_config, dataset_id)
+                .await?;
             let dataset_slug = tenant_config
                 .datasets
                 .iter()
@@ -388,22 +527,21 @@ impl Authenticator {
             .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?
             .ok_or_else(|| AuthError::forbidden(format!("Tenant '{tenant_id}' not found")))?;
 
-        // Resolve dataset
-        if let (Some(bound), Some(requested)) = (&api_key.dataset_id, dataset_id)
-            && bound != requested
-        {
-            return Err(AuthError::forbidden(format!(
-                "API key is restricted to dataset '{bound}'"
-            )));
-        }
-        let resolved_dataset = match dataset_id.or(api_key.dataset_id.as_deref()) {
-            Some(id) => id.to_string(),
-            None => tenant_record.default_dataset.clone().ok_or_else(|| {
-                AuthError::bad_request(
-                    "X-Dataset-ID header required (tenant has no default dataset)",
-                )
-            })?,
-        };
+        // Resolve dataset against the key's restriction (D3/D4).
+        let resolved_dataset =
+            match super::resolve_dataset_restriction(api_key.dataset_ids.as_deref(), dataset_id) {
+                Ok(Some(dataset)) => dataset,
+                Ok(None) => tenant_record.default_dataset.clone().ok_or_else(|| {
+                    AuthError::bad_request(
+                        "X-Dataset-ID header required (tenant has no default dataset)",
+                    )
+                })?,
+                Err(err) => {
+                    return Err(dataset_restriction_error(
+                        err, "API key", dataset_id, tenant_id,
+                    ));
+                }
+            };
 
         // Verify dataset exists for tenant
         let datasets = self
@@ -427,7 +565,45 @@ impl Authenticator {
             api_key.name,
             TenantSource::Database,
         )
-        .with_api_key_restrictions(api_key.scopes, api_key.dataset_id))
+        .with_api_key_restrictions(
+            api_key.scopes,
+            api_key.dataset_ids,
+            api_key.allowed_origins,
+        ))
+    }
+
+    /// Resolve a dataset for a config-defined tenant, falling back to the
+    /// catalog's `datasets` rows when the requested id isn't in
+    /// `tenant_config.datasets`. A dataset created at runtime (UI/management
+    /// API) exists only as a catalog row, so `resolve_dataset` alone would
+    /// reject it even though it's real; the fallback keeps the config's
+    /// rejection message for datasets that are genuinely absent everywhere.
+    async fn resolve_config_dataset(
+        &self,
+        tenant_id: &str,
+        tenant_config: &TenantConfig,
+        dataset_id: Option<&str>,
+    ) -> Result<String, AuthError> {
+        match self.resolve_dataset(tenant_config, dataset_id) {
+            Ok(dataset) => Ok(dataset),
+            Err(error) if dataset_id.is_some() => {
+                let requested = dataset_id.expect("guarded by is_some");
+                let catalog_datasets = self
+                    .catalog
+                    .get_datasets(tenant_id)
+                    .await
+                    .map_err(|e| AuthError::unauthorized(format!("Database error: {e}")))?;
+                if catalog_datasets
+                    .iter()
+                    .any(|dataset| dataset.name == requested)
+                {
+                    Ok(requested.to_string())
+                } else {
+                    Err(error)
+                }
+            }
+            Err(error) => Err(error),
+        }
     }
 
     /// Resolve dataset from config-based tenant
@@ -469,9 +645,7 @@ impl Authenticator {
 
     /// Hash an API key using SHA-256
     pub fn hash_api_key(api_key: &str) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(api_key.as_bytes());
-        hex::encode(hasher.finalize())
+        super::sha256_hex(api_key)
     }
 }
 
@@ -479,14 +653,27 @@ impl Authenticator {
 mod tests {
     use super::*;
     use crate::auth::oauth::{TokenKind, generate_oauth_token, hash_oauth_token};
+    use crate::catalog::UserSessionRecord;
     use crate::config::{ApiKeyConfig, DatasetConfig};
     use chrono::{Duration, Utc};
 
-    /// An authenticator over a database tenant `acme` with dataset `production`,
-    /// a member user, and a stored access token for that user/tenant. Returns
-    /// the authenticator and the raw access token.
+    /// An authenticator over a database tenant `acme` with datasets
+    /// `production` and `staging`, a member user, and a stored access token
+    /// for that user/tenant. Returns the authenticator and the raw access
+    /// token.
     async fn oauth_authenticator(
         scopes: &[String],
+        resource: Option<&str>,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> (Authenticator, String) {
+        oauth_authenticator_with_dataset_restriction(scopes, None, resource, expires_at).await
+    }
+
+    /// Like [`oauth_authenticator`], but the stored access token also
+    /// carries `dataset_ids` (D6/1.5).
+    async fn oauth_authenticator_with_dataset_restriction(
+        scopes: &[String],
+        dataset_ids: Option<&[String]>,
         resource: Option<&str>,
         expires_at: chrono::DateTime<Utc>,
     ) -> (Authenticator, String) {
@@ -496,8 +683,9 @@ mod tests {
             .await
             .unwrap();
         catalog.create_dataset("acme", "production").await.unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
         let user = catalog
-            .create_user("agent@example.com", None, "phc", false)
+            .create_user("agent@example.com", None, Some("phc"), false)
             .await
             .unwrap();
         catalog
@@ -510,7 +698,10 @@ mod tests {
                 &hash_oauth_token(&raw),
                 "client-1",
                 &user.id,
-                "acme",
+                &[crate::catalog::TenantGrant {
+                    tenant_id: "acme".to_string(),
+                    dataset_ids: dataset_ids.map(<[String]>::to_vec),
+                }],
                 scopes,
                 resource,
                 expires_at,
@@ -518,6 +709,443 @@ mod tests {
             .await
             .unwrap();
         (Authenticator::new(AuthConfig::default(), catalog), raw)
+    }
+
+    /// An authenticator over two database tenants (`acme`, restricted to its
+    /// `production` dataset; `globex`, unrestricted), a member of both, and
+    /// one access token whose grant set covers both tenants (design:
+    /// mcp-multi-tenant-oauth-grants D4). Returns the authenticator and the
+    /// raw access token.
+    async fn multi_tenant_oauth_authenticator(
+        scopes: &[String],
+        expires_at: chrono::DateTime<Utc>,
+    ) -> (Authenticator, String) {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        catalog.create_dataset("acme", "staging").await.unwrap();
+        catalog
+            .upsert_tenant("globex", "Globex", Some("default"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("globex", "default").await.unwrap();
+        let user = catalog
+            .create_user("agent@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Member)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "globex", MembershipRole::Member)
+            .await
+            .unwrap();
+        let raw = generate_oauth_token(TokenKind::Access);
+        catalog
+            .create_access_token(
+                &hash_oauth_token(&raw),
+                "client-1",
+                &user.id,
+                &[
+                    crate::catalog::TenantGrant {
+                        tenant_id: "acme".to_string(),
+                        dataset_ids: Some(vec!["production".to_string()]),
+                    },
+                    crate::catalog::TenantGrant {
+                        tenant_id: "globex".to_string(),
+                        dataset_ids: None,
+                    },
+                ],
+                scopes,
+                None,
+                expires_at,
+            )
+            .await
+            .unwrap();
+        (Authenticator::new(AuthConfig::default(), catalog), raw)
+    }
+
+    /// Task 3.6: a single-tenant grant resolves its one tenant exactly as
+    /// before, ignoring any `X-Tenant-ID` selector — including one naming a
+    /// tenant that isn't even the grant's own tenant.
+    #[tokio::test]
+    async fn oauth_single_tenant_grant_ignores_any_selector() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            oauth_authenticator(&scopes, None, Utc::now() + Duration::hours(1)).await;
+
+        let ctx = auth
+            .authenticate_oauth_token(&token, Some("some-other-tenant"), None, None)
+            .await
+            .expect("single-tenant grant ignores an unrelated selector");
+        assert_eq!(ctx.tenant_id, "acme");
+    }
+
+    /// Task 3.7: a multi-tenant grant with no selector is rejected.
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_no_selector_is_rejected() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        let err = auth
+            .authenticate_oauth_token(&token, None, None, None)
+            .await
+            .expect_err("a multi-tenant grant with no selector must be rejected");
+        assert_eq!(err.status_code, 400);
+    }
+
+    /// Task 3.7: a multi-tenant grant with a selector outside the grant set
+    /// is rejected, naming the offending tenant.
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_selector_outside_set_is_rejected() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        let err = auth
+            .authenticate_oauth_token(&token, Some("initech"), None, None)
+            .await
+            .expect_err("a selector outside the grant set must be rejected");
+        assert_eq!(err.status_code, 403);
+        assert!(err.message.contains("initech"), "{}", err.message);
+    }
+
+    /// Task 3.7: a multi-tenant grant with a selector naming a tenant that
+    /// no longer exists in the registry fails to resolve, the same as one
+    /// naming a tenant outside the grant set (D3).
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_selector_naming_deleted_tenant_fails_to_resolve() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        auth.catalog.delete_tenant("acme").await.unwrap();
+
+        let err = auth
+            .authenticate_oauth_token(&token, Some("acme"), None, None)
+            .await
+            .expect_err("a selector naming a deleted tenant must fail to resolve");
+        assert_eq!(err.status_code, 403);
+
+        // The other tenant in the same grant is unaffected.
+        let ctx = auth
+            .authenticate_oauth_token(&token, Some("globex"), None, None)
+            .await
+            .expect("the surviving tenant in the same grant still resolves");
+        assert_eq!(ctx.tenant_id, "globex");
+    }
+
+    /// Task 3.7: a multi-tenant grant with a valid selector resolves that
+    /// tenant's own dataset restriction, independent of any other tenant's
+    /// restriction in the same grant set — proven with two tenants carrying
+    /// *different* restrictions so a fall-through-to-first bug would be
+    /// caught.
+    #[tokio::test]
+    async fn oauth_multi_tenant_grant_with_valid_selector_resolves_its_own_restriction() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            multi_tenant_oauth_authenticator(&scopes, Utc::now() + Duration::hours(1)).await;
+
+        let acme = auth
+            .authenticate_oauth_token(&token, Some("acme"), None, None)
+            .await
+            .expect("acme selector resolves");
+        assert_eq!(acme.tenant_id, "acme");
+        assert_eq!(acme.dataset_id, "production");
+        assert_eq!(
+            acme.api_key_dataset_ids,
+            Some(vec!["production".to_string()])
+        );
+
+        let globex = auth
+            .authenticate_oauth_token(&token, Some("globex"), None, None)
+            .await
+            .expect("globex selector resolves");
+        assert_eq!(globex.tenant_id, "globex");
+        assert_eq!(globex.dataset_id, "default");
+        assert_eq!(globex.api_key_dataset_ids, None);
+
+        // The full grant set is attached regardless of which tenant was
+        // selected (D4/D5), for `whoami`'s `granted_tenants`.
+        let expected_grants = vec![
+            crate::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: Some(vec!["production".to_string()]),
+            },
+            crate::catalog::TenantGrant {
+                tenant_id: "globex".to_string(),
+                dataset_ids: None,
+            },
+        ];
+        assert_eq!(acme.oauth_tenant_grants, Some(expected_grants.clone()));
+        assert_eq!(globex.oauth_tenant_grants, Some(expected_grants));
+    }
+
+    /// A single-tenant OAuth grant also carries its (one-element) grant set
+    /// in `oauth_tenant_grants` (D4/D5) — not just the multi-tenant case.
+    #[tokio::test]
+    async fn oauth_single_tenant_grant_still_carries_its_grant_set() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            oauth_authenticator(&scopes, None, Utc::now() + Duration::hours(1)).await;
+
+        let ctx = auth
+            .authenticate_oauth_token(&token, None, None, None)
+            .await
+            .unwrap();
+        assert_eq!(
+            ctx.oauth_tenant_grants,
+            Some(vec![crate::catalog::TenantGrant {
+                tenant_id: "acme".to_string(),
+                dataset_ids: None,
+            }])
+        );
+    }
+
+    /// A database API key or a browser session carries no OAuth grant set.
+    #[tokio::test]
+    async fn non_oauth_credentials_carry_no_oauth_tenant_grants() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![ApiKeyConfig {
+                    key: "test-key-123".to_string(),
+                    name: None,
+                }],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Authenticator::new(auth_config, catalog);
+        let ctx = authenticator
+            .authenticate("test-key-123", "acme", None)
+            .await
+            .unwrap();
+        assert_eq!(ctx.oauth_tenant_grants, None);
+    }
+
+    /// Task 3.3: when a user holds both a `local` and an `oidc_mapping`
+    /// membership row for the same tenant, `authenticate_session` (via
+    /// `resolve_role` -> `Catalog::get_tenant_membership`) resolves the
+    /// higher-ranked role end to end into the session's `TenantContext`
+    /// (design decision 5's "Local and mapped memberships coexist" scenario).
+    #[tokio::test]
+    async fn session_tenant_context_resolves_the_higher_of_local_and_mapped_roles() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        let user = catalog
+            .create_user("dual@example.com", None, Some("phc"), false)
+            .await
+            .unwrap();
+        // A local admin has granted `viewer`, and a group mapping separately
+        // grants `admin` for the same tenant: the higher role must win.
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Viewer)
+            .await
+            .unwrap();
+        catalog
+            .sync_oidc_memberships(&user.id, &[("acme".to_string(), MembershipRole::Admin)])
+            .await
+            .unwrap();
+
+        let token = crate::auth::generate_session_token();
+        catalog
+            .create_user_session(
+                &user.id,
+                &hash_session_token(&token),
+                Utc::now() + Duration::hours(1),
+            )
+            .await
+            .unwrap();
+
+        let auth = Authenticator::new(AuthConfig::default(), catalog);
+        let (ctx, _renewed) = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("session with a resolvable membership authenticates");
+        assert_eq!(ctx.role, Some(MembershipRole::Admin));
+    }
+
+    /// Shared fixture for the sliding-renewal tests below: an `acme` tenant
+    /// with one dataset, an admin user, and a session for that user expiring
+    /// at `expires_at`. Returns the catalog (so a test can inspect or
+    /// further manipulate the session row), a matching `Authenticator`, the
+    /// plaintext cookie token, and the created session record.
+    async fn renewal_test_fixture(
+        email: &str,
+        expires_at: chrono::DateTime<Utc>,
+    ) -> (Arc<Catalog>, Authenticator, String, UserSessionRecord) {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme", Some("production"), "database")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "production").await.unwrap();
+        let user = catalog
+            .create_user(email, None, Some("phc"), false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_tenant_membership(&user.id, "acme", MembershipRole::Admin)
+            .await
+            .unwrap();
+
+        let token = crate::auth::generate_session_token();
+        let session = catalog
+            .create_user_session(&user.id, &hash_session_token(&token), expires_at)
+            .await
+            .unwrap();
+        let auth = Authenticator::new(AuthConfig::default(), catalog.clone());
+        (catalog, auth, token, session)
+    }
+
+    /// A session within [`SESSION_RENEWAL_THRESHOLD`] of expiring gets its
+    /// expiry pushed out by [`SESSION_TTL`] and reports the renewal.
+    #[tokio::test]
+    async fn authenticate_session_renews_a_near_expiry_session() {
+        let original_expiry = Utc::now() + Duration::hours(1);
+        let (catalog, auth, token, _session) =
+            renewal_test_fixture("renew@example.com", original_expiry).await;
+
+        let (_ctx, renewed) = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("near-expiry session still authenticates");
+        assert!(renewed);
+
+        let renewed_session = catalog
+            .get_valid_session(&hash_session_token(&token))
+            .await
+            .unwrap()
+            .expect("session still valid after renewal");
+        assert!(renewed_session.expires_at > original_expiry);
+    }
+
+    /// A freshly created session, far from expiry, is left untouched.
+    #[tokio::test]
+    async fn authenticate_session_does_not_renew_a_fresh_session() {
+        let original_expiry = Utc::now() + Duration::hours(12);
+        let (catalog, auth, token, _session) =
+            renewal_test_fixture("fresh@example.com", original_expiry).await;
+
+        let (_ctx, renewed) = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("fresh session authenticates");
+        assert!(!renewed);
+
+        let session = catalog
+            .get_valid_session(&hash_session_token(&token))
+            .await
+            .unwrap()
+            .expect("session still valid");
+        assert!((session.expires_at - original_expiry).num_seconds().abs() < 2);
+    }
+
+    /// Backdate a session's `created_at` directly in the database, bypassing
+    /// `create_user_session`'s `Utc::now()` stamp, to simulate an old
+    /// session for the absolute-lifetime tests below. Sqlite-only, matching
+    /// `renewal_test_fixture`.
+    async fn backdate_session_created_at(
+        catalog: &Catalog,
+        session_id: &str,
+        created_at: DateTime<Utc>,
+    ) {
+        let pool = match catalog {
+            Catalog::Sqlite(pool) => pool.clone(),
+            Catalog::Postgres(_) => unreachable!("this test uses the sqlite backend"),
+        };
+        sqlx::query("UPDATE user_sessions SET created_at = ? WHERE id = ?")
+            .bind(created_at.to_rfc3339())
+            .bind(session_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+    }
+
+    /// A near-expiry session past [`SESSION_MAX_LIFETIME`] since its
+    /// creation is left to expire rather than renewed — the absolute cap
+    /// that keeps an old (or stolen) session from staying alive forever on
+    /// activity alone.
+    #[tokio::test]
+    async fn authenticate_session_does_not_renew_past_the_absolute_max_lifetime() {
+        // Near expiry, so renewal would trigger if not for the age cap below.
+        let original_expiry = Utc::now() + Duration::hours(1);
+        let (catalog, auth, token, session) =
+            renewal_test_fixture("old@example.com", original_expiry).await;
+
+        let backdated = Utc::now() - SESSION_MAX_LIFETIME - Duration::hours(1);
+        backdate_session_created_at(&catalog, &session.id, backdated).await;
+
+        let (_ctx, renewed) = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("still valid until its original expiry");
+        assert!(!renewed);
+
+        let unchanged = catalog
+            .get_valid_session(&hash_session_token(&token))
+            .await
+            .unwrap()
+            .expect("session still valid");
+        assert!((unchanged.expires_at - original_expiry).num_seconds().abs() < 2);
+    }
+
+    /// A session renewed just before it would hit [`SESSION_MAX_LIFETIME`]
+    /// still renews, but its new expiry is capped at `created_at +
+    /// SESSION_MAX_LIFETIME` rather than the full `now + SESSION_TTL` — the
+    /// fix for a bug where a renewal landing right under the age cap could
+    /// push a session's expiry past it.
+    #[tokio::test]
+    async fn authenticate_session_caps_renewal_at_the_absolute_max_lifetime() {
+        // Near expiry, so renewal is due.
+        let original_expiry = Utc::now() + Duration::hours(1);
+        let (catalog, auth, token, session) =
+            renewal_test_fixture("near-cap@example.com", original_expiry).await;
+
+        // Just inside the absolute cap: a full `SESSION_TTL` renewal would
+        // overshoot `created_at + SESSION_MAX_LIFETIME` by ten hours.
+        let created_at = Utc::now() - SESSION_MAX_LIFETIME + Duration::hours(2);
+        backdate_session_created_at(&catalog, &session.id, created_at).await;
+
+        let (_ctx, renewed) = auth
+            .authenticate_session(&token, "acme", None)
+            .await
+            .expect("still valid until its original expiry");
+        assert!(renewed);
+
+        let after = catalog
+            .get_valid_session(&hash_session_token(&token))
+            .await
+            .unwrap()
+            .expect("session still valid after renewal");
+        let cap = created_at + SESSION_MAX_LIFETIME;
+        assert!(
+            after.expires_at <= cap,
+            "renewed expiry {} must not exceed the absolute cap {cap}",
+            after.expires_at
+        );
+        assert!((after.expires_at - cap).num_seconds().abs() < 2);
     }
 
     #[tokio::test]
@@ -531,7 +1159,7 @@ mod tests {
         .await;
 
         let ctx = auth
-            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://signaldb.example.com/mcp"))
             .await
             .expect("valid token authenticates");
         // Tenant comes from the token; scopes are enforced like API-key scopes.
@@ -545,6 +1173,65 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn oauth_token_with_dataset_restriction_denies_outside_and_allows_inside() {
+        let scopes = vec!["traces:read".to_string()];
+        let restriction = vec!["production".to_string()];
+        let (auth, token) = oauth_authenticator_with_dataset_restriction(
+            &scopes,
+            Some(&restriction),
+            None,
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+
+        let allowed = auth
+            .authenticate_oauth_token(&token, None, Some("production"), None)
+            .await
+            .expect("dataset inside the restriction is allowed");
+        assert_eq!(allowed.dataset_id, "production");
+
+        let denied = auth
+            .authenticate_oauth_token(&token, None, Some("staging"), None)
+            .await
+            .expect_err("dataset outside the restriction is denied");
+        assert_eq!(denied.status_code, 403);
+    }
+
+    #[tokio::test]
+    async fn oauth_token_without_restriction_reaches_every_dataset() {
+        let scopes = vec!["traces:read".to_string()];
+        let (auth, token) =
+            oauth_authenticator(&scopes, None, Utc::now() + Duration::hours(1)).await;
+
+        for dataset in ["production", "staging"] {
+            let ctx = auth
+                .authenticate_oauth_token(&token, None, Some(dataset), None)
+                .await
+                .unwrap_or_else(|e| panic!("unrestricted token must reach '{dataset}': {e:?}"));
+            assert_eq!(ctx.dataset_id, dataset);
+        }
+    }
+
+    #[tokio::test]
+    async fn oauth_token_restricted_to_two_datasets_with_no_explicit_dataset_is_rejected() {
+        let scopes = vec!["traces:read".to_string()];
+        let restriction = vec!["production".to_string(), "staging".to_string()];
+        let (auth, token) = oauth_authenticator_with_dataset_restriction(
+            &scopes,
+            Some(&restriction),
+            None,
+            Utc::now() + Duration::hours(1),
+        )
+        .await;
+
+        let err = auth
+            .authenticate_oauth_token(&token, None, None, None)
+            .await
+            .expect_err("a multi-element restriction with no explicit dataset must be rejected");
+        assert_eq!(err.status_code, 400);
+    }
+
+    #[tokio::test]
     async fn oauth_token_with_wrong_audience_is_rejected() {
         let (auth, token) = oauth_authenticator(
             &["traces:read".to_string()],
@@ -553,7 +1240,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token(&token, None, Some("https://other.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://other.example.com/mcp"))
             .await
             .expect_err("audience mismatch is rejected");
         assert_eq!(err.status_code, 401);
@@ -570,7 +1257,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://signaldb.example.com/mcp"))
             .await
             .expect_err("unbound token is rejected where a resource is configured");
         assert_eq!(err.status_code, 401);
@@ -585,7 +1272,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token(&token, None, Some("https://signaldb.example.com/mcp"))
+            .authenticate_oauth_token(&token, None, None, Some("https://signaldb.example.com/mcp"))
             .await
             .expect_err("expired token is rejected");
         assert_eq!(err.status_code, 401);
@@ -600,7 +1287,7 @@ mod tests {
         )
         .await;
         let err = auth
-            .authenticate_oauth_token("sdb_at_nonexistent", None, None)
+            .authenticate_oauth_token("sdb_at_nonexistent", None, None, None)
             .await
             .expect_err("unknown token is rejected");
         assert_eq!(err.status_code, 401);
@@ -801,6 +1488,122 @@ mod tests {
         assert!(err.message.contains("X-Dataset-ID header required"));
     }
 
+    /// A dataset created at runtime (UI/management API) on a config-defined
+    /// tenant exists only as a catalog `datasets` row, never in
+    /// `tenant_config.datasets`. A config-minted API key must still be able
+    /// to select it via `X-Dataset-ID`, mirroring what `resolve_user_tenant`
+    /// (the session/OAuth path) already does.
+    #[tokio::test]
+    async fn config_api_key_resolves_runtime_catalog_dataset() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme Corp", Some("production"), "config")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "apps").await.unwrap();
+
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![ApiKeyConfig {
+                    key: "test-key-123".to_string(),
+                    name: None,
+                }],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Authenticator::new(auth_config, catalog);
+
+        let result = authenticator
+            .authenticate("test-key-123", "acme", Some("apps"))
+            .await;
+        assert!(
+            result.is_ok(),
+            "expected runtime catalog dataset to authenticate: {:?}",
+            result.err()
+        );
+        let ctx = result.unwrap();
+        assert_eq!(ctx.dataset_id, "apps");
+        // Not in tenant_config.datasets, so the slug falls back to the name.
+        assert_eq!(ctx.dataset_slug, "apps");
+        assert_eq!(ctx.source, TenantSource::Config);
+    }
+
+    /// A database-minted key (e.g. one created for a UI-provisioned dataset)
+    /// bound to that catalog dataset must still authenticate against a
+    /// config-defined tenant, with or without an explicit `X-Dataset-ID`.
+    #[tokio::test]
+    async fn database_key_on_config_tenant_resolves_catalog_dataset() {
+        let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        catalog
+            .upsert_tenant("acme", "Acme Corp", Some("production"), "config")
+            .await
+            .unwrap();
+        catalog.create_dataset("acme", "apps").await.unwrap();
+        let raw_key = "sdbk_runtime_dataset";
+        catalog
+            .upsert_scoped_api_key(
+                "acme",
+                &Authenticator::hash_api_key(raw_key),
+                None,
+                Some(&["apps".to_string()]),
+                None,
+                None,
+                Some("user-1"),
+            )
+            .await
+            .unwrap();
+
+        let auth_config = AuthConfig {
+            tenants: vec![TenantConfig {
+                id: "acme".to_string(),
+                slug: "acme".to_string(),
+                name: "Acme Corp".to_string(),
+                default_dataset: Some("production".to_string()),
+                datasets: vec![DatasetConfig {
+                    id: "production".to_string(),
+                    slug: "production".to_string(),
+                    is_default: true,
+                    storage: None,
+                }],
+                api_keys: vec![],
+                schema_config: None,
+                limits: None,
+            }],
+            ..Default::default()
+        };
+        let authenticator = Authenticator::new(auth_config, Arc::clone(&catalog));
+
+        let with_header = authenticator
+            .authenticate(raw_key, "acme", Some("apps"))
+            .await;
+        assert!(
+            with_header.is_ok(),
+            "expected DB key with explicit dataset header to authenticate: {:?}",
+            with_header.err()
+        );
+        assert_eq!(with_header.unwrap().dataset_id, "apps");
+
+        let without_header = authenticator.authenticate(raw_key, "acme", None).await;
+        assert!(
+            without_header.is_ok(),
+            "expected DB key bound to a dataset to authenticate without a header: {:?}",
+            without_header.err()
+        );
+        assert_eq!(without_header.unwrap().dataset_id, "apps");
+    }
+
     #[tokio::test]
     async fn database_api_key_enforces_dataset_and_signal_scopes() {
         let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
@@ -817,7 +1620,8 @@ mod tests {
                 "acme",
                 &Authenticator::hash_api_key(raw_key),
                 Some("metrics"),
-                Some("production"),
+                Some(&["production".to_string()]),
+                None,
                 Some(&scopes),
                 Some("user-1"),
             )
@@ -838,6 +1642,6 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error.status_code, 403);
-        assert!(error.message.contains("restricted to dataset"));
+        assert!(error.message.contains("not permitted to access dataset"));
     }
 }

@@ -15,6 +15,7 @@
 //! bounded by [`FLUSH_TIMEOUT`].
 
 use crate::processor::{FlushScope, WalProcessor};
+use crate::routing::{self, RouteMetadata, RouteTarget};
 use crate::schema_transform::{
     FlightMetadata, determine_wal_operation, extract_flight_metadata, transform_for_signal,
 };
@@ -26,10 +27,12 @@ use bytes::Bytes;
 use common::CatalogManager;
 use common::config::WriterConfig;
 use common::flight::decode::flight_data_vec_to_batches;
-use common::wal::{Wal, WalOperation, record_batch_to_bytes};
+use common::ingest_dedup::{Clock, IngestDedup, SystemClock, ingest_id_from_metadata};
+use common::schema::type_authority::TypeAuthority;
+use common::wal::manager::WalManager;
+use common::wal::{WalOperation, record_batch_to_bytes};
 use futures::StreamExt;
 use futures::stream::{self, BoxStream};
-use object_store::ObjectStore;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use tonic::{Request, Response, Status};
@@ -79,9 +82,16 @@ fn parse_flush_scope(metadata: &tonic::metadata::MetadataMap) -> Result<FlushSco
 /// This demonstrates the integration of the new Iceberg-based processor
 pub struct IcebergWriterFlightService {
     processor: Arc<Mutex<WalProcessor>>,
-    wal: Arc<Wal>,
+    /// One WAL per tenant/dataset/signal (#932). `do_put` appends to the WAL
+    /// of the batch's own tenant, so a poisoned or slow WAL only ever affects
+    /// that tenant's ingest path.
+    wal_manager: Arc<WalManager>,
     reconciler: Arc<crate::reconcile::TableReconciler>,
     table_reconcile_interval: std::time::Duration,
+    /// Windowed cache of ingest ids seen on `do_put`, so a resend the
+    /// acceptor routes back to this writer is deduped rather than
+    /// re-inserted (#1734 step 2). See [`common::ingest_dedup`].
+    ingest_dedup: Arc<IngestDedup>,
 }
 
 impl IcebergWriterFlightService {
@@ -91,22 +101,105 @@ impl IcebergWriterFlightService {
     /// metadata across all SignalDB components.
     pub fn new(
         catalog_manager: Arc<CatalogManager>,
-        object_store: Arc<dyn ObjectStore>,
-        wal: Arc<Wal>,
+        wal_manager: Arc<WalManager>,
         writer_config: &WriterConfig,
     ) -> Self {
-        let processor = WalProcessor::with_config(
-            wal.clone(),
-            catalog_manager.clone(),
-            object_store,
+        Self::with_ingest_dedup_clock(
+            catalog_manager,
+            wal_manager,
             writer_config,
-        );
+            Arc::new(SystemClock),
+            None,
+        )
+    }
+
+    /// As [`Self::new`], but wired to place typed-attribute values through
+    /// `type_authority` (see [`WalProcessor::with_type_authority`]). Every
+    /// deployment that commits batches needs one: all tables are typed.
+    pub fn with_type_authority(
+        catalog_manager: Arc<CatalogManager>,
+        wal_manager: Arc<WalManager>,
+        writer_config: &WriterConfig,
+        type_authority: Arc<TypeAuthority>,
+    ) -> Self {
+        Self::with_ingest_dedup_clock(
+            catalog_manager,
+            wal_manager,
+            writer_config,
+            Arc::new(SystemClock),
+            Some(type_authority),
+        )
+    }
+
+    /// As [`Self::new`], but with an injectable clock for the ingest-dedup
+    /// cache and an optional type authority. Exposed so tests can move past
+    /// `ingest_dedup_window` without sleeping; production callers use
+    /// [`Self::new`] or [`Self::with_type_authority`].
+    pub(crate) fn with_ingest_dedup_clock(
+        catalog_manager: Arc<CatalogManager>,
+        wal_manager: Arc<WalManager>,
+        writer_config: &WriterConfig,
+        clock: Arc<dyn Clock>,
+        type_authority: Option<Arc<TypeAuthority>>,
+    ) -> Self {
+        let mut processor =
+            WalProcessor::with_config(wal_manager.clone(), catalog_manager.clone(), writer_config);
+        if let Some(type_authority) = type_authority {
+            processor = processor.with_type_authority(type_authority);
+        }
 
         Self {
             processor: Arc::new(Mutex::new(processor)),
-            wal,
-            reconciler: Arc::new(crate::reconcile::TableReconciler::new(catalog_manager)),
+            wal_manager,
+            reconciler: Arc::new(
+                crate::reconcile::TableReconciler::new(catalog_manager)
+                    .with_marker_retention(writer_config.wal_marker_retention),
+            ),
             table_reconcile_interval: writer_config.table_reconcile_interval,
+            ingest_dedup: Arc::new(IngestDedup::with_clock(
+                writer_config.ingest_dedup_window,
+                clock,
+            )),
+        }
+    }
+
+    /// Rebuild the ingest-dedup cache from ingest ids still recorded in this
+    /// writer's own WAL entries (processed or not) within the dedup window,
+    /// so a restart does not reopen a window an acceptor resend could
+    /// exploit (#1734 step 2). Call once at startup, after the WAL manager
+    /// has opened the WALs left on disk by a previous run.
+    ///
+    /// Known gap: a processed entry pruned from the WAL (segment cleanup)
+    /// before the window elapses is not seen here, so its ingest id is not
+    /// re-protected across this restart. WAL retention is out of scope for
+    /// this change.
+    pub async fn rebuild_ingest_dedup_from_wal(&self) {
+        let mut seeded = 0usize;
+        for (_key, wal) in self.wal_manager.all_wals().await {
+            let entries = match wal.get_entries().await {
+                Ok(entries) => entries,
+                Err(e) => {
+                    tracing::warn!(
+                        error = %e,
+                        "Failed to list WAL entries while rebuilding ingest-dedup cache"
+                    );
+                    continue;
+                }
+            };
+            for entry in entries {
+                let Some(ingest_id) = entry.metadata.as_deref().and_then(ingest_id_from_metadata)
+                else {
+                    continue;
+                };
+                let seen_at =
+                    std::time::UNIX_EPOCH + std::time::Duration::from_secs(entry.timestamp);
+                if self.ingest_dedup.seed(ingest_id, seen_at) {
+                    seeded += 1;
+                }
+            }
+        }
+        if seeded > 0 {
+            tracing::info!(seeded, "Rebuilt ingest-id dedup cache from writer WAL");
         }
     }
 
@@ -129,16 +222,16 @@ impl IcebergWriterFlightService {
                     Ok(summary) => {
                         if summary.tables_created > 0 || summary.tables_failed > 0 {
                             tracing::info!(
-                                datasets_checked = summary.datasets_checked,
-                                datasets_skipped = summary.datasets_skipped,
-                                tables_created = summary.tables_created,
-                                tables_failed = summary.tables_failed,
+                                signaldb.job.datasets_checked = summary.datasets_checked as i64,
+                                signaldb.job.datasets_skipped = summary.datasets_skipped as i64,
+                                signaldb.job.tables_created = summary.tables_created as i64,
+                                signaldb.job.tables_failed = summary.tables_failed as i64,
                                 "Signal-table reconcile pass complete"
                             );
                         } else {
                             tracing::debug!(
-                                datasets_checked = summary.datasets_checked,
-                                datasets_skipped = summary.datasets_skipped,
+                                signaldb.job.datasets_checked = summary.datasets_checked as i64,
+                                signaldb.job.datasets_skipped = summary.datasets_skipped as i64,
                                 "Signal-table reconcile pass complete (converged)"
                             );
                         }
@@ -164,37 +257,33 @@ impl IcebergWriterFlightService {
     }
 
     /// Start the background WAL processing loop.
-    /// Returns the JoinHandle for the spawned task. Caller must abort() this handle
-    /// during shutdown to release the Arc<Wal> reference before calling Arc::try_unwrap.
+    ///
+    /// Returns the JoinHandle for the spawned task; the caller aborts it
+    /// during shutdown, before flushing the WALs.
+    ///
+    /// The loop ticks at a fixed interval. It carries no backoff because
+    /// `process_pending_entries` absorbs failures rather than propagating
+    /// them: an entry that cannot be decoded or committed is counted and, at
+    /// `MAX_ENTRY_FAILURES`, dead-lettered, and a WAL that cannot be listed is
+    /// skipped for the cycle. An error only escapes for an explicit
+    /// `do_action("flush")` scope, which this loop never passes. (The loop
+    /// used to compute an exponential delay from a `consecutive_failures`
+    /// counter that no reachable path could increment — removing it changes
+    /// no behaviour, only the impression that a failing catalog is throttled
+    /// here. Throttling a failing catalog is tracked separately.)
     pub fn start_background_processing(&self) -> tokio::task::JoinHandle<()> {
         let processor = self.processor.clone();
 
         let handle = tokio::spawn(async move {
-            const BASE_INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
-            const MAX_BACKOFF: tokio::time::Duration = tokio::time::Duration::from_secs(300);
-            let mut consecutive_failures: u32 = 0;
+            const INTERVAL: tokio::time::Duration = tokio::time::Duration::from_secs(5);
             loop {
                 let mut processor_guard = processor.lock().await;
-                match processor_guard.process_pending_entries().await {
-                    Ok(()) => consecutive_failures = 0,
-                    Err(e) => {
-                        consecutive_failures = consecutive_failures.saturating_add(1);
-                        tracing::error!(
-                            error = %e,
-                            consecutive_failures,
-                            "Background WAL processing error"
-                        );
-                    }
+                if let Err(e) = processor_guard.process_pending_entries().await {
+                    tracing::error!(error = %e, "Background WAL processing error");
                 }
                 drop(processor_guard);
 
-                // Exponential backoff on repeated failures so a persistently
-                // failing catalog/store is not hammered every 5 seconds.
-                let delay = BASE_INTERVAL
-                    .saturating_mul(1u32 << consecutive_failures.min(6))
-                    .min(MAX_BACKOFF)
-                    .max(BASE_INTERVAL);
-                tokio::time::sleep(delay).await;
+                tokio::time::sleep(INTERVAL).await;
             }
         });
 
@@ -215,6 +304,69 @@ fn log_received_data(metadata: &FlightMetadata) {
         target_table = metadata.target_table.as_deref(),
         "Received data"
     );
+}
+
+/// Whether `metadata` names the self-monitoring tenant, once trimmed.
+///
+/// Computed before `routing::route` runs (the suppression flag gates the
+/// tracing scope that wraps the rest of `do_put`, so moving this check after
+/// routing is a structural reorder — task 2.1 of the `lsm-writer-memtable`
+/// change, out of scope here). The trim mirrors `routing::present` inline
+/// rather than depending on it, so a padded id like `" _system "` is still
+/// recognised instead of silently missing suppression (#1334). Once `do_put`
+/// is reordered, this can consume `routing::route`'s normalised id instead.
+fn is_suppressed_tenant(metadata: Option<&FlightMetadata>) -> bool {
+    metadata
+        .and_then(|m| m.tenant_id.as_deref())
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+        .is_some_and(common::self_monitoring::is_self_monitoring_tenant)
+}
+
+/// The per-tenant materialized-labels override for `tenant_id`, or the
+/// default when `config` is unset or names no override.
+///
+/// Takes the already-routed tenant id (`wal_tenant`), not the raw metadata
+/// id, so a padded id resolves to the same tenant's schema config the batch
+/// is committed under (#1334).
+fn materialized_labels_for_tenant(
+    config: Option<&common::config::Configuration>,
+    tenant_id: &str,
+) -> common::config::MaterializedLabels {
+    config
+        .map(|c| c.get_tenant_schema_config(tenant_id).materialized_labels)
+        .unwrap_or_default()
+}
+
+/// Parse a `do_put` FlightData message's `app_metadata` (called only when
+/// non-empty), or reject the batch.
+///
+/// A non-empty `app_metadata` that isn't the expected JSON is the sender's
+/// fault, and the same bytes fail identically on every retry: it must be
+/// `invalid_argument`, never the retryable `internal` the acceptor reserves
+/// for "this writer is down" (#1060). This previously synthesized a "v1
+/// traces, default tenant" fallback instead of rejecting, silently
+/// misrouting the batch (W3).
+fn parse_flight_metadata(app_metadata: &[u8]) -> Result<FlightMetadata, Status> {
+    extract_flight_metadata(app_metadata)
+        .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))
+}
+
+/// Decode a `do_put` request's collected FlightData into Arrow batches, or
+/// reject it.
+///
+/// An undecodable stream (corrupt IPC framing, dictionary mismatch, version
+/// skew) is the sender's fault, and the same bytes fail identically on every
+/// retry: it must be `invalid_argument`, never the retryable `internal`
+/// (#1060) — `internal` tells the acceptor's WAL retry consumer this writer
+/// is transiently down, which head-of-line-blocks every later entry behind
+/// this one (W3).
+async fn decode_put_batches(
+    data_vec: Vec<FlightData>,
+) -> Result<Vec<datafusion::arrow::record_batch::RecordBatch>, Status> {
+    flight_data_vec_to_batches(data_vec)
+        .await
+        .map_err(|e| Status::invalid_argument(format!("Undecodable FlightData: {e}")))
 }
 
 #[tonic::async_trait]
@@ -278,23 +430,7 @@ impl FlightService for IcebergWriterFlightService {
 
             // Extract full metadata from the first FlightData message (which contains metadata)
             if flight_metadata.is_none() && !d.app_metadata.is_empty() {
-                match extract_flight_metadata(&d.app_metadata) {
-                    Ok(metadata) => {
-                        flight_metadata = Some(metadata);
-                    }
-                    Err(e) => {
-                        tracing::warn!(error = %e, "Failed to extract metadata, using defaults");
-                        flight_metadata = Some(FlightMetadata {
-                            schema_version: "v1".to_string(),
-                            signal_type: Some("traces".to_string()),
-                            target_table: None,
-                            tenant_id: None,
-                            dataset_id: None,
-                            traceparent: None,
-                            tracestate: None,
-                        });
-                    }
-                }
+                flight_metadata = Some(parse_flight_metadata(&d.app_metadata)?);
             }
 
             data_vec.push(d);
@@ -307,10 +443,7 @@ impl FlightService for IcebergWriterFlightService {
         // Anti-loop guard (#760): persisting the _system tenant's own
         // telemetry must not emit logs/spans that get exported and
         // re-ingested as _system telemetry.
-        let suppress = flight_metadata
-            .as_ref()
-            .and_then(|m| m.tenant_id.as_deref())
-            .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
+        let suppress = is_suppressed_tenant(flight_metadata.as_ref());
 
         // Process within a semconv RPC SERVER span that joins the sender's
         // distributed trace (parent must be set before the span is first
@@ -346,9 +479,7 @@ impl FlightService for IcebergWriterFlightService {
         // Convert FlightData stream into Arrow RecordBatches. Dictionary-aware
         // (#951): a hand-rolled decode via `arrow_flight::utils::flight_data_to_batches`
         // silently assumes no dictionary batches are present.
-        let batches = flight_data_vec_to_batches(data_vec)
-            .await
-            .map_err(|e| Status::internal(e.to_string()))?;
+        let batches = decode_put_batches(data_vec).await?;
 
         {
             let app_metrics = common::self_monitoring::app_metrics();
@@ -364,30 +495,58 @@ impl FlightService for IcebergWriterFlightService {
             app_metrics.ingest_batch_size.record(rows, &[]);
         }
 
-        // Determine WAL operation from metadata
+        // Determine WAL operation from metadata. An unrecognized signal_type
+        // is the sender's fault and recurs identically on every retry, so it
+        // must be `invalid_argument`, never a silent fallback to
+        // `WriteTraces` that then fails transform/coercion on every commit
+        // cycle (#1060 class, W4).
         let wal_operation = if let Some(ref metadata) = flight_metadata {
             determine_wal_operation(metadata.signal_type.as_deref())
+                .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))?
         } else {
             WalOperation::WriteTraces // Default fallback
         };
 
         tracing::debug!(operation = ?wal_operation, "Using WAL operation");
 
+        // Route before transforming: an unknown metrics `target_table` can
+        // never be committed (`IcebergTableWriter::new` fails to open it on
+        // every cycle), so it must be rejected here rather than transformed
+        // for a table that doesn't exist (#1060 class, W4). Routing also
+        // validates tenant/dataset (below) and goes through the same
+        // function the commit path uses, so the WAL a batch lands in and the
+        // table it is later committed to cannot disagree about what its
+        // metadata meant (#1319).
+        let route_metadata = flight_metadata.as_ref();
+        let RouteTarget {
+            tenant_id: wal_tenant,
+            dataset_id: wal_dataset,
+            ..
+        } = routing::route(
+            &wal_operation,
+            RouteMetadata {
+                tenant_id: route_metadata.and_then(|m| m.tenant_id.as_deref()),
+                dataset_id: route_metadata.and_then(|m| m.dataset_id.as_deref()),
+                target_table: route_metadata.and_then(|m| m.target_table.as_deref()),
+            },
+            common::bootstrap::DEFAULT_TENANT_ID,
+            common::bootstrap::DEFAULT_DATASET_ID,
+        )
+        .map_err(|e| Status::invalid_argument(format!("Flight metadata: {e}")))?;
+
         let transformed_batches = if let Some(ref metadata) = flight_metadata {
             if metadata.schema_version == "v1" {
                 let mut transformed = Vec::new();
                 for batch in batches {
-                    // Per-tenant materialized labels (tenant schema
-                    // override replaces the global set).
-                    let materialized = metadata
-                        .tenant_id
-                        .as_deref()
-                        .and_then(|t| {
-                            common::config::CONFIG
-                                .get()
-                                .map(|c| c.get_tenant_schema_config(t).materialized_labels)
-                        })
-                        .unwrap_or_default();
+                    // Per-tenant materialized labels (the tenant's schema
+                    // block merged over the global one). Uses the
+                    // already-routed `wal_tenant`, not the raw metadata id,
+                    // so a padded id resolves to the same tenant's schema
+                    // config the batch is committed under (#1334).
+                    let materialized = materialized_labels_for_tenant(
+                        common::config::CONFIG.get(),
+                        &wal_tenant,
+                    );
                     match transform_for_signal(
                         metadata.signal_type.as_deref(),
                         metadata.target_table.as_deref(),
@@ -422,7 +581,25 @@ impl FlightService for IcebergWriterFlightService {
             batches
         };
 
-        // Write all batches to WAL first for durability
+        // Write all batches to WAL first for durability — the WAL of this
+        // batch's own tenant/dataset/signal (#932), so one tenant's segment
+        // never carries, or blocks, another tenant's data.
+        // An absent *or empty* id falls back to the default tenant/dataset:
+        // an empty string would otherwise reach the WAL as a tenant and be
+        // rejected there, and the acceptor classifies the resulting
+        // `internal` as retryable (#1060), retrying a batch that can never
+        // succeed.
+        //
+        // These ids become path components of the WAL directory, and this
+        // Flight surface can be configured without authentication, so they
+        // were validated above (in `routing::route`) as well as inside
+        // `get_wal`. A WAL that fails to open for any other reason (a full or
+        // unwritable disk) is `internal` and retryable.
+        let wal = self
+            .wal_manager
+            .get_wal(&wal_tenant, &wal_dataset, wal_operation.signal())
+            .await
+            .map_err(|e| Status::internal(format!("Failed to open WAL: {e}")))?;
         let mut wal_entry_ids = Vec::new();
 
         // Persist the active (flight_do_put) trace context alongside the
@@ -446,6 +623,7 @@ impl FlightService for IcebergWriterFlightService {
                 "dataset_id": metadata.dataset_id,
                 "traceparent": traceparent,
                 "tracestate": tracestate,
+                "ingest_id": metadata.ingest_id.map(|id| id.to_string()),
             }))
             .unwrap_or_default()
         });
@@ -457,8 +635,7 @@ impl FlightService for IcebergWriterFlightService {
 
             // Write to WAL with correct operation type determined from metadata
             // Pass metadata to enable proper table routing (e.g., metrics_exponential_histogram)
-            let entry_id = self
-                .wal
+            let entry_id = wal
                 .append(wal_operation.clone(), batch_bytes, metadata_json.clone())
                 .await
                 .map_err(|e| Status::internal(format!("Failed to write to WAL: {e}")))?;
@@ -473,14 +650,46 @@ impl FlightService for IcebergWriterFlightService {
         // floor cap the commit rate (#888). Ingested data becomes queryable
         // once the loop commits it (bounded by `commit_interval`); a client
         // needing read-your-writes can force a drain with `do_action("flush")`.
-        self.wal
-            .flush()
+        wal.flush()
             .await
             .map_err(|e| Status::internal(format!("Failed to flush WAL: {e}")))?;
         tracing::debug!(
             entry_count = wal_entry_ids.len(),
             "Durably buffered ingest entries; Iceberg commit deferred to the background loop"
         );
+
+        // Ingest-id dedup (#1734 step 2): only after the flush above made
+        // these entries durable, and only recorded on success -- a flush
+        // failure must not poison the cache against an id that never
+        // actually landed. A repeat marks the entries just appended
+        // processed immediately, so the background loop never commits them;
+        // the batch is still acked (the data behind this ingest id is
+        // already durable from the earlier delivery).
+        if let Some(ingest_id) = flight_metadata.as_ref().and_then(|m| m.ingest_id)
+            && self.ingest_dedup.check_and_record(ingest_id)
+        {
+            wal.mark_processed_many(&wal_entry_ids).await.map_err(|e| {
+                Status::internal(format!(
+                    "Failed to mark duplicate ingest's WAL entries as processed: {e}"
+                ))
+            })?;
+            let signal = wal_operation.signal();
+            common::self_monitoring::app_metrics()
+                .ingest_duplicates_dropped
+                .add(
+                    1,
+                    &[
+                        opentelemetry::KeyValue::new("tenant_id", wal_tenant.clone()),
+                        opentelemetry::KeyValue::new("signal", signal),
+                    ],
+                );
+            tracing::debug!(
+                ingest_id = %ingest_id,
+                tenant_id = %wal_tenant,
+                signal,
+                "Dropped duplicate ingest: already seen within the dedup window"
+            );
+        }
 
         let result = PutResult {
             app_metadata: Bytes::new(),
@@ -528,47 +737,99 @@ impl FlightService for IcebergWriterFlightService {
         &self,
         request: Request<arrow_flight::Action>,
     ) -> Result<Response<Self::DoActionStream>, Status> {
-        // The flush scope is taken from the request's tenant metadata (below),
-        // so extract it before consuming the request.
+        // The flush scope and suppression tenant are taken from the request's
+        // metadata (below), so extract it before consuming the request.
         let metadata = request.metadata().clone();
+        let remote_addr = request.remote_addr();
         let action = request.into_inner();
-        match action.r#type.as_str() {
-            // Read-your-writes drain: force-commit the pending groups for the
-            // requesting tenant (optionally a single dataset), bypassing the
-            // coalescing floor for that scope only. Used by tests and by clients
-            // that need their just-ingested data queryable at once. The scope is
-            // taken from the request's `x-tenant-id` / `x-dataset-id` metadata
-            // (the tenant identity the caller is already acting as); an unscoped
-            // request is rejected so one caller cannot force-commit — and amplify
-            // catalog writes for — every tenant on this writer.
-            FLUSH_ACTION => {
-                let scope = parse_flush_scope(&metadata)?;
-                // Bound the flush: force_commit_pending drives Iceberg/catalog
-                // commits while holding the processor mutex, so a stuck catalog
-                // or object store must not hang this client-facing RPC (and the
-                // background loop behind it) indefinitely.
-                let flush = async {
-                    self.processor
-                        .lock()
-                        .await
-                        .force_commit_pending(scope)
-                        .await
-                };
-                match tokio::time::timeout(FLUSH_TIMEOUT, flush).await {
-                    Ok(Ok(())) => {
-                        let out = stream::empty().boxed();
-                        Ok(Response::new(out))
+
+        // Anti-loop guard (#760): force-flushing the _system tenant's own
+        // telemetry must not emit logs/spans that get exported and
+        // re-ingested as _system telemetry.
+        let suppress = metadata
+            .get("x-tenant-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::trim)
+            .is_some_and(common::self_monitoring::is_self_monitoring_tenant);
+
+        // Process within a semconv RPC SERVER span that joins the caller's
+        // distributed trace (parent must be set before the span is first
+        // entered). `detail` stays the one known, bounded-cardinality action
+        // name — never the caller-supplied string for an unrecognized one.
+        let detail = (action.r#type.as_str() == FLUSH_ACTION).then_some(FLUSH_ACTION);
+        let make_span = || {
+            common::self_monitoring::spans::rpc_server_span(
+                common::self_monitoring::spans::FLIGHT_DO_ACTION,
+                detail,
+            )
+        };
+        let span = if suppress {
+            common::self_monitoring::suppress_self_telemetry_sync(make_span)
+        } else {
+            make_span()
+        };
+        common::flight::trace_context::set_parent_from_metadata(&span, &metadata);
+        common::self_monitoring::spans::record_network_peer_from_addr(&span, remote_addr);
+        let record_span = span.clone();
+
+        let result = common::self_monitoring::maybe_suppress_self_telemetry(
+            suppress,
+            Box::pin(
+                async move {
+                    match action.r#type.as_str() {
+                        // Read-your-writes drain: force-commit the pending groups for the
+                        // requesting tenant (optionally a single dataset), bypassing the
+                        // coalescing floor for that scope only. Used by tests and by clients
+                        // that need their just-ingested data queryable at once. The scope is
+                        // taken from the request's `x-tenant-id` / `x-dataset-id` metadata
+                        // (the tenant identity the caller is already acting as); an unscoped
+                        // request is rejected so one caller cannot force-commit — and amplify
+                        // catalog writes for — every tenant on this writer.
+                        FLUSH_ACTION => {
+                            let scope = parse_flush_scope(&metadata)?;
+                            // Bound the flush: force_commit_pending drives Iceberg/catalog
+                            // commits while holding the processor mutex, so a stuck catalog
+                            // or object store must not hang this client-facing RPC (and the
+                            // background loop behind it) indefinitely.
+                            let flush = async {
+                                self.processor
+                                    .lock()
+                                    .await
+                                    .force_commit_pending(scope)
+                                    .await
+                            };
+                            match tokio::time::timeout(FLUSH_TIMEOUT, flush).await {
+                                Ok(Ok(())) => {
+                                    let out = stream::empty().boxed();
+                                    Ok(Response::new(out))
+                                }
+                                Ok(Err(e)) => Err(Status::internal(format!("Flush failed: {e}"))),
+                                Err(_) => Err(Status::deadline_exceeded(format!(
+                                    "Flush did not complete within {FLUSH_TIMEOUT:?}"
+                                ))),
+                            }
+                        }
+                        other => Err(Status::unimplemented(format!(
+                            "do_action does not support {other:?}"
+                        ))),
                     }
-                    Ok(Err(e)) => Err(Status::internal(format!("Flush failed: {e}"))),
-                    Err(_) => Err(Status::deadline_exceeded(format!(
-                        "Flush did not complete within {FLUSH_TIMEOUT:?}"
-                    ))),
                 }
-            }
-            other => Err(Status::unimplemented(format!(
-                "do_action does not support {other:?}"
-            ))),
-        }
+                .instrument(span),
+            ),
+        )
+        .await;
+
+        let code = result
+            .as_ref()
+            .err()
+            .map(|s| s.code())
+            .unwrap_or(tonic::Code::Ok);
+        common::self_monitoring::spans::record_rpc_result(
+            &record_span,
+            common::self_monitoring::spans::RpcBoundary::Server,
+            code,
+        );
+        result
     }
     type ListActionsStream = BoxStream<'static, Result<arrow_flight::ActionType, Status>>;
     async fn list_actions(
@@ -591,11 +852,24 @@ impl FlightService for IcebergWriterFlightService {
 mod tests {
     use super::*;
     use common::wal::WalConfig;
-    use object_store::memory::InMemory;
     use std::collections::HashMap;
     use std::sync::Mutex as StdMutex;
     use tempfile::tempdir;
     use tracing_subscriber::layer::SubscriberExt;
+
+    /// A `TypeAuthority` backed by a fresh in-memory SQL catalog. Every
+    /// signal table's current `schemas.toml` version is the typed
+    /// attribute layout (one-shot cutover), so a service that actually
+    /// commits a batch needs one attached.
+    async fn test_type_authority() -> Arc<TypeAuthority> {
+        let sql_catalog = common::catalog::Catalog::new_in_memory().await.unwrap();
+        let resolver = common::schema_registry::SchemaResolver::new(sql_catalog.clone());
+        Arc::new(TypeAuthority::new(
+            sql_catalog,
+            resolver,
+            Arc::new(common::config::Configuration::default()),
+        ))
+    }
 
     /// Captures event field values as they are actually recorded by
     /// `tracing::Value`, so tests can tell a raw string field apart from one
@@ -643,6 +917,91 @@ mod tests {
             .unwrap()
     }
 
+    fn flight_metadata_with_tenant(tenant_id: &str) -> FlightMetadata {
+        FlightMetadata {
+            schema_version: "v1".to_string(),
+            signal_type: Some("logs".to_string()),
+            target_table: None,
+            tenant_id: Some(tenant_id.to_string()),
+            dataset_id: None,
+            traceparent: None,
+            tracestate: None,
+            ingest_id: None,
+        }
+    }
+
+    /// #1334: a padded `_system` tenant id (as `routing::route` would trim,
+    /// but the suppression check ran on the raw value before routing) must
+    /// still trip the anti-loop guard, or self-monitoring's own telemetry
+    /// gets re-ingested as `_system` telemetry — the loop the check exists
+    /// to prevent.
+    #[test]
+    fn is_suppressed_tenant_recognises_padded_system_tenant() {
+        let metadata = flight_metadata_with_tenant(" _system ");
+        assert!(
+            is_suppressed_tenant(Some(&metadata)),
+            "a padded _system tenant id must still be suppressed"
+        );
+    }
+
+    #[test]
+    fn is_suppressed_tenant_ignores_unrelated_tenant() {
+        let metadata = flight_metadata_with_tenant("acme");
+        assert!(!is_suppressed_tenant(Some(&metadata)));
+    }
+
+    /// #1334: the materialized-labels lookup must use the tenant id as
+    /// `routing::route` normalises it (trimmed), not the raw metadata value,
+    /// or a padded tenant misses its own schema override and silently gets
+    /// the default one.
+    #[test]
+    fn materialized_labels_use_routed_tenant_not_raw_padded_metadata() {
+        let mut config = common::config::Configuration::default();
+        config.tenants.tenants.insert(
+            "_system".to_string(),
+            common::config::TenantSchemaConfig {
+                schema: Some(common::config::TenantSchemaOverride {
+                    materialized_labels: common::config::MaterializedLabelsOverride {
+                        logs: Some(vec!["custom".to_string()]),
+                        ..Default::default()
+                    },
+                    ..Default::default()
+                }),
+                ..Default::default()
+            },
+        );
+
+        // What the pre-fix call site did: look the tenant's schema config up
+        // by the raw, padded metadata value. It misses and silently falls
+        // back to the default (empty) materialized labels.
+        let raw_tenant = " _system ";
+        let via_raw = materialized_labels_for_tenant(Some(&config), raw_tenant);
+        assert!(
+            via_raw.logs.is_empty(),
+            "a raw padded tenant id must not match the tenant's schema config: {via_raw:?}"
+        );
+
+        // What `routing::route` normalises the same metadata to, and what
+        // the fixed call site passes instead.
+        let routed = routing::route(
+            &WalOperation::WriteLogs,
+            RouteMetadata {
+                tenant_id: Some(raw_tenant),
+                dataset_id: None,
+                target_table: None,
+            },
+            common::bootstrap::DEFAULT_TENANT_ID,
+            common::bootstrap::DEFAULT_DATASET_ID,
+        )
+        .unwrap();
+        let via_routed = materialized_labels_for_tenant(Some(&config), &routed.tenant_id);
+        assert_eq!(
+            via_routed.logs,
+            vec!["custom".to_string()],
+            "the routed (trimmed) tenant id must resolve to the tenant's own schema config"
+        );
+    }
+
     /// Issue #1072: `target_table`/`signal_type` were logged with a `?`
     /// (Debug) sigil, so `Some("metrics_histogram")` reached the log's
     /// attributes verbatim instead of `metrics_histogram`, and a `None`
@@ -658,6 +1017,7 @@ mod tests {
             dataset_id: None,
             traceparent: None,
             tracestate: None,
+            ingest_id: None,
         });
 
         assert_eq!(
@@ -671,52 +1031,55 @@ mod tests {
         );
     }
 
-    #[tokio::test]
-    async fn test_iceberg_flight_service_creation() {
-        let temp_dir = tempdir().unwrap();
-        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 1024 * 1024, // 1MB
+    /// A per-tenant WAL manager rooted at `dir`, plus the `acme/production`
+    /// metrics WAL the tests below write into directly.
+    async fn test_wal_manager(dir: &std::path::Path) -> (Arc<WalManager>, Arc<common::wal::Wal>) {
+        let base = WalConfig {
+            wal_dir: dir.to_path_buf(),
+            max_segment_size: 8 * 1024 * 1024,
             max_buffer_entries: 1000,
             flush_interval_secs: 5,
-            tenant_id: "test-tenant".to_string(),
-            dataset_id: "test-dataset".to_string(),
+            tenant_id: "default".to_string(),
+            dataset_id: "default".to_string(),
             retention_secs: 3600,
             cleanup_interval_secs: 300,
             compaction_threshold: 0.5,
         };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let manager = Arc::new(WalManager::uniform(base));
+        let wal = manager
+            .get_wal("acme", "production", "metrics")
+            .await
+            .unwrap();
+        (manager, wal)
+    }
 
-        let service = IcebergWriterFlightService::new(
-            catalog_manager,
-            object_store,
-            wal,
-            &WriterConfig::default(),
-        );
+    #[tokio::test]
+    async fn test_iceberg_flight_service_creation() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
+
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, manager, &WriterConfig::default());
 
         // Verify service was created successfully
-        assert!(service.processor.lock().await.get_stats().active_writers == 0);
+        assert!(
+            service
+                .processor
+                .lock()
+                .await
+                .get_stats()
+                .await
+                .active_writers
+                == 0
+        );
     }
 
     #[tokio::test]
     async fn do_action_flush_commits_pending_writes() {
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 8 * 1024 * 1024,
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
         // A large interval means the background loop would defer this write; the
         // flush action must commit it regardless.
         let writer_config = WriterConfig {
@@ -724,11 +1087,11 @@ mod tests {
             max_uncommitted_rows: 1_000_000,
             ..Default::default()
         };
-        let service = IcebergWriterFlightService::new(
+        let service = IcebergWriterFlightService::with_type_authority(
             catalog_manager,
-            object_store,
-            wal.clone(),
+            manager,
             &writer_config,
+            test_type_authority().await,
         );
 
         wal.append(
@@ -784,31 +1147,21 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn do_action_flush_surfaces_commit_failure_as_internal() {
+    async fn do_action_flush_retires_a_schema_mismatched_entry_and_succeeds() {
+        // W2: a schema-mismatched entry is rejected and dead-lettered
+        // immediately during prepare rather than failing the whole group
+        // commit, so the flush RPC must report success once it is retired —
+        // there is nothing else left pending.
         let temp_dir = tempdir().unwrap();
         let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
-        let object_store = Arc::new(InMemory::new());
-        let wal_config = WalConfig {
-            wal_dir: temp_dir.path().to_path_buf(),
-            max_segment_size: 8 * 1024 * 1024,
-            max_buffer_entries: 1000,
-            flush_interval_secs: 5,
-            tenant_id: "acme".to_string(),
-            dataset_id: "production".to_string(),
-            retention_secs: 3600,
-            cleanup_interval_secs: 300,
-            compaction_threshold: 0.5,
-        };
-        let wal = Arc::new(Wal::new(wal_config).await.unwrap());
-        let service = IcebergWriterFlightService::new(
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
+        let service = IcebergWriterFlightService::with_type_authority(
             catalog_manager,
-            object_store,
-            wal.clone(),
+            manager,
             &WriterConfig::default(),
+            test_type_authority().await,
         );
 
-        // Routes to metrics_gauge but the batch schema does not match, so the
-        // commit fails — the flush RPC must report that, not a silent success.
         wal.append(
             WalOperation::WriteMetrics,
             crate::test_support::schema_mismatched_bytes(),
@@ -828,11 +1181,417 @@ mod tests {
         flush
             .metadata_mut()
             .insert("x-dataset-id", "production".parse().unwrap());
-        match service.do_action(flush).await {
-            Err(status) => assert_eq!(status.code(), tonic::Code::Internal),
-            Ok(_) => panic!("flush must surface the commit failure as an error"),
+        service
+            .do_action(flush)
+            .await
+            .expect("nothing was left pending once the poison entry was retired");
+
+        assert!(
+            wal.get_unprocessed_entries().await.unwrap().is_empty(),
+            "the rejected entry must be retired (marked processed), not left pending"
+        );
+        assert!(
+            temp_dir
+                .path()
+                .join("acme/production/metrics/dead-letter")
+                .is_dir(),
+            "the rejected entry's payload must be preserved"
+        );
+    }
+
+    /// A trivial one-column batch, encoded the way a real `do_put` client
+    /// would (schema message + data message).
+    fn valid_put_flight_data() -> Vec<FlightData> {
+        use datafusion::arrow::array::Int32Array;
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use datafusion::arrow::record_batch::RecordBatch;
+
+        let schema = Arc::new(Schema::new(vec![Field::new("id", DataType::Int32, false)]));
+        let batch = RecordBatch::try_new(
+            schema.clone(),
+            vec![Arc::new(Int32Array::from(vec![1, 2, 3]))],
+        )
+        .unwrap();
+        common::flight::batches_to_compressed_flight_data(&schema, vec![batch]).unwrap()
+    }
+
+    /// W3: a FlightData stream that cannot be decoded (corrupt IPC framing,
+    /// dictionary mismatch, version skew) fails identically on every retry.
+    /// It must be `invalid_argument`, never the retryable `internal` the
+    /// acceptor treats as "this writer is down" (#1060) — reported as
+    /// `internal` before this fix, wedging every later WAL entry behind it.
+    #[tokio::test]
+    async fn decode_put_batches_rejects_undecodable_flight_data() {
+        let garbage = vec![FlightData {
+            data_header: Bytes::from_static(b"not a valid IPC schema message"),
+            data_body: Bytes::from_static(b"garbage"),
+            app_metadata: Bytes::new(),
+            flight_descriptor: None,
+        }];
+
+        let err = decode_put_batches(garbage).await.unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn decode_put_batches_accepts_a_valid_batch() {
+        let batches = decode_put_batches(valid_put_flight_data()).await.unwrap();
+        assert_eq!(batches.len(), 1);
+        assert_eq!(batches[0].num_rows(), 3);
+    }
+
+    /// W3: a non-empty `app_metadata` that isn't the expected JSON is the
+    /// sender's fault and fails identically on every retry. It must be
+    /// `invalid_argument`; previously it silently fell back to "v1 traces,
+    /// default tenant" instead of being rejected.
+    #[test]
+    fn parse_flight_metadata_rejects_unparseable_bytes() {
+        let err = parse_flight_metadata(b"not json").unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[test]
+    fn parse_flight_metadata_accepts_valid_json() {
+        let metadata = parse_flight_metadata(
+            br#"{"schema_version":"v1","signal_type":"traces","tenant_id":"acme"}"#,
+        )
+        .unwrap();
+        assert_eq!(metadata.signal_type.as_deref(), Some("traces"));
+        assert_eq!(metadata.tenant_id.as_deref(), Some("acme"));
+    }
+
+    /// W7: `do_action` used to run outside any RPC boundary span. It must
+    /// now emit the same semconv RPC SERVER span `do_put` does — matching
+    /// method name, `rpc.*` attributes, and a recorded outcome — and keep
+    /// an unrecognized action's caller-supplied name out of the span
+    /// (unbounded cardinality), unlike the known `flush` action.
+    #[tokio::test]
+    async fn do_action_emits_semconv_rpc_server_span() {
+        use opentelemetry::trace::{SpanKind, TracerProvider as _};
+        use opentelemetry_sdk::trace::{InMemorySpanExporter, SdkTracerProvider};
+        use tracing::instrument::WithSubscriber;
+        use tracing_subscriber::prelude::*;
+
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
+        let service =
+            IcebergWriterFlightService::new(catalog_manager, manager, &WriterConfig::default());
+
+        let exporter = InMemorySpanExporter::default();
+        let provider = SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+
+        async {
+            let unknown = Request::new(arrow_flight::Action {
+                r#type: "nope".to_string(),
+                body: Bytes::new(),
+            });
+            let result = service.do_action(unknown).await;
+            assert!(result.is_err());
         }
-        // The uncommitted entry remains for retry.
-        assert_eq!(wal.get_unprocessed_entries().await.unwrap().len(), 1);
+        .with_subscriber(subscriber)
+        .await;
+
+        provider.force_flush().unwrap();
+        let spans = exporter.get_finished_spans().unwrap();
+        let names: Vec<_> = spans.iter().map(|s| s.name.to_string()).collect();
+        let span = spans
+            .iter()
+            .find(|s| {
+                s.name
+                    .starts_with("arrow.flight.protocol.FlightService/DoAction")
+            })
+            .unwrap_or_else(|| panic!("no RPC server span; exported = {names:?}"));
+
+        assert_eq!(
+            span.name, "arrow.flight.protocol.FlightService/DoAction",
+            "an unrecognized action name must not appear in the span name"
+        );
+        assert_eq!(span.span_kind, SpanKind::Server);
+        let attr = |key: &str| {
+            span.attributes
+                .iter()
+                .find(|kv| kv.key.as_str() == key)
+                .map(|kv| kv.value.as_str().to_string())
+        };
+        assert_eq!(attr("rpc.system.name").as_deref(), Some("grpc"));
+        assert_eq!(
+            attr("rpc.method").as_deref(),
+            Some("arrow.flight.protocol.FlightService/DoAction")
+        );
+        assert_eq!(
+            attr("rpc.response.status_code").as_deref(),
+            Some("UNIMPLEMENTED")
+        );
+    }
+
+    // --- Ingest-id dedup (#1734 step 2) ---------------------------------
+
+    /// `do_put` FlightData for `valid_put_flight_data()`'s batch, with
+    /// `app_metadata` attached to the first (schema) message the way a real
+    /// client does (mirrors the acceptor's `forward.rs`).
+    fn put_flight_data_with_metadata(metadata_json: &str) -> Vec<FlightData> {
+        let mut data = valid_put_flight_data();
+        data[0].app_metadata = Bytes::from(metadata_json.to_string());
+        data
+    }
+
+    fn ingest_metadata_json(ingest_id: Option<&str>, dataset: &str) -> String {
+        serde_json::json!({
+            "schema_version": "v2",
+            "signal_type": "metrics",
+            "tenant_id": "acme",
+            "dataset_id": dataset,
+            "ingest_id": ingest_id,
+        })
+        .to_string()
+    }
+
+    /// Start `service` behind a real in-process Flight gRPC server, so tests
+    /// can drive `do_put` exactly as a client would (a unit-level call would
+    /// need to hand-build a `tonic::Streaming<FlightData>`, which has no
+    /// public constructor).
+    async fn start_test_flight_server(
+        service: IcebergWriterFlightService,
+    ) -> (
+        arrow_flight::flight_service_client::FlightServiceClient<tonic::transport::Channel>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let incoming = tokio_stream::wrappers::TcpListenerStream::new(listener);
+        let handle = tokio::spawn(async move {
+            let _ = tonic::transport::Server::builder()
+                .add_service(common::flight::flight_service_server(service))
+                .serve_with_incoming(incoming)
+                .await;
+        });
+        // Give the listener a moment to come up before connecting.
+        let channel = loop {
+            match tonic::transport::Endpoint::from_shared(format!("http://{addr}"))
+                .unwrap()
+                .connect()
+                .await
+            {
+                Ok(channel) => break channel,
+                Err(_) => tokio::time::sleep(std::time::Duration::from_millis(10)).await,
+            }
+        };
+        (
+            arrow_flight::flight_service_client::FlightServiceClient::new(channel),
+            handle,
+        )
+    }
+
+    async fn do_put_ok(
+        client: &mut arrow_flight::flight_service_client::FlightServiceClient<
+            tonic::transport::Channel,
+        >,
+        flight_data: Vec<FlightData>,
+    ) -> Result<(), tonic::Status> {
+        let response = client.do_put(stream::iter(flight_data)).await?;
+        let _: Vec<_> = response.into_inner().collect().await;
+        Ok(())
+    }
+
+    /// A fresh writer WAL manager and dedup-enabled service sharing one WAL
+    /// directory, so a test can simulate "the writer restarts" by building a
+    /// second service (and, for the restart case, a second `WalManager`)
+    /// over the same directory.
+    fn dedup_service(
+        catalog_manager: Arc<CatalogManager>,
+        wal_manager: Arc<WalManager>,
+        window: std::time::Duration,
+        clock: Arc<dyn Clock>,
+    ) -> IcebergWriterFlightService {
+        let writer_config = WriterConfig {
+            ingest_dedup_window: window,
+            ..Default::default()
+        };
+        IcebergWriterFlightService::with_ingest_dedup_clock(
+            catalog_manager,
+            wal_manager,
+            &writer_config,
+            clock,
+            None,
+        )
+    }
+
+    #[tokio::test]
+    async fn do_put_rejects_malformed_ingest_id() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, _wal) = test_wal_manager(temp_dir.path()).await;
+        let service = dedup_service(
+            catalog_manager,
+            manager,
+            std::time::Duration::from_secs(3600),
+            Arc::new(SystemClock),
+        );
+        let (mut client, _server) = start_test_flight_server(service).await;
+
+        let metadata = serde_json::json!({
+            "schema_version": "v2",
+            "signal_type": "metrics",
+            "tenant_id": "acme",
+            "dataset_id": "production",
+            "ingest_id": "not-a-uuid",
+        })
+        .to_string();
+        let err = do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap_err();
+        assert_eq!(err.code(), tonic::Code::InvalidArgument);
+    }
+
+    #[tokio::test]
+    async fn do_put_without_ingest_id_lands_both_puts() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
+        let service = dedup_service(
+            catalog_manager,
+            manager,
+            std::time::Duration::from_secs(3600),
+            Arc::new(SystemClock),
+        );
+        let (mut client, _server) = start_test_flight_server(service).await;
+
+        let metadata = ingest_metadata_json(None, "production");
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            wal.get_unprocessed_entries().await.unwrap().len(),
+            2,
+            "an absent ingest_id must not dedup (backward compatible with old acceptors)"
+        );
+    }
+
+    #[tokio::test]
+    async fn do_put_with_repeat_ingest_id_marks_the_repeat_processed() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
+        let service = dedup_service(
+            catalog_manager,
+            manager,
+            std::time::Duration::from_secs(3600),
+            Arc::new(SystemClock),
+        );
+        let (mut client, _server) = start_test_flight_server(service).await;
+
+        let ingest_id = uuid::Uuid::new_v4().to_string();
+        let metadata = ingest_metadata_json(Some(&ingest_id), "production");
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+
+        // Only the first put's entries are left pending; the repeat's
+        // entries were marked processed immediately, so draining the WAL
+        // commits exactly one row set.
+        assert_eq!(
+            wal.get_unprocessed_entries().await.unwrap().len(),
+            1,
+            "a repeat ingest_id's entries must be marked processed, not left for the drain loop"
+        );
+        assert_eq!(wal.get_entries().await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn do_put_with_repeat_ingest_id_after_window_expiry_is_accepted_again() {
+        struct FakeClock(StdMutex<std::time::SystemTime>);
+        impl Clock for FakeClock {
+            fn now(&self) -> std::time::SystemTime {
+                *self.0.lock().unwrap()
+            }
+        }
+
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
+        let clock = Arc::new(FakeClock(StdMutex::new(std::time::SystemTime::now())));
+        let service = dedup_service(
+            catalog_manager,
+            manager,
+            std::time::Duration::from_secs(60),
+            clock.clone(),
+        );
+        let (mut client, _server) = start_test_flight_server(service).await;
+
+        let ingest_id = uuid::Uuid::new_v4().to_string();
+        let metadata = ingest_metadata_json(Some(&ingest_id), "production");
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+
+        *clock.0.lock().unwrap() += std::time::Duration::from_secs(61);
+
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            wal.get_unprocessed_entries().await.unwrap().len(),
+            2,
+            "a repeat ingest_id past the dedup window must be accepted again"
+        );
+    }
+
+    #[tokio::test]
+    async fn do_put_after_restart_rejects_an_ingest_id_seen_before_restart() {
+        let temp_dir = tempdir().unwrap();
+        let catalog_manager = Arc::new(CatalogManager::new_in_memory().await.unwrap());
+        let (manager, wal) = test_wal_manager(temp_dir.path()).await;
+        let service = dedup_service(
+            catalog_manager.clone(),
+            manager.clone(),
+            std::time::Duration::from_secs(3600),
+            Arc::new(SystemClock),
+        );
+
+        let ingest_id = uuid::Uuid::new_v4().to_string();
+        let metadata = ingest_metadata_json(Some(&ingest_id), "production");
+        {
+            let (mut client, _server) = start_test_flight_server(service).await;
+            do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+                .await
+                .unwrap();
+        }
+
+        // Simulate a restart: a brand-new service instance, sharing only the
+        // on-disk WAL, rebuilds its dedup cache from what's there before
+        // serving traffic.
+        let restarted = dedup_service(
+            catalog_manager,
+            manager,
+            std::time::Duration::from_secs(3600),
+            Arc::new(SystemClock),
+        );
+        restarted.rebuild_ingest_dedup_from_wal().await;
+        let (mut client, _server) = start_test_flight_server(restarted).await;
+
+        do_put_ok(&mut client, put_flight_data_with_metadata(&metadata))
+            .await
+            .unwrap();
+
+        assert_eq!(
+            wal.get_unprocessed_entries().await.unwrap().len(),
+            1,
+            "a new writer instance must reject a repeat ingest_id seen before restart"
+        );
+        assert_eq!(wal.get_entries().await.unwrap().len(), 2);
     }
 }

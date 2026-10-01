@@ -16,7 +16,7 @@
  * Kept local to the traces feature rather than in api/traceGroups.ts: it
  * exists only to feed this one guard, not as a general-purpose aggregate.
  */
-import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "../../api/gen";
 import { runIrQuery } from "../../api/queryIr";
 import {
   ROOT_SPAN_SENTINEL,
@@ -24,7 +24,7 @@ import {
   type TraceGroup,
 } from "../../api/traceGroups";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
-import { facetField, type TraceFilter } from "../../lib/traceFilters";
+import { filterStages, type TraceFilter } from "../../lib/traceFilters";
 
 /**
  * True when a group result has the *shape* an unresolved dimension produces:
@@ -46,7 +46,7 @@ export function buildWindowTotalDoc(
   filters: TraceFilter[],
   grain: GroupGrain,
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] =
+  const scope: IrStage[] =
     grain === "traces"
       ? [
           {
@@ -59,13 +59,7 @@ export function buildWindowTotalDoc(
         ]
       : [];
 
-  const active = filters.flatMap((f) => {
-    const facet = facetField(f.field);
-    if (!facet) return [];
-    return [
-      { where: { field: facet.irField, op: "eq", value: f.value } },
-    ] as Record<string, unknown>[];
-  });
+  const active = filterStages(filters);
 
   return {
     irVersion: 1,

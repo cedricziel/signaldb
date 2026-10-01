@@ -6,7 +6,7 @@ use common::auth::{TenantContext, TenantSource};
 use common::config::Configuration;
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
 use futures::TryStreamExt;
 use object_store::{ObjectStore, local::LocalFileSystem};
 use opentelemetry_proto::tonic::{
@@ -27,13 +27,13 @@ use tokio::net::TcpListener;
 use tokio::time::sleep;
 use tokio_stream::wrappers::TcpListenerStream;
 use tonic::transport::Server;
-use writer::IcebergWriterFlightService;
 
 struct TestServices {
     object_store: Arc<dyn ObjectStore>,
     log_handler: LogHandler,
     metrics_handler: MetricsHandler,
     flight_transport: Arc<InMemoryFlightTransport>,
+    catalog_manager: Arc<CatalogManager>,
     _temp_dir: TempDir,
 }
 
@@ -45,7 +45,9 @@ fn test_tenant_context() -> TenantContext {
         dataset_slug: "test-dataset".to_string(),
         api_key_name: Some("test-key".to_string()),
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -134,18 +136,21 @@ async fn setup_logs_metrics_services() -> TestServices {
     let writer_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let writer_addr = writer_listener.local_addr().unwrap();
 
-    let writer_wal = Arc::new(Wal::new(wal_config.clone()).await.unwrap());
+    let writer_wal = Arc::new(common::wal::manager::WalManager::uniform(
+        tests_integration::test_helpers::writer_wal_config(&wal_config),
+    ));
     let writer_catalog_manager = Arc::new(
         CatalogManager::new(config.clone())
             .await
             .expect("Failed to create CatalogManager for writer"),
     );
-    let writer_service = IcebergWriterFlightService::new(
-        writer_catalog_manager,
-        object_store.clone(),
+    let writer_service = tests_integration::test_support::writer_service_with_type_authority(
+        writer_catalog_manager.clone(),
         writer_wal,
         &common::config::WriterConfig::default(),
-    );
+    )
+    .await
+    .expect("failed to build writer service with type authority");
     let _bg = writer_service.start_background_processing();
     let writer_server = Server::builder()
         .add_service(common::flight::flight_service_server(writer_service))
@@ -168,14 +173,28 @@ async fn setup_logs_metrics_services() -> TestServices {
         wal_config,
     ));
 
-    let log_handler = LogHandler::new(flight_transport.clone(), wal_manager.clone());
-    let metrics_handler = MetricsHandler::new(flight_transport.clone(), wal_manager);
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        Arc::new(
+            common::catalog::Catalog::new("sqlite::memory:")
+                .await
+                .unwrap(),
+        ),
+        &common::config::ProcessorsConfig::default(),
+    ));
+    let log_handler = LogHandler::new(
+        flight_transport.clone(),
+        wal_manager.clone(),
+        processor_registry.clone(),
+    );
+    let metrics_handler =
+        MetricsHandler::new(flight_transport.clone(), wal_manager, processor_registry);
 
     TestServices {
         object_store,
         log_handler,
         metrics_handler,
         flight_transport,
+        catalog_manager: writer_catalog_manager,
         _temp_dir: temp_dir,
     }
 }
@@ -350,33 +369,40 @@ async fn wait_for_object_locations(
     }
 }
 
-/// Wait until the object store contains at least one path matching EACH of the given
-/// patterns, or until `timeout_duration` elapses. Used by the mixed-types test where
-/// multiple metric tables are written sequentially and the first table's objects
-/// would otherwise satisfy `wait_for_object_locations` before the others are committed.
-async fn wait_for_object_locations_all(
-    store: &Arc<dyn ObjectStore>,
-    required_patterns: &[&str],
-    timeout_duration: Duration,
-) -> Vec<String> {
-    let start = std::time::Instant::now();
+/// The number of `metrics` table rows whose `metric_type` column equals
+/// `metric_type`, read fresh from the catalog.
+async fn metric_type_row_count(catalog_manager: &Arc<CatalogManager>, metric_type: &str) -> i64 {
+    use datafusion::arrow::array::Int64Array;
+    use datafusion::prelude::SessionContext;
+    use datafusion_iceberg::DataFusionTable;
 
-    loop {
-        let locations = object_locations(store).await;
-        let all_found = required_patterns
-            .iter()
-            .all(|pat| locations.iter().any(|l| l.contains(pat)));
+    let table = tests_integration::compaction_helpers::load_table(
+        catalog_manager,
+        "test-tenant",
+        "test-dataset",
+        "metrics",
+    )
+    .await
+    .expect("metrics table must exist");
 
-        if all_found {
-            return locations;
-        }
-
-        if start.elapsed() >= timeout_duration {
-            return locations;
-        }
-
-        sleep(Duration::from_millis(250)).await;
-    }
+    let ctx = SessionContext::new();
+    ctx.register_table("t", Arc::new(DataFusionTable::from(table)))
+        .unwrap();
+    let batches = ctx
+        .sql(&format!(
+            "SELECT COUNT(*) FROM t WHERE metric_type = '{metric_type}'"
+        ))
+        .await
+        .unwrap()
+        .collect()
+        .await
+        .unwrap();
+    batches[0]
+        .column(0)
+        .as_any()
+        .downcast_ref::<Int64Array>()
+        .unwrap()
+        .value(0)
 }
 
 #[tokio::test]
@@ -440,13 +466,13 @@ async fn test_metrics_gauge_ingestion_and_persistence() {
         .await
         .expect("metrics export must be durably accepted");
 
-    let locations =
-        wait_for_object_locations(&services.object_store, Duration::from_secs(20)).await;
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_gauge")),
-        "expected metrics_gauge object path, found: {locations:?}"
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("force-commit flush");
+    assert_eq!(
+        metric_type_row_count(&services.catalog_manager, "gauge").await,
+        1,
+        "the gauge datapoint must land in the metrics table"
     );
 }
 
@@ -462,28 +488,14 @@ async fn test_metrics_mixed_types_ingestion() {
         .await
         .expect("metrics export must be durably accepted");
 
-    let locations = wait_for_object_locations_all(
-        &services.object_store,
-        &["metrics_gauge", "metrics_sum", "metrics_histogram"],
-        Duration::from_secs(20),
-    )
-    .await;
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_gauge")),
-        "expected metrics_gauge object path, found: {locations:?}"
-    );
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_sum")),
-        "expected metrics_sum object path, found: {locations:?}"
-    );
-    assert!(
-        locations
-            .iter()
-            .any(|location| location.contains("metrics_histogram")),
-        "expected metrics_histogram object path, found: {locations:?}"
-    );
+    common::testing::flush_storage_writers(&services.flight_transport, "test-tenant", None)
+        .await
+        .expect("force-commit flush");
+    for metric_type in ["gauge", "sum", "histogram"] {
+        assert_eq!(
+            metric_type_row_count(&services.catalog_manager, metric_type).await,
+            1,
+            "expected one {metric_type} row in the metrics table"
+        );
+    }
 }

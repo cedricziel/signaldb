@@ -42,7 +42,7 @@ COPY ui-dist/ /build/src/ui/dist/
 FROM ui-builder-${UI_BUILDER} AS ui-builder
 
 # Builder stage - compile all services with musl for Alpine compatibility
-FROM rust:1.97-alpine AS builder-source
+FROM rust:1.98-alpine AS builder-source
 
 # Install build dependencies
 RUN apk add --no-cache \

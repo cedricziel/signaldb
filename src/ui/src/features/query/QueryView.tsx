@@ -5,23 +5,38 @@
 // api/gen), with no dialect-string compilation in the browser. The result view
 // is chosen from the declared envelope (`rows`→list, `series`→chart,
 // `table`→topN) before results arrive.
-import { useMemo, useState } from "react";
+import { useMemo } from "react";
 import { useQuery } from "@tanstack/react-query";
 
 import { runIrQuery } from "../../api/queryIr";
-import { irSeriesToPromSeries } from "../../api/metricsIr";
+import { irSeriesToPromSeries } from "../../api/ir/metrics";
 import { AttributeValue } from "../../components/AttributeValue";
-import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
-import type { PromSeries } from "../../api/prom";
+import { EmptyState } from "../../components/EmptyState";
+import { QueryError } from "../../components/QueryError";
+import type {
+  IrComparisonOp,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "../../api/gen";
+import type { PromSeries } from "../../api/ir/metrics";
 import { seriesColorVar } from "../../lib/promSeries";
 import { MetricsChart } from "../metrics/MetricsChart";
 import "../metrics/metrics.css";
-import { FilterChips } from "../logs/FilterChips";
+import "./query.css";
+import { FilterChips } from "../../components/FilterChips";
 import type { LabelFilter } from "../../lib/filters";
-import { msToNanos, type TimeRange } from "../../lib/time";
+import {
+  msToNanos,
+  nanosToMs,
+  resolveRange,
+  stepForRange,
+  type TimeRange,
+} from "../../lib/time";
+import { formatTimestamp } from "../../lib/vizFormat";
+import type { ExploreState } from "../../lib/urlState";
 import {
   buildIrDocument,
-  type IrAggregate,
+  type IrBuilderAggregate,
   type IrFilter,
   type IrResult,
   type IrSource,
@@ -29,7 +44,7 @@ import {
 import { viewForResult } from "./envelope";
 
 /** Map a LogQL-style filter op (from FilterChips) to an IR predicate op. */
-function mapOp(op: string): { op: string; negate?: boolean } {
+function mapOp(op: string): { op: IrComparisonOp; negate?: boolean } {
   switch (op) {
     case "=":
       return { op: "eq" };
@@ -53,11 +68,16 @@ function toIrFilters(filters: LabelFilter[]): IrFilter[] {
 
 /** The aggregate implied by a declared envelope, so the emitted terminal
  * relation matches (`series` needs a step aggregate; `table` a grouped one).
- * Both sources share the `service.name` logical field. */
-function aggregateFor(result: IrResult): IrAggregate | undefined {
+ * Both sources share the `service.name` logical field. `step` is sized to
+ * the selected range (see `stepForRange`) rather than a fixed bucket width,
+ * so a wide range doesn't ask for thousands of one-point buckets. */
+function aggregateFor(
+  result: IrResult,
+  step: string,
+): IrBuilderAggregate | undefined {
   const groupField = "service.name";
   if (result === "series") {
-    return { by: [groupField], aggs: [{ fn: "count", as: "n" }], step: "1m" };
+    return { by: [groupField], aggs: [{ fn: "count", as: "n" }], step };
   }
   if (result === "table") {
     return { by: [groupField], aggs: [{ fn: "count", as: "n" }] };
@@ -68,37 +88,62 @@ function aggregateFor(result: IrResult): IrAggregate | undefined {
 /** Map the shared explore time range to IR range anchors: a relative range
  * becomes a `now-Ns` anchor (resolved once, server-side), an absolute range
  * becomes nanosecond strings. */
-function irRange(range: TimeRange | undefined): { from: string; to: string } {
-  if (!range) return { from: "now-1h", to: "now" };
+function irRange(range: TimeRange): { from: string; to: string } {
   if (range.type === "absolute") {
     return { from: msToNanos(range.fromMs), to: msToNanos(range.toMs) };
   }
   return { from: `now-${range.seconds}s`, to: "now" };
 }
 
-export function QueryView({ range }: { range?: TimeRange } = {}) {
-  const [source, setSource] = useState<IrSource>("logs");
-  const [result, setResult] = useState<IrResult>("rows");
-  const [filters, setFilters] = useState<LabelFilter[]>([]);
-  const [submitted, setSubmitted] = useState<QueryIrRequest | null>(null);
+interface Props {
+  state: ExploreState;
+  update: (patch: Partial<ExploreState>) => void;
+}
+
+export function QueryView({ state, update }: Props) {
+  const source = state.querySource;
+  const result = state.queryResult;
+  const filters = state.queryFilters;
+  const run = state.queryRun;
+
+  const setSource = (v: IrSource) => update({ querySource: v });
+  const setResult = (v: IrResult) => update({ queryResult: v });
+  const setFilters = (fs: LabelFilter[]) => update({ queryFilters: fs });
+
+  const resolved = useMemo(
+    () => resolveRange(state.range, Date.now()),
+    [state.range],
+  );
+  const step = stepForRange(resolved);
 
   const document = useMemo<QueryIrRequest>(
     () =>
       buildIrDocument({
         source,
         result,
-        range: irRange(range),
+        range: irRange(state.range),
         filters: toIrFilters(filters),
-        aggregate: aggregateFor(result),
+        aggregate: aggregateFor(result, step),
       }),
-    [source, result, filters, range],
+    [source, result, filters, state.range, step],
   );
 
   const query = useQuery({
-    queryKey: ["ir-query", JSON.stringify(submitted)],
-    queryFn: () => runIrQuery(submitted as QueryIrRequest),
-    enabled: submitted !== null,
+    queryKey: ["ir-query", JSON.stringify(document), run],
+    queryFn: () => runIrQuery(document),
+    enabled: run,
   });
+
+  // A relative range must slide forward on a second Run even though the
+  // document (and therefore the query key) is unchanged — the anchors
+  // resolve server-side, so only a fresh request picks up a later "now".
+  const runQuery = () => {
+    if (run) {
+      void query.refetch();
+    } else {
+      update({ queryRun: true });
+    }
+  };
 
   // The view is a function of the *declared* envelope, available before results.
   const view = viewForResult(result);
@@ -131,16 +176,39 @@ export function QueryView({ range }: { range?: TimeRange } = {}) {
           </select>
         </label>
         <FilterChips filters={filters} labels={[]} onChange={setFilters} />
-        <button type="button" onClick={() => setSubmitted(document)}>
+        <button type="button" className="btn btn-primary" onClick={runQuery}>
           Run
         </button>
       </div>
 
       <div className="query-ir-result" data-testid={`ir-view-${view}`}>
-        {query.isError && <div role="alert">Query failed</div>}
-        {query.isLoading && submitted && <div>Running…</div>}
+        {query.isError && <QueryError what="results" error={query.error} />}
+        {query.isLoading && run && <div className="view-note">Loading…</div>}
+        {query.data && <QueryWarnings data={query.data} />}
         {query.data && <EnvelopeResult view={view} data={query.data} />}
       </div>
+    </div>
+  );
+}
+
+/**
+ * Non-fatal diagnostics the server attached to a result — today, a group-by
+ * field nothing in the window carries, which would otherwise render as a
+ * single convincing series labelled `null`.
+ */
+function QueryWarnings({ data }: { data: QueryIrResponse }) {
+  const warnings = data.warnings ?? [];
+  if (warnings.length === 0) return null;
+  return (
+    <div className="query-ir-warnings" role="status">
+      {warnings.map((w, i) => (
+        <p key={i}>
+          {w.message}
+          {w.suggestions && w.suggestions.length > 0
+            ? ` Did you mean ${w.suggestions.join(", ")}?`
+            : ""}
+        </p>
+      ))}
     </div>
   );
 }
@@ -159,33 +227,99 @@ function EnvelopeResult({
   return <RowsTable data={data} topN={view === "table"} />;
 }
 
+/** Column names that carry an absolute point in time in their entirety —
+ * matched exactly, not by suffix, so a name like `runtime` (which merely
+ * ends in the letters "time") never qualifies. */
+const EXACT_TIME_COLUMNS = new Set([
+  "timestamp",
+  "time",
+  "start_time_unix_nano",
+  "observed_timestamp",
+  "end_time_unix_nano",
+]);
+
+/** Column-name suffixes that name a timestamp regardless of the field they're
+ * attached to (`span_start_time_unix_nano`, `log.timestamp`, …). */
+const TIME_COLUMN_SUFFIXES = ["_time_unix_nano", "_timestamp", ".timestamp"];
+
+/** Whether a column's own name declares it a timestamp. A value merely
+ * *shaped* like an epoch-nanosecond integer (19 digits) is deliberately not
+ * enough on its own — an id column can be exactly that shape by coincidence,
+ * and formatting it would make it uncopyable in its real form. */
+function isTimeColumnName(column: string): boolean {
+  return (
+    EXACT_TIME_COLUMNS.has(column) ||
+    TIME_COLUMN_SUFFIXES.some((suffix) => column.endsWith(suffix))
+  );
+}
+
+/** A cell that is nothing but digits — the shape the timestamp check below
+ * requires before it re-parses the value as nanoseconds. */
+const NUMERIC_RE = /^\d+$/;
+
+/** Above this length a copy affordance earns its keep; below it, the value
+ * is already easy to select and retyping "Copy" in every short cell (an id,
+ * a count, a short string) is more chrome than help. */
+const COPY_THRESHOLD = 40;
+
+/** One rows/topN table cell: a column the server's own result metadata
+ * declares as `timestamp_ns`, or whose name unambiguously names a timestamp,
+ * renders as an absolute date/time; a long string gets a copy button;
+ * anything else — including a value that merely happens to be
+ * epoch-nanosecond-shaped, e.g. a 19-digit id — renders as plain text. */
+function RowsCell({
+  column,
+  columnType,
+  cell,
+}: {
+  column: string;
+  columnType: string | undefined;
+  cell: unknown;
+}) {
+  const value = formatCell(cell);
+  const isTimestamp = columnType === "timestamp_ns" || isTimeColumnName(column);
+  if (isTimestamp && NUMERIC_RE.test(value)) {
+    return <span>{formatTimestamp(nanosToMs(value), 0)}</span>;
+  }
+  if (value.length > COPY_THRESHOLD) {
+    return <AttributeValue value={value} label={`cell ${value}`} />;
+  }
+  return <span>{value}</span>;
+}
+
 function RowsTable({ data, topN }: { data: QueryIrResponse; topN: boolean }) {
   const columns = data.columns ?? [];
   const rows = data.rows ?? [];
+  if (rows.length === 0) {
+    return <EmptyState title="No rows in this range" />;
+  }
   return (
-    <table className={topN ? "ir-topn" : "ir-rows"}>
-      <thead>
-        <tr>
-          {columns.map((c) => (
-            <th key={c.name}>{c.name}</th>
-          ))}
-        </tr>
-      </thead>
-      <tbody>
-        {rows.map((row, i) => (
-          <tr key={i}>
-            {row.map((cell, j) => {
-              const value = formatCell(cell);
-              return (
-                <td key={j}>
-                  <AttributeValue value={value} label={`cell ${value}`} />
-                </td>
-              );
-            })}
+    <div className="table-scroll">
+      <table className={topN ? "ir-topn" : "ir-rows"}>
+        <thead>
+          <tr>
+            {columns.map((c) => (
+              <th key={c.name}>{c.name}</th>
+            ))}
           </tr>
-        ))}
-      </tbody>
-    </table>
+        </thead>
+        <tbody>
+          {rows.map((row, i) => (
+            <tr key={i}>
+              {row.map((cell, j) => (
+                <td key={j}>
+                  <RowsCell
+                    column={columns[j]?.name ?? ""}
+                    columnType={columns[j]?.type}
+                    cell={cell}
+                  />
+                </td>
+              ))}
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
   );
 }
 
@@ -196,10 +330,10 @@ const irSeriesLabel = (s: PromSeries) => labelString(s.labels);
  * reuse the metrics chart, so it carries the same cursor tooltip.
  */
 function SeriesChart({ data }: { data: QueryIrResponse }) {
-  const series = useMemo(() => irSeriesToPromSeries(data), [data]);
+  const series = useMemo(() => irSeriesToPromSeries(data.series ?? []), [data]);
   return (
     <div className="ir-series">
-      {series.length === 0 && <div>No series</div>}
+      {series.length === 0 && <EmptyState title="No series in this range" />}
       {series.length > 0 && (
         <div className="mchart-wrap">
           <MetricsChart series={series} labelOf={irSeriesLabel} />

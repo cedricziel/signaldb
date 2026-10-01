@@ -3,9 +3,9 @@
 //! DataFusion-backed execution of LogQL log queries against the
 //! tenant-scoped `logs` Iceberg table. Parses a LogQL query, lowers it to
 //! a filter [`Expr`](datafusion::logical_expr::Expr) via
-//! [`super::logql::log_query_filter`], and runs it through the DataFrame
-//! API — the same shape as [`super::trace`] and [`super::profile`], so
-//! user-controlled query values never enter a SQL string.
+//! [`super::logql::log_query_filter_with_columns`], and runs it through the
+//! DataFrame API — the same shape as [`super::trace`] and [`super::profile`],
+//! so user-controlled query values never enter a SQL string.
 //!
 //! Alongside line queries this service backs the Loki metadata endpoints:
 //! label names, label values, and series discovery.
@@ -21,12 +21,12 @@ use datafusion::{
     arrow::compute::{concat_batches, take},
     arrow::datatypes::{DataType, Field, IntervalMonthDayNano, Schema, SchemaRef, TimeUnit},
     functions::datetime::expr_fn::date_bin,
-    functions::unicode::expr_fn::character_length,
+    functions::string::expr_fn::octet_length,
     functions_aggregate::expr_fn::{
         approx_percentile_cont, avg, count, first_value, last_value, max, min, stddev_pop, sum,
         var_pop,
     },
-    logical_expr::{Expr, cast, col, lit},
+    logical_expr::{Expr, cast, col, ident, lit},
     prelude::{DataFrame, SessionContext},
     scalar::ScalarValue,
 };
@@ -42,7 +42,9 @@ use super::logql_metric::{
 use super::{
     DetectedField, DetectedFieldsParams, LogQueryParams, MetricQueryParams,
     error::QuerierError,
-    table_lookup::{distinct_non_empty, optional_table, string_column, time_window},
+    table_lookup::{
+        LABEL_SCAN_LIMIT, distinct_non_empty, optional_table, string_column, time_window,
+    },
 };
 
 /// Columns projected for a log-line query, in wire order. The Flight
@@ -58,6 +60,28 @@ pub const LOG_COLUMNS: &[&str] = &[
     "resource_attributes",
 ];
 
+/// `(logical field, LOG_COLUMNS entry)` pairs the IR path (task 4.1 of
+/// `ir-single-lowering`) uses to build a document's `fields`: each pair's
+/// logical half is what goes in `fields`, and its column half is that
+/// field's `safe_ident` alias — kept as one array of pairs, not two
+/// separately-indexed arrays, so the correspondence is structural rather
+/// than a convention two lists could drift out of. Pinned against
+/// `LOG_COLUMNS` by `log_field_pairs_resolve_to_log_columns` below.
+const LOG_FIELD_PAIRS: &[(&str, &str)] = &[
+    ("timestamp", "timestamp"),
+    ("body", "body"),
+    ("service.name", "service_name"),
+    ("severity_text", "severity_text"),
+    ("trace_id", "trace_id"),
+    ("span_id", "span_id"),
+    ("log.attributes", "log_attributes"),
+    ("resource.attributes", "resource_attributes"),
+];
+
+/// The two attribute containers a log record carries — legacy label
+/// discovery/filter fallback scans both.
+const ATTR_CONTAINERS: &[&str] = &["log_attributes", "resource_attributes"];
+
 /// LogQL label names backed by dedicated columns, in Loki label form.
 const KNOWN_LABELS: &[&str] = &[
     "detected_level",
@@ -67,11 +91,9 @@ const KNOWN_LABELS: &[&str] = &[
     "trace_id",
 ];
 
-/// Columns whose distinct values define a series' identity.
-const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
-
-/// Upper bound on distinct attribute documents scanned for discovery.
-const LABEL_SCAN_LIMIT: usize = 1000;
+/// Columns whose distinct values define a series' identity. Must stay in
+/// step with `ql_ir::STREAM_IDENTITY` (design D7 of `ir-single-lowering`).
+pub(super) const SERIES_COLUMNS: &[&str] = &["service_name", "severity_text"];
 
 /// Scan direction for a log query.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -92,6 +114,24 @@ impl Direction {
     fn ascending(self) -> bool {
         matches!(self, Direction::Forward)
     }
+}
+
+/// The result of attempting the IR path for a LogQL query — shared by
+/// [`LogsService::query_logs_via_ir`] and
+/// [`LogsService::query_metric_via_ir`] via
+/// [`LogsService::lower_and_plan_via_ir`] (task 4.1 of `ir-single-lowering`).
+enum IrOutcome {
+    /// Lowered and planned successfully; the caller executes this. Boxed —
+    /// `DataFrame` dwarfs the other variants, and this enum is short-lived
+    /// local plumbing that never sits in a larger owning type.
+    Planned(Box<DataFrame>),
+    /// The dataset has no table for this source at all — an empty result,
+    /// not a fallback trigger (matches the old path's identical no-table
+    /// handling).
+    NoTable,
+    /// `ql_ir` refused the query, or `plan_document` rejected the resulting
+    /// document — fall back to the old lowering (design D5).
+    Fallback,
 }
 
 /// Executes LogQL log queries and Loki metadata lookups.
@@ -149,6 +189,13 @@ impl LogsService {
         record_attr_demand(&parsed, tenant_slug, dataset_slug);
         let direction = Direction::parse(params.direction.as_deref());
 
+        if let Some(batches) = self
+            .query_logs_via_ir(params, direction, tenant_slug, dataset_slug)
+            .await?
+        {
+            return Ok(batches);
+        }
+
         let Some(df) = self.logs_table(tenant_slug, dataset_slug).await? else {
             return Ok(Vec::new());
         };
@@ -162,6 +209,119 @@ impl LogsService {
             direction,
         )?;
         df.collect().await.map_err(QuerierError::QueryFailed)
+    }
+
+    /// [`Self::query_logs`]'s IR-routed twin (task 4.1 of `ir-single-lowering`):
+    /// lowers the query via
+    /// [`Self::lower_and_plan_via_ir`], appending the ordering/limit stages
+    /// `query_logs` applies itself and projecting `fields` onto exactly
+    /// [`LOG_COLUMNS`] (via `safe_ident`), so the caller and the router's
+    /// Loki conversion need no changes for either path — pinned by
+    /// `log_field_pairs_resolve_to_log_columns` below.
+    async fn query_logs_via_ir(
+        &self,
+        params: &LogQueryParams,
+        direction: Direction,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Option<Vec<RecordBatch>>, QuerierError> {
+        use common::query_ir::{Direction as IrDirection, Order, Stage};
+
+        let outcome = self
+            .lower_and_plan_via_ir(
+                &params.query,
+                params.start,
+                params.end,
+                "log",
+                (tenant_slug, dataset_slug),
+                |doc| {
+                    doc.fields = Some(
+                        LOG_FIELD_PAIRS
+                            .iter()
+                            .map(|(logical, _)| logical.to_string())
+                            .collect(),
+                    );
+                    doc.pipeline.push(Stage::Order(vec![Order {
+                        of: "timestamp".to_string(),
+                        dir: if direction.ascending() {
+                            IrDirection::Asc
+                        } else {
+                            IrDirection::Desc
+                        },
+                    }]));
+                    doc.pipeline.push(Stage::Limit(params.limit as u64));
+                },
+            )
+            .await?;
+        match outcome {
+            IrOutcome::Planned(df) => df
+                .collect()
+                .await
+                .map(Some)
+                .map_err(QuerierError::QueryFailed),
+            IrOutcome::NoTable => Ok(Some(Vec::new())),
+            IrOutcome::Fallback => Ok(None),
+        }
+    }
+
+    /// Lowers a LogQL query via `ql_ir::logql_to_ir` and plans it through
+    /// [`super::ir_planner::plan_document`] — the single planner entry
+    /// point (D1) — classifying the result per the D5 fallback contract
+    /// [`Self::query_logs_via_ir`] and [`Self::query_metric_via_ir`] share:
+    /// [`IrOutcome::Fallback`] **only** on `LowerError::Inexpressible` — D5's
+    /// exception set is enumerable, and design.md's fallback set (task 4.2)
+    /// lists zero `plan_document`-rejected cases (D6 closed the one that
+    /// used to exist). A `plan_document` rejection therefore propagates like
+    /// any other error, even though it means the IR document built from a
+    /// query `ql_ir` itself accepted turned out to be invalid — pinned by
+    /// `planner_invalid_input_propagates_instead_of_falling_back` below.
+    /// [`IrOutcome::NoTable`] is the one non-error, non-fallback outcome:
+    /// the dataset has no table for the source at all, an empty result. A
+    /// `ParseLogql` failure is unreachable here in practice — the caller's
+    /// own parser already accepted `query` — but is mapped to `InvalidInput`
+    /// defensively rather than falling back.
+    ///
+    /// `finish` post-processes the successfully lowered document (`fields`,
+    /// extra pipeline stages, an aggregate's `step`) before it is planned —
+    /// the one part that differs between the two callers.
+    async fn lower_and_plan_via_ir(
+        &self,
+        query: &str,
+        start_ns: i64,
+        end_ns: i64,
+        kind: &str,
+        tenant_dataset: (&str, &str),
+        finish: impl FnOnce(&mut common::query_ir::Document),
+    ) -> Result<IrOutcome, QuerierError> {
+        let (tenant_slug, dataset_slug) = tenant_dataset;
+        let mut doc = match ql_ir::logql_to_ir(query, &start_ns.to_string(), &end_ns.to_string()) {
+            Ok(doc) => doc,
+            Err(ql_ir::LowerError::Inexpressible(reason)) => {
+                tracing::debug!(
+                    query = %query,
+                    kind = %kind,
+                    reason = %reason,
+                    "LogQL query is inexpressible in the IR; falling back to the old lowering"
+                );
+                return Ok(IrOutcome::Fallback);
+            }
+            Err(ql_ir::LowerError::ParseLogql(e)) => {
+                return Err(QuerierError::InvalidInput(e.to_string()));
+            }
+            Err(other) => return Err(QuerierError::InvalidInput(other.to_string())),
+        };
+        finish(&mut doc);
+
+        let planned = super::ir_planner::plan_document(
+            &self.session_context,
+            &doc,
+            super::ir_planner::PlanRequest::new(tenant_slug, dataset_slug, 0),
+        )
+        .await?;
+        Ok(match planned {
+            Some((df, _window, _correlate_truncated)) => IrOutcome::Planned(Box::new(df)),
+            None => IrOutcome::NoTable,
+        })
     }
 
     /// Execute a LogQL metric query, returning a matrix: one row per
@@ -216,8 +376,88 @@ impl LogsService {
         }
 
         let plan = plan_metric_query(&metric)?;
+        if let Some(batches) = self
+            .query_metric_via_ir(
+                &params.query,
+                params,
+                &plan.log_query,
+                tenant_slug,
+                dataset_slug,
+            )
+            .await?
+        {
+            return Ok(batches);
+        }
         self.execute_plan(&plan, params, tenant_slug, dataset_slug)
             .await
+    }
+
+    /// [`Self::query_metric`]'s IR-routed twin (task 4.1 of
+    /// `ir-single-lowering`) for the plain (non-`vector(N)`, non-binary)
+    /// case. `Ok(None)` is the D5 fallback signal, same as
+    /// [`Self::query_logs_via_ir`].
+    ///
+    /// Two post-`plan_document` corrections, both projection/naming only
+    /// (never a filter), keep the result schema identical to
+    /// [`Self::execute_plan`]'s:
+    /// - **`step`**: `ql_ir::logql_to_ir` sets the aggregate's bucket width
+    ///   from the LogQL range literal (`[5m]` → `"5m"`), but the Loki API's
+    ///   own `step` parameter is the caller's requested bucket resolution —
+    ///   a *different* value `execute_plan` buckets by
+    ///   (`params.step` is nanoseconds; a bare integer string is accepted
+    ///   as-is, see `query_ir::parse_duration_ns`). Overridden here so both
+    ///   paths bucket identically. (This would be better owned by `ql_ir`
+    ///   itself accepting a step override instead of deriving one it is
+    ///   then told to discard — filed as a follow-up, not done here.)
+    /// - **`value`'s type**: `ir_planner::agg_expr`'s `count` aggregate is
+    ///   `count(lit(1))`, Arrow `Int64`, unless a `rate` divisor promotes it
+    ///   — `execute_plan` always casts to `Float64`
+    ///   (`logs.rs`'s own aggregate assembly), which is also what the
+    ///   router's `batches_to_matrix` requires (`downcast_ref::<Float64Array>`,
+    ///   silently reading `0.0` for any other type). Cast explicitly so a
+    ///   plain `count_over_time`/`min`/`max` doesn't silently zero out. (The
+    ///   same Int64/Float64 inconsistency exists in `ir_planner::agg_expr`
+    ///   for `min`/`max`/`first`/`last` too — a planner-wide invariant gap
+    ///   beyond this method's reach; also a follow-up.)
+    async fn query_metric_via_ir(
+        &self,
+        query: &str,
+        params: &MetricQueryParams,
+        log_query: &LogQuery,
+        tenant_slug: &str,
+        dataset_slug: &str,
+    ) -> Result<Option<Vec<RecordBatch>>, QuerierError> {
+        use common::query_ir::Stage;
+
+        let outcome = self
+            .lower_and_plan_via_ir(
+                query,
+                params.start,
+                params.end,
+                "metric",
+                (tenant_slug, dataset_slug),
+                |doc| {
+                    for stage in &mut doc.pipeline {
+                        if let Stage::Aggregate(agg) = stage {
+                            agg.step = Some(params.step.to_string());
+                        }
+                    }
+                },
+            )
+            .await?;
+        let df = match outcome {
+            IrOutcome::Planned(df) => df,
+            IrOutcome::NoTable => return Ok(Some(Vec::new())),
+            IrOutcome::Fallback => return Ok(None),
+        };
+        // Cast `value` to Float64 in place (see this method's doc); every
+        // other column passes through unchanged.
+        let df = df
+            .with_column("value", cast(col("value"), DataType::Float64))
+            .map_err(QuerierError::QueryFailed)?;
+        let batches = df.collect().await.map_err(QuerierError::QueryFailed)?;
+        record_attr_demand(log_query, tenant_slug, dataset_slug);
+        Ok(Some(batches))
     }
 
     /// Execute a single lowered [`MetricPlan`] into a matrix. Shared by
@@ -248,7 +488,7 @@ impl LogsService {
                     return Ok(column.to_string());
                 }
                 let name = common::schema::materialized_column_name(label);
-                if materialized.contains(&name) {
+                if common::schema::is_materialized_and_unambiguous(&name, &materialized) {
                     return Ok(name);
                 }
                 Err(QuerierError::Unsupported(format!(
@@ -258,12 +498,17 @@ impl LogsService {
             .collect::<Result<_, _>>()?;
 
         // The range aggregation groups by the output columns directly for a
-        // plain or `sum`-folded query (defaulting to the natural series
-        // identity). A non-`sum` outer aggregation instead groups by the
-        // full series identity so the second pass has per-series values to
-        // reduce across.
+        // plain or `sum`-folded query. A *bare* range aggregation (no
+        // vector wrapper at all) instead defaults to the natural series
+        // identity, per D7 of `ir-single-lowering` — real Loki returns one
+        // series per matching stream when nothing groups it. An explicit,
+        // ungrouped `sum(...)` means the opposite: collapse every matching
+        // series into one row (#1394), so it groups by nothing rather than
+        // falling into that same default. A non-`sum` outer aggregation
+        // instead groups by the full series identity so the second pass has
+        // per-series values to reduce across.
         let range_group_cols: Vec<String> = match plan.outer_agg {
-            None if out_group_cols.is_empty() => {
+            None if out_group_cols.is_empty() && !plan.outer_sum => {
                 SERIES_COLUMNS.iter().map(|c| c.to_string()).collect()
             }
             None => out_group_cols.clone(),
@@ -290,7 +535,7 @@ impl LogsService {
         let bucket = date_bin(stride, timestamp_ns, origin).alias("bucket");
 
         let mut group_exprs = vec![bucket];
-        group_exprs.extend(range_group_cols.iter().map(|c| col(c.as_str())));
+        group_exprs.extend(range_group_cols.iter().map(|c| ident(c.as_str())));
 
         let value = aggregate_expr(&plan.aggregate).alias("value");
         df = df
@@ -300,7 +545,7 @@ impl LogsService {
         // Normalize `value` to Float64 (count/bytes aggregate to Int64)
         // and apply the `rate` divisor in the same projection.
         let mut proj = vec![col("bucket")];
-        proj.extend(range_group_cols.iter().map(|c| col(c.as_str())));
+        proj.extend(range_group_cols.iter().map(|c| ident(c.as_str())));
         let value = cast(col("value"), DataType::Float64);
         let value = match plan.rate_divisor_seconds {
             Some(seconds) => value / lit(seconds),
@@ -313,7 +558,7 @@ impl LogsService {
         // within each output group (`avg`/`min`/`max`/`count`).
         if let Some(outer) = plan.outer_agg {
             let mut group_exprs = vec![col("bucket")];
-            group_exprs.extend(out_group_cols.iter().map(|c| col(c.as_str())));
+            group_exprs.extend(out_group_cols.iter().map(|c| ident(c.as_str())));
             let reduced = outer_agg_expr(outer, col("value")).alias("value");
             df = df
                 .aggregate(group_exprs, vec![reduced])
@@ -321,7 +566,7 @@ impl LogsService {
 
             // `count` reduces to Int64; keep the matrix value Float64.
             let mut proj = vec![col("bucket")];
-            proj.extend(out_group_cols.iter().map(|c| col(c.as_str())));
+            proj.extend(out_group_cols.iter().map(|c| ident(c.as_str())));
             proj.push(cast(col("value"), DataType::Float64).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
@@ -336,7 +581,7 @@ impl LogsService {
                 &range_group_cols
             };
             let mut proj = vec![col("bucket")];
-            proj.extend(current_group_cols.iter().map(|c| col(c.as_str())));
+            proj.extend(current_group_cols.iter().map(|c| ident(c.as_str())));
             proj.push(scalar_op_expr(col("value"), scalar_op).alias("value"));
             df = df.select(proj).map_err(QuerierError::QueryFailed)?;
         }
@@ -384,8 +629,7 @@ impl LogsService {
         };
         let map_attrs = attr_context_of(&df).map_attrs;
         let df = time_window(df, start, end)?;
-        let df = df
-            .select_columns(&["log_attributes", "resource_attributes"])
+        let df = common::attrs::expr::select_attr_columns(df, ATTR_CONTAINERS)
             .map_err(QuerierError::QueryFailed)?;
         // Arrow's row format cannot sort Map columns, so the JSON-era
         // `distinct()` dedup is skipped for map-typed attribute tables.
@@ -402,7 +646,7 @@ impl LogsService {
             .map_err(QuerierError::QueryFailed)?;
 
         for batch in &batches {
-            for column in ["log_attributes", "resource_attributes"] {
+            for column in ATTR_CONTAINERS {
                 for doc in attr_documents(batch, column)?.into_iter().flatten() {
                     labels.extend(doc.into_keys());
                 }
@@ -447,8 +691,7 @@ impl LogsService {
         }
 
         // Otherwise pull the value out of the attribute documents.
-        let df = df
-            .select_columns(&["log_attributes", "resource_attributes"])
+        let df = common::attrs::expr::select_attr_columns(df, ATTR_CONTAINERS)
             .map_err(QuerierError::QueryFailed)?;
         let df = if map_attrs {
             df
@@ -464,7 +707,7 @@ impl LogsService {
 
         let mut values = BTreeSet::new();
         for batch in &batches {
-            for column in ["log_attributes", "resource_attributes"] {
+            for column in ATTR_CONTAINERS {
                 for mut doc in attr_documents(batch, column)?.into_iter().flatten() {
                     if let Some(value) = doc.remove(label) {
                         values.insert(value);
@@ -508,8 +751,7 @@ impl LogsService {
             }
         }
         let df = time_window(df, params.start, params.end)?;
-        let batches = df
-            .select_columns(&["log_attributes", "resource_attributes"])
+        let batches = common::attrs::expr::select_attr_columns(df, ATTR_CONTAINERS)
             .map_err(QuerierError::QueryFailed)?
             .limit(0, Some(LABEL_SCAN_LIMIT))
             .map_err(QuerierError::QueryFailed)?
@@ -532,7 +774,7 @@ impl LogsService {
         let mut agg: BTreeMap<String, FieldAgg> = BTreeMap::new();
 
         for batch in &batches {
-            for column in ["log_attributes", "resource_attributes"] {
+            for column in ATTR_CONTAINERS {
                 for doc in attr_documents(batch, column)?.into_iter().flatten() {
                     for (key, rendered) in doc {
                         let entry = agg.entry(key).or_default();
@@ -633,6 +875,25 @@ impl LogsService {
     }
 }
 
+/// The projection expression list for a set of log-query columns: `body`
+/// (if present in `columns`) is decoded via
+/// [`super::ir_planner::body_decode_expr`] the same way the IR path's own
+/// `body` projection is (issue #1410 — ingest JSON-encodes `body`, so a
+/// plain string value must come back decoded on every path that projects
+/// it), everything else is projected as-is.
+fn log_query_projection(columns: &[&str]) -> Vec<Expr> {
+    columns
+        .iter()
+        .map(|c| {
+            if *c == "body" {
+                super::ir_planner::body_decode_expr("body").alias("body")
+            } else {
+                col(*c)
+            }
+        })
+        .collect()
+}
+
 /// Apply the projection, filter, ordering, and limit of a log-line query
 /// to a base DataFrame. Split out so it can be tested against an
 /// in-memory table.
@@ -648,12 +909,18 @@ pub fn shape_log_query(
     if let Some(filter) = filter {
         df = df.filter(filter).map_err(QuerierError::QueryFailed)?;
     }
-    df.select_columns(LOG_COLUMNS)
-        .map_err(QuerierError::QueryFailed)?
-        .sort(vec![col("timestamp").sort(direction.ascending(), true)])
-        .map_err(QuerierError::QueryFailed)?
-        .limit(0, Some(limit as usize))
-        .map_err(QuerierError::QueryFailed)
+    let columns = common::attrs::expr::select_columns_for_containers(
+        Some(df.schema().as_arrow()),
+        LOG_COLUMNS,
+    );
+    df.select(log_query_projection(
+        &columns.iter().map(String::as_str).collect::<Vec<_>>(),
+    ))
+    .map_err(QuerierError::QueryFailed)?
+    .sort(vec![col("timestamp").sort(direction.ascending(), true)])
+    .map_err(QuerierError::QueryFailed)?
+    .limit(0, Some(limit as usize))
+    .map_err(QuerierError::QueryFailed)
 }
 
 /// Inclusive nanosecond bounds on the `timestamp` column.
@@ -670,23 +937,14 @@ pub(super) fn materialized_columns_of(df: &DataFrame) -> MaterializedColumns {
 }
 
 /// The attribute-matching context for a logs table: its materialized
-/// `label_<key>` columns, and whether its attribute columns are typed maps
-/// (new tables) or JSON strings (legacy tables).
+/// `label_<key>` columns, and whether its attribute columns are on the
+/// typed-attribute layout or still JSON strings (unflushed wire-format rows).
 fn attr_context_of(df: &DataFrame) -> AttrContext {
-    let map_attrs = df
-        .schema()
-        .fields()
-        .iter()
-        .any(|f| f.name() == "log_attributes" && matches!(f.data_type(), DataType::Map(_, _)));
-    // The derived `key=value` token column, when present, backs an extra
-    // bloom-prunable containment conjunct on attribute equality filters.
-    let attr_tokens = df.schema().fields().iter().any(|f| {
-        f.name() == common::schema::ATTR_TOKENS_COLUMN && matches!(f.data_type(), DataType::List(_))
-    });
+    let schema = df.schema().as_arrow();
     AttrContext {
         materialized: materialized_columns_of(df),
-        map_attrs,
-        attr_tokens,
+        map_attrs: common::attrs::expr::is_typed_layout(schema, "log_attributes"),
+        schema: Some(df.schema().inner().clone()),
     }
 }
 
@@ -695,7 +953,7 @@ fn attr_context_of(df: &DataFrame) -> AttrContext {
 fn aggregate_expr(aggregate: &Aggregate) -> Expr {
     match aggregate {
         Aggregate::Count => count(lit(1i64)),
-        Aggregate::BytesSum => sum(character_length(col("body"))),
+        Aggregate::BytesSum => sum(octet_length(super::ir_planner::body_decode_expr("body"))),
         Aggregate::UnwrapSum(label) => sum(unwrap_value(label)),
         Aggregate::UnwrapAvg(label) => avg(unwrap_value(label)),
         Aggregate::UnwrapMin(label) => min(unwrap_value(label)),
@@ -1362,7 +1620,6 @@ fn unwrap_value(label: &str) -> Expr {
     cast(col(column), DataType::Float64)
 }
 
-/// The dedicated column a known label maps to.
 /// Record query demand (epic #737, #733) for every selector label that is
 /// not backed by a dedicated column — the keys that would benefit from
 /// materialization (or, if already materialized, from staying so).
@@ -1374,14 +1631,19 @@ fn record_attr_demand(query: &LogQuery, tenant_slug: &str, dataset_slug: &str) {
     }
 }
 
-fn column_for_label(label: &str) -> Option<&'static str> {
-    match label {
-        "service_name" | "service" | "job" => Some("service_name"),
-        "level" | "severity" | "detected_level" => Some("severity_text"),
-        "trace_id" => Some("trace_id"),
-        "span_id" => Some("span_id"),
-        _ => None,
-    }
+/// The dedicated column a well-known LogQL label maps to.
+///
+/// The one alias table lives in [`ql_ir::logql_label_field`], which maps a
+/// label to its *logical* field; this resolves that logical field to the
+/// *physical* column it materializes as (`service.name` is stored in the
+/// `service_name` column — every other logical field here already spells
+/// its column name). [`super::logql::log_query_filter_with_columns`] and
+/// friends import this rather than keeping their own copy.
+pub(crate) fn column_for_label(label: &str) -> Option<&'static str> {
+    ql_ir::logql_label_field(label).map(|field| match field {
+        "service.name" => "service_name",
+        other => other,
+    })
 }
 
 /// Read an attribute column's per-row documents as string key/value maps.
@@ -1408,8 +1670,65 @@ mod tests {
         CatalogProvider, MemoryCatalogProvider, MemorySchemaProvider, SchemaProvider,
     };
 
-    fn logs_schema() -> Arc<Schema> {
-        Arc::new(Schema::new(vec![
+    /// `LOG_FIELD_PAIRS`' whole reason to exist (task 4.1 of
+    /// `ir-single-lowering`): each pair's logical field, run through
+    /// `safe_ident` the same way `ir_planner::Lowering::apply_projection`
+    /// aliases a `fields` entry, must equal that pair's own column half —
+    /// which must in turn be `LOG_COLUMNS`' entry at the same index, so the
+    /// IR path's projected output lines up with the old path's regardless
+    /// of which one changes first.
+    #[test]
+    fn log_field_pairs_resolve_to_log_columns() {
+        assert_eq!(
+            LOG_FIELD_PAIRS.len(),
+            LOG_COLUMNS.len(),
+            "LOG_FIELD_PAIRS and LOG_COLUMNS must stay the same length"
+        );
+        for (i, (logical, column)) in LOG_FIELD_PAIRS.iter().enumerate() {
+            assert_eq!(
+                common::query_ir::safe_ident(logical),
+                *column,
+                "LOG_FIELD_PAIRS[{i}]: safe_ident({logical:?}) must equal its own column half"
+            );
+            assert_eq!(
+                *column, LOG_COLUMNS[i],
+                "LOG_FIELD_PAIRS[{i}]'s column half must equal LOG_COLUMNS[{i}]"
+            );
+        }
+    }
+
+    #[test]
+    fn series_columns_matches_stream_identity() {
+        let resolved: Vec<&str> = ql_ir::STREAM_IDENTITY
+            .iter()
+            .map(|field| {
+                LOG_FIELD_PAIRS
+                    .iter()
+                    .find(|(logical, _)| logical == field)
+                    .map(|(_, column)| *column)
+                    .unwrap_or_else(|| panic!("{field}: no LOG_FIELD_PAIRS entry"))
+            })
+            .collect();
+        assert_eq!(
+            resolved, SERIES_COLUMNS,
+            "ql_ir::STREAM_IDENTITY must resolve to exactly logs::SERIES_COLUMNS, in order"
+        );
+    }
+
+    /// `column_for_label` backs `get_label_values`, `by` grouping,
+    /// `on`/`ignoring`, `label_replace`, `unwrap`, and attr-demand
+    /// recording, and `logql::label_expr` imports this same function — the
+    /// dotted OTel spelling must resolve here.
+    #[test]
+    fn column_for_label_resolves_dotted_service_name() {
+        assert_eq!(column_for_label("service.name"), Some("service_name"));
+    }
+
+    /// The base (non-attribute) log columns; see [`push_typed_log_attrs`]
+    /// for the typed-layout `log_attributes`/`resource_attributes` columns
+    /// a fixture appends alongside these.
+    fn logs_base_fields() -> Vec<Field> {
+        vec![
             Field::new(
                 "timestamp",
                 DataType::Timestamp(TimeUnit::Nanosecond, None),
@@ -1420,9 +1739,33 @@ mod tests {
             Field::new("severity_text", DataType::Utf8, true),
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
-            Field::new("log_attributes", DataType::Utf8, true),
-            Field::new("resource_attributes", DataType::Utf8, true),
-        ]))
+        ]
+    }
+
+    /// Append typed-layout `log_attributes`/`resource_attributes` columns
+    /// (`logs` `physical-v4`), built from `log_rows`; `resource_attributes`
+    /// is an empty (but present) container on every row.
+    fn push_typed_log_attrs(
+        fields: &mut Vec<Field>,
+        columns: &mut Vec<ArrayRef>,
+        log_rows: &[Option<serde_json::Map<String, serde_json::Value>>],
+    ) {
+        let resource_rows: Vec<Option<serde_json::Map<String, serde_json::Value>>> =
+            vec![Some(serde_json::Map::new()); log_rows.len()];
+        for (name, rows) in [
+            ("log_attributes", log_rows),
+            ("resource_attributes", &resource_rows),
+        ] {
+            let (typed_fields, typed_arrays) =
+                common::testing::typed_attribute_columns_from("logs", "physical-v4", name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
+        }
+    }
+
+    /// `n` rows with no `log_attributes` keys (an empty, present container).
+    fn empty_log_rows(n: usize) -> Vec<Option<serde_json::Map<String, serde_json::Value>>> {
+        vec![Some(serde_json::Map::new()); n]
     }
 
     fn str_col(values: &[&str]) -> Arc<StringArray> {
@@ -1433,30 +1776,22 @@ mod tests {
     /// (`label_namespace`, `label_status`) so the querier routes those
     /// labels to columns for exact / regex / ordered matching.
     fn service_with_materialized_labels() -> LogsService {
-        let mut fields: Vec<Field> = logs_schema()
-            .fields()
-            .iter()
-            .map(|f| (**f).clone())
-            .collect();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            str_col(&["a", "b", "c"]),
+            str_col(&["api", "api", "web"]),
+            str_col(&["error", "info", "error"]),
+            str_col(&["t1", "t2", "t3"]),
+            str_col(&["s1", "s2", "s3"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(3));
         fields.push(Field::new("label_namespace", DataType::Utf8, true));
         fields.push(Field::new("label_status", DataType::Utf8, true));
+        columns.push(str_col(&["prod", "prod", "staging"]));
+        columns.push(str_col(&["200", "500", "503"]));
         let schema = Arc::new(Schema::new(fields));
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                str_col(&["a", "b", "c"]),
-                str_col(&["api", "api", "web"]),
-                str_col(&["error", "info", "error"]),
-                str_col(&["t1", "t2", "t3"]),
-                str_col(&["s1", "s2", "s3"]),
-                str_col(&["{}", "{}", "{}"]),
-                str_col(&["{}", "{}", "{}"]),
-                str_col(&["prod", "prod", "staging"]),
-                str_col(&["200", "500", "503"]),
-            ],
-        )
-        .unwrap();
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -1470,10 +1805,75 @@ mod tests {
         LogsService::new(ctx)
     }
 
+    /// A `t.d.logs` table with a mixed-case materialized label column
+    /// (`label_StatusCode`), for issue #1392: grouping by a mixed-case
+    /// attribute label through the old `execute_plan` path.
+    fn service_with_mixed_case_label() -> LogsService {
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200])),
+            str_col(&["a", "b"]),
+            str_col(&["api", "api"]),
+            str_col(&["info", "info"]),
+            str_col(&["t1", "t2"]),
+            str_col(&["s1", "s2"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(2));
+        fields.push(Field::new("label_StatusCode", DataType::Utf8, true));
+        columns.push(str_col(&["200", "500"]));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    /// #1392: `execute_plan`'s grouping-column resolution used `col()` on a
+    /// materialized label column's name, which DataFusion parses as an SQL
+    /// identifier and lowercases when unquoted — so a mixed-case column
+    /// like `label_StatusCode` failed to resolve
+    /// (`No field named label_statuscode`). `ir_planner.rs`'s
+    /// `lower_aggregate` fixed the identical bug for the IR path (#1070) by
+    /// using `ident()` instead; this pins the same fix on the old path,
+    /// reachable both as a D5 fallback and as each operand of a
+    /// vector-to-vector binary metric query (`LogsService::query_metric`
+    /// routes both straight to `execute_plan`).
+    #[tokio::test]
+    async fn execute_plan_groups_by_mixed_case_materialized_label() {
+        let service = service_with_mixed_case_label();
+        let out = execute_plan_matrix(
+            &service,
+            r#"sum by (StatusCode) (count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out.len(),
+            2,
+            "should group the two StatusCode values: {out:?}"
+        );
+        assert!(out.iter().all(|(v, _, _)| *v == 1.0));
+    }
+
     #[tokio::test]
     async fn sum_by_materialized_label_groups_on_its_column() {
+        // The IR planner names the group column after the logical field the
+        // query wrote (`namespace`), not the promoted column's storage name
+        // (`label_namespace`). The router's `batches_to_matrix` strips a
+        // `label_` prefix from every group column it presents as a label
+        // (`src/router/src/endpoints/logql.rs`), so a client sees `namespace`
+        // either way — this test asserts on the logical name, matching what
+        // a client sees.
         let service = service_with_materialized_labels();
-        // label_namespace: prod, prod, staging → two groups (2 rows, 1 row).
+        // namespace: prod, prod, staging → two groups (2 rows, 1 row).
         let batches = service
             .query_metric(
                 &metric_params(
@@ -1487,7 +1887,7 @@ mod tests {
             .expect("grouped metric query");
         let mut groups: Vec<(String, f64)> = Vec::new();
         for batch in &batches {
-            let ns = string_column(batch, "label_namespace").expect("group column");
+            let ns = string_column(batch, "namespace").expect("group column");
             let value = batch
                 .column_by_name("value")
                 .unwrap()
@@ -1503,21 +1903,54 @@ mod tests {
             groups,
             vec![("prod".to_string(), 2.0), ("staging".to_string(), 1.0)]
         );
+    }
 
-        // A label with no column still can't be grouped.
-        assert!(matches!(
-            service
-                .query_metric(
-                    &metric_params(
-                        r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
-                        1000
-                    ),
-                    "t",
-                    "d"
-                )
-                .await,
-            Err(QuerierError::Unsupported(_))
-        ));
+    /// Grouping by a label with no backing column at all (`nope`, present on
+    /// no row) is not a rejection: the IR planner resolves any name it
+    /// cannot find as a promoted or physical column as an unpromoted
+    /// attribute lookup, which is absent/null on every row here, so every
+    /// row lands in one group under a null label rather than the query
+    /// failing. This is the Loki-faithful behavior, not a regression: Loki
+    /// itself evaluates `sum by (foo) (...)` for a label no stream carries
+    /// without error — one series, `foo` absent/empty — the same as any
+    /// other label a matching stream simply doesn't have. The old (pre-
+    /// `ir-single-lowering`) LogQL metric path's `Unsupported` reflected our
+    /// own storage model (no backing column to group by), not LogQL's
+    /// actual semantics; that restriction is superseded, not preserved
+    /// (see design.md's "§5.3 finding"). No `unknown_group_by_field`-style
+    /// warning is added here: Loki's own API has no such warning for an
+    /// absent grouping label, so that mechanism stays specific to the
+    /// native Query IR endpoint (`router/src/endpoints/query.rs`), which
+    /// doesn't need to match Loki wire-format behavior.
+    #[tokio::test]
+    async fn sum_by_an_unknown_label_groups_everything_under_one_null_label() {
+        let service = service_with_materialized_labels();
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (nope) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouping by an unbacked label is accepted, Loki-faithfully");
+        // All 3 fixture rows collapse into a single group, `nope` absent.
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = &batches[0];
+        let nope = string_column(batch, "nope").expect("group column");
+        assert!(
+            nope.is_null(0),
+            "grouping label must be absent, not empty-string"
+        );
+        let value = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        assert_eq!(value.value(0), 3.0);
     }
 
     #[tokio::test]
@@ -1545,25 +1978,32 @@ mod tests {
 
     /// A context with a `t.d.logs` table holding three sample rows.
     fn service_with_data() -> LogsService {
-        let schema = logs_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                str_col(&["boom happened", "all good", "boom again"]),
-                str_col(&["api", "api", "web"]),
-                str_col(&["error", "info", "error"]),
-                str_col(&["t1", "t2", "t3"]),
-                str_col(&["s1", "s2", "s3"]),
-                str_col(&[
-                    r#"{"namespace":"prod","pod":"api-1"}"#,
-                    r#"{"namespace":"prod","pod":"api-2"}"#,
-                    r#"{"namespace":"staging","pod":"web-1"}"#,
-                ]),
-                str_col(&["{}", "{}", "{}"]),
-            ],
-        )
-        .unwrap();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            str_col(&["boom happened", "all good", "boom again"]),
+            str_col(&["api", "api", "web"]),
+            str_col(&["error", "info", "error"]),
+            str_col(&["t1", "t2", "t3"]),
+            str_col(&["s1", "s2", "s3"]),
+        ];
+        let log_rows = [
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("pod".to_string(), serde_json::json!("api-1")),
+            ])),
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("pod".to_string(), serde_json::json!("api-2")),
+            ])),
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("staging")),
+                ("pod".to_string(), serde_json::json!("web-1")),
+            ])),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &log_rows);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -1576,6 +2016,61 @@ mod tests {
         ctx.register_catalog("t", catalog);
 
         LogsService::new(ctx)
+    }
+
+    /// A `t.d.logs` table with a single row whose `body` is JSON-encoded
+    /// the way ingest actually stores it (#1410), built from `decoded_body`
+    /// via the same [`common::flight::conversion::encode_log_body`] ingest
+    /// uses — for the `bytes_over_time` regression below.
+    fn service_with_encoded_body(decoded_body: &str) -> LogsService {
+        let encoded = common::flight::conversion::encode_log_body(decoded_body);
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100])),
+            str_col(&[encoded.as_str()]),
+            str_col(&["api"]),
+            str_col(&["error"]),
+            str_col(&["t1"]),
+            str_col(&["s1"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(1));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let schema_provider = Arc::new(MemorySchemaProvider::new());
+        schema_provider
+            .register_table("logs".to_string(), Arc::new(table))
+            .unwrap();
+        let catalog = Arc::new(MemoryCatalogProvider::new());
+        catalog.register_schema("d", schema_provider).unwrap();
+        ctx.register_catalog("t", catalog);
+        LogsService::new(ctx)
+    }
+
+    /// #1531: `bytes_over_time`/`bytes_rate` lower to `Aggregate::BytesSum`,
+    /// which read the raw (JSON-encoded since #1410) `body` column and
+    /// counted Unicode characters (`character_length`) rather than bytes.
+    /// A body with a multi-byte UTF-8 character (`Å`, `ö`) and a
+    /// JSON-escaped character (`"`, `\n`) exercises both bugs at once: the
+    /// raw column's surrounding quotes/escapes inflate the count, and
+    /// char-counting undercounts the multi-byte runes.
+    #[tokio::test]
+    async fn bytes_over_time_counts_decoded_utf8_bytes() {
+        let decoded_body = "boom \"Ångström\"\n";
+        let service = service_with_encoded_body(decoded_body);
+        let out = matrix(
+            &service,
+            r#"bytes_over_time({service_name="api"}[1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out,
+            vec![(decoded_body.len() as f64, Some("api".to_string()))],
+            "bytes_over_time must count decoded UTF-8 bytes, not raw-column chars"
+        );
     }
 
     fn params(query: &str, start: i64, end: i64, direction: Direction) -> LogQueryParams {
@@ -1616,11 +2111,9 @@ mod tests {
         out
     }
 
-    /// A `t.d.logs` table whose attribute columns are typed
-    /// `Map<Utf8, Utf8>` (the new-table storage form).
+    /// A `t.d.logs` table whose attribute columns are the typed layout
+    /// (four typed maps plus a CBOR residue column each).
     fn service_with_map_attrs() -> LogsService {
-        use datafusion::arrow::array::{MapBuilder, StringBuilder};
-
         let mut fields: Vec<Field> = vec![
             Field::new(
                 "timestamp",
@@ -1633,75 +2126,47 @@ mod tests {
             Field::new("trace_id", DataType::Utf8, true),
             Field::new("span_id", DataType::Utf8, true),
         ];
-        let map_field = |name: &str| {
-            Field::new_map(
-                name,
-                "key_value",
-                Field::new("key", DataType::Utf8, false),
-                Field::new("value", DataType::Utf8, true),
-                false,
-                true,
-            )
-        };
-        fields.push(map_field("log_attributes"));
-        fields.push(map_field("resource_attributes"));
-        let schema = Arc::new(Schema::new(fields));
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
+            str_col(&["a", "b", "c"]),
+            str_col(&["api", "api", "web"]),
+            str_col(&["info", "error", "info"]),
+            str_col(&["t1", "t2", "t3"]),
+            str_col(&["s1", "s2", "s3"]),
+        ];
 
-        let mut log_attrs = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
         // Row 1: namespace=prod, status=200; row 2: namespace=prod, status=503;
         // row 3: namespace=staging.
-        for (ns, status) in [
-            ("prod", Some("200")),
-            ("prod", Some("503")),
-            ("staging", None),
+        let log_rows = [
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("status".to_string(), serde_json::json!(200)),
+            ])),
+            Some(serde_json::Map::from_iter([
+                ("namespace".to_string(), serde_json::json!("prod")),
+                ("status".to_string(), serde_json::json!(503)),
+            ])),
+            Some(serde_json::Map::from_iter([(
+                "namespace".to_string(),
+                serde_json::json!("staging"),
+            )])),
+        ];
+        let resource_rows = [
+            Some(serde_json::Map::new()),
+            Some(serde_json::Map::new()),
+            Some(serde_json::Map::new()),
+        ];
+        for (name, rows) in [
+            ("log_attributes", &log_rows),
+            ("resource_attributes", &resource_rows),
         ] {
-            log_attrs.keys().append_value("namespace");
-            log_attrs.values().append_value(ns);
-            if let Some(st) = status {
-                log_attrs.keys().append_value("status");
-                log_attrs.values().append_value(st);
-            }
-            log_attrs.append(true).unwrap();
+            let (typed_fields, typed_arrays) =
+                common::testing::typed_attribute_columns_from("logs", "physical-v4", name, rows);
+            fields.extend(typed_fields);
+            columns.extend(typed_arrays);
         }
-        let log_attrs = log_attrs.finish();
-        let mut resource_attrs = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
-        for _ in 0..3 {
-            resource_attrs.append(true).unwrap();
-        }
-        let resource_attrs = resource_attrs.finish();
-
-        // MapBuilder's default field naming must match the schema fields.
-        let log_attrs = datafusion::arrow::compute::cast(
-            &(Arc::new(log_attrs) as Arc<dyn Array>),
-            schema
-                .field_with_name("log_attributes")
-                .unwrap()
-                .data_type(),
-        )
-        .unwrap();
-        let resource_attrs = datafusion::arrow::compute::cast(
-            &(Arc::new(resource_attrs) as Arc<dyn Array>),
-            schema
-                .field_with_name("resource_attributes")
-                .unwrap()
-                .data_type(),
-        )
-        .unwrap();
-
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300])),
-                str_col(&["a", "b", "c"]),
-                str_col(&["api", "api", "web"]),
-                str_col(&["info", "error", "info"]),
-                str_col(&["t1", "t2", "t3"]),
-                str_col(&["s1", "s2", "s3"]),
-                log_attrs,
-                resource_attrs,
-            ],
-        )
-        .unwrap();
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -1713,6 +2178,26 @@ mod tests {
         catalog.register_schema("d", schema_provider).unwrap();
         ctx.register_catalog("t", catalog);
         LogsService::new(ctx)
+    }
+
+    #[tokio::test]
+    async fn attr_context_of_detects_the_typed_attribute_layout() {
+        let (fields, arrays) = common::testing::typed_attribute_columns_from(
+            "logs",
+            "physical-v4",
+            "log_attributes",
+            &[None],
+        );
+        let schema = Arc::new(Schema::new(fields.to_vec()));
+        let batch = RecordBatch::try_new(schema.clone(), arrays.to_vec()).unwrap();
+
+        let ctx = SessionContext::new();
+        let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
+        let df = ctx
+            .read_table(Arc::new(table))
+            .expect("read the typed-layout table as a DataFrame");
+
+        assert!(attr_context_of(&df).map_attrs);
     }
 
     #[tokio::test]
@@ -2004,6 +2489,100 @@ mod tests {
         assert!(out.iter().all(|(v, _)| *v == 1.0));
     }
 
+    /// Executes a metric query through [`LogsService::execute_plan`]
+    /// directly, bypassing `query_metric`'s IR-first routing — the only way
+    /// to exercise the old lowering path for a query `ql_ir` would accept.
+    /// Returns `(value, service_name?, severity_text?)` rows.
+    async fn execute_plan_matrix(
+        service: &LogsService,
+        query: &str,
+        step: i64,
+    ) -> Vec<(f64, Option<String>, Option<String>)> {
+        let LogqlExpr::Metric(metric) = parse(query).expect("parse metric query") else {
+            panic!("{query}: not a metric query");
+        };
+        let plan = plan_metric_query(&metric).expect("plan metric query");
+        let batches = service
+            .execute_plan(&plan, &metric_params(query, step), "t", "d")
+            .await
+            .expect("execute_plan");
+        let mut out = Vec::new();
+        for batch in &batches {
+            let value = batch
+                .column_by_name("value")
+                .unwrap()
+                .as_any()
+                .downcast_ref::<Float64Array>()
+                .unwrap();
+            let service_col = string_column(batch, "service_name").ok();
+            let severity_col = string_column(batch, "severity_text").ok();
+            for i in 0..batch.num_rows() {
+                let svc = service_col.and_then(|c| (!c.is_null(i)).then(|| c.value(i).to_string()));
+                let sev =
+                    severity_col.and_then(|c| (!c.is_null(i)).then(|| c.value(i).to_string()));
+                out.push((value.value(i), svc, sev));
+            }
+        }
+        out
+    }
+
+    /// #1394: an explicit, ungrouped `sum(...)` over a range aggregation
+    /// must collapse every matching series into one row, not fall into the
+    /// bare-range-aggregation default of one row per (service_name,
+    /// severity_text) stream. Two `api` rows of differing severity
+    /// (`error`/`info`) in one bucket: real Loki/Prometheus semantics
+    /// return a single row summing both.
+    #[tokio::test]
+    async fn sum_with_no_by_collapses_to_one_series() {
+        let service = service_with_data();
+        let out = execute_plan_matrix(
+            &service,
+            r#"sum(count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out,
+            vec![(2.0, None, None)],
+            "an ungrouped outer sum must collapse every matching series into one row: {out:?}"
+        );
+    }
+
+    /// Guard: a *bare* range aggregation (no vector wrapper) keeps
+    /// defaulting to one row per (service_name, severity_text) stream (D7
+    /// of `ir-single-lowering`) — #1394's fix must not touch this case.
+    #[tokio::test]
+    async fn bare_range_aggregation_still_defaults_to_series_identity() {
+        let service = service_with_data();
+        let out = execute_plan_matrix(
+            &service,
+            r#"count_over_time({service_name="api"}[1000ns])"#,
+            1000,
+        )
+        .await;
+        assert_eq!(
+            out.len(),
+            2,
+            "one row per (service_name, severity_text) stream: {out:?}"
+        );
+        assert!(out.iter().all(|(v, _, _)| *v == 1.0));
+    }
+
+    /// Guard: an explicitly grouped `sum by (...)` keeps grouping by the
+    /// declared label — #1394's fix only changes the *ungrouped* case.
+    #[tokio::test]
+    async fn sum_by_explicit_label_still_groups_explicitly() {
+        let service = service_with_data();
+        let out = execute_plan_matrix(
+            &service,
+            r#"sum by (level) (count_over_time({service_name="api"}[1000ns]))"#,
+            1000,
+        )
+        .await;
+        assert_eq!(out.len(), 2, "sum by (level) keeps two groups: {out:?}");
+        assert!(out.iter().all(|(v, _, _)| *v == 1.0));
+    }
+
     #[tokio::test]
     async fn sum_by_groups_across_series() {
         let service = service_with_data();
@@ -2076,21 +2655,18 @@ mod tests {
     /// counts in one bucket: `error`×3 and `info`×1 — so a cross-series
     /// `stddev`/`stdvar` over them is non-zero.
     fn service_with_varying_counts() -> LogsService {
-        let schema = logs_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
-                str_col(&["a", "b", "c", "d"]),
-                str_col(&["api", "api", "api", "api"]),
-                str_col(&["error", "error", "error", "info"]),
-                str_col(&["t1", "t2", "t3", "t4"]),
-                str_col(&["s1", "s2", "s3", "s4"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-            ],
-        )
-        .unwrap();
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+            str_col(&["a", "b", "c", "d"]),
+            str_col(&["api", "api", "api", "api"]),
+            str_col(&["error", "error", "error", "info"]),
+            str_col(&["t1", "t2", "t3", "t4"]),
+            str_col(&["s1", "s2", "s3", "s4"]),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &empty_log_rows(4));
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2104,26 +2680,45 @@ mod tests {
         LogsService::new(ctx)
     }
 
-    /// A context with one `api`/`info` series whose `trace_id` column
-    /// carries the numeric strings 10, 20, 30, 40 — a stand-in for an
-    /// unwrappable numeric column, so `unwrap trace_id` yields those
-    /// samples in a single bucket.
-    fn service_with_numeric_unwrap() -> LogsService {
-        let schema = logs_schema();
-        let batch = RecordBatch::try_new(
-            schema.clone(),
-            vec![
-                Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
-                str_col(&["a", "b", "c", "d"]),
-                str_col(&["api", "api", "api", "api"]),
-                str_col(&["info", "info", "info", "info"]),
-                str_col(&["10", "20", "30", "40"]),
-                str_col(&["s1", "s2", "s3", "s4"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-                str_col(&["{}", "{}", "{}", "{}"]),
-            ],
-        )
-        .unwrap();
+    /// A context with one `api`/`info` series whose `log_attributes` map
+    /// carries a `value` attribute set to the numeric strings 10, 20, 30,
+    /// 40 — the realistic shape `unwrap <label>` names (an attribute field,
+    /// never a physical column; #1395), so `unwrap value` yields those
+    /// samples in a single bucket. `trace_id` carries the same numeric
+    /// strings too, for `quantile_over_time_ranks_unwrapped_samples`, which
+    /// has no `ql_ir` equivalent and so always exercises the old lowering's
+    /// bare-physical-column `unwrap` instead (see that test's doc comment).
+    fn service_with_attribute_unwrap() -> LogsService {
+        let mut fields = logs_base_fields();
+        let mut columns: Vec<ArrayRef> = vec![
+            Arc::new(TimestampNanosecondArray::from(vec![100, 200, 300, 400])),
+            str_col(&["a", "b", "c", "d"]),
+            str_col(&["api", "api", "api", "api"]),
+            str_col(&["info", "info", "info", "info"]),
+            str_col(&["10", "20", "30", "40"]),
+            str_col(&["s1", "s2", "s3", "s4"]),
+        ];
+        let log_rows = [
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("10"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("20"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("30"),
+            )])),
+            Some(serde_json::Map::from_iter([(
+                "value".to_string(),
+                serde_json::json!("40"),
+            )])),
+        ];
+        push_typed_log_attrs(&mut fields, &mut columns, &log_rows);
+        let schema = Arc::new(Schema::new(fields));
+        let batch = RecordBatch::try_new(schema.clone(), columns).unwrap();
 
         let ctx = SessionContext::new();
         let table = MemTable::try_new(schema, vec![vec![batch]]).unwrap();
@@ -2137,9 +2732,16 @@ mod tests {
         LogsService::new(ctx)
     }
 
+    /// `quantile_over_time` has no `ql_ir` equivalent (`range_function`
+    /// refuses it as `Inexpressible`), so this always falls back to the old
+    /// lowering — unlike the other `unwrap`-based tests in this module, it
+    /// deliberately keeps `unwrap trace_id` (a registered column, resolved
+    /// as a bare physical reference by the old path's `unwrap_value`) rather
+    /// than an attribute, which only the IR path (unreachable here) can
+    /// unwrap.
     #[tokio::test]
     async fn quantile_over_time_ranks_unwrapped_samples() {
-        let service = service_with_numeric_unwrap();
+        let service = service_with_attribute_unwrap();
         let q = |phi: &str| {
             let query = format!(
                 r#"quantile_over_time({phi}, {{service_name="api"}} | unwrap trace_id [1000ns])"#
@@ -2161,11 +2763,11 @@ mod tests {
 
     #[tokio::test]
     async fn stddev_stdvar_over_time_reduce_unwrapped_samples() {
-        let service = service_with_numeric_unwrap();
+        let service = service_with_attribute_unwrap();
         // Samples [10, 20, 30, 40]: population variance 125, stddev ~11.18.
         let var = matrix(
             &service,
-            r#"stdvar_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"stdvar_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2174,7 +2776,7 @@ mod tests {
 
         let dev = matrix(
             &service,
-            r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"stddev_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2182,6 +2784,38 @@ mod tests {
             (dev[0].0 - 125.0_f64.sqrt()).abs() < 1e-6,
             "stddev {}",
             dev[0].0
+        );
+    }
+
+    /// Review finding on #1393: a `plan_document` rejection must propagate as
+    /// an error, not silently fall back to the old lowering — design D5's
+    /// exception set is `LowerError::Inexpressible` only, and design.md's
+    /// fallback set (task 4.2) lists zero `plan_document`-rejected cases.
+    /// `unwrap trace_id` lowers fine through `ql_ir` (`stddev_over_time` is
+    /// supported, and `ql_ir` does no type checking of the unwrapped field),
+    /// but `trace_id` is logically a `String` field — `plan_document`'s
+    /// aggregate validation requires a numeric field for `stddev` and
+    /// rejects it with `InvalidInput`. The *old* path never logically types
+    /// the unwrap target at all (a bare physical-column cast), so it
+    /// succeeds on the same query — this is not a case for the fallback set,
+    /// it is a case for propagating the planner's answer.
+    #[tokio::test]
+    async fn planner_invalid_input_propagates_instead_of_falling_back() {
+        let service = service_with_attribute_unwrap();
+        let params = MetricQueryParams {
+            query: r#"stddev_over_time({service_name="api"} | unwrap trace_id [1000ns])"#
+                .to_string(),
+            start: 0,
+            end: 1000,
+            step: 1000,
+        };
+        let err = service
+            .query_metric(&params, "t", "d")
+            .await
+            .expect_err("a plan_document rejection must surface as an error, not a silent fallback to the old path's success");
+        assert!(
+            matches!(err, QuerierError::InvalidInput(_)),
+            "expected InvalidInput (unwrap target is not numeric), got {err:?}"
         );
     }
 
@@ -2410,11 +3044,11 @@ mod tests {
 
     #[tokio::test]
     async fn first_and_last_over_time_pick_by_timestamp() {
-        let service = service_with_numeric_unwrap();
+        let service = service_with_attribute_unwrap();
         // Samples arrive as 10@100, 20@200, 30@300, 40@400 in one bucket.
         let first = matrix(
             &service,
-            r#"first_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"first_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2423,7 +3057,7 @@ mod tests {
 
         let last = matrix(
             &service,
-            r#"last_over_time({service_name="api"} | unwrap trace_id [1000ns])"#,
+            r#"last_over_time({service_name="api"} | unwrap value [1000ns])"#,
             1000,
         )
         .await;
@@ -2642,25 +3276,47 @@ mod tests {
         ));
     }
 
+    /// Companion to `sum_by_an_unknown_label_groups_everything_under_one_null_label`
+    /// with a real (existing-table) fixture rather than the materialized-label
+    /// one: grouping by an attribute name no row actually carries
+    /// (`nonmaterialized_attr` — the fixture's JSON attributes are
+    /// `namespace`/`pod`) is accepted and groups everything under one null
+    /// label — the Loki-faithful behavior, same reasoning as its companion
+    /// — rather than surfacing a planning failure.
+    /// `planner_invalid_input_propagates_instead_of_falling_back` (above)
+    /// still covers the general principle this test used to pin — a genuine
+    /// planning failure must surface as an error, not read as empty — with a
+    /// query that actually fails to plan (`stddev_over_time` unwrapping a
+    /// non-numeric registered column).
     #[tokio::test]
-    async fn planning_failure_on_an_existing_table_still_errors() {
-        // The table exists but the requested grouping cannot be lowered —
-        // a planning failure that must surface, not read as empty.
+    async fn sum_by_a_nonexistent_attribute_groups_everything_under_one_null_label() {
         let service = service_with_data();
+        let batches = service
+            .query_metric(
+                &metric_params(
+                    r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
+                    1000,
+                ),
+                "t",
+                "d",
+            )
+            .await
+            .expect("grouping by an unbacked attribute is accepted, Loki-faithfully");
+        // All 3 fixture rows collapse into a single group, the attribute absent.
+        assert_eq!(batches.iter().map(|b| b.num_rows()).sum::<usize>(), 1);
+        let batch = &batches[0];
+        let attr = string_column(batch, "nonmaterialized_attr").expect("group column");
         assert!(
-            service
-                .query_metric(
-                    &metric_params(
-                        r#"sum by (nonmaterialized_attr) (count_over_time({service_name=~".+"}[1000ns]))"#,
-                        1000,
-                    ),
-                    "t",
-                    "d",
-                )
-                .await
-                .is_err(),
-            "planning failure on an existing table must not read as empty"
+            attr.is_null(0),
+            "grouping label must be absent, not empty-string"
         );
+        let value = batch
+            .column_by_name("value")
+            .unwrap()
+            .as_any()
+            .downcast_ref::<datafusion::arrow::array::Float64Array>()
+            .unwrap();
+        assert_eq!(value.value(0), 3.0);
     }
 
     /// As for `query_logs`: a malformed selector must be reported as

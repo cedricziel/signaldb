@@ -27,7 +27,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -78,7 +78,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -120,6 +120,16 @@
           "type": "ci",
           "section": "Continuous Integration"
         }
+      ],
+      "extra-files": [
+        {
+          "type": "generic",
+          "path": "/otel/registry/manifest.yaml"
+        },
+        {
+          "type": "generic",
+          "path": "/otel/registry-genai/manifest.yaml"
+        }
       ]
     },
     "src/compactor": {
@@ -129,7 +139,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -180,7 +190,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -231,7 +241,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -281,7 +291,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -332,7 +342,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -382,7 +392,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -433,7 +443,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -484,57 +494,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
-      "changelog-sections": [
-        {
-          "type": "feat",
-          "section": "Features"
-        },
-        {
-          "type": "fix",
-          "section": "Bug Fixes"
-        },
-        {
-          "type": "perf",
-          "section": "Performance Improvements"
-        },
-        {
-          "type": "revert",
-          "section": "Reverts"
-        },
-        {
-          "type": "docs",
-          "section": "Documentation"
-        },
-        {
-          "type": "style",
-          "section": "Styles"
-        },
-        {
-          "type": "refactor",
-          "section": "Code Refactoring"
-        },
-        {
-          "type": "test",
-          "section": "Tests"
-        },
-        {
-          "type": "build",
-          "section": "Build System"
-        },
-        {
-          "type": "ci",
-          "section": "Continuous Integration"
-        }
-      ]
-    },
-    "src/logql": {
-      "release-type": "rust",
-      "include-component-in-tag": true,
-      "bump-minor-pre-major": true,
-      "bump-patch-for-minor-pre-major": true,
-      "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -584,7 +544,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -634,7 +594,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -684,7 +644,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -734,7 +694,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -785,7 +745,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -835,7 +795,7 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -886,7 +846,64 @@
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
+      ],
+      "extra-files": [
+        {
+          "type": "json",
+          "path": "/.design-sync/pkg/package.json",
+          "jsonpath": "$.version"
+        }
+      ]
+    },
+    "src/mcp-server": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -930,13 +947,13 @@
         }
       ]
     },
-    "src/mcp-server": {
+    "src/logql": {
       "release-type": "rust",
       "include-component-in-tag": true,
       "bump-minor-pre-major": true,
       "bump-patch-for-minor-pre-major": true,
       "draft": false,
-      "prerelease": false,
+      "prerelease": true,
       "changelog-sections": [
         {
           "type": "feat",
@@ -978,7 +995,61 @@
           "type": "ci",
           "section": "Continuous Integration"
         }
-      ]
+      ],
+      "component": "logql-parser",
+      "separate-pull-requests": true
+    },
+    "src/traceql": {
+      "release-type": "rust",
+      "include-component-in-tag": true,
+      "bump-minor-pre-major": true,
+      "bump-patch-for-minor-pre-major": true,
+      "draft": false,
+      "prerelease": true,
+      "changelog-sections": [
+        {
+          "type": "feat",
+          "section": "Features"
+        },
+        {
+          "type": "fix",
+          "section": "Bug Fixes"
+        },
+        {
+          "type": "perf",
+          "section": "Performance Improvements"
+        },
+        {
+          "type": "revert",
+          "section": "Reverts"
+        },
+        {
+          "type": "docs",
+          "section": "Documentation"
+        },
+        {
+          "type": "style",
+          "section": "Styles"
+        },
+        {
+          "type": "refactor",
+          "section": "Code Refactoring"
+        },
+        {
+          "type": "test",
+          "section": "Tests"
+        },
+        {
+          "type": "build",
+          "section": "Build System"
+        },
+        {
+          "type": "ci",
+          "section": "Continuous Integration"
+        }
+      ],
+      "component": "traceql-parser",
+      "separate-pull-requests": true
     }
   },
   "separate-pull-requests": false,

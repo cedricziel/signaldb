@@ -6,10 +6,16 @@ import { useCallback } from "react";
 import { useLocation, useNavigate, useParams } from "react-router";
 import { DEFAULT_SCALE, isScale, type Scale } from "../features/explore/scale";
 import { DEFAULT_ENTITY_TYPE } from "../features/catalog/entityTypes";
-import { filterFromParam, filterToParam, type LabelFilter } from "./filters";
+import {
+  filterFromParam,
+  filterToParam,
+  logFilterFromParam,
+  type LabelFilter,
+} from "./filters";
 import {
   traceFilterFromParam,
   traceFilterToParam,
+  traceFiltersForUrl,
   type TraceFilter,
 } from "./traceFilters";
 import { DEFAULT_GROUP_BY, KEY_SEP } from "./traceGroups";
@@ -54,8 +60,15 @@ export interface ExploreState {
    * the same window, so a shared link must carry it.
    */
   grain: GroupGrain;
-  /** PromQL expression for the metrics view. */
-  promql: string;
+  /**
+   * The metrics builder's queries and formula, JSON-encoded, as of the last
+   * Run — "" before the first run. Everything the builder can express now
+   * compiles to the Query IR (see api/ir/metrics.ts), so this is the only
+   * metrics-view query state; there is no PromQL escape hatch. A bookmarked
+   * `?promql=` link from before this change is not upgraded — it now starts
+   * from an empty builder, same as any other unrecognized param.
+   */
+  metricQuery: string;
   /** Profile type id (e.g. `cpu:nanoseconds`) — "" auto-picks the first. */
   profileType: string;
   /** Service filter for the profiles view — "" means all services. */
@@ -72,12 +85,27 @@ export interface ExploreState {
   /** Exact profile id to render (from a trace's linked-profile action) —
    * "" means the normal service/type-filtered view. */
   profileId: string;
+  /** Sample unit of a linked profile opened via `profileId` (e.g.
+   * "nanoseconds") — carried alongside it since `ProfileSummaryView` has no
+   * type id `profileType` can resolve a unit from; "" means unknown. */
+  profileUnit: string;
   /**
    * Explicit tenant/dataset context. Empty means "ambient default": the dev
    * proxy (or a future session) supplies it and no header is sent.
    */
   tenant: string;
   dataset: string;
+  /** Query IR builder's source (logs/traces/profiles) on the Query tab. */
+  querySource: "logs" | "traces" | "profiles";
+  /** Query IR builder's declared result envelope on the Query tab. */
+  queryResult: "rows" | "series" | "table";
+  /** Query IR builder's filter chips on the Query tab — the `f`-style
+   * LabelFilter encoding, under its own `qf` param so it doesn't collide
+   * with the logs tab's own `f` filters. */
+  queryFilters: LabelFilter[];
+  /** Whether the Query tab has been run at least once — gates the result
+   * query and distinguishes "not run yet" from "ran and returned nothing". */
+  queryRun: boolean;
   /** Selected entity type on the catalog tab (an `EntityTypeDef.id`). */
   catalogEntity: string;
   /**
@@ -92,6 +120,87 @@ export interface ExploreState {
    * type has a `breakdown`; encodes that single dimension's value.
    */
   catalogSecondary: string;
+  /** List | Map switch on the catalog's service list ("Catalog Map view" —
+   * only the service entity type offers Map). Kept in the URL so a link
+   * reopens the map. */
+  catalogView: "list" | "map";
+  /** The Overview page's `deployment.environment` scope — "" means every
+   * environment. Only the Overview reads it; it isn't carried to other
+   * pages (see `crossSignalSearch`). */
+  env: string;
+  /** The Evaluate pages' own selection (agent, source, compared runs,
+   * drilled-into case). Only those pages read it; like `env` it isn't
+   * carried to other pages. */
+  evals: EvalParams;
+  /** The Real users page's selected frontend app (a `service.name`) — ""
+   * means "not yet picked" (the page defaults to the busiest app and
+   * writes it here). Only `/rum` reads it; like `env` it isn't carried to
+   * other pages. */
+  rumApp: string;
+  /** The Real users Pages tab's selected route (a resolved `url.template`)
+   * — "" means no route is selected, showing the route list only. Like
+   * `rumApp`, only `/rum` reads it. */
+  rumRoute: string;
+  /** The Real users Sessions tab's selected session (a `session.id`) — ""
+   * means no session is selected, showing the session list only. Like
+   * `rumApp`, only `/rum` reads it. */
+  rumSession: string;
+  /** The Real users Errors tab's selected group — a `compositeKey` of
+   * (exception type, message, escaped), "" meaning no group is selected.
+   * Like `rumApp`, only `/rum` reads it. */
+  rumErrorGroup: string;
+}
+
+export type EvalSource = "offline" | "production" | "both";
+export type EvalCaseMode = "candidate" | "baseline" | "side";
+
+export interface EvalParams {
+  agent: string;
+  source: EvalSource;
+  baseline: string;
+  candidate: string;
+  case: string;
+  /** The Runs page's eval-set filter. */
+  set: string;
+  mode: EvalCaseMode;
+}
+
+export const DEFAULT_EVAL_PARAMS: EvalParams = {
+  agent: "",
+  source: "offline",
+  baseline: "",
+  candidate: "",
+  case: "",
+  set: "",
+  mode: "candidate",
+};
+
+const EVAL_SOURCES: readonly EvalSource[] = ["offline", "production", "both"];
+const EVAL_MODES: readonly EvalCaseMode[] = ["candidate", "baseline", "side"];
+
+/** The eval params that are plain strings, "" meaning unset. */
+const EVAL_STRING_PARAMS = [
+  "agent",
+  "baseline",
+  "candidate",
+  "case",
+  "set",
+] as const;
+
+function parseEvalParams(p: URLSearchParams): EvalParams {
+  const out = { ...DEFAULT_EVAL_PARAMS };
+  for (const key of EVAL_STRING_PARAMS) out[key] = p.get(key) ?? "";
+  out.source = oneOf(EVAL_SOURCES, p.get("source"), out.source);
+  out.mode = oneOf(EVAL_MODES, p.get("mode"), out.mode);
+  return out;
+}
+
+function oneOf<T extends string>(
+  options: readonly T[],
+  value: string | null,
+  fallback: T,
+): T {
+  return options.find((o) => o === value) ?? fallback;
 }
 
 export const DEFAULT_STATE: ExploreState = {
@@ -109,7 +218,11 @@ export const DEFAULT_STATE: ExploreState = {
   group: "",
   groupBy: DEFAULT_GROUP_BY,
   grain: DEFAULT_GRAIN,
-  promql: "",
+  metricQuery: "",
+  querySource: "logs",
+  queryResult: "rows",
+  queryFilters: [],
+  queryRun: false,
   profileType: "",
   profileService: "",
   profileMatcherLabel: "",
@@ -117,11 +230,19 @@ export const DEFAULT_STATE: ExploreState = {
   profileCompare: false,
   profileBaseline: DEFAULT_RANGE,
   profileId: "",
+  profileUnit: "",
   tenant: "",
   dataset: "",
   catalogEntity: DEFAULT_ENTITY_TYPE,
   catalogPrimary: "",
   catalogSecondary: "",
+  catalogView: "list",
+  env: "",
+  evals: DEFAULT_EVAL_PARAMS,
+  rumApp: "",
+  rumRoute: "",
+  rumSession: "",
+  rumErrorGroup: "",
 };
 
 export const SIGNALS: Signal[] = [
@@ -248,7 +369,7 @@ export function parseExploreState(search: string): ExploreState {
     range: parseRangeParam(p.get("range")),
     filters: p
       .getAll("f")
-      .map(filterFromParam)
+      .map(logFilterFromParam)
       .filter((f): f is LabelFilter => f !== null),
     search: p.get("q") ?? "",
     raw: p.get("raw") ?? "",
@@ -264,7 +385,20 @@ export function parseExploreState(search: string): ExploreState {
     group: p.get("group") ?? "",
     groupBy: p.get("groupBy") || DEFAULT_GROUP_BY,
     grain: grainFromParam(p.get("grain")),
-    promql: p.get("promql") ?? "",
+    // Defensive JSON parsing of the encoded builder state happens where it's
+    // consumed (features/metrics/metricQuery.ts's parseBuilderState) — a
+    // malformed value degrades to an unseeded builder there, same as any
+    // other malformed param degrading to its default here. A legacy
+    // `?promql=` link is simply unrecognized now, same as any other dropped
+    // param.
+    metricQuery: p.get("mq") ?? "",
+    querySource: querySourceFromParam(p.get("qsrc")),
+    queryResult: queryResultFromParam(p.get("qres")),
+    queryFilters: p
+      .getAll("qf")
+      .map(filterFromParam)
+      .filter((f): f is LabelFilter => f !== null),
+    queryRun: p.get("qrun") === "1",
     profileType: p.get("ptype") ?? "",
     profileService: p.get("psvc") ?? "",
     profileMatcherLabel: p.get("plabel") ?? "",
@@ -272,6 +406,7 @@ export function parseExploreState(search: string): ExploreState {
     profileCompare: p.get("pcmp") === "1",
     profileBaseline: parseRangeParam(p.get("pbase")),
     profileId: p.get("pid") ?? "",
+    profileUnit: p.get("punit") ?? "",
     tenant: p.get("tenant") ?? "",
     dataset: p.get("dataset") ?? "",
     // Catalog selection lives in the path (/catalog/:entity/:primary/
@@ -279,7 +414,21 @@ export function parseExploreState(search: string): ExploreState {
     catalogEntity: DEFAULT_ENTITY_TYPE,
     catalogPrimary: "",
     catalogSecondary: "",
+    catalogView: catalogViewFromParam(p.get("cview")),
+    env: p.get("env") ?? "",
+    evals: parseEvalParams(p),
+    rumApp: p.get("app") ?? "",
+    rumRoute: p.get("route") ?? "",
+    rumSession: p.get("session") ?? "",
+    rumErrorGroup: p.get("errgroup") ?? "",
   };
+}
+
+/** An unknown value degrades to the list view rather than rejecting the URL. */
+function catalogViewFromParam(
+  value: string | null,
+): ExploreState["catalogView"] {
+  return value === "map" ? "map" : "list";
 }
 
 /** An unknown grain degrades to the default rather than rejecting the URL. */
@@ -298,6 +447,25 @@ function stepFromParam(value: string | null): string {
   return durationToSeconds(value) === null ? "" : value;
 }
 
+/** An unknown source degrades to the default rather than rejecting the URL. */
+function querySourceFromParam(
+  value: string | null,
+): ExploreState["querySource"] {
+  return value === "logs" || value === "traces" || value === "profiles"
+    ? value
+    : DEFAULT_STATE.querySource;
+}
+
+/** An unknown result envelope degrades to the default rather than rejecting
+ * the URL. */
+function queryResultFromParam(
+  value: string | null,
+): ExploreState["queryResult"] {
+  return value === "rows" || value === "series" || value === "table"
+    ? value
+    : DEFAULT_STATE.queryResult;
+}
+
 export function buildSearch(state: ExploreState): string {
   const p = new URLSearchParams();
   const rangeParam = rangeToParam(state.range);
@@ -309,11 +477,21 @@ export function buildSearch(state: ExploreState): string {
   if (state.live) p.set("live", "1");
   if (state.scale !== DEFAULT_SCALE) p.set("scale", state.scale);
   if (state.step !== "") p.set("step", state.step);
-  for (const f of state.traceFilters) p.append("tf", traceFilterToParam(f));
+  for (const f of traceFiltersForUrl(state.traceFilters)) {
+    p.append("tf", traceFilterToParam(f));
+  }
   if (state.group) p.set("group", state.group);
   if (state.groupBy !== DEFAULT_GROUP_BY) p.set("groupBy", state.groupBy);
   if (state.grain !== DEFAULT_GRAIN) p.set("grain", state.grain);
-  if (state.promql) p.set("promql", state.promql);
+  if (state.metricQuery) p.set("mq", state.metricQuery);
+  if (state.querySource !== DEFAULT_STATE.querySource) {
+    p.set("qsrc", state.querySource);
+  }
+  if (state.queryResult !== DEFAULT_STATE.queryResult) {
+    p.set("qres", state.queryResult);
+  }
+  for (const f of state.queryFilters) p.append("qf", filterToParam(f));
+  if (state.queryRun) p.set("qrun", "1");
   if (state.profileType) p.set("ptype", state.profileType);
   if (state.profileService) p.set("psvc", state.profileService);
   if (state.profileMatcherLabel) p.set("plabel", state.profileMatcherLabel);
@@ -323,8 +501,19 @@ export function buildSearch(state: ExploreState): string {
     p.set("pbase", rangeToParam(state.profileBaseline));
   }
   if (state.profileId) p.set("pid", state.profileId);
+  if (state.profileUnit) p.set("punit", state.profileUnit);
   if (state.tenant) p.set("tenant", state.tenant);
   if (state.dataset) p.set("dataset", state.dataset);
+  if (state.catalogView !== "list") p.set("cview", state.catalogView);
+  if (state.env) p.set("env", state.env);
+  const ev = state.evals;
+  for (const key of EVAL_STRING_PARAMS) if (ev[key]) p.set(key, ev[key]);
+  if (ev.source !== DEFAULT_EVAL_PARAMS.source) p.set("source", ev.source);
+  if (ev.mode !== DEFAULT_EVAL_PARAMS.mode) p.set("mode", ev.mode);
+  if (state.rumApp) p.set("app", state.rumApp);
+  if (state.rumRoute) p.set("route", state.rumRoute);
+  if (state.rumSession) p.set("session", state.rumSession);
+  if (state.rumErrorGroup) p.set("errgroup", state.rumErrorGroup);
   const s = p.toString();
   return s === "" ? "" : `?${s}`;
 }
@@ -345,6 +534,22 @@ export function crossSignalSearch(state: ExploreState): string {
     tenant: state.tenant,
     dataset: state.dataset,
   });
+}
+
+/** An in-app link to `path` carrying the window and tenant context, plus
+ * `patch` for the target page's own state. */
+export function viewHref(
+  path: string,
+  state: ExploreState,
+  patch: Partial<ExploreState> = {},
+): string {
+  return `${path}${buildSearch({
+    ...DEFAULT_STATE,
+    range: state.range,
+    tenant: state.tenant,
+    dataset: state.dataset,
+    ...patch,
+  })}`;
 }
 
 /**

@@ -22,6 +22,17 @@ pub enum AdminClientError {
     ApiError(String),
 }
 
+/// Serialize `value` to JSON and return it as an array, or an empty `Vec`
+/// if serialization fails or the result isn't a JSON array. Matches on the
+/// owned `Value::Array` variant to move its elements out instead of cloning
+/// them out of a borrowed slice.
+fn to_json_array<T: serde::Serialize>(value: &T) -> Vec<serde_json::Value> {
+    match serde_json::to_value(value) {
+        Ok(serde_json::Value::Array(items)) => items,
+        _ => Vec::new(),
+    }
+}
+
 /// HTTP admin API client wrapper
 pub struct AdminClient {
     client: Client,
@@ -38,36 +49,13 @@ impl AdminClient {
     /// Result with AdminClient or error
     pub fn new(base_url: &str, admin_key: &str) -> Result<Self, AdminClientError> {
         // The generated SDK's operation URLs are absolute (e.g.
-        // /api/v1/admin/tenants), so the client base is the router root.
+        // /api/v1/tenants), so the client base is the router root.
         let client = crate::retry::client_builder(base_url)
             .bearer(admin_key)
             .build()
             .map_err(|e| AdminClientError::ConnectionError(e.to_string()))?;
 
         Ok(Self { client })
-    }
-
-    /// Probe admin access to verify credentials
-    ///
-    /// # Arguments
-    /// * `base_url` - Base URL of the SignalDB router
-    /// * `key` - Admin API key to test
-    ///
-    /// # Returns
-    /// Ok(true) if access is granted, Ok(false) if unauthorized, Err if connection fails
-    pub async fn probe_admin_access(base_url: &str, key: &str) -> Result<bool, AdminClientError> {
-        let client = Self::new(base_url, key)?;
-        match client.list_tenants().await {
-            Ok(_) => Ok(true),
-            Err(e) => {
-                let err_str = e.to_string();
-                if err_str.contains("401") || err_str.contains("403") {
-                    Ok(false)
-                } else {
-                    Err(AdminClientError::ConnectionError(err_str))
-                }
-            }
-        }
     }
 
     /// List all tenants
@@ -80,10 +68,7 @@ impl AdminClient {
             .map_err(|e| self.map_error(&e))?;
 
         let body = response.into_inner();
-        Ok(serde_json::to_value(&body.tenants)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default())
+        Ok(to_json_array(&body.tenants))
     }
 
     /// Create a new tenant
@@ -102,20 +87,6 @@ impl AdminClient {
             .client
             .create_tenant()
             .body(request)
-            .send()
-            .await
-            .map_err(|e| self.map_error(&e))?;
-
-        serde_json::to_value(response.into_inner())
-            .map_err(|e| AdminClientError::ApiError(e.to_string()))
-    }
-
-    /// Get a tenant by ID
-    pub async fn get_tenant(&self, id: &str) -> Result<serde_json::Value, AdminClientError> {
-        let response = self
-            .client
-            .get_tenant()
-            .tenant_id(id)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;
@@ -173,11 +144,7 @@ impl AdminClient {
             .await
             .map_err(|e| self.map_error(&e))?;
 
-        let body = response.into_inner();
-        Ok(serde_json::to_value(&body.api_keys)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default())
+        Ok(to_json_array(&response.into_inner()))
     }
 
     /// Create a new API key for a tenant carrying exactly `scopes`
@@ -189,10 +156,17 @@ impl AdminClient {
         scopes: Vec<String>,
         dataset_id: Option<String>,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateApiKeyRequest {
+        let request = signaldb_sdk::types::ManageCreateApiKeyRequest {
             name: Some(name.to_string()),
             scopes,
-            dataset_id,
+            // TODO(multi-dataset-key-restriction phase 4): this TUI action
+            // takes a single dataset; wrap it in a one-element set to keep
+            // phase-2 behavior unchanged until the TUI grows multi-select.
+            dataset_ids: dataset_id.map(|d| vec![d]),
+            // The TUI create form has no origin input yet (same deferral as
+            // the single-dataset TODO above); every key created here is
+            // unrestricted by origin until the form grows one.
+            allowed_origins: None,
         };
 
         let response = self
@@ -238,11 +212,7 @@ impl AdminClient {
             .await
             .map_err(|e| self.map_error(&e))?;
 
-        let body = response.into_inner();
-        Ok(serde_json::to_value(&body.datasets)
-            .ok()
-            .and_then(|v| v.as_array().cloned())
-            .unwrap_or_default())
+        Ok(to_json_array(&response.into_inner()))
     }
 
     /// Create a new dataset for a tenant
@@ -251,7 +221,7 @@ impl AdminClient {
         tenant_id: &str,
         id: &str,
     ) -> Result<serde_json::Value, AdminClientError> {
-        let request = signaldb_sdk::types::CreateDatasetRequest {
+        let request = signaldb_sdk::types::ManageCreateDatasetRequest {
             name: id.to_string(),
         };
 
@@ -272,12 +242,12 @@ impl AdminClient {
     pub async fn delete_dataset(
         &self,
         tenant_id: &str,
-        dataset_id: &str,
+        dataset_name: &str,
     ) -> Result<(), AdminClientError> {
         self.client
             .delete_dataset()
             .tenant_id(tenant_id)
-            .dataset_id(dataset_id)
+            .dataset_name(dataset_name)
             .send()
             .await
             .map_err(|e| self.map_error(&e))?;

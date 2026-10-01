@@ -24,6 +24,36 @@ describe("TraceVolumeHeatmap", () => {
     label: "Span latency",
   };
 
+  it("widens the left gutter to fit a longer y-axis label", () => {
+    const { container: shortContainer } = render(
+      <TraceVolumeHeatmap {...props} />,
+    );
+    const shortX = Number(
+      within(shortContainer)
+        .getAllByTestId("trace-volume-heatmap-cell")[0]!
+        .getAttribute("x"),
+    );
+
+    // A much larger overflow bound (100.00 s+) makes for a longer label than
+    // the default fixture's (100 ms+).
+    const { container: longContainer } = render(
+      <TraceVolumeHeatmap
+        {...props}
+        heatmap={{
+          ...props.heatmap,
+          y: { ...props.heatmap.y, bounds: [10_000_000, 123_456_000_000] },
+        }}
+      />,
+    );
+    const longX = Number(
+      within(longContainer)
+        .getAllByTestId("trace-volume-heatmap-cell")[0]!
+        .getAttribute("x"),
+    );
+
+    expect(longX).toBeGreaterThan(shortX);
+  });
+
   it("uses latency buckets as rows and counts as intensity", () => {
     render(<TraceVolumeHeatmap {...props} />);
 
@@ -109,6 +139,49 @@ describe("TraceVolumeHeatmap", () => {
       expect(screen.getByRole("tooltip")).toHaveTextContent("66.7%");
       fireEvent.blur(populated);
       expect(screen.queryByRole("tooltip")).toBeNull();
+    });
+  });
+
+  describe("roving focus", () => {
+    it("gives only the first populated cell a tab stop", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const second = screen.getByLabelText(/10 ms.*1 spans/i);
+      expect(first).toHaveAttribute("tabindex", "0");
+      expect(second).toHaveAttribute("tabindex", "-1");
+    });
+
+    it("moves down a column to the next populated cell with ArrowDown", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const below = screen.getByLabelText(/10 ms.*1 spans/i);
+      first.focus();
+      fireEvent.keyDown(first, { key: "ArrowDown" });
+      expect(below).toHaveFocus();
+      expect(below).toHaveAttribute("tabindex", "0");
+    });
+
+    // Tab should land wherever the pointer last showed detail for, matching
+    // `docs/users/explore-ui.md`'s "the last one you pointed at" — not just
+    // wherever an arrow key left it.
+    it("moves the tab stop to the populated cell the pointer moves over", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const second = screen.getByLabelText(/10 ms.*1 spans/i);
+      fireEvent.pointerMove(second, { clientX: 100, clientY: 20 });
+      expect(second).toHaveAttribute("tabindex", "0");
+      expect(first).toHaveAttribute("tabindex", "-1");
+    });
+
+    // An empty cell has no roving index at all, so the pointer hovering one
+    // must leave whichever populated cell was previously active as the tab
+    // stop, not clear or crash on it.
+    it("leaves the tab stop unchanged when the pointer moves over an empty cell", () => {
+      render(<TraceVolumeHeatmap {...props} />);
+      const first = screen.getByLabelText(/0.*10 ms.*2 spans/i);
+      const empty = screen.getByLabelText(/10 ms.*100 ms.*no spans/i);
+      fireEvent.pointerMove(empty, { clientX: 100, clientY: 100 });
+      expect(first).toHaveAttribute("tabindex", "0");
     });
   });
 });

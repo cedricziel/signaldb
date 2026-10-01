@@ -151,14 +151,14 @@ async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, Tem
     config.schema = common::config::SchemaConfig {
         catalog_type: "sql".to_string(),
         catalog_uri: catalog_dsn,
-        default_schemas: common::config::DefaultSchemas::default(),
-        materialized_labels: Default::default(),
+        ..Default::default()
     };
 
     // Configure test tenant
     config.auth = common::config::AuthConfig {
         admin_api_key: None,
         internal_service_key: None,
+        oidc: None,
         default_limits: Default::default(),
         storage_usage_refresh_interval: std::time::Duration::from_secs(60),
         tenants: vec![common::config::TenantConfig {
@@ -179,6 +179,7 @@ async fn setup_prometheus_test_with_wal() -> (axum::Router, Arc<WalManager>, Tem
             schema_config: None,
             limits: None,
         }],
+        dataset_restriction_rollout_complete: false,
     };
 
     // Initialize service bootstrap
@@ -325,9 +326,9 @@ async fn test_prometheus_remote_write_gauge() {
         "Expected 204 No Content for successful remote_write"
     );
 
-    // The gauge must actually land in the gauge table with the right name
-    // and value, not just be accepted and dropped.
-    let (name, value) = decoded_metric_row(&wal_manager, "metrics_gauge").await;
+    // The gauge must actually land in the metrics table with the right
+    // name and value, not just be accepted and dropped.
+    let (name, value) = decoded_metric_row(&wal_manager, "metrics").await;
     assert_eq!(name, "temperature_celsius");
     assert!(
         (value - 23.5).abs() < 1e-9,
@@ -386,10 +387,10 @@ async fn test_prometheus_remote_write_counter() {
 
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    // The counter must actually land in the sum table (counters are stored
-    // as monotonic sums) with the right name and value, not just be
+    // The counter must actually land in the metrics table (counters are
+    // stored as monotonic sums) with the right name and value, not just be
     // accepted and dropped.
-    let (name, value) = decoded_metric_row(&wal_manager, "metrics_sum").await;
+    let (name, value) = decoded_metric_row(&wal_manager, "metrics").await;
     // Per the OTel<->Prometheus compatibility spec the _total suffix is
     // stripped on ingest (stored OTel-native) and re-added by from_otel on
     // the Prometheus read surface.
@@ -546,8 +547,8 @@ async fn test_prometheus_remote_write_native_histogram() {
     let response = app.oneshot(http_request).await.unwrap();
     assert_eq!(response.status(), StatusCode::NO_CONTENT);
 
-    // The native histogram must land in the exponential histogram table path,
-    // not be silently dropped.
+    // The native histogram must land in the metrics table, not be silently
+    // dropped.
     let wal = wal_manager
         .get_wal("test-tenant", "metrics", "metrics")
         .await
@@ -560,10 +561,10 @@ async fn test_prometheus_remote_write_native_histogram() {
         .find(|e| {
             e.metadata
                 .as_deref()
-                .map(|m| m.contains("\"target_table\":\"metrics_exponential_histogram\""))
+                .map(|m| m.contains("\"target_table\":\"metrics\""))
                 .unwrap_or(false)
         })
-        .expect("WAL entry targeting metrics_exponential_histogram");
+        .expect("WAL entry targeting metrics");
 
     // Decode the stored batch and verify the metric round-trips
     let data = wal

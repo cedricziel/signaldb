@@ -8,6 +8,9 @@ import {
   useSearchParams,
 } from "react-router";
 import YAML from "yaml";
+import { ConfirmButton } from "../../components/ConfirmButton";
+import { invalidateSemantics } from "../../hooks/useSemantics";
+import { markDirty, useDirtyForm } from "../../lib/dirtyForms";
 import {
   createRegistry,
   deleteRegistry,
@@ -25,6 +28,8 @@ import {
   type DiffSummary,
 } from "./registryIndex";
 import { useSchemaSession } from "./useSchemaSession";
+import { toErrorMessage } from "../../api/http";
+import { useBreadcrumbLeaf } from "../shell/breadcrumbLeaf";
 
 /**
  * `/schema/conventions/new` and `/schema/conventions/:ns/:version/edit` —
@@ -35,10 +40,11 @@ import { useSchemaSession } from "./useSchemaSession";
  */
 export function RegistryEditor() {
   const { ns, version } = useParams<{ ns?: string; version?: string }>();
-  const { isTenantAdmin, isLoading } = useSchemaSession();
+  const { isTenantAdmin, isLoading, tenant, dataset } = useSchemaSession();
   const editing = ns !== undefined && version !== undefined;
+  useBreadcrumbLeaf(editing ? `Edit ${ns}@${version}` : "New registry");
   const stored = useQuery({
-    queryKey: ["schema-registry", ns, version],
+    queryKey: ["schema-registry", ns, version, tenant, dataset],
     queryFn: () => getRegistry(ns!, version!),
     enabled: editing && isTenantAdmin,
     staleTime: 60_000,
@@ -46,17 +52,20 @@ export function RegistryEditor() {
 
   if (isLoading) return null;
   if (!isTenantAdmin) return <Navigate to={CONVENTIONS} replace />;
-  if (!editing) return <EditorForm stored={undefined} />;
+  // Keyed on tenant/dataset/namespace/version: without it, navigating
+  // between two registries whose data is already cached (no intervening
+  // "Loading…" render to unmount the old instance) keeps the same
+  // `EditorForm` mounted, letting unsaved text from the previous registry
+  // carry into the new one instead of resetting to its own document.
+  const formKey = `${tenant}|${dataset}|${ns ?? ""}|${version ?? ""}`;
+  if (!editing) return <EditorForm key={formKey} stored={undefined} />;
 
   if (stored.isPending) return <p className="schema-note">Loading…</p>;
   if (stored.isError) {
     return (
       <div className="schema-page">
-        <p className="schema-error">
-          Failed to load {ns}@{version}:{" "}
-          {stored.error instanceof Error
-            ? stored.error.message
-            : String(stored.error)}
+        <p className="error-text" role="alert">
+          Could not load {ns}@{version}: {toErrorMessage(stored.error)}
         </p>
         <Link to={CONVENTIONS}>Back to conventions</Link>
       </div>
@@ -65,7 +74,7 @@ export function RegistryEditor() {
   if (stored.data.read_only) {
     return <Navigate to={registryPath(ns, version)} replace />;
   }
-  return <EditorForm stored={stored.data} />;
+  return <EditorForm key={formKey} stored={stored.data} />;
 }
 
 type ParseOutcome =
@@ -98,24 +107,62 @@ type Report =
 const count = (n: number, one: string, many: string) =>
   `${n} ${n === 1 ? one : many}`;
 
+// A single id since only one editor instance is ever mounted at a time (one
+// route per registry/new-document) — see the `useDirtyForm` call below.
+const EDITOR_DIRTY_ID = "schema-registry-editor";
+
 function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
-  const [searchParams] = useSearchParams();
+  const [searchParams, setSearchParams] = useSearchParams();
   const fileInput = useRef<HTMLInputElement>(null);
   const [text, setText] = useState(() =>
     stored ? YAML.stringify(stored.document) : "",
   );
+  // The text as loaded (or last saved); compared against `text` to decide
+  // whether there are unsaved edits to guard navigation against.
+  const initialTextRef = useRef(text);
   const [outcome, setOutcome] = useState<Report | null>(null);
   const [validatedText, setValidatedText] = useState<string | null>(null);
   const [newVersion, setNewVersion] = useState("");
-  const [confirmingDelete, setConfirmingDelete] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const isDirty = text !== initialTextRef.current;
+  // Protects an in-progress edit from a PWA update reload and, via the
+  // shell's UnsavedChangesGuard, from an in-app navigation (see
+  // lib/dirtyForms.ts).
+  useDirtyForm(EDITOR_DIRTY_ID, isDirty);
 
-  // "Upload registry" from the list opens the file picker on arrival.
+  // "Upload registry" from the list opens the file picker on arrival, once —
+  // the shell rewrites `?tenant=` on the way in, which would otherwise
+  // re-fire this on every resulting `searchParams` change.
+  const uploadFired = useRef(false);
   useEffect(() => {
-    if (searchParams.get("upload")) fileInput.current?.click();
-  }, [searchParams]);
+    if (uploadFired.current || !searchParams.get("upload")) return;
+    uploadFired.current = true;
+    fileInput.current?.click();
+    setSearchParams(
+      (prev) => {
+        const next = new URLSearchParams(prev);
+        next.delete("upload");
+        return next;
+      },
+      { replace: true },
+    );
+  }, [searchParams, setSearchParams]);
+
+  // A dirty document is guarded against every in-app navigation by the
+  // shell-level `UnsavedChangesGuard` (via `useDirtyForm` above); reload/close
+  // isn't a navigation `useBlocker` can intercept, so it still gets its own
+  // `beforeunload` handler here.
+  useEffect(() => {
+    if (!isDirty) return;
+    const onBeforeUnload = (e: BeforeUnloadEvent) => {
+      e.preventDefault();
+      e.returnValue = "";
+    };
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [isDirty]);
 
   const validation = useMutation({
     mutationFn: async (source: string): Promise<Report> => {
@@ -147,10 +194,26 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
     );
   }, [stored, validated]);
 
-  const finish = (namespace: string, version: string) => {
+  // Every mutation that changes or removes a registry (save, replace, save-as,
+  // delete) invalidates the same caches: the list, any stored copy, its
+  // resolved definitions, and the tooltip/combobox semantics cache — leaving
+  // any of these out lets stale data (or a deleted registry) keep rendering.
+  const invalidateSchemaCaches = () => {
     void queryClient.invalidateQueries({ queryKey: ["schema-registries"] });
     void queryClient.invalidateQueries({ queryKey: ["schema-registry"] });
     void queryClient.invalidateQueries({ queryKey: ["schema-resolve"] });
+    invalidateSemantics();
+  };
+
+  const finish = (namespace: string, version: string) => {
+    invalidateSchemaCaches();
+    // The document just saved is the new baseline: no unsaved edits remain.
+    // Clear the registration synchronously (not via useDirtyForm's effect,
+    // which wouldn't run until after this render) so the shell's
+    // UnsavedChangesGuard doesn't block the navigation below on the edit it
+    // just saved.
+    initialTextRef.current = text;
+    markDirty(EDITOR_DIRTY_ID, false);
     navigate(registryPath(namespace, version));
   };
   const onError = (e: unknown) =>
@@ -192,7 +255,11 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
       await deleteRegistry(stored.namespace, stored.version);
     },
     onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["schema-registries"] });
+      invalidateSchemaCaches();
+      // Same reasoning as `finish` above: clear the registration
+      // synchronously so the guard doesn't block this redirect.
+      initialTextRef.current = text;
+      markDirty(EDITOR_DIRTY_ID, false);
       navigate(CONVENTIONS);
     },
     onError,
@@ -222,7 +289,8 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
   return (
     <div className="schema-page">
       <p className="schema-crumbs">
-        <Link to={CONVENTIONS}>Conventions</Link> ›{" "}
+        <Link to={CONVENTIONS}>Conventions</Link>{" "}
+        ›{" "}
         {stored ? (
           <>
             <Link to={registryPath(stored.namespace, stored.version)}>
@@ -243,7 +311,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
 
       <div className="schema-editor">
         <div className="schema-editor-toolbar">
-          <label className="schema-button">
+          <label className="btn">
             Upload file
             <input
               ref={fileInput}
@@ -257,7 +325,7 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           <span className="spacer" />
           <button
             type="button"
-            className="schema-button"
+            className="btn"
             disabled={busy || text.trim() === ""}
             onClick={() => validation.mutate(text)}
           >
@@ -265,8 +333,9 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           </button>
           <button
             type="button"
-            className="schema-button primary"
+            className="btn btn-primary"
             disabled={busy || !validated}
+            title={validated ? undefined : "Validate first"}
             onClick={() => save.mutate()}
           >
             {stored ? "Replace" : "Save"}
@@ -282,41 +351,20 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
               />
               <button
                 type="button"
-                className="schema-button"
+                className="btn"
                 disabled={busy || !validated || newVersion.trim() === ""}
                 onClick={() => saveAsNew.mutate()}
               >
                 Save as new version
               </button>
-              {confirmingDelete ? (
-                <span className="schema-editor-confirm">
-                  Delete {title}?{" "}
-                  <button
-                    type="button"
-                    className="schema-button danger"
-                    disabled={busy}
-                    onClick={() => remove.mutate()}
-                  >
-                    Confirm delete
-                  </button>{" "}
-                  <button
-                    type="button"
-                    className="schema-button"
-                    onClick={() => setConfirmingDelete(false)}
-                  >
-                    Cancel
-                  </button>
-                </span>
-              ) : (
-                <button
-                  type="button"
-                  className="schema-button danger"
+              <span className="schema-editor-danger">
+                <ConfirmButton
+                  label="Delete"
+                  prompt={`Delete ${title}?`}
                   disabled={busy}
-                  onClick={() => setConfirmingDelete(true)}
-                >
-                  Delete
-                </button>
-              )}
+                  onConfirm={() => remove.mutate()}
+                />
+              </span>
             </>
           )}
         </div>
@@ -325,13 +373,16 @@ function EditorForm({ stored }: { stored: RegistryResponse | undefined }) {
           aria-label="Registry document"
           spellCheck={false}
           value={text}
-          onChange={(e) => setText(e.target.value)}
+          onChange={(e) => {
+            setText(e.target.value);
+            setError(null);
+          }}
           placeholder={
             "name: acme\nversion: 1.0.0\ngroups:\n  - id: registry.acme\n    type: attribute_group\n    attributes: []"
           }
         />
 
-        {error && <p className="schema-error">{error}</p>}
+        {error && <p className="error-text" role="alert">{error}</p>}
 
         {outcome && (
           <ValidationOutcome outcome={outcome} stale={validatedText !== text} />

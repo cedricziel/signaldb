@@ -85,6 +85,16 @@ runnable example to a paragraph. Cut before you add; a fact that already has
 a home gets a link, not a second copy. Never restate what the code says
 line-by-line — document intent, contracts, and gotchas.
 
+`scripts/check-doc-freshness.sh` fails a PR when a changed file matches a
+living doc's `sources` glob and the doc itself wasn't touched. Two escapes:
+a `docs-ok: <path>` line in the PR description dismisses one doc as a false
+positive (the CI workflow extracts these into `DOC_FRESHNESS_ACK`; a typo'd
+path fails the gate instead of silently doing nothing), while the
+`docs-not-needed` label disables the whole check for PRs that owe no docs at
+all. Prefer `docs-ok` for broad sources like `config/mod.rs` that flag docs
+the PR didn't actually need to touch — reserve the label for when nothing in
+the PR is documentation debt.
+
 ## Diagrams and structure
 
 - Docs use Mermaid for diagrams (renders on GitHub, shows in diffs, covered by

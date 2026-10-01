@@ -43,9 +43,10 @@ APIs (see [Authentication](authentication.md)):
 | `GET /loki/api/v1/detected_fields`     | Discover attribute fields in a window: name, inferred type, approximate cardinality (samples the data; no declaration or indexing needed) |
 | `GET /loki/api/v1/tail`                | Not implemented — live tail is tracked separately                                                                                         |
 
-Labels are also reachable without raw HTTP: `signaldb-cli discover
-attributes --signal logs [--tag NAME]`, and the MCP `discover_attributes`
-(`signal: "logs"`) tool for AI agents — see [the MCP server doc](mcp.md).
+First-party discovery does not use these endpoints: `signaldb-cli discover
+attributes --signal logs [--tag NAME]` and the MCP `discover_attributes`
+(`signal: "logs"`) tool go through the Query IR `describe` stage — see
+[the MCP server doc](mcp.md).
 
 Common query parameters: `query` (the LogQL string), `start`/`end`
 (unix nanoseconds, unix seconds, or RFC3339), `limit`, `direction`
@@ -57,13 +58,13 @@ Common query parameters: `query` (the LogQL string), `start`/`end`
 SignalDB stores logs in columnar form, not as free-form label sets. LogQL
 labels resolve as follows:
 
-| LogQL label                           | Resolves to                                       |
-| ------------------------------------- | ------------------------------------------------- |
-| `service_name`, `service`, `job`      | the `service_name` column                         |
-| `level`, `severity`, `detected_level` | the `severity_text` column                        |
-| `trace_id`, `span_id`                 | the matching columns                              |
-| a **materialized** label (see below)  | its dedicated `label_<key>` column                |
-| any other label                       | the `log_attributes` / `resource_attributes` maps |
+| LogQL label                                      | Resolves to                                       |
+| ------------------------------------------------ | ------------------------------------------------- |
+| `service_name`, `service`, `job`, `service.name` | the `service_name` column                         |
+| `level`, `severity`, `detected_level`            | the `severity_text` column                        |
+| `trace_id`, `span_id`                            | the matching columns                              |
+| a **materialized** label (see below)             | its dedicated `label_<key>` column                |
+| any other label                                  | the `log_attributes` / `resource_attributes` maps |
 
 Labels backed by a column are exact. On tables created since attributes
 became typed maps, **any other label is also exact**: the value is looked
@@ -72,6 +73,17 @@ every attribute. Older tables store attributes as serialized JSON, where a
 label is matched by its `"key":"value"` fragment — an approximation that
 can over-match and supports only `=`/`!=`; the querier picks the right
 form per table automatically.
+
+A label name may contain dots (`{k8s.pod.name="checkout-7c9f"}`,
+`| http.response.status_code >= 500`), so a query can name an attribute by
+its real OTel key. Apart from the well-known aliases in the table above
+(`service.name` reaches the `service_name` column), a dotted key resolves
+directly against the attribute maps by exact key — no materialization
+needed. The underscore spelling of
+the same attribute (`k8s_pod_name`) only resolves to that data once the
+label has been **materialized** (see below): both spellings sanitize to
+the identical `label_<key>` column, so either works once the column
+exists, but only the dotted form is guaranteed to match beforehand.
 
 ### Materialized labels
 
@@ -89,8 +101,18 @@ back to the JSON substring match for that label. Because the promoted value
 is also kept in the attribute JSON, label discovery (`/labels`,
 `/label/{name}/values`) is unchanged.
 
-Series identity (in `/series` results and un-grouped metric queries) is
-the `service_name` and `level` labels.
+Two distinct label keys can sanitize to the same `label_<key>` column name
+(see the dotted-vs-underscore example above); the writer resolves that by
+suffixing the later key's column (`label_<key>_2`). As an interim guard
+(#1533), a query against either colliding key currently falls back to the
+attribute-map extraction path rather than risk reading the wrong key's
+column; full per-key resolution of the collision is still open.
+
+Series identity (in `/series` results and bare range aggregations such as
+`count_over_time(...)` with no vector wrapper) is the `service_name` and
+`level` labels. A vector aggregation with no `by` clause —
+`sum(count_over_time(...))` — collapses every matching series into one, as in
+Loki; add `by (...)` to keep a grouping.
 
 ### Structured metadata
 
@@ -138,7 +160,9 @@ and returns log lines.
 All four matchers are supported: `=`, `!=`, `=~`, `!~`. Regex matchers on
 a column (`service_name=~"api.*"`) are pushed down as `regexp_like`;
 regex against an attribute label is **not** supported (attribute labels
-support only `=` and `!=`).
+support only `=` and `!=`). As in Loki, a negative matcher (`!=`, `!~`)
+also matches a stream that lacks the label entirely, not only one holding
+a different value.
 
 ### Line filters
 
@@ -217,10 +241,17 @@ sum by (level) (rate({service_name="api"}[5m]))
   The regex is anchored to the whole source value; a non-match leaves the
   series unchanged, and an empty result deletes the label. A new `dst`
   becomes an additional series label.
-- **Grouping** is supported by labels backed by a column: the built-in
+- **Grouping** by a label backed by a column works as expected: the built-in
   ones (`service_name`, `level`, ...) and any **materialized** label
   (`sum by (namespace) (...)` groups on its `label_namespace` column; the
-  result series carry the label under its sanitized name).
+  result series carry the label under its sanitized name). Grouping by any
+  other name is also accepted — it resolves as an attribute, coalesced
+  across containers the same way a `where` clause on that name would — and
+  if no record in the queried window actually carries that attribute, every
+  row collapses into one series with that label absent, same as real Loki:
+  `sum by (foo) (...)` for a label no stream carries returns one series
+  with `foo` absent/empty rather than an error, whether `foo` is a column
+  we happen to store or an attribute we don't.
 
 ### Time bucketing — the key approximation
 
@@ -238,7 +269,6 @@ These parse but return an "unsupported" error at execution:
 - Many-to-one vector matching (`group_left` / `group_right`) and
   `... or vector(0)` fallbacks
 - `sum without (labels)` with a non-empty label list
-- Grouping by a plain (non-materialized) attribute label
 
 ## Examples
 

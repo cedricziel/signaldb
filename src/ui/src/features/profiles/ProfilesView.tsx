@@ -1,12 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useMemo } from "react";
-import {
-  pyroscopeLabelNames,
-  pyroscopeLabelValues,
-  pyroscopeProfileTypes,
-  pyroscopeServices,
-} from "../../api/pyroscope";
+import { fields, profileTypes, values } from "../../api/ir/discovery";
 import { fetchFlamegraph, fetchFlamegraphById } from "../../api/profilesIr";
+import { EmptyState } from "../../components/EmptyState";
+import { QueryError } from "../../components/QueryError";
+import { liveRefetchInterval } from "../../lib/live";
 import {
   rangeScopeKey,
   rangeToParam,
@@ -14,10 +12,15 @@ import {
   type TimeRange,
 } from "../../lib/time";
 import type { ExploreState, UpdateFn } from "../../lib/urlState";
-import { TimeRangePicker } from "../shell/TimeRangePicker";
+import { SkeletonLines } from "../explore/Skeleton";
+import { TimeRangePicker } from "../../components/TimeRangePicker";
 import { FlameGraph, FlamePane } from "./FlameGraph";
 import { decodeFlamebearer } from "../../lib/flamebearer";
 import "./profiles.css";
+// `.backbtn` (the "← profiles" back-navigation button) is a shared button
+// style this view reuses from the Traces tab rather than profiles.css.
+import "../traces/traces.css";
+import { useSourceContextEnabled } from "../../lib/useSourceContextEnabled";
 
 interface Props {
   state: ExploreState;
@@ -26,7 +29,7 @@ interface Props {
 
 export function ProfilesView({ state, update }: Props) {
   if (state.profileId) {
-    return <SingleProfileView profileId={state.profileId} update={update} />;
+    return <SingleProfileView state={state} update={update} />;
   }
   if (state.profileCompare) {
     return <CompareView state={state} update={update} />;
@@ -40,24 +43,33 @@ function useProfileSelectors(state: ExploreState) {
   const rangeKey = rangeScopeKey(state);
 
   const typesQuery = useQuery({
-    queryKey: ["pyro-types", rangeKey],
-    queryFn: () => pyroscopeProfileTypes(resolveRange(state.range, Date.now())),
+    queryKey: ["ir-profile-types", rangeKey],
+    queryFn: () => profileTypes(resolveRange(state.range, Date.now())),
   });
   const servicesQuery = useQuery({
-    queryKey: ["pyro-services", rangeKey],
-    queryFn: () => pyroscopeServices(resolveRange(state.range, Date.now())),
+    queryKey: ["ir-profile-services", rangeKey],
+    queryFn: () =>
+      values(
+        "profiles",
+        "service.name",
+        resolveRange(state.range, Date.now()),
+      ).then((vs) => vs.map((v) => v.value)),
   });
   const labelNamesQuery = useQuery({
-    queryKey: ["pyro-labelnames", rangeKey],
-    queryFn: () => pyroscopeLabelNames(resolveRange(state.range, Date.now())),
+    queryKey: ["ir-profile-labelnames", rangeKey],
+    queryFn: () =>
+      fields("profiles", resolveRange(state.range, Date.now())).then((fs) =>
+        fs.map((f) => f.name).filter((n) => n !== "service.name"),
+      ),
   });
   const labelValuesQuery = useQuery({
-    queryKey: ["pyro-labelvalues", state.profileMatcherLabel, rangeKey],
+    queryKey: ["ir-profile-labelvalues", state.profileMatcherLabel, rangeKey],
     queryFn: () =>
-      pyroscopeLabelValues(
+      values(
+        "profiles",
         state.profileMatcherLabel,
         resolveRange(state.range, Date.now()),
-      ),
+      ).then((vs) => vs.map((v) => v.value)),
     enabled: state.profileMatcherLabel !== "",
   });
 
@@ -216,7 +228,31 @@ function SelectorControls({
         <input
           type="checkbox"
           checked={state.profileCompare}
-          onChange={(e) => update({ profileCompare: e.target.checked })}
+          onChange={(e) => {
+            const compare = e.target.checked;
+            // The default baseline (see lib/urlState.ts's DEFAULT_STATE) is
+            // the same window as the comparison range, which makes both
+            // flame graphs identical the moment Compare turns on. Switching
+            // it to the window right before the current range gives an
+            // actually-different baseline to diff against, without
+            // requiring the user to pick one first.
+            const sameAsRange =
+              rangeToParam(state.profileBaseline) === rangeToParam(state.range);
+            if (compare && sameAsRange) {
+              const resolved = resolveRange(state.range, Date.now());
+              const span = resolved.toMs - resolved.fromMs;
+              update({
+                profileCompare: true,
+                profileBaseline: {
+                  type: "absolute",
+                  fromMs: resolved.fromMs - span,
+                  toMs: resolved.fromMs,
+                },
+              });
+            } else {
+              update({ profileCompare: compare });
+            }
+          }}
         />
         Compare
       </label>
@@ -225,6 +261,9 @@ function SelectorControls({
 }
 
 function SingleRangeView({ state, update }: Props) {
+  // The Top-functions Source column only makes sense when snippets can be
+  // served; `SourceSnippet` gates each row the same way.
+  const sourceContextEnabled = useSourceContextEnabled(state.tenant);
   const selectors = useProfileSelectors(state);
   const { typesQuery, servicesQuery, selectedType, selectedTypeMeta, unit } =
     selectors;
@@ -240,7 +279,7 @@ function SingleRangeView({ state, update }: Props) {
       ? { label: state.profileMatcherLabel, value: state.profileMatcherValue }
       : undefined,
     enabled: selectedType !== "",
-    refetchInterval: state.live ? 15_000 : false,
+    refetchInterval: liveRefetchInterval(state.live),
   });
 
   const isEmpty =
@@ -252,45 +291,46 @@ function SingleRangeView({ state, update }: Props) {
       <SelectorControls state={state} update={update} selectors={selectors} />
 
       {(typesQuery.isError || servicesQuery.isError || renderQuery.isError) && (
-        <div className="query-error" role="alert">
-          Query failed:{" "}
-          {
-            (
-              (typesQuery.error ??
-                servicesQuery.error ??
-                renderQuery.error) as Error
-            ).message
-          }
-        </div>
+        <QueryError
+          what="profiles"
+          error={typesQuery.error ?? servicesQuery.error ?? renderQuery.error}
+        />
       )}
 
-      {selectedType === "" && !typesQuery.isFetching && (
-        <div className="profiles-note">
-          No profiles in the selected range. Enable{" "}
-          <code>[self_monitoring].profiles_enabled</code> to have SignalDB
-          profile itself, or send profiles over OTLP.
-        </div>
+      {typesQuery.isPending && <SkeletonLines lines={12} />}
+
+      {/* Gated on isSuccess, not "settled" (!isFetching): on a failed
+          fetch, isFetching is also false and selectedType is also "" (no
+          types to pick from), which used to render this note *alongside*
+          the error alert above — a confusing "here's why, also here's a
+          totally different reason" pairing. */}
+      {selectedType === "" && typesQuery.isSuccess && (
+        <EmptyState title="No profiles yet">
+          Enable <code>[self_monitoring].profiles_enabled</code> to have
+          SignalDB profile itself, or send profiles over OTLP.
+        </EmptyState>
       )}
 
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="profiles-note">Loading…</div>
+        <SkeletonLines lines={12} />
       )}
 
       {renderQuery.data?.truncated && (
-        <div className="profiles-note">
+        <div className="view-note">
           Too many matching profiles — showing an aggregate of the first batch
           only. Narrow the range or add a filter for the full picture.
         </div>
       )}
 
-      {isEmpty && (
-        <div className="profiles-note">
-          No profiles in the selected range for this filter.
-        </div>
-      )}
+      {isEmpty && <EmptyState title="No profiles in this range" />}
 
       {renderQuery.data && !isEmpty && (
-        <FlameGraph render={renderQuery.data.render} unit={unit} />
+        <FlameGraph
+          render={renderQuery.data.render}
+          unit={unit}
+          tenant={sourceContextEnabled ? state.tenant : undefined}
+          locations={renderQuery.data.locations}
+        />
       )}
     </div>
   );
@@ -345,18 +385,15 @@ function CompareView({ state, update }: Props) {
         <span className="profiles-field">Comparison: current range</span>
       </div>
 
-      {error && (
-        <div className="query-error" role="alert">
-          Query failed: {(error as Error).message}
-        </div>
-      )}
+      {error && <QueryError what="profiles" error={error} />}
 
-      {selectedType === "" && !typesQuery.isFetching && (
-        <div className="profiles-note">
-          No profiles in the selected range. Enable{" "}
-          <code>[self_monitoring].profiles_enabled</code> to have SignalDB
-          profile itself, or send profiles over OTLP.
-        </div>
+      {typesQuery.isPending && <SkeletonLines lines={12} />}
+
+      {selectedType === "" && typesQuery.isSuccess && (
+        <EmptyState title="No profiles yet">
+          Enable <code>[self_monitoring].profiles_enabled</code> to have
+          SignalDB profile itself, or send profiles over OTLP.
+        </EmptyState>
       )}
 
       <div className="profiles-compare">
@@ -385,7 +422,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="profiles-note">Loading…</div>
+        <SkeletonLines lines={8} />
       </div>
     );
   }
@@ -393,7 +430,7 @@ function ComparePane({
     return (
       <div className="profiles-compare-pane">
         <div className="flame-title">{title}</div>
-        <div className="profiles-note">No profiles in this window.</div>
+        <EmptyState title="No profiles in this range" />
       </div>
     );
   }
@@ -409,17 +446,28 @@ function ComparePane({
   );
 }
 
-function SingleProfileView({
-  profileId,
-  update,
-}: {
-  profileId: string;
-  update: UpdateFn;
-}) {
+function SingleProfileView({ state, update }: Props) {
+  const { profileId, profileType, profileUnit, range } = state;
   const renderQuery = useQuery({
     queryKey: ["pyro-byid", profileId],
     queryFn: () => fetchFlamegraphById(profileId),
   });
+  // `fetchFlamegraphById`'s response carries no sample-type/unit metadata
+  // (a single profile's Pyroscope flamebearer encoding has none — see
+  // FlamegraphResult), so without this, every by-id flamegraph's tooltip
+  // showed bare tick counts regardless of what it actually measured. Only
+  // fetched as a fallback: when the caller named a type but not a unit.
+  // Keyed on the full range scope (tenant/dataset included, not just the
+  // range) — the same tenant's profile-type list under a different tenant's
+  // key would otherwise mislabel a sample type this tenant never registered.
+  const typesQuery = useQuery({
+    queryKey: ["pyro-types-for-unit", rangeScopeKey(state)],
+    queryFn: () => profileTypes(resolveRange(range, Date.now())),
+    enabled: profileUnit === "" && profileType !== "",
+  });
+  const unit =
+    profileUnit ||
+    (typesQuery.data?.find((t) => t.ID === profileType)?.sampleUnit ?? "");
 
   return (
     <div className="profilesview">
@@ -437,14 +485,12 @@ function SingleProfileView({
       </div>
 
       {renderQuery.isError && (
-        <div className="query-error" role="alert">
-          {(renderQuery.error as Error).message}
-        </div>
+        <QueryError what="this profile" error={renderQuery.error} />
       )}
       {renderQuery.isFetching && !renderQuery.data && (
-        <div className="profiles-note">Loading…</div>
+        <SkeletonLines lines={12} />
       )}
-      {renderQuery.data && <FlameGraph render={renderQuery.data} unit="" />}
+      {renderQuery.data && <FlameGraph render={renderQuery.data} unit={unit} />}
     </div>
   );
 }

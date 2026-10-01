@@ -24,7 +24,6 @@ use super::state::AppState;
 ///
 /// Each tab or UI panel implements this trait so the main [`App`] can
 /// delegate key handling, state updates, and rendering uniformly.
-#[allow(dead_code)] // Methods called once tab content components are implemented
 pub trait Component {
     /// Translate a key press into an [`Action`], or `None` to let the
     /// parent handle it.

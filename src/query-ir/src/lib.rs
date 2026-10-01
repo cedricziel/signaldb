@@ -1,0 +1,67 @@
+//! # Query IR — the versioned, structured query contract
+//!
+//! A leaf crate: `serde` and `serde_json`, nothing else. A caller can build,
+//! validate, and version an IR document without a catalog, a tenant, or a
+//! query engine — the same reason the compatibility parsers are their own
+//! crates. Executing a document is the querier's job. The `openapi` feature
+//! adds `utoipa::ToSchema` to the stage grammar for the router's spec.
+//!
+//! SignalDB's native query surface. A [`Document`] is a **versioned** JSON
+//! query over a **registered source** with a defined type system: value types
+//! and coercion ([`value`]), three-valued absent semantics ([`value::Truth`]),
+//! relation types that flow between stages ([`relation`]), a shared predicate
+//! grammar ([`predicate`]), structured stage operands ([`stage`]), and
+//! registry-mediated field resolution ([`resolver`]).
+//!
+//! The IR's meaning is defined by this type system and its denotational
+//! semantics — **not** by the DataFusion plan it lowers to. The plan (built in
+//! the `querier` crate) is correct iff it evaluates to this denotation, so the
+//! contract is stable across DataFusion upgrades and is a sound lowering target
+//! for later sibling changes (correlate, structural traces, metrics) and future
+//! front-ends.
+//!
+//! See `openspec/changes/query-ir-core` for the full specification.
+
+pub mod alias;
+pub mod document;
+pub mod formula;
+#[cfg(feature = "openapi")]
+pub mod openapi;
+pub mod page;
+pub mod predicate;
+pub mod relation;
+pub mod resolver;
+pub mod source;
+pub mod stage;
+pub mod validate;
+pub mod value;
+pub mod version;
+
+pub use alias::safe_ident;
+pub use document::{Document, Range, ResultEnvelope};
+pub use formula::{
+    EvalSeries, Expr as FormulaExpr, Formula, FormulaError, MultiDocument,
+    evaluate as evaluate_formula, parse_expr as parse_formula_expr, validate_multi,
+};
+pub use page::{Page, PageUnit, SortKey, Tail, pagination_order, tail_order};
+pub use predicate::{ComparisonOp, Leaf, Predicate, Record};
+pub use relation::{
+    Column, Grain, Heatmap as HeatmapRelation, Metadata as MetadataRelation, RelationType, RowSet,
+    Scalar as ScalarRelation, Series,
+};
+pub use resolver::{FieldResolver, InMemoryResolver, Resolved, SpanListField};
+pub use source::{PSEUDO_SOURCES, SourceDef, SourceRegistry, is_pseudo_source};
+pub use stage::{
+    Absent, Agg, AggFn, Aggregate, Binop, BinopGroup, BinopOp, BinopOperand, CompareOp, Correlate,
+    CorrelateKey, CorrelateTarget, CorrelateWindow, DerivedField, Describe, DescribeTarget,
+    Direction, Extract, Filter, GroupSide, Heatmap, HeatmapAxisX, HeatmapAxisY, HeatmapValue,
+    HistogramFraction, HistogramMode, HistogramQuantile, JoinKind, LabelJoin, LabelReplace, Labels,
+    Map, MapFn, Match, MatchOp, MatchRelation, NoOperands, Order, OverTime, OverTimeFn, Parser,
+    Rank, Reduce, ReduceFn, Sample, SampleFn, SampleOf, SpanSets, Stage, SubDocument,
+};
+pub use validate::{IrError, Validated, check_structure, validate, validate_describe};
+pub use value::{
+    CoercionError, Literal, RelativeTime, TimestampLiteral, Truth, ValueType, coerce,
+    parse_duration_ns, parse_relative_time, parse_timestamp_literal,
+};
+pub use version::{Feature, MAX_IR_VERSION, MIN_IR_VERSION, OperatorRegistry, is_supported};

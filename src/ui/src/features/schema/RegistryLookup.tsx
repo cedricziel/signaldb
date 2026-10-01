@@ -3,6 +3,7 @@ import { useState } from "react";
 import { Link } from "react-router";
 import { lookup, type LookupResult } from "./api";
 import { definitionPath, kindLabel } from "./paths";
+import { toErrorMessage } from "../../api/http";
 
 /**
  * Global lookup box: resolves a name as attribute key, then entity, then
@@ -33,16 +34,13 @@ export function RegistryLookup() {
           value={name}
           onChange={(e) => setName(e.target.value)}
         />
-        <button type="submit" disabled={resolve.isPending}>
+        <button type="submit" className="btn btn-primary" disabled={resolve.isPending}>
           Resolve
         </button>
       </form>
       {resolve.isError && (
-        <p className="schema-error">
-          Lookup failed:{" "}
-          {resolve.error instanceof Error
-            ? resolve.error.message
-            : String(resolve.error)}
+        <p className="error-text" role="alert">
+          Could not complete the lookup: {toErrorMessage(resolve.error)}
         </p>
       )}
       {resolve.isSuccess && <LookupHits name={asked} result={resolve.data} />}

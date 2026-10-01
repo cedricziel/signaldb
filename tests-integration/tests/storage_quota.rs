@@ -8,21 +8,17 @@
 use anyhow::Result;
 use common::catalog_manager::CatalogManager;
 use common::storage_usage::{StorageUsageTracker, compute_usage};
-use object_store::memory::InMemory;
 use std::sync::Arc;
 use tests_integration::fixtures::{DataGeneratorConfig, PartitionGranularity};
 use tests_integration::generators;
-use writer::IcebergTableWriter;
 
 /// The tenant slug (== id here) whose usage the test tracks.
 const TENANT: &str = "quota-tenant";
 const DATASET: &str = "quota-dataset";
 
 async fn write_traces(catalog_manager: &Arc<CatalogManager>, writes: usize) -> Result<()> {
-    let object_store = Arc::new(InMemory::new());
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         catalog_manager,
-        object_store,
         TENANT.to_string(),
         DATASET.to_string(),
         "traces".to_string(),
@@ -44,10 +40,8 @@ async fn write_traces(catalog_manager: &Arc<CatalogManager>, writes: usize) -> R
 }
 
 async fn write_profiles(catalog_manager: &Arc<CatalogManager>, writes: usize) -> Result<()> {
-    let object_store = Arc::new(InMemory::new());
-    let mut writer = IcebergTableWriter::new(
+    let mut writer = tests_integration::test_support::writer_with_type_authority(
         catalog_manager,
-        object_store,
         TENANT.to_string(),
         DATASET.to_string(),
         "profiles".to_string(),

@@ -13,8 +13,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::Duration;
 
 use acceptor::handler::otlp_grpc::TraceHandler;
-use acceptor::handler::wal_manager::WalManager;
-use acceptor::middleware::grpc_auth_interceptor;
+use acceptor::middleware::GrpcAuthLayer;
 use acceptor::services::otlp_trace_service::TraceAcceptorService;
 use common::auth::{Authenticator, TenantContext, TenantSource};
 use common::catalog::Catalog;
@@ -22,6 +21,7 @@ use common::config::Configuration;
 use common::flight::transport::InMemoryFlightTransport;
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
+use common::wal::manager::WalManager;
 use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
 use opentelemetry_proto::tonic::collector::trace::v1::trace_service_server::{
     TraceService, TraceServiceServer,
@@ -87,6 +87,10 @@ async fn self_monitoring_export_lands_in_system_wal() {
     assert!(config.auth.tenants.iter().any(|t| t.id == "_system"));
 
     let catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+    let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+        catalog.clone(),
+        &common::config::ProcessorsConfig::default(),
+    ));
     let authenticator = Arc::new(Authenticator::new(config.auth.clone(), catalog));
 
     let bootstrap = ServiceBootstrap::new(
@@ -105,17 +109,16 @@ async fn self_monitoring_export_lands_in_system_wal() {
         wal_config(&temp_dir, "profiles"),
     ));
 
-    let trace_handler = TraceHandler::new(flight_transport, wal_manager.clone());
+    let trace_handler =
+        TraceHandler::new(flight_transport, wal_manager.clone(), processor_registry);
     let service = TraceAcceptorService::new(trace_handler);
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let acceptor_addr = listener.local_addr().unwrap();
-    let auth = authenticator.clone();
     tokio::spawn(
         Server::builder()
-            .add_service(TraceServiceServer::with_interceptor(service, move |req| {
-                grpc_auth_interceptor(auth.clone(), req)
-            }))
+            .layer(GrpcAuthLayer::new(authenticator.clone()))
+            .add_service(TraceServiceServer::new(service))
             .serve_with_incoming(tokio_stream::wrappers::TcpListenerStream::new(listener)),
     );
 
@@ -186,7 +189,9 @@ fn tenant_context(tenant: &str, dataset: &str) -> TenantContext {
         dataset_slug: dataset.to_string(),
         api_key_name: None,
         api_key_scopes: None,
-        api_key_dataset_id: None,
+        api_key_dataset_ids: None,
+        oauth_tenant_grants: None,
+        api_key_allowed_origins: None,
         user_id: None,
         role: None,
         is_instance_admin: false,
@@ -225,7 +230,16 @@ async fn anti_loop_guard_prevents_reinstrumentation_of_system_requests() {
             wal_config(&temp_dir, "metrics"),
             wal_config(&temp_dir, "profiles"),
         ));
-        let service = TraceAcceptorService::new(TraceHandler::new(flight_transport, wal_manager));
+        let processor_catalog = Arc::new(Catalog::new("sqlite::memory:").await.unwrap());
+        let processor_registry = Arc::new(common::processors::ProcessorRegistry::new(
+            processor_catalog,
+            &common::config::ProcessorsConfig::default(),
+        ));
+        let service = TraceAcceptorService::new(TraceHandler::new(
+            flight_transport,
+            wal_manager,
+            processor_registry,
+        ));
 
         let subscriber = tracing_subscriber::registry().with(
             CountingLayer(counter.clone()).with_filter(common::self_monitoring::OtelExportFilter),

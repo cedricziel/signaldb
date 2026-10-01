@@ -8,15 +8,18 @@ use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
 use common::service_bootstrap::{ServiceBootstrap, ServiceType};
-use common::wal::{Wal, WalConfig};
+use common::wal::WalConfig;
+use common::wal::manager::WalManager;
 use compactor::service::CompactorService;
 use querier::QuerierFlightService;
-use router::{RouterAppState, RouterState, create_flight_service, create_router};
+use router::{RouterAppState, create_flight_service, create_router};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::oneshot;
 use tonic::transport::Server;
 use writer::IcebergWriterFlightService;
+
+mod wal_cli;
 
 /// The `signaldb` command line: the monolith by default, or one service via
 /// its subcommand. The shared options (`--config`, `-v`, `-q`) are global, so
@@ -58,6 +61,10 @@ pub enum SignalDbCommands {
     /// Run only the MCP server sidecar
     #[command(version)]
     Mcp(mcp_server::cli::Args),
+    /// Inspect, replay, or purge a WAL's dead-letter directory (operator
+    /// tool, not a service — run on the node that owns the WAL directory)
+    #[command(version)]
+    Wal(wal_cli::Args),
 }
 
 impl Default for SignalDbCommands {
@@ -90,6 +97,7 @@ async fn main() -> Result<()> {
             return compactor::cli::run(&cli.common, args).await;
         }
         SignalDbCommands::Mcp(args) => return mcp_server::cli::run(&cli.common, args).await,
+        SignalDbCommands::Wal(args) => return wal_cli::run(args).await,
         SignalDbCommands::Common(common_cmd) => common_cmd,
     };
 
@@ -138,7 +146,7 @@ async fn main() -> Result<()> {
     // Initialize router service bootstrap for catalog-based discovery
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let router_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Router, flight_addr)
             .await
             .context("Failed to initialize router service bootstrap")?;
 
@@ -166,6 +174,15 @@ async fn main() -> Result<()> {
         tracing::info!("Materialized {materialized} missing default dataset row(s)");
     }
 
+    // Provision/reconcile the read-only demo account (change: demo-mode), if
+    // configured. Runs after tenant sync so `[demo].tenant_id` exists.
+    // Failure logs and continues rather than blocking startup.
+    if let Err(error) =
+        common::bootstrap::provision_demo_user(router_bootstrap.catalog(), &config).await
+    {
+        tracing::error!(error = %error, "Failed to provision demo account");
+    }
+
     // First boot with no tenants at all (none in config, none in the
     // catalog): auto-provision a default tenant and print its API key once.
     if let Some(api_key) =
@@ -173,6 +190,9 @@ async fn main() -> Result<()> {
             .await
             .context("Failed to bootstrap default tenant")?
     {
+        let otlp_grpc_url = config.public.otlp_grpc_url();
+        let otlp_http_url = config.public.otlp_http_url();
+        let api_url = config.public.api_url();
         tracing::info!(
             "\n============================================================\n\
              First boot: no tenants were configured or provisioned, so a\n\
@@ -186,10 +206,11 @@ async fn main() -> Result<()> {
              \n\
              Point any OpenTelemetry SDK or Collector at SignalDB:\n\
              \n\
-               export OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4317\n\
+               export OTEL_EXPORTER_OTLP_ENDPOINT={otlp_grpc_url}\n\
                export OTEL_EXPORTER_OTLP_HEADERS=\"authorization=Bearer {api_key},x-tenant-id=default\"\n\
              \n\
-             (OTLP/HTTP uses port 4318 instead.)\n\
+             (OTLP/HTTP uses {otlp_http_url} instead.)\n\
+             Full connection details: GET {api_url}/api/v1/connection (or the MCP `connection_info` tool).\n\
              To create a UI user: signaldb-cli user create <email> --tenant default\n\
              ============================================================"
         );
@@ -220,10 +241,6 @@ async fn main() -> Result<()> {
     );
     tracing::info!("Created shared catalog manager");
 
-    // Initialize Writer components
-    let object_store = common::storage::create_object_store(&config.storage)
-        .context("Failed to initialize object store")?;
-
     // WRITER_WAL_DIR override wins, otherwise [wal].wal_dir + "/writer".
     let writer_wal_dir = config.wal.wal_dir_for_service(
         "writer",
@@ -234,19 +251,39 @@ async fn main() -> Result<()> {
         ..Default::default()
     };
 
-    let mut writer_wal = Wal::new(writer_wal_config)
-        .await
-        .context("Failed to initialize Writer WAL")?;
-    writer_wal.start_background_flush();
-    let writer_wal = Arc::new(writer_wal);
+    // One WAL per tenant/dataset/signal (#932); WALs left by a previous run
+    // are opened now so their pending entries drain.
+    let writer_wal_manager = Arc::new(
+        WalManager::uniform(writer_wal_config)
+            .with_max_instances(config.wal.max_instances)
+            .with_role("writer"),
+    );
+    writer::cli::open_existing_writer_wals(&writer_wal_manager).await;
+    writer_wal_manager.warn_if_fd_headroom_thin("writer").await;
+
+    // Canonical-type resolver for the typed attribute layout (otel-native-schema
+    // layer 4.2a): shared across every table writer the WAL processor creates,
+    // so a key resolved for one commit group is cached for the next. Mirrors
+    // the standalone writer binary's wiring (`writer::cli`) -- the monolith is
+    // an independent wiring and does not inherit it for free.
+    let writer_type_authority = Arc::new(common::schema::type_authority::TypeAuthority::new(
+        router_bootstrap.catalog().clone(),
+        common::schema_registry::SchemaResolver::new(router_bootstrap.catalog().clone()),
+        Arc::new(config.clone()),
+    ));
 
     // Create Iceberg-based Flight ingestion service with CatalogManager
-    let writer_flight_service = IcebergWriterFlightService::new(
+    let writer_flight_service = IcebergWriterFlightService::with_type_authority(
         catalog_manager.clone(),
-        object_store.clone(),
-        writer_wal.clone(),
+        writer_wal_manager.clone(),
         &config.writer,
+        writer_type_authority,
     );
+
+    // Seed the ingest-id dedup cache from WAL entries a previous run left on
+    // disk, so a restart does not reopen a window an acceptor resend could
+    // exploit (#1734 step 2). Must run after `open_existing_writer_wals`.
+    writer_flight_service.rebuild_ingest_dedup_from_wal().await;
 
     // Start background WAL processing for Iceberg writes
     let writer_bg_handle = writer_flight_service.start_background_processing();
@@ -259,13 +296,10 @@ async fn main() -> Result<()> {
     // Initialize Writer service bootstrap for catalog-based discovery
     // This registers the Writer with Storage capability so the Acceptor can discover it
     let writer_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
-    let writer_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Writer,
-        writer_flight_addr.to_string(),
-    )
-    .await
-    .context("Failed to initialize writer service bootstrap")?;
+    let writer_bootstrap =
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Writer, writer_flight_addr)
+            .await
+            .context("Failed to initialize writer service bootstrap")?;
     tracing::info!(
         "Writer service registered with ID: {}",
         writer_bootstrap.service_id()
@@ -273,13 +307,10 @@ async fn main() -> Result<()> {
 
     // Initialize Querier service bootstrap for catalog-based discovery
     let querier_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50054));
-    let querier_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Querier,
-        querier_flight_addr.to_string(),
-    )
-    .await
-    .context("Failed to initialize querier service bootstrap")?;
+    let querier_bootstrap =
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Querier, querier_flight_addr)
+            .await
+            .context("Failed to initialize querier service bootstrap")?;
 
     // Periodically flush attribute query-demand counters (epic #737, #733)
     // into the catalog's advisory `attribute_stats` table.
@@ -318,11 +349,25 @@ async fn main() -> Result<()> {
         );
     }
 
-    // Create QuerierFlightService with shared CatalogManager for per-tenant catalog support
+    // Create QuerierFlightService with shared CatalogManager for per-tenant catalog support.
+    //
+    // Unlike the standalone querier, this process also runs ingest, so an
+    // unbounded query memory pool ([querier].memory_limit_mb left unset) can
+    // take ingest down with it, not just itself (#1359). Resolve the default
+    // here, on a clone, rather than in `QuerierConfig::default` so the
+    // standalone querier binary keeps today's unbounded-by-default behavior.
+    let mut querier_config = config.querier.clone();
+    let monolith_total_ram_bytes = common::self_monitoring::metrics::total_system_memory_bytes();
+    querier_config.resolve_monolith_memory_limit(monolith_total_ram_bytes);
+    tracing::info!(
+        signaldb.querier.memory_limit_mb = querier_config.memory_limit_mb.map(|mb| mb as i64),
+        signaldb.querier.host_memory_bytes = monolith_total_ram_bytes as i64,
+        "Resolved monolith querier memory limit"
+    );
     let querier_flight_service = QuerierFlightService::new_with_catalog_manager(
         querier_flight_transport.clone(),
         catalog_manager.clone(),
-        config.querier.clone(),
+        querier_config,
     )
     .await
     .context("Failed to create querier flight service")?;
@@ -334,10 +379,10 @@ async fn main() -> Result<()> {
         // Register with the real Flight address so operators can reach the
         // compactor's do_action control surface through the router ops API.
         let compactor_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50055));
-        let compactor_bootstrap = ServiceBootstrap::new(
+        let compactor_bootstrap = ServiceBootstrap::from_bind_addr(
             config.clone(),
             ServiceType::Compactor,
-            compactor_flight_addr.to_string(),
+            compactor_flight_addr,
         )
         .await
         .context("Failed to initialize compactor service bootstrap")?;
@@ -431,12 +476,9 @@ async fn main() -> Result<()> {
         "acceptor",
         std::env::var("ACCEPTOR_WAL_DIR").ok().map(Into::into),
     );
-    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], 4317));
-    let http_addr = SocketAddr::from(([0, 0, 0, 0], 4318));
-    let advertise_addr =
-        std::env::var("ACCEPTOR_ADVERTISE_ADDR").unwrap_or_else(|_| grpc_addr.to_string());
-
-    let acceptor_resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
+    let grpc_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_GRPC_PORT));
+    let http_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_HTTP_PORT));
+    let acceptor_resources = init_acceptor_resources(config.clone(), grpc_addr, wal_dir)
         .await
         .context("Failed to initialize acceptor resources")?;
 
@@ -448,6 +490,7 @@ async fn main() -> Result<()> {
     let grpc_config = GrpcAcceptorConfig {
         addr: grpc_addr,
         resources: grpc_resources,
+        max_decoding_message_size: config.acceptor.max_request_body_bytes as usize,
     };
     let grpc_handle = tokio::spawn(async move {
         serve_otlp_grpc(
@@ -468,11 +511,10 @@ async fn main() -> Result<()> {
         authenticator: http_resources.authenticator,
         rate_limiter: http_resources.rate_limiter,
         storage_usage: http_resources.storage_usage,
-        cors_allowed_origins: config
-            .self_monitoring
-            .frontend
-            .enabled
-            .then(|| config.self_monitoring.frontend.allowed_origins.clone()),
+        processor_registry: http_resources.processor_registry,
+        retry_dedup: http_resources.retry_dedup,
+        type_snapshots: http_resources.type_snapshots,
+        max_request_body_bytes: config.acceptor.max_request_body_bytes as usize,
     };
     let http_handle = tokio::spawn(async move {
         serve_otlp_http(
@@ -487,7 +529,8 @@ async fn main() -> Result<()> {
 
     // Start HTTP router
     let app = create_router(state.clone());
-    let http_router_addr = SocketAddr::from(([0, 0, 0, 0], 3000));
+    let http_router_addr =
+        SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_ROUTER_HTTP_PORT));
     let http_router_handle = tokio::spawn(async move {
         tracing::info!("Starting HTTP router on {http_router_addr}");
         let listener = tokio::net::TcpListener::bind(http_router_addr)
@@ -510,6 +553,7 @@ async fn main() -> Result<()> {
             "Flight ports are UNAUTHENTICATED ([auth].internal_service_key is not set); \
              they must be restricted to a trusted network"
         );
+        router::cli::warn_unsigned_cursors();
     }
     let tenant_flight_auth = internal_service_key.clone().map(|key| {
         common::flight::auth::FlightAuthInterceptor::new(
@@ -683,13 +727,10 @@ async fn main() -> Result<()> {
     writer_reconciler_handle.abort();
     let _ = writer_reconciler_handle.await;
 
-    if let Ok(wal) = Arc::try_unwrap(writer_wal) {
-        wal.shutdown()
-            .await
-            .context("Failed to shutdown Writer WAL")?;
-    } else {
-        tracing::warn!("Could not get exclusive access to Writer WAL for shutdown - forcing flush");
-    }
+    writer_wal_manager
+        .flush_all()
+        .await
+        .context("Failed to flush Writer WALs during shutdown")?;
 
     if let Some(telemetry) = _telemetry {
         telemetry.shutdown();
@@ -752,6 +793,32 @@ mod tests {
         assert!(matches!(
             parse(&["signaldb", "mcp", "--stdio"]).command,
             Some(SignalDbCommands::Mcp(_))
+        ));
+    }
+
+    #[test]
+    fn wal_dead_letter_subcommand_parses() {
+        // Unlike the other service subcommands, `wal` has no default: it
+        // always needs `dead-letter <list|replay|purge>` plus the WAL
+        // location, so the full invocation is exercised here rather than in
+        // `service_subcommand_selects_that_service`.
+        assert!(matches!(
+            parse(&[
+                "signaldb",
+                "wal",
+                "dead-letter",
+                "list",
+                "--wal-dir",
+                "/data/wal/acceptor",
+                "--tenant",
+                "acme",
+                "--dataset",
+                "production",
+                "--signal",
+                "metrics",
+            ])
+            .command,
+            Some(SignalDbCommands::Wal(_))
         ));
     }
 

@@ -2,27 +2,13 @@
 //! rejected with a path that points at the offending group/attribute, and a
 //! well-formed Weaver-style file (fixtures/acme.yaml) resolves against otel.
 
-use std::path::{Path, PathBuf};
+mod common;
 
-use schema_model::{Registry, RegistryDocument, ResolvedRegistry, Role, is_reserved_namespace};
+use std::path::Path;
 
-fn repo_root() -> PathBuf {
-    Path::new(env!("CARGO_MANIFEST_DIR")).join("../..")
-}
+use common::otel_resolved;
 
-fn otel() -> ResolvedRegistry {
-    let version = std::fs::read_to_string(repo_root().join("vendor/otel-semconv/VERSION"))
-        .expect("VERSION")
-        .trim()
-        .to_string();
-    let doc = RegistryDocument::from_dir(
-        "otel",
-        &version,
-        &repo_root().join(format!("vendor/otel-semconv/{version}/model")),
-    )
-    .expect("parse otel");
-    Registry::resolve(&doc, &[]).expect("otel resolves")
-}
+use schema_model::{Registry, RegistryDocument, Role, is_reserved_namespace};
 
 fn fixture(name: &str) -> RegistryDocument {
     let text = std::fs::read_to_string(
@@ -34,7 +20,7 @@ fn fixture(name: &str) -> RegistryDocument {
 
 fn errors_of(yaml: &str) -> Vec<String> {
     let doc = RegistryDocument::from_yaml(yaml).expect("yaml parses");
-    let otel = otel();
+    let otel = otel_resolved();
     match Registry::resolve(&doc, &[&otel]) {
         Ok(_) => Vec::new(),
         Err(errs) => errs.iter().map(|e| e.to_string()).collect(),
@@ -43,7 +29,7 @@ fn errors_of(yaml: &str) -> Vec<String> {
 
 #[test]
 fn acme_fixture_resolves_against_otel_and_yields_all_kinds() {
-    let otel = otel();
+    let otel = otel_resolved();
     let doc = fixture("acme.yaml");
     let resolved = Registry::resolve(&doc, &[&otel]).unwrap_or_else(|errs| {
         panic!(
@@ -90,7 +76,7 @@ fn acme_fixture_resolves_against_otel_and_yields_all_kinds() {
 
 #[test]
 fn weaver_checked_fixtures_resolve() {
-    let otel = otel();
+    let otel = otel_resolved();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/weaver");
     for entry in std::fs::read_dir(&dir).expect("fixtures/weaver") {
         let path = entry.expect("entry").path();

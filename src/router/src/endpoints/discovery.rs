@@ -1,0 +1,1353 @@
+//! # Query discovery — answered from metadata, not from data
+//!
+//! Serves the `describe` documents of the native query surface (`POST
+//! /api/v1/query` with the `metadata` envelope) and the source listing
+//! (`GET /api/v1/query/sources`).
+//!
+//! These requests never reach a querier. They are assembled here from the
+//! canonical logical schema (in process), the tenant's schema registries,
+//! the type authority's canonical attribute types, and the compactor's
+//! `attribute_stats` — indexed catalog reads, the same pattern
+//! `/prometheus/api/v1/label_stats` already uses. A field picker therefore
+//! stays responsive while query execution is saturated, which is
+//! exactly when someone is most likely to be building a query.
+//!
+//! The one exception is explicit: a `values` request carrying `"sample": true`
+//! runs the ordinary Query IR aggregation named in the response's `hint`, and
+//! the response says it read data. Without that flag no discovery request
+//! reads signal data — see `openspec/changes/archive/2026-09-22-query-field-discovery`.
+
+use axum::extract::State;
+use common::auth::TenantContext;
+use common::auth::TenantContextExtractor;
+use common::discovery::{
+    CostMode, DEFAULT_FIELD_LIMIT, DEFAULT_VALUE_LIMIT, DiscoveredSource, DiscoveredValue,
+    DiscoveryCost, MetadataKind, MetadataResult, ValueOrigin, intrinsic_values, latest_observation,
+    merge_fields, registry_values, signal_for_source, sketch_values, strip_qualifier,
+};
+use common::query_ir::{Describe, DescribeTarget, Document, SourceRegistry};
+use common::schema::logical::LogicalSchema;
+use common::self_monitoring::spans::discovery_span;
+use tracing::Instrument;
+
+use super::api_error::ApiError;
+use super::query::{QueryIrResponse, QueryWarning, ResolvedWindow, execute_ticket, ir_table};
+use crate::RouterAppState;
+
+/// The low-cardinality string a discovery span records for a [`CostMode`]
+/// once the answer is known — its own `snake_case` `Serialize` output, so a
+/// new variant can't silently fall out of sync with a hand-maintained match.
+fn cost_mode_label(mode: CostMode) -> String {
+    serde_json::to_value(mode)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_string))
+        .unwrap_or_default()
+}
+
+/// Answer a `describe` document. The caller has already authorized the source
+/// and resolved the window.
+///
+/// Carries a `signaldb.discovery` boundary span (`common::self_monitoring::
+/// spans::discovery_span`) for the duration of the read, so the metadata
+/// path's cost is visible in self-monitoring next to the querier's
+/// `signaldb.query.execute` — most `describe` requests never reach a querier;
+/// a sampled `describe: values` does, and records `cost_mode = sampled_scan`.
+pub(super) async fn answer_describe(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    doc: &Document,
+    describe: &Describe,
+    window: ResolvedWindow,
+    now_ns: i64,
+) -> Result<QueryIrResponse, ApiError> {
+    let kind = match describe.target {
+        DescribeTarget::Fields => "fields",
+        DescribeTarget::Values => "values",
+    };
+    let span = discovery_span(
+        kind,
+        &ctx.tenant_id,
+        &ctx.dataset_id,
+        Some(doc.from.as_str()),
+    );
+    async {
+        let metadata = match describe.target {
+            DescribeTarget::Fields => fields(state, ctx, &doc.from, describe).await?,
+            DescribeTarget::Values => values(state, ctx, doc, describe, window, now_ns).await?,
+        };
+        tracing::Span::current().record(
+            "signaldb.discovery.cost_mode",
+            cost_mode_label(metadata.cost.mode).as_str(),
+        );
+        let warnings = warnings_for(&metadata);
+        Ok(QueryIrResponse::metadata(window, metadata, warnings))
+    }
+    .instrument(span)
+    .await
+}
+
+/// The `code` of the warning raised when no statistics back a field answer.
+pub(super) const NO_ATTRIBUTE_STATISTICS: &str = "no_attribute_statistics";
+
+/// Warn when a field answer has no statistics behind it. Without them the
+/// response is not wrong — every field in it is real and queryable — but it is
+/// not necessarily the tenant's complete field set: keys the type authority
+/// has typed are listed regardless, everything else waits for the analyzer.
+fn warnings_for(metadata: &MetadataResult) -> Vec<QueryWarning> {
+    if metadata.kind != MetadataKind::Fields || metadata.cost.as_of.is_some() {
+        return Vec::new();
+    }
+    vec![QueryWarning {
+        code: NO_ATTRIBUTE_STATISTICS.to_string(),
+        message: "no attribute statistics exist for this tenant and signal yet, so this lists \
+                  the declared fields and the attribute keys the type authority has typed; \
+                  other keys this tenant emits appear once the compactor's analyzer has run \
+                  over the data"
+            .to_string(),
+        field: None,
+        suggestions: Vec::new(),
+    }]
+}
+
+/// `GET /api/v1/query/sources` — the signal sources this tenant can query.
+///
+/// A deliberate exception to "a first-party read is a `POST /api/v1/query`
+/// document": an IR document must name a `from`, and this is the one question
+/// that has no source to name.
+#[utoipa::path(
+    get,
+    path = "/api/v1/query/sources",
+    tag = "query",
+    operation_id = "query_sources",
+    description = "List the signal sources available to the authenticated tenant and dataset, each with whether it is currently queryable. A registered signal whose table exists but holds no data is reported as available and empty, never omitted.\n\nThis is the one discovery call that is a GET rather than a `POST /api/v1/query` document: an IR document must name the source it queries (`from`), and \"which sources exist\" is the question that has no source to name. Every other discovery request — fields and values — is a document with a terminal `describe` stage and the `metadata` envelope, so this exception is bounded to this one route rather than a pattern to copy.\n\nThe answer comes from tenant metadata; it reads no signal data. The response is the same `metadata` envelope the `describe` documents return.",
+    security(("bearerAuth" = [])),
+    responses(
+        (status = 200, description = "Available signal sources", body = QueryIrResponse),
+        (status = 401, description = "Unauthorized"),
+        (status = 429, response = crate::endpoints::api_error::RateLimited),
+        (status = 503, description = "Catalog unavailable"),
+    )
+)]
+#[tracing::instrument(
+    skip(state, tenant_ctx),
+    fields(
+        signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+        signaldb.dataset.id = %tenant_ctx.0.dataset_id
+    )
+)]
+pub async fn query_sources(
+    State(state): State<RouterAppState>,
+    tenant_ctx: TenantContextExtractor,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    let ctx = &tenant_ctx.0;
+    let span = discovery_span("sources", &ctx.tenant_id, &ctx.dataset_id, None);
+    query_sources_body(&state, ctx).instrument(span).await
+}
+
+/// The body of [`query_sources`], split out so the boundary span
+/// (`signaldb.discovery`) wraps the whole read rather than just the handler
+/// signature.
+async fn query_sources_body(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    let tables = tenant_tables(state, ctx).await?;
+    let registry = SourceRegistry::core();
+    let sources: Vec<DiscoveredSource> = registry
+        .names()
+        .into_iter()
+        .map(|name| DiscoveredSource {
+            available: source_tables(&name)
+                .iter()
+                .any(|table| tables.iter().any(|t| t == table)),
+            name,
+        })
+        .collect();
+
+    tracing::Span::current().record("signaldb.discovery.cost_mode", "metadata");
+    let window = ResolvedWindow {
+        start_ns: 0,
+        end_ns: 0,
+    };
+    Ok(axum::Json(QueryIrResponse::metadata(
+        window,
+        MetadataResult {
+            kind: MetadataKind::Sources,
+            sources,
+            fields: Vec::new(),
+            values: Vec::new(),
+            truncated: false,
+            cost: DiscoveryCost::metadata(None),
+            hint: None,
+        },
+        Vec::new(),
+    )))
+}
+
+/// The physical tables that make a source queryable. A source with none of
+/// them is reported unavailable; a source whose table exists but holds no data
+/// is available and empty, never omitted.
+fn source_tables(source: &str) -> &'static [&'static str] {
+    match source {
+        "logs" => &["logs"],
+        "traces" => &["traces"],
+        "profiles" => &["profiles"],
+        "metrics" => &["metrics"],
+        "exemplars" => &["metric_exemplars"],
+        _ => &[],
+    }
+}
+
+/// The tenant's table names in the authenticated dataset.
+async fn tenant_tables(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+) -> Result<Vec<String>, ApiError> {
+    let listing = async {
+        crate::tenant_api(state)
+            .await?
+            .list_tables(&ctx.tenant_id)
+            .await
+    };
+    let listing = listing.await.map_err(|error| {
+        tracing::error!(?error, "failed to list tenant tables for source discovery");
+        ApiError::new(
+            axum::http::StatusCode::SERVICE_UNAVAILABLE,
+            "failed to list tenant tables",
+        )
+    })?;
+    Ok(listing
+        .tables
+        .into_iter()
+        .filter(|table| table.dataset == ctx.dataset_slug || table.dataset == ctx.dataset_id)
+        .map(|table| table.name)
+        .collect())
+}
+
+/// The queryable fields of a source: declared schema, enriched by the tenant's
+/// registries, plus the attribute keys the type authority typed or the
+/// statistics observed.
+async fn fields(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    source: &str,
+    describe: &Describe,
+) -> Result<MetadataResult, ApiError> {
+    let signal = signal_for_source(source)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown query source '{source}'")))?;
+    // Statistics are keyed by slug, the authority's types by id (`ctx`
+    // carries both); the two reads are independent.
+    let catalog = state.catalog();
+    let (stats, types) = tokio::try_join!(
+        async {
+            catalog
+                .get_attribute_stats(&ctx.tenant_slug, &ctx.dataset_slug, signal)
+                .await
+                .map_err(|error| {
+                    tracing::error!(?error, "failed to read attribute stats for discovery");
+                    ApiError::new(
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        "failed to read attribute statistics",
+                    )
+                })
+        },
+        async {
+            catalog
+                .list_attribute_types_for_table(&ctx.tenant_id, &ctx.dataset_id, signal)
+                .await
+                .map_err(|error| {
+                    tracing::error!(?error, "failed to read attribute types for discovery");
+                    ApiError::new(
+                        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                        "failed to read attribute types",
+                    )
+                })
+        }
+    )?;
+
+    let schema = LogicalSchema::core();
+    let keys: std::collections::BTreeSet<String> = schema
+        .fields()
+        .filter(|field| field.id.source == source)
+        .map(|field| field.id.name.clone())
+        .chain(stats.iter().map(|record| record.attr_key.clone()))
+        .chain(types.iter().map(|row| row.attr_key.clone()))
+        .collect();
+    let registry = state
+        .schema_resolver()
+        .resolve_attributes(&ctx.tenant_id, keys)
+        .await
+        .unwrap_or_else(|error| {
+            // The registries only enrich: without them the fields are still
+            // correct, just undescribed. Degrade, do not fail.
+            tracing::warn!(?error, "schema registry unavailable for discovery");
+            Default::default()
+        });
+
+    let limit = bounded(describe.limit, DEFAULT_FIELD_LIMIT);
+    let (fields, truncated) = merge_fields(source, &schema, &stats, &registry, &types, limit);
+    Ok(MetadataResult {
+        kind: MetadataKind::Fields,
+        sources: Vec::new(),
+        fields,
+        values: Vec::new(),
+        truncated,
+        cost: DiscoveryCost::metadata(latest_observation(&stats)),
+        hint: None,
+    })
+}
+
+/// The key registries and statistics know `field` by.
+///
+/// A level-qualified attribute name is stripped to its bare key. A declared
+/// field is looked up by its literal name: `span.name`, `scope.name` and
+/// `resource.schema_url` are columns, and stripping them would hand them the
+/// values of an unrelated attribute called `name`. The one declared field that
+/// lives in an attribute map is the resource's `service.name`, so its
+/// qualified spelling is stripped like any other attribute.
+fn lookup_key<'f>(source: &str, field: &'f str) -> &'f str {
+    let Some(bare) = strip_qualifier(source, field) else {
+        return field;
+    };
+    let declared = LogicalSchema::core();
+    match declared.resolve(source, field) {
+        Some(_) if bare != "service.name" => field,
+        _ => bare,
+    }
+}
+
+/// Value suggestions for one field, in tier order: a declared value set, then
+/// — only when the client explicitly opted in — the ordinary IR aggregation
+/// over the window. Otherwise no values, and the reason why.
+async fn values(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    doc: &Document,
+    describe: &Describe,
+    window: ResolvedWindow,
+    now_ns: i64,
+) -> Result<MetadataResult, ApiError> {
+    let source = doc.from.as_str();
+    let field = describe
+        .field
+        .as_deref()
+        .ok_or_else(|| ApiError::bad_request("describe target `values` requires a `field`"))?;
+    let limit = bounded(describe.limit, DEFAULT_VALUE_LIMIT);
+
+    // Registries and statistics are keyed by the bare attribute key; `field`
+    // may be level-qualified (`span.http.method`). The sampled query below
+    // keeps the name the client wrote, which is what the planner resolves.
+    let key = lookup_key(source, field);
+
+    // 1. A value set SignalDB itself writes, or one a registry declares:
+    // exact, and free.
+    let declared = match intrinsic_values(source, field) {
+        Some(values) => Some(values),
+        None => state
+            .schema_resolver()
+            .resolve_attribute(&ctx.tenant_id, key)
+            .await
+            .ok()
+            .and_then(|resolution| resolution.primary)
+            .as_ref()
+            .and_then(registry_values),
+    };
+    if let Some(mut values) = declared {
+        let truncated = values.len() > limit;
+        values.truncate(limit);
+        return Ok(MetadataResult {
+            kind: MetadataKind::Values,
+            sources: Vec::new(),
+            fields: Vec::new(),
+            values,
+            truncated,
+            cost: DiscoveryCost::metadata(None),
+            hint: None,
+        });
+    }
+
+    // 2. The analyzer's value sketch: still no data read, but a bounded list
+    // of the most frequent values rather than the exact set, so the answer is
+    // marked approximate and dated.
+    let signal = signal_for_source(source)
+        .ok_or_else(|| ApiError::bad_request(format!("unknown query source '{source}'")))?;
+    let sketch = state
+        .catalog()
+        .get_attribute_value_stats(
+            &ctx.tenant_slug,
+            &ctx.dataset_slug,
+            signal,
+            key,
+            limit as i64,
+        )
+        .await
+        .unwrap_or_else(|error| {
+            // A missing sketch is a normal state, not a failure: fall through
+            // to the honest "nothing covers this" rather than 500 a picker.
+            tracing::warn!(?error, "failed to read the attribute value sketch");
+            Vec::new()
+        });
+    if !sketch.is_empty() {
+        let as_of = sketch.iter().map(|s| s.updated_at.clone()).max();
+        let values = sketch_values(&sketch, limit);
+        let truncated = values.len() >= limit;
+        return Ok(MetadataResult {
+            kind: MetadataKind::Values,
+            sources: Vec::new(),
+            fields: Vec::new(),
+            values,
+            truncated,
+            cost: DiscoveryCost::statistics(as_of),
+            hint: None,
+        });
+    }
+
+    // 3. Nothing declares this field's values and no sketch covers it — the
+    // analyzer has not run, or the key's cardinality exceeded its cap and a
+    // partial list would mislead. Say so, and name the query that computes the
+    // answer, rather than scanning behind the client's back.
+    let hint = value_query_hint(source, field, window, limit);
+    if !describe.sample {
+        return Ok(MetadataResult {
+            kind: MetadataKind::Values,
+            sources: Vec::new(),
+            fields: Vec::new(),
+            values: Vec::new(),
+            truncated: false,
+            cost: DiscoveryCost::none(),
+            hint: Some(hint),
+        });
+    }
+
+    // 4. The client asked for the data-derived answer: run exactly the query
+    // the hint names, bounded by the window and the limit, and say that the
+    // answer came from reading data.
+    let values = sampled_values(state, ctx, source, field, window, limit, now_ns).await?;
+    let truncated = values.len() >= limit;
+    Ok(MetadataResult {
+        kind: MetadataKind::Values,
+        sources: Vec::new(),
+        fields: Vec::new(),
+        values,
+        truncated,
+        cost: DiscoveryCost::sampled_scan(),
+        hint: Some(hint),
+    })
+}
+
+/// Run the counted top-values aggregation over the window, through the same
+/// IR path as any other query.
+async fn sampled_values(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    source: &str,
+    field: &str,
+    window: ResolvedWindow,
+    limit: usize,
+    now_ns: i64,
+) -> Result<Vec<DiscoveredValue>, ApiError> {
+    let document = value_query_document(source, field, window, limit);
+    let payload = serde_json::json!({ "document": document, "now_ns": now_ns });
+    let ticket = format!(
+        "query_ir:{}:{}:{payload}",
+        ctx.tenant_slug, ctx.dataset_slug
+    );
+    let (batches, _correlate_report) = execute_ticket(state, ticket).await?;
+    let (columns, rows) = ir_table(&batches);
+
+    let key = common::query_ir::safe_ident(field);
+    let value_index = columns.iter().position(|column| column.name == key);
+    let count_index = columns
+        .iter()
+        .position(|column| column.name == COUNT_OUTPUT);
+    let Some(value_index) = value_index else {
+        return Ok(Vec::new());
+    };
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| {
+            let value = match row.get(value_index) {
+                Some(serde_json::Value::String(s)) => s.clone(),
+                Some(serde_json::Value::Null) | None => return None,
+                Some(other) => other.to_string(),
+            };
+            Some(DiscoveredValue {
+                value,
+                count: count_index
+                    .and_then(|index| row.get(index))
+                    .and_then(serde_json::Value::as_i64),
+                origin: ValueOrigin::Sampled,
+            })
+        })
+        .collect())
+}
+
+/// The aggregate output name the value query declares.
+///
+/// Not `"count"`: `metrics` has a
+/// physical `count` column, so that alias trips the physical-addressing
+/// guard (`field 'count' names a physical column or storage detail`) instead
+/// of naming a derived output. `value_count` collides with no schema's
+/// physical or logical field names.
+const COUNT_OUTPUT: &str = "value_count";
+
+/// The IR document that computes a field's top values by reading data.
+fn value_query_document(
+    source: &str,
+    field: &str,
+    window: ResolvedWindow,
+    limit: usize,
+) -> serde_json::Value {
+    serde_json::json!({
+        "irVersion": common::query_ir::MAX_IR_VERSION,
+        "from": source,
+        "range": { "from": window.start_ns.to_string(), "to": window.end_ns.to_string() },
+        "result": "table",
+        "pipeline": [
+            { "aggregate": { "by": [field], "aggs": [{ "fn": "count", "as": COUNT_OUTPUT }] } },
+            { "topk": { "of": COUNT_OUTPUT, "n": limit } }
+        ]
+    })
+}
+
+/// The same document as text, for the response's `hint`: what was run, or —
+/// when nothing covers the field — what the client can run itself.
+fn value_query_hint(source: &str, field: &str, window: ResolvedWindow, limit: usize) -> String {
+    format!(
+        "no declared value set or maintained statistics cover '{field}'. \
+         Reading data answers it: POST /api/v1/query {}",
+        value_query_document(source, field, window, limit)
+    )
+}
+
+/// Clamp a client-supplied limit to the server's cap.
+fn bounded(requested: Option<u64>, cap: usize) -> usize {
+    requested
+        .map(|value| (value as usize).min(cap))
+        .unwrap_or(cap)
+        .max(1)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::RouterAppState;
+    use axum::{
+        Router,
+        body::Body,
+        http::{Request, StatusCode},
+    };
+    use common::auth::TenantSource;
+    use common::catalog::Catalog;
+    use common::config::Configuration;
+    use tower::ServiceExt;
+
+    /// A router serving the discovery surface with `ctx` as the authenticated
+    /// principal, over an empty in-memory catalog.
+    ///
+    /// Its service registry holds **no querier**, which is the point: any
+    /// request that builds a Flight ticket fails with `503`. A `200` from these
+    /// tests is therefore positive evidence that discovery answered from
+    /// metadata alone, and a `403` is evidence that authorization was decided
+    /// before any ticket was attempted rather than after the work was done.
+    async fn app_with(catalog: Catalog, ctx: TenantContext) -> Router {
+        common::testing::install_global_tracing_fallback();
+        let state = RouterAppState::new(catalog, Configuration::default());
+        super::super::query::router()
+            .with_state(state)
+            .layer(axum::middleware::from_fn(
+                move |mut req: Request<Body>, next: axum::middleware::Next| {
+                    let ctx = ctx.clone();
+                    async move {
+                        req.extensions_mut().insert(ctx);
+                        next.run(req).await
+                    }
+                },
+            ))
+    }
+
+    fn ctx_for(tenant: &str, scopes: Option<Vec<String>>) -> TenantContext {
+        TenantContext::new(
+            tenant.to_string(),
+            "default".to_string(),
+            tenant.to_string(),
+            "default".to_string(),
+            Some("test".to_string()),
+            TenantSource::Config,
+        )
+        .with_api_key_restrictions(scopes, None, None)
+    }
+
+    fn describe(source: &str, stage: serde_json::Value) -> serde_json::Value {
+        serde_json::json!({
+            "irVersion": 4, "from": source,
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "metadata",
+            "pipeline": [ { "describe": stage } ]
+        })
+    }
+
+    async fn post(app: &Router, doc: serde_json::Value) -> (StatusCode, serde_json::Value) {
+        let request = Request::builder()
+            .method("POST")
+            .uri("/query")
+            .header("Content-Type", "application/json")
+            .body(Body::from(serde_json::to_vec(&doc).unwrap()))
+            .unwrap();
+        let response = app.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = axum::body::to_bytes(response.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (
+            status,
+            serde_json::from_slice(&body).unwrap_or(serde_json::Value::Null),
+        )
+    }
+
+    #[tokio::test]
+    async fn fields_are_answered_without_a_querier() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        // No querier is registered: a Flight ticket would have produced 503.
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert_eq!(body["result"], "metadata");
+        assert_eq!(body["metadata"]["kind"], "fields");
+        let names: Vec<&str> = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"service.name"), "got {names:?}");
+        assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+        assert_eq!(
+            body["metadata"]["cost"]["window_scoped"], false,
+            "statistics carry no time dimension, so the range narrowed nothing"
+        );
+    }
+
+    #[tokio::test]
+    async fn fields_carry_the_type_authoritys_canonical_type() {
+        use common::schema::logical::{AttributeLevel, LogicalFieldId};
+        use common::schema::type_authority::{CanonicalType, Resolution, TypeSource};
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        // Statistics are keyed by slug, the authority by id: the ids differ
+        // here so a lookup by the wrong one finds nothing.
+        catalog
+            .upsert_attribute_scan_stats(
+                "acme",
+                "prod",
+                "logs",
+                "http.status_code",
+                5,
+                10,
+                3,
+                false,
+            )
+            .await
+            .unwrap();
+        for key in ["http.status_code", "queue.depth"] {
+            catalog
+                .establish_attribute_type(
+                    "tenant-id",
+                    "dataset-id",
+                    &LogicalFieldId {
+                        source: "logs".to_string(),
+                        level: Some(AttributeLevel::Record),
+                        name: key.to_string(),
+                    },
+                    Resolution {
+                        canonical: CanonicalType::Int64,
+                        source: TypeSource::Observed,
+                        hint_schema_url: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let ctx = TenantContext::new(
+            "tenant-id".to_string(),
+            "dataset-id".to_string(),
+            "acme".to_string(),
+            "prod".to_string(),
+            Some("test".to_string()),
+            TenantSource::Config,
+        );
+        let app = app_with(catalog, ctx).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let fields = body["metadata"]["fields"].as_array().unwrap();
+        let find = |name: &str| fields.iter().find(|f| f["name"] == name).cloned();
+        let observed = find("http.status_code").expect("observed key listed");
+        assert_eq!(observed["type"], "int64", "the planner's type, not string");
+        assert_eq!(observed["level"], "record");
+        let unobserved = find("queue.depth").expect("a typed key is listed before its first stat");
+        assert_eq!(unobserved["type"], "int64");
+        assert_eq!(unobserved["origin"], "authority");
+    }
+
+    #[tokio::test]
+    async fn another_datasets_authority_types_are_never_listed() {
+        use common::schema::logical::{AttributeLevel, LogicalFieldId};
+        use common::schema::type_authority::{CanonicalType, Resolution, TypeSource};
+
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        for (tenant, dataset, key) in [
+            ("tenant-id", "dataset-id", "mine.key"),
+            ("tenant-id", "other-dataset", "other.dataset.key"),
+            ("other-tenant", "dataset-id", "other.tenant.key"),
+        ] {
+            catalog
+                .establish_attribute_type(
+                    tenant,
+                    dataset,
+                    &LogicalFieldId {
+                        source: "logs".to_string(),
+                        level: Some(AttributeLevel::Record),
+                        name: key.to_string(),
+                    },
+                    Resolution {
+                        canonical: CanonicalType::Int64,
+                        source: TypeSource::Observed,
+                        hint_schema_url: None,
+                    },
+                )
+                .await
+                .unwrap();
+        }
+        let ctx = TenantContext::new(
+            "tenant-id".to_string(),
+            "dataset-id".to_string(),
+            "acme".to_string(),
+            "prod".to_string(),
+            Some("test".to_string()),
+            TenantSource::Config,
+        );
+        let app = app_with(catalog, ctx).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let names: Vec<&str> = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"mine.key"), "{names:?}");
+        assert!(!names.iter().any(|n| n.starts_with("other.")), "{names:?}");
+    }
+
+    #[tokio::test]
+    async fn missing_statistics_are_reported_not_hidden() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert!(
+            body["metadata"]["cost"]["as_of"].is_null(),
+            "no statistics exist, so the answer has no age to report"
+        );
+        assert!(
+            !body["metadata"]["fields"].as_array().unwrap().is_empty(),
+            "the declared fields are still returned"
+        );
+        let codes: Vec<&str> = body["warnings"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|w| w["code"].as_str().unwrap())
+            .collect();
+        assert!(
+            codes.contains(&NO_ATTRIBUTE_STATISTICS),
+            "the client must be told this is the declared set, not the tenant's whole field set: {codes:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn discovery_sees_only_the_authenticated_tenant() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .upsert_attribute_scan_stats("acme", "default", "logs", "acme.only", 5, 10, 3, false)
+            .await
+            .unwrap();
+        catalog
+            .upsert_attribute_scan_stats("other", "default", "logs", "other.only", 5, 10, 3, false)
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe("logs", serde_json::json!({"target": "fields"})),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        let names: Vec<&str> = body["metadata"]["fields"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|f| f["name"].as_str().unwrap())
+            .collect();
+        assert!(names.contains(&"acme.only"), "got {names:?}");
+        assert!(
+            !names.contains(&"other.only"),
+            "another tenant's observed keys must never appear: {names:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_uncovered_field_reads_nothing_and_names_the_query_that_would() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        // Again: 200 rather than 503 proves no ticket was built.
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        assert!(
+            body["metadata"]["values"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "nothing covers this field, so there is nothing honest to suggest"
+        );
+        assert_eq!(body["metadata"]["cost"]["mode"], "none");
+        let hint = body["metadata"]["hint"].as_str().unwrap_or_default();
+        assert!(
+            hint.contains("aggregate") && hint.contains("topk") && hint.contains("http.route"),
+            "the client must be told what would answer it: {hint}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_value_set_is_answered_exactly_and_for_free() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "traces",
+                serde_json::json!({"target": "values", "field": "span.kind"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let values: Vec<&str> = body["metadata"]["values"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|v| v["value"].as_str().unwrap())
+            .collect();
+        assert!(values.contains(&"Server"), "got {values:?}");
+        assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+    }
+
+    #[tokio::test]
+    async fn a_sketched_field_answers_from_statistics_without_reading_data() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "acme",
+                "default",
+                "logs",
+                "http.route",
+                &[
+                    ("/api/orders".to_string(), 900),
+                    ("/api/users".to_string(), 100),
+                ],
+            )
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        // No querier is registered, so 200 means the sketch answered it.
+        assert_eq!(status, StatusCode::OK, "body: {body}");
+        let values = body["metadata"]["values"].as_array().unwrap();
+        assert_eq!(values[0]["value"], "/api/orders");
+        assert_eq!(values[0]["count"], 900);
+        assert_eq!(values[0]["origin"], "statistics");
+        assert_eq!(body["metadata"]["cost"]["mode"], "metadata");
+        assert_eq!(
+            body["metadata"]["cost"]["approximate"], true,
+            "a bounded sketch is a suggestion, not the exact value set"
+        );
+        assert!(
+            !body["metadata"]["cost"]["as_of"].is_null(),
+            "an approximate answer must say how old it is"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_qualified_name_finds_the_sketch_stored_under_its_bare_key() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "acme",
+                "default",
+                "traces",
+                "deploy.tier",
+                &[("GET".to_string(), 90), ("POST".to_string(), 10)],
+            )
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        for field in ["span.deploy.tier", "deploy.tier"] {
+            let (status, body) = post(
+                &app,
+                describe(
+                    "traces",
+                    serde_json::json!({"target": "values", "field": field}),
+                ),
+            )
+            .await;
+            assert_eq!(status, StatusCode::OK, "{field}: {body}");
+            let values = body["metadata"]["values"].as_array().unwrap();
+            assert_eq!(values[0]["value"], "GET", "{field}: {body}");
+            assert_eq!(values[0]["origin"], "statistics");
+        }
+    }
+
+    async fn values_for(app: &Router, source: &str, field: &str) -> Vec<String> {
+        let (status, body) = post(
+            app,
+            describe(
+                source,
+                serde_json::json!({"target": "values", "field": field}),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "{field}: {body}");
+        // An empty list is omitted from the envelope.
+        body["metadata"]["values"]
+            .as_array()
+            .map(|values| {
+                values
+                    .iter()
+                    .map(|v| v["value"].as_str().unwrap().to_string())
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[tokio::test]
+    async fn a_declared_column_field_never_borrows_an_attribute_of_the_same_bare_name() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        for (key, value) in [("name", "leaked"), ("service.name", "checkout")] {
+            catalog
+                .replace_attribute_value_stats(
+                    "acme",
+                    "default",
+                    "traces",
+                    key,
+                    &[(value.to_string(), 5)],
+                )
+                .await
+                .unwrap();
+        }
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        // `span.name` and `scope.name` are columns, not the attribute `name`.
+        assert!(values_for(&app, "traces", "span.name").await.is_empty());
+        assert!(values_for(&app, "traces", "scope.name").await.is_empty());
+        // `resource.service.name` is the resource attribute `service.name`.
+        assert_eq!(
+            values_for(&app, "traces", "resource.service.name").await,
+            vec!["checkout"]
+        );
+    }
+
+    #[tokio::test]
+    async fn another_tenants_sketch_is_never_suggested() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        catalog
+            .replace_attribute_value_stats(
+                "other",
+                "default",
+                "logs",
+                "http.route",
+                &[("/secret".to_string(), 5)],
+            )
+            .await
+            .unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "logs",
+                serde_json::json!({"target": "values", "field": "http.route"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::OK);
+        assert_eq!(body["metadata"]["cost"]["mode"], "none");
+        assert!(
+            body["metadata"]["values"]
+                .as_array()
+                .is_none_or(|v| v.is_empty()),
+            "the answer must not cross tenants: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_declared_value_set_is_exact_not_approximate() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (_, body) = post(
+            &app,
+            describe(
+                "traces",
+                serde_json::json!({"target": "values", "field": "span.kind"}),
+            ),
+        )
+        .await;
+
+        assert_eq!(
+            body["metadata"]["cost"]["approximate"], false,
+            "the kinds SignalDB itself writes are the complete set"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_sampled_path_is_refused_before_it_can_read_anything() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        // A key scoped to logs only, asking to sample trace values.
+        let ctx = ctx_for("acme", Some(vec!["logs:read".to_string()]));
+        let app = app_with(catalog, ctx).await;
+
+        let (status, body) = post(
+            &app,
+            describe(
+                "traces",
+                serde_json::json!({"target": "values", "field": "http.route", "sample": true}),
+            ),
+        )
+        .await;
+
+        // The distinction that matters: 403 (refused at the authorization
+        // boundary) rather than 503 (refused only after trying to reach a
+        // querier). A 503 here would mean the request was authorized, did the
+        // work, and failed for an unrelated reason.
+        assert_eq!(
+            status,
+            StatusCode::FORBIDDEN,
+            "the missing scope must be decided before any read is attempted: {body}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_predicate_before_describe_is_rejected_with_the_query_that_answers_it() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let app = app_with(catalog, ctx_for("acme", None)).await;
+
+        let (status, body) = post(
+            &app,
+            serde_json::json!({
+                "irVersion": 4, "from": "logs",
+                "range": { "from": "now-1h", "to": "now" },
+                "result": "metadata",
+                "pipeline": [
+                    { "where": { "field": "service.name", "op": "eq", "value": "checkout" } },
+                    { "describe": { "target": "fields" } }
+                ]
+            }),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        let message = body.to_string();
+        assert!(
+            message.contains("aggregate") && message.contains("topk"),
+            "the rejection must name the query that computes the scoped answer: {message}"
+        );
+    }
+
+    #[test]
+    fn a_limit_is_clamped_to_the_cap_and_never_zero() {
+        assert_eq!(bounded(None, 200), 200);
+        assert_eq!(bounded(Some(10), 200), 10);
+        assert_eq!(bounded(Some(10_000), 200), 200);
+    }
+
+    #[test]
+    fn every_registered_source_declares_its_tables() {
+        for name in SourceRegistry::core().names() {
+            assert!(
+                !source_tables(&name).is_empty(),
+                "source {name} has no table mapping, so it would always look unavailable"
+            );
+        }
+    }
+
+    #[test]
+    fn the_hint_names_a_runnable_query_for_the_field() {
+        let window = ResolvedWindow {
+            start_ns: 1,
+            end_ns: 2,
+        };
+        let hint = value_query_hint("logs", "http.route", window, 50);
+        assert!(hint.contains("http.route"), "{hint}");
+        assert!(
+            hint.contains("aggregate") && hint.contains("topk"),
+            "{hint}"
+        );
+        assert!(hint.contains("/api/v1/query"), "{hint}");
+    }
+
+    #[test]
+    fn the_value_query_is_a_bounded_aggregation_over_the_window() {
+        let window = ResolvedWindow {
+            start_ns: 100,
+            end_ns: 200,
+        };
+        let doc = value_query_document("traces", "http.route", window, 25);
+        assert_eq!(doc["from"], "traces");
+        assert_eq!(doc["range"]["from"], "100");
+        assert_eq!(doc["range"]["to"], "200");
+        assert_eq!(doc["pipeline"][1]["topk"]["n"], 25);
+        // It must be a document the server itself accepts.
+        let parsed: Document =
+            serde_json::from_value(doc).expect("the sampled path runs a valid IR document");
+        common::query_ir::validate(
+            &parsed,
+            &SourceRegistry::core(),
+            &common::query_ir::InMemoryResolver::new().with_attribute(
+                "traces",
+                "http.route",
+                "span_attributes",
+                common::query_ir::ValueType::String,
+                None,
+            ),
+        )
+        .expect("the sampled value query validates");
+    }
+
+    #[test]
+    fn the_hints_suggested_query_validates_against_a_source_with_a_physical_count_column() {
+        // `metrics` has a physical `count` column (the OTel
+        // sum-of-observations field), which collided with the aggregate
+        // output alias the hint told clients to run.
+        let window = ResolvedWindow {
+            start_ns: 1,
+            end_ns: 2,
+        };
+        let doc = value_query_document("metrics", "metric.name", window, 200);
+        let parsed: Document =
+            serde_json::from_value(doc).expect("the hint's document parses as valid IR JSON");
+        let resolver = common::query_ir::InMemoryResolver::new()
+            .with_attribute(
+                "metrics",
+                "metric.name",
+                "resource_attributes",
+                common::query_ir::ValueType::String,
+                None,
+            )
+            .with_physical_name("metrics", "count");
+        common::query_ir::validate(&parsed, &SourceRegistry::core(), &resolver).expect(
+            "the hint must suggest a query that validates on a source with a physical 'count' column",
+        );
+    }
+
+    /// Run `f` under a scoped tracing→OTel bridge and return the finished
+    /// span named `name`, the same pattern `common`'s
+    /// `span_factories_semconv.rs` uses to pin a factory span's shape.
+    ///
+    /// Waits for the span rather than reading the exporter once: a span is
+    /// exported when its last handle drops, and that can happen after `f`
+    /// returns and on another thread. The handlers build a catalog inside the
+    /// discovery span, and sqlx hands the caller's current span to its SQLite
+    /// worker thread with every command, dropping it only after replying.
+    ///
+    /// That worker then releases the span's parent through *its* thread's
+    /// default dispatcher (tracing-subscriber's `DataInner::clear`), not ours,
+    /// so the global default must be the inert fallback: a real global
+    /// registry would panic on, or miscount, an id it never issued.
+    async fn capture_span<F, Fut>(name: &str, f: F) -> opentelemetry_sdk::trace::SpanData
+    where
+        F: FnOnce() -> Fut,
+        Fut: std::future::Future<Output = ()>,
+    {
+        use opentelemetry::trace::TracerProvider as _;
+        use tracing_subscriber::prelude::*;
+
+        let exporter = opentelemetry_sdk::trace::InMemorySpanExporter::default();
+        let provider = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+            .with_simple_exporter(exporter.clone())
+            .build();
+        let tracer = provider.tracer("test");
+        common::testing::install_global_tracing_fallback();
+        let subscriber =
+            tracing_subscriber::registry().with(tracing_opentelemetry::layer().with_tracer(tracer));
+        let _guard = tracing::subscriber::set_default(subscriber);
+        f().await;
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        loop {
+            provider.force_flush().unwrap();
+            let spans = exporter.get_finished_spans().unwrap();
+            if let Some(span) = spans.iter().find(|s| s.name == name) {
+                return span.clone();
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "no finished span named {name:?}; got {:?}",
+                spans.iter().map(|s| s.name.as_ref()).collect::<Vec<_>>()
+            );
+            tokio::time::sleep(std::time::Duration::from_millis(5)).await;
+        }
+    }
+
+    fn span_attr(span: &opentelemetry_sdk::trace::SpanData, key: &str) -> Option<String> {
+        span.attributes
+            .iter()
+            .find(|kv| kv.key.as_str() == key)
+            .map(|kv| kv.value.as_str().to_string())
+    }
+
+    #[tokio::test]
+    async fn a_fields_read_carries_the_discovery_boundary_span() {
+        // Calls `answer_describe` directly rather than through the axum
+        // stack: a `oneshot()` round trip can hand work to a pool thread
+        // outside this test's scoped subscriber, which would make span
+        // capture flaky.
+        let span = capture_span("discovery fields", || async {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            let state = RouterAppState::new(catalog, Configuration::default());
+            let ctx = ctx_for("acme", None);
+            let doc: Document =
+                serde_json::from_value(describe("logs", serde_json::json!({"target": "fields"})))
+                    .unwrap();
+            let describe_stage = common::query_ir::validate_describe(&doc, &SourceRegistry::core())
+                .expect("valid describe document");
+            let window = ResolvedWindow {
+                start_ns: 0,
+                end_ns: 0,
+            };
+            let result = answer_describe(&state, &ctx, &doc, describe_stage, window, 0).await;
+            assert!(result.is_ok(), "answer_describe failed: {result:?}");
+        })
+        .await;
+
+        assert_eq!(
+            span.span_kind,
+            opentelemetry::trace::SpanKind::Internal,
+            "discovery answers from metadata in-process; it is never RPC"
+        );
+        assert_eq!(
+            span_attr(&span, "signaldb.tenant.id").as_deref(),
+            Some("acme")
+        );
+        assert_eq!(
+            span_attr(&span, "signaldb.dataset.id").as_deref(),
+            Some("default")
+        );
+        assert_eq!(
+            span_attr(&span, "signaldb.discovery.kind").as_deref(),
+            Some("fields")
+        );
+        assert_eq!(
+            span_attr(&span, "signaldb.discovery.source").as_deref(),
+            Some("logs")
+        );
+        assert_eq!(
+            span_attr(&span, "signaldb.discovery.cost_mode").as_deref(),
+            Some("metadata"),
+            "the answer's cost tier must be recorded once known"
+        );
+    }
+
+    #[tokio::test]
+    async fn sources_listing_carries_the_discovery_boundary_span_with_no_source() {
+        // No tenant-table catalog wiring here (unlike `app_with`'s Flight
+        // registry, `tenant_tables` needs the config's admin tenant source),
+        // so the handler itself 503s; the point of this test is that the
+        // `signaldb.discovery` span still opens and is shaped correctly
+        // regardless of the outcome.
+        let span = capture_span("discovery sources", || async {
+            let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+            let state = RouterAppState::new(catalog, Configuration::default());
+            let ctx = ctx_for("acme", None);
+            let _ = super::query_sources(State(state), TenantContextExtractor(ctx)).await;
+        })
+        .await;
+
+        assert_eq!(
+            span_attr(&span, "signaldb.discovery.kind").as_deref(),
+            Some("sources")
+        );
+        assert_eq!(
+            span_attr(&span, "signaldb.discovery.source"),
+            None,
+            "the sources listing names no single source"
+        );
+    }
+
+    #[tokio::test]
+    async fn repeated_sources_listings_reuse_one_catalog_manager() {
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let state = RouterAppState::new(catalog, Configuration::default());
+        let ctx = ctx_for("acme", None);
+        let cell = state.catalog_manager_cell();
+        assert!(cell.get().is_none(), "built lazily, not at startup");
+
+        let _ =
+            super::query_sources(State(state.clone()), TenantContextExtractor(ctx.clone())).await;
+        let first = cell
+            .get()
+            .cloned()
+            .expect("first listing builds the manager");
+        let _ = super::query_sources(State(state.clone()), TenantContextExtractor(ctx)).await;
+
+        assert!(
+            std::sync::Arc::ptr_eq(&first, cell.get().unwrap()),
+            "the second listing must reuse the manager, not open a new pool"
+        );
+    }
+}

@@ -659,40 +659,12 @@ fn parse_links_from_list_array(
     links
 }
 
-/// Helper to get a column by name as a specific array type
-fn get_string_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a StringArray> {
+/// Helper to get a column by name, downcast to a specific array type.
+fn get_column<'a, T: Array + 'static>(batch: &'a RecordBatch, name: &str) -> Option<&'a T> {
     batch
         .schema()
         .column_with_name(name)
-        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<StringArray>())
-}
-
-fn get_uint64_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a UInt64Array> {
-    batch
-        .schema()
-        .column_with_name(name)
-        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<UInt64Array>())
-}
-
-fn get_list_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a ListArray> {
-    batch
-        .schema()
-        .column_with_name(name)
-        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<ListArray>())
-}
-
-fn get_int32_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Int32Array> {
-    batch
-        .schema()
-        .column_with_name(name)
-        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<Int32Array>())
-}
-
-fn get_int64_column<'a>(batch: &'a RecordBatch, name: &str) -> Option<&'a Int64Array> {
-    batch
-        .schema()
-        .column_with_name(name)
-        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<Int64Array>())
+        .and_then(|(idx, _)| batch.column(idx).as_any().downcast_ref::<T>())
 }
 
 /// Convert Arrow RecordBatch to OTLP ExportTraceServiceRequest
@@ -702,46 +674,50 @@ pub fn arrow_to_otlp_traces(batch: &RecordBatch) -> ExportTraceServiceRequest {
     use std::convert::TryInto;
 
     // Extract columns by name for robustness across schema versions
-    let trace_id_array =
-        get_string_column(batch, "trace_id").expect("trace_id column should be StringArray");
+    let trace_id_array = get_column::<StringArray>(batch, "trace_id")
+        .expect("trace_id column should be StringArray");
     let span_id_array =
-        get_string_column(batch, "span_id").expect("span_id column should be StringArray");
-    let parent_span_id_array = get_string_column(batch, "parent_span_id")
+        get_column::<StringArray>(batch, "span_id").expect("span_id column should be StringArray");
+    let parent_span_id_array = get_column::<StringArray>(batch, "parent_span_id")
         .expect("parent_span_id column should be StringArray");
-    let name_array = get_string_column(batch, "name").expect("name column should be StringArray");
-    let service_name_array = get_string_column(batch, "service_name")
+    let name_array =
+        get_column::<StringArray>(batch, "name").expect("name column should be StringArray");
+    let service_name_array = get_column::<StringArray>(batch, "service_name")
         .expect("service_name column should be StringArray");
-    let start_time_array = get_uint64_column(batch, "start_time_unix_nano")
+    let start_time_array = get_column::<UInt64Array>(batch, "start_time_unix_nano")
         .expect("start_time_unix_nano column should be UInt64Array");
-    let end_time_array = get_uint64_column(batch, "end_time_unix_nano")
+    let end_time_array = get_column::<UInt64Array>(batch, "end_time_unix_nano")
         .expect("end_time_unix_nano column should be UInt64Array");
-    let span_kind_array =
-        get_string_column(batch, "span_kind").expect("span_kind column should be StringArray");
-    let status_code_array =
-        get_string_column(batch, "status_code").expect("status_code column should be StringArray");
-    let status_message_array = get_string_column(batch, "status_message")
+    let span_kind_array = get_column::<StringArray>(batch, "span_kind")
+        .expect("span_kind column should be StringArray");
+    let status_code_array = get_column::<StringArray>(batch, "status_code")
+        .expect("status_code column should be StringArray");
+    let status_message_array = get_column::<StringArray>(batch, "status_message")
         .expect("status_message column should be StringArray");
-    let attributes_json_array = get_string_column(batch, "attributes_json")
+    let attributes_json_array = get_column::<StringArray>(batch, "attributes_json")
         .expect("attributes_json column should be StringArray");
-    let resource_json_array = get_string_column(batch, "resource_json")
+    let resource_json_array = get_column::<StringArray>(batch, "resource_json")
         .expect("resource_json column should be StringArray");
-    let events_array = get_list_column(batch, "events").expect("events column should be ListArray");
-    let links_array = get_list_column(batch, "links").expect("links column should be ListArray");
+    let events_array =
+        get_column::<ListArray>(batch, "events").expect("events column should be ListArray");
+    let links_array =
+        get_column::<ListArray>(batch, "links").expect("links column should be ListArray");
 
     // Optional columns (may not be present in older data)
-    let trace_state_array = get_string_column(batch, "trace_state");
-    let resource_schema_url_array = get_string_column(batch, "resource_schema_url");
-    let scope_name_array = get_string_column(batch, "scope_name");
-    let scope_version_array = get_string_column(batch, "scope_version");
-    let scope_schema_url_array = get_string_column(batch, "scope_schema_url");
-    let scope_attributes_array = get_string_column(batch, "scope_attributes");
+    let trace_state_array = get_column::<StringArray>(batch, "trace_state");
+    let resource_schema_url_array = get_column::<StringArray>(batch, "resource_schema_url");
+    let scope_name_array = get_column::<StringArray>(batch, "scope_name");
+    let scope_version_array = get_column::<StringArray>(batch, "scope_version");
+    let scope_schema_url_array = get_column::<StringArray>(batch, "scope_schema_url");
+    let scope_attributes_array = get_column::<StringArray>(batch, "scope_attributes");
     // Absent for rows written before #1208: fall back to the derived
     // string columns for those, per-row, below.
-    let span_kind_number_array = get_int32_column(batch, "span_kind_number");
-    let status_code_number_array = get_int32_column(batch, "status_code_number");
-    let dropped_attributes_count_array = get_int64_column(batch, "dropped_attributes_count");
-    let dropped_events_count_array = get_int64_column(batch, "dropped_events_count");
-    let dropped_links_count_array = get_int64_column(batch, "dropped_links_count");
+    let span_kind_number_array = get_column::<Int32Array>(batch, "span_kind_number");
+    let status_code_number_array = get_column::<Int32Array>(batch, "status_code_number");
+    let dropped_attributes_count_array =
+        get_column::<Int64Array>(batch, "dropped_attributes_count");
+    let dropped_events_count_array = get_column::<Int64Array>(batch, "dropped_events_count");
+    let dropped_links_count_array = get_column::<Int64Array>(batch, "dropped_links_count");
 
     // Group by (service_name, resource_schema_url) -> ResourceSpans
     // Then within each ResourceSpans, group by (scope_name, scope_version, scope_schema_url) -> ScopeSpans
@@ -1088,7 +1064,7 @@ mod tests {
         let result = otlp_traces_to_arrow(&request).expect("conversion should succeed");
 
         assert_eq!(result.num_rows(), 1);
-        let duration_array = get_uint64_column(&result, "duration_nano").unwrap();
+        let duration_array = get_column::<UInt64Array>(&result, "duration_nano").unwrap();
         assert_eq!(duration_array.value(0), 0);
     }
 
@@ -1253,16 +1229,16 @@ mod tests {
         assert_eq!(result.num_columns(), 27); // 16 original + 6 scope/resource fields + 5 #1208 fields
 
         // Get columns by name
-        let trace_id_array = get_string_column(&result, "trace_id").unwrap();
-        let span_id_array = get_string_column(&result, "span_id").unwrap();
-        let parent_span_id_array = get_string_column(&result, "parent_span_id").unwrap();
-        let name_array = get_string_column(&result, "name").unwrap();
-        let service_name_array = get_string_column(&result, "service_name").unwrap();
-        let start_time_array = get_uint64_column(&result, "start_time_unix_nano").unwrap();
-        let end_time_array = get_uint64_column(&result, "end_time_unix_nano").unwrap();
-        let span_kind_array = get_string_column(&result, "span_kind").unwrap();
-        let status_code_array = get_string_column(&result, "status_code").unwrap();
-        let status_message_array = get_string_column(&result, "status_message").unwrap();
+        let trace_id_array = get_column::<StringArray>(&result, "trace_id").unwrap();
+        let span_id_array = get_column::<StringArray>(&result, "span_id").unwrap();
+        let parent_span_id_array = get_column::<StringArray>(&result, "parent_span_id").unwrap();
+        let name_array = get_column::<StringArray>(&result, "name").unwrap();
+        let service_name_array = get_column::<StringArray>(&result, "service_name").unwrap();
+        let start_time_array = get_column::<UInt64Array>(&result, "start_time_unix_nano").unwrap();
+        let end_time_array = get_column::<UInt64Array>(&result, "end_time_unix_nano").unwrap();
+        let span_kind_array = get_column::<StringArray>(&result, "span_kind").unwrap();
+        let status_code_array = get_column::<StringArray>(&result, "status_code").unwrap();
+        let status_message_array = get_column::<StringArray>(&result, "status_message").unwrap();
         let schema_ref = result.schema();
         let is_root_col = schema_ref.column_with_name("is_root").unwrap();
         let is_root_array = result
@@ -1270,8 +1246,8 @@ mod tests {
             .as_any()
             .downcast_ref::<BooleanArray>()
             .unwrap();
-        let attributes_json_array = get_string_column(&result, "attributes_json").unwrap();
-        let resource_json_array = get_string_column(&result, "resource_json").unwrap();
+        let attributes_json_array = get_column::<StringArray>(&result, "attributes_json").unwrap();
+        let resource_json_array = get_column::<StringArray>(&result, "resource_json").unwrap();
 
         // Verify values
         assert_eq!(trace_id_array.value(0), "0123456789abcdef0123456789abcdef");
@@ -1296,11 +1272,14 @@ mod tests {
         assert_eq!(resource_json["service.name"], "test_service");
 
         // Verify new scope/resource fields
-        let scope_name_array = get_string_column(&result, "scope_name").unwrap();
-        let scope_version_array = get_string_column(&result, "scope_version").unwrap();
-        let scope_schema_url_array = get_string_column(&result, "scope_schema_url").unwrap();
-        let scope_attributes_array = get_string_column(&result, "scope_attributes").unwrap();
-        let resource_schema_url_array = get_string_column(&result, "resource_schema_url").unwrap();
+        let scope_name_array = get_column::<StringArray>(&result, "scope_name").unwrap();
+        let scope_version_array = get_column::<StringArray>(&result, "scope_version").unwrap();
+        let scope_schema_url_array =
+            get_column::<StringArray>(&result, "scope_schema_url").unwrap();
+        let scope_attributes_array =
+            get_column::<StringArray>(&result, "scope_attributes").unwrap();
+        let resource_schema_url_array =
+            get_column::<StringArray>(&result, "resource_schema_url").unwrap();
 
         assert_eq!(scope_name_array.value(0), "test-library");
         assert_eq!(scope_version_array.value(0), "1.0.0");
@@ -1319,29 +1298,30 @@ mod tests {
         assert_eq!(scope_attrs["scope_attr"], "scope_value");
 
         // trace_state should be null (empty string in proto => None)
-        let trace_state_array = get_string_column(&result, "trace_state").unwrap();
+        let trace_state_array = get_column::<StringArray>(&result, "trace_state").unwrap();
         assert!(trace_state_array.is_null(0));
 
         // #1208: numeric source of truth alongside the derived strings,
         // and dropped counts preserved (all zero for this fixture).
-        let span_kind_number_array = get_int32_column(&result, "span_kind_number").unwrap();
-        let status_code_number_array = get_int32_column(&result, "status_code_number").unwrap();
+        let span_kind_number_array = get_column::<Int32Array>(&result, "span_kind_number").unwrap();
+        let status_code_number_array =
+            get_column::<Int32Array>(&result, "status_code_number").unwrap();
         assert_eq!(span_kind_number_array.value(0), 2); // Server
         assert_eq!(status_code_number_array.value(0), 1); // Ok
         assert_eq!(
-            get_int64_column(&result, "dropped_attributes_count")
+            get_column::<Int64Array>(&result, "dropped_attributes_count")
                 .unwrap()
                 .value(0),
             0
         );
         assert_eq!(
-            get_int64_column(&result, "dropped_events_count")
+            get_column::<Int64Array>(&result, "dropped_events_count")
                 .unwrap()
                 .value(0),
             0
         );
         assert_eq!(
-            get_int64_column(&result, "dropped_links_count")
+            get_column::<Int64Array>(&result, "dropped_links_count")
                 .unwrap()
                 .value(0),
             0
@@ -1383,19 +1363,19 @@ mod tests {
         let result = otlp_traces_to_arrow(&request).expect("conversion should succeed");
 
         assert_eq!(
-            get_int64_column(&result, "dropped_attributes_count")
+            get_column::<Int64Array>(&result, "dropped_attributes_count")
                 .unwrap()
                 .value(0),
             3
         );
         assert_eq!(
-            get_int64_column(&result, "dropped_events_count")
+            get_column::<Int64Array>(&result, "dropped_events_count")
                 .unwrap()
                 .value(0),
             5
         );
         assert_eq!(
-            get_int64_column(&result, "dropped_links_count")
+            get_column::<Int64Array>(&result, "dropped_links_count")
                 .unwrap()
                 .value(0),
             7

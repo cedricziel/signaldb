@@ -1,9 +1,8 @@
 //! System resources panel with sparklines for CPU and memory.
 
 use std::collections::HashMap;
-use std::sync::Arc;
 
-use arrow::array::{Array, Float64Array, Int64Array, StringArray, UInt64Array};
+use arrow::array::StringArray;
 use arrow::record_batch::RecordBatch;
 use crossterm::event::KeyEvent;
 use ratatui::Frame;
@@ -13,6 +12,7 @@ use ratatui::widgets::{Block, Borders, Paragraph, Sparkline};
 
 use crate::tui::action::Action;
 use crate::tui::components::Component;
+use crate::tui::format::extract_f64;
 use crate::tui::state::AppState;
 
 #[derive(Debug, Clone)]
@@ -200,30 +200,6 @@ fn render_sparkline_group(
             .style(Style::default().fg(color))
             .block(Block::default().title(label));
         frame.render_widget(sparkline, rows[i]);
-    }
-}
-
-fn extract_f64(col: &Arc<dyn Array>, row: usize) -> Option<f64> {
-    if let Some(arr) = col.as_any().downcast_ref::<Float64Array>() {
-        if arr.is_null(row) {
-            None
-        } else {
-            Some(arr.value(row))
-        }
-    } else if let Some(arr) = col.as_any().downcast_ref::<Int64Array>() {
-        if arr.is_null(row) {
-            None
-        } else {
-            Some(arr.value(row) as f64)
-        }
-    } else if let Some(arr) = col.as_any().downcast_ref::<UInt64Array>() {
-        if arr.is_null(row) {
-            None
-        } else {
-            Some(arr.value(row) as f64)
-        }
-    } else {
-        None
     }
 }
 

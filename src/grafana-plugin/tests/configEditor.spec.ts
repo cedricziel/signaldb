@@ -2,8 +2,8 @@ import { test, expect } from '@grafana/plugin-e2e';
 import { SignalDBDataSourceOptions, SignalDBSecureJsonData } from '../src/types';
 
 // Field labels below must match src/components/ConfigEditor.tsx exactly
-// (Router URL / Protocol / Timeout (seconds) / Tenant ID / Dataset ID / API
-// Key) — the plugin does not have a "Path" field, that was leftover
+// (Router URL / Timeout (seconds) / Tenant ID / Dataset ID / API Key) — the
+// plugin does not have a "Path" field, that was leftover
 // @grafana/create-plugin scaffold boilerplate.
 
 test('smoke: should render config editor', async ({ createDataSourceConfigPage, readProvisionedDataSource, page }) => {

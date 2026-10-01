@@ -1,5 +1,124 @@
 # Changelog
 
+## [0.4.1](https://github.com/cedricziel/signaldb/compare/writer-v0.4.0...writer-v0.4.1) (2026-09-23)
+
+
+### Features
+
+* **writer:** match WAL label columns by stamped origin key ([#1640](https://github.com/cedricziel/signaldb/issues/1640)) ([ec23d82](https://github.com/cedricziel/signaldb/commit/ec23d82325ccecdd4694ee9af32fb09c7cd73593))
+
+
+### Bug Fixes
+
+* **writer:** retire stale WAL markers on dormant tables from the reconciler ([#1635](https://github.com/cedricziel/signaldb/issues/1635)) ([d0ce9e5](https://github.com/cedricziel/signaldb/commit/d0ce9e52f0ec740541339bd741b10e0e1c3f371e))
+
+
+### Code Refactoring
+
+* **writer:** drop unused object_store from WalProcessor ([#1665](https://github.com/cedricziel/signaldb/issues/1665)) ([b34a85d](https://github.com/cedricziel/signaldb/commit/b34a85d14c584bfd2c3215c78fe78f0ad3484b35))
+* **writer:** drop unused object_store handle from IcebergTableWriter ([#1650](https://github.com/cedricziel/signaldb/issues/1650)) ([c2e3112](https://github.com/cedricziel/signaldb/commit/c2e31121ce10d9175ba5a9b54d67d3cbf9035ca8))
+
+## [0.4.0](https://github.com/cedricziel/signaldb/compare/writer-v0.3.0...writer-v0.4.0) (2026-09-12)
+
+
+### Features
+
+* **iceberg:** Postgres backend for the Iceberg SQL catalog ([#1529](https://github.com/cedricziel/signaldb/issues/1529)) ([53f7b7e](https://github.com/cedricziel/signaldb/commit/53f7b7e064c839587d3a4470868012d1051fbcd4))
+* sort every producer's rows by the declared key and attest it per file ([#1313](https://github.com/cedricziel/signaldb/issues/1313)) ([c667eda](https://github.com/cedricziel/signaldb/commit/c667eda0c05752ff51fb1ad6ba37cf4594455c6f))
+* **storage:** persist resource_identity on metrics and profiles ([#1503](https://github.com/cedricziel/signaldb/issues/1503)) ([1177c01](https://github.com/cedricziel/signaldb/commit/1177c01556dcdb5f5c2569eb2cf73a5745c3b177))
+* **storage:** persist resource_identity on traces and logs ([#1497](https://github.com/cedricziel/signaldb/issues/1497)) ([b8a3b47](https://github.com/cedricziel/signaldb/commit/b8a3b47f09edf23eb54a9d4674c4fb9bba5122a7))
+* **wal:** frame every record with a length and CRC-32 ([#1294](https://github.com/cedricziel/signaldb/issues/1294)) ([50ab64a](https://github.com/cedricziel/signaldb/commit/50ab64aefb041d471e0668f86255970ab0e12840)), closes [#946](https://github.com/cedricziel/signaldb/issues/946)
+
+
+### Bug Fixes
+
+* **wal:** add signaldb wal dead-letter replay/list/purge ([#1528](https://github.com/cedricziel/signaldb/issues/1528)) ([563199f](https://github.com/cedricziel/signaldb/commit/563199f9785f16bb70b29d8861437e6af3deb490))
+* **wal:** cap concurrently active WAL instances against RLIMIT_NOFILE ([#1437](https://github.com/cedricziel/signaldb/issues/1437)) ([2c14e7e](https://github.com/cedricziel/signaldb/commit/2c14e7e203c114572bd786a835802512ac7e1067))
+* **wal:** reclaim processed segments from the service drain loops ([#1338](https://github.com/cedricziel/signaldb/issues/1338)) ([e2b3da6](https://github.com/cedricziel/signaldb/commit/e2b3da636d773b20457e92e2a9938da68d14b712))
+* **wal:** report and expire dead-lettered WAL entries ([#1525](https://github.com/cedricziel/signaldb/issues/1525)) ([c8e580b](https://github.com/cedricziel/signaldb/commit/c8e580beef3cfc2ab15f58e048c412dfb01bd12f)), closes [#1494](https://github.com/cedricziel/signaldb/issues/1494)
+* **wal:** self-heal entries_pending gauge drift with per-directory attribution ([#1523](https://github.com/cedricziel/signaldb/issues/1523)) ([586889d](https://github.com/cedricziel/signaldb/commit/586889d2f16e3b5eddb2a7f990c8a347e19394c2))
+* **writer:** bound WAL drain decode to a per-cycle byte budget ([#1396](https://github.com/cedricziel/signaldb/issues/1396)) ([5568037](https://github.com/cedricziel/signaldb/commit/55680371195cb472b076b429ce2a553d2402eefa))
+* **writer:** classify commit failures as permanent or transient ([#1399](https://github.com/cedricziel/signaldb/issues/1399)) ([07c0d9a](https://github.com/cedricziel/signaldb/commit/07c0d9a395cf35ccca06ea3e18201e6d7fa2ab82))
+* **writer:** collision-collapsing materialized_labels naming, same bug class as [#814](https://github.com/cedricziel/signaldb/issues/814) ([#1532](https://github.com/cedricziel/signaldb/issues/1532)) ([d25034c](https://github.com/cedricziel/signaldb/commit/d25034c3228e4f067a197089470db4551057bfbf))
+* **writer:** give each tenant its own WAL instead of one global WAL ([#1299](https://github.com/cedricziel/signaldb/issues/1299)) ([830900e](https://github.com/cedricziel/signaldb/commit/830900ebaddf46dff5ac9eb0748d8fb63e7b35b2))
+* **writer:** hygiene follow-ups from writer review (W8, W10, W11) ([#1409](https://github.com/cedricziel/signaldb/issues/1409)) ([43422e6](https://github.com/cedricziel/signaldb/commit/43422e6f4ac08af152109e8160e0c3dfce40e703))
+* **writer:** isolate a poison entry to itself, not its commit group ([#1402](https://github.com/cedricziel/signaldb/issues/1402)) ([d9c861e](https://github.com/cedricziel/signaldb/commit/d9c861ec4f3bf372dc94ad658be4c70d993eafff))
+* **writer:** normalise tenant id before suppression and label lookup ([#1430](https://github.com/cedricziel/signaldb/issues/1430)) ([ab83f5f](https://github.com/cedricziel/signaldb/commit/ab83f5fc9dbb9c235a42e03aac4aa4503eec2c9a)), closes [#1334](https://github.com/cedricziel/signaldb/issues/1334)
+* **writer:** reject deterministic do_put decode and routing faults ([#1398](https://github.com/cedricziel/signaldb/issues/1398)) ([e09fefb](https://github.com/cedricziel/signaldb/commit/e09fefbc771f5f362660180368383ed8a3b79723)), closes [#1060](https://github.com/cedricziel/signaldb/issues/1060)
+* **writer:** retire Iceberg WAL markers left by writer ids past retention ([#1346](https://github.com/cedricziel/signaldb/issues/1346)) ([61c9f1b](https://github.com/cedricziel/signaldb/commit/61c9f1bc426edc34516922368ddcfe598d1e62f2))
+* **writer:** route ingest and replay through one shared function ([#1333](https://github.com/cedricziel/signaldb/issues/1333)) ([452ec09](https://github.com/cedricziel/signaldb/commit/452ec09495f275117072713a7163eb8183680561))
+* **writer:** tighten processor observability (metrics, logging, do_action span) ([#1397](https://github.com/cedricziel/signaldb/issues/1397)) ([7bf404b](https://github.com/cedricziel/signaldb/commit/7bf404b2142adbfc33fdf0a6362f543a4d831519))
+* **writer:** wrap group commit in an explicit timeout ([#1408](https://github.com/cedricziel/signaldb/issues/1408)) ([1041a9d](https://github.com/cedricziel/signaldb/commit/1041a9de54081f2fca9fc7d35d796639df1b8c5e)), closes [#1400](https://github.com/cedricziel/signaldb/issues/1400)
+
+
+### Performance Improvements
+
+* **writer:** commit tenants' WAL groups concurrently, not one at a time ([#1344](https://github.com/cedricziel/signaldb/issues/1344)) ([414982c](https://github.com/cedricziel/signaldb/commit/414982cab6c0e243302ead1519ef18f9ae6685e3))
+
+
+### Code Refactoring
+
+* quality cleanups across writer, mcp-server, schema-model, and tests-integration ([#1330](https://github.com/cedricziel/signaldb/issues/1330)) ([cee4018](https://github.com/cedricziel/signaldb/commit/cee401872f96e2a6961edc1dd3714fa394a56c31))
+
+
+### Tests
+
+* **bench:** measure the declared sort order win and archive declared-sort-orders ([#1467](https://github.com/cedricziel/signaldb/issues/1467)) ([33aaa38](https://github.com/cedricziel/signaldb/commit/33aaa38ff54b38d6cd10952585b616f20d9e94ca))
+
+## [0.3.0](https://github.com/cedricziel/signaldb/compare/writer-v0.2.1...writer-v0.3.0) (2026-08-17)
+
+
+### Features
+
+* one signaldb binary with the services as subcommands ([#1204](https://github.com/cedricziel/signaldb/issues/1204)) ([77f3278](https://github.com/cedricziel/signaldb/commit/77f3278ca445ac9b28bf955b0e482d4366a27c07))
+* **otel-native-schema:** Layer 2 logical schema foundation ([#1104](https://github.com/cedricziel/signaldb/issues/1104)) ([af66060](https://github.com/cedricziel/signaldb/commit/af6606016430645693a0d524d3f15d9db4a52ead))
+* semconv RPC server spans on Flight boundaries ([#904](https://github.com/cedricziel/signaldb/issues/904)) ([a791f45](https://github.com/cedricziel/signaldb/commit/a791f45edf5b1650cc9091d1acf481175060628a))
+* **tracing:** add server.address and network.peer to RPC spans ([#1111](https://github.com/cedricziel/signaldb/issues/1111)) ([4e64934](https://github.com/cedricziel/signaldb/commit/4e64934814762c25226a3a7529bc9d695035d578))
+* **writer:** ack ingest on WAL flush, commit to Iceberg asynchronously ([#893](https://github.com/cedricziel/signaldb/issues/893)) ([fffdbb1](https://github.com/cedricziel/signaldb/commit/fffdbb109c48893bb2725a8afd3e2e740968a152))
+* **writer:** bound Iceberg metadata growth via delete-after-commit ([#895](https://github.com/cedricziel/signaldb/issues/895)) ([35ce5c7](https://github.com/cedricziel/signaldb/commit/35ce5c7aa18aa4f12d3e62c4f34221c849f973f3))
+* **writer:** coalesce Iceberg commits with a per-table floor + force-commit primitive ([#891](https://github.com/cedricziel/signaldb/issues/891)) ([ad47bb6](https://github.com/cedricziel/signaldb/commit/ad47bb6867dd5cf622701b5778ef9f94e7b60923))
+
+
+### Bug Fixes
+
+* **acceptor:** dead-letter writer-rejected WAL entries instead of wedging the retry pass ([#1063](https://github.com/cedricziel/signaldb/issues/1063)) ([7fc6ada](https://github.com/cedricziel/signaldb/commit/7fc6ada1ea922784220789f304fb3f8448ff8ef1)), closes [#1060](https://github.com/cedricziel/signaldb/issues/1060)
+* **build:** stop jemalloc heap profiling from crashing musl images ([#1126](https://github.com/cedricziel/signaldb/issues/1126)) ([98b2996](https://github.com/cedricziel/signaldb/commit/98b299660ef31b56d73e079a2477166b415e736e))
+* **common:** resolve a tenant's default dataset even without a dataset row ([#1082](https://github.com/cedricziel/signaldb/issues/1082)) ([055733f](https://github.com/cedricziel/signaldb/commit/055733f7e2d0e016091a987836fab2e788540e82))
+* metrics without service.name land as 'unknown'; boot log flood demoted to debug ([#1227](https://github.com/cedricziel/signaldb/issues/1227)) ([7b5ea34](https://github.com/cedricziel/signaldb/commit/7b5ea343096ea8a7c0f62575029ac1e838ec514c))
+* **metrics:** carry NaN/±Inf values through the wire format instead of dead-lettering ([#1239](https://github.com/cedricziel/signaldb/issues/1239)) ([9e38b3a](https://github.com/cedricziel/signaldb/commit/9e38b3a993b6d632d7c67f498f2f489ea97e6636)), closes [#1061](https://github.com/cedricziel/signaldb/issues/1061)
+* provision signal tables for every registered dataset, and read an absent one as empty ([#1074](https://github.com/cedricziel/signaldb/issues/1074)) ([9a50ffa](https://github.com/cedricziel/signaldb/commit/9a50ffaa7e404a96cb80d7d3b0cc0850ede00f49))
+* **telemetry:** emit int-typed registry attributes as i64 ([#1013](https://github.com/cedricziel/signaldb/issues/1013)) ([be67718](https://github.com/cedricziel/signaldb/commit/be677184819e5cbe700d253a03e59cd2bffa7ba8))
+* **traces:** span_kind/status_code numeric source of truth + schema evolution engine ([#1235](https://github.com/cedricziel/signaldb/issues/1235)) ([0f8603b](https://github.com/cedricziel/signaldb/commit/0f8603bdb1f39254c83af0c631653a65c8a85e3f))
+* **wal:** carry tenant/dataset/signal on WAL failure telemetry ([#866](https://github.com/cedricziel/signaldb/issues/866)) ([a023dbb](https://github.com/cedricziel/signaldb/commit/a023dbb54822964d44f7c22864391eb2af957a58))
+* **writer,tempo-api:** stop leaking Option Debug into logs; accept lowercase Tempo tag scopes ([#1149](https://github.com/cedricziel/signaldb/issues/1149)) ([4a83388](https://github.com/cedricziel/signaldb/commit/4a8338801252c36a948efa10d1a5cfe0d4f7de5a))
+* **writer:** derive flush scope from request metadata, not the action body ([#897](https://github.com/cedricziel/signaldb/issues/897)) ([cd94186](https://github.com/cedricziel/signaldb/commit/cd9418653c1f90812ffee4a0688dd947039dbbeb))
+* **writer:** table-schema-consistency check across all built-in tables ([#1241](https://github.com/cedricziel/signaldb/issues/1241)) ([4a392a8](https://github.com/cedricziel/signaldb/commit/4a392a8e6059c3f9b9798b4def4894ebb1d8e97a))
+* **writer:** use registry attribute names on reconciler provisioning counters ([#1152](https://github.com/cedricziel/signaldb/issues/1152)) ([aa15a68](https://github.com/cedricziel/signaldb/commit/aa15a684317399e8356498f0d44c9f8bb3e9d98f))
+
+
+### Performance Improvements
+
+* CPU target features and jemalloc allocator for release builds ([#970](https://github.com/cedricziel/signaldb/issues/970)) ([766e2d1](https://github.com/cedricziel/signaldb/commit/766e2d1c82dad65a674184edaf2e8d67cb4083dd))
+* **flight,wal:** compress Flight IPC payloads and WAL entries ([#945](https://github.com/cedricziel/signaldb/issues/945)) ([#998](https://github.com/cedricziel/signaldb/issues/998)) ([efb5ef4](https://github.com/cedricziel/signaldb/commit/efb5ef4bc85e2e77483f4546255b50c564015827))
+* **wal:** batch index persistence in mark_processed_many ([#943](https://github.com/cedricziel/signaldb/issues/943)) ([#984](https://github.com/cedricziel/signaldb/issues/984)) ([41a91cd](https://github.com/cedricziel/signaldb/commit/41a91cd4938286a39c120e642f0b11261b813ab7))
+* **writer:** compile trace v1-&gt;v2 materialization into a resolved-once plan ([#1245](https://github.com/cedricziel/signaldb/issues/1245)) ([a8910ee](https://github.com/cedricziel/signaldb/commit/a8910eee63c470b277629b8c3ed586acec8467b1))
+
+
+### Code Refactoring
+
+* **flight:** decode Flight data dictionary-aware ([#1004](https://github.com/cedricziel/signaldb/issues/1004)) ([94a7a30](https://github.com/cedricziel/signaldb/commit/94a7a30edd81060f2bfc5147dbf3b53307d2de72))
+* **logging:** forbid log:: macros in favor of tracing:: ([#1006](https://github.com/cedricziel/signaldb/issues/1006)) ([071ebb4](https://github.com/cedricziel/signaldb/commit/071ebb47d02f2d6e43ccfb60380c00e3be929248))
+* simplify backend workspace (dedup, dead code, redundant clones) ([#1168](https://github.com/cedricziel/signaldb/issues/1168)) ([409b778](https://github.com/cedricziel/signaldb/commit/409b778686a1cea5c54edfba7778c3e9ed3aa29c))
+* span hygiene sweep and construction guard ([#907](https://github.com/cedricziel/signaldb/issues/907)) ([c1f7b81](https://github.com/cedricziel/signaldb/commit/c1f7b81fbc00ae5fd6c9b948f9fb35c9d5a27d26))
+* **writer:** simplify pass ([#1173](https://github.com/cedricziel/signaldb/issues/1173)) ([162985e](https://github.com/cedricziel/signaldb/commit/162985e3e249658e08c145bb33624f537177a013))
+
+
+### Tests
+
+* delete tautological tests and rewrite salvageable ones as contract tests ([#961](https://github.com/cedricziel/signaldb/issues/961)) ([b3e884a](https://github.com/cedricziel/signaldb/commit/b3e884ad59b4df853429133d5eef2724a8adcada))
+* make swallow-and-fallback integration tests fail on real failures ([#965](https://github.com/cedricziel/signaldb/issues/965)) ([a6720ba](https://github.com/cedricziel/signaldb/commit/a6720ba4d84b933e59f14490a2aca41f19d38779))
+* polish medium/low audit findings across the workspace ([#969](https://github.com/cedricziel/signaldb/issues/969)) ([8962f6d](https://github.com/cedricziel/signaldb/commit/8962f6d1d22c8a176d4a1d99376d61b42b1da258))
+
 ## [0.2.1](https://github.com/cedricziel/signaldb/compare/writer-v0.2.0...writer-v0.2.1) (2026-07-30)
 
 

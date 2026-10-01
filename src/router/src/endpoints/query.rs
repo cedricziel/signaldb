@@ -5,22 +5,29 @@
 //! router stamps the server clock, forwards it to a querier as a
 //! `query_ir:{tenant}:{dataset}:{json}` Flight ticket, and shapes the returned
 //! RecordBatches into the declared result envelope
-//! (`rows` | `series` | `table` | `heatmap` | `flamegraph`).
+//! (`rows` | `series` | `table` | `heatmap` | `flamegraph` | `graph` |
+//! `metadata` | `scalar` | `trace`; `trace` needs irVersion 12).
 //!
 //! Auth and tenant scoping are identical to the Tempo/LogQL/Prometheus
 //! surfaces: the endpoint sits behind the auth middleware and derives the
 //! tenant/dataset from the authenticated request context, never from the
 //! document body.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
 use tracing::Instrument;
 
 use arrow_flight::Ticket;
-use axum::{Router, extract::State, http::StatusCode, routing::post};
+use axum::{
+    Router,
+    extract::State,
+    http::StatusCode,
+    routing::{get, post},
+};
 use common::auth::{TenantContext, TenantContextExtractor};
 use common::flight::transport::ServiceCapability;
 use common::query_ir::{Literal, ValueType, coerce};
+use common::schema::typed_attributes::{IR_TYPE_METADATA_KEY, RAW_ATTRIBUTE_BAG_IR_TYPE};
 use datafusion::arrow::array::{
     Array, ArrayRef, BinaryArray, BooleanArray, Float64Array, Int64Array, MapArray, RecordBatch,
     StringArray, TimestampNanosecondArray,
@@ -33,10 +40,12 @@ use serde::{Deserialize, Serialize};
 use utoipa::ToSchema;
 
 use super::api_error::ApiError;
-use crate::RouterState;
+use crate::RouterAppState;
 
-pub fn router<S: RouterState>() -> Router<S> {
-    Router::new().route("/query", post(query_ir::<S>))
+pub fn router() -> Router<RouterAppState> {
+    Router::new()
+        .route("/query", post(query_ir))
+        .route("/query/sources", get(super::discovery::query_sources))
 }
 
 /// The query time range. `from`/`to` are timestamp literal **strings**: RFC3339,
@@ -53,33 +62,143 @@ pub struct QueryRange {
 
 /// A versioned Query IR request document.
 ///
-/// The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
-/// querier validates and lowers them per the versioned IR contract. See the
-/// `query-ir-core` capability for the full stage/predicate grammar.
+/// The `pipeline` stages are published as the IR's own stage grammar
+/// (`IrStage`) but kept as raw JSON at the HTTP boundary — the querier
+/// validates and lowers them per the versioned IR contract, rejecting an
+/// unsupported stage by name.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueryIrRequest {
     /// IR document version (the server accepts a bounded range).
     #[serde(rename = "irVersion")]
     pub ir_version: i64,
-    /// The registered signal source: `logs`, `traces`, or profile-summary `profiles`.
+    /// The registered signal source (`logs`, `traces`, `metrics`,
+    /// `exemplars`, profile-summary `profiles`), or (irVersion 10+) the
+    /// Scalar pseudo-source `time` or `constant`.
     #[schema(example = "logs")]
     pub from: String,
     pub range: QueryRange,
-    /// Declared result envelope: `rows`, `series`, `table`, `heatmap`, or
-    /// (for the `profiles` source only) `flamegraph`.
+    /// Declared result envelope: `rows`, `series`, `table`, `heatmap`,
+    /// (for the `profiles` source only) `flamegraph`, (for the `traces`
+    /// source, irVersion 8+) `graph`, (irVersion 10+) `scalar`, or (for the
+    /// `traces` source, irVersion 12+) `trace`.
     #[schema(example = "rows")]
     pub result: String,
     /// Curated projection (logical field names) for `rows`/`table`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<String>>,
-    /// Ordered transform stages (opaque objects; see the IR spec).
+    /// Ordered transform stages.
     #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<common::query_ir::Stage>)]
     pub pipeline: Vec<serde_json::Value>,
+    /// `graph` only: restrict to this service's neighbourhood.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub focus: Option<String>,
+    /// `graph` only: hops from `focus` (1-3, default 1).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub depth: Option<i64>,
+    /// `graph` only: restrict to the services and calls of one trace.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    /// The default evaluation step of the series-algebra stages; required by
+    /// the `time`/`constant` pseudo-sources (irVersion 10+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(example = "1m")]
+    pub step: Option<String>,
+    /// The value of the `constant` pseudo-source (irVersion 10+).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub constant: Option<f64>,
+    /// `flamegraph` only (irVersion 13+): a second window the same `where`
+    /// stages are read over, turning the result into a differential
+    /// flamegraph of `baseline` against `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<QueryRange>,
+    /// Walk a `rows`/`trace` result in pages (irVersion 14+): resend the
+    /// same document with `page.cursor` set to the previous
+    /// `page.next_cursor` to continue.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<common::query_ir::Page>,
+}
+
+/// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
+/// (`+ - * /`, numeric constants, parentheses) over the request's own query
+/// names, e.g. `"errors / total"`.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct QueryFormula {
+    /// The formula's identity: tags each output series' `labels` under the
+    /// `formula` key, so a request with several formulas stays distinguishable.
+    pub name: String,
+    #[schema(example = "errors / total")]
+    pub expr: String,
+}
+
+/// A multi-query document (D5): several named IR queries — each required to
+/// declare `result: "series"` — plus formulas evaluated over their results
+/// after every inner query has run. Series join on an identical label set
+/// and timestamp; a formula input missing a series present in another
+/// contributes nothing to the join, and a zero divisor drops the point,
+/// rather than either erroring.
+#[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
+pub struct MultiQueryIrRequest {
+    pub queries: BTreeMap<String, QueryIrRequest>,
+    pub formulas: Vec<QueryFormula>,
+    /// Always `"series"` — a formula document has no other shape.
+    #[schema(example = "series")]
+    pub result: String,
+}
+
+/// The `POST /api/v1/query` request body: either a single IR document or a
+/// [`MultiQueryIrRequest`], discriminated by the presence of `queries` — a
+/// document without it is a single [`QueryIrRequest`], so an ordinary
+/// request needs no wrapper key.
+#[derive(Debug, Clone, Deserialize, ToSchema)]
+#[serde(untagged)]
+// Parsed once per request and matched on at once; boxing buys nothing.
+#[allow(clippy::large_enum_variant)]
+pub enum QueryIrRequestBody {
+    Multi(MultiQueryIrRequest),
+    Single(Box<QueryIrRequest>),
+}
+
+impl QueryIrResponse {
+    /// The `metadata` envelope: an answer about the source rather than its
+    /// records. Every record-shaped field stays empty.
+    pub(super) fn metadata(
+        window: ResolvedWindow,
+        metadata: common::discovery::MetadataResult,
+        warnings: Vec<QueryWarning>,
+    ) -> Self {
+        QueryIrResponse {
+            result: common::query_ir::ResultEnvelope::Metadata
+                .as_str()
+                .to_string(),
+            window,
+            columns: Vec::new(),
+            rows: Vec::new(),
+            series: Vec::new(),
+            points: None,
+            step_ns: None,
+            heatmap: HeatmapResult::default(),
+            flamegraph: None,
+            graph: None,
+            traces: None,
+            metadata: Some(metadata),
+            page: None,
+            warnings,
+        }
+    }
+}
+
+/// The `page` member of a paged response.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct QueryPage {
+    /// Present exactly when more of the result exists; send it back as
+    /// `page.cursor` with the same document. Opaque: never build or edit one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub next_cursor: Option<String>,
 }
 
 /// The resolved absolute time window, echoed for reproducibility/replay.
-#[derive(Debug, Clone, Serialize, ToSchema)]
+#[derive(Debug, Clone, Copy, Serialize, ToSchema)]
 pub struct ResolvedWindow {
     pub start_ns: i64,
     pub end_ns: i64,
@@ -168,26 +287,74 @@ pub struct FlamegraphResult {
     /// Function name table referenced by the blocks' name indices.
     pub names: Vec<String>,
     /// One entry per depth level; each level is a flat sequence of
-    /// `[offset_delta, total, self, name_index]` quadruples.
+    /// `[offset_delta, total, self, name_index]` quadruples, or with a
+    /// `baseline`, `[offset_delta_baseline, total_baseline, self_baseline,
+    /// offset_delta, total, self, name_index]` septuples.
     #[schema(value_type = Vec<Vec<i64>>)]
     pub levels: Vec<Vec<i64>>,
-    /// Total value of the root (sum of all samples).
+    /// Total value of the root (sum of all samples); with a `baseline`, the
+    /// sum of both windows.
     pub total: i64,
+    /// Present iff the document declared `baseline`: the baseline window's
+    /// total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_total: Option<i64>,
+    /// Present iff the document declared `baseline`: the `range` window's
+    /// total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison_total: Option<i64>,
     /// Largest self value of any block, used for color scaling.
     pub max_self: i64,
     /// `true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
     /// matched — a row-count cap, not a byte-size one — and the flamegraph
-    /// was aggregated over only the first 1,000 of them.
+    /// was aggregated over only the newest 1,000 of them (by timestamp).
     pub truncated: bool,
+    /// Source location for each entry in `names`, aligned by index; `None`
+    /// (or the array is shorter than `names`) where unknown. See
+    /// `common::profile::Flamegraph::locations`.
+    pub locations: Vec<Option<common::profile::FrameLocation>>,
+}
+
+/// A non-fatal diagnostic about a query that still produced a result. A
+/// warning never changes the result: it explains something the caller
+/// probably did not intend, so a client can surface it next to the data.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, ToSchema)]
+pub struct QueryWarning {
+    /// Stable machine-readable identifier — clients branch on this, not on
+    /// `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
+    /// `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
+    /// `graph_node_limit` and `match_incomplete_trace`.
+    #[schema(example = "unknown_group_by_field")]
+    pub code: String,
+    /// Human-readable explanation, safe to show verbatim.
+    pub message: String,
+    /// The document field the warning is about, when it names one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
+    /// Field names close to `field` that the source does declare, best first.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub suggestions: Vec<String>,
+}
+
+/// One trace in a `trace` result: its spans, each an object keyed by result
+/// column name.
+#[derive(Debug, Clone, PartialEq, Serialize, ToSchema)]
+pub struct TraceGroup {
+    /// The trace's `trace_id`.
+    pub trace_id: String,
+    /// The trace's result rows, in result order.
+    #[schema(value_type = Vec<Object>)]
+    pub spans: Vec<serde_json::Map<String, serde_json::Value>>,
 }
 
 /// The single canonical response contract. `result` discriminates which fields
 /// are populated: `rows`/`table` fill `columns` + `rows`; `series` fills
 /// `series` + `step_ns`; `heatmap` fills `heatmap`; `flamegraph` fills
-/// `flamegraph`.
+/// `flamegraph`; `graph` fills `graph`; `trace` fills `traces`; `scalar` fills `points` + `step_ns`.
 #[derive(Debug, Clone, Serialize, ToSchema)]
 pub struct QueryIrResponse {
-    /// The result envelope: `rows`, `series`, `table`, `heatmap`, or `flamegraph`.
+    /// The result envelope: `rows`, `series`, `table`, `heatmap`, `flamegraph`,
+    /// `graph`, `metadata`, `scalar`, or `trace`.
     pub result: String,
     /// The resolved absolute window the query ran over.
     pub window: ResolvedWindow,
@@ -198,6 +365,11 @@ pub struct QueryIrResponse {
     pub rows: Vec<Vec<serde_json::Value>>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub series: Vec<ResultSeries>,
+    /// Present iff `result == "scalar"`: one `[t_ns, value]` point per
+    /// evaluation instant, with no labels (`null` is NaN or ±Inf).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    #[schema(value_type = Option<Vec<Vec<serde_json::Value>>>)]
+    pub points: Option<Vec<[serde_json::Value; 2]>>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub step_ns: Option<i64>,
     #[serde(default, skip_serializing_if = "HeatmapResult::is_empty")]
@@ -207,69 +379,677 @@ pub struct QueryIrResponse {
     /// response has no flamegraph at all" (i.e. a different envelope).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub flamegraph: Option<FlamegraphResult>,
+    /// Present iff `result == "graph"` — the service dependency graph.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub graph: Option<common::service_graph::ServiceGraph>,
+    /// Present iff `result == "trace"` — the result rows grouped per trace, in
+    /// order of first appearance. `Some` even when no row matched.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub traces: Option<Vec<TraceGroup>>,
+    /// Present iff `result == "metadata"` — what a `describe` document asked
+    /// about, with the provenance and cost of the answer.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub metadata: Option<common::discovery::MetadataResult>,
+    /// Non-fatal diagnostics about this query. Empty (and omitted) when the
+    /// server has nothing to report; a warning never suppresses the result.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<QueryWarning>,
+    /// Present iff the request carried `page` (`rows`/`trace` only).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<QueryPage>,
 }
 
-/// Submit a native Query IR document.
+/// Submit a native Query IR document — either a single query or a
+/// multi-query formula document (D5, [`MultiQueryIrRequest`]), discriminated
+/// by the presence of `queries`.
 #[utoipa::path(
     post,
     path = "/api/v1/query",
     tag = "query",
     security(("bearerAuth" = [])),
-    request_body = QueryIrRequest,
+    request_body = QueryIrRequestBody,
     responses(
         (status = 200, description = "The enveloped query result", body = QueryIrResponse),
-        (status = 400, description = "Invalid IR document"),
-        (status = 401, description = "Missing or invalid credentials"),
+        (status = 400, description = "Invalid IR document", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 401, description = "Missing or invalid credentials", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 403, description = "Missing read scope for a queried source", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 410, description = "The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk", body = crate::endpoints::api_error::ApiErrorBody),
+        (status = 422, description = "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry", body = crate::endpoints::api_error::ApiErrorBody),
         (status = 429, response = crate::endpoints::api_error::RateLimited),
-        (status = 503, description = "No querier service available"),
+        (status = 503, description = "No querier service available", body = crate::endpoints::api_error::ApiErrorBody),
     )
 )]
+pub async fn query_ir(
+    state: State<RouterAppState>,
+    tenant_ctx: TenantContextExtractor,
+    axum::Json(body): axum::Json<QueryIrRequestBody>,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    match body {
+        QueryIrRequestBody::Multi(req) => query_ir_multi(state, tenant_ctx, req).await,
+        QueryIrRequestBody::Single(req) => query_ir_single(state, tenant_ctx, *req).await,
+    }
+}
+
 #[tracing::instrument(skip(state, tenant_ctx, req), fields(
     signaldb.tenant.id = %tenant_ctx.0.tenant_id,
     signaldb.dataset.id = %tenant_ctx.0.dataset_id,
     source = %req.from,
     result = %req.result,
 ))]
-pub async fn query_ir<S: RouterState>(
-    State(state): State<S>,
+async fn query_ir_single(
+    State(state): State<RouterAppState>,
     tenant_ctx: TenantContextExtractor,
-    axum::Json(req): axum::Json<QueryIrRequest>,
+    req: QueryIrRequest,
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     let ctx = &tenant_ctx.0;
 
     // Query IR covers several signal tables, so its authorization must be
     // selected from the source before the ticket can reach a querier.
-    source_read_scope(ctx, &req.from)?;
+    document_read_scopes(ctx, &req.from, &req.pipeline)?;
 
     // Stamp the server clock once, at the ticket boundary, so relative anchors
     // resolve to a single absolute window every stage of the plan sees.
     let now = super::now_ns();
-    let window = resolve_window(&req.range, now)?;
+    if let Some(baseline) = &req.baseline {
+        resolve_window(baseline, now)
+            .map_err(|e| ApiError::bad_request(format!("baseline: {}", e.message)))?;
+    }
 
     // The IR document is the request re-serialized; the querier validates it.
     let document = serde_json::to_value(&req)
         .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
-    let payload = serde_json::json!({ "document": document.clone(), "now_ns": now });
-    let payload = serde_json::to_string(&payload)
-        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
-    let ticket = format!(
-        "query_ir:{}:{}:{}",
-        ctx.tenant_slug, ctx.dataset_slug, payload
-    );
 
-    let batches = execute_ticket(&state, ticket).await?;
-    let response = build_envelope(&req.result, window, &batches, &document)?;
+    // A page is planned here, before any data is read: its cursor fixes the
+    // window and the position to resume after.
+    let paging = match &req.page {
+        Some(_) => {
+            let doc: common::query_ir::Document = serde_json::from_value(document.clone())
+                .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+            common::query_ir::check_structure(&doc).map_err(super::query_paging::ir_error)?;
+            let config = state.config();
+            Some(super::query_paging::plan(
+                &config.querier,
+                config.auth.internal_service_key.as_deref(),
+                ctx,
+                &document,
+                &doc,
+                &req.range,
+                now,
+            )?)
+        }
+        None => None,
+    };
+    let window = match &paging {
+        Some(paging) => paging.window,
+        None => resolve_window(&req.range, now)?,
+    };
+
+    // An introspection document is answered here, from the registry and the
+    // catalog. It never becomes a ticket, so discovery does not depend on
+    // query execution being available.
+    if is_introspection(&req) {
+        let doc: common::query_ir::Document = serde_json::from_value(document)
+            .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+        let describe =
+            common::query_ir::validate_describe(&doc, &common::query_ir::SourceRegistry::core())
+                .map_err(|e| ApiError::bad_request(e.to_string()))?;
+        return super::discovery::answer_describe(&state, ctx, &doc, describe, window, now)
+            .await
+            .map(axum::Json);
+    }
+    let ticket = match &paging {
+        Some(paging) => query_ir_page_ticket(
+            ctx,
+            &paging.ticket_document(&document),
+            now,
+            Some(&paging.request),
+        )?,
+        None => query_ir_ticket(ctx, &document, now)?,
+    };
+
+    let (batches, correlate_report) = execute_ticket(&state, ticket).await?;
+    let mut response = build_envelope(&req.result, window, &batches, &document)?;
+    if let Some(paging) = paging {
+        let report = walk_report(correlate_report.page.as_ref())?;
+        response.page = Some(paging.response(report, now)?);
+    }
+    response
+        .warnings
+        .extend(unknown_group_by_warnings(&req.from, &document, &batches));
+    response
+        .warnings
+        .extend(correlate_warnings(&correlate_report));
     Ok(axum::Json(response))
 }
 
+/// D5: submit a [`MultiQueryIrRequest`] — several named queries plus
+/// formulas over their `series` results. Every inner query's source is
+/// authorized before any of them run; each then executes exactly the way a
+/// standalone single-query request would (its own Flight ticket), and the
+/// formulas are evaluated once every inner query has returned.
+#[tracing::instrument(skip(state, tenant_ctx, req), fields(
+    signaldb.tenant.id = %tenant_ctx.0.tenant_id,
+    signaldb.dataset.id = %tenant_ctx.0.dataset_id,
+    query_count = req.queries.len(),
+    formula_count = req.formulas.len(),
+))]
+async fn query_ir_multi(
+    State(state): State<RouterAppState>,
+    tenant_ctx: TenantContextExtractor,
+    req: MultiQueryIrRequest,
+) -> Result<axum::Json<QueryIrResponse>, ApiError> {
+    let ctx = &tenant_ctx.0;
+
+    // Authorize every inner query's source before any of them run — a
+    // partially-authorized multi-query request must fail closed, not spend
+    // work on the queries it was allowed to run before rejecting the rest.
+    check_multi_source_scopes(ctx, &req.queries)?;
+    if let Some(name) = req
+        .queries
+        .iter()
+        .find_map(|(n, q)| q.page.as_ref().map(|_| n))
+    {
+        return Err(super::query_paging::ir_error(
+            common::query_ir::IrError::NotPaginatable {
+                at: format!("queries.{name}"),
+                reason: "a formula document cannot be paginated".to_string(),
+            },
+        ));
+    }
+
+    let multi_doc = to_multi_document(&req)?;
+    let inner_envelopes: HashMap<String, common::query_ir::ResultEnvelope> = req
+        .queries
+        .iter()
+        .map(|(name, inner)| Ok((name.clone(), parse_envelope(&inner.result)?)))
+        .collect::<Result<_, ApiError>>()?;
+    common::query_ir::validate_multi(&multi_doc, &inner_envelopes)
+        .map_err(|e| ApiError::bad_request(e.to_string()))?;
+
+    // One clock stamp for every inner query, same as a single request stamps
+    // it once at the ticket boundary.
+    let now = super::now_ns();
+    let mut inputs: HashMap<String, Vec<common::query_ir::EvalSeries>> = HashMap::new();
+    let mut window = None;
+    for (name, inner) in &req.queries {
+        let (inner_window, series) = execute_inner_series_query(&state, ctx, inner, now).await?;
+        window.get_or_insert(inner_window);
+        inputs.insert(name.clone(), series);
+    }
+    let window = window.ok_or_else(|| ApiError::bad_request("`queries` must not be empty"))?;
+
+    let mut series = Vec::new();
+    for formula in &req.formulas {
+        let expr = common::query_ir::parse_formula_expr(&formula.expr)
+            .map_err(|e| ApiError::bad_request(format!("formula '{}': {e}", formula.name)))?;
+        for out in common::query_ir::evaluate_formula(&expr, &inputs) {
+            // Tag the formula's identity onto its output series' labels, so
+            // a request with several formulas stays distinguishable.
+            let mut labels = out.labels;
+            labels.insert("formula".to_string(), formula.name.clone());
+            series.push(ResultSeries {
+                labels,
+                points: out
+                    .points
+                    .into_iter()
+                    .map(|(t, v)| [serde_json::Value::from(t), serde_json::Value::from(v)])
+                    .collect(),
+            });
+        }
+    }
+
+    Ok(axum::Json(QueryIrResponse {
+        result: common::query_ir::ResultEnvelope::Series
+            .as_str()
+            .to_string(),
+        window,
+        columns: Vec::new(),
+        rows: Vec::new(),
+        series,
+        points: None,
+        step_ns: None,
+        heatmap: HeatmapResult::default(),
+        flamegraph: None,
+        graph: None,
+        traces: None,
+        metadata: None,
+        page: None,
+        warnings: Vec::new(),
+    }))
+}
+
+/// The querier's report of what a paged or tailed query emitted. A querier
+/// that predates paging answers without one, and a page cannot be told
+/// apart from a whole result then.
+fn walk_report(
+    report: Option<&common::query_cursor::PageReport>,
+) -> Result<&common::query_cursor::PageReport, ApiError> {
+    report.ok_or_else(|| {
+        ApiError::new(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "the querier does not support paging or live tail yet; retry once it is upgraded",
+        )
+    })
+}
+
+/// Require the read scope for every inner query's source before any of them
+/// run — the same [`source_read_scope`] check a single-query request goes
+/// through, applied per named query.
+fn check_multi_source_scopes(
+    ctx: &TenantContext,
+    queries: &BTreeMap<String, QueryIrRequest>,
+) -> Result<(), ApiError> {
+    for inner in queries.values() {
+        document_read_scopes(ctx, &inner.from, &inner.pipeline)?;
+    }
+    Ok(())
+}
+
+/// Require the read scope of every source a document reads: its `from`, each
+/// `correlate` stage's signal target, and a `binop` sub-document's sources.
+/// The querier scans those tables unconditionally, so a target left unchecked
+/// here would let a caller probe a signal it cannot read (e.g. which traces
+/// have a log matching a `where`).
+fn document_read_scopes(
+    ctx: &TenantContext,
+    from: &str,
+    pipeline: &[serde_json::Value],
+) -> Result<(), ApiError> {
+    source_read_scope(ctx, from)?;
+    for stage in pipeline {
+        if let Some(to) = stage.pointer("/correlate/to").and_then(|v| v.as_str())
+            && to != "parent"
+        {
+            source_read_scope(ctx, to)?;
+        }
+        if let Some(right) = stage.pointer("/binop/right")
+            && let Some(sub_from) = right.get("from").and_then(|v| v.as_str())
+        {
+            let sub_pipeline = right
+                .get("pipeline")
+                .and_then(|v| v.as_array())
+                .map(Vec::as_slice)
+                .unwrap_or_default();
+            document_read_scopes(ctx, sub_from, sub_pipeline)?;
+        }
+    }
+    Ok(())
+}
+
+/// Parse an HTTP result-envelope string into the IR's typed
+/// [`common::query_ir::ResultEnvelope`].
+fn parse_envelope(s: &str) -> Result<common::query_ir::ResultEnvelope, ApiError> {
+    use common::query_ir::ResultEnvelope::*;
+    Ok(match s {
+        "rows" => Rows,
+        "series" => Series,
+        "table" => Table,
+        "heatmap" => Heatmap,
+        "flamegraph" => Flamegraph,
+        "metadata" => Metadata,
+        "graph" => Graph,
+        "scalar" => Scalar,
+        "trace" => Trace,
+        other => {
+            return Err(ApiError::bad_request(format!(
+                "unknown result envelope '{other}'"
+            )));
+        }
+    })
+}
+
+/// Build the [`common::query_ir::MultiDocument`] a [`MultiQueryIrRequest`]
+/// denotes, re-serializing each inner request the same way a single-query
+/// request's document is built.
+fn to_multi_document(
+    req: &MultiQueryIrRequest,
+) -> Result<common::query_ir::MultiDocument, ApiError> {
+    let mut queries = BTreeMap::new();
+    for (name, inner) in &req.queries {
+        let value = serde_json::to_value(inner)
+            .map_err(|e| ApiError::bad_request(format!("invalid IR document '{name}': {e}")))?;
+        let doc: common::query_ir::Document = serde_json::from_value(value)
+            .map_err(|e| ApiError::bad_request(format!("invalid IR document '{name}': {e}")))?;
+        queries.insert(name.clone(), doc);
+    }
+    let formulas = req
+        .formulas
+        .iter()
+        .map(|f| common::query_ir::Formula {
+            name: f.name.clone(),
+            expr: f.expr.clone(),
+        })
+        .collect();
+    let result = parse_envelope(&req.result)?;
+    Ok(common::query_ir::MultiDocument {
+        queries,
+        formulas,
+        result,
+    })
+}
+
+/// Execute one inner query of a multi-query document exactly the way a
+/// standalone single-query request would (its own `query_ir:` Flight
+/// ticket), decoded straight to [`common::query_ir::EvalSeries`] — the
+/// formula evaluator's input shape — rather than the HTTP `ResultSeries`
+/// envelope. `validate_multi` already required this query's declared result
+/// to be `series`.
+async fn execute_inner_series_query(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    req: &QueryIrRequest,
+    now_ns: i64,
+) -> Result<(ResolvedWindow, Vec<common::query_ir::EvalSeries>), ApiError> {
+    let window = resolve_window(&req.range, now_ns)?;
+    let ticket = query_ir_ticket(ctx, req, now_ns)?;
+    let (batches, _correlate_report) = execute_ticket(state, ticket).await?;
+    let series = to_series(&batches)?;
+    let eval_series = series
+        .into_iter()
+        .map(|s| common::query_ir::EvalSeries {
+            labels: s.labels,
+            points: s
+                .points
+                .into_iter()
+                .filter_map(|[t, v]| Some((t.as_i64()?, v.as_f64()?)))
+                .collect(),
+        })
+        .collect();
+    Ok((window, eval_series))
+}
+
+/// The `query_ir:{tenant}:{dataset}:{payload}` Flight ticket for one IR
+/// document, scoped to the caller's tenant and dataset slugs and carrying
+/// the server clock stamp relative anchors resolve against.
+pub(super) fn query_ir_ticket(
+    ctx: &TenantContext,
+    document: &impl Serialize,
+    now_ns: i64,
+) -> Result<String, ApiError> {
+    query_ir_page_ticket(ctx, document, now_ns, None)
+}
+
+/// [`query_ir_ticket`] carrying a page for the querier to sort, resume and
+/// cut the result to.
+fn query_ir_page_ticket(
+    ctx: &TenantContext,
+    document: &impl Serialize,
+    now_ns: i64,
+    page: Option<&common::query_cursor::PageRequest>,
+) -> Result<String, ApiError> {
+    let mut payload = serde_json::json!({ "document": document, "now_ns": now_ns });
+    if let Some(page) = page {
+        payload["page"] = serde_json::to_value(page)
+            .map_err(|e| ApiError::bad_request(format!("invalid page: {e}")))?;
+    }
+    let payload = serde_json::to_string(&payload)
+        .map_err(|e| ApiError::bad_request(format!("invalid IR document: {e}")))?;
+    Ok(format!(
+        "query_ir:{}:{}:{}",
+        ctx.tenant_slug, ctx.dataset_slug, payload
+    ))
+}
+
+/// Run one IR document for the caller's tenant and dataset exactly the way
+/// a single `POST /api/v1/query` request runs (same ticket, querier and
+/// result bounds), decoded to the `rows`/`table` shape. For first-party
+/// server-side readers such as building eval cases from traces, which go
+/// through the Query IR rather than a compatibility API. The caller checks
+/// the source's read scope first ([`source_read_scope`]).
+pub(super) async fn execute_document_rows(
+    state: &RouterAppState,
+    ctx: &TenantContext,
+    document: &common::query_ir::Document,
+    now_ns: i64,
+) -> Result<(Vec<ResultColumn>, Vec<Vec<serde_json::Value>>), ApiError> {
+    let ticket = query_ir_ticket(ctx, document, now_ns)?;
+    let (batches, _correlate_report) = execute_ticket(state, ticket).await?;
+    Ok(ir_table(&batches))
+}
+
+/// Whether the request asks about the source rather than its records.
+/// Deliberately syntactic: the document's own validator decides whether such a
+/// request is well formed, and reports why when it is not.
+fn is_introspection(req: &QueryIrRequest) -> bool {
+    req.result == common::query_ir::ResultEnvelope::Metadata.as_str()
+        || req
+            .pipeline
+            .iter()
+            .any(|stage| stage.get("describe").is_some())
+}
+
+/// The `code` of the warning raised for a group key that labelled nothing.
+const UNKNOWN_GROUP_BY_FIELD: &str = "unknown_group_by_field";
+
+/// Warn about an `aggregate.by` field that put every row in one null group.
+///
+/// Field resolution is deliberately permissive: unpromoted attributes cannot
+/// be enumerated while planning — there is no attribute registry yet
+/// (#811/#813) — and bare Prometheus-style label names (`job`, `status`) are
+/// legitimate group keys, so a name the source does not declare resolves to
+/// an attribute lookup rather than a rejection. A name that is neither a
+/// logical field nor carried by any record in the window therefore yields a
+/// single null-labelled group instead of an error (#1070). Rejecting it while
+/// planning would break a legitimate query over an attribute that is merely
+/// absent from a short window (a quiet facet panel, a narrow dashboard
+/// refresh), so the result stands and the caller gets this warning next to it.
+fn unknown_group_by_warnings(
+    source: &str,
+    document: &serde_json::Value,
+    batches: &[RecordBatch],
+) -> Vec<QueryWarning> {
+    let Ok(doc) = serde_json::from_value::<common::query_ir::Document>(document.clone()) else {
+        return Vec::new();
+    };
+    // Query-local `extract` outputs are real columns of this document, not
+    // fields of the source — an all-null one means the parser matched
+    // nothing, which is a different (and expected) story.
+    let derived: std::collections::HashSet<&str> = doc
+        .pipeline
+        .iter()
+        .filter_map(|stage| match stage {
+            common::query_ir::Stage::Extract(extract) => Some(extract),
+            _ => None,
+        })
+        .flat_map(|extract| extract.as_fields.iter().map(|f| f.name.as_str()))
+        .collect();
+
+    let schema = common::schema::logical::LogicalSchema::core();
+    let mut seen: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut warnings = Vec::new();
+    for by in doc
+        .pipeline
+        .iter()
+        .filter_map(|stage| match stage {
+            common::query_ir::Stage::Aggregate(agg) => Some(agg),
+            _ => None,
+        })
+        .flat_map(|agg| agg.by.iter())
+    {
+        if !seen.insert(by.as_str())
+            || derived.contains(by.as_str())
+            || schema.resolve(source, by).is_some()
+        {
+            continue;
+        }
+        if !column_is_all_null(batches, &common::query_ir::safe_ident(by)) {
+            continue;
+        }
+        warnings.push(QueryWarning {
+            code: UNKNOWN_GROUP_BY_FIELD.to_string(),
+            message: format!(
+                "'{by}' is not a logical field of '{source}' and no record in the queried \
+                 window carries an attribute named '{by}'; every row was grouped under a \
+                 null label"
+            ),
+            field: Some(by.clone()),
+            suggestions: closest_fields(&schema, source, by),
+        });
+    }
+    warnings
+}
+
+const CORRELATE_ROW_LIMIT: &str = "correlate_row_limit";
+const CORRELATE_FANOUT_LIMIT: &str = "correlate_fanout_limit";
+const CORRELATE_WINDOW: &str = "correlate_window";
+const MATCH_INCOMPLETE_TRACE: &str = "match_incomplete_trace";
+
+/// Translate a querier [`common::flight::QueryReport`] into the
+/// `QueryWarning`s it implies. Ground truth, not a heuristic: the querier
+/// detects each condition where it happens (the join, the `match`
+/// evaluator), streaming, before any `aggregate`/`where`/`limit` stage can
+/// shrink or hide it, and
+/// [`execute_ticket`] reads the report back from the querier's Flight
+/// trailer message (see `common::flight::correlate_report_trailer`).
+fn correlate_warnings(report: &common::flight::QueryReport) -> Vec<QueryWarning> {
+    let mut warnings = Vec::new();
+    if report.row_limit {
+        warnings.push(QueryWarning {
+            code: CORRELATE_ROW_LIMIT.to_string(),
+            message: "a correlate stage's joined row count reached the server limit \
+                       ([querier].correlate_max_rows); the result was truncated"
+                .to_string(),
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
+    if report.fanout_limit {
+        warnings.push(QueryWarning {
+            code: CORRELATE_FANOUT_LIMIT.to_string(),
+            message: "a correlate stage matched more target rows per source row than its \
+                       `fanout` cap; the earliest matches were kept"
+                .to_string(),
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
+    if let Some(window) = report.window {
+        let start = chrono::DateTime::from_timestamp_nanos(window.start_ns).to_rfc3339();
+        let end = chrono::DateTime::from_timestamp_nanos(window.end_ns).to_rfc3339();
+        warnings.push(QueryWarning {
+            code: CORRELATE_WINDOW.to_string(),
+            message: format!(
+                "a correlate stage scanned its target signal over [{start}, {end}]; \
+                 absence or enrichment is judged within that window, widenable with the \
+                 stage's `window` operand"
+            ),
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
+    if let Some(message) = report
+        .match_incomplete
+        .as_ref()
+        .and_then(match_incomplete_message)
+    {
+        warnings.push(QueryWarning {
+            code: MATCH_INCOMPLETE_TRACE.to_string(),
+            message,
+            field: None,
+            suggestions: Vec::new(),
+        });
+    }
+    warnings
+}
+
+/// `None` when the report counts no trace.
+fn match_incomplete_message(report: &common::flight::MatchIncompleteReport) -> Option<String> {
+    let traces = |n: u64, matched: &str, outcome: &str| {
+        let s = if n == 1 { "" } else { "s" };
+        (n > 0).then(|| format!("{n} {matched}trace{s} {outcome}"))
+    };
+    let counts = [
+        traces(report.matched, "matched ", "may be missing witness spans"),
+        traces(
+            report.unmatched,
+            "",
+            "did not match but may match over a wider range",
+        ),
+    ];
+    let counts: Vec<String> = counts.into_iter().flatten().collect();
+    if counts.is_empty() {
+        return None;
+    }
+    let mut message = format!(
+        "{}: a span's parent is not in the queried range (it started before the range or \
+         was not ingested) or a span ends after the range (its children may start after \
+         it). Widen `range` to see whole traces.",
+        counts.join(" and ")
+    );
+    if !report.sample_trace_ids.is_empty() {
+        message.push_str(" Examples: ");
+        message.push_str(&report.sample_trace_ids.join(", "));
+    }
+    Some(message)
+}
+
+/// Whether `column` exists in every batch and is null on every row of a
+/// non-empty result. A result with no rows says nothing about the field.
+fn column_is_all_null(batches: &[RecordBatch], column: &str) -> bool {
+    let mut rows = 0usize;
+    let mut nulls = 0usize;
+    for batch in batches {
+        let Some(array) = batch.column_by_name(column) else {
+            return false;
+        };
+        rows += batch.num_rows();
+        nulls += array.null_count();
+    }
+    rows > 0 && rows == nulls
+}
+
+/// Up to three logical field names of `source` closest to `field`: an exact
+/// match once punctuation and case are ignored first (`statusCode` →
+/// `status.code`), then near-misses by edit distance.
+fn closest_fields(
+    schema: &common::schema::logical::LogicalSchema,
+    source: &str,
+    field: &str,
+) -> Vec<String> {
+    let normalize = |name: &str| -> String {
+        name.chars()
+            .filter(|c| c.is_ascii_alphanumeric())
+            .map(|c| c.to_ascii_lowercase())
+            .collect()
+    };
+    let target = normalize(field);
+    let mut scored: Vec<(usize, String)> = schema
+        .fields()
+        .filter(|f| f.id.source == source && f.id.name != field)
+        .map(|f| f.id.name.clone())
+        .map(|name| (edit_distance(&target, &normalize(&name)), name))
+        // A distance beyond a third of the name is a different word, not a
+        // typo — suggesting it would be noise.
+        .filter(|(distance, name)| *distance <= (name.len() / 3).max(2))
+        .collect();
+    scored.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.cmp(&b.1)));
+    scored.dedup_by(|a, b| a.1 == b.1);
+    scored.into_iter().take(3).map(|(_, name)| name).collect()
+}
+
+/// Levenshtein distance, iterative with a single row of state.
+fn edit_distance(a: &str, b: &str) -> usize {
+    let b: Vec<char> = b.chars().collect();
+    let mut prev: Vec<usize> = (0..=b.len()).collect();
+    let mut current = vec![0usize; b.len() + 1];
+    for (i, ca) in a.chars().enumerate() {
+        current[0] = i + 1;
+        for (j, cb) in b.iter().enumerate() {
+            let substitution = prev[j] + usize::from(ca != *cb);
+            current[j + 1] = substitution.min(prev[j + 1] + 1).min(current[j] + 1);
+        }
+        std::mem::swap(&mut prev, &mut current);
+    }
+    prev[b.len()]
+}
+
 /// Require the read scope associated with a registered Query IR source.
-fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
+pub(super) fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> {
     let signal = match source {
+        // A Scalar pseudo-source reads no signal.
+        s if common::query_ir::is_pseudo_source(s) => return Ok(()),
         "logs" | "traces" | "profiles" | "metrics" => source,
-        // metrics_histogram is a distinct IR source (bucketed rows, not a
-        // scalar value — see ir_planner.rs) but the same signal for scoping
-        // purposes; there is no separate metrics_histogram:read scope.
-        "metrics_histogram" => "metrics",
+        "exemplars" => "metrics",
         _ => {
             return Err(ApiError::bad_request(format!(
                 "unknown query source '{source}'"
@@ -287,7 +1067,7 @@ fn source_read_scope(ctx: &TenantContext, source: &str) -> Result<(), ApiError> 
 }
 
 /// Resolve a range to an absolute window using the server-stamped clock.
-fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, ApiError> {
+pub(super) fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, ApiError> {
     let resolve = |s: &str| -> Result<i64, ApiError> {
         match coerce(
             &serde_json::Value::String(s.to_string()),
@@ -297,17 +1077,25 @@ fn resolve_window(range: &QueryRange, now_ns: i64) -> Result<ResolvedWindow, Api
             _ => Err(ApiError::bad_request(format!("invalid time bound: {s}"))),
         }
     };
-    Ok(ResolvedWindow {
+    let window = ResolvedWindow {
         start_ns: resolve(&range.from)?,
         end_ns: resolve(&range.to)?,
-    })
+    };
+    if window.start_ns > window.end_ns {
+        return Err(ApiError::bad_request(
+            "range.from must not be after range.to",
+        ));
+    }
+    Ok(window)
 }
 
-/// Send a `query_ir` Flight ticket to a querier and collect the result batches.
-async fn execute_ticket<S: RouterState>(
-    state: &S,
+/// Send a `query_ir` Flight ticket to a querier and collect the result
+/// batches, alongside the [`common::flight::QueryReport`] of what a
+/// `correlate` stage's join did (see [`correlate_warnings`]).
+pub(super) async fn execute_ticket(
+    state: &RouterAppState,
     ticket_content: String,
-) -> Result<Vec<RecordBatch>, ApiError> {
+) -> Result<(Vec<RecordBatch>, common::flight::QueryReport), ApiError> {
     let (mut client, server_address) = state
         .service_registry()
         .get_flight_client_and_address_for_capability(ServiceCapability::QueryExecution)
@@ -349,8 +1137,27 @@ async fn execute_ticket<S: RouterState>(
             // unbounded result set for up to the timeout.
             let mut data = Vec::new();
             let mut bytes: usize = 0;
+            let mut correlate_report = common::flight::QueryReport::default();
             while let Some(flight_data) = stream.next().await {
                 let fd = flight_data.map_err(|e| ApiError::from_flight(&e, "query_ir"))?;
+                // The trailer the querier appends reporting a `correlate` stage
+                // (see `common::flight::correlate_report_trailer`) is a
+                // data-free message: recognized and dropped here rather than
+                // handed to `decode_flight_batches`, which expects only schema
+                // and record-batch messages. A malformed payload only loses
+                // the warnings, never the rows already received.
+                if let Some(parsed) =
+                    common::flight::parse_correlate_report_trailer(&fd.app_metadata)
+                {
+                    match parsed {
+                        Ok(report) => correlate_report = report,
+                        Err(e) => tracing::warn!(
+                            error = %e,
+                            "malformed correlate report trailer; ignoring it"
+                        ),
+                    }
+                    continue;
+                }
                 bytes = bytes.saturating_add(fd.data_body.len());
                 if bytes > MAX_IR_RESULT_BYTES {
                     return Err(ApiError::new(
@@ -365,9 +1172,10 @@ async fn execute_ticket<S: RouterState>(
                 common::self_monitoring::spans::RpcBoundary::Client,
                 tonic::Code::Ok,
             );
-            super::flight_decode::decode_flight_batches(data, "query_ir")
+            let batches = super::flight_decode::decode_flight_batches(data, "query_ir")
                 .await
-                .map_err(ApiError::from)
+                .map_err(ApiError::from)?;
+            Ok((batches, correlate_report))
         }
         .instrument(rpc_span),
     )
@@ -391,29 +1199,61 @@ fn build_envelope(
 ) -> Result<QueryIrResponse, ApiError> {
     match result {
         "series" => {
-            let (series, step_ns) = to_series(batches);
+            let series = to_series(batches)?;
             Ok(QueryIrResponse {
                 result: result.to_string(),
                 window,
                 columns: Vec::new(),
                 rows: Vec::new(),
                 series,
-                step_ns,
+                points: None,
+                step_ns: evaluation_step_ns(document),
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                graph: None,
+                traces: None,
+                metadata: None,
+                page: None,
+                warnings: Vec::new(),
+            })
+        }
+        "scalar" => {
+            // A Scalar frame is `(bucket, value)`: one label-less series.
+            let points = to_series(batches)?.into_iter().next();
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                series: Vec::new(),
+                points: Some(points.map(|s| s.points).unwrap_or_default()),
+                step_ns: evaluation_step_ns(document),
+                heatmap: HeatmapResult::default(),
+                flamegraph: None,
+                graph: None,
+                traces: None,
+                metadata: None,
+                page: None,
+                warnings: Vec::new(),
             })
         }
         "rows" | "table" => {
-            let (columns, rows) = to_rows(batches);
+            let (columns, rows) = ir_table(batches);
             Ok(QueryIrResponse {
                 result: result.to_string(),
                 window,
                 columns,
                 rows,
                 series: Vec::new(),
+                points: None,
                 step_ns: None,
                 heatmap: HeatmapResult::default(),
                 flamegraph: None,
+                graph: None,
+                traces: None,
+                metadata: None,
+                page: None,
+                warnings: Vec::new(),
             })
         }
         "heatmap" => {
@@ -446,6 +1286,7 @@ fn build_envelope(
                 columns: Vec::new(),
                 rows: Vec::new(),
                 series: Vec::new(),
+                points: None,
                 step_ns: None,
                 heatmap: HeatmapResult {
                     x: HeatmapAxisX {
@@ -462,6 +1303,11 @@ fn build_envelope(
                     cells: to_heatmap_cells(batches)?,
                 },
                 flamegraph: None,
+                graph: None,
+                traces: None,
+                metadata: None,
+                page: None,
+                warnings: Vec::new(),
             })
         }
         "flamegraph" => Ok(QueryIrResponse {
@@ -470,14 +1316,141 @@ fn build_envelope(
             columns: Vec::new(),
             rows: Vec::new(),
             series: Vec::new(),
+            points: None,
             step_ns: None,
             heatmap: HeatmapResult::default(),
             flamegraph: Some(to_flamegraph_result(batches)?),
+            graph: None,
+            traces: None,
+            metadata: None,
+            page: None,
+            warnings: Vec::new(),
         }),
+        "trace" => {
+            let (columns, rows) = ir_table(batches);
+            let traces = group_by_trace(&columns, rows)?;
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns,
+                rows: Vec::new(),
+                series: Vec::new(),
+                points: None,
+                step_ns: None,
+                heatmap: HeatmapResult::default(),
+                flamegraph: None,
+                graph: None,
+                traces: Some(traces),
+                metadata: None,
+                page: None,
+                warnings: Vec::new(),
+            })
+        }
+        "graph" => {
+            let graph = to_graph(batches)?;
+            Ok(QueryIrResponse {
+                result: result.to_string(),
+                window,
+                columns: Vec::new(),
+                rows: Vec::new(),
+                series: Vec::new(),
+                points: None,
+                step_ns: None,
+                heatmap: HeatmapResult::default(),
+                flamegraph: None,
+                metadata: None,
+                page: None,
+                warnings: graph_node_limit_warning(graph.dropped_nodes)
+                    .into_iter()
+                    .collect(),
+                graph: Some(graph),
+                traces: None,
+            })
+        }
         other => Err(ApiError::bad_request(format!(
             "unsupported result envelope '{other}'"
         ))),
     }
+}
+
+/// Group result rows by their `trace_id` column, in first-appearance order.
+fn group_by_trace(
+    columns: &[ResultColumn],
+    rows: Vec<Vec<serde_json::Value>>,
+) -> Result<Vec<TraceGroup>, ApiError> {
+    if rows.is_empty() {
+        return Ok(Vec::new());
+    }
+    let trace_col = columns
+        .iter()
+        .position(|c| c.name == "trace_id")
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "trace result is missing the trace_id column",
+            )
+        })?;
+    let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
+    let mut index: HashMap<String, usize> = HashMap::new();
+    let mut groups: Vec<TraceGroup> = Vec::new();
+    for row in rows {
+        let trace_id = match &row[trace_col] {
+            serde_json::Value::String(id) => std::borrow::Cow::Borrowed(id.as_str()),
+            other => std::borrow::Cow::Owned(other.to_string()),
+        };
+        let at = match index.get(trace_id.as_ref()) {
+            Some(&at) => at,
+            None => {
+                index.insert(trace_id.to_string(), groups.len());
+                groups.push(TraceGroup {
+                    trace_id: trace_id.to_string(),
+                    spans: Vec::new(),
+                });
+                groups.len() - 1
+            }
+        };
+        let span = names.iter().map(|n| n.to_string()).zip(row).collect();
+        groups[at].spans.push(span);
+    }
+    Ok(groups)
+}
+
+/// Decode the querier's one-row `graph_json` batch (see
+/// `querier::query::graph::encode_graph_batch`).
+fn to_graph(batches: &[RecordBatch]) -> Result<common::service_graph::ServiceGraph, ApiError> {
+    let Some(batch) = batches.iter().find(|b| b.num_rows() > 0) else {
+        return Ok(Default::default());
+    };
+    let json = batch
+        .column_by_name(common::service_graph::GRAPH_JSON_COLUMN)
+        .and_then(|array| array.as_any().downcast_ref::<StringArray>())
+        .ok_or_else(|| {
+            ApiError::new(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "graph result is missing graph_json",
+            )
+        })?;
+    serde_json::from_str(json.value(0)).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid graph_json: {e}"),
+        )
+    })
+}
+
+/// The `graph` node cap (`[querier].graph_max_nodes`) dropped nodes.
+const GRAPH_NODE_LIMIT: &str = "graph_node_limit";
+
+fn graph_node_limit_warning(dropped_nodes: u64) -> Option<QueryWarning> {
+    (dropped_nodes > 0).then(|| QueryWarning {
+        code: GRAPH_NODE_LIMIT.to_string(),
+        message: format!(
+            "the graph reached the server node limit ([querier].graph_max_nodes); \
+             {dropped_nodes} lower-traffic nodes were dropped"
+        ),
+        field: None,
+        suggestions: Vec::new(),
+    })
 }
 
 /// Decode the querier's single-row flamegraph batch
@@ -505,14 +1478,7 @@ fn to_flamegraph_result(batches: &[RecordBatch]) -> Result<FlamegraphResult, Api
                 "flamegraph result is missing truncated",
             )
         })?;
-    #[derive(Deserialize)]
-    struct Decoded {
-        names: Vec<String>,
-        levels: Vec<Vec<i64>>,
-        total: i64,
-        max_self: i64,
-    }
-    let decoded: Decoded = serde_json::from_str(json.value(0)).map_err(|e| {
+    let decoded: FlamegraphWire = serde_json::from_str(json.value(0)).map_err(|e| {
         ApiError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             format!("invalid flamegraph_json: {e}"),
@@ -523,8 +1489,25 @@ fn to_flamegraph_result(batches: &[RecordBatch]) -> Result<FlamegraphResult, Api
         levels: decoded.levels,
         total: decoded.total,
         max_self: decoded.max_self,
+        baseline_total: decoded.left_ticks,
+        comparison_total: decoded.right_ticks,
         truncated: truncated.value(0),
+        locations: decoded.locations,
     })
+}
+
+/// Either `common::profile::Flamegraph` or, for a `baseline` document,
+/// `common::profile::DiffFlamegraph`: the latter adds the two side totals.
+#[derive(Deserialize)]
+struct FlamegraphWire {
+    names: Vec<String>,
+    levels: Vec<Vec<i64>>,
+    total: i64,
+    max_self: i64,
+    #[serde(default)]
+    locations: Vec<Option<common::profile::FrameLocation>>,
+    left_ticks: Option<i64>,
+    right_ticks: Option<i64>,
 }
 
 fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiError> {
@@ -568,8 +1551,17 @@ fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiErro
     Ok(cells)
 }
 
-/// Column name + IR value type for a batch field.
+/// Column name + IR value type for a batch field. A field's own metadata
+/// (set by the querier for a type Arrow can't express on its own, e.g.
+/// [`RAW_ATTRIBUTE_BAG_IR_TYPE`]) takes precedence over the Arrow-type
+/// inference below.
 fn column_meta(field: &datafusion::arrow::datatypes::Field) -> ResultColumn {
+    if let Some(ir_type) = field.metadata().get(IR_TYPE_METADATA_KEY) {
+        return ResultColumn {
+            name: field.name().clone(),
+            value_type: ir_type.clone(),
+        };
+    }
     let value_type = match field.data_type() {
         DataType::Boolean => "bool",
         DataType::Int8
@@ -614,9 +1606,50 @@ fn canonical_arrow_type(ir_type: &str) -> Option<DataType> {
         "bool" => DataType::Boolean,
         "timestamp_ns" => DataType::Timestamp(TimeUnit::Nanosecond, None),
         "bytes" => DataType::Binary,
-        MAP_TYPE => return None,
+        MAP_TYPE | RAW_ATTRIBUTE_BAG_IR_TYPE => return None,
         _ => DataType::Utf8,
     })
+}
+
+/// Decodes an attribute-bag struct column (the querier's `attribute_bag_expr`
+/// — five typed-layout columns as a struct's children, in that fixed order)
+/// into one JSON object per row, via `common::attrs::typed::decode_typed_arrays`
+/// — once per column, not once per cell. A malformed struct (never produced
+/// by the querier, but not a `panic!`) decodes every row as `null`.
+fn attribute_bag_cells(array: &dyn Array) -> Vec<serde_json::Value> {
+    use common::attrs::typed::decode_typed_arrays;
+    use datafusion::arrow::array::{BinaryArray, MapArray, StructArray};
+
+    fn typed_children(
+        cols: &[ArrayRef],
+    ) -> Option<(&MapArray, &MapArray, &MapArray, &MapArray, &BinaryArray)> {
+        Some((
+            cols.first()?.as_any().downcast_ref()?,
+            cols.get(1)?.as_any().downcast_ref()?,
+            cols.get(2)?.as_any().downcast_ref()?,
+            cols.get(3)?.as_any().downcast_ref()?,
+            cols.get(4)?.as_any().downcast_ref()?,
+        ))
+    }
+
+    let len = array.len();
+    let decoded = array
+        .as_any()
+        .downcast_ref::<StructArray>()
+        .and_then(|s| typed_children(s.columns()))
+        .and_then(|(str_map, int_map, double_map, bool_map, residue)| {
+            decode_typed_arrays(str_map, int_map, double_map, bool_map, residue).ok()
+        });
+    match decoded {
+        Some(rows) => rows
+            .into_iter()
+            .map(|row| {
+                row.map(serde_json::Value::Object)
+                    .unwrap_or(serde_json::Value::Null)
+            })
+            .collect(),
+        None => vec![serde_json::Value::Null; len],
+    }
 }
 
 /// Extract one cell of an already-canonicalized array as JSON, following the IR
@@ -682,7 +1715,9 @@ fn cell(array: &dyn Array, row: usize) -> serde_json::Value {
         .unwrap_or(Value::Null)
 }
 
-fn to_rows(batches: &[RecordBatch]) -> (Vec<ResultColumn>, Vec<Vec<serde_json::Value>>) {
+pub(super) fn ir_table(
+    batches: &[RecordBatch],
+) -> (Vec<ResultColumn>, Vec<Vec<serde_json::Value>>) {
     let mut columns = Vec::new();
     let mut rows = Vec::new();
     let Some(first) = batches
@@ -714,18 +1749,82 @@ fn to_rows(batches: &[RecordBatch]) -> (Vec<ResultColumn>, Vec<Vec<serde_json::V
                 None => batch.column(c).clone(),
             })
             .collect();
+        // An attribute-bag column decodes once per column here, not once per
+        // cell (see `attribute_bag_cells`).
+        let bag_cells: Vec<Option<Vec<serde_json::Value>>> = columns
+            .iter()
+            .zip(&casted)
+            .map(|(meta, array)| {
+                (meta.value_type == RAW_ATTRIBUTE_BAG_IR_TYPE)
+                    .then(|| attribute_bag_cells(array.as_ref()))
+            })
+            .collect();
         for r in 0..batch.num_rows() {
-            let row = casted.iter().map(|a| cell(a.as_ref(), r)).collect();
+            let row = casted
+                .iter()
+                .enumerate()
+                .map(|(c, a)| match &bag_cells[c] {
+                    Some(decoded) => decoded[r].clone(),
+                    None => cell(a.as_ref(), r),
+                })
+                .collect();
             rows.push(row);
         }
     }
     (columns, rows)
 }
 
-/// Reshape step-aggregate batches (`[bucket, labels…, value]`) into series.
-fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
+/// The step a Series or Scalar result is evaluated at: the last `sample`,
+/// `aggregate`, `histogram_quantile` or `histogram_fraction` stage's own
+/// `step`, else the document's.
+fn evaluation_step_ns(document: &serde_json::Value) -> Option<i64> {
+    use common::query_ir::Stage;
+    let doc = common::query_ir::Document::deserialize(document).ok()?;
+    let stage_step = doc.pipeline.iter().rev().find_map(|stage| match stage {
+        Stage::Sample(s) => s.step.as_deref(),
+        Stage::Aggregate(a) => a.step.as_deref(),
+        Stage::HistogramQuantile(h) => Some(h.step.as_str()),
+        Stage::HistogramFraction(h) => Some(h.step.as_str()),
+        _ => None,
+    });
+    common::query_ir::parse_duration_ns(stage_step.or(doc.step.as_deref())?)
+}
+
+/// The column a metric Series frame carries its canonical label set in
+/// (`querier::query::metric_series::labels::LABELS_COLUMN`).
+const SERIES_LABELS_COLUMN: &str = "__labels";
+
+/// Reshape series batches into series: a metric Series frame
+/// (`[bucket, __labels, value]`, the label set as a JSON object, sorted by
+/// label set then bucket) or a legacy step aggregate (`[bucket, labels…,
+/// value]`, one column per label).
+///
+/// A Series frame is keyed on its canonical `__labels` string. Two of its
+/// rows sharing a label set and a bucket came from series the label sets
+/// cannot tell apart, which is a 400 as in Prometheus.
+fn to_series(batches: &[RecordBatch]) -> Result<Vec<ResultSeries>, ApiError> {
+    Ok(decode_series(batches, |array, row| Some(cell(array, row)))?
+        .into_iter()
+        .map(|(labels, points)| ResultSeries {
+            labels,
+            points: points.into_iter().map(|(t, v)| [t, v]).collect(),
+        })
+        .collect())
+}
+
+/// One decoded series: its labels and its `(bucket, value)` points.
+pub(super) type DecodedSeries<V> = (BTreeMap<String, String>, Vec<(serde_json::Value, V)>);
+
+/// The decoding behind [`to_series`], with the value cell read by `value`:
+/// the Prometheus endpoints keep NaN and ±Inf, which a JSON number cannot.
+/// A cell `value` reads as `None` is no sample: its point is left out, and
+/// so is a series with no other.
+pub(super) fn decode_series<V>(
+    batches: &[RecordBatch],
+    value: impl Fn(&dyn Array, usize) -> Option<V>,
+) -> Result<Vec<DecodedSeries<V>>, ApiError> {
     let mut order: Vec<String> = Vec::new();
-    let mut series: BTreeMap<String, ResultSeries> = BTreeMap::new();
+    let mut series: BTreeMap<String, DecodedSeries<V>> = BTreeMap::new();
 
     for batch in batches {
         let ncols = batch.num_columns();
@@ -739,7 +1838,7 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
         let value_col = ncols - 1;
         // Normalize every column to its declared canonical Arrow type first, so
         // narrow-int / view / dictionary encodings serialize as the right JSON
-        // (same as `to_rows`).
+        // (same as `ir_table`).
         let casted: Vec<ArrayRef> = schema
             .fields()
             .iter()
@@ -753,44 +1852,76 @@ fn to_series(batches: &[RecordBatch]) -> (Vec<ResultSeries>, Option<i64>) {
                 },
             )
             .collect();
+        let label_set = label_cols.len() == 1 && schema.field(1).name() == SERIES_LABELS_COLUMN;
         for r in 0..batch.num_rows() {
-            let mut labels = BTreeMap::new();
-            for &c in &label_cols {
-                let name = schema.field(c).name().clone();
-                let v = match cell(casted[c].as_ref(), r) {
-                    serde_json::Value::String(s) => s,
-                    other => other.to_string(),
-                };
-                labels.insert(name, v);
-            }
-            let key = labels
-                .iter()
-                .map(|(k, v)| format!("{k}={v}"))
-                .collect::<Vec<_>>()
-                .join(",");
-            let t = cell(casted[0].as_ref(), r);
-            let value = cell(casted[value_col].as_ref(), r);
-            let entry = series.entry(key.clone()).or_insert_with(|| {
-                order.push(key.clone());
-                ResultSeries {
-                    labels,
-                    points: Vec::new(),
+            let Some(v) = value(casted[value_col].as_ref(), r) else {
+                continue;
+            };
+            let (key, labels) = if label_set {
+                series_label_set(cell(casted[1].as_ref(), r))?
+            } else {
+                let mut labels = BTreeMap::new();
+                for &c in &label_cols {
+                    let name = schema.field(c).name().clone();
+                    let v = match cell(casted[c].as_ref(), r) {
+                        serde_json::Value::String(s) => s,
+                        other => other.to_string(),
+                    };
+                    labels.insert(name, v);
                 }
+                let key = labels
+                    .iter()
+                    .map(|(k, v)| format!("{k}={v}"))
+                    .collect::<Vec<_>>()
+                    .join(",");
+                (key, labels)
+            };
+            let t = cell(casted[0].as_ref(), r);
+            let (_, points) = series.entry(key.clone()).or_insert_with(|| {
+                order.push(key.clone());
+                (labels, Vec::new())
             });
-            entry.points.push([t, value]);
+            if label_set && points.last().is_some_and(|(last, _)| *last == t) {
+                return Err(ApiError::bad_request(format!(
+                    "several series share the label set {key} at {t}; \
+                     keep a label that tells them apart"
+                )));
+            }
+            points.push((t, v));
         }
     }
 
-    let ordered = order
+    Ok(order
         .into_iter()
         .filter_map(|k| series.remove(&k))
-        .collect();
-    (ordered, None)
+        .collect())
+}
+
+/// One `__labels` cell: its canonical string (the series key) and its
+/// labels. The querier writes it, so a malformed one is a server bug.
+fn series_label_set(
+    cell: serde_json::Value,
+) -> Result<(String, BTreeMap<String, String>), ApiError> {
+    let serde_json::Value::String(set) = cell else {
+        return Err(malformed_label_set(format!("not a string: {cell}")));
+    };
+    match serde_json::from_str(&set) {
+        Ok(labels) => Ok((set, labels)),
+        Err(e) => Err(malformed_label_set(e.to_string())),
+    }
+}
+
+fn malformed_label_set(error: String) -> ApiError {
+    tracing::error!(%error, "querier returned a malformed series label set");
+    ApiError::new(
+        StatusCode::INTERNAL_SERVER_ERROR,
+        "the query returned a malformed series label set",
+    )
 }
 
 #[cfg(test)]
 mod row_encoding {
-    use super::{column_meta, to_rows};
+    use super::{column_meta, ir_table};
     use datafusion::arrow::array::{ArrayRef, MapBuilder, RecordBatch, StringBuilder};
     use datafusion::arrow::datatypes::{Field, Schema};
     use std::sync::Arc;
@@ -829,7 +1960,7 @@ mod row_encoding {
             "log_attributes",
             vec![Some(vec![("http.method", "GET"), ("user.id", "u-1")]), None],
         );
-        let (columns, rows) = to_rows(&[batch]);
+        let (columns, rows) = ir_table(&[batch]);
 
         assert_eq!(columns[0].value_type, "map<string,string>");
         assert_eq!(
@@ -849,7 +1980,7 @@ mod row_encoding {
     #[test]
     fn empty_map_encodes_as_an_empty_object() {
         let batch = map_batch("scope_attributes", vec![Some(vec![])]);
-        let (_, rows) = to_rows(&[batch]);
+        let (_, rows) = ir_table(&[batch]);
         assert_eq!(rows[0][0], serde_json::json!({}));
     }
 
@@ -861,11 +1992,340 @@ mod row_encoding {
         assert_eq!(meta.name, "resource_attributes");
         assert_eq!(meta.value_type, "map<string,string>");
     }
+
+    /// A struct column tagged with
+    /// `common::schema::typed_attributes::IR_TYPE_METADATA_KEY` — the shape
+    /// the querier's `attribute_bag_expr` produces for a typed-layout
+    /// container's raw accessor — declares `map<string,any>` and decodes as
+    /// the JSON object its typed children encode, not the legacy layout's
+    /// flat string map.
+    #[test]
+    fn metadata_tagged_struct_column_decodes_as_a_json_object() {
+        use common::schema::typed_attributes::{IR_TYPE_METADATA_KEY, RAW_ATTRIBUTE_BAG_IR_TYPE};
+        use datafusion::arrow::array::{
+            BinaryArray, BooleanBuilder, Float64Builder, Int64Builder, StructArray,
+        };
+        use std::collections::HashMap;
+
+        // Row 0: `http.method` in its `str` home. Row 1: no attributes at
+        // all (every typed column null) — the container-absent case.
+        macro_rules! empty_map {
+            ($value_builder:expr) => {{
+                let mut b = MapBuilder::new(None, StringBuilder::new(), $value_builder);
+                b.append(false).unwrap();
+                b.append(false).unwrap();
+                Arc::new(b.finish()) as ArrayRef
+            }};
+        }
+        let mut str_builder = MapBuilder::new(None, StringBuilder::new(), StringBuilder::new());
+        str_builder.keys().append_value("http.method");
+        str_builder.values().append_value("GET");
+        str_builder.append(true).unwrap();
+        str_builder.append(false).unwrap();
+        let children: Vec<(&str, ArrayRef)> = vec![
+            ("str", Arc::new(str_builder.finish())),
+            ("int", empty_map!(Int64Builder::new())),
+            ("double", empty_map!(Float64Builder::new())),
+            ("bool", empty_map!(BooleanBuilder::new())),
+            ("residue", Arc::new(BinaryArray::from(vec![None, None]))),
+        ];
+        let children: Vec<(Arc<Field>, ArrayRef)> = children
+            .into_iter()
+            .map(|(name, arr)| {
+                (
+                    Arc::new(Field::new(name, arr.data_type().clone(), true)),
+                    arr,
+                )
+            })
+            .collect();
+        let array: ArrayRef = Arc::new(StructArray::from(children));
+        let field = Field::new("log_attributes", array.data_type().clone(), true).with_metadata(
+            HashMap::from([(
+                IR_TYPE_METADATA_KEY.to_string(),
+                RAW_ATTRIBUTE_BAG_IR_TYPE.to_string(),
+            )]),
+        );
+        let schema = Arc::new(Schema::new(vec![field]));
+        let batch = RecordBatch::try_new(schema, vec![array]).unwrap();
+
+        let meta = column_meta(batch.schema().field(0));
+        assert_eq!(meta.value_type, RAW_ATTRIBUTE_BAG_IR_TYPE);
+
+        let (columns, rows) = ir_table(&[batch]);
+        assert_eq!(columns[0].value_type, RAW_ATTRIBUTE_BAG_IR_TYPE);
+        assert_eq!(
+            rows[0][0],
+            serde_json::json!({ "http.method": "GET" }),
+            "a map<string,any> cell must decode the struct into a JSON object"
+        );
+        assert_eq!(
+            rows[1][0],
+            serde_json::Value::Null,
+            "a row with no attributes in any typed column stays null"
+        );
+    }
+}
+
+/// An `aggregate.by` field nothing in the window carries (#1070). The
+/// grouping stays as the query asked for it — one null-labelled group — and
+/// the envelope explains why, because a plan-time rejection would also
+/// reject the legitimate case of a real attribute absent from a short window.
+#[cfg(test)]
+mod group_by_warnings {
+    use super::{UNKNOWN_GROUP_BY_FIELD, closest_fields, unknown_group_by_warnings};
+    use datafusion::arrow::array::{ArrayRef, Int64Array, RecordBatch, StringArray};
+    use datafusion::arrow::datatypes::{DataType, Field, Schema};
+    use std::sync::Arc;
+
+    /// A one-group aggregate result: the `by` column plus a count.
+    fn grouped(column: &str, labels: Vec<Option<&str>>) -> RecordBatch {
+        let rows = labels.len();
+        let label: ArrayRef = Arc::new(StringArray::from(labels));
+        let count: ArrayRef = Arc::new(Int64Array::from(vec![1_i64; rows]));
+        let schema = Arc::new(Schema::new(vec![
+            Field::new(column, DataType::Utf8, true),
+            Field::new("n", DataType::Int64, false),
+        ]));
+        RecordBatch::try_new(schema, vec![label, count]).unwrap()
+    }
+
+    fn document(by: &str) -> serde_json::Value {
+        serde_json::json!({
+            "irVersion": 1, "from": "traces",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [{ "aggregate": { "by": [by], "aggs": [{ "fn": "count", "as": "n" }] } }]
+        })
+    }
+
+    #[test]
+    fn an_all_null_group_key_warns_and_names_the_field() {
+        let batches = [grouped("bogus_field_xyz", vec![None, None])];
+        let warnings = unknown_group_by_warnings("traces", &document("bogus_field_xyz"), &batches);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert_eq!(warnings[0].code, UNKNOWN_GROUP_BY_FIELD);
+        assert_eq!(warnings[0].field.as_deref(), Some("bogus_field_xyz"));
+        assert!(
+            warnings[0].message.contains("bogus_field_xyz")
+                && warnings[0].message.contains("traces"),
+            "{}",
+            warnings[0].message
+        );
+    }
+
+    /// The camelCase spelling of a real field is the motivating typo: it must
+    /// point at the field the caller meant.
+    #[test]
+    fn a_near_miss_spelling_suggests_the_real_field() {
+        let batches = [grouped("statusCode", vec![None])];
+        let warnings = unknown_group_by_warnings("traces", &document("statusCode"), &batches);
+
+        assert_eq!(warnings.len(), 1, "{warnings:?}");
+        assert!(
+            warnings[0].suggestions.contains(&"status.code".to_string()),
+            "{:?}",
+            warnings[0].suggestions
+        );
+    }
+
+    #[test]
+    fn a_logical_field_never_warns_even_when_every_row_is_null() {
+        let batches = [grouped("service_name", vec![None, None])];
+        let warnings = unknown_group_by_warnings("traces", &document("service.name"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// #1340: `resource.identity` is declared on every source but used to be
+    /// unresolvable (a `LogicalSchema::resolve` bug, fixed independently in
+    /// `schema/logical.rs`), so grouping by it always warned — even
+    /// self-contradictorily suggesting the very field the caller used. Now
+    /// that it resolves, an all-null result (e.g. every row predates the
+    /// column) is unremarkable: no warning, same as any other logical field.
+    #[test]
+    fn resource_identity_group_key_never_warns_even_when_every_row_is_null() {
+        let batches = [grouped("resource_identity", vec![None, None])];
+        let warnings =
+            unknown_group_by_warnings("traces", &document("resource.identity"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// The bug the issue reported by name: a field that discovery
+    /// advertises but that fails to resolve must never suggest itself as
+    /// its own fix.
+    /// `resource.identity` was the motivating case before the `resolve` fix
+    /// above made it resolvable — `closest_fields` itself still must not
+    /// self-suggest for any field, resolvable or not.
+    #[test]
+    fn closest_fields_never_suggests_the_queried_field_itself() {
+        let schema = common::schema::logical::LogicalSchema::core();
+        for source in ["logs", "traces", "metrics", "profiles"] {
+            let suggestions = closest_fields(&schema, source, "resource.identity");
+            assert!(
+                !suggestions.contains(&"resource.identity".to_string()),
+                "{source}: {suggestions:?}"
+            );
+        }
+    }
+
+    /// A real attribute that is simply absent from *this* window still
+    /// warns — but one the window does carry must not, even partially.
+    #[test]
+    fn a_group_key_with_any_value_never_warns() {
+        let batches = [grouped("job", vec![Some("api"), None])];
+        let warnings = unknown_group_by_warnings("traces", &document("job"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// An empty result is not evidence: the window held no records at all.
+    #[test]
+    fn an_empty_result_never_warns() {
+        let batches = [grouped("bogus_field_xyz", vec![])];
+        let warnings = unknown_group_by_warnings("traces", &document("bogus_field_xyz"), &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+
+    /// An `extract`-derived column belongs to the document, not the source:
+    /// an all-null one means the parser matched nothing, a different story.
+    #[test]
+    fn an_extract_derived_group_key_never_warns() {
+        let batches = [grouped("level", vec![None])];
+        let doc = serde_json::json!({
+            "irVersion": 1, "from": "logs",
+            "range": { "from": "now-1h", "to": "now" },
+            "result": "table",
+            "pipeline": [
+                { "extract": { "parser": "json", "as": [{ "name": "level", "type": "string" }] } },
+                { "aggregate": { "by": ["level"], "aggs": [{ "fn": "count", "as": "n" }] } }
+            ]
+        });
+        let warnings = unknown_group_by_warnings("logs", &doc, &batches);
+
+        assert!(warnings.is_empty(), "{warnings:?}");
+    }
+}
+
+/// A `correlate` stage's row/fanout caps or scan window, or a `match`
+/// stage's incomplete traces, reported through the querier's Flight trailer
+/// — the querier truncates rather than fails, and these warnings are the
+/// caller's only signal that it happened.
+#[cfg(test)]
+mod correlate_warnings_tests {
+    use super::{
+        CORRELATE_FANOUT_LIMIT, CORRELATE_ROW_LIMIT, CORRELATE_WINDOW, MATCH_INCOMPLETE_TRACE,
+        correlate_warnings,
+    };
+    use common::flight::{CorrelateWindowReport, MatchIncompleteReport, QueryReport};
+
+    fn match_incomplete(matched: u64, unmatched: u64) -> QueryReport {
+        QueryReport {
+            match_incomplete: Some(MatchIncompleteReport {
+                matched,
+                unmatched,
+                sample_trace_ids: vec!["5b8e".into(), "a1f0".into()],
+            }),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn match_incomplete_warns_once_with_both_counts_and_examples() {
+        let warnings = correlate_warnings(&match_incomplete(3, 1));
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![MATCH_INCOMPLETE_TRACE]
+        );
+        let message = &warnings[0].message;
+        assert!(
+            message.starts_with(
+                "3 matched traces may be missing witness spans and 1 trace did not match but \
+                 may match over a wider range: "
+            ),
+            "{message}"
+        );
+        assert!(message.ends_with("Examples: 5b8e, a1f0"), "{message}");
+        assert!(message.contains("Widen `range`"), "{message}");
+    }
+
+    #[test]
+    fn match_incomplete_drops_a_zero_count() {
+        let only_matched = &correlate_warnings(&match_incomplete(1, 0))[0].message;
+        assert!(
+            only_matched.starts_with("1 matched trace may be missing witness spans: "),
+            "{only_matched}"
+        );
+        let only_unmatched = &correlate_warnings(&match_incomplete(0, 2))[0].message;
+        assert!(
+            only_unmatched.starts_with("2 traces did not match but may match over a wider range: "),
+            "{only_unmatched}"
+        );
+    }
+
+    #[test]
+    fn match_incomplete_without_counted_traces_warns_nothing() {
+        assert!(correlate_warnings(&match_incomplete(0, 0)).is_empty());
+    }
+
+    #[test]
+    fn row_limit_warns() {
+        let report = QueryReport {
+            row_limit: true,
+            ..Default::default()
+        };
+        let warnings = correlate_warnings(&report);
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![CORRELATE_ROW_LIMIT]
+        );
+    }
+
+    #[test]
+    fn fanout_limit_warns() {
+        let report = QueryReport {
+            fanout_limit: true,
+            ..Default::default()
+        };
+        let warnings = correlate_warnings(&report);
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![CORRELATE_FANOUT_LIMIT]
+        );
+    }
+
+    #[test]
+    fn window_warns() {
+        let report = QueryReport {
+            window: Some(CorrelateWindowReport {
+                start_ns: 0,
+                end_ns: 1_000_000_000,
+            }),
+            ..Default::default()
+        };
+        let warnings = correlate_warnings(&report);
+        assert_eq!(
+            warnings.iter().map(|w| w.code.as_str()).collect::<Vec<_>>(),
+            vec![CORRELATE_WINDOW]
+        );
+        assert!(warnings[0].message.contains("1970-01-01T00:00:00"));
+    }
+
+    #[test]
+    fn empty_report_warns_nothing() {
+        assert!(correlate_warnings(&QueryReport::default()).is_empty());
+    }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::{ResolvedWindow, build_envelope, source_read_scope};
+    use super::{
+        GRAPH_NODE_LIMIT, MultiQueryIrRequest, QueryFormula, QueryIrRequest, QueryRange,
+        ResolvedWindow, build_envelope, check_multi_source_scopes, document_read_scopes,
+        parse_envelope, resolve_window, source_read_scope, to_multi_document,
+    };
     use crate::{RouterAppState, create_router};
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -961,7 +2421,11 @@ mod tests {
             TenantSource::Database,
         )
         .with_user("u1".into(), MembershipRole::Member, false, None)
-        .with_api_key_restrictions(Some(scopes.into_iter().map(str::to_string).collect()), None)
+        .with_api_key_restrictions(
+            Some(scopes.into_iter().map(str::to_string).collect()),
+            None,
+            None,
+        )
     }
 
     #[test]
@@ -970,6 +2434,27 @@ mod tests {
         assert!(source_read_scope(&profiles, "profiles").is_ok());
         assert!(source_read_scope(&profiles, "logs").is_err());
         assert!(source_read_scope(&profiles, "traces").is_err());
+    }
+
+    #[test]
+    fn a_correlate_target_needs_its_own_read_scope() {
+        let traces = scoped_context(vec!["traces:read"]);
+        let to_logs = [
+            serde_json::json!({ "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }),
+        ];
+        let err = document_read_scopes(&traces, "traces", &to_logs).unwrap_err();
+        assert_eq!(err.status, StatusCode::FORBIDDEN);
+        let to_parent = [serde_json::json!({ "correlate": { "to": "parent", "kind": "inner" } })];
+        assert!(document_read_scopes(&traces, "traces", &to_parent).is_ok());
+
+        let nested = [serde_json::json!({ "binop": { "op": "add", "right": {
+            "from": "traces",
+            "pipeline": [{ "correlate": { "to": "logs", "on": "trace_id", "kind": "semi" } }]
+        } } })];
+        assert!(document_read_scopes(&traces, "traces", &nested).is_err());
+
+        let both = scoped_context(vec!["traces:read", "logs:read"]);
+        assert!(document_read_scopes(&both, "traces", &to_logs).is_ok());
     }
 
     // The `metrics` Query IR source (PR #1138) 400'd end-to-end through the
@@ -989,12 +2474,18 @@ mod tests {
     }
 
     #[test]
-    fn metrics_read_scope_also_grants_the_metrics_histogram_ir_source() {
+    fn metrics_read_scope_grants_the_exemplars_source() {
         let metrics = scoped_context(vec!["metrics:read"]);
-        assert!(source_read_scope(&metrics, "metrics_histogram").is_ok());
+        assert!(source_read_scope(&metrics, "exemplars").is_ok());
 
-        let profiles = scoped_context(vec!["profiles:read"]);
-        assert!(source_read_scope(&profiles, "metrics_histogram").is_err());
+        let traces = scoped_context(vec!["traces:read"]);
+        assert!(source_read_scope(&traces, "exemplars").is_err());
+    }
+
+    #[test]
+    fn metrics_histogram_is_no_longer_a_query_source() {
+        let metrics = scoped_context(vec!["metrics:read"]);
+        assert!(source_read_scope(&metrics, "metrics_histogram").is_err());
     }
 
     // Task 6.1 — unauthenticated requests are rejected.
@@ -1070,6 +2561,81 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    fn paged_body(pipeline: serde_json::Value, cursor: Option<&str>) -> Body {
+        let mut doc = serde_json::json!({
+            "irVersion": 14, "from": "logs", "range": { "from": "now-1h", "to": "now" },
+            "result": "rows", "pipeline": pipeline, "page": { "size": 10 }
+        });
+        if let Some(cursor) = cursor {
+            doc["page"]["cursor"] = serde_json::json!(cursor);
+        }
+        Body::from(serde_json::to_vec(&doc).unwrap())
+    }
+
+    async fn error_body(app: &axum::Router, body: Body) -> (StatusCode, serde_json::Value) {
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        let status = resp.status();
+        let bytes = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        (status, serde_json::from_slice(&bytes).unwrap_or_default())
+    }
+
+    #[tokio::test]
+    async fn a_paged_document_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let (status, _) = error_body(&app, paged_body(serde_json::json!([]), None)).await;
+        assert_eq!(status, StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    #[tokio::test]
+    async fn an_aggregate_page_is_not_paginatable_with_details() {
+        let app = test_app().await;
+        let pipeline = serde_json::json!([
+            { "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }] } }
+        ]);
+        let (status, body) = error_body(&app, paged_body(pipeline, None)).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["details"][0]["reason"], "not_paginatable");
+        assert_eq!(body["details"][0]["column"], "pipeline[0].aggregate");
+    }
+
+    #[tokio::test]
+    async fn an_incompatible_cursor_is_gone_and_a_corrupt_one_bad_data() {
+        let app = test_app().await;
+        let (status, body) =
+            error_body(&app, paged_body(serde_json::json!([]), Some("sdbc0.a.b"))).await;
+        assert_eq!(status, StatusCode::GONE);
+        assert_eq!(body["errorType"], "gone");
+        let (status, body) =
+            error_body(&app, paged_body(serde_json::json!([]), Some("sdbc1.a.b"))).await;
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(body["errorType"], "bad_data");
+    }
+
+    #[test]
+    fn a_querier_without_a_page_report_is_unavailable() {
+        let err = crate::endpoints::query::walk_report(None).expect_err("no report");
+        assert_eq!(err.status, StatusCode::SERVICE_UNAVAILABLE);
+        let report = common::query_cursor::PageReport::default();
+        assert!(crate::endpoints::query::walk_report(Some(&report)).is_ok());
+    }
+
+    #[test]
+    fn a_response_without_page_carries_no_page_member() {
+        let window = ResolvedWindow {
+            start_ns: 0,
+            end_ns: 1,
+        };
+        let response = build_envelope("rows", window, &[], &serde_json::json!({})).unwrap();
+        let json = serde_json::to_value(&response).unwrap();
+        assert!(json.get("page").is_none(), "{json}");
     }
 
     // Task 6.1 — a malformed IR body is a client error, not a 500.
@@ -1153,6 +2719,72 @@ mod tests {
     }
 
     #[test]
+    fn graph_envelope_decodes_the_querier_batch_and_warns_on_dropped_nodes() {
+        use datafusion::arrow::array::{RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let graph_json = serde_json::json!({
+            "nodes": [
+                { "id": "service:orders", "name": "orders", "kind": "service", "request_rate": 1.5,
+                  "error_rate": 0.0, "p95_ns": 100 },
+                { "id": "external:database:orders-db", "name": "orders-db", "kind": "external",
+                  "dependency_kind": "database" }
+            ],
+            "edges": [{ "source": "service:orders", "target": "external:database:orders-db", "count": 3,
+                        "rate": 0.05, "error_rate": 0.0, "p95_ns": 50 }],
+            "dropped_nodes": 3
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![Field::new(
+                common::service_graph::GRAPH_JSON_COLUMN,
+                DataType::Utf8,
+                false,
+            )])),
+            vec![Arc::new(StringArray::from(vec![graph_json]))],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "0", "to": "60" },
+            "result": "graph", "pipeline": []
+        });
+        let response = build_envelope(
+            "graph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        let graph = response.graph.expect("graph envelope is present");
+        assert_eq!(graph.nodes.len(), 2);
+        assert_eq!(graph.edges[0].count, 3);
+        assert_eq!(
+            response
+                .warnings
+                .iter()
+                .map(|w| w.code.as_str())
+                .collect::<Vec<_>>(),
+            vec![GRAPH_NODE_LIMIT]
+        );
+    }
+
+    #[test]
+    fn graph_scoping_fields_reach_the_querier_document() {
+        let req: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 8, "from": "traces", "range": { "from": "now-1h", "to": "now" },
+            "result": "graph", "focus": "orders", "depth": 2, "pipeline": []
+        }))
+        .unwrap();
+        let doc = serde_json::to_value(&req).unwrap();
+        assert_eq!(doc["focus"], "orders");
+        assert_eq!(doc["depth"], 2);
+        assert!(doc.get("trace_id").is_none());
+    }
+
+    #[test]
     fn flamegraph_envelope_decodes_the_querier_batch() {
         use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
         use datafusion::arrow::datatypes::{DataType, Field, Schema};
@@ -1161,7 +2793,8 @@ mod tests {
             "names": ["total", "main", "foo"],
             "levels": [[0, 100, 0, 0], [0, 100, 30, 1, 0, 70, 70, 2]],
             "total": 100,
-            "max_self": 70
+            "max_self": 70,
+            "locations": [null, {"file": "src/main.rs", "line": 12}, null]
         })
         .to_string();
         let batch = RecordBatch::try_new(
@@ -1194,6 +2827,127 @@ mod tests {
         assert_eq!(flamegraph.total, 100);
         assert_eq!(flamegraph.max_self, 70);
         assert!(flamegraph.truncated);
+        assert_eq!(
+            flamegraph.locations,
+            vec![
+                None,
+                Some(common::profile::FrameLocation {
+                    file: "src/main.rs".to_string(),
+                    line: 12,
+                }),
+                None,
+            ]
+        );
+        assert_eq!(flamegraph.baseline_total, None);
+        assert_eq!(flamegraph.comparison_total, None);
+    }
+
+    #[test]
+    fn an_inverted_window_is_a_bad_request() {
+        let range = QueryRange {
+            from: "now".to_string(),
+            to: "now-1h".to_string(),
+        };
+        let err = resolve_window(&range, 10_000_000_000_000).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(err.message.contains("range.from"), "{}", err.message);
+    }
+
+    /// A `baseline` document's batch carries a `DiffFlamegraph`; its two
+    /// sides' totals surface next to the septuple levels.
+    #[test]
+    fn flamegraph_envelope_decodes_a_differential_batch() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let diff_json = serde_json::json!({
+            "names": ["total", "main"],
+            "levels": [[0, 100, 0, 0, 50, 0, 0], [0, 100, 100, 0, 50, 50, 1]],
+            "left_ticks": 100,
+            "right_ticks": 50,
+            "total": 150,
+            "max_self": 100,
+            "locations": [null, null]
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("flamegraph_json", DataType::Utf8, false),
+                Field::new("truncated", DataType::Boolean, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![diff_json])),
+                Arc::new(BooleanArray::from(vec![false])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 13, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "baseline": { "from": "0", "to": "30" },
+            "result": "flamegraph", "pipeline": []
+        });
+        let response = build_envelope(
+            "flamegraph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        let flamegraph = response.flamegraph.expect("flamegraph envelope is present");
+        assert_eq!(flamegraph.levels[1], vec![0, 100, 100, 0, 50, 50, 1]);
+        assert_eq!(flamegraph.total, 150);
+        assert_eq!(flamegraph.baseline_total, Some(100));
+        assert_eq!(flamegraph.comparison_total, Some(50));
+        let wire = serde_json::to_value(&flamegraph).unwrap();
+        assert_eq!(wire["baseline_total"], 100);
+    }
+
+    /// A `flamegraph_json` batch encoded before `locations` existed (no such
+    /// key at all) decodes to an empty `Vec`, not an error — the field is
+    /// additive per the "Flamegraph envelope carries per-name locations"
+    /// decision.
+    #[test]
+    fn flamegraph_envelope_without_locations_field_decodes_to_empty_vec() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let flamegraph_json = serde_json::json!({
+            "names": ["total"],
+            "levels": [[0, 0, 0, 0]],
+            "total": 0,
+            "max_self": 0
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("flamegraph_json", DataType::Utf8, false),
+                Field::new("truncated", DataType::Boolean, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![flamegraph_json])),
+                Arc::new(BooleanArray::from(vec![false])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 1, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "result": "flamegraph", "pipeline": []
+        });
+        let response = build_envelope(
+            "flamegraph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        let flamegraph = response.flamegraph.expect("flamegraph envelope is present");
+        assert_eq!(flamegraph.locations, Vec::new());
     }
 
     /// A flamegraph query that matches zero profile rows still carries
@@ -1226,6 +2980,62 @@ mod tests {
         assert!(!flamegraph.truncated);
     }
 
+    #[test]
+    fn trace_envelope_groups_rows_by_trace_id_in_first_appearance_order() {
+        use datafusion::arrow::array::{Int64Array, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+
+        let schema = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, false),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("duration_nano", DataType::Int64, true),
+        ]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![
+                Arc::new(StringArray::from(vec!["t2", "t1", "t2", "t1", "t3"])),
+                Arc::new(StringArray::from(vec![
+                    Some("a"),
+                    Some("b"),
+                    Some("c"),
+                    None,
+                    Some("e"),
+                ])),
+                Arc::new(Int64Array::from(vec![1, 2, 3, 4, 5])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 12, "from": "traces", "range": { "from": "0", "to": "60" },
+            "result": "trace", "pipeline": []
+        });
+        let window = ResolvedWindow {
+            start_ns: 0,
+            end_ns: 60,
+        };
+        let response = build_envelope("trace", window, &[batch], &document).unwrap();
+        assert!(response.rows.is_empty());
+        assert_eq!(response.columns.len(), 3);
+        let traces = response.traces.as_ref().expect("traces populated");
+        let ids: Vec<&str> = traces.iter().map(|t| t.trace_id.as_str()).collect();
+        assert_eq!(ids, ["t2", "t1", "t3"]);
+        assert_eq!(traces[0].spans.len(), 2);
+        assert_eq!(traces[1].spans[1]["span_id"], serde_json::Value::Null);
+        assert_eq!(traces[0].spans[1]["duration_nano"], serde_json::json!(3));
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["result"], "trace");
+        assert_eq!(json["traces"][0]["trace_id"], "t2");
+        assert!(json.get("rows").is_none());
+
+        let empty = build_envelope("trace", window, &[], &document).unwrap();
+        assert_eq!(empty.traces, Some(Vec::new()));
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["traces"],
+            serde_json::json!([])
+        );
+    }
+
     /// Every non-flamegraph envelope carries `flamegraph: None` — the field
     /// only ever appears for `result == "flamegraph"`.
     #[test]
@@ -1245,5 +3055,388 @@ mod tests {
         )
         .unwrap();
         assert!(response.flamegraph.is_none());
+    }
+
+    // Task 5.2 — formulas wired into POST /api/v1/query.
+
+    /// A multi-query formula body (the error-ratio scenario from D5) is
+    /// recognized by the `queries` key, authorized, and reaches the query
+    /// boundary — same fixture pattern as `metrics_source_reaches_the_query_boundary`:
+    /// this fixture has no querier, so a correctly-routed, correctly-authorized
+    /// request fails as 503 (no querier), never 400/403.
+    #[tokio::test]
+    async fn formula_request_reaches_the_query_boundary() {
+        let app = test_app().await;
+        let body = Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "queries": {
+                    "errors": {
+                        "irVersion": 1, "from": "traces",
+                        "range": { "from": "now-1h", "to": "now" }, "result": "series",
+                        "pipeline": [{ "aggregate": {
+                            "by": ["service.name"],
+                            "aggs": [{ "fn": "count", "as": "n" }],
+                            "step": "1m"
+                        } }]
+                    },
+                    "total": {
+                        "irVersion": 1, "from": "traces",
+                        "range": { "from": "now-1h", "to": "now" }, "result": "series",
+                        "pipeline": [{ "aggregate": {
+                            "by": ["service.name"],
+                            "aggs": [{ "fn": "count", "as": "n" }],
+                            "step": "1m"
+                        } }]
+                    }
+                },
+                "formulas": [{ "name": "error_ratio", "expr": "errors / total" }],
+                "result": "series"
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+
+    /// A malformed/incomplete formula document (no `formulas`) is rejected as
+    /// a client error before it ever reaches the query boundary — proof the
+    /// `queries` key alone routes into the multi-query path rather than
+    /// silently falling back to the single-query shape (which has no `from`
+    /// here and would 400 for a different reason).
+    #[tokio::test]
+    async fn formula_request_without_formulas_is_a_client_error() {
+        let app = test_app().await;
+        let body = Body::from(
+            serde_json::to_vec(&serde_json::json!({
+                "queries": {
+                    "a": {
+                        "irVersion": 1, "from": "traces",
+                        "range": { "from": "now-1h", "to": "now" }, "result": "series",
+                        "pipeline": [{ "aggregate": {
+                            "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "1m"
+                        } }]
+                    }
+                },
+                "formulas": [],
+                "result": "series"
+            }))
+            .unwrap(),
+        );
+        let resp = app
+            .clone()
+            .oneshot(post("/api/v1/query", true, body))
+            .await
+            .unwrap();
+        assert!(resp.status().is_client_error(), "got {}", resp.status());
+    }
+
+    /// Every inner query's source is authorized before any of them run — the
+    /// same [`source_read_scope`] check a single-query request goes through,
+    /// applied per named query. A request holding one authorized and one
+    /// unauthorized source must reject as a whole, not run the authorized
+    /// half first.
+    #[test]
+    fn multi_query_rejects_when_one_inner_source_is_unauthorized() {
+        let scoped = scoped_context(vec!["traces:read"]);
+        let mut queries = std::collections::BTreeMap::new();
+        queries.insert(
+            "a".to_string(),
+            QueryIrRequest {
+                ir_version: 1,
+                from: "traces".to_string(),
+                range: QueryRange {
+                    from: "now-1h".to_string(),
+                    to: "now".to_string(),
+                },
+                result: "series".to_string(),
+                fields: None,
+                pipeline: Vec::new(),
+                focus: None,
+                depth: None,
+                trace_id: None,
+                baseline: None,
+                step: None,
+                constant: None,
+                page: None,
+            },
+        );
+        queries.insert(
+            "b".to_string(),
+            QueryIrRequest {
+                ir_version: 1,
+                from: "logs".to_string(),
+                range: QueryRange {
+                    from: "now-1h".to_string(),
+                    to: "now".to_string(),
+                },
+                result: "series".to_string(),
+                fields: None,
+                pipeline: Vec::new(),
+                focus: None,
+                depth: None,
+                trace_id: None,
+                baseline: None,
+                step: None,
+                constant: None,
+                page: None,
+            },
+        );
+        assert!(check_multi_source_scopes(&scoped, &queries).is_err());
+
+        // The all-authorized case (both `traces`) is accepted.
+        let mut both_traces = std::collections::BTreeMap::new();
+        both_traces.insert("a".to_string(), queries["a"].clone());
+        let mut c = queries["a"].clone();
+        c.from = "traces".to_string();
+        both_traces.insert("c".to_string(), c);
+        assert!(check_multi_source_scopes(&scoped, &both_traces).is_ok());
+    }
+
+    // Task 5.1/5.2 — the formula evaluator's HTTP wiring: `to_multi_document`
+    // builds the same IR the evaluator runs against, and `parse_envelope`
+    // rejects anything but the six declared envelopes.
+    #[test]
+    fn to_multi_document_builds_the_declared_queries_and_formulas() {
+        let mut queries = std::collections::BTreeMap::new();
+        queries.insert(
+            "a".to_string(),
+            QueryIrRequest {
+                ir_version: 1,
+                from: "traces".to_string(),
+                range: QueryRange {
+                    from: "now-1h".to_string(),
+                    to: "now".to_string(),
+                },
+                result: "series".to_string(),
+                fields: None,
+                pipeline: vec![serde_json::json!({
+                    "aggregate": { "by": [], "aggs": [{ "fn": "count", "as": "n" }], "step": "1m" }
+                })],
+                focus: None,
+                depth: None,
+                trace_id: None,
+                baseline: None,
+                step: None,
+                constant: None,
+                page: None,
+            },
+        );
+        let req = MultiQueryIrRequest {
+            queries,
+            formulas: vec![QueryFormula {
+                name: "f".to_string(),
+                expr: "a * 2".to_string(),
+            }],
+            result: "series".to_string(),
+        };
+        let multi = to_multi_document(&req).unwrap();
+        assert_eq!(multi.queries.len(), 1);
+        assert_eq!(multi.formulas.len(), 1);
+        assert_eq!(multi.formulas[0].expr, "a * 2");
+        assert_eq!(multi.result, common::query_ir::ResultEnvelope::Series);
+    }
+
+    #[test]
+    fn parse_envelope_rejects_an_unknown_result() {
+        assert!(parse_envelope("bogus").is_err());
+        assert_eq!(
+            parse_envelope("scalar").unwrap(),
+            common::query_ir::ResultEnvelope::Scalar
+        );
+        assert_eq!(
+            parse_envelope("series").unwrap(),
+            common::query_ir::ResultEnvelope::Series
+        );
+    }
+
+    // otel-native-schema D11 — metric Series and the scalar envelope.
+
+    use datafusion::arrow::array::{ArrayRef, Float64Array, RecordBatch, StringArray};
+    use std::sync::Arc;
+
+    fn frame(columns: Vec<(&str, ArrayRef)>) -> RecordBatch {
+        RecordBatch::try_from_iter(columns).unwrap()
+    }
+
+    fn buckets(ns: Vec<i64>) -> ArrayRef {
+        Arc::new(datafusion::arrow::array::TimestampNanosecondArray::from(ns))
+    }
+
+    #[test]
+    fn a_scalar_frame_serializes_as_label_less_points() {
+        let batch = frame(vec![
+            ("bucket", buckets(vec![60, 120])),
+            ("value", Arc::new(Float64Array::from(vec![1.5, f64::NAN]))),
+        ]);
+        let window = ResolvedWindow {
+            start_ns: 60,
+            end_ns: 120,
+        };
+        let doc = serde_json::json!({});
+        let response = build_envelope("scalar", window, &[batch], &doc).unwrap();
+        let json = serde_json::to_value(&response).unwrap();
+        assert_eq!(json["result"], "scalar");
+        assert_eq!(json["points"], serde_json::json!([[60, 1.5], [120, null]]));
+        assert!(json.get("series").is_none());
+        let empty = build_envelope("scalar", window, &[], &doc).unwrap();
+        assert_eq!(
+            serde_json::to_value(&empty).unwrap()["points"],
+            serde_json::json!([])
+        );
+    }
+
+    #[test]
+    fn a_series_frame_decodes_its_label_set() {
+        let labels = [
+            r#"{"code":"200","metric.name":"m"}"#,
+            r#"{"code":"500","metric.name":"m"}"#,
+        ];
+        let batch = frame(vec![
+            ("bucket", buckets(vec![60, 60, 120])),
+            (
+                "__labels",
+                Arc::new(StringArray::from(vec![labels[0], labels[1], labels[0]])),
+            ),
+            ("value", Arc::new(Float64Array::from(vec![1.0, 2.0, 3.0]))),
+        ]);
+        let window = ResolvedWindow {
+            start_ns: 60,
+            end_ns: 120,
+        };
+        let response = build_envelope("series", window, &[batch], &serde_json::json!({})).unwrap();
+        let json = serde_json::to_value(&response.series).unwrap();
+        assert_eq!(
+            json,
+            serde_json::json!([
+                { "labels": { "code": "200", "metric.name": "m" }, "points": [[60, 1.0], [120, 3.0]] },
+                { "labels": { "code": "500", "metric.name": "m" }, "points": [[60, 2.0]] }
+            ])
+        );
+    }
+
+    fn series_frame(labels: Vec<&str>, buckets_ns: Vec<i64>, values: Vec<f64>) -> RecordBatch {
+        frame(vec![
+            ("bucket", buckets(buckets_ns)),
+            ("__labels", Arc::new(StringArray::from(labels))),
+            ("value", Arc::new(Float64Array::from(values))),
+        ])
+    }
+
+    const WINDOW: ResolvedWindow = ResolvedWindow {
+        start_ns: 60,
+        end_ns: 120,
+    };
+
+    #[test]
+    fn a_malformed_label_set_is_an_internal_error() {
+        let batch = series_frame(vec!["{not json"], vec![60], vec![1.0]);
+        let err = build_envelope("series", WINDOW, &[batch], &serde_json::json!({})).unwrap_err();
+        assert_eq!(err.status, StatusCode::INTERNAL_SERVER_ERROR);
+    }
+
+    /// Two series whose label sets collide (e.g. after `rate` drops
+    /// `metric.name`) cannot be told apart, as in Prometheus.
+    #[test]
+    fn two_series_sharing_a_label_set_at_one_instant_is_a_bad_request() {
+        let set = r#"{"code":"200"}"#;
+        let batch = series_frame(vec![set, set], vec![60, 60], vec![1.0, 2.0]);
+        let err = build_envelope("series", WINDOW, &[batch], &serde_json::json!({})).unwrap_err();
+        assert_eq!(err.status, StatusCode::BAD_REQUEST);
+        assert!(
+            err.message.contains("several series share the label set"),
+            "{}",
+            err.message
+        );
+    }
+
+    /// JSON has no NaN or infinity: such a value is `null`.
+    #[test]
+    fn nan_and_infinities_serialize_as_null() {
+        let values = vec![f64::NAN, f64::INFINITY, f64::NEG_INFINITY];
+        let batch = series_frame(vec!["{}"; 3], vec![60, 90, 120], values.clone());
+        let doc = serde_json::json!({});
+        let series = build_envelope("series", WINDOW, &[batch], &doc).unwrap();
+        let points = serde_json::to_value(&series.series[0].points).unwrap();
+        assert_eq!(
+            points,
+            serde_json::json!([[60, null], [90, null], [120, null]])
+        );
+        let scalar = frame(vec![
+            ("bucket", buckets(vec![60, 90, 120])),
+            ("value", Arc::new(Float64Array::from(values))),
+        ]);
+        let scalar = build_envelope("scalar", WINDOW, &[scalar], &doc).unwrap();
+        let points = serde_json::to_value(&scalar.points).unwrap();
+        assert_eq!(
+            points,
+            serde_json::json!([[60, null], [90, null], [120, null]])
+        );
+    }
+
+    #[test]
+    fn series_and_scalar_envelopes_carry_the_evaluation_step() {
+        let doc = |pipeline| {
+            serde_json::json!({
+                "irVersion": 10, "from": "metrics", "range": { "from": 0, "to": 1 },
+                "result": "series", "step": "1m", "pipeline": pipeline
+            })
+        };
+        let batch = series_frame(vec!["{}"], vec![60], vec![1.0]);
+        let step = |result, doc| {
+            build_envelope(result, WINDOW, std::slice::from_ref(&batch), &doc)
+                .unwrap()
+                .step_ns
+        };
+        let minute = Some(60_000_000_000);
+        assert_eq!(step("series", doc(serde_json::json!([]))), minute);
+        let sample = serde_json::json!([{ "sample": { "fn": "latest", "step": "30s" } }]);
+        assert_eq!(step("series", doc(sample)), Some(30_000_000_000));
+        let quantile = serde_json::json!([
+            { "histogram_quantile": { "q": 0.9, "step": "5m", "as": "p90" } }
+        ]);
+        assert_eq!(step("series", doc(quantile)), Some(300_000_000_000));
+        let fraction = serde_json::json!([
+            { "sample": { "fn": "latest", "step": "30s" } },
+            { "histogram_fraction": { "lower": 0.0, "upper": 1.0, "step": "2m", "as": "f" } }
+        ]);
+        assert_eq!(step("series", doc(fraction)), Some(120_000_000_000));
+        let scalar = frame(vec![
+            ("bucket", buckets(vec![60])),
+            ("value", Arc::new(Float64Array::from(vec![1.0]))),
+        ]);
+        let scalar = build_envelope("scalar", WINDOW, &[scalar], &doc(serde_json::json!([])));
+        assert_eq!(scalar.unwrap().step_ns, minute);
+    }
+
+    /// `step`/`constant` survive the router's re-serialization into the
+    /// querier ticket, and a pseudo-source needs no read scope.
+    #[tokio::test]
+    async fn a_pseudo_source_scalar_request_reaches_the_query_boundary() {
+        let req: QueryIrRequest = serde_json::from_value(serde_json::json!({
+            "irVersion": 10, "from": "constant", "range": { "from": "now-1h", "to": "now" },
+            "result": "scalar", "step": "1m", "constant": 2.5
+        }))
+        .unwrap();
+        let round_trip = serde_json::to_value(&req).unwrap();
+        assert_eq!(
+            (round_trip["step"].clone(), round_trip["constant"].clone()),
+            ("1m".into(), 2.5.into())
+        );
+
+        let app = test_app().await;
+        let resp = app
+            .clone()
+            .oneshot(post(
+                "/api/v1/query",
+                true,
+                Body::from(round_trip.to_string()),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(resp.status(), StatusCode::SERVICE_UNAVAILABLE);
     }
 }

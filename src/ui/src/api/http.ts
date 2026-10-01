@@ -26,11 +26,6 @@ export class ApiError extends Error {
   }
 }
 
-/** True when the error is a throttling failure (retries exhausted). */
-export function isThrottledError(err: unknown): err is ApiError {
-  return err instanceof ApiError && err.status === 429;
-}
-
 /** The user-facing throttling message, naming the wait when known. */
 export function throttlingMessage(retryAfterMs: number | null): string {
   if (retryAfterMs == null) return "Rate limited — please retry shortly";
@@ -117,7 +112,14 @@ export type RetryDecision =
   | { action: "retry"; waitMs: number }
   | { action: "fail-fast" };
 
-const IDEMPOTENT = new Set(["GET", "HEAD", "PUT", "DELETE", "OPTIONS", "TRACE"]);
+const IDEMPOTENT = new Set([
+  "GET",
+  "HEAD",
+  "PUT",
+  "DELETE",
+  "OPTIONS",
+  "TRACE",
+]);
 
 export function isIdempotentMethod(method: string): boolean {
   return IDEMPOTENT.has(method.toUpperCase());
@@ -244,17 +246,57 @@ function classifyFetchError(err: unknown): RetryFailure | null {
   return null;
 }
 
+/** Ceiling (ms) on a single request attempt before `retryingFetch` aborts it
+ * as timed out. Sooner than the backend querier's own 60s timeout, so a hung
+ * call fails with a clear, retryable error instead of leaving the UI loading
+ * forever. */
+export const REQUEST_TIMEOUT_MS = 30_000;
+
+/** An `AbortSignal` that fires (as a `TimeoutError`, so it retries the same
+ * way a transient failure does) after `ms`, or as soon as `signal` aborts —
+ * whichever comes first. Built on `setTimeout` rather than the native
+ * `AbortSignal.timeout`/`AbortSignal.any` so tests can drive it with fake
+ * timers, the same way `abortableSleep` already does. */
+function withRequestTimeout(
+  signal: AbortSignal | null,
+  ms: number,
+): { signal: AbortSignal; clear: () => void } {
+  const controller = new AbortController();
+  if (signal?.aborted) {
+    controller.abort(abortError(signal));
+    return { signal: controller.signal, clear: () => {} };
+  }
+  const timer = setTimeout(() => {
+    controller.abort(
+      new DOMException("The request timed out.", "TimeoutError"),
+    );
+  }, ms);
+  const onAbort = () => controller.abort(abortError(signal!));
+  signal?.addEventListener("abort", onAbort, { once: true });
+  return {
+    signal: controller.signal,
+    clear: () => {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", onAbort);
+    },
+  };
+}
+
 /**
  * `fetch` with the shared retry-on-throttle policy. Installed on the
  * generated client (`client.setConfig({ fetch: retryingFetch })`) and used
  * by the remaining raw-fetch callers, so every UI request backs off the same
  * way. Respects the request's `AbortSignal` during waits; the final response
  * (or error) is returned unchanged so callers keep their own status handling.
+ * Each attempt is also bounded by `requestTimeoutMs` — a hung attempt is
+ * aborted and, for an idempotent method, retried like any other transient
+ * failure.
  */
 export async function retryingFetch(
   input: RequestInfo | URL,
   init?: RequestInit,
   policy: RetryPolicy = DEFAULT_RETRY_POLICY,
+  requestTimeoutMs: number = REQUEST_TIMEOUT_MS,
 ): Promise<Response> {
   // The generated client hands over one `Request`; raw callers pass
   // `(url, init)`. A `Request` body is single-use, so a fresh clone is sent
@@ -264,8 +306,15 @@ export async function retryingFetch(
   const request = input instanceof Request ? input : null;
   const signal = init?.signal ?? request?.signal ?? null;
   const method = (init?.method ?? request?.method ?? "GET").toUpperCase();
-  const send = () =>
-    request ? fetch(request.clone()) : fetch(input as string | URL, init);
+  const send = () => {
+    const timeout = withRequestTimeout(signal, requestTimeoutMs);
+    const result = request
+      ? // eslint-disable-next-line no-restricted-syntax -- the generated client's transport
+        fetch(new Request(request.clone(), { signal: timeout.signal }))
+      : // eslint-disable-next-line no-restricted-syntax -- the generated client's transport
+        fetch(input as string | URL, { ...init, signal: timeout.signal });
+    return result.finally(timeout.clear);
+  };
   let attempt = 1;
   let waitedMs = 0;
   for (;;) {
@@ -317,6 +366,70 @@ export async function retryingFetch(
  * credentials) that a login can fix. */
 export function isAuthError(err: unknown): boolean {
   return err instanceof ApiError && err.status === 401;
+}
+
+/** True when the error is an authorization failure: valid credentials, but
+ * refused for this tenant/resource. Unlike a 401, signing in again can't fix
+ * it, so callers that redirect to `/login` on `isAuthError` should not treat
+ * this the same way. */
+export function isForbiddenError(err: unknown): boolean {
+  return err instanceof ApiError && err.status === 403;
+}
+
+// --- generated-client result unwrapping -------------------------------------
+
+/** Result envelope produced by the generated SDK (`RequestResult` with the
+ * default `fields` response style): `data` on success, `error` set (and
+ * `response` unset on a network/URL error) otherwise. */
+export interface SdkResult<T> {
+  data?: T;
+  error?: unknown;
+  response?: Response;
+}
+
+/** Unwrap a generated SDK result into its data, re-throwing failures as
+ * `ApiError` (with the HTTP status, so `isAuthError(401)` keeps working).
+ * `fallbackMessage` supplies the message shown when nothing better is
+ * found; `messageFromError`, when given, is tried first against the raw
+ * `error` value — each caller's own precedence for reading a message out of
+ * the error body (`error_description`, `error`, ...). `toError`, when given,
+ * builds the thrown error instead, for an `ApiError` subclass that keeps
+ * more of the body. */
+export function unwrapSdkResult<T>(
+  result: SdkResult<T>,
+  fallbackMessage: (status: number) => string,
+  messageFromError?: (error: unknown) => string | undefined,
+  toError: (
+    message: string,
+    status: number,
+    error: unknown,
+    retryAfterMs: number | null,
+  ) => ApiError = (message, status, _error, retryAfterMs) =>
+    new ApiError(message, status, retryAfterMs),
+): T {
+  const { data, error, response } = result;
+  if (error !== undefined || !response?.ok) {
+    const status = response?.status ?? 0;
+    const message = messageFromError?.(error) ?? fallbackMessage(status);
+    throw toError(message, status, error, retryAfterMsFrom(response));
+  }
+  return data as T;
+}
+
+/** The message of the router's `{ error: string }` envelope, if any. */
+export function errorEnvelopeMessage(error: unknown): string | undefined {
+  return (error as { error?: string } | undefined)?.error;
+}
+
+/** {@link unwrapSdkResult} for the router's `{ error: string }` envelope
+ * (the management and GitHub surfaces): the envelope's message when it has
+ * one, else `"<what> request failed (<status>)"`. */
+export function unwrapErrorEnvelope<T>(result: SdkResult<T>, what: string): T {
+  return unwrapSdkResult(
+    result,
+    (status) => `${what} request failed (${status})`,
+    errorEnvelopeMessage,
+  );
 }
 
 /** Render a caught value as a display string, whether or not it's an Error. */

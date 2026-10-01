@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import type { Flamebearer } from "../api/pyroscope";
+import type { Flamebearer } from "../api/profileTypes";
 import {
   ancestorPath,
   collapseSmallFrames,

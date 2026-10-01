@@ -1,10 +1,4 @@
-use axum::{
-    Router,
-    http::StatusCode,
-    middleware,
-    response::IntoResponse,
-    routing::{delete, get, post, put},
-};
+use axum::{Router, http::StatusCode, middleware, response::IntoResponse, routing::get};
 use common::auth::{Authenticator, TenantContext, admin_auth_middleware, auth_middleware};
 use common::catalog::Catalog;
 use common::config::Configuration;
@@ -13,34 +7,59 @@ use common::schema_registry::SchemaResolver;
 use std::sync::Arc;
 
 pub mod cli;
+pub mod demo_guard;
 pub mod discovery;
 pub mod endpoints;
+pub mod github;
+pub mod oidc;
 pub mod openapi;
 pub mod read_scope;
+pub mod source_context;
 pub mod ui;
 
-/// The shared state that route handlers depend on.
+/// Mount prefixes for the Tempo/Loki/Prometheus/Pyroscope compatibility
+/// dialects and the native query surface, shared between the `.nest()` calls
+/// in [`create_router`] and `endpoints::session::connection_info`'s
+/// `ConnectionQuery`/`ConnectionCompat` response, so the two can never drift.
+pub(crate) const TEMPO_PREFIX: &str = "/tempo";
+pub(crate) const LOKI_PREFIX: &str = "/loki";
+pub(crate) const PROMETHEUS_PREFIX: &str = "/prometheus";
+pub(crate) const PYROSCOPE_PREFIX: &str = "/pyroscope";
+pub(crate) const QUERY_IR_PATH: &str = "/api/v1/query";
+pub(crate) const OPENAPI_JSON_PATH: &str = "/api/v1/openapi.json";
+
+/// Concrete state that every route handler depends on: the catalog, service
+/// registry, configuration, and authenticator, plus the shared handles built
+/// from them.
+type SharedCatalogManager = tokio::sync::OnceCell<Arc<common::CatalogManager>>;
+
+/// The router's `CatalogManager`, carrying the catalog as tenant source.
 ///
-/// This is the narrow interface every handler needs from the router's state —
-/// the catalog, service registry, configuration, and authenticator. Handlers
-/// are generic over this trait so they can be exercised against any state that
-/// satisfies the contract; [`RouterAppState`] is the concrete implementation
-/// used in production and tests.
-pub trait RouterState: std::fmt::Debug + Clone + Send + Sync + 'static {
-    fn catalog(&self) -> &Catalog;
-    fn service_registry(&self) -> &discovery::ServiceRegistry;
-    fn config(&self) -> &Configuration;
-    fn authenticator(&self) -> &Arc<Authenticator>;
-    /// The schema-registry resolver. The default builds a fresh (uncached)
-    /// resolver over the catalog, which is fine for tests; the app state
-    /// overrides it with a shared instance whose per-tenant index persists
-    /// across requests.
-    fn schema_resolver(&self) -> SchemaResolver {
-        SchemaResolver::new(self.catalog().clone())
-    }
+/// Built once on first use and reused, so per-request callers stop opening a
+/// new connection pool each time. Nothing in it needs invalidating: the
+/// router's config is fixed at startup, and tenants/datasets are read live
+/// from the tenant source on every lookup. A failed build is not cached.
+async fn catalog_manager(state: &RouterAppState) -> anyhow::Result<Arc<common::CatalogManager>> {
+    state
+        .catalog_manager
+        .get_or_try_init(|| async {
+            let manager = common::CatalogManager::new(state.config().clone()).await?;
+            Ok(Arc::new(
+                manager.with_tenant_source(Arc::new(state.catalog().clone())),
+            ))
+        })
+        .await
+        .cloned()
 }
 
-/// Concrete [`RouterState`] holding the router's shared handles.
+/// A [`common::tenant_api::TenantApi`] over the shared `CatalogManager`.
+pub(crate) async fn tenant_api(
+    state: &RouterAppState,
+) -> anyhow::Result<common::tenant_api::TenantApi> {
+    Ok(common::tenant_api::TenantApi::new(state.config().clone())
+        .with_catalog_manager(catalog_manager(state).await?))
+}
+
 #[derive(Clone)]
 pub struct RouterAppState {
     catalog: Catalog,
@@ -48,6 +67,11 @@ pub struct RouterAppState {
     config: Configuration,
     authenticator: Arc<Authenticator>,
     schema_resolver: SchemaResolver,
+    processor_registry: Arc<common::processors::ProcessorRegistry>,
+    oidc: Option<Arc<oidc::OidcRuntime>>,
+    github: Option<Arc<github::GitHubApp>>,
+    source_context: Option<Arc<source_context::SourceContextService>>,
+    catalog_manager: Arc<SharedCatalogManager>,
 }
 
 impl std::fmt::Debug for RouterAppState {
@@ -57,6 +81,9 @@ impl std::fmt::Debug for RouterAppState {
             .field("service_registry", &self.service_registry)
             .field("config", &"Configuration")
             .field("authenticator", &"Authenticator")
+            .field("oidc", &self.oidc.is_some())
+            .field("github", &self.github.is_some())
+            .field("source_context", &self.source_context.is_some())
             .finish()
     }
 }
@@ -71,13 +98,23 @@ impl RouterAppState {
             Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
+        let oidc = spawn_oidc_runtime(&config);
+        let (github, source_context) = build_github(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
+            processor_registry: Arc::new(common::processors::ProcessorRegistry::new(
+                Arc::new(catalog.clone()),
+                &config.processors,
+            )),
             catalog,
             service_registry,
             config,
             authenticator,
+            oidc,
+            github,
+            source_context,
+            catalog_manager: Arc::default(),
         }
     }
 
@@ -95,45 +132,188 @@ impl RouterAppState {
             Authenticator::new(config.auth.clone(), Arc::new(catalog.clone()))
                 .with_mcp_resource(config.mcp.oauth.resource_url.clone()),
         );
+        let oidc = spawn_oidc_runtime(&config);
+        let (github, source_context) = build_github(&config);
 
         Self {
             schema_resolver: SchemaResolver::new(catalog.clone()),
+            processor_registry: Arc::new(common::processors::ProcessorRegistry::new(
+                Arc::new(catalog.clone()),
+                &config.processors,
+            )),
             catalog,
             service_registry,
             config,
             authenticator,
+            oidc,
+            github,
+            source_context,
+            catalog_manager: Arc::default(),
         }
     }
 }
 
-impl RouterState for RouterAppState {
-    fn catalog(&self) -> &Catalog {
+/// Spawn the OIDC runtime for a configured `[auth.oidc]` section (change:
+/// oidc-login). Discovery runs entirely in the background (design decision
+/// 10), so this never blocks or fails construction — an unreachable issuer
+/// leaves the runtime in its `unavailable` state until a retry succeeds.
+fn spawn_oidc_runtime(config: &Configuration) -> Option<Arc<oidc::OidcRuntime>> {
+    config.auth.oidc.clone().map(oidc::OidcRuntime::spawn)
+}
+
+/// Build the GitHub App client, and the source-context service wrapping it,
+/// for a configured `[github]` section (change: github-app-source-context).
+/// `GitHubApp::new` fails only on a private key that can't be parsed; since
+/// [`common::config::GitHubAppConfig::validate`] already parses that key at
+/// config-validation time (startup), this should never fail in practice —
+/// but if it somehow does, this logs the failure and degrades both handles
+/// to `None` rather than panicking: the GitHub endpoints then answer 404,
+/// same as when `[github]` is absent. The two handles always agree (`Some`
+/// together or `None` together) because the second is built from the
+/// first — the one place that invariant needs to hold.
+fn build_github(
+    config: &Configuration,
+) -> (
+    Option<Arc<github::GitHubApp>>,
+    Option<Arc<source_context::SourceContextService>>,
+) {
+    let Some(github_config) = config.github.clone() else {
+        return (None, None);
+    };
+    let app = match github::GitHubApp::new(github_config) {
+        Ok(app) => Arc::new(app),
+        Err(error) => {
+            tracing::error!(%error, "[github] is configured but the GitHub App client failed to build; GitHub endpoints will answer 404");
+            return (None, None);
+        }
+    };
+    let source_context = Arc::new(source_context::SourceContextService::new(app.clone()));
+    (Some(app), Some(source_context))
+}
+
+impl RouterAppState {
+    pub fn catalog(&self) -> &Catalog {
         &self.catalog
     }
 
-    fn service_registry(&self) -> &discovery::ServiceRegistry {
+    pub fn service_registry(&self) -> &discovery::ServiceRegistry {
         &self.service_registry
     }
 
-    fn config(&self) -> &Configuration {
+    pub fn config(&self) -> &Configuration {
         &self.config
     }
 
-    fn authenticator(&self) -> &Arc<Authenticator> {
+    pub fn authenticator(&self) -> &Arc<Authenticator> {
         &self.authenticator
     }
 
-    fn schema_resolver(&self) -> SchemaResolver {
+    pub fn schema_resolver(&self) -> SchemaResolver {
         self.schema_resolver.clone()
+    }
+
+    pub fn processor_registry(&self) -> Arc<common::processors::ProcessorRegistry> {
+        self.processor_registry.clone()
+    }
+
+    /// Share an externally built processor registry, e.g. the one the
+    /// acceptor's ingest handlers use, so processors created through the
+    /// router are visible on the ingest path.
+    pub fn with_processor_registry(
+        mut self,
+        registry: Arc<common::processors::ProcessorRegistry>,
+    ) -> Self {
+        self.processor_registry = registry;
+        self
+    }
+
+    pub fn oidc(&self) -> Option<&Arc<oidc::OidcRuntime>> {
+        self.oidc.as_ref()
+    }
+
+    pub fn github(&self) -> Option<&Arc<github::GitHubApp>> {
+        self.github.as_ref()
+    }
+
+    pub fn source_context(&self) -> Option<&Arc<source_context::SourceContextService>> {
+        self.source_context.as_ref()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn catalog_manager_cell(&self) -> &SharedCatalogManager {
+        &self.catalog_manager
     }
 }
 
+/// Whether `path` (relative to the `/api/v1` nest — `Router::nest` strips
+/// that prefix from the request `Uri` before an inner layer like
+/// `auth_layer` below ever sees it) is eligible for the break-glass
+/// `admin_api_key` bypass: the tenant-identity resource
+/// (`/tenants`, `/tenants/{id}`), human users (`/users`), or the
+/// tenant-scoped API-key/dataset/membership admin surface under
+/// `/tenants/{id}/...` — matched by route, not by any privilege-scope path
+/// segment (issue #1561 follow-up: there is no `/manage` or `/manage/admin`
+/// prefix left to match on). Every other `/tenants/{id}/...` path (`tables`,
+/// `schemas`, `source-context`, and `github-installations`) is deliberately
+/// excluded: those stay tenant-credential-only. `github-installations` in
+/// particular must stay out of this bypass even though its handlers accept
+/// the admin key — they take `TenantContextExtractor`, which this bypass
+/// leaves unset, and 500 without it (issue #1685 follow-up).
+fn is_admin_key_bypass_path(path: &str) -> bool {
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    matches!(
+        segments.as_slice(),
+        ["tenants"]
+            | ["tenants", _]
+            | ["tenants", _, "api-keys", ..]
+            | ["tenants", _, "datasets", ..]
+            | ["tenants", _, "memberships", ..]
+            | ["users"]
+    )
+}
+
 /// Create a new router instance with all routes configured
-pub fn create_router<S: RouterState>(state: S) -> Router {
-    // Create auth middleware layer
+pub fn create_router(state: RouterAppState) -> Router {
+    // The break-glass admin key, hashed once, shared by the auth layer's
+    // admin-key bypass below and by `ops_auth_layer`.
+    let admin_key_hash = state
+        .config()
+        .auth
+        .admin_api_key
+        .as_ref()
+        .map(|key| Authenticator::hash_api_key(key));
+
+    // Create auth middleware layer. `admin_key_hash` lets a break-glass
+    // request through untouched (no TenantContext attached) when it targets
+    // one of `is_admin_key_bypass_path`'s routes and its bearer token
+    // matches the configured admin key — regardless of whether `X-Tenant-ID`
+    // is *also* present (the MCP server forwards both) — the normal auth
+    // flow this layer otherwise runs requires a tenant for every bearer
+    // credential, which the admin key deliberately has none of. The actual
+    // authorization decision (does this request in fact carry that key, or
+    // an instance-admin tenant credential) stays in each handler via
+    // `endpoints::authz`, not here.
     let authenticator = state.authenticator().clone();
+    let admin_key_bypass_hash = admin_key_hash.clone();
     let auth_layer =
-        middleware::from_fn(move |req, next| auth_middleware(authenticator.clone(), req, next));
+        middleware::from_fn(move |req: axum::extract::Request, next: middleware::Next| {
+            let authenticator = authenticator.clone();
+            let admin_key_hash = admin_key_bypass_hash.clone();
+            async move {
+                if is_admin_key_bypass_path(req.uri().path())
+                    && let Some(expected_hash) = admin_key_hash.as_deref()
+                    && let Some(token) = req
+                        .headers()
+                        .get(axum::http::header::AUTHORIZATION)
+                        .and_then(|v| v.to_str().ok())
+                        .and_then(|v| v.strip_prefix("Bearer "))
+                    && Authenticator::hash_api_key(token) == expected_hash
+                {
+                    return next.run(req).await;
+                }
+                auth_middleware(authenticator, req, next).await
+            }
+        });
 
     // Per-tenant query request-rate limiting, applied after authentication
     // (it reads the TenantContext the auth layer inserts). Tenants without
@@ -160,19 +340,14 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             }
         });
 
-    // Create admin auth middleware layer
-    let admin_key_hash = state
-        .config()
-        .auth
-        .admin_api_key
-        .as_ref()
-        .map(|key| Authenticator::hash_api_key(key));
+    // Create admin auth middleware layer for operational control (compaction).
+    // The old dedicated admin API was removed (issue #1561): instance-admin
+    // operations live on the same plain resource paths as everything else
+    // (`/api/v1/tenants`, `/api/v1/users`, ...), authenticated per-handler via
+    // `endpoints::authz::require_instance_admin_or_admin_key` (which also
+    // accepts this same admin key, tenant-less — see `auth_layer` above).
     let admin_authenticator = state.authenticator().clone();
-    // Operational control uses the same administrative authentication as the
-    // admin API; clone the inputs before the admin layer moves them.
-    let ops_key_hash = admin_key_hash.clone();
-    let ops_authenticator = admin_authenticator.clone();
-    let admin_auth_layer = middleware::from_fn(move |req, next| {
+    let ops_auth_layer = middleware::from_fn(move |req, next| {
         admin_auth_middleware(
             admin_key_hash.clone(),
             admin_authenticator.clone(),
@@ -180,53 +355,6 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
             next,
         )
     });
-    let ops_auth_layer = middleware::from_fn(move |req, next| {
-        admin_auth_middleware(ops_key_hash.clone(), ops_authenticator.clone(), req, next)
-    });
-
-    // Build admin routes
-    let admin_router = Router::new()
-        .route("/tenants", get(endpoints::admin::list_tenants::<S>))
-        .route("/tenants", post(endpoints::admin::create_tenant::<S>))
-        .route(
-            "/tenants/{tenant_id}",
-            get(endpoints::admin::get_tenant::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}",
-            put(endpoints::admin::update_tenant::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}",
-            delete(endpoints::admin::delete_tenant::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}/api-keys",
-            get(endpoints::admin::list_api_keys::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}/api-keys",
-            post(endpoints::admin::create_api_key::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}/api-keys/{key_id}",
-            delete(endpoints::admin::revoke_api_key::<S>)
-                .patch(endpoints::admin::update_api_key::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}/datasets",
-            get(endpoints::admin::list_datasets::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}/datasets",
-            post(endpoints::admin::create_dataset::<S>),
-        )
-        .route(
-            "/tenants/{tenant_id}/datasets/{dataset_id}",
-            delete(endpoints::admin::delete_dataset::<S>),
-        )
-        .route("/users", post(endpoints::admin::create_user::<S>))
-        .layer(admin_auth_layer);
 
     // Serialize the OpenAPI spec once at startup; served as pre-encoded bytes
     // so each request only bumps a refcount instead of re-serializing (and
@@ -246,7 +374,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .route("/health", get(health_check))
         // OpenAPI spec endpoint (public)
         .route(
-            "/api/v1/openapi.json",
+            OPENAPI_JSON_PATH,
             get(move || {
                 let spec = openapi_spec.clone();
                 async move {
@@ -259,7 +387,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Protected routes with authentication
         .nest(
-            "/tempo",
+            TEMPO_PREFIX,
             endpoints::tempo::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("traces", req, next)
@@ -269,7 +397,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Pyroscope-compatible profile query API
         .nest(
-            "/pyroscope",
+            PYROSCOPE_PREFIX,
             endpoints::pyroscope::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("profiles", req, next)
@@ -279,7 +407,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Loki-compatible log query API (LogQL)
         .nest(
-            "/loki",
+            LOKI_PREFIX,
             endpoints::logql::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("logs", req, next)
@@ -289,7 +417,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         )
         // Prometheus-compatible metrics query API (PromQL)
         .nest(
-            "/prometheus",
+            PROMETHEUS_PREFIX,
             endpoints::promql::router()
                 .layer(middleware::from_fn(|req, next| {
                     read_scope::require_read_scope("metrics", req, next)
@@ -310,23 +438,37 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         // UI session login/logout (public; sets/clears the HttpOnly session
         // cookie the auth middleware accepts in place of auth headers)
         .merge(endpoints::session::router())
+        // OIDC SSO login (public; change: oidc-login) — 404s on every route
+        // when `[auth.oidc]` is absent.
+        .merge(endpoints::oidc::router())
+        // GitHub App install-flow callback (public; change:
+        // github-app-source-context) — 404s when `[github]` is absent (see
+        // `endpoints::github::callback`).
+        .merge(endpoints::github::callback_router())
         // OAuth 2.1 authorization-server endpoints (public: discovery + DCR are
         // unauthenticated by spec; empty unless mcp.oauth.enabled)
         .merge(oauth_routes)
         // Admin routes with admin authentication
-        .nest("/api/v1/admin", admin_router)
         // Operational control (compaction), admin-authenticated, proxied to the
         // compactor's Flight do_action surface.
         .nest(
             "/api/v1/ops",
-            endpoints::ops::router::<S>().layer(ops_auth_layer),
+            endpoints::ops::router().layer(ops_auth_layer),
         )
         .nest(
-            "/api/v1",
+            endpoints::links::API_V1,
             endpoints::tenant::router()
-                .nest("/manage", endpoints::management::router())
+                .merge(endpoints::tenants::router())
+                .merge(endpoints::source_context::router())
+                .merge(endpoints::management::router())
+                .merge(endpoints::github::manage_router())
+                .route("/schema", get(endpoints::schema::get_schema))
                 .nest("/schema", endpoints::schema::router())
-                .route("/whoami", get(endpoints::session::whoami::<S>))
+                .merge(endpoints::processors::router())
+                .merge(endpoints::eval_sets::router())
+                .merge(endpoints::evals::router())
+                .route("/whoami", get(endpoints::session::whoami))
+                .route("/connection", get(endpoints::session::connection_info))
                 .merge(endpoints::query::router())
                 .layer(query_rate_layer)
                 .layer(auth_layer),
@@ -338,6 +480,13 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
         .fallback_service(ui::service_from_env(
             &state.config().self_monitoring.frontend,
             &state.config().self_monitoring.environment,
+        ))
+        // Demo-account write guard (change: demo-mode): a no-op unless
+        // `[demo]` is enabled, and a no-op for every session but the demo
+        // user's own — see `demo_guard` for the allowlist.
+        .layer(middleware::from_fn_with_state(
+            state.clone(),
+            demo_guard::demo_write_guard,
         ))
         // OTel HTTP server metrics for all routes (no-op unless
         // self-monitoring is enabled)
@@ -354,9 +503,7 @@ pub fn create_router<S: RouterState>(state: S) -> Router {
 }
 
 /// Create a new Flight service instance
-pub fn create_flight_service<S: RouterState>(
-    state: S,
-) -> endpoints::flight::SignalDBFlightService<S> {
+pub fn create_flight_service(state: RouterAppState) -> endpoints::flight::SignalDBFlightService {
     endpoints::flight::SignalDBFlightService::new(state)
 }
 
@@ -382,6 +529,30 @@ mod tests {
     use axum::http::Request;
     use common::config::{ApiKeyConfig, TenantConfig, TenantLimits};
     use tower::ServiceExt;
+
+    #[test]
+    fn admin_key_bypass_path_covers_plain_tenant_and_user_resource_paths() {
+        assert!(is_admin_key_bypass_path("/tenants"));
+        assert!(is_admin_key_bypass_path("/tenants/acme"));
+        assert!(is_admin_key_bypass_path("/users"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/api-keys"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/api-keys/key-1"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/datasets"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/datasets/staging"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/memberships"));
+        assert!(is_admin_key_bypass_path("/tenants/acme/memberships/u1"));
+
+        // Data-plane tenant paths, and github-installations (whose handlers
+        // take a TenantContextExtractor and 500 without one — issue #1685
+        // follow-up), stay tenant-credential-only.
+        assert!(!is_admin_key_bypass_path("/tenants/acme/tables"));
+        assert!(!is_admin_key_bypass_path("/tenants/acme/schemas"));
+        assert!(!is_admin_key_bypass_path("/tenants/acme/source-context"));
+        assert!(!is_admin_key_bypass_path(
+            "/tenants/acme/github-installations"
+        ));
+        assert!(!is_admin_key_bypass_path("/query"));
+    }
 
     fn test_config(query_limit: Option<u32>) -> Configuration {
         let mut config = Configuration::default();
@@ -508,6 +679,29 @@ mod tests {
         for _ in 0..40 {
             assert_eq!(echo_request(&app).await, StatusCode::OK);
         }
+    }
+
+    #[tokio::test]
+    async fn admin_key_request_to_github_installations_route_is_unauthorized_not_500() {
+        // github-installations handlers take a TenantContextExtractor, which
+        // 500s when no TenantContext is attached — so the admin-key bypass
+        // must not cover this route (issue #1685 follow-up).
+        let catalog = Catalog::new("sqlite::memory:").await.unwrap();
+        let mut config = test_config(None);
+        config.auth.admin_api_key = Some("admin-secret".to_string());
+        let app = create_router(RouterAppState::new(catalog, config));
+
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/api/v1/tenants/acme/github-installations")
+                    .header("authorization", "Bearer admin-secret")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]

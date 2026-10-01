@@ -1,3 +1,2 @@
-// Unit tests that remain in writer crate
+// Cargo test binary for the writer crate's `tests/` integration tests.
 mod test_e2e_simple;
-mod test_retry_logic;

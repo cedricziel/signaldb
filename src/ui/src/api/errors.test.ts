@@ -9,6 +9,7 @@ import {
   type ErrorGroup,
 } from "./errors";
 import { client } from "./gen/client.gen";
+import type { IrStage } from "./gen";
 
 beforeEach(() => {
   client.setConfig({ baseUrl: "http://localhost" });
@@ -38,6 +39,24 @@ function tableResponse(rows: unknown[][]) {
 }
 
 describe("buildErrorGroupDoc", () => {
+  it("appends extra scope stages after the service pin", () => {
+    const scope: IrStage[] = [
+      {
+        where: {
+          field: "deployment.environment.name",
+          op: "eq",
+          value: "prod",
+        },
+      },
+    ];
+    const doc = buildErrorGroupDoc("logs", range, "cart", scope);
+    expect(doc.pipeline?.slice(0, 3)).toEqual([
+      { where: { field: "exception.type", op: "exists" } },
+      { where: { field: "service.name", op: "eq", value: "cart" } },
+      ...scope,
+    ]);
+  });
+
   it("groups spans with a captured exception by type/message/service/escaped", () => {
     const doc = buildErrorGroupDoc("traces", range);
     expect(doc.from).toBe("traces");
@@ -79,6 +98,24 @@ describe("buildErrorGroupDoc", () => {
         ],
       },
     });
+  });
+
+  it("pins to one service when a service name is given", () => {
+    const doc = buildErrorGroupDoc("traces", range, "checkout");
+    expect(doc.pipeline).toContainEqual({
+      where: { field: "service.name", op: "eq", value: "checkout" },
+    });
+  });
+
+  it("leaves the service unconstrained when no service name is given", () => {
+    const doc = buildErrorGroupDoc("traces", range);
+    expect(
+      (doc.pipeline ?? []).some(
+        (s) =>
+          "where" in s &&
+          (s.where as { field?: string }).field === "service.name",
+      ),
+    ).toBe(false);
   });
 });
 
@@ -124,6 +161,28 @@ describe("fetchErrorGroups", () => {
       },
     ]);
     expect(result.truncated).toBe(false);
+  });
+
+  it("pins both sources to the given service name", async () => {
+    const bodies: unknown[] = [];
+    const fetchMock = vi.fn().mockImplementation(async (input: unknown) => {
+      const req = input as Request;
+      bodies.push(JSON.parse(await req.clone().text()));
+      return jsonResponse(tableResponse([]));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    await fetchErrorGroups(range, "checkout");
+    for (const body of bodies as Array<{
+      pipeline: Array<{ where?: { field?: string; value?: unknown } }>;
+    }>) {
+      expect(
+        body.pipeline.some(
+          (s) =>
+            s.where?.field === "service.name" && s.where.value === "checkout",
+        ),
+      ).toBe(true);
+    }
   });
 });
 
