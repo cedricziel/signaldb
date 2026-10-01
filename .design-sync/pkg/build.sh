@@ -14,6 +14,7 @@ AppShell:features/shell/AppShell
 CaseView:features/evals/CaseView
 CatalogView:features/catalog/CatalogView
 CompareView:features/evals/CompareView
+ConnectPanel:features/shell/ConnectPanel
 ConsentView:features/consent/ConsentView
 ErrorsView:features/errors/ErrorsView
 EvalSetsView:features/evals/EvalSetsView
@@ -64,8 +65,9 @@ rm -rf dist && mkdir -p dist
   # page header, palette, user menu, banners) and route-only views like the
   # schema storage explorer. Story-local CSS compiles empty, so without these
   # lines any story rendering them previews unstyled. Order mirrors the app's
-  # import order (UserMenu.css before AppNav.css).
-  for c in features/shell/UserMenu.css features/shell/AppNav.css \
+  # import order (ConnectPanel.css, then UserMenu.css before AppNav.css).
+  for c in features/shell/ConnectPanel.css \
+    features/shell/UserMenu.css features/shell/AppNav.css \
     features/shell/RouteErrorBoundary.css features/shell/UnsavedChangesGuard.css \
     features/schema/SchemaExplorer.css; do
     echo "import \"../$UI/$c\";"

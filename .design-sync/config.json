@@ -98,6 +98,11 @@
       "viewport": "1280x800",
       "primaryStory": "Default"
     },
+    "ConnectPanel": {
+      "cardMode": "single",
+      "viewport": "1280x800",
+      "primaryStory": "Default"
+    },
     "GitHubIntegration": {
       "cardMode": "single",
       "viewport": "1280x800",
