@@ -1843,6 +1843,17 @@ the spans that witness the match.
   would pass through a span outside the range does not match: a `child` whose
   parent is out of range has no parent, and a `descendant` chain broken by an
   out-of-range span is broken. Widen the `range` to see the whole trace.
+  When the stage has a relation and an evaluated trace shows such a cut, the
+  response carries a [`match_incomplete_trace`](#warnings) warning and the
+  rows stay the same. A trace counts when one of its in-range spans names a
+  `parent_span_id` that no in-range span of the trace carries (the parent
+  started before the range, or was never ingested), or when an in-range span
+  ends strictly after `range.to` (its children may start after the range). A
+  trace dropped because a span-set had no in-range span is not counted, and
+  clock skew can hide a cut, so a missing warning does not prove the traces
+  are whole. Skew also works the other way: with `range.to` at `now`, a span
+  whose clock runs ahead can end just after `now` and raise the warning for a
+  trace that is complete.
   `sibling` compares `parent_span_id` values, so two spans whose shared parent
   is out of range are still siblings. A parent cycle (corrupt data) is cut
   at the span with the smallest `span_id` in the cycle, which then counts as
