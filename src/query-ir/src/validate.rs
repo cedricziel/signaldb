@@ -214,6 +214,7 @@ fn infer<'a>(
         )));
     }
     check_graph_scoping(doc)?;
+    check_flamegraph_baseline(doc, &registry)?;
     // 1b. Introspection documents (`describe` + `metadata`) never reach a plan:
     // they are answered from declared schema, the schema registries and
     // maintained statistics. Legality is checked here so this validator and the
@@ -858,6 +859,7 @@ impl InferCtx<'_> {
             focus: None,
             depth: None,
             trace_id: None,
+            baseline: None,
             step: self.doc.step.clone(),
             constant: sub.constant,
         };
@@ -1614,6 +1616,7 @@ impl InferCtx<'_> {
             focus: None,
             depth: None,
             trace_id: None,
+            baseline: None,
             step: None,
             constant: None,
         };
@@ -2215,6 +2218,21 @@ fn check_graph_scoping(doc: &Document) -> Result<(), IrError> {
         }
     }
     Ok(())
+}
+
+/// `baseline` is a sibling of `result` like the graph scoping fields, so it
+/// parses on any envelope; it only means something to `flamegraph`.
+fn check_flamegraph_baseline(doc: &Document, registry: &OperatorRegistry) -> Result<(), IrError> {
+    let Some(baseline) = &doc.baseline else {
+        return Ok(());
+    };
+    if doc.result != ResultEnvelope::Flamegraph {
+        return Err(IrError::Invalid(
+            "baseline is only valid with the flamegraph result envelope".to_string(),
+        ));
+    }
+    require_feature(registry, Feature::FlamegraphBaseline, "flamegraph baseline")?;
+    check_window("baseline", baseline)
 }
 
 /// Resolve the document's source against the registry.
@@ -3046,6 +3064,50 @@ mod tests {
         );
     }
 
+    fn baseline_flamegraph_doc(version: i64) -> serde_json::Value {
+        json!({
+            "irVersion": version, "from": "profiles",
+            "range": { "from": "now-1h", "to": "now" },
+            "baseline": { "from": "now-2h", "to": "now-1h" },
+            "result": "flamegraph",
+            "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "checkout" } }]
+        })
+    }
+
+    #[test]
+    fn flamegraph_with_a_baseline_validates_at_v13() {
+        let document = doc(baseline_flamegraph_doc(13));
+        assert_eq!(document.minimum_ir_version(), 13);
+        validate(&document, &SourceRegistry::core(), &profiles_resolver())
+            .expect("a v13 flamegraph with a baseline validates");
+    }
+
+    #[test]
+    fn flamegraph_baseline_below_v13_names_the_version() {
+        let document = doc(baseline_flamegraph_doc(12));
+        let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("baseline") && m.contains("irVersion 13")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn baseline_is_rejected_on_a_non_flamegraph_envelope() {
+        let mut document = baseline_flamegraph_doc(13);
+        document["result"] = json!("rows");
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("baseline")),
+            "got {err:?}"
+        );
+    }
+
     #[test]
     fn an_inverted_absolute_range_is_rejected() {
         let err = validate_json(json!({
@@ -3068,6 +3130,38 @@ mod tests {
         .unwrap_err();
         assert!(
             matches!(err, IrError::Invalid(ref m) if m.contains("range.from")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_inverted_relative_baseline_is_rejected() {
+        let mut document = baseline_flamegraph_doc(13);
+        document["baseline"] = json!({ "from": "now-1h", "to": "now-2h" });
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("baseline.from")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn baseline_bounds_must_be_timestamps() {
+        let mut document = baseline_flamegraph_doc(13);
+        document["baseline"]["from"] = json!("yesterday");
+        let err = validate(
+            &doc(document),
+            &SourceRegistry::core(),
+            &profiles_resolver(),
+        )
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Coercion { ref field, .. } if field == "baseline.from"),
             "got {err:?}"
         );
     }
@@ -3596,13 +3690,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(13, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(14, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 13,
-                    max: 12,
+                    found: 14,
+                    max: 13,
                     ..
                 }
             ),

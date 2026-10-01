@@ -35,7 +35,7 @@ use common::attrs::expr::typed_compat_attr_expr;
 use common::attrs::expr::typed_home_expr;
 use common::attrs::expr::typed_home_filter_expr;
 use common::flight::{CorrelateReport, CorrelateWindowReport};
-use common::profile::aggregate_profiles_to_flamegraph;
+use common::profile::{aggregate_profiles_to_diff_flamegraph, aggregate_profiles_to_flamegraph};
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
     FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Match, Parser, Predicate,
@@ -992,7 +992,10 @@ impl IrService {
     }
 
     /// A `flamegraph` document. The aggregation happens in Rust, not
-    /// DataFusion (see `apply_projection`'s flamegraph carve-out).
+    /// DataFusion (see `apply_projection`'s flamegraph carve-out). With a
+    /// `baseline` the same pipeline is read over both windows, one after the
+    /// other so a query never holds two scans at once, and merged into one
+    /// differential flamegraph; the reported window is `range`'s.
     async fn query_flamegraph(
         &self,
         doc: &Document,
@@ -1001,10 +1004,24 @@ impl IrService {
         dataset_slug: &str,
     ) -> Result<(Vec<RecordBatch>, ResolvedWindow, CorrelateReport), QuerierError> {
         let cap = FLAMEGRAPH_PROFILE_CAP;
-        let (rows, window) = self
+        let (comparison, window) = self
             .flamegraph_rows(doc, now_ns, tenant_slug, dataset_slug, cap)
             .await?;
-        let batch = encode_flamegraph_batch(&rows, cap)?;
+        let batch = match &doc.baseline {
+            None => encode_flamegraph_batch(&comparison, cap)?,
+            Some(baseline) => {
+                resolve_range("baseline", baseline, now_ns)?;
+                let baseline_doc = Document {
+                    range: baseline.clone(),
+                    baseline: None,
+                    ..doc.clone()
+                };
+                let (baseline, _) = self
+                    .flamegraph_rows(&baseline_doc, now_ns, tenant_slug, dataset_slug, cap)
+                    .await?;
+                encode_diff_flamegraph_batch(&baseline, &comparison, cap)?
+            }
+        };
         Ok((vec![batch], window, CorrelateReport::default()))
     }
 
@@ -1494,6 +1511,7 @@ async fn lower_frame_stage(
         focus: None,
         depth: None,
         trace_id: None,
+        baseline: None,
         step: doc.step.clone(),
         constant: sub.constant,
     };
@@ -1518,12 +1536,40 @@ fn encode_flamegraph_batch(
     batches: &[RecordBatch],
     cap: usize,
 ) -> Result<RecordBatch, QuerierError> {
+    let (profiles, truncated) = capped_profiles(batches, cap);
+    flamegraph_batch(&aggregate_profiles_to_flamegraph(&profiles), truncated)
+}
+
+/// [`encode_flamegraph_batch`] for a `baseline` document: the cap applies to
+/// each side, and `truncated` is set when either side hit it.
+fn encode_diff_flamegraph_batch(
+    baseline: &[RecordBatch],
+    comparison: &[RecordBatch],
+    cap: usize,
+) -> Result<RecordBatch, QuerierError> {
+    let (baseline, baseline_truncated) = capped_profiles(baseline, cap);
+    let (comparison, comparison_truncated) = capped_profiles(comparison, cap);
+    flamegraph_batch(
+        &aggregate_profiles_to_diff_flamegraph(&baseline, &comparison),
+        baseline_truncated || comparison_truncated,
+    )
+}
+
+fn capped_profiles(
+    batches: &[RecordBatch],
+    cap: usize,
+) -> (Vec<common::model::profile::Profile>, bool) {
     let mut profiles: Vec<_> = batches.iter().flat_map(batch_to_models).collect();
     let truncated = profiles.len() > cap;
     profiles.truncate(cap);
+    (profiles, truncated)
+}
 
-    let flamegraph = aggregate_profiles_to_flamegraph(&profiles);
-    let flamegraph_json = serde_json::to_string(&flamegraph).map_err(|e| {
+fn flamegraph_batch(
+    flamegraph: &impl serde::Serialize,
+    truncated: bool,
+) -> Result<RecordBatch, QuerierError> {
+    let flamegraph_json = serde_json::to_string(flamegraph).map_err(|e| {
         QuerierError::QueryFailed(datafusion::error::DataFusionError::Execution(format!(
             "failed to encode flamegraph: {e}"
         )))
@@ -7792,6 +7838,35 @@ mod tests {
         assert!(!flamegraph.names.contains(&"baz".to_string()));
     }
 
+    /// A `baseline` reads the same `where` over a second window: p1 (t=10,
+    /// main/foo 100) is the baseline, p2 (t=20, main/bar 50) the comparison.
+    #[tokio::test]
+    async fn flamegraph_with_a_baseline_diffs_the_two_windows() {
+        let svc = IrService::new(profiles_ctx())
+            .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 13, "from": "profiles", "range": { "from": 15, "to": 1000 },
+                "baseline": { "from": 0, "to": 15 },
+                "result": "flamegraph",
+                "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
+            }),
+            now_ns: 0,
+        };
+        let (batches, window, _) = svc.query(&params, "t", "d").await.unwrap();
+        assert_eq!((window.start_ns, window.end_ns), (15, 1000));
+        let json = batches[0]
+            .column_by_name("flamegraph_json")
+            .and_then(|c| c.as_any().downcast_ref::<StringArray>())
+            .unwrap();
+        let diff: common::profile::DiffFlamegraph = serde_json::from_str(json.value(0)).unwrap();
+        assert_eq!((diff.left_ticks, diff.right_ticks), (100, 50));
+        assert_eq!(diff.total, 150);
+        assert!(diff.names.contains(&"foo".to_string()));
+        assert!(diff.names.contains(&"bar".to_string()));
+        assert!(!truncated_from_batch(&batches[0]));
+    }
+
     /// The cap keeps the newest profiles: p2 (t=20) over p1 (t=10).
     #[tokio::test]
     async fn flamegraph_rows_keep_the_newest_profiles() {
@@ -7826,6 +7901,25 @@ mod tests {
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
             matches!(err, QuerierError::InvalidInput(ref m) if m.contains("range.from")),
+            "got {err:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_inverted_baseline_window_is_invalid_input() {
+        let svc = IrService::new(profiles_ctx())
+            .with_canonical_types(Arc::new(StaticLookup(canonical_types(&[]))));
+        let params = IrQueryParams {
+            document: serde_json::json!({
+                "irVersion": 13, "from": "profiles", "range": { "from": "now-1h", "to": "now" },
+                "baseline": { "from": "now", "to": 0 },
+                "result": "flamegraph", "pipeline": []
+            }),
+            now_ns: 1_000,
+        };
+        let err = svc.query(&params, "t", "d").await.unwrap_err();
+        assert!(
+            matches!(err, QuerierError::InvalidInput(ref m) if m.contains("baseline.from")),
             "got {err:?}"
         );
     }

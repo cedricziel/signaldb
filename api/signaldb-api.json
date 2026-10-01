@@ -7985,6 +7985,22 @@
           "locations"
         ],
         "properties": {
+          "baseline_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Present iff the document declared `baseline`: the baseline window's\ntotal."
+          },
+          "comparison_total": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Present iff the document declared `baseline`: the `range` window's\ntotal."
+          },
           "levels": {
             "type": "array",
             "items": {
@@ -7994,7 +8010,7 @@
                 "format": "int64"
               }
             },
-            "description": "One entry per depth level; each level is a flat sequence of\n`[offset_delta, total, self, name_index]` quadruples."
+            "description": "One entry per depth level; each level is a flat sequence of\n`[offset_delta, total, self, name_index]` quadruples, or with a\n`baseline`, `[offset_delta_baseline, total_baseline, self_baseline,\noffset_delta, total, self, name_index]` septuples."
           },
           "locations": {
             "type": "array",
@@ -8025,7 +8041,7 @@
           "total": {
             "type": "integer",
             "format": "int64",
-            "description": "Total value of the root (sum of all samples)."
+            "description": "Total value of the root (sum of all samples); with a `baseline`, the\nsum of both windows."
           },
           "truncated": {
             "type": "boolean",
@@ -11099,6 +11115,17 @@
           "result"
         ],
         "properties": {
+          "baseline": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QueryRange",
+                "description": "`flamegraph` only (irVersion 13+): a second window the same `where`\nstages are read over, turning the result into a differential\nflamegraph of `baseline` against `range`."
+              }
+            ]
+          },
           "constant": {
             "type": [
               "number",
