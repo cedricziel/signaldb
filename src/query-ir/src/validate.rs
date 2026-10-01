@@ -40,7 +40,7 @@ use super::stage::{
     HistogramQuantile, JoinKind, Labels, Map, Match, Order, OverTime, OverTimeFn, Rank, Reduce,
     ReduceFn, Sample, SampleFn, Stage, SubDocument, is_expression_string,
 };
-use super::value::{ValueType, coerce, parse_duration_ns};
+use super::value::{Literal, TimestampLiteral, ValueType, coerce, parse_duration_ns};
 use super::version::{Feature, OperatorRegistry};
 
 /// Errors raised while validating an IR document.
@@ -1950,8 +1950,33 @@ fn coerce_for(field: &str, value: &serde_json::Value, target: &ValueType) -> Res
 }
 
 fn check_range(range: &Range) -> Result<(), IrError> {
-    coerce_for("range.from", &range.from, &ValueType::TimestampNs)?;
-    coerce_for("range.to", &range.to, &ValueType::TimestampNs)?;
+    check_window("range", range)
+}
+
+/// Both bounds of a window must be timestamp literals, and when both are
+/// absolute (or both relative to the same `now`) `from` must not be after
+/// `to`. A mixed pair is checked once the router resolves it.
+fn check_window(name: &str, range: &Range) -> Result<(), IrError> {
+    let instant = |bound: &str, value| match coerce(value, &ValueType::TimestampNs) {
+        Ok(Literal::Timestamp(ts)) => Ok(ts),
+        _ => Err(IrError::Coercion {
+            field: format!("{name}.{bound}"),
+            value: value.to_string(),
+            target: ValueType::TimestampNs.to_string(),
+        }),
+    };
+    let from = instant("from", &range.from)?;
+    let to = instant("to", &range.to)?;
+    let comparable = matches!(
+        (&from, &to),
+        (TimestampLiteral::Absolute(_), TimestampLiteral::Absolute(_))
+            | (TimestampLiteral::Relative(_), TimestampLiteral::Relative(_))
+    );
+    if comparable && from.resolve(0) > to.resolve(0) {
+        return Err(IrError::Invalid(format!(
+            "{name}.from must not be after {name}.to"
+        )));
+    }
     Ok(())
 }
 
@@ -3017,6 +3042,32 @@ mod tests {
         let err = validate(&document, &SourceRegistry::core(), &profiles_resolver()).unwrap_err();
         assert!(
             matches!(err, IrError::IllegalStage { ref stage, .. } if stage == "extract"),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_inverted_absolute_range_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": 1000, "to": 10 },
+            "result": "rows", "pipeline": []
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("range.from") && m.contains("after")),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn an_inverted_relative_range_is_rejected() {
+        let err = validate_json(json!({
+            "irVersion": 1, "from": "logs", "range": { "from": "now", "to": "now-1h" },
+            "result": "rows", "pipeline": []
+        }))
+        .unwrap_err();
+        assert!(
+            matches!(err, IrError::Invalid(ref m) if m.contains("range.from")),
             "got {err:?}"
         );
     }

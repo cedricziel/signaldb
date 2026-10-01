@@ -8029,7 +8029,7 @@
           },
           "truncated": {
             "type": "boolean",
-            "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the first 1,000 of them."
+            "description": "`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows\nmatched — a row-count cap, not a byte-size one — and the flamegraph\nwas aggregated over only the newest 1,000 of them (by timestamp)."
           }
         }
       },

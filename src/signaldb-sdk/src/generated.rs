@@ -1533,7 +1533,7 @@ pub mod types {
         pub total: i64,
         /**`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
         matched — a row-count cap, not a byte-size one — and the flamegraph
-        was aggregated over only the first 1,000 of them.*/
+        was aggregated over only the newest 1,000 of them (by timestamp).*/
         pub truncated: bool,
     }
     impl FlamegraphResult {
