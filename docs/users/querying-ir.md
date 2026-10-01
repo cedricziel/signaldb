@@ -719,10 +719,10 @@ legitimate query, and would otherwise fail a quiet dashboard panel.
 
 `match_incomplete_trace` is raised when a
 [`match`](#structural-matching-the-match-stage-ir-v12) stage with a relation
-evaluated traces that the `range` visibly cut (see its Semantics). The
-message counts the matched traces that may be missing witness spans and the
-unmatched traces that may have matched over a wider range, and names up to
-three example trace ids:
+saw traces that the `range` visibly cut (see its Semantics for which traces
+count). The message counts the matched traces that may be missing witness
+spans and the unmatched traces that may match over a wider range. It names up
+to three example trace ids:
 
 ```jsonc
 { "code": "match_incomplete_trace",
@@ -1883,10 +1883,22 @@ the spans that witness the match.
   rows stay the same. A trace counts when one of its in-range spans names a
   `parent_span_id` that no in-range span of the trace carries (the parent
   started before the range, or was never ingested), or when an in-range span
-  ends strictly after `range.to` (its children may start after the range). A
-  trace dropped because a span-set had no in-range span is not counted, and
-  clock skew can hide a cut, so a missing warning does not prove the traces
-  are whole. Skew also works the other way: with `range.to` at `now`, a span
+  ends strictly after `range.to` (its children may start after the range).
+  A trace with no in-range span for some span-set cannot match, so it is not
+  evaluated, and a cheaper test decides whether it counts. It counts as
+  unmatched when at least one of its in-range spans is in some span-set and
+  either none of its in-range spans is a root (an empty or all-zero
+  `parent_span_id`), or an in-range span ends after `range.to`. Two cases
+  differ from the evaluated test:
+  - A trace with an in-range root and another span whose parent is missing
+    is not counted.
+  - A trace whose spans all have remote parents (its root lives in a service
+    that is not instrumented) has no root at any range, so it counts every
+    time, and widening `range` never clears the warning for it.
+
+  A trace whose in-range spans are in no span-set is not counted. Clock skew
+  can also hide a cut, so a missing warning does not prove the traces are
+  whole. Skew also works the other way: with `range.to` at `now`, a span
   whose clock runs ahead can end just after `now` and raise the warning for a
   trace that is complete.
   `sibling` compares `parent_span_id` values, so two spans whose shared parent
