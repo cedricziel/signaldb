@@ -700,7 +700,7 @@ mod tests {
                     }
                 }
                 let body = if status == "200 OK" {
-                    b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\",\"granted_tenants\":[{\"tenant_id\":\"acme\"}]}".as_slice()
+                    b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\",\"memberships\":[],\"datasets\":[],\"default_dataset\":null,\"granted_tenants\":[{\"tenant_id\":\"acme\"}]}".as_slice()
                 } else {
                     b"".as_slice()
                 };

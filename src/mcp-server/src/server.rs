@@ -6766,7 +6766,7 @@ mod tests {
                     .starts_with("GET /api/v1/whoami "),
                 "server_info must validate through the router whoami endpoint"
             );
-            let body = b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\",\"granted_tenants\":[{\"tenant_id\":\"acme\"}]}";
+            let body = b"{\"user_id\":\"user-a\",\"tenant\":{\"id\":\"acme\",\"slug\":\"acme\",\"name\":\"Acme\"},\"dataset\":\"production\",\"memberships\":[],\"datasets\":[],\"default_dataset\":null,\"granted_tenants\":[{\"tenant_id\":\"acme\"}]}";
             socket
                 .write_all(
                     format!(
@@ -6860,7 +6860,7 @@ mod tests {
                     .starts_with("GET /api/v1/whoami "),
                 "discover_datasets must call whoami first"
             );
-            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","granted_tenants":[{"tenant_id":"acme"}]}"#;
+            let body = br#"{"user_id":"user-a","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","memberships":[],"datasets":[],"default_dataset":null,"granted_tenants":[{"tenant_id":"acme"}]}"#;
             socket
                 .write_all(
                     format!(
@@ -6951,7 +6951,7 @@ mod tests {
             let (mut socket, _) = listener.accept().await.expect("accept whoami request");
             let mut request = [0_u8; 4096];
             let _request_len = socket.read(&mut request).await.expect("read request");
-            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","dataset_ids":["production"],"granted_tenants":[{"tenant_id":"acme","dataset_ids":["production"]}]}"#;
+            let body = br#"{"user_id":"","tenant":{"id":"acme","slug":"acme","name":"Acme Corp"},"dataset":"production","memberships":[],"datasets":[],"default_dataset":null,"dataset_ids":["production"],"granted_tenants":[{"tenant_id":"acme","dataset_ids":["production"]}]}"#;
             socket
                 .write_all(
                     format!(

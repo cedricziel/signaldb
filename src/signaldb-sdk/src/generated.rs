@@ -744,6 +744,42 @@ pub mod types {
             value.parse()
         }
     }
+    ///`POST /ui/session`'s request body.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateSessionRequest {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        pub email: ::std::string::String,
+        pub password: ::std::string::String,
+        /**Optional: when omitted, the response lists the user's tenant
+        memberships so the UI can offer a picker (auto-selected when the
+        user belongs to exactly one tenant).*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub tenant: ::std::option::Option<::std::string::String>,
+    }
+    impl CreateSessionRequest {
+        pub fn builder() -> builder::CreateSessionRequest {
+            Default::default()
+        }
+    }
+    /**`POST /ui/session`'s response: the tenant/dataset the login landed in and
+    every membership the session may enter.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct CreateSessionResponse {
+        ///Always serialized, `null` alongside `tenant`.
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
+        pub dataset: ::std::option::Option<::std::string::String>,
+        pub memberships: ::std::vec::Vec<SessionMembership>,
+        /**Always serialized, `null` when the user must still pick a tenant
+        from `memberships`.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
+        pub tenant: ::std::option::Option<::std::string::String>,
+    }
+    impl CreateSessionResponse {
+        pub fn builder() -> builder::CreateSessionResponse {
+            Default::default()
+        }
+    }
     ///`CreateTenantRequest`
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct CreateTenantRequest {
@@ -5261,6 +5297,17 @@ pub mod types {
             Default::default()
         }
     }
+    /**The `{"error": "..."}` body the session and whoami endpoints answer
+    failures with.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct SessionErrorBody {
+        pub error: ::std::string::String,
+    }
+    impl SessionErrorBody {
+        pub fn builder() -> builder::SessionErrorBody {
+            Default::default()
+        }
+    }
     /**A tenant the signed-in user may select, returned by `POST /ui/session`
     and `GET /ui/session` so the UI can present a picker instead of
     free-text tenant entry.*/
@@ -6121,22 +6168,68 @@ pub mod types {
             value.parse()
         }
     }
-    ///The non-null identity contract shared by generated clients.
+    ///`WhoamiDataset`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct WhoamiDataset {
+        pub id: ::std::string::String,
+        pub is_default: bool,
+        pub slug: ::std::string::String,
+    }
+    impl WhoamiDataset {
+        pub fn builder() -> builder::WhoamiDataset {
+            Default::default()
+        }
+    }
+    ///`GET /api/v1/whoami`'s response.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct WhoamiIdentityResponse {
+        /**Dataset resolved by the authentication middleware from the requested
+        header or the tenant default.*/
         pub dataset: ::std::string::String,
-        /**The credential's own dataset-set restriction, if any; `null`/absent
-        means unrestricted. See [`WhoamiResponse::dataset_ids`].*/
+        /**The credential's own dataset-set restriction (`TenantContext::
+        api_key_dataset_ids`), if any; `null`/absent means unrestricted.
+        Callers that need to know which of `datasets` they may actually
+        query (e.g. the MCP `discover_datasets`/`tenant_list_tables` tools)
+        read this rather than assuming every listed dataset is reachable.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub dataset_ids: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
-        ///See [`WhoamiResponse::granted_tenants`].
+        ///The tenant's datasets, narrowed to the credential's own restriction.
+        pub datasets: ::std::vec::Vec<WhoamiDataset>,
+        /**Always serialized, `null` when the tenant (or the credential's
+        restriction) has no default dataset.*/
+        #[serde(deserialize_with = "::std::option::Option::deserialize")]
+        pub default_dataset: ::std::option::Option<::std::string::String>,
+        /**Every tenant this specific credential's grant reaches (change:
+        mcp-multi-tenant-oauth-grants D5) — a one-element array equal to
+        `tenant`/`dataset_ids` for a single-tenant credential (API key or
+        single-tenant OAuth grant), or every tenant in the grant for a
+        multi-tenant OAuth credential. Distinct from `memberships`, which
+        lists every tenant the *human user* belongs to regardless of what
+        this credential was scoped to.*/
         pub granted_tenants: ::std::vec::Vec<GrantedTenant>,
+        /**Every tenant the human user belongs to (every tenant, as admin, for
+        an instance admin); empty for API key credentials.*/
+        pub memberships: ::std::vec::Vec<WhoamiMembership>,
         pub tenant: WhoamiTenant,
-        ///Stable authenticated user ID. Empty for API key credentials.
+        ///The signed-in human user; absent for API key credentials.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub user: ::std::option::Option<WhoamiUser>,
+        ///Authenticated human user ID. Empty for API key credentials.
         pub user_id: ::std::string::String,
     }
     impl WhoamiIdentityResponse {
         pub fn builder() -> builder::WhoamiIdentityResponse {
+            Default::default()
+        }
+    }
+    ///`WhoamiMembership`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct WhoamiMembership {
+        pub role: MembershipRole,
+        pub tenant_id: ::std::string::String,
+    }
+    impl WhoamiMembership {
+        pub fn builder() -> builder::WhoamiMembership {
             Default::default()
         }
     }
@@ -6149,6 +6242,20 @@ pub mod types {
     }
     impl WhoamiTenant {
         pub fn builder() -> builder::WhoamiTenant {
+            Default::default()
+        }
+    }
+    ///`WhoamiUser`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct WhoamiUser {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub display_name: ::std::option::Option<::std::string::String>,
+        pub email: ::std::string::String,
+        pub id: ::std::string::String,
+        pub is_instance_admin: bool,
+    }
+    impl WhoamiUser {
+        pub fn builder() -> builder::WhoamiUser {
             Default::default()
         }
     }
@@ -8806,6 +8913,171 @@ pub mod types {
                 Self {
                     dataset_ids: Ok(value.dataset_ids),
                     tenant_id: Ok(value.tenant_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct CreateSessionRequest {
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            password: ::std::result::Result<::std::string::String, ::std::string::String>,
+            tenant: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for CreateSessionRequest {
+            fn default() -> Self {
+                Self {
+                    dataset: Ok(Default::default()),
+                    email: Err("no value supplied for email".to_string()),
+                    password: Err("no value supplied for password".to_string()),
+                    tenant: Ok(Default::default()),
+                }
+            }
+        }
+        impl CreateSessionRequest {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn email<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.email = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn password<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.password = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for password: {e}"));
+                self
+            }
+            pub fn tenant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<CreateSessionRequest> for super::CreateSessionRequest {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: CreateSessionRequest,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset: value.dataset?,
+                    email: value.email?,
+                    password: value.password?,
+                    tenant: value.tenant?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::CreateSessionRequest> for CreateSessionRequest {
+            fn from(value: super::CreateSessionRequest) -> Self {
+                Self {
+                    dataset: Ok(value.dataset),
+                    email: Ok(value.email),
+                    password: Ok(value.password),
+                    tenant: Ok(value.tenant),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct CreateSessionResponse {
+            dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            memberships: ::std::result::Result<
+                ::std::vec::Vec<super::SessionMembership>,
+                ::std::string::String,
+            >,
+            tenant: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for CreateSessionResponse {
+            fn default() -> Self {
+                Self {
+                    dataset: Err("no value supplied for dataset".to_string()),
+                    memberships: Err("no value supplied for memberships".to_string()),
+                    tenant: Err("no value supplied for tenant".to_string()),
+                }
+            }
+        }
+        impl CreateSessionResponse {
+            pub fn dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dataset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dataset: {e}"));
+                self
+            }
+            pub fn memberships<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::SessionMembership>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.memberships = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for memberships: {e}"));
+                self
+            }
+            pub fn tenant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<CreateSessionResponse> for super::CreateSessionResponse {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: CreateSessionResponse,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dataset: value.dataset?,
+                    memberships: value.memberships?,
+                    tenant: value.tenant?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::CreateSessionResponse> for CreateSessionResponse {
+            fn from(value: super::CreateSessionResponse) -> Self {
+                Self {
+                    dataset: Ok(value.dataset),
+                    memberships: Ok(value.memberships),
+                    tenant: Ok(value.tenant),
                 }
             }
         }
@@ -20629,6 +20901,46 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct SessionErrorBody {
+            error: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for SessionErrorBody {
+            fn default() -> Self {
+                Self {
+                    error: Err("no value supplied for error".to_string()),
+                }
+            }
+        }
+        impl SessionErrorBody {
+            pub fn error<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.error = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for error: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<SessionErrorBody> for super::SessionErrorBody {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: SessionErrorBody,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    error: value.error?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::SessionErrorBody> for SessionErrorBody {
+            fn from(value: super::SessionErrorBody) -> Self {
+                Self {
+                    error: Ok(value.error),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct SessionMembership {
             name: ::std::result::Result<::std::string::String, ::std::string::String>,
             role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
@@ -23109,15 +23421,97 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct WhoamiDataset {
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            is_default: ::std::result::Result<bool, ::std::string::String>,
+            slug: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for WhoamiDataset {
+            fn default() -> Self {
+                Self {
+                    id: Err("no value supplied for id".to_string()),
+                    is_default: Err("no value supplied for is_default".to_string()),
+                    slug: Err("no value supplied for slug".to_string()),
+                }
+            }
+        }
+        impl WhoamiDataset {
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn is_default<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.is_default = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for is_default: {e}"));
+                self
+            }
+            pub fn slug<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.slug = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for slug: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<WhoamiDataset> for super::WhoamiDataset {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: WhoamiDataset,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    id: value.id?,
+                    is_default: value.is_default?,
+                    slug: value.slug?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::WhoamiDataset> for WhoamiDataset {
+            fn from(value: super::WhoamiDataset) -> Self {
+                Self {
+                    id: Ok(value.id),
+                    is_default: Ok(value.is_default),
+                    slug: Ok(value.slug),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct WhoamiIdentityResponse {
             dataset: ::std::result::Result<::std::string::String, ::std::string::String>,
             dataset_ids: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<::std::string::String>>,
                 ::std::string::String,
             >,
+            datasets:
+                ::std::result::Result<::std::vec::Vec<super::WhoamiDataset>, ::std::string::String>,
+            default_dataset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
             granted_tenants:
                 ::std::result::Result<::std::vec::Vec<super::GrantedTenant>, ::std::string::String>,
+            memberships: ::std::result::Result<
+                ::std::vec::Vec<super::WhoamiMembership>,
+                ::std::string::String,
+            >,
             tenant: ::std::result::Result<super::WhoamiTenant, ::std::string::String>,
+            user: ::std::result::Result<
+                ::std::option::Option<super::WhoamiUser>,
+                ::std::string::String,
+            >,
             user_id: ::std::result::Result<::std::string::String, ::std::string::String>,
         }
         impl ::std::default::Default for WhoamiIdentityResponse {
@@ -23125,8 +23519,12 @@ pub mod types {
                 Self {
                     dataset: Err("no value supplied for dataset".to_string()),
                     dataset_ids: Ok(Default::default()),
+                    datasets: Err("no value supplied for datasets".to_string()),
+                    default_dataset: Err("no value supplied for default_dataset".to_string()),
                     granted_tenants: Err("no value supplied for granted_tenants".to_string()),
+                    memberships: Err("no value supplied for memberships".to_string()),
                     tenant: Err("no value supplied for tenant".to_string()),
+                    user: Ok(Default::default()),
                     user_id: Err("no value supplied for user_id".to_string()),
                 }
             }
@@ -23154,6 +23552,26 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for dataset_ids: {e}"));
                 self
             }
+            pub fn datasets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::WhoamiDataset>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.datasets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for datasets: {e}"));
+                self
+            }
+            pub fn default_dataset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.default_dataset = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for default_dataset: {e}")
+                });
+                self
+            }
             pub fn granted_tenants<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<super::GrantedTenant>>,
@@ -23164,6 +23582,16 @@ pub mod types {
                 });
                 self
             }
+            pub fn memberships<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::WhoamiMembership>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.memberships = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for memberships: {e}"));
+                self
+            }
             pub fn tenant<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<super::WhoamiTenant>,
@@ -23172,6 +23600,16 @@ pub mod types {
                 self.tenant = value
                     .try_into()
                     .map_err(|e| format!("error converting supplied value for tenant: {e}"));
+                self
+            }
+            pub fn user<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::WhoamiUser>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.user = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for user: {e}"));
                 self
             }
             pub fn user_id<T>(mut self, value: T) -> Self
@@ -23193,8 +23631,12 @@ pub mod types {
                 Ok(Self {
                     dataset: value.dataset?,
                     dataset_ids: value.dataset_ids?,
+                    datasets: value.datasets?,
+                    default_dataset: value.default_dataset?,
                     granted_tenants: value.granted_tenants?,
+                    memberships: value.memberships?,
                     tenant: value.tenant?,
+                    user: value.user?,
                     user_id: value.user_id?,
                 })
             }
@@ -23204,9 +23646,67 @@ pub mod types {
                 Self {
                     dataset: Ok(value.dataset),
                     dataset_ids: Ok(value.dataset_ids),
+                    datasets: Ok(value.datasets),
+                    default_dataset: Ok(value.default_dataset),
                     granted_tenants: Ok(value.granted_tenants),
+                    memberships: Ok(value.memberships),
                     tenant: Ok(value.tenant),
+                    user: Ok(value.user),
                     user_id: Ok(value.user_id),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct WhoamiMembership {
+            role: ::std::result::Result<super::MembershipRole, ::std::string::String>,
+            tenant_id: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for WhoamiMembership {
+            fn default() -> Self {
+                Self {
+                    role: Err("no value supplied for role".to_string()),
+                    tenant_id: Err("no value supplied for tenant_id".to_string()),
+                }
+            }
+        }
+        impl WhoamiMembership {
+            pub fn role<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::MembershipRole>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.role = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for role: {e}"));
+                self
+            }
+            pub fn tenant_id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tenant_id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tenant_id: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<WhoamiMembership> for super::WhoamiMembership {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: WhoamiMembership,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    role: value.role?,
+                    tenant_id: value.tenant_id?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::WhoamiMembership> for WhoamiMembership {
+            fn from(value: super::WhoamiMembership) -> Self {
+                Self {
+                    role: Ok(value.role),
+                    tenant_id: Ok(value.tenant_id),
                 }
             }
         }
@@ -23275,6 +23775,91 @@ pub mod types {
                     id: Ok(value.id),
                     name: Ok(value.name),
                     slug: Ok(value.slug),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct WhoamiUser {
+            display_name: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            email: ::std::result::Result<::std::string::String, ::std::string::String>,
+            id: ::std::result::Result<::std::string::String, ::std::string::String>,
+            is_instance_admin: ::std::result::Result<bool, ::std::string::String>,
+        }
+        impl ::std::default::Default for WhoamiUser {
+            fn default() -> Self {
+                Self {
+                    display_name: Ok(Default::default()),
+                    email: Err("no value supplied for email".to_string()),
+                    id: Err("no value supplied for id".to_string()),
+                    is_instance_admin: Err("no value supplied for is_instance_admin".to_string()),
+                }
+            }
+        }
+        impl WhoamiUser {
+            pub fn display_name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.display_name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for display_name: {e}"));
+                self
+            }
+            pub fn email<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.email = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for email: {e}"));
+                self
+            }
+            pub fn id<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.id = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for id: {e}"));
+                self
+            }
+            pub fn is_instance_admin<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.is_instance_admin = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for is_instance_admin: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<WhoamiUser> for super::WhoamiUser {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: WhoamiUser,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    display_name: value.display_name?,
+                    email: value.email?,
+                    id: value.id?,
+                    is_instance_admin: value.is_instance_admin?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::WhoamiUser> for WhoamiUser {
+            fn from(value: super::WhoamiUser) -> Self {
+                Self {
+                    display_name: Ok(value.display_name),
+                    email: Ok(value.email),
+                    id: Ok(value.id),
+                    is_instance_admin: Ok(value.is_instance_admin),
                 }
             }
         }
@@ -24834,6 +25419,40 @@ impl Client {
     ```*/
     pub fn current_session(&self) -> builder::CurrentSession<'_> {
         builder::CurrentSession::new(self)
+    }
+    /**POST /ui/session
+
+    Validates the credentials and sets the session cookie. 200 on success,
+    401/403 with a JSON error body on invalid credentials, 400 on malformed
+    tenant/dataset IDs. The response always carries the user's memberships;
+    `tenant`/`dataset` are null when the user must still pick one (the
+    session itself is tenant-agnostic — every request re-validates the
+    `X-Tenant-ID` header against the memberships).
+
+    Sends a `POST` request to `/ui/session`
+
+    ```ignore
+    let response = client.create_session()
+        .body(body)
+        .send()
+        .await;
+    ```*/
+    pub fn create_session(&self) -> builder::CreateSession<'_> {
+        builder::CreateSession::new(self)
+    }
+    /**DELETE /ui/session
+
+    Revokes the session named by the `signaldb_session` cookie, if any, and clears the cookie. Without a valid session cookie this is a no-op that still answers 204.
+
+    Sends a `DELETE` request to `/ui/session`
+
+    ```ignore
+    let response = client.delete_session()
+        .send()
+        .await;
+    ```*/
+    pub fn delete_session(&self) -> builder::DeleteSession<'_> {
+        builder::DeleteSession::new(self)
     }
     /**GET /ui/session/config
 
@@ -32314,6 +32933,140 @@ pub mod builder {
             }
         }
     }
+    /**Builder for [`Client::create_session`]
+
+    [`Client::create_session`]: super::Client::create_session*/
+    #[derive(Debug, Clone)]
+    pub struct CreateSession<'a> {
+        client: &'a super::Client,
+        body: Result<types::builder::CreateSessionRequest, String>,
+    }
+    impl<'a> CreateSession<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self {
+                client: client,
+                body: Ok(::std::default::Default::default()),
+            }
+        }
+        pub fn body<V>(mut self, value: V) -> Self
+        where
+            V: std::convert::TryInto<types::CreateSessionRequest>,
+            <V as std::convert::TryInto<types::CreateSessionRequest>>::Error: std::fmt::Display,
+        {
+            self.body = value.try_into().map(From::from).map_err(|s| {
+                format!(
+                    "conversion to `CreateSessionRequest` for body failed: {}",
+                    s
+                )
+            });
+            self
+        }
+        pub fn body_map<F>(mut self, f: F) -> Self
+        where
+            F: std::ops::FnOnce(
+                    types::builder::CreateSessionRequest,
+                ) -> types::builder::CreateSessionRequest,
+        {
+            self.body = self.body.map(f);
+            self
+        }
+        ///Sends a `POST` request to `/ui/session`
+        pub async fn send(
+            self,
+        ) -> Result<ResponseValue<types::CreateSessionResponse>, Error<types::SessionErrorBody>>
+        {
+            let Self { client, body } = self;
+            let body = body
+                .and_then(|v| types::CreateSessionRequest::try_from(v).map_err(|e| e.to_string()))
+                .map_err(Error::InvalidRequest)?;
+            let url = format!("{}/ui/session", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .post(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .json(&body)
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "create_session",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                200u16 => ResponseValue::from_response(response).await,
+                400u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                401u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                403u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
+    /**Builder for [`Client::delete_session`]
+
+    [`Client::delete_session`]: super::Client::delete_session*/
+    #[derive(Debug, Clone)]
+    pub struct DeleteSession<'a> {
+        client: &'a super::Client,
+    }
+    impl<'a> DeleteSession<'a> {
+        pub fn new(client: &'a super::Client) -> Self {
+            Self { client: client }
+        }
+        ///Sends a `DELETE` request to `/ui/session`
+        pub async fn send(self) -> Result<ResponseValue<()>, Error<types::SessionErrorBody>> {
+            let Self { client } = self;
+            let url = format!("{}/ui/session", client.baseurl,);
+            let mut header_map = ::reqwest::header::HeaderMap::with_capacity(1usize);
+            header_map.append(
+                ::reqwest::header::HeaderName::from_static("api-version"),
+                ::reqwest::header::HeaderValue::from_static(super::Client::api_version()),
+            );
+            #[allow(unused_mut)]
+            let mut request = client
+                .client
+                .delete(url)
+                .header(
+                    ::reqwest::header::ACCEPT,
+                    ::reqwest::header::HeaderValue::from_static("application/json"),
+                )
+                .headers(header_map)
+                .build()?;
+            let info = OperationInfo {
+                operation_id: "delete_session",
+            };
+            client.pre(&mut request, &info).await?;
+            let result = client.exec(request, &info).await;
+            client.post(&result, &info).await?;
+            let response = result?;
+            match response.status().as_u16() {
+                204u16 => Ok(ResponseValue::empty(response)),
+                500u16 => Err(Error::ErrorResponse(
+                    ResponseValue::from_response(response).await?,
+                )),
+                _ => Err(Error::UnexpectedResponse(response)),
+            }
+        }
+    }
     /**Builder for [`Client::login_config`]
 
     [`Client::login_config`]: super::Client::login_config*/
@@ -32515,12 +33268,14 @@ pub const OPERATIONS: &[&str] = &[
     "create_api_key",
     "create_dataset",
     "create_eval_set",
+    "create_session",
     "create_tenant",
     "create_tenant_tables",
     "create_user",
     "current_session",
     "delete_dataset",
     "delete_eval_set",
+    "delete_session",
     "delete_tenant",
     "get_eval_set",
     "get_schema",

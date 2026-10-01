@@ -29,7 +29,6 @@ use common::auth::{
 };
 use common::catalog::{MembershipRole, UserRecord, UserSessionRecord};
 use serde::{Deserialize, Serialize};
-use serde_json::json;
 use std::collections::HashMap;
 
 /// Routes mounted at the router root (absolute `/ui/session` paths, so the
@@ -45,7 +44,8 @@ pub fn router() -> Router<RouterAppState> {
         .route("/ui/session/config", get(login_config))
 }
 
-#[derive(Debug, Deserialize)]
+/// `POST /ui/session`'s request body.
+#[derive(Debug, Deserialize, utoipa::ToSchema)]
 pub struct CreateSessionRequest {
     pub email: String,
     pub password: String,
@@ -68,6 +68,27 @@ pub struct SessionMembership {
     pub role: MembershipRole,
 }
 
+/// `POST /ui/session`'s response: the tenant/dataset the login landed in and
+/// every membership the session may enter.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct CreateSessionResponse {
+    /// Always serialized, `null` when the user must still pick a tenant
+    /// from `memberships`.
+    #[schema(required = true)]
+    pub tenant: Option<String>,
+    /// Always serialized, `null` alongside `tenant`.
+    #[schema(required = true)]
+    pub dataset: Option<String>,
+    pub memberships: Vec<SessionMembership>,
+}
+
+/// The `{"error": "..."}` body the session and whoami endpoints answer
+/// failures with.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct SessionErrorBody {
+    pub error: String,
+}
+
 /// POST /ui/session
 ///
 /// Validates the credentials and sets the session cookie. 200 on success,
@@ -76,6 +97,21 @@ pub struct SessionMembership {
 /// `tenant`/`dataset` are null when the user must still pick one (the
 /// session itself is tenant-agnostic — every request re-validates the
 /// `X-Tenant-ID` header against the memberships).
+#[utoipa::path(
+    post,
+    path = "/ui/session",
+    operation_id = "create_session",
+    tag = "session",
+    security(()),
+    request_body = CreateSessionRequest,
+    responses(
+        (status = 200, description = "Session created; sets the `signaldb_session` HttpOnly cookie", body = CreateSessionResponse),
+        (status = 400, description = "Malformed tenant or dataset ID", body = SessionErrorBody),
+        (status = 401, description = "Invalid email or password", body = SessionErrorBody),
+        (status = 403, description = "Password login disabled, no tenant memberships, or not a member of the requested tenant", body = SessionErrorBody),
+        (status = 500, description = "Internal error", body = SessionErrorBody),
+    )
+)]
 pub async fn create_session(
     State(state): State<RouterAppState>,
     Json(body): Json<CreateSessionRequest>,
@@ -197,11 +233,11 @@ pub async fn create_session(
         return (
             StatusCode::OK,
             [(header::SET_COOKIE, cookie)],
-            Json(json!({
-                "tenant": Option::<String>::None,
-                "dataset": Option::<String>::None,
-                "memberships": memberships,
-            })),
+            Json(CreateSessionResponse {
+                tenant: None,
+                dataset: None,
+                memberships,
+            }),
         )
             .into_response();
     };
@@ -217,11 +253,11 @@ pub async fn create_session(
             (
                 StatusCode::OK,
                 [(header::SET_COOKIE, cookie)],
-                Json(json!({
-                    "tenant": ctx.tenant_id,
-                    "dataset": ctx.dataset_id,
-                    "memberships": memberships,
-                })),
+                Json(CreateSessionResponse {
+                    tenant: Some(ctx.tenant_id),
+                    dataset: Some(ctx.dataset_id),
+                    memberships,
+                }),
             )
                 .into_response()
         }
@@ -399,6 +435,18 @@ pub(crate) async fn resolve_session_user(
 /// DELETE /ui/session
 ///
 /// Clears the session cookie (logout).
+#[utoipa::path(
+    delete,
+    path = "/ui/session",
+    operation_id = "delete_session",
+    tag = "session",
+    security((), ("sessionCookie" = [])),
+    description = "Revokes the session named by the `signaldb_session` cookie, if any, and clears the cookie. Without a valid session cookie this is a no-op that still answers 204.",
+    responses(
+        (status = 204, description = "Session revoked and cookie cleared"),
+        (status = 500, description = "Internal error", body = SessionErrorBody),
+    )
+)]
 pub async fn delete_session(
     State(state): State<RouterAppState>,
     headers: axum::http::HeaderMap,
@@ -629,7 +677,7 @@ pub async fn current_session(
 fn error_response(status: u16, message: String) -> Response {
     (
         StatusCode::from_u16(status).unwrap_or(StatusCode::UNAUTHORIZED),
-        Json(json!({ "error": message })),
+        Json(SessionErrorBody { error: message }),
     )
         .into_response()
 }
@@ -641,17 +689,21 @@ pub struct WhoamiTenant {
     pub name: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiDataset {
     pub id: String,
     pub slug: String,
     pub is_default: bool,
 }
 
-#[derive(Debug, Serialize)]
-pub struct WhoamiResponse {
+/// `GET /api/v1/whoami`'s response.
+#[derive(Debug, Serialize, utoipa::ToSchema)]
+pub struct WhoamiIdentityResponse {
+    /// The signed-in human user; absent for API key credentials.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub user: Option<WhoamiUser>,
+    /// Every tenant the human user belongs to (every tenant, as admin, for
+    /// an instance admin); empty for API key credentials.
     pub memberships: Vec<WhoamiMembership>,
     pub tenant: WhoamiTenant,
     /// Authenticated human user ID. Empty for API key credentials.
@@ -659,7 +711,11 @@ pub struct WhoamiResponse {
     /// Dataset resolved by the authentication middleware from the requested
     /// header or the tenant default.
     pub dataset: String,
+    /// The tenant's datasets, narrowed to the credential's own restriction.
     pub datasets: Vec<WhoamiDataset>,
+    /// Always serialized, `null` when the tenant (or the credential's
+    /// restriction) has no default dataset.
+    #[schema(required = true)]
     pub default_dataset: Option<String>,
     /// The credential's own dataset-set restriction (`TenantContext::
     /// api_key_dataset_ids`), if any; `null`/absent means unrestricted.
@@ -711,7 +767,7 @@ fn granted_tenants(ctx: &TenantContext) -> Vec<GrantedTenant> {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiUser {
     pub id: String,
     pub email: String,
@@ -719,25 +775,10 @@ pub struct WhoamiUser {
     pub is_instance_admin: bool,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Serialize, utoipa::ToSchema)]
 pub struct WhoamiMembership {
     pub tenant_id: String,
     pub role: MembershipRole,
-}
-
-/// The non-null identity contract shared by generated clients.
-#[derive(Debug, Serialize, utoipa::ToSchema)]
-pub struct WhoamiIdentityResponse {
-    pub tenant: WhoamiTenant,
-    pub dataset: String,
-    /// Stable authenticated user ID. Empty for API key credentials.
-    pub user_id: String,
-    /// The credential's own dataset-set restriction, if any; `null`/absent
-    /// means unrestricted. See [`WhoamiResponse::dataset_ids`].
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub dataset_ids: Option<Vec<String>>,
-    /// See [`WhoamiResponse::granted_tenants`].
-    pub granted_tenants: Vec<GrantedTenant>,
 }
 
 /// D10: narrow `datasets`/`default_dataset` to a dataset-restricted
@@ -900,7 +941,7 @@ pub async fn whoami(
             default_dataset,
             ctx.api_key_dataset_ids.as_deref(),
         );
-        let response = WhoamiResponse {
+        let response = WhoamiIdentityResponse {
             user,
             memberships,
             tenant: WhoamiTenant {
@@ -950,7 +991,7 @@ pub async fn whoami(
         tenant.default_dataset,
         ctx.api_key_dataset_ids.as_deref(),
     );
-    let response = WhoamiResponse {
+    let response = WhoamiIdentityResponse {
         user,
         memberships,
         tenant: WhoamiTenant {
@@ -1519,6 +1560,51 @@ mod tests {
         assert_eq!(body["user"]["is_instance_admin"], true);
         assert_eq!(body["memberships"][0]["tenant_id"], "acme");
         assert_eq!(body["memberships"][0]["role"], "admin");
+        assert_body_documented(&body, "WhoamiIdentityResponse");
+    }
+
+    /// Every key the handler actually serialized (here and in each nested
+    /// object) is a property of the published schema, so a generated client
+    /// sees the whole response.
+    fn assert_body_documented(body: &Value, schema: &str) {
+        let spec: Value =
+            serde_json::from_str(&crate::openapi::openapi_document().to_pretty_json().unwrap())
+                .unwrap();
+        let schemas = &spec["components"]["schemas"];
+        // Follows a `$ref`, or the `$ref` branch of a nullable `oneOf`.
+        fn resolve<'a>(schema: &'a Value, schemas: &'a Value) -> &'a Value {
+            let reference = schema.get("$ref").or_else(|| {
+                schema
+                    .get("oneOf")?
+                    .as_array()?
+                    .iter()
+                    .find_map(|v| v.get("$ref"))
+            });
+            match reference.and_then(Value::as_str) {
+                Some(r) => &schemas[r.rsplit('/').next().unwrap()],
+                None => schema,
+            }
+        }
+        fn check(value: &Value, schema: &Value, schemas: &Value, at: &str) {
+            let schema = resolve(schema, schemas);
+            match value {
+                Value::Object(map) => {
+                    for (key, field) in map {
+                        let property = schema
+                            .pointer(&format!("/properties/{key}"))
+                            .unwrap_or_else(|| panic!("{at}.{key} is not in the schema"));
+                        check(field, property, schemas, &format!("{at}.{key}"));
+                    }
+                }
+                Value::Array(items) => {
+                    for item in items {
+                        check(item, &schema["items"], schemas, &format!("{at}[]"));
+                    }
+                }
+                _ => {}
+            }
+        }
+        check(body, &schemas[schema], schemas, schema);
     }
 
     /// Change: oidc-login, "session views count a tenant once": a user
@@ -2345,6 +2431,7 @@ mod tests {
         assert_eq!(res.status(), StatusCode::OK);
         let body = json_body(res).await;
         assert_eq!(body["dataset_ids"], serde_json::json!(["production"]));
+        assert_body_documented(&body, "WhoamiIdentityResponse");
     }
 
     /// D10: a config-defined tenant can still be reached through a
@@ -2590,6 +2677,7 @@ mod tests {
                 .iter()
                 .all(|m| m["role"] == "admin" && m["name"].as_str().is_some())
         );
+        assert_body_documented(&body, "CreateSessionResponse");
     }
 
     #[tokio::test]

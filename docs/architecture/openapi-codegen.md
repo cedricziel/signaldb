@@ -67,13 +67,17 @@ flowchart LR
   (the session-authed OAuth consent surface the explore-UI consumes —
   `GET /oauth/consent/context` and `POST /oauth/authorize/decision`),
   `endpoints/session.rs` and `endpoints/oidc.rs` (the login page's
-  unauthenticated surface — `GET /ui/session/config` and the cookie-only
-  `GET /ui/session`, both declared with an empty security requirement and
-  with their nullable fields marked `required` so the generated clients
-  type them as `T | null` rather than optional — plus the SSO redirect
-  endpoints `GET /ui/session/oidc/{start,callback}`, so the UI reads the
-  SSO offering and the `granted_by` membership source through generated
-  types — change: oidc-login), `endpoints/github.rs` (the GitHub App
+  surface — the unauthenticated `GET /ui/session/config` and
+  `POST /ui/session` (login), the cookie-only `GET /ui/session`, and
+  `DELETE /ui/session` (logout, cookie optional), with their nullable
+  fields marked `required` so the generated clients type them as
+  `T | null` rather than optional — plus the SSO redirect endpoints
+  `GET /ui/session/oidc/{start,callback}`, so the UI reads the SSO
+  offering and the `granted_by` membership source through generated
+  types — change: oidc-login; and `GET /api/v1/whoami`, whose
+  `WhoamiIdentityResponse` is the handler's own response type, so it lists
+  every field served, `user`/`memberships`/`datasets`/`default_dataset`
+  included), `endpoints/github.rs` (the GitHub App
   installation surface — `start_github_link`,
   `list_github_installations`, `remove_github_installation`,
   `attach_github_installation` (attaches an installation that already
@@ -126,8 +130,8 @@ for the modules whose `router()` is a plain list of `.route(...)` calls under
 one fixed mount prefix, and diff them against a hand-maintained
 `KNOWN_ROUTES`/`ALLOWLISTED_ROUTES` pair — catching both directions of drift
 (a route added to source without an OpenAPI operation, or a stale list
-entry). Public/infra routes (`/health`, the spec endpoint itself, session,
-OAuth) are trusted by inspection instead of extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
+entry). Public/infra routes (`/health`, the spec endpoint itself, the
+`/ui/session` routes, OAuth) are trusted by inspection instead of extracted. Pre-existing Tempo v2/echo/metrics, Loki `series`/`detected_fields`,
 and Prometheus `label_stats`/`series` routes are `ALLOWLISTED_ROUTES` (not yet
 in the OpenAPI contract, tracked separately) rather than annotated.
 
@@ -253,14 +257,11 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 ## Known gaps
 
 - **The UI's login, logout, and whoami calls still bypass the generated
-  client.** `src/ui/src/api/session.ts`'s `createSession`/`deleteSession`
-  (`POST`/`DELETE /ui/session`) have no `#[utoipa::path]`, so there is no
-  generated operation to call; its `whoami` reads `datasets`,
-  `default_dataset`, `user`, and `memberships`, which the documented
-  `WhoamiIdentityResponse` leaves out. They go through
-  `withProxyLoginRecovery(retryingFetch)` directly until both are in the
-  spec. The lint rule above doesn't catch them because they never call
-  `fetch` by name.
+  client.** `src/ui/src/api/session.ts`'s `createSession`/`deleteSession`/
+  `whoami` go through `withProxyLoginRecovery(retryingFetch)` directly,
+  though their operations (`create_session`, `delete_session`, `whoami`)
+  are now in the spec with every field the UI reads. The lint rule above
+  doesn't catch them because they never call `fetch` by name.
 - **The Query IR stages are typed, with caveats.** The `/api/v1/query`
   request's `pipeline` is a list of `IrStage`, and the stage grammar is
   published as typed `Ir*` components (`IrStage`, `IrPredicate`,
