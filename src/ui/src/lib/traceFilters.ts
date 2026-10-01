@@ -183,7 +183,8 @@ export function filterStages(
     .filter(({ facet }) => facet.irField !== excludeIrField)
     .flatMap(({ facet, values, absent }) => {
       const stages: Record<string, unknown>[] = [];
-      if (absent) stages.push({ not: { field: facet.irField, op: "exists" } });
+      if (absent)
+        stages.push({ where: { not: { field: facet.irField, op: "exists" } } });
       if (values.length > 0) {
         stages.push({
           where:
