@@ -100,6 +100,10 @@ const EXCLUDED: &[(&str, &str)] = &[
         "compat profile endpoint for external clients; the CLI `profiles types` still calls it, while the MCP `discover_profile_types` groups the query_ir profiles source",
     ),
     (
+        "profiles_by_trace",
+        "the CLI `profiles by-trace` still calls it, while the MCP `profiles_for_trace` reads query_ir profile rows filtered on trace.id",
+    ),
+    (
         "pyroscope_label_values",
         "compat metadata endpoint for external clients; the CLI `profiles labels`/`label-values` still call it, while the MCP server reaches profile labels through `discover_attributes` (query_ir describe)",
     ),
@@ -463,11 +467,6 @@ const MANIFEST: &[(&str, CliSurface, &str)] = &[
         "connection_info",
         CliSurface::Path(&["connection"]),
         "connection_info",
-    ),
-    (
-        "profiles_by_trace",
-        CliSurface::Path(&["profiles", "by-trace"]),
-        "profiles_for_trace",
     ),
 ];
 
