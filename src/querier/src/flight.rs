@@ -599,6 +599,7 @@ impl QuerierFlightService {
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_correlate_max_source_rows(limits.correlate_max_source_rows)
             .with_match_limits(limits.match_max_trace_spans, limits.match_max_trace_bytes)
+            .with_page_limits(limits.page_max_tie_rows, limits.page_max_bytes)
             .with_graph_max_nodes(limits.graph_max_nodes);
 
         Self {
@@ -687,6 +688,7 @@ impl QuerierFlightService {
             .with_correlate_max_rows(limits.correlate_max_rows)
             .with_correlate_max_source_rows(limits.correlate_max_source_rows)
             .with_match_limits(limits.match_max_trace_spans, limits.match_max_trace_bytes)
+            .with_page_limits(limits.page_max_tie_rows, limits.page_max_bytes)
             .with_graph_max_nodes(limits.graph_max_nodes);
         // Only meaningful with a database tenant source attached — without
         // one, a typed-layout table's query fails loudly instead of
@@ -2732,6 +2734,7 @@ mod tests {
                 "pipeline": [{ "correlate": { "to": "parent", "kind": "inner" } }]
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -2882,6 +2885,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, report) = service
             .ir_service

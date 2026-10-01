@@ -76,6 +76,10 @@ pub struct QueryReport {
     /// query range visibly cut.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub match_incomplete: Option<MatchIncompleteReport>,
+    /// What a paged query emitted (`query-result-pagination`). An older
+    /// router ignores it, but never sends the `page` ticket that sets it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<crate::query_cursor::PageReport>,
 }
 
 /// The pre-`match` name of [`QueryReport`].
@@ -362,6 +366,38 @@ mod correlate_report_tests {
             .expect("prefix matched")
             .expect("old report parses");
         assert_eq!(decoded.match_incomplete, None);
+    }
+
+    #[test]
+    fn a_page_report_round_trips_through_the_trailer() {
+        use crate::query_cursor::{KeyPart, KeyValue, PageReport};
+        let report = CorrelateReport {
+            page: Some(PageReport {
+                last_key: Some(vec![KeyPart {
+                    field: "timestamp".into(),
+                    value: KeyValue::I64(7),
+                }]),
+                has_more: true,
+                emitted: 3,
+            }),
+            ..CorrelateReport::default()
+        };
+        let trailer = correlate_report_trailer(&report).expect("non-empty report has a trailer");
+        let decoded = parse_correlate_report_trailer(&trailer.app_metadata)
+            .expect("trailer carries the report prefix")
+            .expect("trailer JSON parses");
+        assert_eq!(decoded, report);
+    }
+
+    #[test]
+    fn a_trailer_without_page_still_parses() {
+        let mut app_metadata = CORRELATE_REPORT_APP_METADATA_PREFIX.to_vec();
+        app_metadata.extend_from_slice(br#"{"rowLimit":false,"fanoutLimit":true,"window":null}"#);
+        let decoded = parse_correlate_report_trailer(&app_metadata)
+            .expect("prefix matched")
+            .expect("parses");
+        assert!(decoded.fanout_limit);
+        assert_eq!(decoded.page, None);
     }
 
     #[test]

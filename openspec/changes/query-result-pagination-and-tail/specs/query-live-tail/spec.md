@@ -13,7 +13,7 @@ obeys.
 SignalDB SHALL let a client tail a `rows` or `trace` document through
 repeated calls to `POST /api/v1/query`. A call carries an optional
 document-level `tail` (optional `cursor`, optional `settle`), available from
-`irVersion` 14, on a `range` whose `to` is the relative anchor `now`. Each
+`irVersion` 15, on a `range` whose `to` is the relative anchor `now`. Each
 response SHALL carry a `tail` member with the next `cursor`, the
 `settled_through_ns` it read up to, the effective `settle_ns`, and
 `caught_up`. The server SHALL hold no per-tail state between calls. Each call

@@ -3,7 +3,7 @@ import {
   currentSession,
   whoami,
   type CurrentSessionResponse,
-  type WhoamiResponse,
+  type WhoamiIdentityResponse,
 } from "../api/session";
 
 /** `/login`'s (and `/select-tenant`'s, and the app shell's) "already
@@ -41,7 +41,7 @@ export function useIsDemo(): boolean {
 
 /** {@link useWhoami}'s query result plus the derived management permission
  * every shell/admin surface otherwise recomputed from `data` itself. */
-export type WhoamiResult = UseQueryResult<WhoamiResponse> & {
+export type WhoamiResult = UseQueryResult<WhoamiIdentityResponse> & {
   /** Whether the signed-in user can reach tenant-admin surfaces: an
    * instance admin, or holding the "admin" role on the active tenant. */
   canManage: boolean;
@@ -70,7 +70,7 @@ export function useWhoami(state: {
 
 /** Whether `who` can reach tenant-admin surfaces: an instance admin, or
  * holding the "admin" role on the active tenant. */
-export function canManage(who: WhoamiResponse | undefined): boolean {
+export function canManage(who: WhoamiIdentityResponse | undefined): boolean {
   const role = who?.memberships.find(
     (membership) => membership.tenant_id === who.tenant.id,
   )?.role;

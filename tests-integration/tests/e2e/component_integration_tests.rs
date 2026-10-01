@@ -534,10 +534,13 @@ async fn test_acceptor_grpc_accepts_gzip_compressed_requests() {
     let config = test_configuration(&temp_dir);
     let wal_dir = temp_dir.path().join("wal");
 
-    let resources =
-        acceptor::init_acceptor_resources(config.clone(), "127.0.0.1:4317".to_string(), wal_dir)
-            .await
-            .expect("Failed to init acceptor resources");
+    let resources = acceptor::init_acceptor_resources(
+        config.clone(),
+        std::net::SocketAddr::from(([127, 0, 0, 1], 4317)),
+        wal_dir,
+    )
+    .await
+    .expect("Failed to init acceptor resources");
 
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();

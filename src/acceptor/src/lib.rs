@@ -79,7 +79,7 @@ pub struct AcceptorResources {
 /// Initialize shared resources for acceptor services
 pub async fn init_acceptor_resources(
     config: Configuration,
-    advertise_addr: String,
+    grpc_addr: std::net::SocketAddr,
     wal_dir: std::path::PathBuf,
 ) -> Result<AcceptorResources, anyhow::Error> {
     // Keep a copy for the storage usage refresher, which needs the full
@@ -91,9 +91,10 @@ pub async fn init_acceptor_resources(
     ));
 
     // Initialize service bootstrap for catalog-based discovery
-    let service_bootstrap = ServiceBootstrap::new(config, ServiceType::Acceptor, advertise_addr)
-        .await
-        .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {e}"))?;
+    let service_bootstrap =
+        ServiceBootstrap::from_bind_addr(config, ServiceType::Acceptor, grpc_addr)
+            .await
+            .map_err(|e| anyhow::anyhow!("Failed to initialize service bootstrap: {e}"))?;
 
     // Extract catalog and auth config BEFORE moving service_bootstrap into InMemoryFlightTransport
     let catalog = Arc::new(service_bootstrap.catalog().clone());
