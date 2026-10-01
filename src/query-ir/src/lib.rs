@@ -3,7 +3,8 @@
 //! A leaf crate: `serde` and `serde_json`, nothing else. A caller can build,
 //! validate, and version an IR document without a catalog, a tenant, or a
 //! query engine — the same reason the compatibility parsers are their own
-//! crates. Executing a document is the querier's job.
+//! crates. Executing a document is the querier's job. The `openapi` feature
+//! adds `utoipa::ToSchema` to the stage grammar for the router's spec.
 //!
 //! SignalDB's native query surface. A [`Document`] is a **versioned** JSON
 //! query over a **registered source** with a defined type system: value types
