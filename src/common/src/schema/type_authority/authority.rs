@@ -4,7 +4,9 @@
 
 use std::collections::HashSet;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
+use dashmap::mapref::entry::Entry;
 use dashmap::{DashMap, DashSet};
 
 use super::{CanonicalType, ObservedKind, SchemaUrls, resolve};
@@ -25,12 +27,36 @@ pub enum AuthorityError {
 
 type ScopeKey = (String, String, String);
 
-/// Cached [`SignalScope`]s keyed by (tenant, dataset, signal).
+/// How long a [`SignalScope`] is served before the next [`TypeAuthority::scope`]
+/// call rebuilds it. Schema-registry writes land in the router, whose
+/// `SchemaResolver` is never this one -- not even in the monolith -- so
+/// expiry is how a created, replaced or deleted registry's type hints reach
+/// ingest. Each (tenant, dataset, signal) rebuild costs one registry listing
+/// for the tenant, one catalog read per config-pinned key, and one per
+/// attribute key as the new scope's per-key cache refills.
+pub const DEFAULT_SCOPE_TTL: Duration = Duration::from_secs(30);
+
+struct CachedScope {
+    scope: Arc<SignalScope>,
+    built_at: Instant,
+}
+
+enum Cached {
+    /// Within the TTL: serve as is.
+    Fresh(Arc<SignalScope>),
+    /// Expired, and this caller claimed the rebuild; served if it fails.
+    Claimed(Arc<SignalScope>),
+    Missing,
+}
+
+/// Cached [`SignalScope`]s keyed by (tenant, dataset, signal), each served
+/// for at most the scope TTL ([`DEFAULT_SCOPE_TTL`]).
 pub struct TypeAuthority {
     catalog: Catalog,
     resolver: SchemaResolver,
     config: Arc<Configuration>,
-    scopes: DashMap<ScopeKey, Arc<SignalScope>>,
+    scopes: DashMap<ScopeKey, CachedScope>,
+    scope_ttl: Duration,
 }
 
 impl TypeAuthority {
@@ -40,13 +66,27 @@ impl TypeAuthority {
             resolver,
             config,
             scopes: DashMap::new(),
+            scope_ttl: DEFAULT_SCOPE_TTL,
         }
     }
 
+    /// Overrides [`DEFAULT_SCOPE_TTL`]; `Duration::ZERO` rebuilds on every
+    /// call.
+    pub fn with_scope_ttl(mut self, ttl: Duration) -> Self {
+        self.scope_ttl = ttl;
+        self
+    }
+
     /// The scope for (`tenant_id`, `dataset_id`, `signal`), building and
-    /// caching it on first use. Concurrent first calls may each build their
-    /// own scope; the caller keeps whichever `Arc` it already holds, and the
-    /// cache converges on the last one inserted.
+    /// caching it on first use or once the cached one is older than the scope
+    /// TTL.
+    ///
+    /// Only the first caller to see an expired entry rebuilds it; it restarts
+    /// the entry's clock, so concurrent callers keep serving the old scope
+    /// meanwhile. A failed rebuild also serves the old scope (and retries one
+    /// TTL later); only a first build with nothing cached returns the error.
+    /// Concurrent first builds may each produce their own scope; the newest
+    /// build wins the cache.
     pub async fn scope(
         &self,
         tenant_id: &str,
@@ -58,22 +98,73 @@ impl TypeAuthority {
             dataset_id.to_string(),
             signal.to_string(),
         );
-        if let Some(scope) = self.scopes.get(&key) {
-            return Ok(Arc::clone(&scope));
-        }
+        let stale = match self.lookup(&key) {
+            Cached::Fresh(scope) => return Ok(scope),
+            Cached::Claimed(stale) => Some(stale),
+            Cached::Missing => None,
+        };
+        let started = Instant::now();
+        // A rebuilt scope keeps its predecessor's warned set, so an off-type
+        // key still logs once per process rather than once per TTL.
+        let off_type_warned = stale
+            .as_ref()
+            .map(|stale| Arc::clone(&stale.off_type_warned))
+            .unwrap_or_default();
 
-        let scope = Arc::new(self.build_scope(tenant_id, dataset_id, signal).await?);
-        self.scopes.insert(key, Arc::clone(&scope));
+        let scope = match self
+            .build_scope(tenant_id, dataset_id, signal, off_type_warned)
+            .await
+        {
+            Ok(scope) => Arc::new(scope),
+            Err(error) => {
+                let Some(stale) = stale else {
+                    return Err(error);
+                };
+                tracing::warn!(
+                    tenant_id,
+                    dataset_id,
+                    signal,
+                    error = %error,
+                    "failed to rebuild the attribute type scope; serving the previous one"
+                );
+                return Ok(stale);
+            }
+        };
+
+        // A slower build that started earlier must not replace a newer one.
+        match self.scopes.entry(key) {
+            Entry::Occupied(cached) if cached.get().built_at > started => {}
+            entry => {
+                entry.insert(CachedScope {
+                    scope: Arc::clone(&scope),
+                    built_at: started,
+                });
+            }
+        }
         Ok(scope)
     }
 
-    /// Drop every cached scope. A schema-version bump ships as a new binary
-    /// (a fresh process already starts with an empty cache), so the only
-    /// caller that matters here is a config reload within one running
-    /// process: it must see retyped or newly pinned fields on the next
-    /// `scope` call.
-    pub fn invalidate(&self) {
-        self.scopes.clear();
+    fn lookup(&self, key: &ScopeKey) -> Cached {
+        let fresh = self
+            .scopes
+            .get(key)
+            .filter(|cached| cached.built_at.elapsed() < self.scope_ttl)
+            .map(|cached| Arc::clone(&cached.scope));
+        if let Some(scope) = fresh {
+            return Cached::Fresh(scope);
+        }
+        // Re-checked under the write lock: another caller may have claimed
+        // the rebuild since the read above.
+        match self.scopes.get_mut(key) {
+            Some(cached) if cached.built_at.elapsed() < self.scope_ttl => {
+                Cached::Fresh(Arc::clone(&cached.scope))
+            }
+            Some(mut cached) => {
+                cached.built_at = Instant::now();
+                Cached::Claimed(Arc::clone(&cached.scope))
+            }
+            None => Cached::Missing,
+        }
     }
 
     async fn build_scope(
@@ -81,8 +172,11 @@ impl TypeAuthority {
         tenant_id: &str,
         dataset_id: &str,
         signal: &str,
+        off_type_warned: Arc<DashSet<(AttributeLevel, String)>>,
     ) -> Result<SignalScope, AuthorityError> {
-        let hints = self.resolver.type_hints(tenant_id).await?;
+        // Registry writes go through another resolver, so this one's cache
+        // would never notice them.
+        let hints = self.resolver.fresh_type_hints(tenant_id).await?;
         let schema = self.config.get_tenant_schema_config(tenant_id);
 
         let keys: HashSet<(AttributeLevel, &str)> = schema
@@ -142,7 +236,7 @@ impl TypeAuthority {
             resource: DashMap::new(),
             scope_level: DashMap::new(),
             record: DashMap::new(),
-            off_type_warned: DashSet::new(),
+            off_type_warned,
         })
     }
 }
@@ -162,7 +256,7 @@ pub struct SignalScope {
     record: DashMap<String, CanonicalType>,
     /// (level, key) pairs already warned about for an off-type value, so a
     /// hot key logs once per process rather than once per batch.
-    off_type_warned: DashSet<(AttributeLevel, String)>,
+    off_type_warned: Arc<DashSet<(AttributeLevel, String)>>,
 }
 
 impl SignalScope {
