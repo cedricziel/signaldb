@@ -328,9 +328,10 @@ jobs:
       # behind the per-crate `benchmarks` feature (common, writer,
       # tests-integration), so this step doubles as the Criterion suites'
       # compile guard on every core PR (plugin/UI-only PRs skip this job) —
-      # the benches cannot silently bit-rot.
+      # the benches cannot silently bit-rot. `--locked` fails a PR whose
+      # manifests changed without the matching Cargo.lock update.
       - name: Run clippy
-        run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+        run: cargo clippy --locked --workspace --all-targets --all-features -- -D warnings
 
       # Span-construction guard (otel-compliant-self-tracing): boundary spans
       # must come from the factories in common::self_monitoring::spans — the
