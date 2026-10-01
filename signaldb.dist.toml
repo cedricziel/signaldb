@@ -1,5 +1,16 @@
 # SignalDB Distribution Configuration
 # Copy to signaldb.toml and adjust for your environment
+#
+# Environment variable overrides: every field below can be set via
+# SIGNALDB_<SECTION>_<FIELD> for single-word fields (e.g. SIGNALDB_DATABASE_DSN),
+# but a field whose TOML key itself contains an underscore (e.g.
+# discovery.heartbeat_interval, wal.max_segment_size, any [compactor.*] field)
+# needs the double-underscore form instead: SIGNALDB__DISCOVERY__HEARTBEAT_INTERVAL,
+# SIGNALDB__WAL__MAX_SEGMENT_SIZE, SIGNALDB__COMPACTOR__TICK_INTERVAL. The
+# single-underscore parser splits on every underscore, so applying it to a
+# multi-word field produces the wrong path (e.g. discovery.heartbeat.interval)
+# and silently does nothing -- no error, the value is just never read. When in
+# doubt, use the double-underscore form.
 
 [database]
 # Database for internal metadata storage
@@ -857,7 +868,10 @@ default_tenant = "default"
 # above, which describe what a service listens on locally. All fields are
 # optional; unset ones fall back to localhost defaults suitable only for local
 # development. Answers `GET /api/v1/connection` and the MCP `connection_info`
-# tool so agents and humans can self-serve connection details.
+# tool so agents and humans can self-serve connection details. Trailing
+# slashes are trimmed, an `https` scheme marks the endpoint as TLS in that
+# response, and the response carries a note when it falls back to a default.
+# Env: SIGNALDB__PUBLIC__OTLP_GRPC_URL, ..._OTLP_HTTP_URL, ..._API_URL, ..._MCP_URL.
 # [public]
 # otlp_grpc_url = "https://otlp.example.com:4317"    # public OTLP/gRPC endpoint
 # otlp_http_url = "https://otlp.example.com:4318"    # public OTLP/HTTP base (signal paths appended)
@@ -909,12 +923,12 @@ default_tenant = "default"
 # SIGNALDB__MCP__ROUTER_URL=http://localhost:3000
 # SIGNALDB_DATABASE_DSN=postgres://user:pass@localhost/signaldb
 # SIGNALDB_STORAGE_DSN=file:///data/signaldb
-# SIGNALDB_SCHEMA_CATALOG_TYPE=sql
-# SIGNALDB_SCHEMA_CATALOG_URI=postgres://user:pass@localhost:5432/iceberg
-# SIGNALDB_TENANTS_DEFAULT_TENANT=my_tenant
+# SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+# SIGNALDB__SCHEMA__CATALOG_URI=postgres://user:pass@localhost:5432/iceberg
+# SIGNALDB__TENANTS__DEFAULT_TENANT=my_tenant
 
 # Production environment example with Iceberg:
 # SIGNALDB_DATABASE_DSN=postgres://signaldb:password@postgres:5432/signaldb_metadata
 # SIGNALDB_STORAGE_DSN=s3://my-data-bucket/iceberg-tables/
-# SIGNALDB_SCHEMA_CATALOG_TYPE=sql  
-# SIGNALDB_SCHEMA_CATALOG_URI=postgres://iceberg:password@postgres:5432/iceberg_catalog
+# SIGNALDB__SCHEMA__CATALOG_TYPE=sql
+# SIGNALDB__SCHEMA__CATALOG_URI=postgres://iceberg:password@postgres:5432/iceberg_catalog

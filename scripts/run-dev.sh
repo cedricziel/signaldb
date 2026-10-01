@@ -162,8 +162,6 @@ EOF
 export SIGNALDB_DATABASE_DSN="$DATABASE_DSN"
 export SIGNALDB_DISCOVERY_DSN="$DISCOVERY_DSN"
 export SIGNALDB_STORAGE_DSN="file://$(pwd)/${BASE_DIR}/storage"
-export SIGNALDB_SCHEMA_CATALOG_TYPE="sql"
-export SIGNALDB_SCHEMA_CATALOG_URI="sqlite://$(pwd)/${BASE_DIR}/iceberg_catalog.db"
 export RUST_LOG="${RUST_LOG:-info,signaldb=debug}"
 
 export SIGNALDB_ADMIN_KEY="dev-admin-key"

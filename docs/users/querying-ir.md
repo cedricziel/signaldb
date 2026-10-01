@@ -1675,7 +1675,9 @@ A `correlate` stage joins the current relation to another one by a shared
 key. `to: "parent"` (IR v8) joins `traces` to a span's own parent within the
 same source. `to: "<signal>"` (IR v11) joins any source to a different
 signal — logs, traces, metrics, exemplars, profiles. At most one `correlate`
-stage appears per pipeline.
+stage appears per pipeline. Both sides of the join scan the tenant and dataset
+the query is scoped to, so a related row stored under another tenant or
+dataset reads as missing, exactly like an absent one.
 
 ### Joining spans to their parents (v8)
 
