@@ -7,14 +7,16 @@ import {
   connectionInfoBody,
   MCP_ENDPOINT as MCP,
 } from "../../test/connectionInfo";
-import { ConnectPanel } from "./ConnectPanel";
+import { ConnectPanel, type ConnectTab } from "./ConnectPanel";
 
 function renderPanel({
   canManage = true,
   info = { mcp: MCP },
+  initialTab,
 }: {
   canManage?: boolean;
   info?: Partial<ConnectionInfoResponse>;
+  initialTab?: ConnectTab;
 } = {}) {
   stubFetchRoutes([
     { match: "/api/v1/connection", body: connectionInfoBody(info) },
@@ -24,6 +26,7 @@ function renderPanel({
       <ConnectPanel
         state={{ tenant: "acme", dataset: "production" }}
         canManage={canManage}
+        initialTab={initialTab}
         onClose={() => {}}
       />
     </MemoryRouter>,
@@ -71,6 +74,19 @@ describe("ConnectPanel", () => {
       "true",
     );
     expect(screen.getByRole("tabpanel", { name: "CLI" })).toBeInTheDocument();
+  });
+
+  it("opens on the requested tab", () => {
+    renderPanel({ initialTab: "cli" });
+
+    expect(screen.getByRole("tab", { name: "CLI" })).toHaveAttribute(
+      "aria-selected",
+      "true",
+    );
+    expect(screen.getByRole("tab", { name: "CLI" })).toHaveAttribute(
+      "tabindex",
+      "0",
+    );
   });
 
   it("moves between tabs with the arrow keys", () => {
