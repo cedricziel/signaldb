@@ -67,12 +67,10 @@ fn client_exposes_ir_query_and_round_trips_the_request() {
         step: None,
         constant: None,
         pipeline: vec![
-            serde_json::json!({
+            serde_json::from_value(serde_json::json!({
                 "where": { "field": "service.name", "op": "eq", "value": "api" }
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
+            }))
+            .unwrap(),
         ],
     };
     // Serializes to the versioned IR document shape and back.

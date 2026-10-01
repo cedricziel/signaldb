@@ -62,9 +62,10 @@ pub struct QueryRange {
 
 /// A versioned Query IR request document.
 ///
-/// The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
-/// querier validates and lowers them per the versioned IR contract. See the
-/// `query-ir-core` capability for the full stage/predicate grammar.
+/// The `pipeline` stages are published as the IR's own stage grammar
+/// (`IrStage`) but kept as raw JSON at the HTTP boundary — the querier
+/// validates and lowers them per the versioned IR contract, rejecting an
+/// unsupported stage by name.
 #[derive(Debug, Clone, Serialize, Deserialize, ToSchema)]
 pub struct QueryIrRequest {
     /// IR document version (the server accepts a bounded range).
@@ -85,9 +86,9 @@ pub struct QueryIrRequest {
     /// Curated projection (logical field names) for `rows`/`table`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub fields: Option<Vec<String>>,
-    /// Ordered transform stages (opaque objects; see the IR spec).
+    /// Ordered transform stages.
     #[serde(default)]
-    #[schema(value_type = Vec<Object>)]
+    #[schema(value_type = Vec<common::query_ir::Stage>)]
     pub pipeline: Vec<serde_json::Value>,
     /// `graph` only: restrict to this service's neighbourhood.
     #[serde(default, skip_serializing_if = "Option::is_none")]

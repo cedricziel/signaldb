@@ -11091,7 +11091,7 @@
       },
       "QueryIrRequest": {
         "type": "object",
-        "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are opaque JSON objects at the HTTP boundary — the\nquerier validates and lowers them per the versioned IR contract. See the\n`query-ir-core` capability for the full stage/predicate grammar.",
+        "description": "A versioned Query IR request document.\n\nThe `pipeline` stages are published as the IR's own stage grammar\n(`IrStage`) but kept as raw JSON at the HTTP boundary — the querier\nvalidates and lowers them per the versioned IR contract, rejecting an\nunsupported stage by name.",
         "required": [
           "irVersion",
           "from",
@@ -11145,9 +11145,9 @@
           "pipeline": {
             "type": "array",
             "items": {
-              "type": "object"
+              "$ref": "#/components/schemas/IrStage"
             },
-            "description": "Ordered transform stages (opaque objects; see the IR spec)."
+            "description": "Ordered transform stages."
           },
           "range": {
             "$ref": "#/components/schemas/QueryRange"

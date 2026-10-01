@@ -2254,7 +2254,9 @@ to an attribute extraction — same query, same result either way.
   renders the declared envelope.
 
 - **HTTP:** `POST /api/v1/query` directly (the request/response schemas are in
-  the OpenAPI document at `GET /api/v1/openapi.json`).
+  the OpenAPI document at `GET /api/v1/openapi.json`, which types each
+  `pipeline` entry as an `IrStage`, so a generated client checks stages
+  before sending them).
 
 The first-party UI and CLI consume the endpoint exclusively through their
 generated clients (the TypeScript client and Rust SDK), never hand-written HTTP.

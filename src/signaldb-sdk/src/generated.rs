@@ -4815,9 +4815,10 @@ pub mod types {
     }
     /**A versioned Query IR request document.
 
-    The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
-    querier validates and lowers them per the versioned IR contract. See the
-    `query-ir-core` capability for the full stage/predicate grammar.*/
+    The `pipeline` stages are published as the IR's own stage grammar
+    (`IrStage`) but kept as raw JSON at the HTTP boundary — the querier
+    validates and lowers them per the versioned IR contract, rejecting an
+    unsupported stage by name.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrRequest {
         ///The value of the `constant` pseudo-source (irVersion 10+).
@@ -4839,10 +4840,9 @@ pub mod types {
         ///IR document version (the server accepts a bounded range).
         #[serde(rename = "irVersion")]
         pub ir_version: i64,
-        ///Ordered transform stages (opaque objects; see the IR spec).
+        ///Ordered transform stages.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
-        pub pipeline:
-            ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        pub pipeline: ::std::vec::Vec<IrStage>,
         pub range: QueryRange,
         /**Declared result envelope: `rows`, `series`, `table`, `heatmap`,
         (for the `profiles` source only) `flamegraph`, (for the `traces`
@@ -19067,10 +19067,7 @@ pub mod types {
             >,
             from: ::std::result::Result<::std::string::String, ::std::string::String>,
             ir_version: ::std::result::Result<i64, ::std::string::String>,
-            pipeline: ::std::result::Result<
-                ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
-                ::std::string::String,
-            >,
+            pipeline: ::std::result::Result<::std::vec::Vec<super::IrStage>, ::std::string::String>,
             range: ::std::result::Result<super::QueryRange, ::std::string::String>,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
             step: ::std::result::Result<
@@ -19164,11 +19161,7 @@ pub mod types {
             }
             pub fn pipeline<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<
-                        ::std::vec::Vec<
-                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-                        >,
-                    >,
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrStage>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.pipeline = value

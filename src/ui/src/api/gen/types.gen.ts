@@ -2416,9 +2416,10 @@ export type QueryFormula = {
 /**
  * A versioned Query IR request document.
  *
- * The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
- * querier validates and lowers them per the versioned IR contract. See the
- * `query-ir-core` capability for the full stage/predicate grammar.
+ * The `pipeline` stages are published as the IR's own stage grammar
+ * (`IrStage`) but kept as raw JSON at the HTTP boundary — the querier
+ * validates and lowers them per the versioned IR contract, rejecting an
+ * unsupported stage by name.
  */
 export type QueryIrRequest = {
     /**
@@ -2448,11 +2449,9 @@ export type QueryIrRequest = {
      */
     irVersion: number;
     /**
-     * Ordered transform stages (opaque objects; see the IR spec).
+     * Ordered transform stages.
      */
-    pipeline?: Array<{
-        [key: string]: unknown;
-    }>;
+    pipeline?: Array<IrStage>;
     range: QueryRange;
     /**
      * Declared result envelope: `rows`, `series`, `table`, `heatmap`,
