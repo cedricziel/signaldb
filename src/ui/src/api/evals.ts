@@ -3,7 +3,13 @@
 // to the span it scores through its trace context; `signaldb.eval.*`
 // attributes group offline results into runs (see the
 // `agent-evaluation-results` spec). Every figure is a Query IR read.
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type {
+  IrAgg,
+  IrPredicate,
+  IrStage,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "./gen";
 import {
   decodePoints,
   irColumn as col,
@@ -48,31 +54,28 @@ export const F = {
   outputMessages: "gen_ai.output.messages",
 } as const;
 
-type Stage = Record<string, unknown>;
-type Pred = Record<string, unknown>;
-
-const eq = (field: string, value: unknown): Pred => ({
+const eq = (field: string, value: unknown): IrPredicate => ({
   field,
   op: "eq",
   value,
 });
-const exists = (field: string): Pred => ({ field, op: "exists" });
-const absent = (field: string): Pred => ({ not: exists(field) });
+const exists = (field: string): IrPredicate => ({ field, op: "exists" });
+const absent = (field: string): IrPredicate => ({ not: exists(field) });
 /** Log records without trace context store an empty trace id. */
-const LINKED: Pred = {
+const LINKED: IrPredicate = {
   and: [exists("trace_id"), { field: "trace_id", op: "ne", value: "" }],
 };
-const UNLINKED: Pred = { not: LINKED };
+const UNLINKED: IrPredicate = { not: LINKED };
 
-const COUNT_N = { fn: "count", as: "n" };
-const FIRST_SEEN = { fn: "min", of: "timestamp", as: "first" };
-const LAST_SEEN = { fn: "max", of: "timestamp", as: "last" };
+const COUNT_N: IrAgg = { fn: "count", as: "n" };
+const FIRST_SEEN: IrAgg = { fn: "min", of: "timestamp", as: "first" };
+const LAST_SEEN: IrAgg = { fn: "max", of: "timestamp", as: "last" };
 
 function irDoc(
   from: "logs" | "traces",
   result: "table" | "rows" | "series",
   range: ResolvedRange,
-  pipeline: Stage[],
+  pipeline: IrStage[],
   extra: { irVersion?: number; fields?: string[] } = {},
 ): QueryIrRequest {
   return {
@@ -85,13 +88,13 @@ function irDoc(
   };
 }
 
-const logsTable = (range: ResolvedRange, pipeline: Stage[], irVersion = 4) =>
+const logsTable = (range: ResolvedRange, pipeline: IrStage[], irVersion = 4) =>
   irDoc("logs", "table", range, pipeline, { irVersion });
 
 const tracesRows = (
   range: ResolvedRange,
   fields: string[],
-  pipeline: Stage[],
+  pipeline: IrStage[],
 ) => irDoc("traces", "rows", range, pipeline, { irVersion: 1, fields });
 
 const str = (v: unknown): string | null =>
@@ -118,7 +121,7 @@ function widen(prev: Seen | undefined, row: IrRow): Seen {
 
 /** `gen_ai.agent.name`, or the resource's `service.name` when the result
  * doesn't name its agent. */
-function agentPred(agent: string): Pred {
+function agentPred(agent: string): IrPredicate {
   return {
     or: [
       eq(F.agent, agent),
@@ -134,8 +137,8 @@ export interface ResultScope {
   caseId?: string;
 }
 
-export function resultsWhere(scope: ResultScope = {}): Stage[] {
-  const preds: Pred[] = [eq("event_name", EVAL_EVENT)];
+export function resultsWhere(scope: ResultScope = {}): IrStage[] {
+  const preds: IrPredicate[] = [eq("event_name", EVAL_EVENT)];
   if (scope.agent) preds.push(agentPred(scope.agent));
   if (scope.source === "offline") preds.push(exists(F.runId));
   if (scope.source === "production") preds.push(absent(F.runId));
@@ -145,7 +148,7 @@ export function resultsWhere(scope: ResultScope = {}): Stage[] {
   return preds.map((p) => ({ where: p }));
 }
 
-const STAT_AGGS = [
+const STAT_AGGS: IrAgg[] = [
   COUNT_N,
   {
     fn: "count",
@@ -316,7 +319,7 @@ export async function fetchCoverage(
   range: ResolvedRange,
   scope: ResultScope,
 ): Promise<Coverage> {
-  const agentPreds: Stage[] = [{ where: eq(F.operation, "invoke_agent") }];
+  const agentPreds: IrStage[] = [{ where: eq(F.operation, "invoke_agent") }];
   if (scope.agent) agentPreds.push({ where: agentPred(scope.agent) });
   const [spans, traces] = await Promise.all([
     runIrQuery(

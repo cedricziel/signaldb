@@ -13,7 +13,11 @@ import { irSeriesToPromSeries } from "../../api/ir/metrics";
 import { AttributeValue } from "../../components/AttributeValue";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError } from "../../components/QueryError";
-import type { QueryIrRequest, QueryIrResponse } from "../../api/gen";
+import type {
+  IrComparisonOp,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "../../api/gen";
 import type { PromSeries } from "../../api/ir/metrics";
 import { seriesColorVar } from "../../lib/promSeries";
 import { MetricsChart } from "../metrics/MetricsChart";
@@ -32,7 +36,7 @@ import { formatTimestamp } from "../../lib/vizFormat";
 import type { ExploreState } from "../../lib/urlState";
 import {
   buildIrDocument,
-  type IrAggregate,
+  type IrBuilderAggregate,
   type IrFilter,
   type IrResult,
   type IrSource,
@@ -40,7 +44,7 @@ import {
 import { viewForResult } from "./envelope";
 
 /** Map a LogQL-style filter op (from FilterChips) to an IR predicate op. */
-function mapOp(op: string): { op: string; negate?: boolean } {
+function mapOp(op: string): { op: IrComparisonOp; negate?: boolean } {
   switch (op) {
     case "=":
       return { op: "eq" };
@@ -67,7 +71,10 @@ function toIrFilters(filters: LabelFilter[]): IrFilter[] {
  * Both sources share the `service.name` logical field. `step` is sized to
  * the selected range (see `stepForRange`) rather than a fixed bucket width,
  * so a wide range doesn't ask for thousands of one-point buckets. */
-function aggregateFor(result: IrResult, step: string): IrAggregate | undefined {
+function aggregateFor(
+  result: IrResult,
+  step: string,
+): IrBuilderAggregate | undefined {
   const groupField = "service.name";
   if (result === "series") {
     return { by: [groupField], aggs: [{ fn: "count", as: "n" }], step };
@@ -270,8 +277,7 @@ function RowsCell({
   cell: unknown;
 }) {
   const value = formatCell(cell);
-  const isTimestamp =
-    columnType === "timestamp_ns" || isTimeColumnName(column);
+  const isTimestamp = columnType === "timestamp_ns" || isTimeColumnName(column);
   if (isTimestamp && NUMERIC_RE.test(value)) {
     return <span>{formatTimestamp(nanosToMs(value), 0)}</span>;
   }

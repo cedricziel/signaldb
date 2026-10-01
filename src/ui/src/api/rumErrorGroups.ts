@@ -21,7 +21,12 @@
  * boundaries aren't tracked on the client, so a fixed window stands in for
  * "the same page view".
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type {
+  IrPredicate,
+  IrStage,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "./gen";
 import {
   irColumn,
   namedRows,
@@ -243,7 +248,7 @@ const FAILED_REQUEST_FIELDS = [
 
 /** ≥400, or the span itself recorded an error — `api/rum.ts`'s
  * `HTTP_ERROR_WHERE` predicate, applied to the app's client spans here. */
-const FAILED_REQUEST_WHERE = {
+const FAILED_REQUEST_WHERE: IrPredicate = {
   or: [
     { field: "status.code", op: "eq", value: "Error" },
     { field: "http.response.status_code", op: "gte", value: 400 },
@@ -371,7 +376,7 @@ export async function fetchRumErrorGroupsWithBackendCause(
  * "not exists", mirroring `api/errors.ts`'s own `pin` (private there, so
  * duplicated here rather than exported from a module that treats it as an
  * internal decoding detail). */
-function pin(field: string, value: string | null): Record<string, unknown> {
+function pin(field: string, value: string | null): IrStage {
   return {
     where:
       value == null
@@ -380,10 +385,7 @@ function pin(field: string, value: string | null): Record<string, unknown> {
   };
 }
 
-function pinnedGroupWhere(
-  group: RumErrorGroup,
-  app: string,
-): Record<string, unknown>[] {
+function pinnedGroupWhere(group: RumErrorGroup, app: string): IrStage[] {
   return [
     serviceWhere(app),
     {

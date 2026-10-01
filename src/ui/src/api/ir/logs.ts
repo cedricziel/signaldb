@@ -4,7 +4,7 @@
  * Field/value discovery (`FieldSidebar`, add-filter chips) is
  * `api/ir/discovery.ts`; chips address IR logical field names directly.
  */
-import type { QueryIrRequest, QueryIrResponse } from "../gen";
+import type { IrPredicate, QueryIrRequest, QueryIrResponse } from "../gen";
 import type { LabelFilter } from "../../lib/filters";
 import { msToNanos, type ResolvedRange } from "../../lib/time";
 import { namedRows, runIrQuery, type IrRow } from "../queryIr";
@@ -29,7 +29,7 @@ export interface HistogramSeries {
   points: [number, number][];
 }
 
-function filterWhere(f: LabelFilter): Record<string, unknown> {
+function filterWhere(f: LabelFilter): IrPredicate {
   const field = f.label;
   switch (f.op) {
     case "=":

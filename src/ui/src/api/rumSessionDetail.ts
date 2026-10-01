@@ -13,7 +13,7 @@
  * `start_time_unix_nano` cursor set to the last loaded event's own
  * timestamp, per the spec's "starting after the last loaded timestamp".
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import {
   irColumn,
   namedRows,
@@ -79,7 +79,7 @@ export interface SessionLogEvent extends SessionEventBase {
 
 export type SessionEvent = SessionSpanEvent | SessionLogEvent;
 
-function whereSession(sessionId: string): Record<string, unknown> {
+function whereSession(sessionId: string): IrStage {
   return { where: { field: "session.id", op: "eq", value: sessionId } };
 }
 
@@ -112,7 +112,7 @@ export function buildSessionSpansDoc(
     pipeline: [
       whereSession(sessionId),
       ...(afterNs
-        ? [
+        ? ([
             {
               where: {
                 field: "start_time_unix_nano",
@@ -120,7 +120,7 @@ export function buildSessionSpansDoc(
                 value: afterNs,
               },
             },
-          ]
+          ] satisfies IrStage[])
         : []),
       { order: [{ of: "start_time_unix_nano", dir: "asc" }] },
       { limit: PAGE_LIMIT },
@@ -166,7 +166,9 @@ export function buildSessionLogsDoc(
         },
       },
       ...(afterNs
-        ? [{ where: { field: "timestamp", op: "gt", value: afterNs } }]
+        ? ([
+            { where: { field: "timestamp", op: "gt", value: afterNs } },
+          ] satisfies IrStage[])
         : []),
       { order: [{ of: "timestamp", dir: "asc" }] },
       { limit: PAGE_LIMIT },

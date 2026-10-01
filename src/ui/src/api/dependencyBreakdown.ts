@@ -15,7 +15,12 @@
  * overlapping calls double-count — the same caveat any RED-metrics
  * duration figure in this app already has (see buildEntitySourceDoc's p50/p95).
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type {
+  IrPredicate,
+  IrStage,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 
@@ -36,9 +41,9 @@ const CATEGORIES: { key: string; label: string; attr: string }[] = [
 function sumCountDoc(
   serviceName: string,
   range: ResolvedRange,
-  extraWhere?: Record<string, unknown>,
+  extraWhere?: IrPredicate,
 ): QueryIrRequest {
-  const pipeline: Record<string, unknown>[] = [
+  const pipeline: IrStage[] = [
     { where: { field: "service.name", op: "eq", value: serviceName } },
     { where: { field: "span_kind", op: "eq", value: "Client" } },
   ];

@@ -11,7 +11,7 @@
  * aggregate independently and merges client-side, ranked by count — the
  * same pattern as `api/dependencyBreakdown.ts`'s multi-query combine.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import type { VolumeSeries } from "../components/SignalHistogram";
@@ -79,7 +79,7 @@ export function buildErrorGroupDoc(
    * Errors tab which shows every service at once. */
   serviceName?: string,
   /** Extra `where` stages — the Overview's environment scope. */
-  scope: Record<string, unknown>[] = [],
+  scope: IrStage[] = [],
 ): QueryIrRequest {
   return {
     irVersion: 1,
@@ -89,7 +89,9 @@ export function buildErrorGroupDoc(
     pipeline: [
       { where: { field: "exception.type", op: "exists" } },
       ...(serviceName != null
-        ? [{ where: { field: "service.name", op: "eq", value: serviceName } }]
+        ? ([
+            { where: { field: "service.name", op: "eq", value: serviceName } },
+          ] satisfies IrStage[])
         : []),
       ...scope,
       {
@@ -140,7 +142,7 @@ function groupsFromResponse(
 export async function fetchErrorGroups(
   range: ResolvedRange,
   serviceName?: string,
-  scope: Record<string, unknown>[] = [],
+  scope: IrStage[] = [],
 ): Promise<ErrorGroupResult> {
   const [tracesRes, logsRes] = await Promise.all([
     runIrQuery(buildErrorGroupDoc("traces", range, serviceName, scope)),
@@ -161,7 +163,7 @@ export async function fetchErrorGroups(
  * left unconstrained. An omitted pin would let occurrence/volume queries
  * for a "no service" group match records from *any* service instead of
  * only those genuinely missing one. */
-function pin(field: string, value: string | null): Record<string, unknown> {
+function pin(field: string, value: string | null): IrStage {
   return {
     where:
       value == null
@@ -170,7 +172,7 @@ function pin(field: string, value: string | null): Record<string, unknown> {
   };
 }
 
-function pinnedWhere(group: ErrorGroup): Record<string, unknown>[] {
+function pinnedWhere(group: ErrorGroup): IrStage[] {
   return [
     {
       where: {

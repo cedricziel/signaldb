@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { fetchServiceGraph } from "./serviceGraph";
 import { client } from "./gen/client.gen";
+import type { IrStage } from "./gen";
 
 beforeEach(() => {
   client.setConfig({ baseUrl: "http://localhost" });
@@ -69,7 +70,7 @@ describe("fetchServiceGraph", () => {
         jsonResponse({ result: "graph", graph: { nodes: [], edges: [] } }),
       );
     vi.stubGlobal("fetch", fetchMock);
-    const where = [
+    const where: IrStage[] = [
       {
         where: {
           field: "deployment.environment.name",

@@ -3,7 +3,7 @@
 // during it — the data the waterfall and span panel render. Replaces the
 // Tempo-compat `tempoGetTrace` (which lacks span kind and flattens scopes)
 // and the separate span-kinds enrichment.
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { namedRows, runIrQuery, type IrRow } from "./queryIr";
 import { ROOT_SPAN_SENTINEL } from "./traceGroups";
 import type {
@@ -24,7 +24,7 @@ export const WIDE_LOOKBACK_MS = 30 * 24 * 60 * 60 * 1000;
 function whereTrace(
   traceId: string,
   field: "trace_id" | "trace.id" = "trace_id",
-): Record<string, unknown> {
+): IrStage {
   return { where: { field, op: "eq", value: traceId } };
 }
 

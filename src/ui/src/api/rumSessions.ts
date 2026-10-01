@@ -23,7 +23,7 @@
  * with no attribute `where` of its own. One request when no filter is set,
  * two when one is.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { rangeDoc, runIrQuery } from "./queryIr";
 import type { ResolvedRange } from "../lib/time";
 import { parseBrowserFromUserAgent } from "../features/rum/rumModel";
@@ -53,9 +53,7 @@ export interface RumSessionRow {
 /** `session.id` / `user.id` equality, or `key=value` for an arbitrary
  * attribute — the spec's "free-text filter SHALL accept `session.id`,
  * `user.id` or `attribute=value`". Empty/blank text has no filter. */
-export function sessionsTextFilterWhere(
-  text: string,
-): Record<string, unknown> | null {
+export function sessionsTextFilterWhere(text: string): IrStage | null {
   const trimmed = text.trim();
   if (trimmed === "") return null;
   const eq = trimmed.indexOf("=");
@@ -133,7 +131,9 @@ export function buildSessionsListDoc(
       serviceWhere(app),
       { where: { field: "session.id", op: "exists" } },
       ...(sessionIds
-        ? [{ where: { field: "session.id", op: "in", value: sessionIds } }]
+        ? ([
+            { where: { field: "session.id", op: "in", value: sessionIds } },
+          ] satisfies IrStage[])
         : []),
       {
         aggregate: {

@@ -8,7 +8,7 @@ import { runIrQuery } from "./queryIr";
 import { ApiError } from "./http";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import type { RenderResponse } from "./profileTypes";
-import type { FrameLocation } from "./gen";
+import type { FrameLocation, IrStage } from "./gen";
 
 /** An additional attribute matcher beyond service/sample-type — the field
  * is a bare attribute key, which Query IR coalesces across the profile's
@@ -34,7 +34,7 @@ export interface FlamegraphFetch {
   locations: Array<FrameLocation | null>;
 }
 
-function whereEq(field: string, value: string): Record<string, unknown> {
+function whereEq(field: string, value: string): IrStage {
   return { where: { field, op: "eq", value } };
 }
 
@@ -63,7 +63,7 @@ export async function fetchFlamegraph(
   range: ResolvedRange,
   query: FlamegraphQuery,
 ): Promise<FlamegraphFetch> {
-  const pipeline: Record<string, unknown>[] = [];
+  const pipeline: IrStage[] = [];
   if (query.service) pipeline.push(whereEq("service.name", query.service));
   if (query.sampleType) pipeline.push(whereEq("sample.type", query.sampleType));
   if (query.matcher?.label) {

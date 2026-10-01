@@ -14,7 +14,7 @@
  * to scope by, so they go unscoped, naturally limited to whichever records
  * carry the identity attribute at all.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrAgg, IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { sortRows, type SortValue } from "../lib/sortTable";
@@ -78,7 +78,7 @@ function sourceIdentity(entityType: EntityTypeDef, source: string): string[] {
  * module that pins a query to an already-known identity (this file,
  * `entityDetailStats.ts`, `operationSeries.ts`), so a change to how a pin
  * compiles can't leave one of them behind. */
-export function pinsWhere(pinned: EntityPin[]): Record<string, unknown>[] {
+export function pinsWhere(pinned: EntityPin[]): IrStage[] {
   return pinned.map((p) => ({
     where:
       p.value === null
@@ -89,9 +89,7 @@ export function pinsWhere(pinned: EntityPin[]): Record<string, unknown>[] {
 
 /** A `where` stage scoping to one span kind, or no stage when `kind` is
  * undefined. */
-export function spanKindWhere(
-  kind: string | undefined,
-): Record<string, unknown>[] {
+export function spanKindWhere(kind: string | undefined): IrStage[] {
   return kind ? [{ where: { field: "span_kind", op: "eq", value: kind } }] : [];
 }
 
@@ -103,7 +101,7 @@ export function buildEntitySourceDoc(
 ): QueryIrRequest {
   const isTraces = source === "traces";
   const identity = sourceIdentity(entityType, source);
-  const scope: Record<string, unknown>[] = [
+  const scope: IrStage[] = [
     ...spanKindWhere(isTraces ? entityType.spanKindScope : undefined),
     ...pinsWhere(pinned),
   ];
@@ -124,7 +122,7 @@ export function buildEntitySourceDoc(
           aggs: [
             { fn: "count", as: "n" },
             ...(isTraces
-              ? [
+              ? ([
                   {
                     fn: "count",
                     as: "errors",
@@ -136,7 +134,7 @@ export function buildEntitySourceDoc(
                   },
                   { fn: "quantile", of: "duration", arg: 0.5, as: "p50" },
                   { fn: "quantile", of: "duration", arg: 0.95, as: "p95" },
-                ]
+                ] satisfies IrAgg[])
               : []),
             { fn: "max", of: timeField(source), as: "last" },
           ],

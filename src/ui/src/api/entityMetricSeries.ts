@@ -10,7 +10,7 @@
  * *is* the observed-set filter — nothing here has to zero-fill, and nothing
  * downstream can mistake "not reported" for "reported as zero".
  */
-import type { QueryIrRequest } from "./gen";
+import type { IrStage, QueryIrRequest } from "./gen";
 import type { EntityPin } from "./catalog";
 import type { MetricHit } from "../features/schema/api";
 import {
@@ -68,7 +68,7 @@ export function buildEntityMetricDocs(
   }
 
   /** Every document opens the same way: these names, this entity. */
-  const head = (batch: string[]) => [
+  const head = (batch: string[]): IrStage[] => [
     {
       where: {
         field: "metric.name",
@@ -76,7 +76,7 @@ export function buildEntityMetricDocs(
         value: `^(${batch.map(escapeName).join("|")})$`,
       },
     },
-    ...pinned.map((p) => ({
+    ...pinned.map((p): IrStage => ({
       where: { field: p.field, op: "eq", value: p.value },
     })),
   ];

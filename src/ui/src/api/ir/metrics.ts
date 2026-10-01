@@ -9,6 +9,8 @@
  * in `features/metrics/metricQuery.ts`.
  */
 import type {
+  IrAgg,
+  IrPredicate,
   MultiQueryIrRequest,
   QueryFormula,
   QueryIrRequest,
@@ -68,7 +70,7 @@ function irFieldForLabel(label: string): string {
 /** One `LabelFilter` as an IR `where` clause, or `null` for an op the IR
  * predicate grammar can't express directly (none today — kept total rather
  * than partial so a future `FilterOp` addition fails loudly here). */
-function filterWhere(f: LabelFilter): Record<string, unknown> {
+function filterWhere(f: LabelFilter): IrPredicate {
   const field = irFieldForLabel(f.label);
   switch (f.op) {
     case "=":
@@ -112,7 +114,7 @@ export function buildMetricIrDoc(
   // functions) aggregates the point's value, via metric.value — "value" is
   // itself the physical column name, which the resolver rejects as a bare
   // field reference (see ir_planner.rs).
-  const agg: Record<string, unknown> =
+  const agg: IrAgg =
     fn === "count" ? { fn, as: "v" } : { fn, of: "metric.value", as: "v" };
   if (query.range?.across !== undefined) {
     agg.across = query.range.across;

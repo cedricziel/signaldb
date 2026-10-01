@@ -7,7 +7,12 @@
  * truncation artefact the volume chart exists to avoid. The IR aggregate is
  * evaluated server-side over the whole window with no limit on the path.
  */
-import type { HeatmapResult, QueryIrRequest, QueryIrResponse } from "./gen";
+import type {
+  HeatmapResult,
+  IrStage,
+  QueryIrRequest,
+  QueryIrResponse,
+} from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { filterStages, type TraceFilter } from "../lib/traceFilters";
@@ -54,7 +59,7 @@ export function buildTraceVolumeDoc(
   // Drilled-in group pins (see `api/traceGroups`'s `groupPinStages`) — when
   // a group is selected, the chart must describe that group's spans, the
   // same ones the member list shows, not the whole traces tab.
-  groupPins: Record<string, unknown>[] = [],
+  groupPins: IrStage[] = [],
 ): QueryIrRequest {
   // The chart must describe the same traces the list shows, so the active
   // filters narrow it too.
@@ -81,7 +86,7 @@ export function buildTraceVolumeDoc(
   };
 }
 
-function traceFilterStages(filters: TraceFilter[]): Record<string, unknown>[] {
+function traceFilterStages(filters: TraceFilter[]): IrStage[] {
   return filterStages(filters);
 }
 
@@ -90,7 +95,7 @@ export function buildTraceLatencyHeatmapDoc(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
-  groupPins: Record<string, unknown>[] = [],
+  groupPins: IrStage[] = [],
 ): QueryIrRequest {
   return {
     irVersion: 2,
@@ -143,7 +148,7 @@ export async function fetchTraceVolume(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
-  groupPins: Record<string, unknown>[] = [],
+  groupPins: IrStage[] = [],
 ): Promise<VolumeSeries[]> {
   return seriesFromIrResponse(
     await runIrQuery(buildTraceVolumeDoc(range, step, filters, groupPins)),
@@ -154,7 +159,7 @@ export async function fetchTraceLatencyHeatmap(
   range: ResolvedRange,
   step: string,
   filters: TraceFilter[] = [],
-  groupPins: Record<string, unknown>[] = [],
+  groupPins: IrStage[] = [],
 ): Promise<TraceLatencyHeatmap> {
   const response = await runIrQuery(
     buildTraceLatencyHeatmapDoc(range, step, filters, groupPins),

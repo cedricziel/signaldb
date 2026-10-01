@@ -36,6 +36,8 @@
  * in production.
  */
 import type {
+  IrPredicate,
+  IrStage,
   MultiQueryIrRequest,
   QueryFormula,
   QueryIrRequest,
@@ -64,7 +66,7 @@ const RUM_EVENT_NAMES = [
   "browser.resource_timing",
 ];
 
-function rumEventWhere(): Record<string, unknown> {
+function rumEventWhere(): IrStage {
   return {
     where: {
       or: [
@@ -81,7 +83,7 @@ function rumEventWhere(): Record<string, unknown> {
 
 /** Scopes a pipeline to one app's `service.name` — shared with
  * `api/rumSessions.ts`. */
-export function serviceWhere(app: string): Record<string, unknown> {
+export function serviceWhere(app: string): IrStage {
   return { where: { field: "service.name", op: "eq", value: app } };
 }
 
@@ -582,7 +584,7 @@ export async function fetchBreakdown(
 // buckets by (method, origin, URL template) since the raw grouping is too
 // fine for display (`/orders/48213` and `/orders/91820` are one endpoint).
 
-function clientSpanWhere(app: string): Record<string, unknown> {
+function clientSpanWhere(app: string): IrStage {
   return {
     where: {
       and: [
@@ -595,7 +597,7 @@ function clientSpanWhere(app: string): Record<string, unknown> {
 
 /** ≥400, or the span itself recorded an error — the spec's error-share
  * predicate for a client HTTP span. */
-const HTTP_ERROR_WHERE = {
+const HTTP_ERROR_WHERE: IrPredicate = {
   or: [
     { field: "status.code", op: "eq", value: "Error" },
     { field: "http.response.status_code", op: "gte", value: 400 },
@@ -608,9 +610,7 @@ const NETWORK_GROUP_LIMIT = 500;
  * and `buildTracedShareDoc`'s traced query: join to the parent span, then
  * keep only rows where that parent is one of the app's own client spans and
  * this (child) row is its server-kind callee — the "traced" join, once. */
-function correlatedServerChildOfAppClient(
-  app: string,
-): Record<string, unknown>[] {
+function correlatedServerChildOfAppClient(app: string): IrStage[] {
   return [
     { correlate: { to: "parent", kind: "inner" } },
     {
@@ -995,7 +995,7 @@ export async function fetchResources(
  * every client span. */
 const SDK_EXPORT_URL_REGEX = "/v1/(traces|logs|metrics)([?#]|$)";
 
-function notSdkExport(field: string) {
+function notSdkExport(field: string): IrPredicate {
   return { not: { field, op: "regex", value: SDK_EXPORT_URL_REGEX } };
 }
 

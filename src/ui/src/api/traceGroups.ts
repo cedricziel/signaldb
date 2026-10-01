@@ -7,7 +7,7 @@
  * newest N records. The row budget below therefore bounds the number of
  * *groups* returned, not the records their aggregates cover.
  */
-import type { QueryIrRequest, QueryIrResponse } from "./gen";
+import type { IrStage, QueryIrRequest, QueryIrResponse } from "./gen";
 import { runIrQuery } from "./queryIr";
 import { msToNanos, type ResolvedRange } from "../lib/time";
 import { filterStages, type TraceFilter } from "../lib/traceFilters";
@@ -44,7 +44,7 @@ export type GroupGrain = "traces" | "spans";
 export function groupPinStages(
   dims: string[],
   values: (string | null)[],
-): Record<string, unknown>[] {
+): IrStage[] {
   return dims.map((dim, i) => ({
     where:
       values[i] == null
@@ -123,7 +123,7 @@ export function buildGroupDoc(
   grain: GroupGrain,
   sort: GroupSort = DEFAULT_GROUP_SORT,
 ): QueryIrRequest {
-  const scope: Record<string, unknown>[] =
+  const scope: IrStage[] =
     grain === "traces"
       ? [
           {
