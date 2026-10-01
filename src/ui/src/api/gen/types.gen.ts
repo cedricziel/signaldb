@@ -1062,8 +1062,20 @@ export type FlamebearerMetadata = {
  */
 export type FlamegraphResult = {
     /**
+     * Present iff the document declared `baseline`: the baseline window's
+     * total.
+     */
+    baseline_total?: number | null;
+    /**
+     * Present iff the document declared `baseline`: the `range` window's
+     * total.
+     */
+    comparison_total?: number | null;
+    /**
      * One entry per depth level; each level is a flat sequence of
-     * `[offset_delta, total, self, name_index]` quadruples.
+     * `[offset_delta, total, self, name_index]` quadruples, or with a
+     * `baseline`, `[offset_delta_baseline, total_baseline, self_baseline,
+     * offset_delta, total, self, name_index]` septuples.
      */
     levels: Array<Array<number>>;
     /**
@@ -1081,7 +1093,8 @@ export type FlamegraphResult = {
      */
     names: Array<string>;
     /**
-     * Total value of the root (sum of all samples).
+     * Total value of the root (sum of all samples); with a `baseline`, the
+     * sum of both windows.
      */
     total: number;
     /**
@@ -2422,6 +2435,7 @@ export type QueryFormula = {
  * unsupported stage by name.
  */
 export type QueryIrRequest = {
+    baseline?: null | QueryRange;
     /**
      * The value of the `constant` pseudo-source (irVersion 10+).
      */

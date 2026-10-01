@@ -107,6 +107,11 @@ pub struct QueryIrRequest {
     /// The value of the `constant` pseudo-source (irVersion 10+).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constant: Option<f64>,
+    /// `flamegraph` only (irVersion 13+): a second window the same `where`
+    /// stages are read over, turning the result into a differential
+    /// flamegraph of `baseline` against `range`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<QueryRange>,
 }
 
 /// One named formula in a [`MultiQueryIrRequest`] (D5): arithmetic
@@ -144,7 +149,7 @@ pub struct MultiQueryIrRequest {
 #[serde(untagged)]
 pub enum QueryIrRequestBody {
     Multi(MultiQueryIrRequest),
-    Single(QueryIrRequest),
+    Single(Box<QueryIrRequest>),
 }
 
 impl QueryIrResponse {
@@ -265,11 +270,22 @@ pub struct FlamegraphResult {
     /// Function name table referenced by the blocks' name indices.
     pub names: Vec<String>,
     /// One entry per depth level; each level is a flat sequence of
-    /// `[offset_delta, total, self, name_index]` quadruples.
+    /// `[offset_delta, total, self, name_index]` quadruples, or with a
+    /// `baseline`, `[offset_delta_baseline, total_baseline, self_baseline,
+    /// offset_delta, total, self, name_index]` septuples.
     #[schema(value_type = Vec<Vec<i64>>)]
     pub levels: Vec<Vec<i64>>,
-    /// Total value of the root (sum of all samples).
+    /// Total value of the root (sum of all samples); with a `baseline`, the
+    /// sum of both windows.
     pub total: i64,
+    /// Present iff the document declared `baseline`: the baseline window's
+    /// total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline_total: Option<i64>,
+    /// Present iff the document declared `baseline`: the `range` window's
+    /// total.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub comparison_total: Option<i64>,
     /// Largest self value of any block, used for color scaling.
     pub max_self: i64,
     /// `true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
@@ -389,7 +405,7 @@ pub async fn query_ir(
 ) -> Result<axum::Json<QueryIrResponse>, ApiError> {
     match body {
         QueryIrRequestBody::Multi(req) => query_ir_multi(state, tenant_ctx, req).await,
-        QueryIrRequestBody::Single(req) => query_ir_single(state, tenant_ctx, req).await,
+        QueryIrRequestBody::Single(req) => query_ir_single(state, tenant_ctx, *req).await,
     }
 }
 
@@ -414,6 +430,10 @@ async fn query_ir_single(
     // resolve to a single absolute window every stage of the plan sees.
     let now = super::now_ns();
     let window = resolve_window(&req.range, now)?;
+    if let Some(baseline) = &req.baseline {
+        resolve_window(baseline, now)
+            .map_err(|e| ApiError::bad_request(format!("baseline: {}", e.message)))?;
+    }
 
     // The IR document is the request re-serialized; the querier validates it.
     let document = serde_json::to_value(&req)
@@ -1352,21 +1372,36 @@ fn to_flamegraph_result(batches: &[RecordBatch]) -> Result<FlamegraphResult, Api
                 "flamegraph result is missing truncated",
             )
         })?;
-    let decoded: common::profile::Flamegraph =
-        serde_json::from_str(json.value(0)).map_err(|e| {
-            ApiError::new(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                format!("invalid flamegraph_json: {e}"),
-            )
-        })?;
+    let decoded: FlamegraphWire = serde_json::from_str(json.value(0)).map_err(|e| {
+        ApiError::new(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("invalid flamegraph_json: {e}"),
+        )
+    })?;
     Ok(FlamegraphResult {
         names: decoded.names,
         levels: decoded.levels,
         total: decoded.total,
         max_self: decoded.max_self,
+        baseline_total: decoded.left_ticks,
+        comparison_total: decoded.right_ticks,
         truncated: truncated.value(0),
         locations: decoded.locations,
     })
+}
+
+/// Either `common::profile::Flamegraph` or, for a `baseline` document,
+/// `common::profile::DiffFlamegraph`: the latter adds the two side totals.
+#[derive(Deserialize)]
+struct FlamegraphWire {
+    names: Vec<String>,
+    levels: Vec<Vec<i64>>,
+    total: i64,
+    max_self: i64,
+    #[serde(default)]
+    locations: Vec<Option<common::profile::FrameLocation>>,
+    left_ticks: Option<i64>,
+    right_ticks: Option<i64>,
 }
 
 fn to_heatmap_cells(batches: &[RecordBatch]) -> Result<Vec<HeatmapCell>, ApiError> {
@@ -2622,6 +2657,8 @@ mod tests {
                 None,
             ]
         );
+        assert_eq!(flamegraph.baseline_total, None);
+        assert_eq!(flamegraph.comparison_total, None);
     }
 
     #[test]
@@ -2633,6 +2670,58 @@ mod tests {
         let err = resolve_window(&range, 10_000_000_000_000).unwrap_err();
         assert_eq!(err.status, StatusCode::BAD_REQUEST);
         assert!(err.message.contains("range.from"), "{}", err.message);
+    }
+
+    /// A `baseline` document's batch carries a `DiffFlamegraph`; its two
+    /// sides' totals surface next to the septuple levels.
+    #[test]
+    fn flamegraph_envelope_decodes_a_differential_batch() {
+        use datafusion::arrow::array::{BooleanArray, RecordBatch, StringArray};
+        use datafusion::arrow::datatypes::{DataType, Field, Schema};
+        use std::sync::Arc;
+        let diff_json = serde_json::json!({
+            "names": ["total", "main"],
+            "levels": [[0, 100, 0, 0, 50, 0, 0], [0, 100, 100, 0, 50, 50, 1]],
+            "left_ticks": 100,
+            "right_ticks": 50,
+            "total": 150,
+            "max_self": 100,
+            "locations": [null, null]
+        })
+        .to_string();
+        let batch = RecordBatch::try_new(
+            Arc::new(Schema::new(vec![
+                Field::new("flamegraph_json", DataType::Utf8, false),
+                Field::new("truncated", DataType::Boolean, false),
+            ])),
+            vec![
+                Arc::new(StringArray::from(vec![diff_json])),
+                Arc::new(BooleanArray::from(vec![false])),
+            ],
+        )
+        .unwrap();
+        let document = serde_json::json!({
+            "irVersion": 13, "from": "profiles", "range": { "from": "0", "to": "60" },
+            "baseline": { "from": "0", "to": "30" },
+            "result": "flamegraph", "pipeline": []
+        });
+        let response = build_envelope(
+            "flamegraph",
+            ResolvedWindow {
+                start_ns: 0,
+                end_ns: 60,
+            },
+            &[batch],
+            &document,
+        )
+        .unwrap();
+        let flamegraph = response.flamegraph.expect("flamegraph envelope is present");
+        assert_eq!(flamegraph.levels[1], vec![0, 100, 100, 0, 50, 50, 1]);
+        assert_eq!(flamegraph.total, 150);
+        assert_eq!(flamegraph.baseline_total, Some(100));
+        assert_eq!(flamegraph.comparison_total, Some(50));
+        let wire = serde_json::to_value(&flamegraph).unwrap();
+        assert_eq!(wire["baseline_total"], 100);
     }
 
     /// A `flamegraph_json` batch encoded before `locations` existed (no such
@@ -2888,6 +2977,7 @@ mod tests {
                 focus: None,
                 depth: None,
                 trace_id: None,
+                baseline: None,
                 step: None,
                 constant: None,
             },
@@ -2907,6 +2997,7 @@ mod tests {
                 focus: None,
                 depth: None,
                 trace_id: None,
+                baseline: None,
                 step: None,
                 constant: None,
             },
@@ -2945,6 +3036,7 @@ mod tests {
                 focus: None,
                 depth: None,
                 trace_id: None,
+                baseline: None,
                 step: None,
                 constant: None,
             },

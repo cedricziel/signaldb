@@ -1518,8 +1518,18 @@ pub mod types {
     "Profile flamegraph retrieval" requirement.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct FlamegraphResult {
+        /**Present iff the document declared `baseline`: the baseline window's
+        total.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub baseline_total: ::std::option::Option<i64>,
+        /**Present iff the document declared `baseline`: the `range` window's
+        total.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub comparison_total: ::std::option::Option<i64>,
         /**One entry per depth level; each level is a flat sequence of
-        `[offset_delta, total, self, name_index]` quadruples.*/
+        `[offset_delta, total, self, name_index]` quadruples, or with a
+        `baseline`, `[offset_delta_baseline, total_baseline, self_baseline,
+        offset_delta, total, self, name_index]` septuples.*/
         pub levels: ::std::vec::Vec<::std::vec::Vec<i64>>,
         /**Source location for each entry in `names`, aligned by index; `None`
         (or the array is shorter than `names`) where unknown. See
@@ -1529,7 +1539,8 @@ pub mod types {
         pub max_self: i64,
         ///Function name table referenced by the blocks' name indices.
         pub names: ::std::vec::Vec<::std::string::String>,
-        ///Total value of the root (sum of all samples).
+        /**Total value of the root (sum of all samples); with a `baseline`, the
+        sum of both windows.*/
         pub total: i64,
         /**`true` when more than `FLAMEGRAPH_PROFILE_CAP` (1,000) profile rows
         matched — a row-count cap, not a byte-size one — and the flamegraph
@@ -4821,6 +4832,11 @@ pub mod types {
     unsupported stage by name.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrRequest {
+        /**`flamegraph` only (irVersion 13+): a second window the same `where`
+        stages are read over, turning the result into a differential
+        flamegraph of `baseline` against `range`.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub baseline: ::std::option::Option<QueryRange>,
         ///The value of the `constant` pseudo-source (irVersion 10+).
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub constant: ::std::option::Option<f64>,
@@ -12012,6 +12028,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct FlamegraphResult {
+            baseline_total:
+                ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            comparison_total:
+                ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
             levels:
                 ::std::result::Result<::std::vec::Vec<::std::vec::Vec<i64>>, ::std::string::String>,
             locations: ::std::result::Result<
@@ -12029,6 +12049,8 @@ pub mod types {
         impl ::std::default::Default for FlamegraphResult {
             fn default() -> Self {
                 Self {
+                    baseline_total: Ok(Default::default()),
+                    comparison_total: Ok(Default::default()),
                     levels: Err("no value supplied for levels".to_string()),
                     locations: Err("no value supplied for locations".to_string()),
                     max_self: Err("no value supplied for max_self".to_string()),
@@ -12039,6 +12061,26 @@ pub mod types {
             }
         }
         impl FlamegraphResult {
+            pub fn baseline_total<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.baseline_total = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for baseline_total: {e}")
+                });
+                self
+            }
+            pub fn comparison_total<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.comparison_total = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for comparison_total: {e}")
+                });
+                self
+            }
             pub fn levels<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::vec::Vec<::std::vec::Vec<i64>>>,
@@ -12108,6 +12150,8 @@ pub mod types {
                 value: FlamegraphResult,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    baseline_total: value.baseline_total?,
+                    comparison_total: value.comparison_total?,
                     levels: value.levels?,
                     locations: value.locations?,
                     max_self: value.max_self?,
@@ -12120,6 +12164,8 @@ pub mod types {
         impl ::std::convert::From<super::FlamegraphResult> for FlamegraphResult {
             fn from(value: super::FlamegraphResult) -> Self {
                 Self {
+                    baseline_total: Ok(value.baseline_total),
+                    comparison_total: Ok(value.comparison_total),
                     levels: Ok(value.levels),
                     locations: Ok(value.locations),
                     max_self: Ok(value.max_self),
@@ -19055,6 +19101,10 @@ pub mod types {
         }
         #[derive(Clone, Debug)]
         pub struct QueryIrRequest {
+            baseline: ::std::result::Result<
+                ::std::option::Option<super::QueryRange>,
+                ::std::string::String,
+            >,
             constant: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
             depth: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
             fields: ::std::result::Result<
@@ -19082,6 +19132,7 @@ pub mod types {
         impl ::std::default::Default for QueryIrRequest {
             fn default() -> Self {
                 Self {
+                    baseline: Ok(Default::default()),
                     constant: Ok(Default::default()),
                     depth: Ok(Default::default()),
                     fields: Ok(Default::default()),
@@ -19097,6 +19148,16 @@ pub mod types {
             }
         }
         impl QueryIrRequest {
+            pub fn baseline<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::QueryRange>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.baseline = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for baseline: {e}"));
+                self
+            }
             pub fn constant<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<f64>>,
@@ -19216,6 +19277,7 @@ pub mod types {
                 value: QueryIrRequest,
             ) -> ::std::result::Result<Self, super::error::ConversionError> {
                 Ok(Self {
+                    baseline: value.baseline?,
                     constant: value.constant?,
                     depth: value.depth?,
                     fields: value.fields?,
@@ -19233,6 +19295,7 @@ pub mod types {
         impl ::std::convert::From<super::QueryIrRequest> for QueryIrRequest {
             fn from(value: super::QueryIrRequest) -> Self {
                 Self {
+                    baseline: Ok(value.baseline),
                     constant: Ok(value.constant),
                     depth: Ok(value.depth),
                     fields: Ok(value.fields),

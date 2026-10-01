@@ -259,6 +259,7 @@ fn build_document(
         focus: None,
         depth: None,
         trace_id: None,
+        baseline: None,
         step: None,
         constant: None,
     };

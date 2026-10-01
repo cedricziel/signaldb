@@ -59,7 +59,7 @@ body. The response is the declared result envelope (see
 
 ```jsonc
 {
-  "irVersion": 1, // 1 to 12; declare the lowest version that carries every feature you use (see Pipeline stages)
+  "irVersion": 1, // 1 to 13; declare the lowest version that carries every feature you use (see Pipeline stages)
   "from": "logs", // a registered source: "logs", "traces", "profiles", "metrics", or "exemplars"
   "range": { "from": "now-1h", "to": "now" },
   "result": "series", // v1: rows | series | table; v2 adds heatmap; flamegraph is profiles-only
@@ -129,7 +129,7 @@ joins on matching timestamps. Samples after the last instant are not
 counted. On every other source, `step` buckets are epoch-aligned
 `[t, t + step)` and labelled by their start `t`.
 
-What each `irVersion` unlocks (the server supports 1 to 12; the source of
+What each `irVersion` unlocks (the server supports 1 to 13; the source of
 truth is `src/query-ir/src/version.rs`):
 
 | Version | Adds |
@@ -146,6 +146,7 @@ truth is `src/query-ir/src/version.rs`):
 | 10 | the metric Series algebra: `sample`, `reduce`, `map`, `labels`, `filter`, `binop`, `absent`, `over_time`, `sort`, `scalar`, `vector`, `histogram_fraction`, histogram `window`, `lookback` and `per_series`, the `scalar` envelope, document `step`/`constant`, the `time`/`constant` sources |
 | 11 | `correlate` to another signal source |
 | 12 | `match` and the `trace` envelope |
+| 13 | the `flamegraph` envelope's `baseline` (a differential flamegraph) |
 
 Every earlier document keeps its exact meaning; a document using a feature
 while declaring a lower version is rejected naming the version it needs, never
@@ -905,9 +906,8 @@ Profile IR deliberately does not expose `samples_json`, `stacktraces_json`, or
 attribute payload columns as selectable/filterable fields — no query can
 address the raw payload directly, on any envelope. Retrieving the actual
 profile payload goes through the `flamegraph` envelope below instead, which
-returns it aggregated and bounded rather than as raw storage JSON. Use the
-Pyroscope-compatible APIs for diffs, label discovery, profile extraction, and
-heatmaps — those remain specialized APIs.
+returns it aggregated and bounded rather than as raw storage JSON, or, with a
+`baseline` window, as a differential flamegraph of two windows.
 
 The `samples_json`/`stacktraces_json` columns are, however, ordinary columns
 in the underlying Iceberg table: raw SQL against `profiles` (see
@@ -970,6 +970,40 @@ result, same as `series`. `locations` is parallel to `names`: `{file, line}` for
 first frame seen under that name when the profiler recorded a source file,
 `null` otherwise — the Explore UI uses it to offer
 [View source](explore-ui.md#view-source-github) on profile frames.
+
+#### Comparing two windows: `baseline` (v13)
+
+A document-level `baseline` range turns the flamegraph into a differential
+one: the same `where` stages are read over `baseline` and over `range`, each
+side capped at 1,000 profile rows, and merged by call stack. It is valid only
+with `"result": "flamegraph"` and needs `irVersion` 13.
+
+```json
+{
+  "irVersion": 13,
+  "from": "profiles",
+  "range": { "from": "now-1h", "to": "now" },
+  "baseline": { "from": "now-25h", "to": "now-24h" },
+  "result": "flamegraph",
+  "pipeline": [
+    { "where": { "field": "service.name", "op": "eq", "value": "checkout" } }
+  ]
+}
+```
+
+The response is the flamegraph envelope with two changes. Each level is a
+sequence of `[offset_delta_baseline, total_baseline, self_baseline,
+offset_delta, total, self, name_index]` septuples (Pyroscope's "double"
+flamebearer), and two totals are added: `baseline_total` (the `baseline`
+window) and `comparison_total` (the `range` window). `total` is their sum,
+`max_self` the largest self value on either side, and `truncated` is `true`
+when either side hit the cap. A stack present on one side only carries zeros
+for the other. `window` echoes `range`.
+
+The two sides are not normalized: a baseline window twice as long as `range`
+contributes roughly twice the samples, so compare windows of equal length or
+read the per-side totals. A baseline query costs two flamegraph queries, run
+one after the other.
 
 ## Metrics
 

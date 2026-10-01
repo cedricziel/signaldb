@@ -85,6 +85,7 @@ impl MapArgs {
             trace_id: self.trace_id.clone(),
             step: None,
             constant: None,
+            baseline: None,
         };
 
         let client = self.connect.build_client()?;

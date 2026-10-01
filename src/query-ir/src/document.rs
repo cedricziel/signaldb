@@ -1,7 +1,7 @@
 //! # The IR document shape
 //!
 //! ```text
-//!   Document = { irVersion, from: Source, range, result, fields?, pipeline: [Stage] }
+//!   Document = { irVersion, from: Source, range, result, fields?, baseline?, pipeline: [Stage] }
 //! ```
 //!
 //! `from` is a **document-level field** (not a pipeline stage) that selects the
@@ -106,6 +106,11 @@ pub struct Document {
     /// (`irVersion` 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constant: Option<f64>,
+    /// `flamegraph` only: a second window the same `where` stages are read
+    /// over. The result becomes a differential flamegraph of `baseline`
+    /// against `range` (`irVersion` 13).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub baseline: Option<Range>,
 }
 
 impl Document {
@@ -136,6 +141,11 @@ impl Document {
         if self.result == ResultEnvelope::Trace {
             needed = needed.max(OperatorRegistry::feature_min_version(
                 Feature::TraceEnvelope,
+            ));
+        }
+        if self.baseline.is_some() {
+            needed = needed.max(OperatorRegistry::feature_min_version(
+                Feature::FlamegraphBaseline,
             ));
         }
         if self.step.is_some() || self.constant.is_some() {

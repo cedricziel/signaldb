@@ -57,6 +57,7 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
         focus: None,
         depth: None,
         trace_id: None,
+        baseline: None,
         step: None,
         constant: None,
     })

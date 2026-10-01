@@ -536,6 +536,7 @@ impl TraceService {
             focus: None,
             depth: None,
             trace_id: None,
+            baseline: None,
             step: None,
             constant: None,
         };

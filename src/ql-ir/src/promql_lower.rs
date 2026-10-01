@@ -162,6 +162,7 @@ pub fn promql_to_ir(query: &str, params: &PromqlParams) -> Result<Document, Lowe
         focus: None,
         depth: None,
         trace_id: None,
+        baseline: None,
         step: Some(duration_ns(step_ns)),
         constant: pipe.constant,
     })
