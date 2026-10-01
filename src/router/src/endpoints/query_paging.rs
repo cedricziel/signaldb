@@ -193,12 +193,12 @@ pub(super) fn ir_error(err: IrError) -> ApiError {
     }
 }
 
-fn cursor_error(err: CursorError) -> ApiError {
+pub(super) fn cursor_error(err: CursorError) -> ApiError {
     let status = match err {
         CursorError::Expired(_) => StatusCode::GONE,
         CursorError::Corrupt | CursorError::Mismatch => StatusCode::BAD_REQUEST,
     };
-    ApiError::new(status, format!("page.cursor: {err}"))
+    ApiError::new(status, format!("cursor: {err}"))
 }
 
 #[cfg(test)]
