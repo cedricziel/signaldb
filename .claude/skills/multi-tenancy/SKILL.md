@@ -349,9 +349,13 @@ and off-type handling are described once, in
   labels, warm index and `default_schemas` all come from that block and nothing
   is inherited. Keep every pin the tenant needs in its own list.
 - **Caching**: the writer caches one `SignalScope` per (tenant, dataset, signal)
-  and resolves each distinct key once per batch. `TypeAuthority::invalidate()`
-  drops the cache but has no production caller today; a schema-version bump or
-  a changed pin takes effect on the next writer process start. The acceptor
+  and resolves each distinct key once per batch. A scope expires after
+  `DEFAULT_SCOPE_TTL` (30s); the first caller past expiry rebuilds it from the
+  catalog (`SchemaResolver::fresh_type_hints`) while others keep the old one,
+  and a failed rebuild keeps serving the old one. That is how schema-registry
+  writes, which go through the router's own resolver, reach ingest. A
+  schema-version bump or a changed pin takes effect on the next writer
+  process start. The acceptor
   only reads (`TypeSnapshots`, refreshed in the background after a 30s TTL) to
   warn the sender about off-type scalars in OTLP `partial_success`; it never
   establishes or places anything.

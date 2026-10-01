@@ -255,6 +255,14 @@ impl SchemaResolver {
         if let Some(v) = self.custom.get(tenant_id) {
             return Ok(v.clone());
         }
+        let arc = Arc::new(self.load_custom(tenant_id).await?);
+        self.custom.insert(tenant_id.to_string(), arc.clone());
+        Ok(arc)
+    }
+
+    /// The tenant's custom registries straight from the catalog, bypassing
+    /// (and leaving untouched) the cache.
+    async fn load_custom(&self, tenant_id: &str) -> Result<Vec<Visible>, StoreError> {
         let mut rows = self.catalog.list_schema_registries(tenant_id).await?;
         rows.sort_by(|a, b| {
             a.namespace
@@ -270,9 +278,7 @@ impl SchemaResolver {
                 resolved: Arc::new(r.resolved),
             })
             .collect();
-        let arc = Arc::new(visible);
-        self.custom.insert(tenant_id.to_string(), arc.clone());
-        Ok(arc)
+        Ok(visible)
     }
 
     fn invalidate(&self, tenant_id: &str) {
@@ -281,9 +287,14 @@ impl SchemaResolver {
 
     /// Every registry visible to the tenant in precedence order.
     async fn visible(&self, tenant_id: &str) -> Result<Vec<Visible>, StoreError> {
-        let mut all: Vec<Visible> = self.custom_for(tenant_id).await?.as_ref().clone();
+        Ok(Self::with_bundled(&self.custom_for(tenant_id).await?))
+    }
+
+    /// `custom` followed by the bundled registries: the precedence order.
+    fn with_bundled(custom: &[Visible]) -> Vec<Visible> {
+        let mut all = custom.to_vec();
         all.extend(Self::bundled_visible());
-        Ok(all)
+        all
     }
 
     // ---- listing / documents -------------------------------------------

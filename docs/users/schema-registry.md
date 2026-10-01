@@ -337,6 +337,9 @@ known entity; and an entity that `extends` another may add descriptive
 attributes but never new identifying ones. Errors name the offending path
 (`groups[2].attributes[0].ref: unresolved ref …`). Replace is all-or-nothing —
 an invalid document leaves the previous one served.
+Ingest picks up a created, replaced or deleted registry's type hints within
+about 30 seconds; batches already in flight may use the previous hints, and the
+interval is not configurable. A key that already has a canonical type keeps it.
 
 Registries are documents: replacing uploads the whole file (a
 `weaver`-managed repo can push its files unchanged). Namespaces `otel`,

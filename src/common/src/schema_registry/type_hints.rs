@@ -94,6 +94,13 @@ impl SchemaResolver {
         let visible = self.visible(tenant_id).await?;
         Ok(SemconvTypeHints::from_visible(&visible))
     }
+
+    /// Like [`Self::type_hints`], but read from the catalog now rather than
+    /// from this resolver's cache, which only its own writes invalidate.
+    pub async fn fresh_type_hints(&self, tenant_id: &str) -> Result<SemconvTypeHints, StoreError> {
+        let visible = Self::with_bundled(&self.load_custom(tenant_id).await?);
+        Ok(SemconvTypeHints::from_visible(&visible))
+    }
 }
 
 #[cfg(test)]
