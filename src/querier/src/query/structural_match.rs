@@ -8,19 +8,23 @@
 //! parent links in O(n), and emits the witnessing spans with a `spansets`
 //! column, keeping the input order. A trace over `match_max_trace_spans` or
 //! `match_max_trace_bytes` fails the query; it is never truncated or skipped.
+//! A trace the range visibly cut (a span whose parent is not buffered, or a
+//! span ending after the window) is counted in [`IncompleteTraces`] when the
+//! stage has a relation; the result does not change.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
 use std::fmt;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, PoisonError};
 
 use async_trait::async_trait;
+use common::flight::MatchIncompleteReport;
 use common::query_ir::{Match, MatchOp};
 use datafusion::arrow::array::{
     Array, ArrayRef, AsArray, OffsetSizeTrait, RecordBatch, StringArray, make_comparator,
 };
 use datafusion::arrow::compute::{SortOptions, cast, concat, interleave, partition};
-use datafusion::arrow::datatypes::{DataType, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, SchemaRef, UInt64Type};
 use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 use datafusion::catalog::Session;
 use datafusion::common::tree_node::TreeNodeRecursion;
@@ -58,6 +62,9 @@ const CANDIDATE_TRACE: &str = "__match_trace";
 const TRACE_ID: &str = "trace_id";
 const SPAN_ID: &str = "span_id";
 const PARENT_SPAN_ID: &str = "parent_span_id";
+const END_TIME: &str = "end_time_unix_nano";
+/// How many example trace ids [`IncompleteTraces`] keeps.
+const SAMPLE_TRACES: usize = 3;
 
 /// One bit per span-set a span witnesses.
 type Mask = u16;
@@ -86,17 +93,71 @@ struct Spec {
     relations: Vec<(usize, MatchOp, usize)>,
     limits: MatchLimits,
     time_col: String,
+    window_end_ns: i64,
 }
 
-/// Lower a validated `match` stage over `df` (the windowed traces scan).
-/// `flags` holds one boolean expression per span-set, in declaration order.
+/// Traces a relational `match` evaluated whose hierarchy the range visibly
+/// cut, shared by every partition's evaluator and read once the plan has
+/// run. A pipeline holds at most one `match` stage, so one handle covers
+/// it. Only traces the evaluator finished count: a `limit` that stops the
+/// stream early leaves a lower bound. Handles compare by identity.
+#[derive(Debug, Clone, Default)]
+pub(crate) struct IncompleteTraces(Arc<Mutex<MatchIncompleteReport>>);
+
+impl IncompleteTraces {
+    fn record(&self, matched: bool, trace: impl FnOnce() -> DFResult<String>) -> DFResult<()> {
+        let mut report = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        // Matched samples sit before unmatched ones.
+        let at = if matched {
+            report.matched
+        } else {
+            report.sample_trace_ids.len() as u64
+        };
+        let sample = (at < SAMPLE_TRACES as u64).then(trace).transpose()?;
+        *(if matched {
+            &mut report.matched
+        } else {
+            &mut report.unmatched
+        }) += 1;
+        if let Some(sample) = sample {
+            report.sample_trace_ids.insert(at as usize, sample);
+            report.sample_trace_ids.truncate(SAMPLE_TRACES);
+        }
+        Ok(())
+    }
+
+    /// The counts so far, or `None` when no trace was counted.
+    pub(crate) fn report(&self) -> Option<MatchIncompleteReport> {
+        let report = self.0.lock().unwrap_or_else(PoisonError::into_inner);
+        (report.matched + report.unmatched > 0).then(|| report.clone())
+    }
+}
+
+impl PartialEq for IncompleteTraces {
+    fn eq(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.0, &other.0)
+    }
+}
+
+impl Eq for IncompleteTraces {}
+
+impl std::hash::Hash for IncompleteTraces {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        Arc::as_ptr(&self.0).hash(state);
+    }
+}
+
+/// Lower a validated `match` stage over `df` (the traces scan up to
+/// `window_end_ns`). `flags` holds one boolean expression per span-set, in
+/// declaration order. The returned handle counts the traces the window cut.
 pub(crate) fn lower(
     df: DataFrame,
     stage: &Match,
     flags: Vec<Expr>,
     time_col: &str,
+    window_end_ns: i64,
     limits: MatchLimits,
-) -> Result<DataFrame, QuerierError> {
+) -> Result<(DataFrame, IncompleteTraces), QuerierError> {
     let internal = |msg: &str| QuerierError::QueryFailed(DataFusionError::Internal(msg.into()));
     let names: Vec<String> = stage.spansets.0.iter().map(|(n, _)| n.clone()).collect();
     let index = |name: &str| names.iter().position(|n| n == name);
@@ -138,6 +199,7 @@ pub(crate) fn lower(
         )?;
 
     let (state, input) = kept.into_parts();
+    let incomplete = IncompleteTraces::default();
     let node = StructuralMatchNode {
         schema: output_schema(input.schema())?,
         input,
@@ -146,15 +208,18 @@ pub(crate) fn lower(
             relations,
             limits,
             time_col: time_col.to_string(),
+            window_end_ns,
         },
+        incomplete: incomplete.clone(),
     };
     let plan = LogicalPlan::Extension(Extension {
         node: Arc::new(node),
     });
-    Ok(DataFrame::new(with_querier_planner(state), plan).sort(vec![
+    let df = DataFrame::new(with_querier_planner(state), plan).sort(vec![
         col(TRACE_ID).sort(true, true),
         col(time_col).sort(true, true),
-    ])?)
+    ])?;
+    Ok((df, incomplete))
 }
 
 fn output_schema(input: &DFSchema) -> DFResult<DFSchemaRef> {
@@ -182,6 +247,7 @@ struct StructuralMatchNode {
     input: LogicalPlan,
     schema: DFSchemaRef,
     spec: Spec,
+    incomplete: IncompleteTraces,
 }
 
 impl PartialOrd for StructuralMatchNode {
@@ -222,6 +288,7 @@ impl UserDefinedLogicalNodeCore for StructuralMatchNode {
             schema: output_schema(input.schema())?,
             input,
             spec: self.spec.clone(),
+            incomplete: self.incomplete.clone(),
         })
     }
 }
@@ -250,6 +317,7 @@ impl ExtensionPlanner for StructuralMatchPlanner {
         Ok(Some(Arc::new(StructuralMatchExec::try_new(
             Arc::clone(input),
             node.spec.clone(),
+            node.incomplete.clone(),
             schema,
         )?)))
     }
@@ -259,6 +327,7 @@ impl ExtensionPlanner for StructuralMatchPlanner {
 struct StructuralMatchExec {
     input: Arc<dyn ExecutionPlan>,
     spec: Spec,
+    incomplete: IncompleteTraces,
     schema: SchemaRef,
     /// `(trace_id, start time)` over the input.
     order: [Arc<dyn PhysicalExpr>; 2],
@@ -266,7 +335,12 @@ struct StructuralMatchExec {
 }
 
 impl StructuralMatchExec {
-    fn try_new(input: Arc<dyn ExecutionPlan>, spec: Spec, schema: SchemaRef) -> DFResult<Self> {
+    fn try_new(
+        input: Arc<dyn ExecutionPlan>,
+        spec: Spec,
+        incomplete: IncompleteTraces,
+        schema: SchemaRef,
+    ) -> DFResult<Self> {
         let order_by = |schema: &SchemaRef| -> DFResult<[Arc<dyn PhysicalExpr>; 2]> {
             Ok([
                 physical_col(TRACE_ID, schema)?,
@@ -288,6 +362,7 @@ impl StructuralMatchExec {
             order: order_by(&input.schema())?,
             input,
             spec,
+            incomplete,
             schema,
             properties,
         })
@@ -354,8 +429,9 @@ impl ExecutionPlan for StructuralMatchExec {
         let Ok([input]) = <[Arc<dyn ExecutionPlan>; 1]>::try_from(children) else {
             return internal_err!("StructuralMatchExec takes exactly one input");
         };
+        let (spec, incomplete) = (self.spec.clone(), self.incomplete.clone());
         let schema = Arc::clone(&self.schema);
-        Ok(Arc::new(Self::try_new(input, self.spec.clone(), schema)?))
+        Ok(Arc::new(Self::try_new(input, spec, incomplete, schema)?))
     }
 
     fn execute(
@@ -366,8 +442,13 @@ impl ExecutionPlan for StructuralMatchExec {
         let input = self.input.execute(partition, Arc::clone(&context))?;
         let reservation = MemoryConsumer::new(format!("StructuralMatchExec[{partition}]"))
             .register(context.memory_pool());
-        let evaluator =
-            Evaluator::try_new(&self.input.schema(), &self.schema, &self.spec, reservation)?;
+        let evaluator = Evaluator::try_new(
+            &self.input.schema(),
+            &self.schema,
+            &self.spec,
+            self.incomplete.clone(),
+            reservation,
+        )?;
         let stream = futures::stream::try_unfold(Some((input, evaluator)), |state| async move {
             let Some((mut input, mut evaluator)) = state else {
                 return Ok(None);
@@ -394,6 +475,9 @@ struct Evaluator {
     trace: usize,
     span: usize,
     parent: usize,
+    /// `None` without an end-time column: only dangling parents count then.
+    end: Option<usize>,
+    incomplete: IncompleteTraces,
     flags: Vec<usize>,
     kept: Vec<usize>,
     current: Vec<RecordBatch>,
@@ -412,6 +496,7 @@ impl Evaluator {
         input: &SchemaRef,
         schema: &SchemaRef,
         spec: &Spec,
+        incomplete: IncompleteTraces,
         reservation: MemoryReservation,
     ) -> DFResult<Self> {
         let flags = (0..spec.names.len())
@@ -426,6 +511,8 @@ impl Evaluator {
             trace: input.index_of(TRACE_ID)?,
             span: input.index_of(SPAN_ID)?,
             parent: input.index_of(PARENT_SPAN_ID)?,
+            end: input.index_of(END_TIME).ok(),
+            incomplete,
             flags,
             kept,
             current: Vec::new(),
@@ -502,16 +589,20 @@ impl Evaluator {
                 Err(e) => format!("does not fit the query memory pool at {total} bytes: {e}"),
             }
         };
-        let trace =
-            ArrayFormatter::try_new(slice.column(self.trace).as_ref(), &FormatOptions::default())?
-                .value(0)
-                .to_string();
+        let trace = self.trace_id(slice)?;
         Err(DataFusionError::External(Box::new(
             QuerierError::ResourceExhausted(format!(
                 "match: trace {trace} {over}; a trace is never evaluated partially, so narrow \
                  the range or raise the bound"
             )),
         )))
+    }
+
+    fn trace_id(&self, slice: &RecordBatch) -> DFResult<String> {
+        let ids = slice.column(self.trace).as_ref();
+        Ok(ArrayFormatter::try_new(ids, &FormatOptions::default())?
+            .value(0)
+            .to_string())
     }
 
     fn finish_trace(&mut self) -> DFResult<()> {
@@ -543,7 +634,29 @@ impl Evaluator {
                 Ok(flag.iter().map(|v| v == Some(true)).collect())
             })
             .collect::<DFResult<Vec<Vec<bool>>>>()?;
-        if let Some(masks) = evaluate(&self.spec.relations, &ids(&spans), &ids(&parents), &flags) {
+        let (masks, dangling) =
+            evaluate(&self.spec.relations, &ids(&spans), &ids(&parents), &flags);
+        if !self.spec.relations.is_empty() {
+            let end_limit = u64::try_from(self.spec.window_end_ns).unwrap_or(0);
+            let open = || -> DFResult<bool> {
+                let Some(end) = self.end else {
+                    return Ok(false);
+                };
+                for slice in &slices {
+                    let ends = cast(slice.column(end), &DataType::UInt64)?;
+                    let mut ends = ends.as_primitive::<UInt64Type>().iter();
+                    if ends.any(|end| end.is_some_and(|end| end > end_limit)) {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            };
+            if dangling || open()? {
+                self.incomplete
+                    .record(masks.is_some(), || self.trace_id(&slices[0]))?;
+            }
+        }
+        if let Some(masks) = masks {
             let base = self.done.len();
             let rows = slices
                 .iter()
@@ -655,17 +768,18 @@ fn value_bytes(array: &dyn Array) -> DFResult<usize> {
     })
 }
 
-/// Per row, a bitmask of the span-sets it witnesses; `None` when the trace
-/// does not match. Rows sharing a `span_id` (a redelivered span) are one
-/// node: their flags are OR'd and they witness together.
+/// Per row, a bitmask of the span-sets it witnesses (`None` when the trace
+/// does not match), and whether a span names a parent the trace lacks. Rows
+/// sharing a `span_id` (a redelivered span) are one node: their flags are
+/// OR'd and they witness together.
 fn evaluate(
     relations: &[(usize, MatchOp, usize)],
     span_ids: &[Option<&[u8]>],
     parent_ids: &[Option<&[u8]>],
     row_flags: &[Vec<bool>],
-) -> Option<Vec<Mask>> {
+) -> (Option<Vec<Mask>>, bool) {
     if row_flags.iter().any(|f| !f.contains(&true)) {
-        return None;
+        return (None, false);
     }
     let mut index: HashMap<&[u8], usize> = HashMap::new();
     let (mut node_of, mut node_ids) = (Vec::with_capacity(span_ids.len()), Vec::new());
@@ -692,11 +806,14 @@ fn evaluate(
             nodes
         })
         .collect();
+    let mut dangling = false;
     let mut parent: Vec<Option<usize>> = (0..n)
         .map(|i| {
-            parent_ids_of[i]
-                .and_then(|p| index.get(p).copied())
-                .filter(|&p| p != i)
+            let p = parent_ids_of[i]?;
+            let found = index.get(p).copied();
+            // Storage writes a root's absent parent as an all-zero id.
+            dangling |= found.is_none() && p.iter().any(|&b| b != b'0' && b != 0);
+            found.filter(|&p| p != i)
         })
         .collect();
     let order = break_cycles(&mut parent, &node_ids);
@@ -727,7 +844,7 @@ fn evaluate(
             MatchOp::Sibling => sibling(fl, fr, &parent_ids_of),
         };
         if !left.contains(&true) {
-            return None;
+            return (None, dangling);
         }
         for i in 0..n {
             masks[i] |= (Mask::from(left[i]) << l) | (Mask::from(right[i]) << r);
@@ -742,7 +859,10 @@ fn evaluate(
             }
         }
     }
-    Some(node_of.iter().map(|&node| masks[node]).collect())
+    (
+        Some(node_of.iter().map(|&node| masks[node]).collect()),
+        dangling,
+    )
 }
 
 /// Cut each parent cycle at its smallest span id, which becomes a root, and
@@ -837,7 +957,8 @@ mod tests {
     use super::*;
     use crate::query::IrQueryParams;
     use crate::query::ir_planner::IrService;
-    use datafusion::arrow::array::{Int64Array, StringViewArray};
+    use common::flight::{MatchIncompleteReport, QueryReport};
+    use datafusion::arrow::array::{Int64Array, StringViewArray, UInt64Array};
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
@@ -847,7 +968,9 @@ mod tests {
     use serde_json::{Value, json};
 
     /// `[trace_id, span_id, parent_span_id ("" = none), span_name]`; start
-    /// time is the row's position within its trace.
+    /// time is the row's position within its trace, and so is the end time,
+    /// except that a span named [`OPEN`] ends 1ns after the test range and
+    /// one named [`EDGE`] ends exactly at it.
     type Span = [String; 4];
 
     fn span(trace: &str, id: &str, parent: &str, name: &str) -> Span {
@@ -876,6 +999,9 @@ mod tests {
             .collect()
     }
 
+    const OPEN: &str = "open";
+    const EDGE: &str = "edge";
+
     fn batch(spans: &[Span]) -> RecordBatch {
         let names = ["trace_id", "span_id", "parent_span_id", "span_name"];
         let mut fields: Vec<_> = names.map(|n| Field::new(n, DataType::Utf8, true)).into();
@@ -890,7 +1016,17 @@ mod tests {
             .collect();
         let starts =
             (0..spans.len()).map(|i| spans[..i].iter().filter(|s| s[0] == spans[i][0]).count());
-        columns.push(Arc::new(starts.map(|n| n as i64).collect::<Int64Array>()));
+        let starts: Vec<i64> = starts.map(|n| n as i64).collect();
+        let ends = spans.iter().zip(&starts);
+        let ends = ends.map(|(s, &start)| match s[3].as_str() {
+            OPEN => 1001,
+            EDGE => 1000,
+            _ => start as u64,
+        });
+        let ends: UInt64Array = ends.collect();
+        fields.push(Field::new("end_time_unix_nano", DataType::UInt64, false));
+        columns.push(Arc::new(Int64Array::from(starts)));
+        columns.push(Arc::new(ends));
         RecordBatch::try_new(Arc::new(Schema::new(fields)), columns).unwrap()
     }
 
@@ -936,7 +1072,15 @@ mod tests {
 
     /// `"<first column>:<second column>"` per returned row, in result order.
     async fn run(ctx: SessionContext, params: IrQueryParams, columns: [&str; 2]) -> Vec<String> {
-        let (batches, ..) = IrService::new(ctx).query(&params, "t", "d").await.unwrap();
+        run_reporting(ctx, params, columns).await.0
+    }
+
+    async fn run_reporting(
+        ctx: SessionContext,
+        params: IrQueryParams,
+        columns: [&str; 2],
+    ) -> (Vec<String>, QueryReport) {
+        let (batches, _, report) = IrService::new(ctx).query(&params, "t", "d").await.unwrap();
         let text = |b: &RecordBatch, c: &str, i: usize| {
             let column = b.column_by_name(c).unwrap();
             let format = ArrayFormatter::try_new(column.as_ref(), &FormatOptions::default());
@@ -946,7 +1090,7 @@ mod tests {
             (0..b.num_rows())
                 .map(move |i| format!("{}:{}", text(b, columns[0], i), text(b, columns[1], i)))
         });
-        rows.collect()
+        (rows.collect(), report)
     }
 
     const WITNESS: [&str; 2] = ["span_id", "spansets"];
@@ -1187,11 +1331,19 @@ mod tests {
             relations: Vec::new(),
             limits: MatchLimits::default(),
             time_col: "start_time_unix_nano".into(),
+            window_end_ns: 1000,
         };
         let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(pool_bytes));
         let reservation = MemoryConsumer::new("test").register(&pool);
         let output = Arc::new(Schema::new(output));
-        let evaluator = Evaluator::try_new(&input.schema(), &output, &spec, reservation).unwrap();
+        let evaluator = Evaluator::try_new(
+            &input.schema(),
+            &output,
+            &spec,
+            IncompleteTraces::default(),
+            reservation,
+        )
+        .unwrap();
         (evaluator, input)
     }
 
@@ -1263,6 +1415,113 @@ mod tests {
         });
         let got = run(ctx_of(batch), params(stage, &[]), WITNESS).await;
         assert_eq!(got, ["e1r:failed", "e1l:linked"]);
+    }
+
+    /// `x` matches below a parent outside the range, `y` misses because its
+    /// spans' shared parent is outside it, `w` matches with a span open past
+    /// the range end, and `z` is whole.
+    fn straddling() -> Vec<Span> {
+        [
+            ["w", "w0", "", "a"],
+            ["w", "w1", "w0", "b"],
+            ["w", "w2", "w0", OPEN],
+            ["x", "x1", "x0", "a"],
+            ["x", "x2", "x1", "b"],
+            ["y", "y1", "y0", "a"],
+            ["y", "y2", "y0", "b"],
+            ["z", "z0", "", "a"],
+            ["z", "z1", "z0", "b"],
+        ]
+        .map(|[t, id, parent, name]| span(t, id, parent, name))
+        .to_vec()
+    }
+
+    #[tokio::test]
+    async fn traces_cut_by_the_range_are_counted_by_outcome_without_changing_rows() {
+        let stage = relation("a", "descendant", "b");
+        let (rows, report) = run_reporting(ctx(&straddling()), params(stage, &[]), WITNESS).await;
+        assert_eq!(rows, ["w0:a", "w1:b", "x1:a", "x2:b", "z0:a", "z1:b"]);
+        let Some(MatchIncompleteReport {
+            matched: 2,
+            unmatched: 1,
+            sample_trace_ids: mut samples,
+        }) = report.match_incomplete
+        else {
+            panic!("{report:?}");
+        };
+        samples[..2].sort();
+        assert_eq!(samples, ["w", "x", "y"]);
+    }
+
+    #[tokio::test]
+    async fn at_most_three_sample_traces_are_named_matched_first() {
+        let mut spans: Vec<Span> = ["p", "q", "r", "s"]
+            .iter()
+            .flat_map(|t| {
+                [(1, 0, "a"), (2, 1, "b")].map(|(id, parent, name)| {
+                    span(t, &format!("{t}{id}"), &format!("{t}{parent}"), name)
+                })
+            })
+            .collect();
+        spans.extend(straddling().into_iter().filter(|s| s[0] == "y"));
+        let stage = relation("a", "descendant", "b");
+        let (_, report) = run_reporting(ctx(&spans), params(stage, &[]), WITNESS).await;
+        let incomplete = report.match_incomplete.unwrap();
+        assert_eq!((incomplete.matched, incomplete.unmatched), (4, 1));
+        let samples = incomplete.sample_trace_ids;
+        assert!(
+            samples.len() == 3 && !samples.contains(&"y".into()),
+            "{samples:?}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_redelivered_span_with_a_dangling_parent_counts_its_trace_once() {
+        let spans = [
+            ["dup", "d1", "d0", "a"],
+            ["dup", "d1", "d0", "a"],
+            ["dup", "d2", "d1", "b"],
+        ]
+        .map(|[t, id, parent, name]| span(t, id, parent, name));
+        let stage = relation("a", "descendant", "b");
+        let (_, report) = run_reporting(ctx(&spans), params(stage, &[]), WITNESS).await;
+        let incomplete = report.match_incomplete.unwrap();
+        assert_eq!((incomplete.matched, incomplete.unmatched), (1, 0));
+        assert_eq!(incomplete.sample_trace_ids, ["dup"]);
+    }
+
+    #[tokio::test]
+    async fn without_an_end_time_column_only_dangling_parents_count() {
+        let batch = batch(&straddling());
+        let end = batch.schema().index_of(END_TIME).unwrap();
+        let mut batch = batch;
+        batch.remove_column(end);
+        let stage = relation("a", "descendant", "b");
+        let (rows, report) = run_reporting(ctx_of(batch), params(stage, &[]), WITNESS).await;
+        assert_eq!(rows, ["w0:a", "w1:b", "x1:a", "x2:b", "z0:a", "z1:b"]);
+        let incomplete = report.match_incomplete.unwrap();
+        assert_eq!((incomplete.matched, incomplete.unmatched), (1, 1));
+    }
+
+    #[tokio::test]
+    async fn whole_traces_and_relation_free_matches_report_nothing() {
+        let mut whole = [chain("d1", 1), chain("d5", 5)].concat();
+        whole.extend([
+            span("zero", "z0", "0000000000000000", "root"),
+            span("zero", "z1", "z0", "write"),
+            span("zero", "z2", "z0", EDGE),
+            span("zero32", "y0", &"0".repeat(32), "root"),
+            span("zero32", "y1", "y0", "write"),
+        ]);
+        let stage = relation("root", "descendant", "write");
+        let (rows, report) = run_reporting(ctx(&whole), params(stage, &[]), WITNESS).await;
+        assert_eq!(rows.len(), 8);
+        assert_eq!(report.match_incomplete, None);
+
+        let stage = json!({ "spansets": { "a": name_is("a"), "b": name_is("b") } });
+        let (rows, report) = run_reporting(ctx(&straddling()), params(stage, &[]), WITNESS).await;
+        assert_eq!(rows.len(), 8);
+        assert_eq!(report.match_incomplete, None);
     }
 
     #[tokio::test]

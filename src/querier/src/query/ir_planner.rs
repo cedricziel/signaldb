@@ -989,7 +989,7 @@ impl IrService {
                 start_ns: w.start_ns,
                 end_ns: w.end_ns,
             }),
-            match_incomplete: None,
+            match_incomplete: outcome.match_incomplete.and_then(|m| m.report()),
         };
         if doc.result == ResultEnvelope::Flamegraph {
             return Ok((
@@ -1279,6 +1279,7 @@ async fn plan_operand(
     let mut df = lowering.apply_time_window(base, &scan)?;
     let mut metric_frame = false;
     let mut series_step = None;
+    let mut match_incomplete = None;
     for (i, (stage, &stage_window)) in doc.pipeline.iter().zip(&windows).enumerate() {
         // A limit keeps the first rows, so it needs the frame's final order.
         if metric_frame && matches!(stage, Stage::Limit(_)) {
@@ -1357,7 +1358,11 @@ async fn plan_operand(
                     _ => lowering.lower_correlate(ctx, df, correlate, scan).await?,
                 }
             }
-            Stage::Match(stage) => lowering.lower_match(df, stage, match_limits)?,
+            Stage::Match(stage) => {
+                let (df, incomplete) = lowering.lower_match(df, stage, &scan, match_limits)?;
+                match_incomplete = Some(incomplete);
+                df
+            }
             other => lowering.lower_stage(df, other)?,
         };
         series_step = metric_series::output_step(stage, series_step, doc_step);
@@ -1370,6 +1375,7 @@ async fn plan_operand(
         truncated: lowering.correlate_truncated,
         fanout_limit: lowering.correlate_fanout,
         window: lowering.correlate_window,
+        match_incomplete,
     };
     Ok(Some((df, window, outcome)))
 }
@@ -1690,12 +1696,14 @@ pub(crate) const DEFAULT_CORRELATE_MAX_ROWS: usize = 5_000_000;
 pub(crate) const DEFAULT_CORRELATE_MAX_SOURCE_ROWS: usize = 10_000;
 
 /// What a `correlate` stage reports once the plan has run: the streaming
-/// row-cap and fan-out-cap flags and the target scan window (signal target).
+/// row-cap and fan-out-cap flags and the target scan window (signal target),
+/// plus the traces a `match` stage found cut by the range.
 #[derive(Debug, Default)]
 pub(crate) struct CorrelateOutcome {
     pub truncated: Option<Arc<AtomicBool>>,
     pub fanout_limit: Option<Arc<AtomicBool>>,
     pub window: Option<ResolvedWindow>,
+    pub match_incomplete: Option<structural_match::IncompleteTraces>,
 }
 
 /// Helper columns of a signal-target `correlate`: the canonical key columns
@@ -2512,8 +2520,9 @@ impl<'a> Lowering<'a> {
         &mut self,
         df: DataFrame,
         stage: &Match,
+        scan: &ResolvedWindow,
         limits: MatchLimits,
-    ) -> Result<DataFrame, QuerierError> {
+    ) -> Result<(DataFrame, structural_match::IncompleteTraces), QuerierError> {
         if let Some(clash) = self
             .schema_cols
             .iter()
@@ -2529,11 +2538,12 @@ impl<'a> Lowering<'a> {
             .iter()
             .map(|(_, pred)| Ok(coalesce(vec![self.lower_predicate(pred)?, lit(false)])))
             .collect::<Result<Vec<_>, QuerierError>>()?;
-        let df = structural_match::lower(df, stage, flags, self.source.time_col, limits)?;
+        let time_col = self.source.time_col;
+        let lowered = structural_match::lower(df, stage, flags, time_col, scan.end_ns, limits)?;
         self.col_of
             .insert(Match::SPANSETS.to_string(), Match::SPANSETS.to_string());
         self.schema_cols.push(Match::SPANSETS.to_string());
-        Ok(df)
+        Ok(lowered)
     }
 
     fn parent_scope(&self) -> CorrelateScope<'a> {
