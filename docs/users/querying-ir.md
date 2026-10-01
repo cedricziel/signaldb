@@ -1863,36 +1863,42 @@ column.
   A `limit` bounds spans, not traces. `match` with the default `rows`
   envelope returns the flat witness rows.
 
-### Example: a `DoPut` with a `write_parquet_files` below it
+### Example: a `write_parquet_files` with a `create_arrow_writer` child
+
+SignalDB's own writer traces (`_system/_monitoring`) record every Parquet
+flush as a `write_parquet_files` root span with a `create_arrow_writer` child:
 
 ```json
 {
   "irVersion": 12,
   "from": "traces",
-  "range": { "from": "2026-09-30T08:00:00Z", "to": "2026-09-30T09:00:00Z" },
+  "range": { "from": "now-1h", "to": "now" },
   "result": "trace",
   "pipeline": [
     { "match": {
         "spansets": {
-          "put":   { "field": "span.name", "op": "eq", "value": "DoPut" },
-          "write": { "field": "span.name", "op": "eq", "value": "write_parquet_files" }
+          "flush":  { "field": "span.name", "op": "eq", "value": "write_parquet_files" },
+          "writer": { "field": "span.name", "op": "eq", "value": "create_arrow_writer" }
         },
-        "relations": [ { "left": "put", "op": "descendant", "right": "write" } ]
+        "relations": [ { "left": "flush", "op": "child", "right": "writer" } ]
     } },
     { "limit": 500 }
   ]
 }
 ```
 
-Each returned trace lists its `DoPut` spans that have a `write_parquet_files`
-descendant (`spansets: "put"`) and those `write_parquet_files` spans
-(`spansets: "write"`). To keep only the `DoPut` side, add
-`{ "where": { "field": "spansets", "op": "contains", "value": "put" } }`
-(`contains`, not `eq`: a span in both sets reads `"put,write"`; `contains`
-also matches names that merely contain `put`, so pick distinct names).
+Each returned trace lists its `write_parquet_files` spans that have a
+`create_arrow_writer` child (`spansets: "flush"`) and those
+`create_arrow_writer` spans (`spansets: "writer"`). To keep only the
+`write_parquet_files` side, add
+`{ "where": { "field": "spansets", "op": "eq", "value": "flush" } }`
+(`eq` works here because no span can be in both sets; when the span-sets
+overlap, a span in both reads `"flush,writer"`, so use `contains` and pick
+names that are not substrings of each other).
 
-Span-set predicates can use event fields, e.g. a `DoPut` with a direct child
-that recorded an `exception` event:
+Span-set predicates can use event fields, e.g. a Flight `DoPut` server span
+with a direct child that recorded an `exception` event (on a healthy
+deployment this one returns no traces):
 
 ```json
 {
@@ -1903,7 +1909,7 @@ that recorded an `exception` event:
   "pipeline": [
     { "match": {
         "spansets": {
-          "put":    { "field": "span.name", "op": "eq", "value": "DoPut" },
+          "put":    { "field": "span.name", "op": "eq", "value": "arrow.flight.protocol.FlightService/DoPut" },
           "failed": { "field": "events.name", "op": "eq", "value": "exception" }
         },
         "relations": [ { "left": "put", "op": "child", "right": "failed" } ]
