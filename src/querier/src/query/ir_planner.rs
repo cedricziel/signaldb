@@ -36,6 +36,7 @@ use common::attrs::expr::typed_home_expr;
 use common::attrs::expr::typed_home_filter_expr;
 use common::flight::{CorrelateReport, CorrelateWindowReport};
 use common::profile::{aggregate_profiles_to_diff_flamegraph, aggregate_profiles_to_flamegraph};
+use common::query_cursor::{PageReport, PageRequest};
 use common::query_ir::{
     Aggregate, BinopOperand, ComparisonOp, Correlate, CorrelateTarget, Document, Extract,
     FieldResolver, Heatmap, HistogramMode, JoinKind, Leaf, Literal, Match, Parser, Predicate,
@@ -80,6 +81,7 @@ use super::metric_ops::instants::{check_instants, check_positive};
 use super::metric_ops::range_math::RangeFn;
 use super::metric_ops::range_plan::{RangeEval, range_series};
 use super::metric_series;
+use super::page_cut::{self, CutLimits};
 use super::profile::batch_to_models;
 use super::structural_match::{self, MatchLimits};
 use super::table_lookup::{optional_table_provider, scan_provider};
@@ -850,6 +852,9 @@ pub struct IrService {
     match_limits: MatchLimits,
     /// Node cap on a `graph` result (`[querier].graph_max_nodes`).
     graph_max_nodes: usize,
+    /// `[querier].page_max_tie_rows` / `page_max_bytes`.
+    page_max_tie_rows: usize,
+    page_max_bytes: usize,
     /// Fetches committed canonical attribute types for a typed-layout table
     /// (`otel-native-schema` task 4.4). Set via [`Self::with_canonical_types`]
     /// by the production Flight service; `None` in every other caller
@@ -873,6 +878,8 @@ impl IrService {
             correlate_max_source_rows: DEFAULT_CORRELATE_MAX_SOURCE_ROWS,
             match_limits: MatchLimits::default(),
             graph_max_nodes: common::config::QuerierConfig::default().graph_max_nodes,
+            page_max_tie_rows: common::config::QuerierConfig::default().page_max_tie_rows,
+            page_max_bytes: common::config::QuerierConfig::default().page_max_bytes,
             canonical_type_lookup: None,
         }
     }
@@ -902,6 +909,14 @@ impl IrService {
     /// `[querier].correlate_max_source_rows`.
     pub fn with_correlate_max_source_rows(mut self, correlate_max_source_rows: usize) -> Self {
         self.correlate_max_source_rows = correlate_max_source_rows;
+        self
+    }
+
+    /// Override the page bounds, from `[querier].page_max_tie_rows` /
+    /// `page_max_bytes`.
+    pub fn with_page_limits(mut self, max_tie_rows: usize, max_bytes: usize) -> Self {
+        self.page_max_tie_rows = max_tie_rows;
+        self.page_max_bytes = max_bytes;
         self
     }
 
@@ -950,6 +965,7 @@ impl IrService {
                 dataset_slug,
                 params.now_ns,
                 AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+                params.page.as_ref(),
             )
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
@@ -959,7 +975,10 @@ impl IrService {
             return Ok((
                 Vec::new(),
                 resolve_window(&doc, params.now_ns)?,
-                CorrelateReport::default(),
+                CorrelateReport {
+                    page: params.page.as_ref().map(|_| PageReport::default()),
+                    ..CorrelateReport::default()
+                },
             ));
         };
         let exec_span = tracing::info_span!(
@@ -972,6 +991,21 @@ impl IrService {
             .instrument(exec_span.clone())
             .await
             .map_err(QuerierError::from)?;
+        let (batches, page) = match &params.page {
+            Some(page) => {
+                let limits = CutLimits {
+                    size: page.size as usize,
+                    unit: page.unit,
+                    exact: false,
+                    ceiling: page.ceiling.map(|c| c as usize),
+                    max_tie_rows: self.page_max_tie_rows,
+                    max_bytes: self.page_max_bytes,
+                };
+                let (batches, report) = page_cut::cut_page(&batches, &page.order, limits)?;
+                (batches, Some(report))
+            }
+            None => (batches, None),
+        };
         let rows: usize = batches.iter().map(|b| b.num_rows()).sum();
         exec_span.record("signaldb.query.rows", rows as i64);
         exec_span.record("signaldb.query.batches", batches.len() as i64);
@@ -987,7 +1021,7 @@ impl IrService {
                 end_ns: w.end_ns,
             }),
             match_incomplete: outcome.match_incomplete.and_then(|m| m.report()),
-            page: None,
+            page,
         };
         Ok((batches, window, report))
     }
@@ -1045,6 +1079,7 @@ impl IrService {
                 dataset_slug,
                 now_ns,
                 AttributeTypeRequest::Resolve(self.canonical_type_lookup.clone()),
+                None,
             )
             .instrument(tracing::info_span!("signaldb.query.plan"))
             .await?
@@ -1134,6 +1169,7 @@ impl IrService {
                 dataset_slug,
                 now_ns,
                 AttributeTypeRequest::CompatOnly,
+                None,
             )
             .await?
             .map(|(df, window, _outcome)| (df, window)))
@@ -1154,6 +1190,7 @@ impl IrService {
         dataset_slug: &str,
         now_ns: i64,
         attribute_type_request: AttributeTypeRequest,
+        page: Option<&PageRequest>,
     ) -> Result<Option<(DataFrame, ResolvedWindow, CorrelateOutcome)>, QuerierError> {
         plan_document(
             &self.session_context,
@@ -1162,7 +1199,8 @@ impl IrService {
                 .with_correlate_max_rows(self.correlate_max_rows)
                 .with_correlate_max_source_rows(self.correlate_max_source_rows)
                 .with_match_limits(self.match_limits)
-                .with_attribute_type_request(attribute_type_request),
+                .with_attribute_type_request(attribute_type_request)
+                .with_page(page, self.page_max_tie_rows),
         )
         .await
     }
@@ -1228,6 +1266,8 @@ async fn plan_operand(
         correlate_max_source_rows,
         match_limits,
         attribute_type_request,
+        page,
+        page_max_tie_rows,
     } = request;
     reject_pseudo_source(doc)?;
     // Before the missing-table shortcut below skips `validate`.
@@ -1341,7 +1381,12 @@ async fn plan_operand(
     let mut metric_frame = false;
     let mut series_step = None;
     let mut match_incomplete = None;
-    for (i, (stage, &stage_window)) in doc.pipeline.iter().zip(&windows).enumerate() {
+    // A paged walk caps a trailing `limit` across pages itself.
+    let pipeline = match (page, doc.pipeline.split_last()) {
+        (Some(_), Some((Stage::Limit(_), rest))) => rest,
+        _ => &doc.pipeline[..],
+    };
+    for (i, (stage, &stage_window)) in pipeline.iter().zip(&windows).enumerate() {
         // A limit keeps the first rows, so it needs the frame's final order.
         if metric_frame && matches!(stage, Stage::Limit(_)) {
             df = metric_series::sort_frame(df, None)?;
@@ -1431,7 +1476,19 @@ async fn plan_operand(
     if metric_frame {
         df = metric_series::sort_frame(df, metric_series::terminal_order(doc, window))?;
     }
-    df = lowering.apply_projection(df, doc)?;
+    let mut page_keys = Vec::new();
+    if let Some(page) = page {
+        for (i, key) in page.order.iter().enumerate() {
+            lowering.record_field_demand(&key.field);
+            let name = page_cut::key_column(i);
+            df = df
+                .with_column(&name, lowering.value_expr(&key.field)?)
+                .map_err(QuerierError::QueryFailed)?;
+            page_keys.push(name);
+        }
+        df = page_cut::bound_to_page(df, page, page_max_tie_rows)?;
+    }
+    df = lowering.apply_projection(df, doc, &page_keys)?;
     let outcome = CorrelateOutcome {
         truncated: lowering.correlate_truncated,
         fanout_limit: lowering.correlate_fanout,
@@ -2241,6 +2298,11 @@ pub(crate) struct PlanRequest<'a> {
     pub correlate_max_source_rows: usize,
     pub match_limits: MatchLimits,
     pub attribute_type_request: AttributeTypeRequest,
+    /// Sort, resume and bound the result to one page.
+    pub page: Option<&'a PageRequest>,
+    /// `[querier].page_max_tie_rows`: how far past `page.size` the sort
+    /// fetches, so the cut can complete a tie group.
+    pub page_max_tie_rows: usize,
 }
 
 impl<'a> PlanRequest<'a> {
@@ -2253,7 +2315,15 @@ impl<'a> PlanRequest<'a> {
             correlate_max_source_rows: DEFAULT_CORRELATE_MAX_SOURCE_ROWS,
             match_limits: MatchLimits::default(),
             attribute_type_request: AttributeTypeRequest::CompatOnly,
+            page: None,
+            page_max_tie_rows: common::config::QuerierConfig::default().page_max_tie_rows,
         }
+    }
+
+    pub(crate) fn with_page(mut self, page: Option<&'a PageRequest>, max_tie_rows: usize) -> Self {
+        self.page = page;
+        self.page_max_tie_rows = max_tie_rows;
+        self
     }
 
     pub(crate) fn with_correlate_max_rows(mut self, correlate_max_rows: usize) -> Self {
@@ -4116,7 +4186,13 @@ impl<'a> Lowering<'a> {
             .collect()
     }
 
-    fn apply_projection(&self, df: DataFrame, doc: &Document) -> Result<DataFrame, QuerierError> {
+    /// `keep` names columns carried past the projection (a page's sort keys).
+    fn apply_projection(
+        &self,
+        df: DataFrame,
+        doc: &Document,
+        keep: &[String],
+    ) -> Result<DataFrame, QuerierError> {
         // Series results are already shaped by the step aggregate. Flamegraph
         // is decoded from the full unprojected row set (samples_json/
         // stacktraces_json included) by the caller, not curated here.
@@ -4127,7 +4203,7 @@ impl<'a> Lowering<'a> {
         {
             return Ok(df);
         }
-        let projection: Vec<Expr> = match &doc.fields {
+        let mut projection: Vec<Expr> = match &doc.fields {
             Some(fields) => fields
                 .iter()
                 .map(|f| {
@@ -4233,6 +4309,7 @@ impl<'a> Lowering<'a> {
                 projection
             }
         };
+        projection.extend(keep.iter().map(ident));
         df.select(projection).map_err(QuerierError::QueryFailed)
     }
 }
@@ -4913,6 +4990,10 @@ fn compile_regex_guard(pattern: &str) -> Result<regex::Regex, QuerierError> {
 }
 
 #[cfg(test)]
+#[path = "ir_planner_page_tests.rs"]
+mod page_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::query::metric_ops::fixtures::{
@@ -4977,7 +5058,7 @@ mod tests {
 
     /// Registers one `(schema, batch)` as `table_name` under catalog `t`,
     /// schema `d` — the common tail of every single-table fixture below.
-    fn single_table_ctx(
+    pub(super) fn single_table_ctx(
         table_name: &str,
         schema: Arc<Schema>,
         batch: RecordBatch,
@@ -6036,6 +6117,7 @@ mod tests {
         let params = IrQueryParams {
             document: increase_json("rate"),
             now_ns: 0,
+            page: None,
         };
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
@@ -7261,6 +7343,7 @@ mod tests {
                 } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(
@@ -7503,6 +7586,7 @@ mod tests {
                 } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let err = IrService::new(points_ctx(batch))
             .query(&params, "t", "d")
@@ -7933,6 +8017,7 @@ mod tests {
                 "pipeline": [{ "where": { "field": "profile.id", "op": "eq", "value": "p1" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!(batches.len(), 1);
@@ -7955,6 +8040,7 @@ mod tests {
                 "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, _, _) = svc.query(&params, "t", "d").await.unwrap();
         let flamegraph = flamegraph_from_batch(&batches[0]);
@@ -7979,6 +8065,7 @@ mod tests {
                 "pipeline": [{ "where": { "field": "service.name", "op": "eq", "value": "api" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let (batches, window, _) = svc.query(&params, "t", "d").await.unwrap();
         assert_eq!((window.start_ns, window.end_ns), (15, 1000));
@@ -8024,6 +8111,7 @@ mod tests {
                 "result": "flamegraph", "pipeline": []
             }),
             now_ns: 1_000,
+            page: None,
         };
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
@@ -8043,6 +8131,7 @@ mod tests {
                 "result": "flamegraph", "pipeline": []
             }),
             now_ns: 1_000,
+            page: None,
         };
         let err = svc.query(&params, "t", "d").await.unwrap_err();
         assert!(
@@ -11564,6 +11653,7 @@ mod tests {
                 "pipeline": pipeline
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -11955,6 +12045,7 @@ mod tests {
                 "pipeline": [{ "correlate": correlate }]
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -12276,6 +12367,7 @@ mod tests {
                 "result": "rows", "pipeline": [{ "correlate": correlate }]
             }),
             now_ns: 0,
+            page: None,
         };
         let default =
             params(serde_json::json!({ "to": "traces", "on": "trace_id", "kind": "semi" }));
@@ -12326,6 +12418,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let expected: Vec<Option<String>> = [6, 10, 2, 12, 4, 8]
             .into_iter()
@@ -12428,6 +12521,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let (ids, report) = correlated_trace_ids(signal_ctx(false, false), &params).await;
         assert_eq!(ids, vec![hex_id(1), hex_id(4)]);
@@ -12560,6 +12654,7 @@ mod tests {
                 ]
             }),
             now_ns: 0,
+            page: None,
         };
         let err = IrService::new(signal_ctx(false, false))
             .query(&params, "t", "d")
@@ -12649,6 +12744,7 @@ mod tests {
                 "result": result, "pipeline": pipeline
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -12972,6 +13068,7 @@ mod tests {
                 "pipeline": [{ "correlate": { "to": "traces", "on": "trace_id", "kind": "inner" } }]
             }),
             now_ns: 0,
+            page: None,
         };
         let err = IrService::new(ctx)
             .query(&params, "t", "d")
@@ -13184,6 +13281,7 @@ mod tests {
                     "pipeline": [{ "correlate": { "to": "traces", "on": "resource_identity", "kind": kind } }]
                 }),
                 now_ns: 0,
+                page: None,
             };
             let (batches, _, _) = with_empty_lookup(IrService::new(ctx()))
                 .query(&params, "t", "d")
@@ -14695,6 +14793,7 @@ mod tests {
                     "pipeline": []
                 }),
                 now_ns: 0,
+                page: None,
             };
             let _ = svc.query(&params, "t", "d").await.unwrap();
         }
@@ -14746,6 +14845,7 @@ mod tests {
                 "pipeline": []
             }),
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -14787,6 +14887,7 @@ mod tests {
                 "result": "rows", "pipeline": []
             }),
             now_ns: 0,
+            page: None,
         };
         assert!(matches!(
             svc.query(&params, "t", "d").await,
@@ -14803,6 +14904,7 @@ mod tests {
                 "result": "rows", "pipeline": []
             }),
             now_ns: 0,
+            page: None,
         };
         assert!(matches!(
             svc.query(&params, "t", "d").await,
@@ -15397,6 +15499,7 @@ mod tests {
                 "result": "rows", "fields": ["timestamp"]
             }),
             now_ns: 0,
+            page: None,
         }
     }
 

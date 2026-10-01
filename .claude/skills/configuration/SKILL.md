@@ -351,6 +351,12 @@ correlate_max_source_rows = 10000     # Row cap on a `correlate` stage's source 
 match_max_trace_spans = 100000        # Span cap on one trace a `match` stage evaluates (irVersion 12); over it the query fails naming the trace (422 resource_limit)
 match_max_trace_bytes = 67108864      # Byte budget on one trace's buffered rows in a `match` stage; over it the query fails naming the trace (422 resource_limit)
 graph_max_nodes = 200                 # Node cap on a Query IR `graph` result; keeps focus, then highest-traffic nodes, and warns
+page_default_size = 1000              # Query IR page size when `page.size` is omitted (irVersion 14)
+page_max_size = 10000                 # Largest `page.size`; above it is a 400
+page_max_bytes = 16777216             # Page byte budget; past it the page ends early at a sort-key boundary
+page_max_tie_rows = 10000             # Rows sharing one sort key at a page boundary; more is a 422 resource_limit
+page_max_walk_rows = 1000000          # Rows one cursor chain may walk; the page past it is a 422 resource_limit
+page_cursor_ttl = "15m"               # Page cursor lifetime from issue; older is a 410
 
 [querier.datafusion]
 batch_size = 1024                # Scan batch row count; 0 = DataFusion default (8192). Bounds ExternalSorter's unspillable per-batch reservation (#1359)
