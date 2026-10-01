@@ -4,6 +4,7 @@ type: explanation
 status: living
 sources:
   - src/router/src/openapi.rs
+  - src/query-ir/src/openapi.rs
   - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/management.rs
   - src/router/src/endpoints/tenant.rs
@@ -259,6 +260,16 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
   `withProxyLoginRecovery(retryingFetch)` directly until both are in the
   spec. The lint rule above doesn't catch them because they never call
   `fetch` by name.
+- **The Query IR request body does not reference the stage schemas yet.**
+  The stage grammar is published as typed `Ir*` components (`IrStage`,
+  `IrPredicate`, `IrAggregate`, …), derived from the `query-ir` types under
+  its `openapi` feature, with every variant closed to unknown keys. The
+  `/api/v1/query` request's `pipeline` is still declared as a list of plain
+  objects until the UI's query builders build `IrStage` values. Two schema
+  details clients must honour: `IrMatch.spansets` key order is significant
+  (declaration order), which the Rust SDK's generated `HashMap` loses, and
+  `IrPredicate`'s leaf/`and`/`or`/`not` shape is hand-written because
+  `Predicate` has custom serde.
 - **A nullable `$ref` (struct or enum) used to break the Rust SDK
   generator.** `Option<T>` where `T` derives `ToSchema` makes utoipa emit
   `"oneOf": [{"type": "null"}, {"$ref": "..."}]`, which progenitor's

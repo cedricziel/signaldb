@@ -54,6 +54,23 @@ impl Modify for SecurityAddon {
     }
 }
 
+/// Closes the IR's externally tagged enums' single-key wrappers to unknown
+/// keys, as the IR parser does; the derive cannot express it.
+struct ClosedIrVariants;
+
+impl Modify for ClosedIrVariants {
+    fn modify(&self, openapi: &mut utoipa::openapi::OpenApi) {
+        let Some(components) = openapi.components.as_mut() else {
+            return;
+        };
+        for name in ["IrStage", "IrLabels"] {
+            if let Some(schema) = components.schemas.get_mut(name) {
+                common::query_ir::openapi::close_object_variants(schema);
+            }
+        }
+    }
+}
+
 #[derive(OpenApi)]
 #[openapi(
     info(
@@ -62,7 +79,7 @@ impl Modify for SecurityAddon {
         description = "SignalDB admin, tenant-management, and query HTTP API\n\nEvery response whose request was traced carries the server's W3C trace context back to the caller: `Server-Timing: traceparent;desc=\"00-<trace-id>-<span-id>-<flags>\"` (readable in browsers via the Performance API) and the equivalent `traceresponse` header, plus `Server-Timing` `dur` entries with server-side stage timings (always `total`, endpoint-specific stages where available) and `Timing-Allow-Origin: *` so cross-origin pages can read the timing entries. The headers are omitted when self-monitoring tracing is disabled."
     ),
     servers((url = "/")),
-    modifiers(&SecurityAddon),
+    modifiers(&SecurityAddon, &ClosedIrVariants),
     tags(
         (name = "tenants", description = "Tenant lifecycle operations"),
         (name = "api-keys", description = "API key management"),
@@ -272,6 +289,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::QueryIrRequest,
         crate::endpoints::query::QueryRange,
         crate::endpoints::query::QueryIrResponse,
+        common::query_ir::Stage,
         common::discovery::MetadataResult,
         common::discovery::MetadataKind,
         common::discovery::DiscoveredField,
@@ -441,6 +459,103 @@ mod tests {
                 "{path} must document the keys parameter it resolves"
             );
         }
+    }
+
+    /// The IR's own stage grammar is published as `IrStage` (externally
+    /// tagged: one single-key object per stage), so the generated clients
+    /// carry a variant per stage. The IR schemas take an `Ir` prefix:
+    /// unprefixed, `HeatmapAxisX`/`Y` collide with the response DTOs and one
+    /// silently replaces the other.
+    #[test]
+    fn ir_stage_schemas_are_published() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let variants = spec
+            .pointer("/components/schemas/IrStage/oneOf")
+            .and_then(|v| v.as_array())
+            .expect("IrStage must be a oneOf");
+        let mut tags: Vec<&str> = variants
+            .iter()
+            .filter_map(|v| v.pointer("/required/0").and_then(|t| t.as_str()))
+            .collect();
+        tags.sort_unstable();
+        let mut expected = [
+            "where",
+            "extract",
+            "aggregate",
+            "topk",
+            "bottomk",
+            "order",
+            "limit",
+            "heatmap",
+            "histogram_quantile",
+            "describe",
+            "correlate",
+            "sample",
+            "scalar",
+            "vector",
+            "reduce",
+            "map",
+            "labels",
+            "filter",
+            "sort",
+            "absent",
+            "over_time",
+            "binop",
+            "histogram_fraction",
+            "match",
+        ];
+        expected.sort_unstable();
+        assert_eq!(tags, expected);
+
+        // The server rejects unknown keys in a stage wrapper and a predicate;
+        // the published shapes say so.
+        let closed = |pointer: &str| {
+            let schemas = spec
+                .pointer(pointer)
+                .and_then(|v| v.as_array())
+                .unwrap_or_else(|| panic!("{pointer} must be a oneOf"));
+            for schema in schemas {
+                assert_eq!(
+                    schema.get("additionalProperties"),
+                    Some(&serde_json::json!(false)),
+                    "{pointer}: open variant {schema}"
+                );
+            }
+        };
+        closed("/components/schemas/IrStage/oneOf");
+        closed("/components/schemas/IrPredicate/oneOf");
+
+        assert_eq!(
+            spec.pointer(
+                "/components/schemas/IrMatch/properties/spansets/additionalProperties/$ref"
+            ),
+            Some(&serde_json::json!("#/components/schemas/IrPredicate")),
+        );
+        let spansets_doc = spec
+            .pointer("/components/schemas/IrMatch/properties/spansets/description")
+            .and_then(|d| d.as_str())
+            .unwrap_or_default();
+        assert!(
+            spansets_doc.contains("order"),
+            "IrMatch.spansets must document that key order is significant"
+        );
+        let correlate_to = spec
+            .pointer("/components/schemas/IrCorrelate/properties/to")
+            .expect("IrCorrelate.to");
+        assert_eq!(correlate_to.get("type"), Some(&serde_json::json!("string")));
+        assert!(
+            correlate_to
+                .get("description")
+                .and_then(|d| d.as_str())
+                .is_some_and(|d| d.contains("parent")),
+            "IrCorrelate.to must document the `parent` target"
+        );
+        assert_eq!(
+            spec.pointer("/components/schemas/IrHeatmap/properties/x/$ref"),
+            Some(&serde_json::json!("#/components/schemas/IrHeatmapAxisX")),
+        );
     }
 
     /// `dedicated-login-page` change, section 1, and `oidc-login` task 4.1:

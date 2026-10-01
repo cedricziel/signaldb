@@ -30,7 +30,7 @@ tempfile = { workspace = true, optional = true }
 testcontainers-modules = { workspace = true, optional = true }
 anyhow.workspace = true
 schema-model = { path = "../schema-model" }
-query-ir = { path = "../query-ir" }
+query-ir = { path = "../query-ir", features = ["openapi"] }
 eval-model = { path = "../eval-model" }
 ottl.workspace = true
 

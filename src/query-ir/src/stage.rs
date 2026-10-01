@@ -12,6 +12,7 @@ use super::version::Feature;
 
 /// An aggregate function. Member of the versioned function registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrAggFn))]
 #[serde(rename_all = "snake_case")]
 pub enum AggFn {
     Count,
@@ -128,6 +129,7 @@ impl AggFn {
 
 /// A single named aggregate output.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrAgg))]
 #[serde(deny_unknown_fields)]
 pub struct Agg {
     #[serde(rename = "fn")]
@@ -174,6 +176,7 @@ pub struct Agg {
 
 /// The `aggregate` stage: group-reduce, optionally time-bucketed by `step`.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrAggregate))]
 #[serde(deny_unknown_fields)]
 pub struct Aggregate {
     /// Grouping fields (logical names).
@@ -188,6 +191,7 @@ pub struct Aggregate {
 
 /// A sort direction.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrDirection))]
 #[serde(rename_all = "snake_case")]
 pub enum Direction {
     Asc,
@@ -196,6 +200,7 @@ pub enum Direction {
 
 /// An `order` key: a field or aggregate name plus a direction.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrOrder))]
 #[serde(deny_unknown_fields)]
 pub struct Order {
     /// A `FieldRef` or `AggRef` (a name), never an expression string.
@@ -205,6 +210,7 @@ pub struct Order {
 
 /// A `topk`/`bottomk` rank stage.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrRank))]
 #[serde(deny_unknown_fields)]
 pub struct Rank {
     /// Must be an integer `> 0` (validated).
@@ -215,6 +221,7 @@ pub struct Rank {
 
 /// A parser for the `extract` stage. `regex` is deferred (registry-gated).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrParser))]
 #[serde(rename_all = "snake_case")]
 pub enum Parser {
     Json,
@@ -223,6 +230,7 @@ pub enum Parser {
 
 /// A field derived by an `extract` stage, with its declared type.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrDerivedField))]
 #[serde(deny_unknown_fields)]
 pub struct DerivedField {
     pub name: String,
@@ -232,6 +240,7 @@ pub struct DerivedField {
 
 /// The `extract` stage: derive typed, query-local fields from log content.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrExtract))]
 #[serde(deny_unknown_fields)]
 pub struct Extract {
     pub parser: Parser,
@@ -241,6 +250,7 @@ pub struct Extract {
 
 /// A terminal two-dimensional count aggregate, available in IR v2.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHeatmapAxisX))]
 #[serde(deny_unknown_fields)]
 pub struct HeatmapAxisX {
     pub step: String,
@@ -248,6 +258,7 @@ pub struct HeatmapAxisX {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHeatmapAxisY))]
 #[serde(deny_unknown_fields)]
 pub struct HeatmapAxisY {
     pub of: String,
@@ -257,6 +268,7 @@ pub struct HeatmapAxisY {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHeatmapValue))]
 #[serde(deny_unknown_fields)]
 pub struct HeatmapValue {
     #[serde(rename = "fn")]
@@ -266,6 +278,7 @@ pub struct HeatmapValue {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHeatmap))]
 #[serde(deny_unknown_fields)]
 pub struct Heatmap {
     pub x: HeatmapAxisX,
@@ -275,6 +288,7 @@ pub struct Heatmap {
 
 /// How data points sharing a `histogram_quantile` step bucket combine.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHistogramMode))]
 #[serde(rename_all = "snake_case")]
 pub enum HistogramMode {
     /// Each series' increase over `(t - window, t]` (cumulative points
@@ -293,6 +307,7 @@ pub enum HistogramMode {
 /// `fn: "quantile"` (`approx_percentile_cont` over independent scalar
 /// values — a different algorithm entirely, over a different source shape).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHistogramQuantile))]
 #[serde(deny_unknown_fields)]
 pub struct HistogramQuantile {
     /// The quantile, in `[0, 1]`.
@@ -333,6 +348,7 @@ pub struct HistogramQuantile {
 /// sibling (`irVersion` 10). A bound inside a bucket is interpolated, so the
 /// result is an estimate.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrHistogramFraction))]
 #[serde(deny_unknown_fields)]
 pub struct HistogramFraction {
     pub lower: f64,
@@ -358,6 +374,7 @@ pub struct HistogramFraction {
 
 /// What a `describe` stage introspects.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrDescribeTarget))]
 #[serde(rename_all = "snake_case")]
 pub enum DescribeTarget {
     /// The queryable fields of the source.
@@ -383,6 +400,7 @@ impl DescribeTarget {
 /// no predicate: see `openspec/changes/archive/2026-09-22-query-field-discovery`
 /// (design D6) for why a predicate-scoped answer is refused rather than approximated.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrDescribe))]
 #[serde(deny_unknown_fields)]
 pub struct Describe {
     pub target: DescribeTarget,
@@ -435,6 +453,7 @@ impl From<CorrelateTarget> for String {
 
 /// A join kind for a `correlate` stage. `semi`/`anti` need a signal target.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrJoinKind))]
 #[serde(rename_all = "snake_case")]
 pub enum JoinKind {
     Inner,
@@ -456,6 +475,7 @@ impl JoinKind {
 
 /// A logical join key a signal `correlate` matches on.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrCorrelateKey))]
 #[serde(rename_all = "snake_case")]
 pub enum CorrelateKey {
     TraceId,
@@ -496,6 +516,7 @@ impl CorrelateKey {
 /// How far a signal `correlate` widens its target scan beyond the source
 /// rows' time envelope. Both default to zero.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrCorrelateWindow))]
 #[serde(deny_unknown_fields)]
 pub struct CorrelateWindow {
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -510,13 +531,18 @@ pub struct CorrelateWindow {
 /// that source `on` a logical key; `pipeline` (`where` stages only) narrows
 /// the target side.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrCorrelate))]
 #[serde(deny_unknown_fields)]
 pub struct Correlate {
+    /// `"parent"` for the span's parent span, or the name of another signal
+    /// source.
+    #[cfg_attr(feature = "openapi", schema(value_type = String, example = "parent"))]
     pub to: CorrelateTarget,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub on: Option<CorrelateKey>,
     pub kind: JoinKind,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    #[cfg_attr(feature = "openapi", schema(no_recursion))]
     pub pipeline: Vec<Stage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub window: Option<CorrelateWindow>,
@@ -527,6 +553,7 @@ pub struct Correlate {
 
 /// How a `match` relation relates its two span-sets.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrMatchOp))]
 #[serde(rename_all = "snake_case")]
 pub enum MatchOp {
     /// `right`'s parent is `left`.
@@ -541,6 +568,7 @@ pub enum MatchOp {
 
 /// One structural relation of a `match` stage, between two declared span-sets.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrMatchRelation))]
 #[serde(deny_unknown_fields)]
 pub struct MatchRelation {
     pub left: String,
@@ -585,8 +613,16 @@ impl<'de> Deserialize<'de> for SpanSets {
 /// span-set has a matching span and every relation holds, returning the
 /// witnessing spans.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrMatch))]
 #[serde(deny_unknown_fields)]
 pub struct Match {
+    /// Named span-set predicates. Key order is significant: it is the
+    /// declaration order, which orders the names in each row's `spansets`
+    /// column.
+    #[cfg_attr(
+        feature = "openapi",
+        schema(value_type = std::collections::BTreeMap<String, Predicate>)
+    )]
     pub spansets: SpanSets,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub relations: Vec<MatchRelation>,
@@ -602,6 +638,7 @@ impl Match {
 /// A function a `sample` stage evaluates over each series' point stream
 /// (`irVersion` 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrSampleFn))]
 #[serde(rename_all = "snake_case")]
 pub enum SampleFn {
     /// The latest point in `(t - lookback, t]`.
@@ -628,6 +665,7 @@ pub enum SampleFn {
 
 /// Which value of a metric point a `sample` reads.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrSampleOf))]
 pub enum SampleOf {
     #[default]
     #[serde(rename = "metric.value")]
@@ -641,6 +679,7 @@ pub enum SampleOf {
 /// The `sample` stage: evaluate a metric point stream into a `Series` at
 /// every evaluation instant (`irVersion` 10).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrSample))]
 #[serde(deny_unknown_fields)]
 pub struct Sample {
     #[serde(rename = "fn")]
@@ -670,6 +709,7 @@ pub struct Sample {
 /// A `reduce` function: folds series into groups at every instant
 /// (`irVersion` 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrReduceFn))]
 #[serde(rename_all = "snake_case")]
 pub enum ReduceFn {
     Sum,
@@ -691,6 +731,7 @@ pub enum ReduceFn {
 /// `without` also drops `metric.name`, as Prometheus does; `by` keeps
 /// exactly the listed labels (so `by (metric.name)` keeps the name).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrReduce))]
 #[serde(deny_unknown_fields)]
 pub struct Reduce {
     #[serde(rename = "fn")]
@@ -709,6 +750,7 @@ pub struct Reduce {
 
 /// A per-value `map` function (`irVersion` 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrMapFn))]
 #[serde(rename_all = "snake_case")]
 pub enum MapFn {
     Abs,
@@ -765,6 +807,7 @@ impl MapFn {
 
 /// The `map` stage: apply a function to every value.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrMap))]
 #[serde(deny_unknown_fields)]
 pub struct Map {
     #[serde(rename = "fn")]
@@ -775,6 +818,7 @@ pub struct Map {
 
 /// `labels.replace`: PromQL's `label_replace`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrLabelReplace))]
 #[serde(deny_unknown_fields)]
 pub struct LabelReplace {
     pub dst: String,
@@ -785,6 +829,7 @@ pub struct LabelReplace {
 
 /// `labels.join`: PromQL's `label_join`.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrLabelJoin))]
 #[serde(deny_unknown_fields)]
 pub struct LabelJoin {
     pub dst: String,
@@ -794,6 +839,7 @@ pub struct LabelJoin {
 
 /// The `labels` stage: rewrite one label of every series.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrLabels))]
 #[serde(rename_all = "snake_case")]
 pub enum Labels {
     Replace(LabelReplace),
@@ -802,6 +848,7 @@ pub enum Labels {
 
 /// A comparison against a number.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrCompareOp))]
 #[serde(rename_all = "snake_case")]
 pub enum CompareOp {
     Eq,
@@ -815,6 +862,7 @@ pub enum CompareOp {
 /// The `filter` stage: keep the values that compare true, or with `bool`
 /// replace every value by 0/1.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrFilter))]
 #[serde(deny_unknown_fields)]
 pub struct Filter {
     pub op: CompareOp,
@@ -825,6 +873,7 @@ pub struct Filter {
 
 /// The `absent` stage: one series valued 1 where the input has none.
 #[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrAbsent))]
 #[serde(deny_unknown_fields)]
 pub struct Absent {
     #[serde(default)]
@@ -833,6 +882,7 @@ pub struct Absent {
 
 /// An `over_time` function (`irVersion` 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrOverTimeFn))]
 #[serde(rename_all = "snake_case")]
 pub enum OverTimeFn {
     Avg,
@@ -854,6 +904,7 @@ pub enum OverTimeFn {
 /// The `over_time` stage: re-window a Series evaluated at its own step (a
 /// subquery).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrOverTime))]
 #[serde(deny_unknown_fields)]
 pub struct OverTime {
     #[serde(rename = "fn")]
@@ -866,6 +917,7 @@ pub struct OverTime {
 }
 /// A `binop` operator (`irVersion` 10).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrBinopOp))]
 #[serde(rename_all = "snake_case")]
 pub enum BinopOp {
     Add,
@@ -902,6 +954,7 @@ impl BinopOp {
 
 /// Which operand of a `binop` holds many series per match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrGroupSide))]
 #[serde(rename_all = "snake_case")]
 pub enum GroupSide {
     Left,
@@ -910,6 +963,7 @@ pub enum GroupSide {
 
 /// A `binop`'s one-to-many (`group_left`/`group_right`) match.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrBinopGroup))]
 #[serde(deny_unknown_fields)]
 pub struct BinopGroup {
     pub side: GroupSide,
@@ -921,10 +975,12 @@ pub struct BinopGroup {
 /// A `binop`'s right operand as a sub-document: it inherits `irVersion`,
 /// `range` and `step` from the enclosing document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrSubDocument))]
 #[serde(deny_unknown_fields)]
 pub struct SubDocument {
     pub from: String,
     #[serde(default)]
+    #[cfg_attr(feature = "openapi", schema(no_recursion))]
     pub pipeline: Vec<Stage>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constant: Option<f64>,
@@ -932,6 +988,7 @@ pub struct SubDocument {
 
 /// A `binop`'s right operand: a number or a sub-document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrBinopOperand))]
 #[serde(untagged)]
 pub enum BinopOperand {
     Number(f64),
@@ -944,6 +1001,7 @@ pub enum BinopOperand {
 /// label but `metric.name`; with `ignoring`, every label but `metric.name`
 /// and the listed ones; with `on`, exactly the listed labels.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrBinop))]
 #[serde(deny_unknown_fields)]
 pub struct Binop {
     pub op: BinopOp,
@@ -964,6 +1022,7 @@ pub struct Binop {
 
 /// The operand of a stage that takes none (`{"scalar": {}}`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrNoOperands))]
 #[serde(deny_unknown_fields)]
 pub struct NoOperands {}
 
@@ -971,6 +1030,7 @@ pub struct NoOperands {}
 /// whose key names the stage. An unknown key is an unsupported stage and is
 /// rejected by name.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrStage))]
 #[serde(rename_all = "snake_case")]
 pub enum Stage {
     Where(Predicate),

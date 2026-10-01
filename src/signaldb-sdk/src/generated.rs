@@ -1785,6 +1785,2129 @@ pub mod types {
             Default::default()
         }
     }
+    ///The `absent` stage: one series valued 1 where the input has none.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrAbsent {
+        #[serde(
+            default,
+            skip_serializing_if = ":: std :: collections :: HashMap::is_empty"
+        )]
+        pub labels: ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+    }
+    impl IrAbsent {
+        pub fn builder() -> builder::IrAbsent {
+            Default::default()
+        }
+    }
+    ///A single named aggregate output.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrAgg {
+        /**For a per-series range function (`rate`/`increase`/`irate`/
+        `*_over_time`), the reducer that folds each `by` group's per-series
+        values into one value per step. Defaults to `sum` (the historical
+        `rate`/`increase` behaviour). `irVersion` 7.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub across: ::std::option::Option<IrAggFn>,
+        ///A numeric argument (e.g. the quantile in `[0,1]`).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub arg: ::std::option::Option<f64>,
+        ///The output column name — the only thing later stages may reference.
+        #[serde(rename = "as")]
+        pub as_: ::std::string::String,
+        /**Divide the aggregate's value by this scalar, so a measure can be
+        reported per unit rather than absolute (`irVersion` 5).
+
+        This is what a rate is: a count over a window, divided by the window.
+        Named for the operation rather than for time — dividing an aggregate
+        by a scalar is not inherently temporal, and this IR is
+        signal-agnostic.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub divisor: ::std::option::Option<f64>,
+        #[serde(rename = "fn")]
+        pub fn_: IrAggFn,
+        ///The field being aggregated (a logical name). Omitted for `count`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub of: ::std::option::Option<::std::string::String>,
+        /**An optional predicate scoping which records this aggregate consumes,
+        so one grouped query can report a total and a subset measure over the
+        same groups (`count` of everything beside `count` of just the errors).
+
+        It is the same grammar, resolver and evaluation semantics as the `where`
+        stage — deliberately the shared [`Predicate`], not a second grammar —
+        and it narrows only this aggregate. Grouping happens once regardless.*/
+        #[serde(
+            rename = "where",
+            skip_serializing_if = "::std::option::Option::is_none"
+        )]
+        pub where_: ::std::option::Option<IrPredicate>,
+        /**For a per-series range function, the lookback window: each step's
+        value uses samples in `(t - window, t]`. A duration string like
+        `step`. Defaults to `step` (the historical behaviour). `irVersion` 7.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub window: ::std::option::Option<::std::string::String>,
+    }
+    impl IrAgg {
+        pub fn builder() -> builder::IrAgg {
+            Default::default()
+        }
+    }
+    ///An aggregate function. Member of the versioned function registry.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrAggFn {
+        #[serde(rename = "count")]
+        Count,
+        #[serde(rename = "sum")]
+        Sum,
+        #[serde(rename = "avg")]
+        Avg,
+        #[serde(rename = "min")]
+        Min,
+        #[serde(rename = "max")]
+        Max,
+        #[serde(rename = "quantile")]
+        Quantile,
+        #[serde(rename = "stddev")]
+        Stddev,
+        #[serde(rename = "stdvar")]
+        Stdvar,
+        #[serde(rename = "first")]
+        First,
+        #[serde(rename = "last")]
+        Last,
+        #[serde(rename = "rate")]
+        Rate,
+        #[serde(rename = "increase")]
+        Increase,
+        #[serde(rename = "irate")]
+        Irate,
+        #[serde(rename = "avg_over_time")]
+        AvgOverTime,
+        #[serde(rename = "min_over_time")]
+        MinOverTime,
+        #[serde(rename = "max_over_time")]
+        MaxOverTime,
+        #[serde(rename = "sum_over_time")]
+        SumOverTime,
+        #[serde(rename = "count_over_time")]
+        CountOverTime,
+        #[serde(rename = "count_distinct")]
+        CountDistinct,
+    }
+    impl ::std::fmt::Display for IrAggFn {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Count => f.write_str("count"),
+                Self::Sum => f.write_str("sum"),
+                Self::Avg => f.write_str("avg"),
+                Self::Min => f.write_str("min"),
+                Self::Max => f.write_str("max"),
+                Self::Quantile => f.write_str("quantile"),
+                Self::Stddev => f.write_str("stddev"),
+                Self::Stdvar => f.write_str("stdvar"),
+                Self::First => f.write_str("first"),
+                Self::Last => f.write_str("last"),
+                Self::Rate => f.write_str("rate"),
+                Self::Increase => f.write_str("increase"),
+                Self::Irate => f.write_str("irate"),
+                Self::AvgOverTime => f.write_str("avg_over_time"),
+                Self::MinOverTime => f.write_str("min_over_time"),
+                Self::MaxOverTime => f.write_str("max_over_time"),
+                Self::SumOverTime => f.write_str("sum_over_time"),
+                Self::CountOverTime => f.write_str("count_over_time"),
+                Self::CountDistinct => f.write_str("count_distinct"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrAggFn {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "count" => Ok(Self::Count),
+                "sum" => Ok(Self::Sum),
+                "avg" => Ok(Self::Avg),
+                "min" => Ok(Self::Min),
+                "max" => Ok(Self::Max),
+                "quantile" => Ok(Self::Quantile),
+                "stddev" => Ok(Self::Stddev),
+                "stdvar" => Ok(Self::Stdvar),
+                "first" => Ok(Self::First),
+                "last" => Ok(Self::Last),
+                "rate" => Ok(Self::Rate),
+                "increase" => Ok(Self::Increase),
+                "irate" => Ok(Self::Irate),
+                "avg_over_time" => Ok(Self::AvgOverTime),
+                "min_over_time" => Ok(Self::MinOverTime),
+                "max_over_time" => Ok(Self::MaxOverTime),
+                "sum_over_time" => Ok(Self::SumOverTime),
+                "count_over_time" => Ok(Self::CountOverTime),
+                "count_distinct" => Ok(Self::CountDistinct),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrAggFn {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrAggFn {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///The `aggregate` stage: group-reduce, optionally time-bucketed by `step`.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrAggregate {
+        ///The named aggregate outputs.
+        pub aggs: ::std::vec::Vec<IrAgg>,
+        ///Grouping fields (logical names).
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub by: ::std::vec::Vec<::std::string::String>,
+        ///A time-bucket width (`"1m"`). Present → the result is a `series`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub step: ::std::option::Option<::std::string::String>,
+    }
+    impl IrAggregate {
+        pub fn builder() -> builder::IrAggregate {
+            Default::default()
+        }
+    }
+    /**The `binop` stage: combine the pipeline (left) with `right`.
+
+    Two series match on a key of their labels, as in PromQL: by default every
+    label but `metric.name`; with `ignoring`, every label but `metric.name`
+    and the listed ones; with `on`, exactly the listed labels.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrBinop {
+        ///Comparison ops only: yield 0/1 instead of filtering.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub bool: ::std::option::Option<bool>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub group: ::std::option::Option<IrBinopGroup>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub ignoring: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub on: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        pub op: IrBinopOp,
+        ///Evaluate `right op left` (e.g. `2 - series`).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub reverse: ::std::option::Option<bool>,
+        pub right: IrBinopOperand,
+    }
+    impl IrBinop {
+        pub fn builder() -> builder::IrBinop {
+            Default::default()
+        }
+    }
+    ///A `binop`'s one-to-many (`group_left`/`group_right`) match.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrBinopGroup {
+        ///Labels copied from the "one" side onto the result.
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub include: ::std::vec::Vec<::std::string::String>,
+        pub side: IrGroupSide,
+    }
+    impl IrBinopGroup {
+        pub fn builder() -> builder::IrBinopGroup {
+            Default::default()
+        }
+    }
+    ///A `binop` operator (`irVersion` 10).
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrBinopOp {
+        #[serde(rename = "add")]
+        Add,
+        #[serde(rename = "sub")]
+        Sub,
+        #[serde(rename = "mul")]
+        Mul,
+        #[serde(rename = "div")]
+        Div,
+        #[serde(rename = "mod")]
+        Mod,
+        #[serde(rename = "pow")]
+        Pow,
+        #[serde(rename = "atan2")]
+        Atan2,
+        #[serde(rename = "eq")]
+        Eq,
+        #[serde(rename = "ne")]
+        Ne,
+        #[serde(rename = "gt")]
+        Gt,
+        #[serde(rename = "ge")]
+        Ge,
+        #[serde(rename = "lt")]
+        Lt,
+        #[serde(rename = "le")]
+        Le,
+        #[serde(rename = "and")]
+        And,
+        #[serde(rename = "or")]
+        Or,
+        #[serde(rename = "unless")]
+        Unless,
+    }
+    impl ::std::fmt::Display for IrBinopOp {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Add => f.write_str("add"),
+                Self::Sub => f.write_str("sub"),
+                Self::Mul => f.write_str("mul"),
+                Self::Div => f.write_str("div"),
+                Self::Mod => f.write_str("mod"),
+                Self::Pow => f.write_str("pow"),
+                Self::Atan2 => f.write_str("atan2"),
+                Self::Eq => f.write_str("eq"),
+                Self::Ne => f.write_str("ne"),
+                Self::Gt => f.write_str("gt"),
+                Self::Ge => f.write_str("ge"),
+                Self::Lt => f.write_str("lt"),
+                Self::Le => f.write_str("le"),
+                Self::And => f.write_str("and"),
+                Self::Or => f.write_str("or"),
+                Self::Unless => f.write_str("unless"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrBinopOp {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "add" => Ok(Self::Add),
+                "sub" => Ok(Self::Sub),
+                "mul" => Ok(Self::Mul),
+                "div" => Ok(Self::Div),
+                "mod" => Ok(Self::Mod),
+                "pow" => Ok(Self::Pow),
+                "atan2" => Ok(Self::Atan2),
+                "eq" => Ok(Self::Eq),
+                "ne" => Ok(Self::Ne),
+                "gt" => Ok(Self::Gt),
+                "ge" => Ok(Self::Ge),
+                "lt" => Ok(Self::Lt),
+                "le" => Ok(Self::Le),
+                "and" => Ok(Self::And),
+                "or" => Ok(Self::Or),
+                "unless" => Ok(Self::Unless),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrBinopOp {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrBinopOp {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///A `binop`'s right operand: a number or a sub-document.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged)]
+    pub enum IrBinopOperand {
+        Double(f64),
+        IrSubDocument(IrSubDocument),
+    }
+    impl ::std::convert::From<f64> for IrBinopOperand {
+        fn from(value: f64) -> Self {
+            Self::Double(value)
+        }
+    }
+    impl ::std::convert::From<IrSubDocument> for IrBinopOperand {
+        fn from(value: IrSubDocument) -> Self {
+            Self::IrSubDocument(value)
+        }
+    }
+    ///A comparison against a number.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrCompareOp {
+        #[serde(rename = "eq")]
+        Eq,
+        #[serde(rename = "ne")]
+        Ne,
+        #[serde(rename = "gt")]
+        Gt,
+        #[serde(rename = "ge")]
+        Ge,
+        #[serde(rename = "lt")]
+        Lt,
+        #[serde(rename = "le")]
+        Le,
+    }
+    impl ::std::fmt::Display for IrCompareOp {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Eq => f.write_str("eq"),
+                Self::Ne => f.write_str("ne"),
+                Self::Gt => f.write_str("gt"),
+                Self::Ge => f.write_str("ge"),
+                Self::Lt => f.write_str("lt"),
+                Self::Le => f.write_str("le"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrCompareOp {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "eq" => Ok(Self::Eq),
+                "ne" => Ok(Self::Ne),
+                "gt" => Ok(Self::Gt),
+                "ge" => Ok(Self::Ge),
+                "lt" => Ok(Self::Lt),
+                "le" => Ok(Self::Le),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrCompareOp {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrCompareOp {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///A comparison operator. Members of the versioned operator registry.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrComparisonOp {
+        #[serde(rename = "eq")]
+        Eq,
+        #[serde(rename = "ne")]
+        Ne,
+        #[serde(rename = "gt")]
+        Gt,
+        #[serde(rename = "gte")]
+        Gte,
+        #[serde(rename = "lt")]
+        Lt,
+        #[serde(rename = "lte")]
+        Lte,
+        #[serde(rename = "in")]
+        In,
+        #[serde(rename = "between")]
+        Between,
+        #[serde(rename = "contains")]
+        Contains,
+        #[serde(rename = "regex")]
+        Regex,
+        #[serde(rename = "exists")]
+        Exists,
+    }
+    impl ::std::fmt::Display for IrComparisonOp {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Eq => f.write_str("eq"),
+                Self::Ne => f.write_str("ne"),
+                Self::Gt => f.write_str("gt"),
+                Self::Gte => f.write_str("gte"),
+                Self::Lt => f.write_str("lt"),
+                Self::Lte => f.write_str("lte"),
+                Self::In => f.write_str("in"),
+                Self::Between => f.write_str("between"),
+                Self::Contains => f.write_str("contains"),
+                Self::Regex => f.write_str("regex"),
+                Self::Exists => f.write_str("exists"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrComparisonOp {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "eq" => Ok(Self::Eq),
+                "ne" => Ok(Self::Ne),
+                "gt" => Ok(Self::Gt),
+                "gte" => Ok(Self::Gte),
+                "lt" => Ok(Self::Lt),
+                "lte" => Ok(Self::Lte),
+                "in" => Ok(Self::In),
+                "between" => Ok(Self::Between),
+                "contains" => Ok(Self::Contains),
+                "regex" => Ok(Self::Regex),
+                "exists" => Ok(Self::Exists),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrComparisonOp {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrComparisonOp {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**The `correlate` stage. With `to: "parent"` (`irVersion` 8) it joins each
+    span to its parent span, whose columns come back under a fixed `parent.`
+    prefix. With a signal target (`irVersion` 11) it joins the relation to
+    that source `on` a logical key; `pipeline` (`where` stages only) narrows
+    the target side.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrCorrelate {
+        ///inner/left only: the most target rows kept per source row.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub fanout: ::std::option::Option<i64>,
+        pub kind: IrJoinKind,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub on: ::std::option::Option<IrCorrelateKey>,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub pipeline: ::std::vec::Vec<IrStage>,
+        /**`"parent"` for the span's parent span, or the name of another signal
+        source.*/
+        pub to: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub window: ::std::option::Option<IrCorrelateWindow>,
+    }
+    impl IrCorrelate {
+        pub fn builder() -> builder::IrCorrelate {
+            Default::default()
+        }
+    }
+    ///A logical join key a signal `correlate` matches on.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrCorrelateKey {
+        #[serde(rename = "trace_id")]
+        TraceId,
+        #[serde(rename = "span_id")]
+        SpanId,
+        #[serde(rename = "resource_identity")]
+        ResourceIdentity,
+        #[serde(rename = "series_id")]
+        SeriesId,
+    }
+    impl ::std::fmt::Display for IrCorrelateKey {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::TraceId => f.write_str("trace_id"),
+                Self::SpanId => f.write_str("span_id"),
+                Self::ResourceIdentity => f.write_str("resource_identity"),
+                Self::SeriesId => f.write_str("series_id"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrCorrelateKey {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "trace_id" => Ok(Self::TraceId),
+                "span_id" => Ok(Self::SpanId),
+                "resource_identity" => Ok(Self::ResourceIdentity),
+                "series_id" => Ok(Self::SeriesId),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrCorrelateKey {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrCorrelateKey {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**How far a signal `correlate` widens its target scan beyond the source
+    rows' time envelope. Both default to zero.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrCorrelateWindow {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub after: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub before: ::std::option::Option<::std::string::String>,
+    }
+    impl IrCorrelateWindow {
+        pub fn builder() -> builder::IrCorrelateWindow {
+            Default::default()
+        }
+    }
+    ///A field derived by an `extract` stage, with its declared type.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrDerivedField {
+        pub name: ::std::string::String,
+        #[serde(rename = "type")]
+        pub type_: IrValueType,
+    }
+    impl IrDerivedField {
+        pub fn builder() -> builder::IrDerivedField {
+            Default::default()
+        }
+    }
+    /**The `describe` stage: introspect the source instead of reading its records.
+
+    Terminal, and legal only with the `metadata` result envelope. It is answered
+    from declared schema, the type authority, the tenant's schema registries
+    and maintained statistics — not by lowering to a query plan — so it carries
+    no predicate: see `openspec/changes/archive/2026-09-22-query-field-discovery`
+    (design D6) for why a predicate-scoped answer is refused rather than approximated.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrDescribe {
+        /**The logical field whose values to suggest. Required by `values`,
+        rejected by `fields`.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub field: ::std::option::Option<::std::string::String>,
+        ///Maximum items to return. Bounded by the server's own cap.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub limit: ::std::option::Option<i64>,
+        /**Opt in to reading signal data when no metadata covers the request.
+        Without it, an uncovered request is answered with an explanation
+        rather than a scan.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub sample: ::std::option::Option<bool>,
+        pub target: IrDescribeTarget,
+    }
+    impl IrDescribe {
+        pub fn builder() -> builder::IrDescribe {
+            Default::default()
+        }
+    }
+    ///What a `describe` stage introspects.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrDescribeTarget {
+        #[serde(rename = "fields")]
+        Fields,
+        #[serde(rename = "values")]
+        Values,
+    }
+    impl ::std::fmt::Display for IrDescribeTarget {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Fields => f.write_str("fields"),
+                Self::Values => f.write_str("values"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrDescribeTarget {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "fields" => Ok(Self::Fields),
+                "values" => Ok(Self::Values),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrDescribeTarget {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrDescribeTarget {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///A sort direction.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrDirection {
+        #[serde(rename = "asc")]
+        Asc,
+        #[serde(rename = "desc")]
+        Desc,
+    }
+    impl ::std::fmt::Display for IrDirection {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Asc => f.write_str("asc"),
+                Self::Desc => f.write_str("desc"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrDirection {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "asc" => Ok(Self::Asc),
+                "desc" => Ok(Self::Desc),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrDirection {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrDirection {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///The `extract` stage: derive typed, query-local fields from log content.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrExtract {
+        #[serde(rename = "as")]
+        pub as_: ::std::vec::Vec<IrDerivedField>,
+        pub parser: IrParser,
+    }
+    impl IrExtract {
+        pub fn builder() -> builder::IrExtract {
+            Default::default()
+        }
+    }
+    /**The `filter` stage: keep the values that compare true, or with `bool`
+    replace every value by 0/1.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrFilter {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub bool: ::std::option::Option<bool>,
+        pub op: IrCompareOp,
+        pub value: f64,
+    }
+    impl IrFilter {
+        pub fn builder() -> builder::IrFilter {
+            Default::default()
+        }
+    }
+    ///Which operand of a `binop` holds many series per match.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrGroupSide {
+        #[serde(rename = "left")]
+        Left,
+        #[serde(rename = "right")]
+        Right,
+    }
+    impl ::std::fmt::Display for IrGroupSide {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Left => f.write_str("left"),
+                Self::Right => f.write_str("right"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrGroupSide {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "left" => Ok(Self::Left),
+                "right" => Ok(Self::Right),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrGroupSide {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrGroupSide {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`IrHeatmap`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHeatmap {
+        pub value: IrHeatmapValue,
+        pub x: IrHeatmapAxisX,
+        pub y: IrHeatmapAxisY,
+    }
+    impl IrHeatmap {
+        pub fn builder() -> builder::IrHeatmap {
+            Default::default()
+        }
+    }
+    ///A terminal two-dimensional count aggregate, available in IR v2.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHeatmapAxisX {
+        pub align: ::std::string::String,
+        pub step: ::std::string::String,
+    }
+    impl IrHeatmapAxisX {
+        pub fn builder() -> builder::IrHeatmapAxisX {
+            Default::default()
+        }
+    }
+    ///`IrHeatmapAxisY`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHeatmapAxisY {
+        pub bounds: ::std::vec::Vec<::serde_json::Value>,
+        pub of: ::std::string::String,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub overflow: ::std::option::Option<bool>,
+    }
+    impl IrHeatmapAxisY {
+        pub fn builder() -> builder::IrHeatmapAxisY {
+            Default::default()
+        }
+    }
+    ///`IrHeatmapValue`
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHeatmapValue {
+        #[serde(rename = "as")]
+        pub as_: ::std::string::String,
+        #[serde(rename = "fn")]
+        pub fn_: IrAggFn,
+    }
+    impl IrHeatmapValue {
+        pub fn builder() -> builder::IrHeatmapValue {
+            Default::default()
+        }
+    }
+    /**The estimated fraction of histogram observations in `(lower, upper]`,
+    cumulative(`upper`) − cumulative(`lower`): the `histogram_quantile`
+    sibling (`irVersion` 10). A bound inside a bucket is interpolated, so the
+    result is an estimate.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHistogramFraction {
+        #[serde(rename = "as")]
+        pub as_: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub by: ::std::vec::Vec<::std::string::String>,
+        ///As on `histogram_quantile`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub lookback: ::std::option::Option<::std::string::String>,
+        pub lower: f64,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub mode: ::std::option::Option<IrHistogramMode>,
+        /**One result per stored series instead of merging them (`irVersion`
+        10). Excludes `by`; the output keeps each series' labels less
+        `metric.name`.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub per_series: ::std::option::Option<bool>,
+        pub step: ::std::string::String,
+        pub upper: f64,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub window: ::std::option::Option<::std::string::String>,
+    }
+    impl IrHistogramFraction {
+        pub fn builder() -> builder::IrHistogramFraction {
+            Default::default()
+        }
+    }
+    ///How data points sharing a `histogram_quantile` step bucket combine.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrHistogramMode {
+        #[serde(rename = "rate")]
+        Rate,
+        #[serde(rename = "instant")]
+        Instant,
+    }
+    impl ::std::fmt::Display for IrHistogramMode {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Rate => f.write_str("rate"),
+                Self::Instant => f.write_str("instant"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrHistogramMode {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "rate" => Ok(Self::Rate),
+                "instant" => Ok(Self::Instant),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrHistogramMode {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrHistogramMode {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**A terminal quantile-over-buckets stage, available in IR v3. Only legal on
+    the `metrics` source, over its histogram rows: interpolates a percentile
+    from OTLP classic-histogram bucket data, distinct from the `aggregate` stage's
+    `fn: "quantile"` (`approx_percentile_cont` over independent scalar
+    values — a different algorithm entirely, over a different source shape).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrHistogramQuantile {
+        ///The output value column name.
+        #[serde(rename = "as")]
+        pub as_: ::std::string::String,
+        /**Grouping labels (logical names), and the output's labels. Grouping
+        also separates metrics internally — merging bucket data across
+        different metrics is meaningless, since different metrics carry
+        different bucket bounds — but, as in Prometheus, the output does not
+        carry `metric.name`.*/
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub by: ::std::vec::Vec<::std::string::String>,
+        /**Instant mode only: at each evaluation instant `t`, read each series'
+        latest point within `(t - lookback, t]`, as a PromQL instant vector
+        does (`irVersion` 10). Without it the lookback is `step`.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub lookback: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub mode: ::std::option::Option<IrHistogramMode>,
+        /**One result per stored series instead of merging them (`irVersion`
+        10). Excludes `by`; the output keeps each series' labels less
+        `metric.name`.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub per_series: ::std::option::Option<bool>,
+        ///The quantile, in `[0, 1]`.
+        pub q: f64,
+        /**Evaluation step: the stage is evaluated at `t = from + k·step` and
+        each value labelled `t`. The result is always a `series`.*/
+        pub step: ::std::string::String,
+        /**Rate mode's window: each instant reads `(t - window, t]` (default:
+        `step`), `irVersion` 10.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub window: ::std::option::Option<::std::string::String>,
+    }
+    impl IrHistogramQuantile {
+        pub fn builder() -> builder::IrHistogramQuantile {
+            Default::default()
+        }
+    }
+    ///A join kind for a `correlate` stage. `semi`/`anti` need a signal target.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrJoinKind {
+        #[serde(rename = "inner")]
+        Inner,
+        #[serde(rename = "left")]
+        Left,
+        #[serde(rename = "semi")]
+        Semi,
+        #[serde(rename = "anti")]
+        Anti,
+    }
+    impl ::std::fmt::Display for IrJoinKind {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Inner => f.write_str("inner"),
+                Self::Left => f.write_str("left"),
+                Self::Semi => f.write_str("semi"),
+                Self::Anti => f.write_str("anti"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrJoinKind {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "inner" => Ok(Self::Inner),
+                "left" => Ok(Self::Left),
+                "semi" => Ok(Self::Semi),
+                "anti" => Ok(Self::Anti),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrJoinKind {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrJoinKind {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///`labels.join`: PromQL's `label_join`.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrLabelJoin {
+        pub dst: ::std::string::String,
+        pub separator: ::std::string::String,
+        pub src: ::std::vec::Vec<::std::string::String>,
+    }
+    impl IrLabelJoin {
+        pub fn builder() -> builder::IrLabelJoin {
+            Default::default()
+        }
+    }
+    ///`labels.replace`: PromQL's `label_replace`.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrLabelReplace {
+        pub dst: ::std::string::String,
+        pub regex: ::std::string::String,
+        pub replacement: ::std::string::String,
+        pub src: ::std::string::String,
+    }
+    impl IrLabelReplace {
+        pub fn builder() -> builder::IrLabelReplace {
+            Default::default()
+        }
+    }
+    ///The `labels` stage: rewrite one label of every series.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub enum IrLabels {
+        #[serde(rename = "replace")]
+        Replace(IrLabelReplace),
+        #[serde(rename = "join")]
+        Join(IrLabelJoin),
+    }
+    impl ::std::convert::From<IrLabelReplace> for IrLabels {
+        fn from(value: IrLabelReplace) -> Self {
+            Self::Replace(value)
+        }
+    }
+    impl ::std::convert::From<IrLabelJoin> for IrLabels {
+        fn from(value: IrLabelJoin) -> Self {
+            Self::Join(value)
+        }
+    }
+    ///The `map` stage: apply a function to every value.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrMap {
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub args: ::std::vec::Vec<f64>,
+        #[serde(rename = "fn")]
+        pub fn_: IrMapFn,
+    }
+    impl IrMap {
+        pub fn builder() -> builder::IrMap {
+            Default::default()
+        }
+    }
+    ///A per-value `map` function (`irVersion` 10).
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrMapFn {
+        #[serde(rename = "abs")]
+        Abs,
+        #[serde(rename = "ceil")]
+        Ceil,
+        #[serde(rename = "floor")]
+        Floor,
+        #[serde(rename = "round")]
+        Round,
+        #[serde(rename = "sqrt")]
+        Sqrt,
+        #[serde(rename = "exp")]
+        Exp,
+        #[serde(rename = "ln")]
+        Ln,
+        #[serde(rename = "log2")]
+        Log2,
+        #[serde(rename = "log10")]
+        Log10,
+        #[serde(rename = "sgn")]
+        Sgn,
+        #[serde(rename = "clamp")]
+        Clamp,
+        #[serde(rename = "clamp_min")]
+        ClampMin,
+        #[serde(rename = "clamp_max")]
+        ClampMax,
+        #[serde(rename = "timestamp")]
+        Timestamp,
+        #[serde(rename = "day_of_month")]
+        DayOfMonth,
+        #[serde(rename = "day_of_week")]
+        DayOfWeek,
+        #[serde(rename = "day_of_year")]
+        DayOfYear,
+        #[serde(rename = "days_in_month")]
+        DaysInMonth,
+        #[serde(rename = "hour")]
+        Hour,
+        #[serde(rename = "minute")]
+        Minute,
+        #[serde(rename = "month")]
+        Month,
+        #[serde(rename = "year")]
+        Year,
+    }
+    impl ::std::fmt::Display for IrMapFn {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Abs => f.write_str("abs"),
+                Self::Ceil => f.write_str("ceil"),
+                Self::Floor => f.write_str("floor"),
+                Self::Round => f.write_str("round"),
+                Self::Sqrt => f.write_str("sqrt"),
+                Self::Exp => f.write_str("exp"),
+                Self::Ln => f.write_str("ln"),
+                Self::Log2 => f.write_str("log2"),
+                Self::Log10 => f.write_str("log10"),
+                Self::Sgn => f.write_str("sgn"),
+                Self::Clamp => f.write_str("clamp"),
+                Self::ClampMin => f.write_str("clamp_min"),
+                Self::ClampMax => f.write_str("clamp_max"),
+                Self::Timestamp => f.write_str("timestamp"),
+                Self::DayOfMonth => f.write_str("day_of_month"),
+                Self::DayOfWeek => f.write_str("day_of_week"),
+                Self::DayOfYear => f.write_str("day_of_year"),
+                Self::DaysInMonth => f.write_str("days_in_month"),
+                Self::Hour => f.write_str("hour"),
+                Self::Minute => f.write_str("minute"),
+                Self::Month => f.write_str("month"),
+                Self::Year => f.write_str("year"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrMapFn {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "abs" => Ok(Self::Abs),
+                "ceil" => Ok(Self::Ceil),
+                "floor" => Ok(Self::Floor),
+                "round" => Ok(Self::Round),
+                "sqrt" => Ok(Self::Sqrt),
+                "exp" => Ok(Self::Exp),
+                "ln" => Ok(Self::Ln),
+                "log2" => Ok(Self::Log2),
+                "log10" => Ok(Self::Log10),
+                "sgn" => Ok(Self::Sgn),
+                "clamp" => Ok(Self::Clamp),
+                "clamp_min" => Ok(Self::ClampMin),
+                "clamp_max" => Ok(Self::ClampMax),
+                "timestamp" => Ok(Self::Timestamp),
+                "day_of_month" => Ok(Self::DayOfMonth),
+                "day_of_week" => Ok(Self::DayOfWeek),
+                "day_of_year" => Ok(Self::DayOfYear),
+                "days_in_month" => Ok(Self::DaysInMonth),
+                "hour" => Ok(Self::Hour),
+                "minute" => Ok(Self::Minute),
+                "month" => Ok(Self::Month),
+                "year" => Ok(Self::Year),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrMapFn {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrMapFn {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**The `match` stage (`irVersion` 12): keep the traces in which every
+    span-set has a matching span and every relation holds, returning the
+    witnessing spans.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrMatch {
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub relations: ::std::vec::Vec<IrMatchRelation>,
+        /**Named span-set predicates. Key order is significant: it is the
+        declaration order, which orders the names in each row's `spansets`
+        column.*/
+        pub spansets: ::std::collections::HashMap<::std::string::String, IrPredicate>,
+    }
+    impl IrMatch {
+        pub fn builder() -> builder::IrMatch {
+            Default::default()
+        }
+    }
+    ///How a `match` relation relates its two span-sets.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrMatchOp {
+        #[serde(rename = "child")]
+        Child,
+        #[serde(rename = "descendant")]
+        Descendant,
+        #[serde(rename = "ancestor")]
+        Ancestor,
+        #[serde(rename = "sibling")]
+        Sibling,
+    }
+    impl ::std::fmt::Display for IrMatchOp {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Child => f.write_str("child"),
+                Self::Descendant => f.write_str("descendant"),
+                Self::Ancestor => f.write_str("ancestor"),
+                Self::Sibling => f.write_str("sibling"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrMatchOp {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "child" => Ok(Self::Child),
+                "descendant" => Ok(Self::Descendant),
+                "ancestor" => Ok(Self::Ancestor),
+                "sibling" => Ok(Self::Sibling),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrMatchOp {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrMatchOp {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///One structural relation of a `match` stage, between two declared span-sets.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrMatchRelation {
+        pub left: ::std::string::String,
+        pub op: IrMatchOp,
+        pub right: ::std::string::String,
+    }
+    impl IrMatchRelation {
+        pub fn builder() -> builder::IrMatchRelation {
+            Default::default()
+        }
+    }
+    ///The operand of a stage that takes none (`{"scalar": {}}`).
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrNoOperands {}
+    impl IrNoOperands {
+        pub fn builder() -> builder::IrNoOperands {
+            Default::default()
+        }
+    }
+    ///An `order` key: a field or aggregate name plus a direction.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrOrder {
+        pub dir: IrDirection,
+        ///A `FieldRef` or `AggRef` (a name), never an expression string.
+        pub of: ::std::string::String,
+    }
+    impl IrOrder {
+        pub fn builder() -> builder::IrOrder {
+            Default::default()
+        }
+    }
+    /**The `over_time` stage: re-window a Series evaluated at its own step (a
+    subquery).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrOverTime {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub arg: ::std::option::Option<f64>,
+        #[serde(rename = "fn")]
+        pub fn_: IrOverTimeFn,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub step: ::std::option::Option<::std::string::String>,
+        pub window: ::std::string::String,
+    }
+    impl IrOverTime {
+        pub fn builder() -> builder::IrOverTime {
+            Default::default()
+        }
+    }
+    ///An `over_time` function (`irVersion` 10).
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrOverTimeFn {
+        #[serde(rename = "avg")]
+        Avg,
+        #[serde(rename = "min")]
+        Min,
+        #[serde(rename = "max")]
+        Max,
+        #[serde(rename = "sum")]
+        Sum,
+        #[serde(rename = "count")]
+        Count,
+        #[serde(rename = "last")]
+        Last,
+        #[serde(rename = "stddev")]
+        Stddev,
+        #[serde(rename = "stdvar")]
+        Stdvar,
+        #[serde(rename = "present")]
+        Present,
+        #[serde(rename = "quantile")]
+        Quantile,
+        #[serde(rename = "delta")]
+        Delta,
+        #[serde(rename = "deriv")]
+        Deriv,
+        #[serde(rename = "changes")]
+        Changes,
+        #[serde(rename = "resets")]
+        Resets,
+    }
+    impl ::std::fmt::Display for IrOverTimeFn {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Avg => f.write_str("avg"),
+                Self::Min => f.write_str("min"),
+                Self::Max => f.write_str("max"),
+                Self::Sum => f.write_str("sum"),
+                Self::Count => f.write_str("count"),
+                Self::Last => f.write_str("last"),
+                Self::Stddev => f.write_str("stddev"),
+                Self::Stdvar => f.write_str("stdvar"),
+                Self::Present => f.write_str("present"),
+                Self::Quantile => f.write_str("quantile"),
+                Self::Delta => f.write_str("delta"),
+                Self::Deriv => f.write_str("deriv"),
+                Self::Changes => f.write_str("changes"),
+                Self::Resets => f.write_str("resets"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrOverTimeFn {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "avg" => Ok(Self::Avg),
+                "min" => Ok(Self::Min),
+                "max" => Ok(Self::Max),
+                "sum" => Ok(Self::Sum),
+                "count" => Ok(Self::Count),
+                "last" => Ok(Self::Last),
+                "stddev" => Ok(Self::Stddev),
+                "stdvar" => Ok(Self::Stdvar),
+                "present" => Ok(Self::Present),
+                "quantile" => Ok(Self::Quantile),
+                "delta" => Ok(Self::Delta),
+                "deriv" => Ok(Self::Deriv),
+                "changes" => Ok(Self::Changes),
+                "resets" => Ok(Self::Resets),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrOverTimeFn {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrOverTimeFn {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///A parser for the `extract` stage. `regex` is deferred (registry-gated).
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrParser {
+        #[serde(rename = "json")]
+        Json,
+        #[serde(rename = "logfmt")]
+        Logfmt,
+    }
+    impl ::std::fmt::Display for IrParser {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Json => f.write_str("json"),
+                Self::Logfmt => f.write_str("logfmt"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrParser {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "json" => Ok(Self::Json),
+                "logfmt" => Ok(Self::Logfmt),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrParser {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrParser {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**A predicate: exactly one of a comparison leaf (`field`, `op`, and a
+    `value` unless `op` is `exists`), `and`, `or`, or `not`.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(untagged, deny_unknown_fields)]
+    pub enum IrPredicate {
+        Variant0 {
+            field: ::std::string::String,
+            op: IrComparisonOp,
+            ///Absent for `exists`.
+            #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+            value: ::std::option::Option<::serde_json::Value>,
+        },
+        Variant1 {
+            and: ::std::vec::Vec<IrPredicate>,
+        },
+        Variant2 {
+            or: ::std::vec::Vec<IrPredicate>,
+        },
+        Variant3 {
+            not: ::std::boxed::Box<IrPredicate>,
+        },
+    }
+    ///A `topk`/`bottomk` rank stage.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrRank {
+        ///Must be an integer `> 0` (validated).
+        pub n: i64,
+        ///The `AggRef` or `FieldRef` to rank by (a name).
+        pub of: ::std::string::String,
+    }
+    impl IrRank {
+        pub fn builder() -> builder::IrRank {
+            Default::default()
+        }
+    }
+    /**The `reduce` stage: Series → Series, grouped `by` or `without` labels.
+
+    `without` also drops `metric.name`, as Prometheus does; `by` keeps
+    exactly the listed labels (so `by (metric.name)` keeps the name).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrReduce {
+        ///`topk`/`bottomk`: the integer k; `quantile`: the quantile.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub arg: ::std::option::Option<f64>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub by: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+        #[serde(rename = "fn")]
+        pub fn_: IrReduceFn,
+        ///`count_values`: the label that carries each value.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub label: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub without: ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+    }
+    impl IrReduce {
+        pub fn builder() -> builder::IrReduce {
+            Default::default()
+        }
+    }
+    /**A `reduce` function: folds series into groups at every instant
+    (`irVersion` 10).*/
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrReduceFn {
+        #[serde(rename = "sum")]
+        Sum,
+        #[serde(rename = "avg")]
+        Avg,
+        #[serde(rename = "min")]
+        Min,
+        #[serde(rename = "max")]
+        Max,
+        #[serde(rename = "count")]
+        Count,
+        #[serde(rename = "group")]
+        Group,
+        #[serde(rename = "stddev")]
+        Stddev,
+        #[serde(rename = "stdvar")]
+        Stdvar,
+        #[serde(rename = "quantile")]
+        Quantile,
+        #[serde(rename = "topk")]
+        Topk,
+        #[serde(rename = "bottomk")]
+        Bottomk,
+        #[serde(rename = "count_values")]
+        CountValues,
+    }
+    impl ::std::fmt::Display for IrReduceFn {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Sum => f.write_str("sum"),
+                Self::Avg => f.write_str("avg"),
+                Self::Min => f.write_str("min"),
+                Self::Max => f.write_str("max"),
+                Self::Count => f.write_str("count"),
+                Self::Group => f.write_str("group"),
+                Self::Stddev => f.write_str("stddev"),
+                Self::Stdvar => f.write_str("stdvar"),
+                Self::Quantile => f.write_str("quantile"),
+                Self::Topk => f.write_str("topk"),
+                Self::Bottomk => f.write_str("bottomk"),
+                Self::CountValues => f.write_str("count_values"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrReduceFn {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "sum" => Ok(Self::Sum),
+                "avg" => Ok(Self::Avg),
+                "min" => Ok(Self::Min),
+                "max" => Ok(Self::Max),
+                "count" => Ok(Self::Count),
+                "group" => Ok(Self::Group),
+                "stddev" => Ok(Self::Stddev),
+                "stdvar" => Ok(Self::Stdvar),
+                "quantile" => Ok(Self::Quantile),
+                "topk" => Ok(Self::Topk),
+                "bottomk" => Ok(Self::Bottomk),
+                "count_values" => Ok(Self::CountValues),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrReduceFn {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrReduceFn {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**The `sample` stage: evaluate a metric point stream into a `Series` at
+    every evaluation instant (`irVersion` 10).*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrSample {
+        ///`quantile_over_time` only: the quantile in `[0, 1]`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub arg: ::std::option::Option<f64>,
+        ///Pin every evaluation instant to this timestamp literal.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub at: ::std::option::Option<::serde_json::Value>,
+        #[serde(rename = "fn")]
+        pub fn_: IrSampleFn,
+        ///`latest` only: how far back a point still counts (default `5m`).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub lookback: ::std::option::Option<::std::string::String>,
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub of: ::std::option::Option<IrSampleOf>,
+        ///Shift the read window back by this non-negative duration.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub offset: ::std::option::Option<::std::string::String>,
+        ///The evaluation step; defaults to the document `step`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub step: ::std::option::Option<::std::string::String>,
+        ///The range read by every function but `latest`: `(t - window, t]`.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub window: ::std::option::Option<::std::string::String>,
+    }
+    impl IrSample {
+        pub fn builder() -> builder::IrSample {
+            Default::default()
+        }
+    }
+    /**A function a `sample` stage evaluates over each series' point stream
+    (`irVersion` 10).*/
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrSampleFn {
+        #[serde(rename = "latest")]
+        Latest,
+        #[serde(rename = "rate")]
+        Rate,
+        #[serde(rename = "increase")]
+        Increase,
+        #[serde(rename = "irate")]
+        Irate,
+        #[serde(rename = "delta")]
+        Delta,
+        #[serde(rename = "idelta")]
+        Idelta,
+        #[serde(rename = "deriv")]
+        Deriv,
+        #[serde(rename = "resets")]
+        Resets,
+        #[serde(rename = "changes")]
+        Changes,
+        #[serde(rename = "avg_over_time")]
+        AvgOverTime,
+        #[serde(rename = "min_over_time")]
+        MinOverTime,
+        #[serde(rename = "max_over_time")]
+        MaxOverTime,
+        #[serde(rename = "sum_over_time")]
+        SumOverTime,
+        #[serde(rename = "count_over_time")]
+        CountOverTime,
+        #[serde(rename = "last_over_time")]
+        LastOverTime,
+        #[serde(rename = "stddev_over_time")]
+        StddevOverTime,
+        #[serde(rename = "stdvar_over_time")]
+        StdvarOverTime,
+        #[serde(rename = "present_over_time")]
+        PresentOverTime,
+        #[serde(rename = "quantile_over_time")]
+        QuantileOverTime,
+    }
+    impl ::std::fmt::Display for IrSampleFn {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::Latest => f.write_str("latest"),
+                Self::Rate => f.write_str("rate"),
+                Self::Increase => f.write_str("increase"),
+                Self::Irate => f.write_str("irate"),
+                Self::Delta => f.write_str("delta"),
+                Self::Idelta => f.write_str("idelta"),
+                Self::Deriv => f.write_str("deriv"),
+                Self::Resets => f.write_str("resets"),
+                Self::Changes => f.write_str("changes"),
+                Self::AvgOverTime => f.write_str("avg_over_time"),
+                Self::MinOverTime => f.write_str("min_over_time"),
+                Self::MaxOverTime => f.write_str("max_over_time"),
+                Self::SumOverTime => f.write_str("sum_over_time"),
+                Self::CountOverTime => f.write_str("count_over_time"),
+                Self::LastOverTime => f.write_str("last_over_time"),
+                Self::StddevOverTime => f.write_str("stddev_over_time"),
+                Self::StdvarOverTime => f.write_str("stdvar_over_time"),
+                Self::PresentOverTime => f.write_str("present_over_time"),
+                Self::QuantileOverTime => f.write_str("quantile_over_time"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrSampleFn {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "latest" => Ok(Self::Latest),
+                "rate" => Ok(Self::Rate),
+                "increase" => Ok(Self::Increase),
+                "irate" => Ok(Self::Irate),
+                "delta" => Ok(Self::Delta),
+                "idelta" => Ok(Self::Idelta),
+                "deriv" => Ok(Self::Deriv),
+                "resets" => Ok(Self::Resets),
+                "changes" => Ok(Self::Changes),
+                "avg_over_time" => Ok(Self::AvgOverTime),
+                "min_over_time" => Ok(Self::MinOverTime),
+                "max_over_time" => Ok(Self::MaxOverTime),
+                "sum_over_time" => Ok(Self::SumOverTime),
+                "count_over_time" => Ok(Self::CountOverTime),
+                "last_over_time" => Ok(Self::LastOverTime),
+                "stddev_over_time" => Ok(Self::StddevOverTime),
+                "stdvar_over_time" => Ok(Self::StdvarOverTime),
+                "present_over_time" => Ok(Self::PresentOverTime),
+                "quantile_over_time" => Ok(Self::QuantileOverTime),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrSampleFn {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrSampleFn {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    ///Which value of a metric point a `sample` reads.
+    #[derive(
+        ::serde::Deserialize,
+        ::serde::Serialize,
+        Clone,
+        Copy,
+        Debug,
+        Eq,
+        Hash,
+        Ord,
+        PartialEq,
+        PartialOrd,
+    )]
+    pub enum IrSampleOf {
+        #[serde(rename = "metric.value")]
+        MetricValue,
+        #[serde(rename = "metric.count")]
+        MetricCount,
+        #[serde(rename = "metric.sum")]
+        MetricSum,
+    }
+    impl ::std::fmt::Display for IrSampleOf {
+        fn fmt(&self, f: &mut ::std::fmt::Formatter<'_>) -> ::std::fmt::Result {
+            match *self {
+                Self::MetricValue => f.write_str("metric.value"),
+                Self::MetricCount => f.write_str("metric.count"),
+                Self::MetricSum => f.write_str("metric.sum"),
+            }
+        }
+    }
+    impl ::std::str::FromStr for IrSampleOf {
+        type Err = self::error::ConversionError;
+        fn from_str(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            match value {
+                "metric.value" => Ok(Self::MetricValue),
+                "metric.count" => Ok(Self::MetricCount),
+                "metric.sum" => Ok(Self::MetricSum),
+                _ => Err("invalid value".into()),
+            }
+        }
+    }
+    impl ::std::convert::TryFrom<&str> for IrSampleOf {
+        type Error = self::error::ConversionError;
+        fn try_from(value: &str) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    impl ::std::convert::TryFrom<::std::string::String> for IrSampleOf {
+        type Error = self::error::ConversionError;
+        fn try_from(
+            value: ::std::string::String,
+        ) -> ::std::result::Result<Self, self::error::ConversionError> {
+            value.parse()
+        }
+    }
+    /**A transform stage in the pipeline. Externally tagged: a single-key object
+    whose key names the stage. An unknown key is an unsupported stage and is
+    rejected by name.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub enum IrStage {
+        #[serde(rename = "where")]
+        Where(IrPredicate),
+        #[serde(rename = "extract")]
+        Extract(IrExtract),
+        #[serde(rename = "aggregate")]
+        Aggregate(IrAggregate),
+        #[serde(rename = "topk")]
+        Topk(IrRank),
+        #[serde(rename = "bottomk")]
+        Bottomk(IrRank),
+        #[serde(rename = "order")]
+        Order(::std::vec::Vec<IrOrder>),
+        #[serde(rename = "limit")]
+        Limit(i64),
+        #[serde(rename = "heatmap")]
+        Heatmap(IrHeatmap),
+        #[serde(rename = "histogram_quantile")]
+        HistogramQuantile(IrHistogramQuantile),
+        #[serde(rename = "describe")]
+        Describe(IrDescribe),
+        #[serde(rename = "correlate")]
+        Correlate(IrCorrelate),
+        #[serde(rename = "sample")]
+        Sample(IrSample),
+        #[serde(rename = "scalar")]
+        Scalar(IrNoOperands),
+        #[serde(rename = "vector")]
+        Vector(IrNoOperands),
+        #[serde(rename = "reduce")]
+        Reduce(IrReduce),
+        #[serde(rename = "map")]
+        Map(IrMap),
+        #[serde(rename = "labels")]
+        Labels(IrLabels),
+        #[serde(rename = "filter")]
+        Filter(IrFilter),
+        #[serde(rename = "sort")]
+        Sort(IrDirection),
+        #[serde(rename = "absent")]
+        Absent(IrAbsent),
+        #[serde(rename = "over_time")]
+        OverTime(IrOverTime),
+        #[serde(rename = "binop")]
+        Binop(IrBinop),
+        #[serde(rename = "histogram_fraction")]
+        HistogramFraction(IrHistogramFraction),
+        #[serde(rename = "match")]
+        Match(IrMatch),
+    }
+    impl ::std::convert::From<IrPredicate> for IrStage {
+        fn from(value: IrPredicate) -> Self {
+            Self::Where(value)
+        }
+    }
+    impl ::std::convert::From<IrExtract> for IrStage {
+        fn from(value: IrExtract) -> Self {
+            Self::Extract(value)
+        }
+    }
+    impl ::std::convert::From<IrAggregate> for IrStage {
+        fn from(value: IrAggregate) -> Self {
+            Self::Aggregate(value)
+        }
+    }
+    impl ::std::convert::From<::std::vec::Vec<IrOrder>> for IrStage {
+        fn from(value: ::std::vec::Vec<IrOrder>) -> Self {
+            Self::Order(value)
+        }
+    }
+    impl ::std::convert::From<i64> for IrStage {
+        fn from(value: i64) -> Self {
+            Self::Limit(value)
+        }
+    }
+    impl ::std::convert::From<IrHeatmap> for IrStage {
+        fn from(value: IrHeatmap) -> Self {
+            Self::Heatmap(value)
+        }
+    }
+    impl ::std::convert::From<IrHistogramQuantile> for IrStage {
+        fn from(value: IrHistogramQuantile) -> Self {
+            Self::HistogramQuantile(value)
+        }
+    }
+    impl ::std::convert::From<IrDescribe> for IrStage {
+        fn from(value: IrDescribe) -> Self {
+            Self::Describe(value)
+        }
+    }
+    impl ::std::convert::From<IrCorrelate> for IrStage {
+        fn from(value: IrCorrelate) -> Self {
+            Self::Correlate(value)
+        }
+    }
+    impl ::std::convert::From<IrSample> for IrStage {
+        fn from(value: IrSample) -> Self {
+            Self::Sample(value)
+        }
+    }
+    impl ::std::convert::From<IrReduce> for IrStage {
+        fn from(value: IrReduce) -> Self {
+            Self::Reduce(value)
+        }
+    }
+    impl ::std::convert::From<IrMap> for IrStage {
+        fn from(value: IrMap) -> Self {
+            Self::Map(value)
+        }
+    }
+    impl ::std::convert::From<IrLabels> for IrStage {
+        fn from(value: IrLabels) -> Self {
+            Self::Labels(value)
+        }
+    }
+    impl ::std::convert::From<IrFilter> for IrStage {
+        fn from(value: IrFilter) -> Self {
+            Self::Filter(value)
+        }
+    }
+    impl ::std::convert::From<IrDirection> for IrStage {
+        fn from(value: IrDirection) -> Self {
+            Self::Sort(value)
+        }
+    }
+    impl ::std::convert::From<IrAbsent> for IrStage {
+        fn from(value: IrAbsent) -> Self {
+            Self::Absent(value)
+        }
+    }
+    impl ::std::convert::From<IrOverTime> for IrStage {
+        fn from(value: IrOverTime) -> Self {
+            Self::OverTime(value)
+        }
+    }
+    impl ::std::convert::From<IrBinop> for IrStage {
+        fn from(value: IrBinop) -> Self {
+            Self::Binop(value)
+        }
+    }
+    impl ::std::convert::From<IrHistogramFraction> for IrStage {
+        fn from(value: IrHistogramFraction) -> Self {
+            Self::HistogramFraction(value)
+        }
+    }
+    impl ::std::convert::From<IrMatch> for IrStage {
+        fn from(value: IrMatch) -> Self {
+            Self::Match(value)
+        }
+    }
+    /**A `binop`'s right operand as a sub-document: it inherits `irVersion`,
+    `range` and `step` from the enclosing document.*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrSubDocument {
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub constant: ::std::option::Option<f64>,
+        pub from: ::std::string::String,
+        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
+        pub pipeline: ::std::vec::Vec<IrStage>,
+    }
+    impl IrSubDocument {
+        pub fn builder() -> builder::IrSubDocument {
+            Default::default()
+        }
+    }
+    /**The canonical value types that flow through the IR.
+
+    Each logical field has exactly one canonical `ValueType`, owned by the
+    attribute registry. Literal coercion always targets a field's canonical
+    type — see [`coerce`].*/
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub enum IrValueType {
+        #[serde(rename = "string")]
+        String,
+        #[serde(rename = "int64")]
+        Int64,
+        #[serde(rename = "float64")]
+        Float64,
+        #[serde(rename = "bool")]
+        Bool,
+        ///Nanoseconds since the Unix epoch.
+        #[serde(rename = "timestamp_ns")]
+        TimestampNs,
+        ///A duration in nanoseconds.
+        #[serde(rename = "duration_ns")]
+        DurationNs,
+        ///Raw bytes, encoded as base64 on the wire.
+        #[serde(rename = "bytes")]
+        Bytes,
+        ///A homogeneous array of a single element type.
+        #[serde(rename = "array")]
+        Array(::std::boxed::Box<IrValueType>),
+    }
+    impl ::std::convert::From<::std::boxed::Box<IrValueType>> for IrValueType {
+        fn from(value: ::std::boxed::Box<IrValueType>) -> Self {
+            Self::Array(value)
+        }
+    }
     ///Response body of the label-names / label-values endpoints.
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct LabelsResponse {
@@ -10972,6 +13095,2350 @@ pub mod types {
                     value: Ok(value.value),
                     x: Ok(value.x),
                     y: Ok(value.y),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrAbsent {
+            labels: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrAbsent {
+            fn default() -> Self {
+                Self {
+                    labels: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrAbsent {
+            pub fn labels<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::collections::HashMap<::std::string::String, ::std::string::String>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.labels = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for labels: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrAbsent> for super::IrAbsent {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrAbsent,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    labels: value.labels?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrAbsent> for IrAbsent {
+            fn from(value: super::IrAbsent) -> Self {
+                Self {
+                    labels: Ok(value.labels),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrAgg {
+            across:
+                ::std::result::Result<::std::option::Option<super::IrAggFn>, ::std::string::String>,
+            arg: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            as_: ::std::result::Result<::std::string::String, ::std::string::String>,
+            divisor: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            fn_: ::std::result::Result<super::IrAggFn, ::std::string::String>,
+            of: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            where_: ::std::result::Result<
+                ::std::option::Option<super::IrPredicate>,
+                ::std::string::String,
+            >,
+            window: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrAgg {
+            fn default() -> Self {
+                Self {
+                    across: Ok(Default::default()),
+                    arg: Ok(Default::default()),
+                    as_: Err("no value supplied for as_".to_string()),
+                    divisor: Ok(Default::default()),
+                    fn_: Err("no value supplied for fn_".to_string()),
+                    of: Ok(Default::default()),
+                    where_: Ok(Default::default()),
+                    window: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrAgg {
+            pub fn across<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrAggFn>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.across = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for across: {e}"));
+                self
+            }
+            pub fn arg<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.arg = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for arg: {e}"));
+                self
+            }
+            pub fn as_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_: {e}"));
+                self
+            }
+            pub fn divisor<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.divisor = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for divisor: {e}"));
+                self
+            }
+            pub fn fn_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrAggFn>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fn_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fn_: {e}"));
+                self
+            }
+            pub fn of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for of: {e}"));
+                self
+            }
+            pub fn where_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrPredicate>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.where_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for where_: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrAgg> for super::IrAgg {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrAgg,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    across: value.across?,
+                    arg: value.arg?,
+                    as_: value.as_?,
+                    divisor: value.divisor?,
+                    fn_: value.fn_?,
+                    of: value.of?,
+                    where_: value.where_?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrAgg> for IrAgg {
+            fn from(value: super::IrAgg) -> Self {
+                Self {
+                    across: Ok(value.across),
+                    arg: Ok(value.arg),
+                    as_: Ok(value.as_),
+                    divisor: Ok(value.divisor),
+                    fn_: Ok(value.fn_),
+                    of: Ok(value.of),
+                    where_: Ok(value.where_),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrAggregate {
+            aggs: ::std::result::Result<::std::vec::Vec<super::IrAgg>, ::std::string::String>,
+            by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            step: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrAggregate {
+            fn default() -> Self {
+                Self {
+                    aggs: Err("no value supplied for aggs".to_string()),
+                    by: Ok(Default::default()),
+                    step: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrAggregate {
+            pub fn aggs<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrAgg>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.aggs = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for aggs: {e}"));
+                self
+            }
+            pub fn by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for by: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrAggregate> for super::IrAggregate {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrAggregate,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    aggs: value.aggs?,
+                    by: value.by?,
+                    step: value.step?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrAggregate> for IrAggregate {
+            fn from(value: super::IrAggregate) -> Self {
+                Self {
+                    aggs: Ok(value.aggs),
+                    by: Ok(value.by),
+                    step: Ok(value.step),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrBinop {
+            bool: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            group: ::std::result::Result<
+                ::std::option::Option<super::IrBinopGroup>,
+                ::std::string::String,
+            >,
+            ignoring: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            on: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            op: ::std::result::Result<super::IrBinopOp, ::std::string::String>,
+            reverse: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            right: ::std::result::Result<super::IrBinopOperand, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrBinop {
+            fn default() -> Self {
+                Self {
+                    bool: Ok(Default::default()),
+                    group: Ok(Default::default()),
+                    ignoring: Ok(Default::default()),
+                    on: Ok(Default::default()),
+                    op: Err("no value supplied for op".to_string()),
+                    reverse: Ok(Default::default()),
+                    right: Err("no value supplied for right".to_string()),
+                }
+            }
+        }
+        impl IrBinop {
+            pub fn bool<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.bool = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for bool: {e}"));
+                self
+            }
+            pub fn group<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrBinopGroup>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.group = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for group: {e}"));
+                self
+            }
+            pub fn ignoring<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.ignoring = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for ignoring: {e}"));
+                self
+            }
+            pub fn on<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.on = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for on: {e}"));
+                self
+            }
+            pub fn op<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrBinopOp>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.op = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for op: {e}"));
+                self
+            }
+            pub fn reverse<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.reverse = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for reverse: {e}"));
+                self
+            }
+            pub fn right<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrBinopOperand>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.right = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for right: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrBinop> for super::IrBinop {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrBinop,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    bool: value.bool?,
+                    group: value.group?,
+                    ignoring: value.ignoring?,
+                    on: value.on?,
+                    op: value.op?,
+                    reverse: value.reverse?,
+                    right: value.right?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrBinop> for IrBinop {
+            fn from(value: super::IrBinop) -> Self {
+                Self {
+                    bool: Ok(value.bool),
+                    group: Ok(value.group),
+                    ignoring: Ok(value.ignoring),
+                    on: Ok(value.on),
+                    op: Ok(value.op),
+                    reverse: Ok(value.reverse),
+                    right: Ok(value.right),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrBinopGroup {
+            include: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            side: ::std::result::Result<super::IrGroupSide, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrBinopGroup {
+            fn default() -> Self {
+                Self {
+                    include: Ok(Default::default()),
+                    side: Err("no value supplied for side".to_string()),
+                }
+            }
+        }
+        impl IrBinopGroup {
+            pub fn include<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.include = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for include: {e}"));
+                self
+            }
+            pub fn side<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrGroupSide>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.side = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for side: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrBinopGroup> for super::IrBinopGroup {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrBinopGroup,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    include: value.include?,
+                    side: value.side?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrBinopGroup> for IrBinopGroup {
+            fn from(value: super::IrBinopGroup) -> Self {
+                Self {
+                    include: Ok(value.include),
+                    side: Ok(value.side),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrCorrelate {
+            fanout: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            kind: ::std::result::Result<super::IrJoinKind, ::std::string::String>,
+            on: ::std::result::Result<
+                ::std::option::Option<super::IrCorrelateKey>,
+                ::std::string::String,
+            >,
+            pipeline: ::std::result::Result<::std::vec::Vec<super::IrStage>, ::std::string::String>,
+            to: ::std::result::Result<::std::string::String, ::std::string::String>,
+            window: ::std::result::Result<
+                ::std::option::Option<super::IrCorrelateWindow>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrCorrelate {
+            fn default() -> Self {
+                Self {
+                    fanout: Ok(Default::default()),
+                    kind: Err("no value supplied for kind".to_string()),
+                    on: Ok(Default::default()),
+                    pipeline: Ok(Default::default()),
+                    to: Err("no value supplied for to".to_string()),
+                    window: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrCorrelate {
+            pub fn fanout<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fanout = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fanout: {e}"));
+                self
+            }
+            pub fn kind<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrJoinKind>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.kind = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for kind: {e}"));
+                self
+            }
+            pub fn on<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrCorrelateKey>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.on = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for on: {e}"));
+                self
+            }
+            pub fn pipeline<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrStage>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.pipeline = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for pipeline: {e}"));
+                self
+            }
+            pub fn to<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.to = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for to: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrCorrelateWindow>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrCorrelate> for super::IrCorrelate {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrCorrelate,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    fanout: value.fanout?,
+                    kind: value.kind?,
+                    on: value.on?,
+                    pipeline: value.pipeline?,
+                    to: value.to?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrCorrelate> for IrCorrelate {
+            fn from(value: super::IrCorrelate) -> Self {
+                Self {
+                    fanout: Ok(value.fanout),
+                    kind: Ok(value.kind),
+                    on: Ok(value.on),
+                    pipeline: Ok(value.pipeline),
+                    to: Ok(value.to),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrCorrelateWindow {
+            after: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            before: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrCorrelateWindow {
+            fn default() -> Self {
+                Self {
+                    after: Ok(Default::default()),
+                    before: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrCorrelateWindow {
+            pub fn after<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.after = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for after: {e}"));
+                self
+            }
+            pub fn before<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.before = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for before: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrCorrelateWindow> for super::IrCorrelateWindow {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrCorrelateWindow,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    after: value.after?,
+                    before: value.before?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrCorrelateWindow> for IrCorrelateWindow {
+            fn from(value: super::IrCorrelateWindow) -> Self {
+                Self {
+                    after: Ok(value.after),
+                    before: Ok(value.before),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrDerivedField {
+            name: ::std::result::Result<::std::string::String, ::std::string::String>,
+            type_: ::std::result::Result<super::IrValueType, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrDerivedField {
+            fn default() -> Self {
+                Self {
+                    name: Err("no value supplied for name".to_string()),
+                    type_: Err("no value supplied for type_".to_string()),
+                }
+            }
+        }
+        impl IrDerivedField {
+            pub fn name<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.name = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for name: {e}"));
+                self
+            }
+            pub fn type_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrValueType>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.type_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for type_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrDerivedField> for super::IrDerivedField {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrDerivedField,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    name: value.name?,
+                    type_: value.type_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrDerivedField> for IrDerivedField {
+            fn from(value: super::IrDerivedField) -> Self {
+                Self {
+                    name: Ok(value.name),
+                    type_: Ok(value.type_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrDescribe {
+            field: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            limit: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            sample: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            target: ::std::result::Result<super::IrDescribeTarget, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrDescribe {
+            fn default() -> Self {
+                Self {
+                    field: Ok(Default::default()),
+                    limit: Ok(Default::default()),
+                    sample: Ok(Default::default()),
+                    target: Err("no value supplied for target".to_string()),
+                }
+            }
+        }
+        impl IrDescribe {
+            pub fn field<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.field = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for field: {e}"));
+                self
+            }
+            pub fn limit<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<i64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.limit = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for limit: {e}"));
+                self
+            }
+            pub fn sample<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.sample = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for sample: {e}"));
+                self
+            }
+            pub fn target<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrDescribeTarget>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.target = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for target: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrDescribe> for super::IrDescribe {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrDescribe,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    field: value.field?,
+                    limit: value.limit?,
+                    sample: value.sample?,
+                    target: value.target?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrDescribe> for IrDescribe {
+            fn from(value: super::IrDescribe) -> Self {
+                Self {
+                    field: Ok(value.field),
+                    limit: Ok(value.limit),
+                    sample: Ok(value.sample),
+                    target: Ok(value.target),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrExtract {
+            as_: ::std::result::Result<
+                ::std::vec::Vec<super::IrDerivedField>,
+                ::std::string::String,
+            >,
+            parser: ::std::result::Result<super::IrParser, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrExtract {
+            fn default() -> Self {
+                Self {
+                    as_: Err("no value supplied for as_".to_string()),
+                    parser: Err("no value supplied for parser".to_string()),
+                }
+            }
+        }
+        impl IrExtract {
+            pub fn as_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrDerivedField>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_: {e}"));
+                self
+            }
+            pub fn parser<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrParser>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.parser = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for parser: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrExtract> for super::IrExtract {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrExtract,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    as_: value.as_?,
+                    parser: value.parser?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrExtract> for IrExtract {
+            fn from(value: super::IrExtract) -> Self {
+                Self {
+                    as_: Ok(value.as_),
+                    parser: Ok(value.parser),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrFilter {
+            bool: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            op: ::std::result::Result<super::IrCompareOp, ::std::string::String>,
+            value: ::std::result::Result<f64, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrFilter {
+            fn default() -> Self {
+                Self {
+                    bool: Ok(Default::default()),
+                    op: Err("no value supplied for op".to_string()),
+                    value: Err("no value supplied for value".to_string()),
+                }
+            }
+        }
+        impl IrFilter {
+            pub fn bool<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.bool = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for bool: {e}"));
+                self
+            }
+            pub fn op<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrCompareOp>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.op = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for op: {e}"));
+                self
+            }
+            pub fn value<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<f64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrFilter> for super::IrFilter {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrFilter,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    bool: value.bool?,
+                    op: value.op?,
+                    value: value.value?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrFilter> for IrFilter {
+            fn from(value: super::IrFilter) -> Self {
+                Self {
+                    bool: Ok(value.bool),
+                    op: Ok(value.op),
+                    value: Ok(value.value),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHeatmap {
+            value: ::std::result::Result<super::IrHeatmapValue, ::std::string::String>,
+            x: ::std::result::Result<super::IrHeatmapAxisX, ::std::string::String>,
+            y: ::std::result::Result<super::IrHeatmapAxisY, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrHeatmap {
+            fn default() -> Self {
+                Self {
+                    value: Err("no value supplied for value".to_string()),
+                    x: Err("no value supplied for x".to_string()),
+                    y: Err("no value supplied for y".to_string()),
+                }
+            }
+        }
+        impl IrHeatmap {
+            pub fn value<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrHeatmapValue>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.value = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for value: {e}"));
+                self
+            }
+            pub fn x<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrHeatmapAxisX>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.x = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for x: {e}"));
+                self
+            }
+            pub fn y<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrHeatmapAxisY>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.y = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for y: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHeatmap> for super::IrHeatmap {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHeatmap,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    value: value.value?,
+                    x: value.x?,
+                    y: value.y?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHeatmap> for IrHeatmap {
+            fn from(value: super::IrHeatmap) -> Self {
+                Self {
+                    value: Ok(value.value),
+                    x: Ok(value.x),
+                    y: Ok(value.y),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHeatmapAxisX {
+            align: ::std::result::Result<::std::string::String, ::std::string::String>,
+            step: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrHeatmapAxisX {
+            fn default() -> Self {
+                Self {
+                    align: Err("no value supplied for align".to_string()),
+                    step: Err("no value supplied for step".to_string()),
+                }
+            }
+        }
+        impl IrHeatmapAxisX {
+            pub fn align<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.align = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for align: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHeatmapAxisX> for super::IrHeatmapAxisX {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHeatmapAxisX,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    align: value.align?,
+                    step: value.step?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHeatmapAxisX> for IrHeatmapAxisX {
+            fn from(value: super::IrHeatmapAxisX) -> Self {
+                Self {
+                    align: Ok(value.align),
+                    step: Ok(value.step),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHeatmapAxisY {
+            bounds:
+                ::std::result::Result<::std::vec::Vec<::serde_json::Value>, ::std::string::String>,
+            of: ::std::result::Result<::std::string::String, ::std::string::String>,
+            overflow: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrHeatmapAxisY {
+            fn default() -> Self {
+                Self {
+                    bounds: Err("no value supplied for bounds".to_string()),
+                    of: Err("no value supplied for of".to_string()),
+                    overflow: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrHeatmapAxisY {
+            pub fn bounds<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::serde_json::Value>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.bounds = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for bounds: {e}"));
+                self
+            }
+            pub fn of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for of: {e}"));
+                self
+            }
+            pub fn overflow<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.overflow = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for overflow: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHeatmapAxisY> for super::IrHeatmapAxisY {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHeatmapAxisY,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    bounds: value.bounds?,
+                    of: value.of?,
+                    overflow: value.overflow?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHeatmapAxisY> for IrHeatmapAxisY {
+            fn from(value: super::IrHeatmapAxisY) -> Self {
+                Self {
+                    bounds: Ok(value.bounds),
+                    of: Ok(value.of),
+                    overflow: Ok(value.overflow),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHeatmapValue {
+            as_: ::std::result::Result<::std::string::String, ::std::string::String>,
+            fn_: ::std::result::Result<super::IrAggFn, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrHeatmapValue {
+            fn default() -> Self {
+                Self {
+                    as_: Err("no value supplied for as_".to_string()),
+                    fn_: Err("no value supplied for fn_".to_string()),
+                }
+            }
+        }
+        impl IrHeatmapValue {
+            pub fn as_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_: {e}"));
+                self
+            }
+            pub fn fn_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrAggFn>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fn_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fn_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHeatmapValue> for super::IrHeatmapValue {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHeatmapValue,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    as_: value.as_?,
+                    fn_: value.fn_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHeatmapValue> for IrHeatmapValue {
+            fn from(value: super::IrHeatmapValue) -> Self {
+                Self {
+                    as_: Ok(value.as_),
+                    fn_: Ok(value.fn_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHistogramFraction {
+            as_: ::std::result::Result<::std::string::String, ::std::string::String>,
+            by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            lookback: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            lower: ::std::result::Result<f64, ::std::string::String>,
+            mode: ::std::result::Result<
+                ::std::option::Option<super::IrHistogramMode>,
+                ::std::string::String,
+            >,
+            per_series: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            step: ::std::result::Result<::std::string::String, ::std::string::String>,
+            upper: ::std::result::Result<f64, ::std::string::String>,
+            window: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrHistogramFraction {
+            fn default() -> Self {
+                Self {
+                    as_: Err("no value supplied for as_".to_string()),
+                    by: Ok(Default::default()),
+                    lookback: Ok(Default::default()),
+                    lower: Err("no value supplied for lower".to_string()),
+                    mode: Ok(Default::default()),
+                    per_series: Ok(Default::default()),
+                    step: Err("no value supplied for step".to_string()),
+                    upper: Err("no value supplied for upper".to_string()),
+                    window: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrHistogramFraction {
+            pub fn as_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_: {e}"));
+                self
+            }
+            pub fn by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for by: {e}"));
+                self
+            }
+            pub fn lookback<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.lookback = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for lookback: {e}"));
+                self
+            }
+            pub fn lower<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<f64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.lower = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for lower: {e}"));
+                self
+            }
+            pub fn mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrHistogramMode>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mode: {e}"));
+                self
+            }
+            pub fn per_series<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.per_series = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for per_series: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+            pub fn upper<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<f64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.upper = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for upper: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHistogramFraction> for super::IrHistogramFraction {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHistogramFraction,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    as_: value.as_?,
+                    by: value.by?,
+                    lookback: value.lookback?,
+                    lower: value.lower?,
+                    mode: value.mode?,
+                    per_series: value.per_series?,
+                    step: value.step?,
+                    upper: value.upper?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHistogramFraction> for IrHistogramFraction {
+            fn from(value: super::IrHistogramFraction) -> Self {
+                Self {
+                    as_: Ok(value.as_),
+                    by: Ok(value.by),
+                    lookback: Ok(value.lookback),
+                    lower: Ok(value.lower),
+                    mode: Ok(value.mode),
+                    per_series: Ok(value.per_series),
+                    step: Ok(value.step),
+                    upper: Ok(value.upper),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrHistogramQuantile {
+            as_: ::std::result::Result<::std::string::String, ::std::string::String>,
+            by: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+            lookback: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            mode: ::std::result::Result<
+                ::std::option::Option<super::IrHistogramMode>,
+                ::std::string::String,
+            >,
+            per_series: ::std::result::Result<::std::option::Option<bool>, ::std::string::String>,
+            q: ::std::result::Result<f64, ::std::string::String>,
+            step: ::std::result::Result<::std::string::String, ::std::string::String>,
+            window: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrHistogramQuantile {
+            fn default() -> Self {
+                Self {
+                    as_: Err("no value supplied for as_".to_string()),
+                    by: Ok(Default::default()),
+                    lookback: Ok(Default::default()),
+                    mode: Ok(Default::default()),
+                    per_series: Ok(Default::default()),
+                    q: Err("no value supplied for q".to_string()),
+                    step: Err("no value supplied for step".to_string()),
+                    window: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrHistogramQuantile {
+            pub fn as_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.as_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for as_: {e}"));
+                self
+            }
+            pub fn by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for by: {e}"));
+                self
+            }
+            pub fn lookback<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.lookback = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for lookback: {e}"));
+                self
+            }
+            pub fn mode<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrHistogramMode>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.mode = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for mode: {e}"));
+                self
+            }
+            pub fn per_series<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<bool>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.per_series = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for per_series: {e}"));
+                self
+            }
+            pub fn q<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<f64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.q = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for q: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrHistogramQuantile> for super::IrHistogramQuantile {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrHistogramQuantile,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    as_: value.as_?,
+                    by: value.by?,
+                    lookback: value.lookback?,
+                    mode: value.mode?,
+                    per_series: value.per_series?,
+                    q: value.q?,
+                    step: value.step?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrHistogramQuantile> for IrHistogramQuantile {
+            fn from(value: super::IrHistogramQuantile) -> Self {
+                Self {
+                    as_: Ok(value.as_),
+                    by: Ok(value.by),
+                    lookback: Ok(value.lookback),
+                    mode: Ok(value.mode),
+                    per_series: Ok(value.per_series),
+                    q: Ok(value.q),
+                    step: Ok(value.step),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrLabelJoin {
+            dst: ::std::result::Result<::std::string::String, ::std::string::String>,
+            separator: ::std::result::Result<::std::string::String, ::std::string::String>,
+            src: ::std::result::Result<
+                ::std::vec::Vec<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrLabelJoin {
+            fn default() -> Self {
+                Self {
+                    dst: Err("no value supplied for dst".to_string()),
+                    separator: Err("no value supplied for separator".to_string()),
+                    src: Err("no value supplied for src".to_string()),
+                }
+            }
+        }
+        impl IrLabelJoin {
+            pub fn dst<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dst = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dst: {e}"));
+                self
+            }
+            pub fn separator<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.separator = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for separator: {e}"));
+                self
+            }
+            pub fn src<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.src = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for src: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrLabelJoin> for super::IrLabelJoin {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrLabelJoin,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dst: value.dst?,
+                    separator: value.separator?,
+                    src: value.src?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrLabelJoin> for IrLabelJoin {
+            fn from(value: super::IrLabelJoin) -> Self {
+                Self {
+                    dst: Ok(value.dst),
+                    separator: Ok(value.separator),
+                    src: Ok(value.src),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrLabelReplace {
+            dst: ::std::result::Result<::std::string::String, ::std::string::String>,
+            regex: ::std::result::Result<::std::string::String, ::std::string::String>,
+            replacement: ::std::result::Result<::std::string::String, ::std::string::String>,
+            src: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrLabelReplace {
+            fn default() -> Self {
+                Self {
+                    dst: Err("no value supplied for dst".to_string()),
+                    regex: Err("no value supplied for regex".to_string()),
+                    replacement: Err("no value supplied for replacement".to_string()),
+                    src: Err("no value supplied for src".to_string()),
+                }
+            }
+        }
+        impl IrLabelReplace {
+            pub fn dst<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dst = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dst: {e}"));
+                self
+            }
+            pub fn regex<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.regex = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for regex: {e}"));
+                self
+            }
+            pub fn replacement<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.replacement = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for replacement: {e}"));
+                self
+            }
+            pub fn src<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.src = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for src: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrLabelReplace> for super::IrLabelReplace {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrLabelReplace,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dst: value.dst?,
+                    regex: value.regex?,
+                    replacement: value.replacement?,
+                    src: value.src?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrLabelReplace> for IrLabelReplace {
+            fn from(value: super::IrLabelReplace) -> Self {
+                Self {
+                    dst: Ok(value.dst),
+                    regex: Ok(value.regex),
+                    replacement: Ok(value.replacement),
+                    src: Ok(value.src),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrMap {
+            args: ::std::result::Result<::std::vec::Vec<f64>, ::std::string::String>,
+            fn_: ::std::result::Result<super::IrMapFn, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrMap {
+            fn default() -> Self {
+                Self {
+                    args: Ok(Default::default()),
+                    fn_: Err("no value supplied for fn_".to_string()),
+                }
+            }
+        }
+        impl IrMap {
+            pub fn args<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.args = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for args: {e}"));
+                self
+            }
+            pub fn fn_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrMapFn>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fn_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fn_: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrMap> for super::IrMap {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrMap,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    args: value.args?,
+                    fn_: value.fn_?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrMap> for IrMap {
+            fn from(value: super::IrMap) -> Self {
+                Self {
+                    args: Ok(value.args),
+                    fn_: Ok(value.fn_),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrMatch {
+            relations: ::std::result::Result<
+                ::std::vec::Vec<super::IrMatchRelation>,
+                ::std::string::String,
+            >,
+            spansets: ::std::result::Result<
+                ::std::collections::HashMap<::std::string::String, super::IrPredicate>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrMatch {
+            fn default() -> Self {
+                Self {
+                    relations: Ok(Default::default()),
+                    spansets: Err("no value supplied for spansets".to_string()),
+                }
+            }
+        }
+        impl IrMatch {
+            pub fn relations<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrMatchRelation>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.relations = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for relations: {e}"));
+                self
+            }
+            pub fn spansets<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::collections::HashMap<::std::string::String, super::IrPredicate>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.spansets = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for spansets: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrMatch> for super::IrMatch {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrMatch,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    relations: value.relations?,
+                    spansets: value.spansets?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrMatch> for IrMatch {
+            fn from(value: super::IrMatch) -> Self {
+                Self {
+                    relations: Ok(value.relations),
+                    spansets: Ok(value.spansets),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrMatchRelation {
+            left: ::std::result::Result<::std::string::String, ::std::string::String>,
+            op: ::std::result::Result<super::IrMatchOp, ::std::string::String>,
+            right: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrMatchRelation {
+            fn default() -> Self {
+                Self {
+                    left: Err("no value supplied for left".to_string()),
+                    op: Err("no value supplied for op".to_string()),
+                    right: Err("no value supplied for right".to_string()),
+                }
+            }
+        }
+        impl IrMatchRelation {
+            pub fn left<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.left = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for left: {e}"));
+                self
+            }
+            pub fn op<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrMatchOp>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.op = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for op: {e}"));
+                self
+            }
+            pub fn right<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.right = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for right: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrMatchRelation> for super::IrMatchRelation {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrMatchRelation,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    left: value.left?,
+                    op: value.op?,
+                    right: value.right?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrMatchRelation> for IrMatchRelation {
+            fn from(value: super::IrMatchRelation) -> Self {
+                Self {
+                    left: Ok(value.left),
+                    op: Ok(value.op),
+                    right: Ok(value.right),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrNoOperands {}
+        impl ::std::default::Default for IrNoOperands {
+            fn default() -> Self {
+                Self {}
+            }
+        }
+        impl IrNoOperands {}
+        impl ::std::convert::TryFrom<IrNoOperands> for super::IrNoOperands {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                _value: IrNoOperands,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {})
+            }
+        }
+        impl ::std::convert::From<super::IrNoOperands> for IrNoOperands {
+            fn from(_value: super::IrNoOperands) -> Self {
+                Self {}
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrOrder {
+            dir: ::std::result::Result<super::IrDirection, ::std::string::String>,
+            of: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrOrder {
+            fn default() -> Self {
+                Self {
+                    dir: Err("no value supplied for dir".to_string()),
+                    of: Err("no value supplied for of".to_string()),
+                }
+            }
+        }
+        impl IrOrder {
+            pub fn dir<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrDirection>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.dir = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for dir: {e}"));
+                self
+            }
+            pub fn of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for of: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrOrder> for super::IrOrder {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrOrder,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    dir: value.dir?,
+                    of: value.of?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrOrder> for IrOrder {
+            fn from(value: super::IrOrder) -> Self {
+                Self {
+                    dir: Ok(value.dir),
+                    of: Ok(value.of),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrOverTime {
+            arg: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            fn_: ::std::result::Result<super::IrOverTimeFn, ::std::string::String>,
+            step: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            window: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrOverTime {
+            fn default() -> Self {
+                Self {
+                    arg: Ok(Default::default()),
+                    fn_: Err("no value supplied for fn_".to_string()),
+                    step: Ok(Default::default()),
+                    window: Err("no value supplied for window".to_string()),
+                }
+            }
+        }
+        impl IrOverTime {
+            pub fn arg<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.arg = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for arg: {e}"));
+                self
+            }
+            pub fn fn_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrOverTimeFn>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fn_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fn_: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrOverTime> for super::IrOverTime {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrOverTime,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    arg: value.arg?,
+                    fn_: value.fn_?,
+                    step: value.step?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrOverTime> for IrOverTime {
+            fn from(value: super::IrOverTime) -> Self {
+                Self {
+                    arg: Ok(value.arg),
+                    fn_: Ok(value.fn_),
+                    step: Ok(value.step),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrRank {
+            n: ::std::result::Result<i64, ::std::string::String>,
+            of: ::std::result::Result<::std::string::String, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrRank {
+            fn default() -> Self {
+                Self {
+                    n: Err("no value supplied for n".to_string()),
+                    of: Err("no value supplied for of".to_string()),
+                }
+            }
+        }
+        impl IrRank {
+            pub fn n<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.n = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for n: {e}"));
+                self
+            }
+            pub fn of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for of: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrRank> for super::IrRank {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrRank,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    n: value.n?,
+                    of: value.of?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrRank> for IrRank {
+            fn from(value: super::IrRank) -> Self {
+                Self {
+                    n: Ok(value.n),
+                    of: Ok(value.of),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrReduce {
+            arg: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            by: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+            fn_: ::std::result::Result<super::IrReduceFn, ::std::string::String>,
+            label: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            without: ::std::result::Result<
+                ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrReduce {
+            fn default() -> Self {
+                Self {
+                    arg: Ok(Default::default()),
+                    by: Ok(Default::default()),
+                    fn_: Err("no value supplied for fn_".to_string()),
+                    label: Ok(Default::default()),
+                    without: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrReduce {
+            pub fn arg<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.arg = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for arg: {e}"));
+                self
+            }
+            pub fn by<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.by = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for by: {e}"));
+                self
+            }
+            pub fn fn_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrReduceFn>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fn_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fn_: {e}"));
+                self
+            }
+            pub fn label<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.label = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for label: {e}"));
+                self
+            }
+            pub fn without<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<
+                        ::std::option::Option<::std::vec::Vec<::std::string::String>>,
+                    >,
+                T::Error: ::std::fmt::Display,
+            {
+                self.without = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for without: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrReduce> for super::IrReduce {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrReduce,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    arg: value.arg?,
+                    by: value.by?,
+                    fn_: value.fn_?,
+                    label: value.label?,
+                    without: value.without?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrReduce> for IrReduce {
+            fn from(value: super::IrReduce) -> Self {
+                Self {
+                    arg: Ok(value.arg),
+                    by: Ok(value.by),
+                    fn_: Ok(value.fn_),
+                    label: Ok(value.label),
+                    without: Ok(value.without),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrSample {
+            arg: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            at: ::std::result::Result<
+                ::std::option::Option<::serde_json::Value>,
+                ::std::string::String,
+            >,
+            fn_: ::std::result::Result<super::IrSampleFn, ::std::string::String>,
+            lookback: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            of: ::std::result::Result<
+                ::std::option::Option<super::IrSampleOf>,
+                ::std::string::String,
+            >,
+            offset: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            step: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            window: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrSample {
+            fn default() -> Self {
+                Self {
+                    arg: Ok(Default::default()),
+                    at: Ok(Default::default()),
+                    fn_: Err("no value supplied for fn_".to_string()),
+                    lookback: Ok(Default::default()),
+                    of: Ok(Default::default()),
+                    offset: Ok(Default::default()),
+                    step: Ok(Default::default()),
+                    window: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrSample {
+            pub fn arg<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.arg = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for arg: {e}"));
+                self
+            }
+            pub fn at<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::serde_json::Value>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.at = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for at: {e}"));
+                self
+            }
+            pub fn fn_<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<super::IrSampleFn>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.fn_ = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for fn_: {e}"));
+                self
+            }
+            pub fn lookback<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.lookback = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for lookback: {e}"));
+                self
+            }
+            pub fn of<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrSampleOf>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.of = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for of: {e}"));
+                self
+            }
+            pub fn offset<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.offset = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for offset: {e}"));
+                self
+            }
+            pub fn step<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.step = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for step: {e}"));
+                self
+            }
+            pub fn window<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.window = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for window: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrSample> for super::IrSample {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrSample,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    arg: value.arg?,
+                    at: value.at?,
+                    fn_: value.fn_?,
+                    lookback: value.lookback?,
+                    of: value.of?,
+                    offset: value.offset?,
+                    step: value.step?,
+                    window: value.window?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrSample> for IrSample {
+            fn from(value: super::IrSample) -> Self {
+                Self {
+                    arg: Ok(value.arg),
+                    at: Ok(value.at),
+                    fn_: Ok(value.fn_),
+                    lookback: Ok(value.lookback),
+                    of: Ok(value.of),
+                    offset: Ok(value.offset),
+                    step: Ok(value.step),
+                    window: Ok(value.window),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct IrSubDocument {
+            constant: ::std::result::Result<::std::option::Option<f64>, ::std::string::String>,
+            from: ::std::result::Result<::std::string::String, ::std::string::String>,
+            pipeline: ::std::result::Result<::std::vec::Vec<super::IrStage>, ::std::string::String>,
+        }
+        impl ::std::default::Default for IrSubDocument {
+            fn default() -> Self {
+                Self {
+                    constant: Ok(Default::default()),
+                    from: Err("no value supplied for from".to_string()),
+                    pipeline: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrSubDocument {
+            pub fn constant<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<f64>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.constant = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for constant: {e}"));
+                self
+            }
+            pub fn from<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.from = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for from: {e}"));
+                self
+            }
+            pub fn pipeline<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrStage>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.pipeline = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for pipeline: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrSubDocument> for super::IrSubDocument {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrSubDocument,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    constant: value.constant?,
+                    from: value.from?,
+                    pipeline: value.pipeline?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrSubDocument> for IrSubDocument {
+            fn from(value: super::IrSubDocument) -> Self {
+                Self {
+                    constant: Ok(value.constant),
+                    from: Ok(value.from),
+                    pipeline: Ok(value.pipeline),
                 }
             }
         }

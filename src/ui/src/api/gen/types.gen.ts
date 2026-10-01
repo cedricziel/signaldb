@@ -1289,6 +1289,638 @@ export type HeatmapResult = {
 };
 
 /**
+ * The `absent` stage: one series valued 1 where the input has none.
+ */
+export type IrAbsent = {
+    labels?: {
+        [key: string]: string;
+    };
+};
+
+/**
+ * A single named aggregate output.
+ */
+export type IrAgg = {
+    across?: null | IrAggFn;
+    /**
+     * A numeric argument (e.g. the quantile in `[0,1]`).
+     */
+    arg?: number | null;
+    /**
+     * The output column name — the only thing later stages may reference.
+     */
+    as: string;
+    /**
+     * Divide the aggregate's value by this scalar, so a measure can be
+     * reported per unit rather than absolute (`irVersion` 5).
+     *
+     * This is what a rate is: a count over a window, divided by the window.
+     * Named for the operation rather than for time — dividing an aggregate
+     * by a scalar is not inherently temporal, and this IR is
+     * signal-agnostic.
+     */
+    divisor?: number | null;
+    fn: IrAggFn;
+    /**
+     * The field being aggregated (a logical name). Omitted for `count`.
+     */
+    of?: string | null;
+    where?: null | IrPredicate;
+    /**
+     * For a per-series range function, the lookback window: each step's
+     * value uses samples in `(t - window, t]`. A duration string like
+     * `step`. Defaults to `step` (the historical behaviour). `irVersion` 7.
+     */
+    window?: string | null;
+};
+
+/**
+ * An aggregate function. Member of the versioned function registry.
+ */
+export type IrAggFn = 'count' | 'sum' | 'avg' | 'min' | 'max' | 'quantile' | 'stddev' | 'stdvar' | 'first' | 'last' | 'rate' | 'increase' | 'irate' | 'avg_over_time' | 'min_over_time' | 'max_over_time' | 'sum_over_time' | 'count_over_time' | 'count_distinct';
+
+/**
+ * The `aggregate` stage: group-reduce, optionally time-bucketed by `step`.
+ */
+export type IrAggregate = {
+    /**
+     * The named aggregate outputs.
+     */
+    aggs: Array<IrAgg>;
+    /**
+     * Grouping fields (logical names).
+     */
+    by?: Array<string>;
+    /**
+     * A time-bucket width (`"1m"`). Present → the result is a `series`.
+     */
+    step?: string | null;
+};
+
+/**
+ * The `binop` stage: combine the pipeline (left) with `right`.
+ *
+ * Two series match on a key of their labels, as in PromQL: by default every
+ * label but `metric.name`; with `ignoring`, every label but `metric.name`
+ * and the listed ones; with `on`, exactly the listed labels.
+ */
+export type IrBinop = {
+    /**
+     * Comparison ops only: yield 0/1 instead of filtering.
+     */
+    bool?: boolean;
+    group?: null | IrBinopGroup;
+    ignoring?: Array<string> | null;
+    on?: Array<string> | null;
+    op: IrBinopOp;
+    /**
+     * Evaluate `right op left` (e.g. `2 - series`).
+     */
+    reverse?: boolean;
+    right: IrBinopOperand;
+};
+
+/**
+ * A `binop`'s one-to-many (`group_left`/`group_right`) match.
+ */
+export type IrBinopGroup = {
+    /**
+     * Labels copied from the "one" side onto the result.
+     */
+    include?: Array<string>;
+    side: IrGroupSide;
+};
+
+/**
+ * A `binop` operator (`irVersion` 10).
+ */
+export type IrBinopOp = 'add' | 'sub' | 'mul' | 'div' | 'mod' | 'pow' | 'atan2' | 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le' | 'and' | 'or' | 'unless';
+
+/**
+ * A `binop`'s right operand: a number or a sub-document.
+ */
+export type IrBinopOperand = number | IrSubDocument;
+
+/**
+ * A comparison against a number.
+ */
+export type IrCompareOp = 'eq' | 'ne' | 'gt' | 'ge' | 'lt' | 'le';
+
+/**
+ * A comparison operator. Members of the versioned operator registry.
+ */
+export type IrComparisonOp = 'eq' | 'ne' | 'gt' | 'gte' | 'lt' | 'lte' | 'in' | 'between' | 'contains' | 'regex' | 'exists';
+
+/**
+ * The `correlate` stage. With `to: "parent"` (`irVersion` 8) it joins each
+ * span to its parent span, whose columns come back under a fixed `parent.`
+ * prefix. With a signal target (`irVersion` 11) it joins the relation to
+ * that source `on` a logical key; `pipeline` (`where` stages only) narrows
+ * the target side.
+ */
+export type IrCorrelate = {
+    /**
+     * inner/left only: the most target rows kept per source row.
+     */
+    fanout?: number | null;
+    kind: IrJoinKind;
+    on?: null | IrCorrelateKey;
+    pipeline?: Array<IrStage>;
+    /**
+     * `"parent"` for the span's parent span, or the name of another signal
+     * source.
+     */
+    to: string;
+    window?: null | IrCorrelateWindow;
+};
+
+/**
+ * A logical join key a signal `correlate` matches on.
+ */
+export type IrCorrelateKey = 'trace_id' | 'span_id' | 'resource_identity' | 'series_id';
+
+/**
+ * How far a signal `correlate` widens its target scan beyond the source
+ * rows' time envelope. Both default to zero.
+ */
+export type IrCorrelateWindow = {
+    after?: string | null;
+    before?: string | null;
+};
+
+/**
+ * A field derived by an `extract` stage, with its declared type.
+ */
+export type IrDerivedField = {
+    name: string;
+    type: IrValueType;
+};
+
+/**
+ * The `describe` stage: introspect the source instead of reading its records.
+ *
+ * Terminal, and legal only with the `metadata` result envelope. It is answered
+ * from declared schema, the type authority, the tenant's schema registries
+ * and maintained statistics — not by lowering to a query plan — so it carries
+ * no predicate: see `openspec/changes/archive/2026-09-22-query-field-discovery`
+ * (design D6) for why a predicate-scoped answer is refused rather than approximated.
+ */
+export type IrDescribe = {
+    /**
+     * The logical field whose values to suggest. Required by `values`,
+     * rejected by `fields`.
+     */
+    field?: string | null;
+    /**
+     * Maximum items to return. Bounded by the server's own cap.
+     */
+    limit?: number | null;
+    /**
+     * Opt in to reading signal data when no metadata covers the request.
+     * Without it, an uncovered request is answered with an explanation
+     * rather than a scan.
+     */
+    sample?: boolean;
+    target: IrDescribeTarget;
+};
+
+/**
+ * What a `describe` stage introspects.
+ */
+export type IrDescribeTarget = 'fields' | 'values';
+
+/**
+ * A sort direction.
+ */
+export type IrDirection = 'asc' | 'desc';
+
+/**
+ * The `extract` stage: derive typed, query-local fields from log content.
+ */
+export type IrExtract = {
+    as: Array<IrDerivedField>;
+    parser: IrParser;
+};
+
+/**
+ * The `filter` stage: keep the values that compare true, or with `bool`
+ * replace every value by 0/1.
+ */
+export type IrFilter = {
+    bool?: boolean;
+    op: IrCompareOp;
+    value: number;
+};
+
+/**
+ * Which operand of a `binop` holds many series per match.
+ */
+export type IrGroupSide = 'left' | 'right';
+
+export type IrHeatmap = {
+    value: IrHeatmapValue;
+    x: IrHeatmapAxisX;
+    y: IrHeatmapAxisY;
+};
+
+/**
+ * A terminal two-dimensional count aggregate, available in IR v2.
+ */
+export type IrHeatmapAxisX = {
+    align: string;
+    step: string;
+};
+
+export type IrHeatmapAxisY = {
+    bounds: Array<unknown>;
+    of: string;
+    overflow?: boolean;
+};
+
+export type IrHeatmapValue = {
+    as: string;
+    fn: IrAggFn;
+};
+
+/**
+ * The estimated fraction of histogram observations in `(lower, upper]`,
+ * cumulative(`upper`) − cumulative(`lower`): the `histogram_quantile`
+ * sibling (`irVersion` 10). A bound inside a bucket is interpolated, so the
+ * result is an estimate.
+ */
+export type IrHistogramFraction = {
+    as: string;
+    by?: Array<string>;
+    /**
+     * As on `histogram_quantile`.
+     */
+    lookback?: string | null;
+    lower: number;
+    mode?: IrHistogramMode;
+    /**
+     * One result per stored series instead of merging them (`irVersion`
+     * 10). Excludes `by`; the output keeps each series' labels less
+     * `metric.name`.
+     */
+    per_series?: boolean;
+    step: string;
+    upper: number;
+    window?: string | null;
+};
+
+/**
+ * How data points sharing a `histogram_quantile` step bucket combine.
+ */
+export type IrHistogramMode = 'rate' | 'instant';
+
+/**
+ * A terminal quantile-over-buckets stage, available in IR v3. Only legal on
+ * the `metrics` source, over its histogram rows: interpolates a percentile
+ * from OTLP classic-histogram bucket data, distinct from the `aggregate` stage's
+ * `fn: "quantile"` (`approx_percentile_cont` over independent scalar
+ * values — a different algorithm entirely, over a different source shape).
+ */
+export type IrHistogramQuantile = {
+    /**
+     * The output value column name.
+     */
+    as: string;
+    /**
+     * Grouping labels (logical names), and the output's labels. Grouping
+     * also separates metrics internally — merging bucket data across
+     * different metrics is meaningless, since different metrics carry
+     * different bucket bounds — but, as in Prometheus, the output does not
+     * carry `metric.name`.
+     */
+    by?: Array<string>;
+    /**
+     * Instant mode only: at each evaluation instant `t`, read each series'
+     * latest point within `(t - lookback, t]`, as a PromQL instant vector
+     * does (`irVersion` 10). Without it the lookback is `step`.
+     */
+    lookback?: string | null;
+    mode?: IrHistogramMode;
+    /**
+     * One result per stored series instead of merging them (`irVersion`
+     * 10). Excludes `by`; the output keeps each series' labels less
+     * `metric.name`.
+     */
+    per_series?: boolean;
+    /**
+     * The quantile, in `[0, 1]`.
+     */
+    q: number;
+    /**
+     * Evaluation step: the stage is evaluated at `t = from + k·step` and
+     * each value labelled `t`. The result is always a `series`.
+     */
+    step: string;
+    /**
+     * Rate mode's window: each instant reads `(t - window, t]` (default:
+     * `step`), `irVersion` 10.
+     */
+    window?: string | null;
+};
+
+/**
+ * A join kind for a `correlate` stage. `semi`/`anti` need a signal target.
+ */
+export type IrJoinKind = 'inner' | 'left' | 'semi' | 'anti';
+
+/**
+ * `labels.join`: PromQL's `label_join`.
+ */
+export type IrLabelJoin = {
+    dst: string;
+    separator: string;
+    src: Array<string>;
+};
+
+/**
+ * `labels.replace`: PromQL's `label_replace`.
+ */
+export type IrLabelReplace = {
+    dst: string;
+    regex: string;
+    replacement: string;
+    src: string;
+};
+
+/**
+ * The `labels` stage: rewrite one label of every series.
+ */
+export type IrLabels = {
+    replace: IrLabelReplace;
+} | {
+    join: IrLabelJoin;
+};
+
+/**
+ * The `map` stage: apply a function to every value.
+ */
+export type IrMap = {
+    args?: Array<number>;
+    fn: IrMapFn;
+};
+
+/**
+ * A per-value `map` function (`irVersion` 10).
+ */
+export type IrMapFn = 'abs' | 'ceil' | 'floor' | 'round' | 'sqrt' | 'exp' | 'ln' | 'log2' | 'log10' | 'sgn' | 'clamp' | 'clamp_min' | 'clamp_max' | 'timestamp' | 'day_of_month' | 'day_of_week' | 'day_of_year' | 'days_in_month' | 'hour' | 'minute' | 'month' | 'year';
+
+/**
+ * The `match` stage (`irVersion` 12): keep the traces in which every
+ * span-set has a matching span and every relation holds, returning the
+ * witnessing spans.
+ */
+export type IrMatch = {
+    relations?: Array<IrMatchRelation>;
+    /**
+     * Named span-set predicates. Key order is significant: it is the
+     * declaration order, which orders the names in each row's `spansets`
+     * column.
+     */
+    spansets: {
+        [key: string]: IrPredicate;
+    };
+};
+
+/**
+ * How a `match` relation relates its two span-sets.
+ */
+export type IrMatchOp = 'child' | 'descendant' | 'ancestor' | 'sibling';
+
+/**
+ * One structural relation of a `match` stage, between two declared span-sets.
+ */
+export type IrMatchRelation = {
+    left: string;
+    op: IrMatchOp;
+    right: string;
+};
+
+/**
+ * The operand of a stage that takes none (`{"scalar": {}}`).
+ */
+export type IrNoOperands = {
+    [key: string]: never;
+};
+
+/**
+ * An `order` key: a field or aggregate name plus a direction.
+ */
+export type IrOrder = {
+    dir: IrDirection;
+    /**
+     * A `FieldRef` or `AggRef` (a name), never an expression string.
+     */
+    of: string;
+};
+
+/**
+ * The `over_time` stage: re-window a Series evaluated at its own step (a
+ * subquery).
+ */
+export type IrOverTime = {
+    arg?: number | null;
+    fn: IrOverTimeFn;
+    step?: string | null;
+    window: string;
+};
+
+/**
+ * An `over_time` function (`irVersion` 10).
+ */
+export type IrOverTimeFn = 'avg' | 'min' | 'max' | 'sum' | 'count' | 'last' | 'stddev' | 'stdvar' | 'present' | 'quantile' | 'delta' | 'deriv' | 'changes' | 'resets';
+
+/**
+ * A parser for the `extract` stage. `regex` is deferred (registry-gated).
+ */
+export type IrParser = 'json' | 'logfmt';
+
+/**
+ * A predicate: exactly one of a comparison leaf (`field`, `op`, and a
+ * `value` unless `op` is `exists`), `and`, `or`, or `not`.
+ */
+export type IrPredicate = {
+    field: string;
+    op: IrComparisonOp;
+    /**
+     * Absent for `exists`.
+     */
+    value?: unknown;
+} | {
+    and: Array<IrPredicate>;
+} | {
+    or: Array<IrPredicate>;
+} | {
+    not: IrPredicate;
+};
+
+/**
+ * A `topk`/`bottomk` rank stage.
+ */
+export type IrRank = {
+    /**
+     * Must be an integer `> 0` (validated).
+     */
+    n: number;
+    /**
+     * The `AggRef` or `FieldRef` to rank by (a name).
+     */
+    of: string;
+};
+
+/**
+ * The `reduce` stage: Series → Series, grouped `by` or `without` labels.
+ *
+ * `without` also drops `metric.name`, as Prometheus does; `by` keeps
+ * exactly the listed labels (so `by (metric.name)` keeps the name).
+ */
+export type IrReduce = {
+    /**
+     * `topk`/`bottomk`: the integer k; `quantile`: the quantile.
+     */
+    arg?: number | null;
+    by?: Array<string> | null;
+    fn: IrReduceFn;
+    /**
+     * `count_values`: the label that carries each value.
+     */
+    label?: string | null;
+    without?: Array<string> | null;
+};
+
+/**
+ * A `reduce` function: folds series into groups at every instant
+ * (`irVersion` 10).
+ */
+export type IrReduceFn = 'sum' | 'avg' | 'min' | 'max' | 'count' | 'group' | 'stddev' | 'stdvar' | 'quantile' | 'topk' | 'bottomk' | 'count_values';
+
+/**
+ * The `sample` stage: evaluate a metric point stream into a `Series` at
+ * every evaluation instant (`irVersion` 10).
+ */
+export type IrSample = {
+    /**
+     * `quantile_over_time` only: the quantile in `[0, 1]`.
+     */
+    arg?: number | null;
+    /**
+     * Pin every evaluation instant to this timestamp literal.
+     */
+    at?: unknown;
+    fn: IrSampleFn;
+    /**
+     * `latest` only: how far back a point still counts (default `5m`).
+     */
+    lookback?: string | null;
+    of?: IrSampleOf;
+    /**
+     * Shift the read window back by this non-negative duration.
+     */
+    offset?: string | null;
+    /**
+     * The evaluation step; defaults to the document `step`.
+     */
+    step?: string | null;
+    /**
+     * The range read by every function but `latest`: `(t - window, t]`.
+     */
+    window?: string | null;
+};
+
+/**
+ * A function a `sample` stage evaluates over each series' point stream
+ * (`irVersion` 10).
+ */
+export type IrSampleFn = 'latest' | 'rate' | 'increase' | 'irate' | 'delta' | 'idelta' | 'deriv' | 'resets' | 'changes' | 'avg_over_time' | 'min_over_time' | 'max_over_time' | 'sum_over_time' | 'count_over_time' | 'last_over_time' | 'stddev_over_time' | 'stdvar_over_time' | 'present_over_time' | 'quantile_over_time';
+
+/**
+ * Which value of a metric point a `sample` reads.
+ */
+export type IrSampleOf = 'metric.value' | 'metric.count' | 'metric.sum';
+
+/**
+ * A transform stage in the pipeline. Externally tagged: a single-key object
+ * whose key names the stage. An unknown key is an unsupported stage and is
+ * rejected by name.
+ */
+export type IrStage = {
+    where: IrPredicate;
+} | {
+    extract: IrExtract;
+} | {
+    aggregate: IrAggregate;
+} | {
+    topk: IrRank;
+} | {
+    bottomk: IrRank;
+} | {
+    order: Array<IrOrder>;
+} | {
+    limit: number;
+} | {
+    heatmap: IrHeatmap;
+} | {
+    histogram_quantile: IrHistogramQuantile;
+} | {
+    describe: IrDescribe;
+} | {
+    correlate: IrCorrelate;
+} | {
+    sample: IrSample;
+} | {
+    scalar: IrNoOperands;
+} | {
+    vector: IrNoOperands;
+} | {
+    reduce: IrReduce;
+} | {
+    map: IrMap;
+} | {
+    labels: IrLabels;
+} | {
+    filter: IrFilter;
+} | {
+    sort: IrDirection;
+} | {
+    absent: IrAbsent;
+} | {
+    over_time: IrOverTime;
+} | {
+    binop: IrBinop;
+} | {
+    histogram_fraction: IrHistogramFraction;
+} | {
+    match: IrMatch;
+};
+
+/**
+ * A `binop`'s right operand as a sub-document: it inherits `irVersion`,
+ * `range` and `step` from the enclosing document.
+ */
+export type IrSubDocument = {
+    constant?: number | null;
+    from: string;
+    pipeline?: Array<IrStage>;
+};
+
+/**
+ * The canonical value types that flow through the IR.
+ *
+ * Each logical field has exactly one canonical `ValueType`, owned by the
+ * attribute registry. Literal coercion always targets a field's canonical
+ * type — see [`coerce`].
+ */
+export type IrValueType = 'string' | 'int64' | 'float64' | 'bool' | 'timestamp_ns' | 'duration_ns' | 'bytes' | {
+    /**
+     * A homogeneous array of a single element type.
+     */
+    array: IrValueType;
+};
+
+/**
  * Response body of the label-names / label-values endpoints.
  */
 export type LabelsResponse = {

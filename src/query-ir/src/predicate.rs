@@ -17,6 +17,7 @@ use super::value::Truth;
 
 /// A comparison operator. Members of the versioned operator registry.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrComparisonOp))]
 #[serde(rename_all = "snake_case")]
 pub enum ComparisonOp {
     Eq,
@@ -126,6 +127,64 @@ impl<'de> Deserialize<'de> for Predicate {
             op,
             value: repr.value,
         }))
+    }
+}
+
+// The OpenAPI shape of `Predicate`'s hand-written serde; its doc comment is
+// the published schema description.
+/// A predicate: exactly one of a comparison leaf (`field`, `op`, and a
+/// `value` unless `op` is `exists`), `and`, `or`, or `not`.
+#[cfg(feature = "openapi")]
+#[derive(Serialize, utoipa::ToSchema)]
+#[serde(untagged)]
+#[expect(
+    dead_code,
+    reason = "schema-only mirror of Predicate's hand-written serde"
+)]
+enum PredicateSchema {
+    Leaf {
+        field: String,
+        op: ComparisonOp,
+        /// Absent for `exists`.
+        #[serde(skip_serializing_if = "Option::is_none")]
+        value: Option<serde_json::Value>,
+    },
+    And {
+        #[schema(no_recursion)]
+        and: Vec<Predicate>,
+    },
+    Or {
+        #[schema(no_recursion)]
+        or: Vec<Predicate>,
+    },
+    Not {
+        #[schema(no_recursion)]
+        not: Box<Predicate>,
+    },
+}
+
+#[cfg(feature = "openapi")]
+impl utoipa::PartialSchema for Predicate {
+    fn schema() -> utoipa::openapi::RefOr<utoipa::openapi::schema::Schema> {
+        let mut schema = PredicateSchema::schema();
+        crate::openapi::close_object_variants(&mut schema);
+        schema
+    }
+}
+
+#[cfg(feature = "openapi")]
+impl utoipa::ToSchema for Predicate {
+    fn name() -> std::borrow::Cow<'static, str> {
+        "IrPredicate".into()
+    }
+
+    fn schemas(
+        schemas: &mut Vec<(
+            String,
+            utoipa::openapi::RefOr<utoipa::openapi::schema::Schema>,
+        )>,
+    ) {
+        PredicateSchema::schemas(schemas);
     }
 }
 

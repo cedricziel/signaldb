@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 /// attribute registry. Literal coercion always targets a field's canonical
 /// type — see [`coerce`].
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "openapi", derive(utoipa::ToSchema), schema(as = IrValueType))]
 #[serde(rename_all = "snake_case")]
 pub enum ValueType {
     String,
@@ -36,6 +37,7 @@ pub enum ValueType {
     /// Raw bytes, encoded as base64 on the wire.
     Bytes,
     /// A homogeneous array of a single element type.
+    #[cfg_attr(feature = "openapi", schema(no_recursion))]
     Array(Box<ValueType>),
 }
 
