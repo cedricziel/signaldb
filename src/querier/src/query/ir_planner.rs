@@ -1514,6 +1514,8 @@ async fn lower_frame_stage(
         baseline: None,
         step: doc.step.clone(),
         constant: sub.constant,
+        page: None,
+        tail: None,
     };
     let right = match Box::pin(plan_operand(env.ctx, &child, request.clone())).await? {
         Some((right, _, _)) => metric_series::operand(right),

@@ -238,7 +238,7 @@ A violation is a **400** whose `details` carry `reason: "not_paginatable"` or
 }
 ```
 
-`page`/`tail` under too low an `irVersion` (<13 / <14) is the ordinary
+`page`/`tail` under too low an `irVersion` (<14 / <15) is the ordinary
 version-gate rejection. `tail` together with `page.cursor` is a 400: a tail
 call carries its position in `tail.cursor`, and `page.size` only bounds the
 call.
@@ -438,14 +438,14 @@ A stack of PRs (tasks.md), each one leaving `main` working:
 2. Cursor codec in `common`.
 3. Querier page execution behind the ticket's optional `page` object (no
    router sends it yet).
-4. Router + IR v13 + OpenAPI/clients: pagination goes live.
+4. Router + IR v14 + OpenAPI/clients: pagination goes live.
 5. CLI/MCP/UI pagination surfaces.
 6. Tail in the querier (tail-time, settle, lag).
-7. Router + IR v14 + clients: tail goes live.
+7. Router + IR v15 + clients: tail goes live.
 8. UI live mode + CLI `--follow` move to tail.
 
 Rollback: revert the router PR (4 or 7). Older servers reject `irVersion`
-13/14 with the existing unsupported-version error, and clients that never
+14/15 with the existing unsupported-version error, and clients that never
 send `page`/`tail` are unaffected. No persisted state.
 
 ## Open Questions
