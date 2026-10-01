@@ -67,12 +67,10 @@ fn client_exposes_ir_query_and_round_trips_the_request() {
         step: None,
         constant: None,
         pipeline: vec![
-            serde_json::json!({
+            serde_json::from_value(serde_json::json!({
                 "where": { "field": "service.name", "op": "eq", "value": "api" }
-            })
-            .as_object()
-            .unwrap()
-            .clone(),
+            }))
+            .unwrap(),
         ],
     };
     // Serializes to the versioned IR document shape and back.
@@ -81,6 +79,52 @@ fn client_exposes_ir_query_and_round_trips_the_request() {
     assert_eq!(json["from"], "logs");
     let round: QueryIrRequest = serde_json::from_value(json).unwrap();
     assert_eq!(round.result, "rows");
+}
+
+/// A `match` stage's span-set order is significant (it orders each row's
+/// `spansets` column), so a document passed through the SDK's typed stages
+/// must reach the server with its span-sets in declaration order.
+#[test]
+fn match_stage_keeps_span_set_declaration_order() {
+    use signaldb_sdk::types::IrStage;
+
+    let names = ["zeta", "alpha", "mid", "beta", "omega", "gamma"];
+    let spansets: serde_json::Map<String, serde_json::Value> = names
+        .iter()
+        .map(|n| {
+            let leaf = serde_json::json!({ "field": "span.name", "op": "eq", "value": n });
+            (n.to_string(), leaf)
+        })
+        .collect();
+    let stage = serde_json::json!({
+        "match": {
+            "spansets": spansets,
+            "relations": [{ "left": "zeta", "op": "child", "right": "alpha" }]
+        }
+    });
+
+    let typed: IrStage = serde_json::from_value(stage).unwrap();
+    let text = serde_json::to_string(&typed).unwrap();
+    let positions: Vec<usize> = names
+        .iter()
+        .map(|n| text.find(&format!("\"{n}\":")).unwrap())
+        .collect();
+    assert!(positions.is_sorted(), "span-sets reordered: {text}");
+}
+
+/// Duplicate span-set names are not the SDK's to resolve: both entries go
+/// out in order, and the server rejects the document when it validates it.
+#[test]
+fn match_stage_keeps_duplicate_span_set_names() {
+    let text = r#"{"match":{"spansets":{"a":{"field":"span.name","op":"eq","value":"first"},"a":{"field":"span.name","op":"eq","value":"second"}}}}"#;
+
+    let typed: signaldb_sdk::types::IrStage = serde_json::from_str(text).unwrap();
+    let signaldb_sdk::types::IrStage::Match(stage) = &typed else {
+        panic!("not a match stage: {typed:?}");
+    };
+    let names: Vec<&str> = stage.spansets.0.iter().map(|(n, _)| n.as_str()).collect();
+    assert_eq!(names, ["a", "a"]);
+    assert_eq!(serde_json::to_string(&typed).unwrap(), text);
 }
 
 #[tokio::test]

@@ -3064,24 +3064,6 @@ pub mod types {
             value.parse()
         }
     }
-    /**The `match` stage (`irVersion` 12): keep the traces in which every
-    span-set has a matching span and every relation holds, returning the
-    witnessing spans.*/
-    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
-    #[serde(deny_unknown_fields)]
-    pub struct IrMatch {
-        #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
-        pub relations: ::std::vec::Vec<IrMatchRelation>,
-        /**Named span-set predicates. Key order is significant: it is the
-        declaration order, which orders the names in each row's `spansets`
-        column.*/
-        pub spansets: ::std::collections::HashMap<::std::string::String, IrPredicate>,
-    }
-    impl IrMatch {
-        pub fn builder() -> builder::IrMatch {
-            Default::default()
-        }
-    }
     ///How a `match` relation relates its two span-sets.
     #[derive(
         ::serde::Deserialize,
@@ -3757,7 +3739,7 @@ pub mod types {
         #[serde(rename = "histogram_fraction")]
         HistogramFraction(IrHistogramFraction),
         #[serde(rename = "match")]
-        Match(IrMatch),
+        Match(crate::ir::IrMatch),
     }
     impl ::std::convert::From<IrPredicate> for IrStage {
         fn from(value: IrPredicate) -> Self {
@@ -3854,8 +3836,8 @@ pub mod types {
             Self::HistogramFraction(value)
         }
     }
-    impl ::std::convert::From<IrMatch> for IrStage {
-        fn from(value: IrMatch) -> Self {
+    impl ::std::convert::From<crate::ir::IrMatch> for IrStage {
+        fn from(value: crate::ir::IrMatch) -> Self {
             Self::Match(value)
         }
     }
@@ -4833,9 +4815,10 @@ pub mod types {
     }
     /**A versioned Query IR request document.
 
-    The `pipeline` stages are opaque JSON objects at the HTTP boundary — the
-    querier validates and lowers them per the versioned IR contract. See the
-    `query-ir-core` capability for the full stage/predicate grammar.*/
+    The `pipeline` stages are published as the IR's own stage grammar
+    (`IrStage`) but kept as raw JSON at the HTTP boundary — the querier
+    validates and lowers them per the versioned IR contract, rejecting an
+    unsupported stage by name.*/
     #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
     pub struct QueryIrRequest {
         ///The value of the `constant` pseudo-source (irVersion 10+).
@@ -4857,10 +4840,9 @@ pub mod types {
         ///IR document version (the server accepts a bounded range).
         #[serde(rename = "irVersion")]
         pub ir_version: i64,
-        ///Ordered transform stages (opaque objects; see the IR spec).
+        ///Ordered transform stages.
         #[serde(default, skip_serializing_if = "::std::vec::Vec::is_empty")]
-        pub pipeline:
-            ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
+        pub pipeline: ::std::vec::Vec<IrStage>,
         pub range: QueryRange,
         /**Declared result envelope: `rows`, `series`, `table`, `heatmap`,
         (for the `profiles` source only) `flamegraph`, (for the `traces`
@@ -14766,68 +14748,6 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
-        pub struct IrMatch {
-            relations: ::std::result::Result<
-                ::std::vec::Vec<super::IrMatchRelation>,
-                ::std::string::String,
-            >,
-            spansets: ::std::result::Result<
-                ::std::collections::HashMap<::std::string::String, super::IrPredicate>,
-                ::std::string::String,
-            >,
-        }
-        impl ::std::default::Default for IrMatch {
-            fn default() -> Self {
-                Self {
-                    relations: Ok(Default::default()),
-                    spansets: Err("no value supplied for spansets".to_string()),
-                }
-            }
-        }
-        impl IrMatch {
-            pub fn relations<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<::std::vec::Vec<super::IrMatchRelation>>,
-                T::Error: ::std::fmt::Display,
-            {
-                self.relations = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for relations: {e}"));
-                self
-            }
-            pub fn spansets<T>(mut self, value: T) -> Self
-            where
-                T: ::std::convert::TryInto<
-                        ::std::collections::HashMap<::std::string::String, super::IrPredicate>,
-                    >,
-                T::Error: ::std::fmt::Display,
-            {
-                self.spansets = value
-                    .try_into()
-                    .map_err(|e| format!("error converting supplied value for spansets: {e}"));
-                self
-            }
-        }
-        impl ::std::convert::TryFrom<IrMatch> for super::IrMatch {
-            type Error = super::error::ConversionError;
-            fn try_from(
-                value: IrMatch,
-            ) -> ::std::result::Result<Self, super::error::ConversionError> {
-                Ok(Self {
-                    relations: value.relations?,
-                    spansets: value.spansets?,
-                })
-            }
-        }
-        impl ::std::convert::From<super::IrMatch> for IrMatch {
-            fn from(value: super::IrMatch) -> Self {
-                Self {
-                    relations: Ok(value.relations),
-                    spansets: Ok(value.spansets),
-                }
-            }
-        }
-        #[derive(Clone, Debug)]
         pub struct IrMatchRelation {
             left: ::std::result::Result<::std::string::String, ::std::string::String>,
             op: ::std::result::Result<super::IrMatchOp, ::std::string::String>,
@@ -19147,10 +19067,7 @@ pub mod types {
             >,
             from: ::std::result::Result<::std::string::String, ::std::string::String>,
             ir_version: ::std::result::Result<i64, ::std::string::String>,
-            pipeline: ::std::result::Result<
-                ::std::vec::Vec<::serde_json::Map<::std::string::String, ::serde_json::Value>>,
-                ::std::string::String,
-            >,
+            pipeline: ::std::result::Result<::std::vec::Vec<super::IrStage>, ::std::string::String>,
             range: ::std::result::Result<super::QueryRange, ::std::string::String>,
             result: ::std::result::Result<::std::string::String, ::std::string::String>,
             step: ::std::result::Result<
@@ -19244,11 +19161,7 @@ pub mod types {
             }
             pub fn pipeline<T>(mut self, value: T) -> Self
             where
-                T: ::std::convert::TryInto<
-                        ::std::vec::Vec<
-                            ::serde_json::Map<::std::string::String, ::serde_json::Value>,
-                        >,
-                    >,
+                T: ::std::convert::TryInto<::std::vec::Vec<super::IrStage>>,
                 T::Error: ::std::fmt::Display,
             {
                 self.pipeline = value

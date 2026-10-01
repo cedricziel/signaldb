@@ -4,6 +4,7 @@ type: explanation
 status: living
 sources:
   - src/router/src/openapi.rs
+  - src/signaldb-sdk/src/ir.rs
   - src/query-ir/src/openapi.rs
   - src/router/src/endpoints/tenants.rs
   - src/router/src/endpoints/management.rs
@@ -260,14 +261,19 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
   `withProxyLoginRecovery(retryingFetch)` directly until both are in the
   spec. The lint rule above doesn't catch them because they never call
   `fetch` by name.
-- **The Query IR request body does not reference the stage schemas yet.**
-  The stage grammar is published as typed `Ir*` components (`IrStage`,
-  `IrPredicate`, `IrAggregate`, …), derived from the `query-ir` types under
-  its `openapi` feature, with every variant closed to unknown keys. The
-  `/api/v1/query` request's `pipeline` is still declared as a list of plain
-  objects until the UI's query builders build `IrStage` values. Two schema
-  details clients must honour: `IrMatch.spansets` key order is significant
-  (declaration order), which the Rust SDK's generated `HashMap` loses, and
+- **The Query IR stages are typed, with caveats.** The `/api/v1/query`
+  request's `pipeline` is a list of `IrStage`, and the stage grammar is
+  published as typed `Ir*` components (`IrStage`, `IrPredicate`,
+  `IrAggregate`, …), derived from the `query-ir` types under its `openapi`
+  feature, with every variant closed to unknown keys. The router still
+  takes the stages as raw JSON and the querier validates them, so a client
+  built from an older document sees a new stage rejected client-side, not by
+  the server. `IrMatch.spansets` key order is significant (declaration
+  order), which a generated `HashMap` loses: `cargo xtask generate`
+  substitutes the hand-written `signaldb_sdk::ir::IrMatch` for progenitor's,
+  so there is no generated `types::IrMatch` (or `builder::IrMatch`), and
+  fails if the spec loses the `IrMatch` schema or the output stops using
+  the replacement.
   `IrPredicate`'s leaf/`and`/`or`/`not` shape is hand-written because
   `Predicate` has custom serde.
 - **A nullable `$ref` (struct or enum) used to break the Rust SDK

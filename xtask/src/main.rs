@@ -249,6 +249,12 @@ fn generate(check_only: bool) -> Result<()> {
 /// `"nullable": true` form before handing the spec to progenitor. The served
 /// spec and the checked-in `signaldb-api.json` stay 3.1; this rewrite is
 /// progenitor-input only.
+/// `IrMatch.spansets` key order is significant (it orders each row's
+/// `spansets` column); the generated `HashMap` would lose it, so the SDK's
+/// hand-written `src/signaldb-sdk/src/ir.rs` stands in for the generated type.
+const IR_MATCH_SCHEMA: &str = "IrMatch";
+const IR_MATCH_REPLACEMENT: &str = "crate::ir::IrMatch";
+
 fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     // `OPERATIONS`: every operation id in the OpenAPI document, alphabetized.
     // This is the manifest `client-surface-parity`'s whole-SDK check iterates
@@ -261,6 +267,16 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     let mut operation_ids = extract_operation_ids(spec);
     operation_ids.sort();
     operation_ids.dedup();
+
+    // A renamed schema would make the replacement a silent no-op.
+    if spec
+        .pointer(&format!("/components/schemas/{IR_MATCH_SCHEMA}"))
+        .is_none()
+    {
+        anyhow::bail!(
+            "the spec has no `{IR_MATCH_SCHEMA}` schema to replace with `{IR_MATCH_REPLACEMENT}`"
+        );
+    }
 
     let mut spec = spec.clone();
     homogenize_error_response_bodies(&mut spec);
@@ -288,7 +304,8 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
         // specialization (the generated code only implements the hooks for
         // `&Client`). No post-processing of progenitor's output is needed;
         // `signaldb-sdk/tests/retry.rs` guards both halves.
-        .with_inner_type(quote::quote!(crate::retry::RetryPolicy));
+        .with_inner_type(quote::quote!(crate::retry::RetryPolicy))
+        .with_replacement(IR_MATCH_SCHEMA, IR_MATCH_REPLACEMENT, std::iter::empty());
 
     let mut generator = progenitor::Generator::new(&settings);
     let tokens = generator
@@ -298,6 +315,9 @@ fn generate_sdk_client(spec: &serde_json::Value) -> Result<String> {
     let code = prettyplease::unparse(&ast);
 
     let mut formatted = run_rustfmt(&code)?;
+    if !formatted.contains(IR_MATCH_REPLACEMENT) {
+        anyhow::bail!("the generated SDK does not use `{IR_MATCH_REPLACEMENT}`");
+    }
 
     let operations_const = format!(
         "/// Every operation id declared in the OpenAPI document, alphabetized.\n\

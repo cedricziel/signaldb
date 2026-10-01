@@ -8310,7 +8310,11 @@ mod tests {
         assert_eq!(request.ir_version, 2);
         assert_eq!(request.result, "heatmap");
         assert!(
-            request.pipeline.len() == 1 && request.pipeline[0].contains_key("heatmap"),
+            request.pipeline.len() == 1
+                && matches!(
+                    request.pipeline[0],
+                    signaldb_sdk::types::IrStage::Heatmap(_)
+                ),
             "the heatmap stage must survive the conversion: {:?}",
             request.pipeline
         );
@@ -8337,7 +8341,10 @@ mod tests {
             serde_json::from_value(params.query).unwrap();
         assert_eq!(request.ir_version, 8);
         assert!(
-            request.pipeline[0].contains_key("correlate"),
+            matches!(
+                request.pipeline[0],
+                signaldb_sdk::types::IrStage::Correlate(_)
+            ),
             "the correlate stage must survive the conversion: {:?}",
             request.pipeline
         );

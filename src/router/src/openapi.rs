@@ -471,6 +471,11 @@ mod tests {
         let spec: serde_json::Value =
             serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
 
+        assert_eq!(
+            spec.pointer("/components/schemas/QueryIrRequest/properties/pipeline/items/$ref"),
+            Some(&serde_json::json!("#/components/schemas/IrStage")),
+            "the /api/v1/query pipeline must be typed by the stage grammar"
+        );
         let variants = spec
             .pointer("/components/schemas/IrStage/oneOf")
             .and_then(|v| v.as_array())
