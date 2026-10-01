@@ -1,7 +1,7 @@
 //! # The IR document shape
 //!
 //! ```text
-//!   Document = { irVersion, from: Source, range, result, fields?, pipeline: [Stage] }
+//!   Document = { irVersion, from: Source, range, result, fields?, pipeline: [Stage], page?, tail? }
 //! ```
 //!
 //! `from` is a **document-level field** (not a pipeline stage) that selects the
@@ -11,6 +11,7 @@
 
 use serde::{Deserialize, Serialize};
 
+use super::page::{Page, Tail};
 use super::stage::Stage;
 
 /// The declared result envelope. Validated against the inferred terminal
@@ -106,6 +107,12 @@ pub struct Document {
     /// (`irVersion` 10).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub constant: Option<f64>,
+    /// Walk a `rows`/`trace` result in pages (`irVersion` 14).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page: Option<Page>,
+    /// Follow a `rows`/`trace` result forward in time (`irVersion` 15).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub tail: Option<Tail>,
 }
 
 impl Document {
@@ -140,6 +147,12 @@ impl Document {
         }
         if self.step.is_some() || self.constant.is_some() {
             needed = needed.max(OperatorRegistry::feature_min_version(Feature::DocumentStep));
+        }
+        if self.page.is_some() {
+            needed = needed.max(OperatorRegistry::feature_min_version(Feature::Page));
+        }
+        if self.tail.is_some() {
+            needed = needed.max(OperatorRegistry::feature_min_version(Feature::Tail));
         }
         if super::source::is_pseudo_source(&self.from) {
             needed = needed.max(OperatorRegistry::feature_min_version(Feature::PseudoSource));

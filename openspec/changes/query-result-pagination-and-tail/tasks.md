@@ -3,14 +3,15 @@
 A stack of PRs, one per `##` group, each under 500 changed lines (excluding
 regenerated clients) and each leaving `main` working. Groups 1–3 add only
 code that nothing calls yet, so no behaviour changes until group 4 raises the
-IR version to 13; group 7 raises it to 14. Later groups depend on earlier
-ones. Group 9 is an optional follow-up and outside this change's
-definition of done.
+IR version to 14; group 7 raises it to 15. Later groups depend on earlier
+ones. IR v13 went to the flamegraph `baseline` of
+`feat/query-ir-profile-diff`, so `page` is v14 and `tail` v15. Group 9 is an
+optional follow-up and outside this change's definition of done.
 
 ## 1. IR model: `page`/`tail` fields, order derivation, validation (query-ir)
 
-- [ ] 1.1 Write failing tests in `query-ir` (`validate.rs`): `page`
-      rejected under irVersion < 13 and `tail` under < 14 (the version gate
+- [x] 1.1 Write failing tests in `query-ir` (`validate.rs`): `page`
+      rejected under irVersion < 14 and `tail` under < 15 (the version gate
       stays at 12 in this PR, so the tests use the validator with an
       explicit max-version parameter); every `not_paginatable` case from
       design D5 (aggregate, topk, bottomk, rank, describe, non-trailing
@@ -19,10 +20,10 @@ definition of done.
       case (absolute `range.to`, `order`, `match`, `limit`, `tail` plus
       `page.cursor`); `page.size` above max rejected.
       Verify with `cargo test -p query-ir validate`
-- [ ] 1.2 Add `Document.page: Option<Page { size, cursor }>` and
+- [x] 1.2 Add `Document.page: Option<Page { size, cursor }>` and
       `Document.tail: Option<Tail { cursor, settle }>` (serde-optional, so
       existing documents round-trip unchanged) and the validation from 1.1.
-      Add `MAX_IR_VERSION` constants for 13/14 without raising
+      Add `MAX_IR_VERSION` constants for 14/15 without raising
       `MAX_IR_VERSION`. 1.1 passes
 - [ ] 1.3 Write failing tests, then implement `pagination_order(doc,
     source) -> Vec<SortKey>`: explicit `order` keys plus appended
@@ -76,7 +77,7 @@ definition of done.
 
 ## 4. Router: pagination goes live (router, query-ir version, API contract)
 
-- [ ] 4.1 Write failing router tests (`endpoints::query`): a v13 `page`
+- [ ] 4.1 Write failing router tests (`endpoints::query`): a v14 `page`
       document yields `page.next_cursor` until the last page; a resubmitted
       cursor continues; the window is frozen from the cursor (a relative
       range does not drift); another tenant's or dataset's cursor → 400; an
@@ -84,7 +85,7 @@ definition of done.
       with `errorType: "gone"`; `not_paginatable` → 400 with `details`; a
       document without `page` yields a byte-identical response.
       Verify with `cargo test -p router endpoints::query`
-- [ ] 4.2 Raise `MAX_IR_VERSION` to 13. Validate, decode and check the
+- [ ] 4.2 Raise `MAX_IR_VERSION` to 14. Validate, decode and check the
       cursor, put `page` into the ticket, build `page.next_cursor` from the
       trailer, and map 410 → `gone` in `api_error.rs`. Add `page` to
       `QueryIrRequest`/`QueryIrResponse` with `utoipa` docs. 4.1 passes
@@ -135,14 +136,14 @@ definition of done.
 
 ## 7. Router: live tail goes live (router, query-ir version, API contract)
 
-- [ ] 7.1 Write failing router tests: a v14 `tail` call returns `tail
+- [ ] 7.1 Write failing router tests: a v15 `tail` call returns `tail
     { cursor, settled_through_ns, settle_ns, caught_up }`; a follow-up call
       returns only rows after the cursor; settle is clamped and echoed; a
       cursor older than `tail_max_lag` skips forward with a `tail_lagged`
       warning naming the interval; `not_tailable` cases → 400; cross-tenant
       cursor → 400; a revoked key → 401 on the next call.
       Verify with `cargo test -p router endpoints::query`
-- [ ] 7.2 Raise `MAX_IR_VERSION` to 14. Implement the tail cursor
+- [ ] 7.2 Raise `MAX_IR_VERSION` to 15. Implement the tail cursor
       (sliding window, cursor advance to the settle line, lag skip), add
       `tail` to the request/response types, and add `tail_lagged` to the
       `QueryWarning.code` docs. 7.1 passes

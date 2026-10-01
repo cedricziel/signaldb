@@ -206,6 +206,8 @@ fn document(
         trace_id: None,
         step: None,
         constant: None,
+        page: None,
+        tail: None,
     };
     doc.ir_version = doc.minimum_ir_version();
     doc
