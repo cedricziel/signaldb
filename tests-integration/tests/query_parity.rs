@@ -36,6 +36,14 @@ const EXCLUDED: &[(&str, &str)] = &[
         "browser session introspection authenticated by the session cookie alone — no CLI or MCP surface makes sense (dedicated-login-page)",
     ),
     (
+        "create_session",
+        "browser password login that mints the UI session cookie — the CLI and MCP authenticate with API keys, not sessions",
+    ),
+    (
+        "delete_session",
+        "browser logout that revokes the UI session cookie — the CLI and MCP hold no session to end",
+    ),
+    (
         "session_oidc_start",
         "browser OIDC SSO redirect flow (change: oidc-login) — UI/HTTP-only, no CLI command or MCP tool makes sense",
     ),
