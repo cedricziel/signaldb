@@ -1,8 +1,9 @@
 // The app frame every page renders inside: the sidebar (or the mobile top
-// bar), the sticky page header, the ⌘K palette and the main column. It only
-// draws — who is signed in and the tenant/window context come in as props —
-// so `App` owns the data and redirects, and the same frame can render on
-// its own (stories, the design system) with no backend behind it.
+// bar), the sticky page header, the ⌘K palette, the Connect dialog and the
+// main column. It only draws — who is signed in and the tenant/window context
+// come in as props — so `App` owns the data and redirects, and the same frame
+// can render on its own (stories, the design system) with no backend behind
+// it.
 
 import { useState, type ReactNode } from "react";
 import { MemoryRouter, useInRouterContext } from "react-router";
@@ -20,6 +21,7 @@ import {
   SetBreadcrumbLeafContext,
 } from "./breadcrumbLeaf";
 import { CommandPalette } from "./CommandPalette";
+import { ConnectPanel } from "./ConnectPanel";
 import { HOME_PATH, pageById, type PageId } from "./navModel";
 import { PageHeader } from "./PageHeader";
 
@@ -95,7 +97,11 @@ function Frame({
             />
             <div className="app-column">
               {!nav.narrow && (
-                <PageHeader state={state} onOpenPalette={nav.openPalette} />
+                <PageHeader
+                  state={state}
+                  onOpenPalette={nav.openPalette}
+                  onOpenConnect={nav.openConnect}
+                />
               )}
               <ThrottleBanner />
               <main className="app-main">{children}</main>
@@ -106,6 +112,13 @@ function Frame({
               state={state}
               canManage={canManage}
               isDemo={isDemo}
+              onClose={nav.close}
+            />
+          )}
+          {nav.overlay === "connect" && (
+            <ConnectPanel
+              state={state}
+              canManage={canManage}
               onClose={nav.close}
             />
           )}

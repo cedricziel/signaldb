@@ -45,7 +45,7 @@ function isTypingTarget(target: EventTarget | null): boolean {
   );
 }
 
-export type NavOverlay = "palette" | "drawer" | null;
+export type NavOverlay = "palette" | "connect" | "drawer" | null;
 
 /**
  * Shell-level nav state: which overlay is open, whether the sidebar is
@@ -72,6 +72,7 @@ export function useAppNavState() {
     });
   }, []);
   const openPalette = useCallback(() => setOverlay("palette"), []);
+  const openConnect = useCallback(() => setOverlay("connect"), []);
   const close = useCallback(() => setOverlay(null), []);
   const toggleDrawer = useCallback(
     () => setOverlay((o) => (o === "drawer" ? null : "drawer")),
@@ -112,6 +113,7 @@ export function useAppNavState() {
     overlay,
     toggleCollapsed,
     openPalette,
+    openConnect,
     close,
     toggleDrawer,
   };
@@ -184,11 +186,7 @@ function Sidebar({ state, update, who, canManage, isDemo, nav }: NavProps) {
           ))}
         </nav>
         <div className="app-sidebar-footer">
-          <UserMenu
-            who={who}
-            variant="sidebar"
-            expanded={expanded}
-          />
+          <UserMenu who={who} variant="sidebar" expanded={expanded} />
           <button
             type="button"
             className="app-nav-item app-sidebar-collapse"
@@ -408,6 +406,15 @@ function MobileNav({ state, update, who, canManage, isDemo, nav }: NavProps) {
           onClick={nav.openPalette}
         >
           <NavIcon name="search" size={18} />
+        </button>
+        <button
+          type="button"
+          className="app-mobilebar-btn"
+          aria-label="Connect"
+          aria-haspopup="dialog"
+          onClick={nav.openConnect}
+        >
+          <NavIcon name="connect" size={18} />
         </button>
         <UserMenu who={who} variant="compact" />
       </header>

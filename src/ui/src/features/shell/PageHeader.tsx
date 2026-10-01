@@ -1,6 +1,7 @@
 // The main column's sticky 52px header on desktop and tablet: a
 // "{Group} / {Page} / {Leaf}" breadcrumb (the leaf only on a detail page,
-// see breadcrumbLeaf.ts) and the search field that opens the ⌘K palette.
+// see breadcrumbLeaf.ts), the search field that opens the ⌘K palette and
+// the Connect button for MCP, CLI and API access.
 // Its bottom border lines up with the sidebar's brand row.
 
 import { Link, useLocation } from "react-router";
@@ -16,9 +17,11 @@ const isMac =
 export function PageHeader({
   state,
   onOpenPalette,
+  onOpenConnect,
 }: {
   state: ExploreState;
   onOpenPalette: () => void;
+  onOpenConnect: () => void;
 }) {
   const { pathname } = useLocation();
   const page = currentPageFor(pathname);
@@ -74,6 +77,15 @@ export function PageHeader({
           Search pages, services, trace IDs…
         </span>
         <kbd className="nav-kbd">{shortcut}</kbd>
+      </button>
+      <button
+        type="button"
+        className="app-connect-trigger"
+        onClick={onOpenConnect}
+        aria-haspopup="dialog"
+      >
+        <NavIcon name="connect" size={15} />
+        Connect
       </button>
     </header>
   );

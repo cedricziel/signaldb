@@ -185,6 +185,23 @@ describe("AppShell", () => {
     );
   });
 
+  it("opens the Connect dialog from the page header", () => {
+    renderWithClient(<AppShell page="logs" who={WHO} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(
+      screen.getByRole("dialog", { name: "Connect" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the Connect dialog from the mobile top bar", () => {
+    stubViewport(390);
+    renderWithClient(<AppShell page="logs" who={WHO} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(
+      screen.getByRole("dialog", { name: "Connect" }),
+    ).toBeInTheDocument();
+  });
+
   it("shows the demo banner in demo mode", () => {
     renderWithClient(<AppShell page="overview" isDemo />);
     expect(screen.getByText("Demo · read-only")).toBeInTheDocument();

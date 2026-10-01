@@ -582,6 +582,27 @@
   white-space: nowrap;
 }
 
+.app-connect-trigger {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: none;
+  height: 32px;
+  box-sizing: border-box;
+  padding: 0 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--bg-inset);
+  color: var(--dim);
+  font: 12px var(--ui);
+  cursor: pointer;
+}
+
+.app-connect-trigger:hover {
+  border-color: var(--dim);
+  color: var(--text);
+}
+
 /* ---- mobile top bar + drawer (<720px) --------------------------------- */
 
 .app-mobilebar {
