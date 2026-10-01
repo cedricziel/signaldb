@@ -552,6 +552,15 @@ SIGNALDB__COMPACTOR__MEMORY_LIMIT_MB=512
 
 `SIGNALDB__COMPACTOR__MIN_INPUT_FILE_SIZE_KB` and `SIGNALDB__COMPACTOR__MAX_FILES_PER_JOB` no longer exist (see [Compaction Settings](#compaction-settings)).
 
+### Network Environment Variables
+
+The standalone compactor (`signaldb compactor`) reads its Flight addresses from these variables rather than from `signaldb.toml`:
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `COMPACTOR_FLIGHT_ADDR` | `0.0.0.0:50055` | Socket the Flight server binds. Must be an IP address and port. |
+| `COMPACTOR_ADVERTISE_ADDR` | the bind address | Address registered in service discovery, which the router dials for the ops endpoints (`/api/v1/ops/compact*`). May be a hostname, e.g. `compactor-1:50055`. |
+
 ### Retention Environment Variables
 
 **Basic:**
