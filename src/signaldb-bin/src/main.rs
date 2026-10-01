@@ -7,7 +7,7 @@ use clap::{Parser, Subcommand};
 use common::CatalogManager;
 use common::cli::{CommonArgs, CommonCommands, utils};
 use common::flight::transport::{InMemoryFlightTransport, ServiceCapability};
-use common::service_bootstrap::{ServiceBootstrap, ServiceType, advertise_addr};
+use common::service_bootstrap::{ServiceBootstrap, ServiceType};
 use common::wal::WalConfig;
 use common::wal::manager::WalManager;
 use compactor::service::CompactorService;
@@ -146,7 +146,7 @@ async fn main() -> Result<()> {
     // Initialize router service bootstrap for catalog-based discovery
     let flight_addr = SocketAddr::from(([0, 0, 0, 0], 50053));
     let router_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Router, flight_addr)
             .await
             .context("Failed to initialize router service bootstrap")?;
 
@@ -296,13 +296,10 @@ async fn main() -> Result<()> {
     // Initialize Writer service bootstrap for catalog-based discovery
     // This registers the Writer with Storage capability so the Acceptor can discover it
     let writer_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50051));
-    let writer_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Writer,
-        advertise_addr("WRITER_ADVERTISE_ADDR", writer_flight_addr),
-    )
-    .await
-    .context("Failed to initialize writer service bootstrap")?;
+    let writer_bootstrap =
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Writer, writer_flight_addr)
+            .await
+            .context("Failed to initialize writer service bootstrap")?;
     tracing::info!(
         "Writer service registered with ID: {}",
         writer_bootstrap.service_id()
@@ -310,13 +307,10 @@ async fn main() -> Result<()> {
 
     // Initialize Querier service bootstrap for catalog-based discovery
     let querier_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50054));
-    let querier_bootstrap = ServiceBootstrap::new(
-        config.clone(),
-        ServiceType::Querier,
-        advertise_addr("QUERIER_ADVERTISE_ADDR", querier_flight_addr),
-    )
-    .await
-    .context("Failed to initialize querier service bootstrap")?;
+    let querier_bootstrap =
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Querier, querier_flight_addr)
+            .await
+            .context("Failed to initialize querier service bootstrap")?;
 
     // Periodically flush attribute query-demand counters (epic #737, #733)
     // into the catalog's advisory `attribute_stats` table.
@@ -385,10 +379,10 @@ async fn main() -> Result<()> {
         // Register with the real Flight address so operators can reach the
         // compactor's do_action control surface through the router ops API.
         let compactor_flight_addr = SocketAddr::from(([0, 0, 0, 0], 50055));
-        let compactor_bootstrap = ServiceBootstrap::new(
+        let compactor_bootstrap = ServiceBootstrap::from_bind_addr(
             config.clone(),
             ServiceType::Compactor,
-            advertise_addr("COMPACTOR_ADVERTISE_ADDR", compactor_flight_addr),
+            compactor_flight_addr,
         )
         .await
         .context("Failed to initialize compactor service bootstrap")?;
@@ -484,13 +478,9 @@ async fn main() -> Result<()> {
     );
     let grpc_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_GRPC_PORT));
     let http_addr = SocketAddr::from(([0, 0, 0, 0], common::endpoints::DEFAULT_OTLP_HTTP_PORT));
-    let acceptor_resources = init_acceptor_resources(
-        config.clone(),
-        advertise_addr("ACCEPTOR_ADVERTISE_ADDR", grpc_addr),
-        wal_dir,
-    )
-    .await
-    .context("Failed to initialize acceptor resources")?;
+    let acceptor_resources = init_acceptor_resources(config.clone(), grpc_addr, wal_dir)
+        .await
+        .context("Failed to initialize acceptor resources")?;
 
     // Clone resources for both servers (all fields are Arcs, cheap to clone)
     let grpc_resources = acceptor_resources.clone();

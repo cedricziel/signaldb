@@ -103,17 +103,13 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     let grpc_addr = SocketAddr::new(bind_ip, args.grpc_port);
     let http_addr = SocketAddr::new(bind_ip, args.http_port);
 
-    // Initialize shared resources for both gRPC and HTTP servers
-    let advertise_addr =
-        common::service_bootstrap::advertise_addr("ACCEPTOR_ADVERTISE_ADDR", grpc_addr);
-
     // WAL directory: --wal-dir / ACCEPTOR_WAL_DIR override wins, otherwise
     // [wal].wal_dir from the configuration with the service suffix appended.
     let wal_dir = config
         .wal
         .wal_dir_for_service("acceptor", args.wal_dir.clone());
 
-    let resources = init_acceptor_resources(config.clone(), advertise_addr, wal_dir)
+    let resources = init_acceptor_resources(config.clone(), grpc_addr, wal_dir)
         .await
         .context("Failed to initialize acceptor resources")?;
 

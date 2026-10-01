@@ -88,7 +88,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
 
     // Initialize router service bootstrap for catalog-based discovery
     let router_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Router, flight_addr)
             .await
             .context("Failed to initialize router service bootstrap")?;
 
