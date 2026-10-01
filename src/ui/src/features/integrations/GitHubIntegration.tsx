@@ -14,7 +14,7 @@ import {
   type GithubInstallation,
 } from "../../api/github";
 import { toErrorMessage } from "../../api/http";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { EmptyState } from "../../components/EmptyState";
 import { QueryError, whoamiQueryError } from "../../components/QueryError";
@@ -73,7 +73,7 @@ export function GitHubIntegration() {
   return <GitHubIntegrationBody key={state.tenant} who={who} />;
 }
 
-function GitHubIntegrationBody({ who }: { who: WhoamiResponse }) {
+function GitHubIntegrationBody({ who }: { who: WhoamiIdentityResponse }) {
   const tenant = who.tenant.id;
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();

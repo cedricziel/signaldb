@@ -1056,7 +1056,8 @@ tenant-less page.
 
 ![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
-Signing in calls `POST /ui/session`, which validates the credentials and
+Signing in calls `POST /ui/session` (through the generated client, like
+every other UI call), which validates the credentials and
 sets an `HttpOnly`, `Secure`, `SameSite=Lax` cookie containing an opaque
 random token. The password and tenant API keys never live in the cookie,
 page JavaScript, `localStorage`, or URLs. A session starts with a 12-hour

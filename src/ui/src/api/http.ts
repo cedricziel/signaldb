@@ -416,6 +416,11 @@ export function unwrapSdkResult<T>(
   return data as T;
 }
 
+/** The message of the router's `{ error: string }` envelope, if any. */
+export function errorEnvelopeMessage(error: unknown): string | undefined {
+  return (error as { error?: string } | undefined)?.error;
+}
+
 /** {@link unwrapSdkResult} for the router's `{ error: string }` envelope
  * (the management and GitHub surfaces): the envelope's message when it has
  * one, else `"<what> request failed (<status>)"`. */
@@ -423,7 +428,7 @@ export function unwrapErrorEnvelope<T>(result: SdkResult<T>, what: string): T {
   return unwrapSdkResult(
     result,
     (status) => `${what} request failed (${status})`,
-    (error) => (error as { error?: string } | undefined)?.error,
+    errorEnvelopeMessage,
   );
 }
 

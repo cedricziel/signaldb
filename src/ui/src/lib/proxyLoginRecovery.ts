@@ -13,11 +13,8 @@ import { isSameOrigin } from "./redirectTarget";
 
 const MARKER_KEY = "signaldb.proxyLoginReload";
 
-/** `/api/v1/whoami`'s path, used both as the probe target here and by
- * `session.ts`'s `whoami()` — kept here (rather than the other way around)
- * because `session.ts` imports {@link withProxyLoginRecovery}, and the
- * reverse import would cycle. */
-export const WHOAMI_PATH = "/api/v1/whoami";
+/** The probe target: `/api/v1/whoami`. */
+const WHOAMI_PATH = "/api/v1/whoami";
 
 interface RecoveryDeps {
   fetch: typeof fetch;

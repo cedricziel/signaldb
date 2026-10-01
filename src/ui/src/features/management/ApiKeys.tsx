@@ -12,7 +12,7 @@ import {
   type ApiKeyScope,
 } from "../../api/management";
 import { toErrorMessage } from "../../api/http";
-import type { WhoamiResponse } from "../../api/session";
+import type { WhoamiIdentityResponse } from "../../api/session";
 import { ConfirmButton } from "../../components/ConfirmButton";
 import { CopyValueButton } from "../../components/CopyValueButton";
 import { Dialog } from "../../components/Dialog";
@@ -102,7 +102,7 @@ export function ApiKeys() {
   return <ApiKeysBody key={state.tenant} who={who} />;
 }
 
-function ApiKeysBody({ who }: { who: WhoamiResponse }) {
+function ApiKeysBody({ who }: { who: WhoamiIdentityResponse }) {
   const queryClient = useQueryClient();
   const [secret, setSecret] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
