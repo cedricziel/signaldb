@@ -176,7 +176,10 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   suggestion, instead of silently rendering one `null`-labelled group. The
   builder is URL-backed (`?qsrc=`, `?qres=`, repeated `?qf=`, and `?qrun=1`
   once run), so a reload, a tab switch, or Back keeps the query; **Run** on
-  an unchanged document re-runs it against a fresh "now".
+  an unchanged document re-runs it against a fresh "now". A `rows` result
+  arrives 500 rows at a time, newest first; **Load more** under the table
+  fetches the next page with the response's cursor
+  ([Pagination](querying-ir.md#pagination-ir-v14)) over the same window.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace, and, for a span
   with a linked profile, offers a "Profile: `<sample type>` →" button that
