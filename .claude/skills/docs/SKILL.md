@@ -123,4 +123,5 @@ this: a living doc whose `sources` changed without the doc changing blocks
 once. The right response is to _read the doc against the diff and edit only
 what is now wrong_ — deleting a stale sentence counts; adding a paragraph to
 satisfy the check does not. If the doc is still accurate, say so (locally: one
-line; on the PR: the `docs-not-needed` label).
+line; on the PR: a `docs-ok: <path>` line in the description, and the
+`docs-not-needed` label only when nothing in the PR owes docs).
