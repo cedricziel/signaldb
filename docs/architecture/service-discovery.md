@@ -135,8 +135,9 @@ sequenceDiagram
 
 ```rust
 // Registers with the catalog, spawns the heartbeat task and the stale-row
-// reaper internally. The service id is a generated UUID.
-let bootstrap = ServiceBootstrap::new(config, ServiceType::Querier, address).await?;
+// reaper internally. The service id is a generated UUID. The registered
+// address is QUERIER_ADVERTISE_ADDR when set, else the bind address.
+let bootstrap = ServiceBootstrap::from_bind_addr(config, ServiceType::Querier, bind).await?;
 ```
 
 ### 2. Health Monitoring
@@ -223,7 +224,7 @@ poll_interval = "60s"
 ttl = "300s"
 ```
 
-There is no `[service]` config section: the service address is passed programmatically to `ServiceBootstrap::new()`, and the service id is a generated UUID.
+There is no `[service]` config section. Services pass their bind address to `ServiceBootstrap::from_bind_addr()`, which registers the `<SERVICE>_ADVERTISE_ADDR` override when set (`ServiceType::advertise_env_var`), else the bind address; see [Advertised addresses](../operations/binaries.md#advertised-addresses). `ServiceBootstrap::new()` takes the registered address verbatim. The service id is a generated UUID.
 
 ## Integration Patterns
 

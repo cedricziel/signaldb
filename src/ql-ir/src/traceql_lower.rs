@@ -60,6 +60,8 @@ pub fn traceql_to_ir(query: &str, from: &str, to: &str) -> Result<Document, Lowe
         baseline: None,
         step: None,
         constant: None,
+        page: None,
+        tail: None,
     })
 }
 

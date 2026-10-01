@@ -33,11 +33,6 @@ pub(crate) fn split_host_port(addr: &str) -> Option<(&str, u16)> {
     Some((host, port))
 }
 
-/// Address to register in discovery: `env_var` if set and non-empty, else `bind`.
-pub fn advertise_addr(env_var: &str, bind: impl std::fmt::Display) -> String {
-    resolve_advertise_addr(std::env::var(env_var).ok(), bind)
-}
-
 fn resolve_advertise_addr(advertise: Option<String>, bind: impl std::fmt::Display) -> String {
     advertise
         .filter(|addr| !addr.is_empty())
@@ -86,6 +81,24 @@ impl ServiceType {
         }
     }
 
+    /// Environment variable that overrides the address this service registers
+    /// in discovery.
+    pub fn advertise_env_var(&self) -> &'static str {
+        match self {
+            ServiceType::Acceptor => "ACCEPTOR_ADVERTISE_ADDR",
+            ServiceType::Writer => "WRITER_ADVERTISE_ADDR",
+            ServiceType::Router => "ROUTER_ADVERTISE_ADDR",
+            ServiceType::Querier => "QUERIER_ADVERTISE_ADDR",
+            ServiceType::Compactor => "COMPACTOR_ADVERTISE_ADDR",
+        }
+    }
+
+    /// Address to register in discovery: the [`Self::advertise_env_var`]
+    /// override if set and non-empty, else `bind`.
+    pub fn advertise_addr(&self, bind: impl std::fmt::Display) -> String {
+        resolve_advertise_addr(std::env::var(self.advertise_env_var()).ok(), bind)
+    }
+
     /// Parse a service type persisted by [`Self::catalog_name`].
     pub fn from_catalog_name(s: &str) -> Option<ServiceType> {
         ServiceType::ALL
@@ -120,7 +133,20 @@ pub struct ServiceBootstrap {
 }
 
 impl ServiceBootstrap {
-    /// Create a new service bootstrap instance and register with catalog
+    /// Register a service bound to `bind` under its advertised address
+    /// ([`ServiceType::advertise_addr`]), which peers in other containers dial.
+    pub async fn from_bind_addr(
+        config: Configuration,
+        service_type: ServiceType,
+        bind: std::net::SocketAddr,
+    ) -> Result<Self> {
+        let address = service_type.advertise_addr(bind);
+        Self::new(config, service_type, address).await
+    }
+
+    /// Create a new service bootstrap instance and register `address` with the
+    /// catalog verbatim. Services use [`Self::from_bind_addr`] so the
+    /// advertise override applies.
     #[tracing::instrument(
         level = "debug",
         skip_all,
@@ -514,6 +540,15 @@ mod tests {
     use super::*;
     use crate::config::{DatabaseConfig, DiscoveryConfig};
     use std::time::Duration;
+
+    #[test]
+    fn every_service_type_has_its_own_advertise_env_var() {
+        let vars: std::collections::HashSet<_> = ServiceType::ALL
+            .iter()
+            .map(|t| t.advertise_env_var())
+            .collect();
+        assert_eq!(vars.len(), ServiceType::ALL.len());
+    }
 
     #[test]
     fn advertise_addr_prefers_the_override() {

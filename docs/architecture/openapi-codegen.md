@@ -256,12 +256,6 @@ job, and the `codegen` job runs `cargo xtask check` to gate the clients.
 
 ## Known gaps
 
-- **The UI's login, logout, and whoami calls still bypass the generated
-  client.** `src/ui/src/api/session.ts`'s `createSession`/`deleteSession`/
-  `whoami` go through `withProxyLoginRecovery(retryingFetch)` directly,
-  though their operations (`create_session`, `delete_session`, `whoami`)
-  are now in the spec with every field the UI reads. The lint rule above
-  doesn't catch them because they never call `fetch` by name.
 - **The Query IR stages are typed, with caveats.** The `/api/v1/query`
   request's `pipeline` is a list of `IrStage`, and the stage grammar is
   published as typed `Ir*` components (`IrStage`, `IrPredicate`,

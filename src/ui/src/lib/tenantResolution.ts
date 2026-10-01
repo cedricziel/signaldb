@@ -2,7 +2,7 @@ import { useState } from "react";
 import {
   whoami,
   type SessionMembership,
-  type SessionResult,
+  type CreateSessionResponse,
 } from "../api/session";
 
 /** Copy shown by the "choose a tenant" render (LoginRoute) — the account has
@@ -32,14 +32,14 @@ export function useTenantStep(
   onResolved: (tenant: string, dataset: string) => void,
 ): {
   pending: SessionMembership[] | null;
-  onAuthenticated: (result: SessionResult) => void;
+  onAuthenticated: (result: CreateSessionResponse) => void;
   pick: (tenant: string) => void;
   busy: boolean;
 } {
   const [pending, setPending] = useState<SessionMembership[] | null>(null);
   const [busy, setBusy] = useState(false);
 
-  const onAuthenticated = (result: SessionResult) => {
+  const onAuthenticated = (result: CreateSessionResponse) => {
     if (result.tenant) {
       onResolved(result.tenant, result.dataset ?? "");
     } else {

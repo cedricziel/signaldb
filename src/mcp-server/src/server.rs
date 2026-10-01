@@ -828,6 +828,40 @@ struct QueryIrParams {
     /// datasets, so there is no implicit session default; see
     /// `discover_datasets`.
     dataset: String,
+    /// Page a `rows`/`trace` result this many rows (or traces) at a time
+    /// (`irVersion` 14+). The response's `page.next_cursor` continues it.
+    #[serde(default)]
+    page_size: Option<u32>,
+    /// The previous response's `page.next_cursor`: resubmit the same
+    /// `query` with it to get the next page.
+    #[serde(default)]
+    cursor: Option<String>,
+}
+
+impl QueryIrParams {
+    /// The document with `page_size`/`cursor` merged into its `page`.
+    fn request(&self) -> Result<signaldb_sdk::types::QueryIrRequest, ErrorData> {
+        let mut request = <signaldb_sdk::types::QueryIrRequest as serde::Deserialize>::deserialize(
+            &self.query,
+        )
+        .map_err(|e| ErrorData::invalid_params(query_ir_parse_error(&self.query, e), None))?;
+        if self.page_size.is_some() || self.cursor.is_some() {
+            let page = request.page.get_or_insert_with(Default::default);
+            if let Some(size) = self.page_size {
+                let size = i32::try_from(size).ok().filter(|s| *s > 0).ok_or_else(|| {
+                    ErrorData::invalid_params(
+                        format!("page_size must be between 1 and {}", i32::MAX),
+                        None,
+                    )
+                })?;
+                page.size = Some(size);
+            }
+            if let Some(cursor) = &self.cursor {
+                page.cursor = Some(cursor.clone());
+            }
+        }
+        Ok(request)
+    }
 }
 
 /// Advertises `query` as a JSON object in the tool's schema. A bare
@@ -2850,7 +2884,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "List the profiles correlated with a trace ID, scoped to your tenant.",
+        description = "List the profiles correlated with a hex trace ID (`trace.id` on the `profiles` source, last 30 days, newest first, at most 1,000), scoped to your tenant.",
         annotations(read_only_hint = true)
     )]
     async fn profiles_for_trace(
@@ -2859,14 +2893,34 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
-        let resp = client
-            .profiles_by_trace()
-            .trace_id(p.trace_id)
-            .send()
-            .await
-            .map_err(|e| map_sdk_err(e, "profiles_for_trace"))?;
-        json_result(&resp.into_inner())
+        if p.trace_id.is_empty() || !p.trace_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err(ErrorData::invalid_params(
+                format!("trace_id `{}` is not a hex trace id", p.trace_id),
+                None,
+            ));
+        }
+        let document = serde_json::json!({
+            "irVersion": 1,
+            "from": "profiles",
+            "range": { "from": "now-30d", "to": "now" },
+            "result": "rows",
+            "fields": PROFILE_SUMMARY_FIELDS,
+            "pipeline": [
+                { "where": { "field": "trace.id", "op": "eq", "value": p.trace_id.to_ascii_lowercase() } },
+                { "order": [{ "of": "timestamp", "dir": "desc" }] },
+                { "limit": PROFILES_FOR_TRACE_LIMIT }
+            ]
+        });
+        let response = self
+            .run_ir_document(
+                &parts,
+                &p.tenant,
+                &p.dataset,
+                document,
+                "profiles_for_trace",
+            )
+            .await?;
+        json_result(&profile_summaries(&response))
     }
 
     #[tool(
@@ -3246,7 +3300,7 @@ impl McpServer {
     }
 
     #[tool(
-        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
+        description = "Execute a native Query IR document (the structured, versioned query surface). Provide `query` as the IR JSON object. Returns the enveloped result scoped to your tenant. Reach for this over search_traces/search_logs/query_metrics when you need a pipeline stage those dialects can't express (topk/bottomk, extract, a multi-stage aggregate with step, or — at `irVersion` 8 — a `correlate` stage joining each span to its parent so you can group by caller and callee service) or you're building from discover_sources/discover_fields/discover_field_values. A large `rows`/`trace` result can be paged (`irVersion` 14): pass `page_size`, then call again with the same `query` and `cursor` set to the response's `page.next_cursor` until it is absent; see `get_skill(\"query-ir\")` (or the `skill://query-ir/SKILL.md` resource) for the full document reference."
     )]
     async fn query_ir(
         &self,
@@ -3254,9 +3308,7 @@ impl McpServer {
         Extension(parts): Extension<Parts>,
     ) -> Result<CallToolResult, ErrorData> {
         check_tenant_scope(&parts, &p.tenant)?;
-        let request =
-            <signaldb_sdk::types::QueryIrRequest as serde::Deserialize>::deserialize(&p.query)
-                .map_err(|e| ErrorData::invalid_params(query_ir_parse_error(&p.query, e), None))?;
+        let request = p.request()?;
         let client = self.scoped_router_client(&parts, &p.tenant, Some(&p.dataset))?;
         let resp = client
             .query_ir()
@@ -5533,6 +5585,54 @@ fn profile_types(response: &signaldb_sdk::types::QueryIrResponse) -> Vec<serde_j
     types
 }
 
+/// The most profiles `profiles_for_trace` lists, newest first.
+const PROFILES_FOR_TRACE_LIMIT: u64 = 1_000;
+
+/// The `profiles` fields a `profiles_for_trace` summary is built from.
+const PROFILE_SUMMARY_FIELDS: [&str; 7] = [
+    "profile.id",
+    "timestamp",
+    "duration",
+    "sample.type",
+    "sample.unit",
+    "service.name",
+    "span.id",
+];
+
+/// Profile rows in the `/api/profiles/trace/{id}` summary shape.
+fn profile_summaries(response: &signaldb_sdk::types::QueryIrResponse) -> Vec<serde_json::Value> {
+    response
+        .rows
+        .iter()
+        .map(|row| {
+            let text = |name| {
+                cell(response, row, name)
+                    .and_then(|v| v.as_str())
+                    .unwrap_or_default()
+                    .to_string()
+            };
+            let number = |name| match cell(response, row, name) {
+                Some(serde_json::Value::Number(n)) => n.as_i64().unwrap_or(0).to_string(),
+                Some(serde_json::Value::String(s)) if s.parse::<i64>().is_ok() => s.clone(),
+                _ => "0".to_string(),
+            };
+            let mut summary = serde_json::json!({
+                "profileID": text("profile_id"),
+                "timeUnixNano": number("timestamp"),
+                "durationNano": number("duration_nano"),
+                "sampleType": text("sample_type"),
+                "sampleUnit": text("sample_unit"),
+                "serviceName": text("service_name"),
+            });
+            let span_id = text("span_id");
+            if !span_id.is_empty() {
+                summary["spanID"] = serde_json::json!(span_id);
+            }
+            summary
+        })
+        .collect()
+}
+
 /// Build the Query IR document `get_profile` submits: a `flamegraph`-enveloped
 /// `profiles` query filtered to one `profile.id`, defaulting to the last 30
 /// days when no `start`/`end` hint is given. Pure and synchronous, so it's
@@ -6794,10 +6894,37 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn profiles_for_trace_lists_correlated_profiles() {
-        let (base_url, router) = mock_json_router(
-            "GET /api/profiles/trace/abc123",
-            r#"[{"profileID":"p1","timeUnixNano":"1","durationNano":"1","sampleType":"cpu","sampleUnit":"nanoseconds","serviceName":"checkout"}]"#,
+    async fn profiles_for_trace_rejects_a_non_hex_trace_id() {
+        let server = McpServer::new(
+            "http://127.0.0.1:9".to_string(),
+            std::time::Duration::from_secs(1),
+        );
+        for trace_id in ["", "abc-123", "zz"] {
+            let err = server
+                .profiles_for_trace(
+                    Parameters(ProfilesForTraceParams {
+                        trace_id: trace_id.to_string(),
+                        tenant: "acme".to_string(),
+                        dataset: "production".to_string(),
+                    }),
+                    Extension(valid_parts()),
+                )
+                .await
+                .expect_err("a non-hex trace id is rejected before any request");
+            assert_eq!(
+                err.code,
+                rmcp::model::ErrorCode::INVALID_PARAMS,
+                "{trace_id:?}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn profiles_for_trace_reads_profile_rows_for_the_trace() {
+        let (base_url, router) = mock_capturing_router(
+            "POST /api/v1/query",
+            200,
+            r#"{"result":"rows","window":{"start_ns":0,"end_ns":1},"columns":[{"name":"profile_id","type":"string"},{"name":"timestamp","type":"timestamp_ns"},{"name":"duration_nano","type":"int64"},{"name":"sample_type","type":"string"},{"name":"sample_unit","type":"string"},{"name":"service_name","type":"string"},{"name":"span_id","type":"string"}],"rows":[["p1","1",2,"cpu","nanoseconds","checkout",null]]}"#,
         )
         .await;
         let server = McpServer::new(base_url, std::time::Duration::from_secs(1));
@@ -6805,7 +6932,7 @@ mod tests {
         let result = server
             .profiles_for_trace(
                 Parameters(ProfilesForTraceParams {
-                    trace_id: "abc123".to_string(),
+                    trace_id: "ABC123".to_string(),
                     tenant: "acme".to_string(),
                     dataset: "production".to_string(),
                 }),
@@ -6814,9 +6941,23 @@ mod tests {
             .await
             .expect("profiles_for_trace succeeds");
 
-        let profiles = text_json(&result);
-        assert_eq!(profiles[0]["profileID"], "p1");
-        router.await.expect("mock router task panicked");
+        let document = captured_json_body(&router.await.expect("mock router task panicked"));
+        assert_eq!(document["result"], "rows");
+        assert_eq!(
+            document["pipeline"],
+            serde_json::json!([
+                { "where": { "field": "trace.id", "op": "eq", "value": "abc123" } },
+                { "order": [{ "of": "timestamp", "dir": "desc" }] },
+                { "limit": 1000 }
+            ])
+        );
+        assert_eq!(
+            text_json(&result),
+            serde_json::json!([{
+                "profileID": "p1", "timeUnixNano": "1", "durationNano": "2",
+                "sampleType": "cpu", "sampleUnit": "nanoseconds", "serviceName": "checkout"
+            }])
+        );
     }
 
     #[test]
@@ -8915,6 +9056,44 @@ mod tests {
         }))
         .unwrap();
         assert_eq!(params.query, ir_document);
+    }
+
+    #[test]
+    fn query_ir_tool_merges_page_size_and_cursor_into_the_document() {
+        let params: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": {
+                "irVersion": 14, "from": "logs",
+                "range": { "from": "now-1h", "to": "now" },
+                "result": "rows", "pipeline": [], "page": { "size": 10 }
+            },
+            "tenant": "acme", "dataset": "production",
+            "page_size": 50, "cursor": "sdbc1.a.b"
+        }))
+        .unwrap();
+        let page = params.request().unwrap().page.expect("page");
+        assert_eq!(page.size, Some(50));
+        assert_eq!(page.cursor.as_deref(), Some("sdbc1.a.b"));
+
+        let plain: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": { "irVersion": 1, "from": "logs",
+                       "range": { "from": "now-1h", "to": "now" },
+                       "result": "rows", "pipeline": [] },
+            "tenant": "acme", "dataset": "production"
+        }))
+        .unwrap();
+        assert!(plain.request().unwrap().page.is_none());
+
+        let zero: QueryIrParams = serde_json::from_value(serde_json::json!({
+            "query": { "irVersion": 14, "from": "logs",
+                       "range": { "from": "now-1h", "to": "now" },
+                       "result": "rows", "pipeline": [] },
+            "tenant": "acme", "dataset": "production", "page_size": 0
+        }))
+        .unwrap();
+        assert!(
+            zero.request().is_err(),
+            "an out-of-range page_size is a tool error"
+        );
     }
 
     #[test]
