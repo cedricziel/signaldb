@@ -40,6 +40,7 @@ mod query_field_discovery_e2e;
 mod query_ir_e2e;
 mod query_ir_pagination_e2e;
 mod query_ir_promql_e2e;
+mod query_ir_tail_e2e;
 mod query_parity;
 mod retry_on_throttle;
 mod router_tempo_endpoints;

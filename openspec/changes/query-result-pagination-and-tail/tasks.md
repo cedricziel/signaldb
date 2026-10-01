@@ -171,7 +171,7 @@ optional follow-up and outside this change's definition of done.
       `QueryWarning.code` docs. 7.1 passes
 - [x] 7.3 Regenerate the OpenAPI spec, `signaldb-sdk`, and the TS client.
       Verify with `pnpm --filter ./src/ui typecheck`
-- [ ] 7.4 Write a `tests-integration` test: start a tail, ingest new logs and
+- [x] 7.4 Write a `tests-integration` test: start a tail, ingest new logs and
       a long span, and poll. Assert each row is delivered once and in order,
       the long span is delivered by end time, and a row ingested with a
       tail-time behind the cursor is not delivered (documented
