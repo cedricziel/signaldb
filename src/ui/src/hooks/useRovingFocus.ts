@@ -33,6 +33,8 @@ export interface UseRovingFocusOptions {
    * left for the page to handle (e.g. scrolling) instead of swallowed.
    */
   vertical?: (index: number, direction: -1 | 1) => number | null;
+  /** The mark that starts active (the group's one tab stop). Defaults to 0. */
+  initialIndex?: number;
 }
 
 export interface RovingFocus {
@@ -55,7 +57,9 @@ export function useRovingFocus(
   count: number,
   options: UseRovingFocusOptions = {},
 ): RovingFocus {
-  const [activeIndex, setActiveIndexState] = useState(0);
+  const [activeIndex, setActiveIndexState] = useState(
+    options.initialIndex ?? 0,
+  );
   const itemRefs = useRef<(HTMLOrSVGElement | null)[]>([]);
   const { horizontal, vertical } = options;
 

@@ -59,7 +59,7 @@ function curlSnippet(headers: ConnectionHeaders, queryUrl: string) {
 export const CONNECT_TITLE = "Connect: MCP, CLI and API";
 
 type WayId = "mcp" | "cli" | "api";
-type TabId = "overview" | WayId;
+export type ConnectTab = "overview" | WayId;
 
 const WAYS: { id: WayId; label: string; icon: NavIconName; blurb: string }[] = [
   {
@@ -82,30 +82,36 @@ const WAYS: { id: WayId; label: string; icon: NavIconName; blurb: string }[] = [
   },
 ];
 
-const TABS: { id: TabId; label: string; icon: NavIconName }[] = [
+const TABS: { id: ConnectTab; label: string; icon: NavIconName }[] = [
   { id: "overview", label: "Overview", icon: "overview" },
   ...WAYS,
 ];
 
 const stepTab = (i: number, d: -1 | 1) => i + d;
+const indexOf = (id: ConnectTab) => TABS.findIndex((t) => t.id === id);
 
 export function ConnectPanel({
   state,
   canManage,
+  initialTab = "overview",
   onClose,
 }: {
   state: Pick<ExploreState, "tenant" | "dataset">;
   canManage: boolean;
+  /** The tab the dialog opens on. */
+  initialTab?: ConnectTab;
   onClose: () => void;
 }) {
   const connection = useQuery(connectionQuery(state));
-  const roving = useRovingFocus(TABS.length, { vertical: stepTab });
+  const roving = useRovingFocus(TABS.length, {
+    vertical: stepTab,
+    initialIndex: indexOf(initialTab),
+  });
   const tab = TABS[roving.activeIndex]!.id;
-  const select = (id: TabId) =>
-    roving.setActiveIndex(TABS.findIndex((t) => t.id === id));
+  const select = (id: ConnectTab) => roving.setActiveIndex(indexOf(id));
   const baseId = useId();
-  const tabId = (id: TabId) => `${baseId}-tab-${id}`;
-  const panelId = (id: TabId) => `${tabId(id)}-panel`;
+  const tabId = (id: ConnectTab) => `${baseId}-tab-${id}`;
+  const panelId = (id: ConnectTab) => `${tabId(id)}-panel`;
 
   return (
     <Dialog label="Connect" onClose={onClose} className="connect-panel">
@@ -173,9 +179,9 @@ function TabBody({
   onPick,
   apiKeyLink,
 }: {
-  tab: TabId;
+  tab: ConnectTab;
   connection: UseQueryResult<ConnectionInfoResponse>;
-  onPick: (id: TabId) => void;
+  onPick: (id: ConnectTab) => void;
   apiKeyLink: ReactNode;
 }) {
   if (connection.isError) {
