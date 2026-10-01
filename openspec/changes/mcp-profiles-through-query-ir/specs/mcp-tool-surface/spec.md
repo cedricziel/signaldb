@@ -6,7 +6,7 @@ The MCP server SHALL expose profile discovery and query as tools,
 tenant-scoped like every other tool, reading through the Query IR
 (`POST /api/v1/query`) and never through the Pyroscope-compatible endpoints:
 `discover_profile_types` (the distinct `sample.type`/`sample.unit` pairs of
-the `profiles` source, default the last 30 days), `discover_attributes` with
+the `profiles` source, default all history up to now), `discover_attributes` with
 `signal: "profiles"` (the `profiles` source's field names through the Query IR
 `describe` stage and, with `tag`, a field's values), `search_profiles` (a
 Pyroscope-style selector plus a time range, default the last hour → the

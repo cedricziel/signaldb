@@ -12,7 +12,8 @@ still read the Pyroscope-compatible endpoints that exist for Grafana.
 - The Pyroscope selector filters its sample type and `service_name` (`=`,
   `!=`, `=~`, `!~`); any other label or a malformed selector is rejected
   instead of silently ignored.
-- Unset ranges default to a bounded window instead of an unbounded scan;
+- Unset ranges default to a bounded window instead of an unbounded scan,
+  except `discover_profile_types`, which keeps reading all history;
   blank, unparseable or inverted ranges are invalid parameters.
 - Flame graph responses carry the IR's `truncated` flag; an empty diff still
   renders as `double` with zero ticks.
