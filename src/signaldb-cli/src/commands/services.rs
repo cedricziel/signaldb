@@ -87,6 +87,7 @@ impl MapArgs {
             constant: None,
             baseline: None,
             page: None,
+            tail: None,
         };
 
         let client = self.connect.build_client()?;
@@ -411,6 +412,7 @@ mod tests {
             heatmap: None,
             metadata: None,
             page: None,
+            tail: None,
             points: None,
             result: "graph".to_string(),
             rows: vec![],
@@ -576,6 +578,7 @@ mod tests {
             heatmap: None,
             metadata: None,
             page: None,
+            tail: None,
             points: None,
             result: "graph".to_string(),
             rows: vec![],

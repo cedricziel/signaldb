@@ -3921,6 +3921,23 @@ pub mod types {
             Default::default()
         }
     }
+    ///A document-level `tail`: follow the window forward in time.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug, Default)]
+    #[serde(deny_unknown_fields)]
+    pub struct IrTail {
+        ///The previous response's `tail.cursor`; absent on the first call.
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub cursor: ::std::option::Option<::std::string::String>,
+        /**How far behind the server clock the tail reads (a duration such as
+        `10s`), clamped to the server's bounds.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub settle: ::std::option::Option<::std::string::String>,
+    }
+    impl IrTail {
+        pub fn builder() -> builder::IrTail {
+            Default::default()
+        }
+    }
     /**The canonical value types that flow through the IR.
 
     Each logical field has exactly one canonical `ValueType`, owned by the
@@ -4927,6 +4944,11 @@ pub mod types {
         the `time`/`constant` pseudo-sources (irVersion 10+).*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub step: ::std::option::Option<::std::string::String>,
+        /**Follow the result forward in time (irVersion 15+, `range.to` must be
+        `now`): resend the same document with `tail.cursor` set to the
+        previous response's `tail.cursor`. `page.size` bounds each call.*/
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub tail: ::std::option::Option<IrTail>,
         ///`graph` only: restrict to the services and calls of one trace.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub trace_id: ::std::option::Option<::std::string::String>,
@@ -4994,6 +5016,9 @@ pub mod types {
         pub series: ::std::vec::Vec<ResultSeries>,
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
         pub step_ns: ::std::option::Option<i64>,
+        ///Present iff the request carried `tail` (`rows`/`trace` only).
+        #[serde(skip_serializing_if = "::std::option::Option::is_none")]
+        pub tail: ::std::option::Option<QueryTail>,
         /**Present iff `result == "trace"` — the result rows grouped per trace, in
         order of first appearance. `Some` even when no row matched.*/
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -5036,6 +5061,24 @@ pub mod types {
             Default::default()
         }
     }
+    ///The `tail` member of a live-tail response.
+    #[derive(::serde::Deserialize, ::serde::Serialize, Clone, Debug)]
+    pub struct QueryTail {
+        ///`false` when `page.size` cut the call short: call again right away.
+        pub caught_up: bool,
+        /**Send back as `tail.cursor` with the same document for the next call.
+        Opaque: never build or edit one.*/
+        pub cursor: ::std::string::String,
+        ///The settle delay this call used: the requested one, clamped.
+        pub settle_ns: i64,
+        ///This call read rows whose tail-time is at or before this instant.
+        pub settled_through_ns: i64,
+    }
+    impl QueryTail {
+        pub fn builder() -> builder::QueryTail {
+            Default::default()
+        }
+    }
     /**A non-fatal diagnostic about a query that still produced a result. A
     warning never changes the result: it explains something the caller
     probably did not intend, so a client can surface it next to the data.*/
@@ -5044,7 +5087,8 @@ pub mod types {
         /**Stable machine-readable identifier — clients branch on this, not on
         `message`. Today `unknown_group_by_field`, `no_attribute_statistics`,
         `correlate_row_limit`, `correlate_fanout_limit`, `correlate_window`,
-        `graph_node_limit` and `match_incomplete_trace`.*/
+        `graph_node_limit`, `match_incomplete_trace` and `tail_lagged` (a
+        live tail skipped forward).*/
         pub code: ::std::string::String,
         ///The document field the warning is about, when it names one.
         #[serde(skip_serializing_if = "::std::option::Option::is_none")]
@@ -15778,6 +15822,66 @@ pub mod types {
             }
         }
         #[derive(Clone, Debug)]
+        pub struct IrTail {
+            cursor: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+            settle: ::std::result::Result<
+                ::std::option::Option<::std::string::String>,
+                ::std::string::String,
+            >,
+        }
+        impl ::std::default::Default for IrTail {
+            fn default() -> Self {
+                Self {
+                    cursor: Ok(Default::default()),
+                    settle: Ok(Default::default()),
+                }
+            }
+        }
+        impl IrTail {
+            pub fn cursor<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cursor = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cursor: {e}"));
+                self
+            }
+            pub fn settle<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.settle = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for settle: {e}"));
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<IrTail> for super::IrTail {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: IrTail,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    cursor: value.cursor?,
+                    settle: value.settle?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::IrTail> for IrTail {
+            fn from(value: super::IrTail) -> Self {
+                Self {
+                    cursor: Ok(value.cursor),
+                    settle: Ok(value.settle),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
         pub struct LabelsResponse {
             names: ::std::result::Result<
                 ::std::vec::Vec<::std::string::String>,
@@ -19495,6 +19599,8 @@ pub mod types {
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
             >,
+            tail:
+                ::std::result::Result<::std::option::Option<super::IrTail>, ::std::string::String>,
             trace_id: ::std::result::Result<
                 ::std::option::Option<::std::string::String>,
                 ::std::string::String,
@@ -19515,6 +19621,7 @@ pub mod types {
                     range: Err("no value supplied for range".to_string()),
                     result: Err("no value supplied for result".to_string()),
                     step: Ok(Default::default()),
+                    tail: Ok(Default::default()),
                     trace_id: Ok(Default::default()),
                 }
             }
@@ -19642,6 +19749,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for step: {e}"));
                 self
             }
+            pub fn tail<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::IrTail>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tail = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tail: {e}"));
+                self
+            }
             pub fn trace_id<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<::std::option::Option<::std::string::String>>,
@@ -19671,6 +19788,7 @@ pub mod types {
                     range: value.range?,
                     result: value.result?,
                     step: value.step?,
+                    tail: value.tail?,
                     trace_id: value.trace_id?,
                 })
             }
@@ -19690,6 +19808,7 @@ pub mod types {
                     range: Ok(value.range),
                     result: Ok(value.result),
                     step: Ok(value.step),
+                    tail: Ok(value.tail),
                     trace_id: Ok(value.trace_id),
                 }
             }
@@ -19730,6 +19849,10 @@ pub mod types {
             series:
                 ::std::result::Result<::std::vec::Vec<super::ResultSeries>, ::std::string::String>,
             step_ns: ::std::result::Result<::std::option::Option<i64>, ::std::string::String>,
+            tail: ::std::result::Result<
+                ::std::option::Option<super::QueryTail>,
+                ::std::string::String,
+            >,
             traces: ::std::result::Result<
                 ::std::option::Option<::std::vec::Vec<super::TraceGroup>>,
                 ::std::string::String,
@@ -19752,6 +19875,7 @@ pub mod types {
                     rows: Ok(Default::default()),
                     series: Ok(Default::default()),
                     step_ns: Ok(Default::default()),
+                    tail: Ok(Default::default()),
                     traces: Ok(Default::default()),
                     warnings: Ok(Default::default()),
                     window: Err("no value supplied for window".to_string()),
@@ -19873,6 +19997,16 @@ pub mod types {
                     .map_err(|e| format!("error converting supplied value for step_ns: {e}"));
                 self
             }
+            pub fn tail<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::option::Option<super::QueryTail>>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.tail = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for tail: {e}"));
+                self
+            }
             pub fn traces<T>(mut self, value: T) -> Self
             where
                 T: ::std::convert::TryInto<
@@ -19923,6 +20057,7 @@ pub mod types {
                     rows: value.rows?,
                     series: value.series?,
                     step_ns: value.step_ns?,
+                    tail: value.tail?,
                     traces: value.traces?,
                     warnings: value.warnings?,
                     window: value.window?,
@@ -19943,6 +20078,7 @@ pub mod types {
                     rows: Ok(value.rows),
                     series: Ok(value.series),
                     step_ns: Ok(value.step_ns),
+                    tail: Ok(value.tail),
                     traces: Ok(value.traces),
                     warnings: Ok(value.warnings),
                     window: Ok(value.window),
@@ -20043,6 +20179,88 @@ pub mod types {
                 Self {
                     from: Ok(value.from),
                     to: Ok(value.to),
+                }
+            }
+        }
+        #[derive(Clone, Debug)]
+        pub struct QueryTail {
+            caught_up: ::std::result::Result<bool, ::std::string::String>,
+            cursor: ::std::result::Result<::std::string::String, ::std::string::String>,
+            settle_ns: ::std::result::Result<i64, ::std::string::String>,
+            settled_through_ns: ::std::result::Result<i64, ::std::string::String>,
+        }
+        impl ::std::default::Default for QueryTail {
+            fn default() -> Self {
+                Self {
+                    caught_up: Err("no value supplied for caught_up".to_string()),
+                    cursor: Err("no value supplied for cursor".to_string()),
+                    settle_ns: Err("no value supplied for settle_ns".to_string()),
+                    settled_through_ns: Err("no value supplied for settled_through_ns".to_string()),
+                }
+            }
+        }
+        impl QueryTail {
+            pub fn caught_up<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<bool>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.caught_up = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for caught_up: {e}"));
+                self
+            }
+            pub fn cursor<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<::std::string::String>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.cursor = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for cursor: {e}"));
+                self
+            }
+            pub fn settle_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.settle_ns = value
+                    .try_into()
+                    .map_err(|e| format!("error converting supplied value for settle_ns: {e}"));
+                self
+            }
+            pub fn settled_through_ns<T>(mut self, value: T) -> Self
+            where
+                T: ::std::convert::TryInto<i64>,
+                T::Error: ::std::fmt::Display,
+            {
+                self.settled_through_ns = value.try_into().map_err(|e| {
+                    format!("error converting supplied value for settled_through_ns: {e}")
+                });
+                self
+            }
+        }
+        impl ::std::convert::TryFrom<QueryTail> for super::QueryTail {
+            type Error = super::error::ConversionError;
+            fn try_from(
+                value: QueryTail,
+            ) -> ::std::result::Result<Self, super::error::ConversionError> {
+                Ok(Self {
+                    caught_up: value.caught_up?,
+                    cursor: value.cursor?,
+                    settle_ns: value.settle_ns?,
+                    settled_through_ns: value.settled_through_ns?,
+                })
+            }
+        }
+        impl ::std::convert::From<super::QueryTail> for QueryTail {
+            fn from(value: super::QueryTail) -> Self {
+                Self {
+                    caught_up: Ok(value.caught_up),
+                    cursor: Ok(value.cursor),
+                    settle_ns: Ok(value.settle_ns),
+                    settled_through_ns: Ok(value.settled_through_ns),
                 }
             }
         }

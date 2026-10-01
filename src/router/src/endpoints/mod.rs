@@ -17,8 +17,6 @@ pub mod promql;
 pub mod pyroscope;
 pub mod query;
 mod query_paging;
-// Called from `query::query_ir_single` once the router accepts `tail`.
-#[allow(dead_code)]
 mod query_tail;
 pub mod schema;
 pub mod session;
