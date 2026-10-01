@@ -17,8 +17,8 @@
 
 use common::query_cursor::{KeyPart, KeyValue, PageReport, PageRequest};
 use common::query_ir::{Direction, PageUnit, SortKey};
-use datafusion::arrow::array::{ArrayRef, AsArray, Int64Array, RecordBatch};
-use datafusion::arrow::compute::concat_batches;
+use datafusion::arrow::array::{ArrayRef, AsArray, Int64Array, RecordBatch, UInt32Array};
+use datafusion::arrow::compute::{concat_batches, take_record_batch};
 use datafusion::arrow::datatypes::DataType;
 use datafusion::arrow::row::{RowConverter, Rows, SortField};
 use datafusion::logical_expr::{
@@ -52,11 +52,22 @@ pub(crate) fn bound_to_page(
         let predicate = keyset_predicate(&df, &page.order, after)?;
         df = df.filter(predicate).map_err(QuerierError::QueryFailed)?;
     }
+    let newest = page.tail.is_some_and(|t| t.newest);
+    if let Some(tail) = page.tail {
+        let field = page.order.first().map_or("", |k| k.field.as_str());
+        let through = key_literal(&df, &key_column(0), field, &KeyValue::I64(tail.through_ns))?
+            .ok_or_else(|| QuerierError::InvalidInput("a tail needs a tail-time bound".into()))?;
+        df = df
+            .filter(ident(key_column(0)).lt_eq(lit(through)))
+            .map_err(QuerierError::QueryFailed)?;
+    }
+    // The first tail call reads the order backwards (nulls first) for the
+    // newest rows; the cut reverses them back.
     let sort: Vec<SortExpr> = page
         .order
         .iter()
         .enumerate()
-        .map(|(i, k)| ident(key_column(i)).sort(k.dir == Direction::Asc, false))
+        .map(|(i, k)| ident(key_column(i)).sort((k.dir == Direction::Asc) != newest, newest))
         .collect();
     let df = match page.unit {
         PageUnit::Rows => df.sort(sort)?.limit(0, Some(fetch))?,
@@ -99,25 +110,20 @@ fn keyset_predicate(
             // Nothing sorts after a null: nulls are last.
             None => column.is_null(),
             Some(value) => {
-                let beyond = match key.dir {
-                    Direction::Asc => column.clone().gt(value.clone()),
-                    Direction::Desc => column.clone().lt(value.clone()),
+                let inclusive = match key.dir {
+                    Direction::Asc => column.clone().gt_eq(lit(value.clone())),
+                    Direction::Desc => column.clone().lt_eq(lit(value.clone())),
                 };
                 if i == 0 {
-                    leading_bound = Some(
-                        match key.dir {
-                            Direction::Asc => column.clone().gt_eq(value.clone()),
-                            Direction::Desc => column.clone().lt_eq(value.clone()),
-                        }
-                        .or(column.clone().is_null()),
-                    );
+                    leading_bound = Some(inclusive.or(column.clone().is_null()));
                 }
+                let beyond = strictly_beyond(column.clone(), &value, key.dir);
                 let beyond = beyond.or(column.clone().is_null());
                 disjuncts.push(match &equal_prefix {
                     Some(prefix) => prefix.clone().and(beyond),
                     None => beyond,
                 });
-                column.eq(value)
+                column.eq(lit(value))
             }
         };
         equal_prefix = Some(match equal_prefix {
@@ -138,26 +144,59 @@ fn key_literal(
     column: &str,
     field_name: &str,
     value: &KeyValue,
-) -> Result<Option<Expr>, QuerierError> {
+) -> Result<Option<ScalarValue>, QuerierError> {
+    let field = df
+        .schema()
+        .field_with_unqualified_name(column)
+        .map_err(QuerierError::QueryFailed)?;
     let scalar = match value {
         KeyValue::Null => return Ok(None),
+        // Timestamps travel in nanoseconds (see `key_value`).
+        KeyValue::I64(v) if matches!(field.data_type(), DataType::Timestamp(..)) => {
+            return super::trace::timestamp_bound_scalar(*v, field.data_type(), false).map(Some);
+        }
         KeyValue::I64(v) => ScalarValue::Int64(Some(*v)),
         KeyValue::F64(v) => ScalarValue::Float64(Some(*v)),
         KeyValue::Str(v) => ScalarValue::Utf8(Some(v.clone())),
         KeyValue::Bytes(v) => ScalarValue::Binary(Some(v.clone())),
         KeyValue::Bool(v) => ScalarValue::Boolean(Some(*v)),
     };
-    let field = df
-        .schema()
-        .field_with_unqualified_name(column)
-        .map_err(QuerierError::QueryFailed)?;
     let typed = scalar.cast_to(field.data_type()).map_err(|_| {
         QuerierError::InvalidInput(format!(
             "the page cursor's '{field_name}' value does not fit its {} type",
             field.data_type()
         ))
     })?;
-    Ok(Some(lit(typed)))
+    Ok(Some(typed))
+}
+
+/// `column` strictly after `value` in `dir`. On an integer or timestamp key
+/// it is the inclusive comparison against the next value: the Iceberg scan
+/// maps a comparison on the partition source column onto the partition
+/// (hour) unchanged, so a strict `>`/`<` would prune the bound's own hour.
+fn strictly_beyond(column: Expr, value: &ScalarValue, dir: Direction) -> Expr {
+    use ScalarValue::*;
+    let step: i64 = if dir == Direction::Asc { 1 } else { -1 };
+    let stepped = |v: &i64| v.checked_add(step).map(Some);
+    let next = match value {
+        Int64(Some(v)) => stepped(v).map(Int64),
+        UInt64(Some(v)) => v.checked_add_signed(step).map(|n| UInt64(Some(n))),
+        TimestampNanosecond(Some(v), tz) => stepped(v).map(|n| TimestampNanosecond(n, tz.clone())),
+        TimestampMicrosecond(Some(v), tz) => {
+            stepped(v).map(|n| TimestampMicrosecond(n, tz.clone()))
+        }
+        TimestampMillisecond(Some(v), tz) => {
+            stepped(v).map(|n| TimestampMillisecond(n, tz.clone()))
+        }
+        TimestampSecond(Some(v), tz) => stepped(v).map(|n| TimestampSecond(n, tz.clone())),
+        _ => None,
+    };
+    match (next, dir) {
+        (Some(next), Direction::Asc) => column.gt_eq(lit(next)),
+        (Some(next), Direction::Desc) => column.lt_eq(lit(next)),
+        (None, Direction::Asc) => column.gt(lit(value.clone())),
+        (None, Direction::Desc) => column.lt(lit(value.clone())),
+    }
 }
 
 /// The bounds one page is cut to.
@@ -170,6 +209,9 @@ pub(crate) struct CutLimits {
     /// Rows left under a trailing `limit`: the cut never passes them, and
     /// reaching them ends the walk.
     pub ceiling: Option<usize>,
+    /// Emit the page in reverse (a first tail call's newest rows, oldest
+    /// first).
+    pub reverse: bool,
     /// Rows one group may hold: a tie group, or one trace's spans.
     pub max_tie_rows: usize,
     pub max_bytes: usize,
@@ -203,7 +245,9 @@ pub(crate) fn cut_page(
     let mut cut = 0;
     let mut units = 0;
     if limits.exact {
-        cut = n.min(limits.size);
+        // At least one row, as a page never splits a single row.
+        let fit = (limits.max_bytes / row_bytes.max(1)).max(1);
+        cut = n.min(limits.size).min(fit);
         units = cut;
     } else {
         while cut < n && units < limits.size {
@@ -250,13 +294,18 @@ pub(crate) fn cut_page(
         (cut, units) = (ceiling, ceiling);
     }
 
+    // The key of the last row emitted: a reversed page emits row 0 last.
     let last_key = cut
         .checked_sub(1)
-        .map(|last| key_at(order, &keys, last))
+        .map(|last| key_at(order, &keys, if limits.reverse { 0 } else { last }))
         .transpose()?;
     let mut page = all.slice(0, cut);
     for &i in key_indices.iter().rev() {
         page.remove_column(i);
+    }
+    if limits.reverse {
+        let indices = UInt32Array::from_iter_values((0..cut as u32).rev());
+        page = take_record_batch(&page, &indices).map_err(arrow_error)?;
     }
     Ok((
         vec![page],
@@ -385,11 +434,12 @@ pub(crate) fn key_value(value: ScalarValue) -> Result<KeyValue, QuerierError> {
         Int8(Some(v)) => KeyValue::I64(v.into()),
         Int16(Some(v)) => KeyValue::I64(v.into()),
         Int32(Some(v)) => KeyValue::I64(v.into()),
-        Int64(Some(v))
-        | TimestampNanosecond(Some(v), _)
-        | TimestampMicrosecond(Some(v), _)
-        | TimestampMillisecond(Some(v), _)
-        | TimestampSecond(Some(v), _) => KeyValue::I64(v),
+        // Timestamps in nanoseconds, whatever the column's unit, so a tail's
+        // nanosecond bound and a row's key compare alike.
+        Int64(Some(v)) | TimestampNanosecond(Some(v), _) => KeyValue::I64(v),
+        TimestampMicrosecond(Some(v), _) => KeyValue::I64(v.saturating_mul(1_000)),
+        TimestampMillisecond(Some(v), _) => KeyValue::I64(v.saturating_mul(1_000_000)),
+        TimestampSecond(Some(v), _) => KeyValue::I64(v.saturating_mul(1_000_000_000)),
         UInt8(Some(v)) => KeyValue::I64(v.into()),
         UInt16(Some(v)) => KeyValue::I64(v.into()),
         UInt32(Some(v)) => KeyValue::I64(v.into()),
@@ -469,6 +519,7 @@ mod tests {
             unit,
             exact: false,
             ceiling: None,
+            reverse: false,
             max_tie_rows: BIG,
             max_bytes: BIG,
         }
@@ -565,6 +616,10 @@ mod tests {
         l.exact = true;
         let (n, report) = cut(&rows, l).expect("cut");
         assert_eq!((n, report.emitted, report.has_more), (2, 2, true));
+        // The byte bound still ends an exact cut early.
+        l.max_bytes = batch(&rows).get_array_memory_size() / rows.len();
+        let (n, report) = cut(&rows, l).expect("cut");
+        assert_eq!((n, report.has_more), (1, true));
     }
 
     fn trace_order() -> Vec<SortKey> {
@@ -621,6 +676,58 @@ mod tests {
         assert_eq!(report, PageReport::default());
         let (n, report) = cut(&[], limits(2, PageUnit::Rows)).expect("cut");
         assert_eq!((n, report.has_more, report.last_key), (0, false, None));
+    }
+
+    #[test]
+    fn a_nanosecond_key_compares_against_a_microsecond_column() {
+        let ctx = datafusion::prelude::SessionContext::new();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            key_column(0),
+            DataType::Timestamp(datafusion::arrow::datatypes::TimeUnit::Microsecond, None),
+            false,
+        )]));
+        let batch = RecordBatch::try_new(
+            schema,
+            vec![Arc::new(
+                datafusion::arrow::array::TimestampMicrosecondArray::from(vec![1, 2, 3]),
+            )],
+        )
+        .expect("batch");
+        let df = ctx.read_batch(batch).expect("df");
+        let literal = key_literal(&df, &key_column(0), "timestamp", &KeyValue::I64(2_000))
+            .expect("literal")
+            .expect("not null");
+        assert_eq!(
+            literal,
+            ScalarValue::TimestampMicrosecond(Some(2), None),
+            "2,000 ns is 2 µs"
+        );
+    }
+
+    #[test]
+    fn the_keyset_predicate_compares_against_the_next_value() {
+        let ctx = datafusion::prelude::SessionContext::new();
+        let schema = Arc::new(Schema::new(vec![Field::new(
+            key_column(0),
+            DataType::Int64,
+            false,
+        )]));
+        let batch =
+            RecordBatch::try_new(schema, vec![Arc::new(Int64Array::from(vec![1]))]).expect("batch");
+        let df = ctx.read_batch(batch).expect("df");
+        let order = [SortKey {
+            field: "timestamp".into(),
+            dir: Direction::Asc,
+        }];
+        let after = [KeyPart {
+            field: "timestamp".into(),
+            value: KeyValue::I64(1),
+        }];
+        let predicate = keyset_predicate(&df, &order, &after)
+            .expect("predicate")
+            .to_string();
+        assert!(!predicate.contains(" > "), "{predicate}");
+        assert!(predicate.contains(">= Int64(2)"), "{predicate}");
     }
 
     #[test]

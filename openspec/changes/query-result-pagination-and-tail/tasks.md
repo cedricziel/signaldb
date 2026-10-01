@@ -141,17 +141,20 @@ optional follow-up and outside this change's definition of done.
 
 ## 6. Querier tail execution (querier)
 
-- [ ] 6.1 Write failing `ir_planner` tests for a ticket `page` object with
+- [x] 6.1 Write failing `ir_planner` tests for a ticket `page` object with
       `tail`: the tail-time predicate `(cursor, T − settle]`; traces use
       `end_time_unix_nano` with the `start ≥ lower − tail_max_span_duration`
       prune bound; the first call (no `after`) returns the newest `size` rows,
       re-ordered ascending; the trailer reports `caught_up` and the last key;
       an idle window yields an empty page with `caught_up: true`.
       Verify with `cargo test --profile ci-test -p querier ir_planner::tail`
-- [ ] 6.2 Implement tail lowering on top of group 3's sort/keyset/cut (newest-N
+- [x] 6.2 Implement tail lowering on top of group 3's sort/keyset/cut (newest-N
       via a reversed sort plus fetch, then ascending re-order) and add the
       `tail_*` `[querier]` keys (design D9) to config and
       `signaldb.dist.toml`. 6.1 passes
+      (The ticket's `page.tail` bounds the tail-time and, on a first call,
+      reverses the order for the newest rows; the router sets the scan window,
+      including the traces start-time prune bound, in the ticket document.)
 
 ## 7. Router: live tail goes live (router, query-ir version, API contract)
 

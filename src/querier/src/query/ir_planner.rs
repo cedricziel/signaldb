@@ -997,7 +997,9 @@ impl IrService {
         // by the tie limit, rather than over-fetching every page by it.
         let crossing = match &params.page {
             Some(page)
-                if page.unit == PageUnit::Rows && page.ceiling.is_none_or(|c| c > page.size) =>
+                if page.unit == PageUnit::Rows
+                    && page.ceiling.is_none_or(|c| c > page.size)
+                    && !page.tail.is_some_and(|t| t.newest) =>
             {
                 page_cut::crossing_group(&batches, &page.order, page.size as usize)?
                     .map(|crossing| (page, crossing))
@@ -1035,11 +1037,13 @@ impl IrService {
         };
         let (batches, page) = match &params.page {
             Some(page) => {
+                let newest = page.tail.is_some_and(|t| t.newest);
                 let limits = CutLimits {
                     size: page.size as usize,
                     unit: page.unit,
-                    exact: false,
+                    exact: newest,
                     ceiling: page.ceiling.map(|c| c as usize),
+                    reverse: newest,
                     // A trace page bounds each trace's spans as `match` does.
                     max_tie_rows: match page.unit {
                         PageUnit::Rows => self.page_max_tie_rows,

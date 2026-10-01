@@ -2,8 +2,8 @@
 
 use std::sync::Arc;
 
-use common::query_cursor::{KeyPart, PageReport, PageRequest};
-use common::query_ir::{Document, PageUnit, pagination_order};
+use common::query_cursor::{KeyPart, KeyValue, PageReport, PageRequest, TailBound};
+use common::query_ir::{Document, PageUnit, pagination_order, tail_order};
 use datafusion::arrow::array::{Array, RecordBatch, StringArray, TimestampNanosecondArray};
 use datafusion::arrow::datatypes::{DataType, Field, Schema, TimeUnit};
 use datafusion::prelude::SessionContext;
@@ -73,6 +73,7 @@ fn request(doc: &serde_json::Value, size: u32, after: Option<Vec<KeyPart>>) -> P
         order: pagination_order(&parsed),
         after,
         ceiling: None,
+        tail: None,
     }
 }
 
@@ -281,4 +282,155 @@ async fn a_trace_page_holds_whole_traces_and_only_the_requested_columns() {
         .expect("page");
     assert_eq!(traces_of(&second), ["t3"]);
     assert!(!report.page.expect("page report").has_more);
+}
+
+fn tail_request(after: Option<i64>, through_ns: i64, size: u32) -> PageRequest {
+    let doc: Document = serde_json::from_value(document(json!([]))).expect("document");
+    let order = tail_order(&doc);
+    PageRequest {
+        size,
+        unit: PageUnit::Rows,
+        after: after.map(|t| {
+            order
+                .iter()
+                .enumerate()
+                .map(|(i, k)| KeyPart {
+                    field: k.field.clone(),
+                    value: if i == 0 {
+                        KeyValue::I64(t)
+                    } else {
+                        KeyValue::Null
+                    },
+                })
+                .collect()
+        }),
+        order,
+        ceiling: None,
+        tail: Some(TailBound {
+            through_ns,
+            newest: after.is_none(),
+        }),
+    }
+}
+
+#[tokio::test]
+async fn a_first_tail_call_returns_the_newest_rows_oldest_first() {
+    let svc = IrService::new(ctx());
+    let doc = document(json!([]));
+    // Settled through 40: r7 (50) is not yet visible to the tail.
+    let (bodies, report, _) = page(&svc, &doc, tail_request(None, 40, 3)).await;
+    assert_eq!(bodies.len(), 3);
+    assert_eq!(
+        bodies[0], "r4",
+        "oldest of the newest three first: {bodies:?}"
+    );
+    assert!(bodies[1..].iter().all(|b| b == "r5" || b == "r6"));
+    assert_eq!(report.emitted, 3);
+}
+
+#[tokio::test]
+async fn a_follow_up_tail_call_returns_only_rows_after_the_cursor() {
+    let svc = IrService::new(ctx());
+    let doc = document(json!([]));
+    let (bodies, report, _) = page(&svc, &doc, tail_request(Some(20), 50, 10)).await;
+    assert_eq!(bodies.len(), 4);
+    assert_eq!(bodies[0], "r4");
+    assert_eq!(bodies[3], "r7");
+    assert!(!report.has_more);
+
+    let (bodies, report, _) = page(&svc, &doc, tail_request(Some(20), 50, 2)).await;
+    assert_eq!(bodies[0], "r4", "{bodies:?}");
+    assert!(report.has_more, "the backlog is drained in bounded calls");
+
+    let (bodies, report, _) = page(&svc, &doc, tail_request(Some(50), 60, 10)).await;
+    assert!(bodies.is_empty());
+    assert!(!report.has_more, "an idle tail is caught up");
+}
+
+/// Iceberg stores `timestamp` in microseconds; a tail's bounds are
+/// nanoseconds.
+#[tokio::test]
+async fn a_tail_over_a_microsecond_timestamp_column_compares_in_nanoseconds() {
+    use datafusion::arrow::array::TimestampMicrosecondArray;
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Microsecond, None),
+            false,
+        ),
+        Field::new("body", DataType::Utf8, true),
+        Field::new("service_name", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(TimestampMicrosecondArray::from(vec![10, 20, 30])),
+            Arc::new(StringArray::from(vec!["a", "b", "c"])),
+            Arc::new(StringArray::from(vec!["api"; 3])),
+            Arc::new(StringArray::from(vec![None::<&str>; 3])),
+            Arc::new(StringArray::from(vec![None::<&str>; 3])),
+        ],
+    )
+    .expect("batch");
+    let svc = IrService::new(super::tests::single_table_ctx("logs", schema, batch));
+    let doc = json!({
+        "irVersion": 12, "from": "logs", "range": { "from": 0, "to": 100_000 },
+        "result": "rows", "fields": ["body"], "pipeline": []
+    });
+    // After 10 µs, through 25 µs, in nanoseconds.
+    let (bodies, _, _) = page(&svc, &doc, tail_request(Some(10_000), 25_000, 10)).await;
+    assert_eq!(bodies, ["b"]);
+}
+
+/// A null tie-breaker sorts last, so it is the newest of its timestamp:
+/// the backwards read puts it first, and the page ends on it.
+#[tokio::test]
+async fn a_first_tail_call_keeps_null_tie_breakers_last() {
+    let schema = Arc::new(Schema::new(vec![
+        Field::new(
+            "timestamp",
+            DataType::Timestamp(TimeUnit::Nanosecond, None),
+            false,
+        ),
+        Field::new("body", DataType::Utf8, true),
+        Field::new("service_name", DataType::Utf8, true),
+        Field::new("trace_id", DataType::Utf8, true),
+        Field::new("span_id", DataType::Utf8, true),
+    ]));
+    let batch = RecordBatch::try_new(
+        schema.clone(),
+        vec![
+            Arc::new(TimestampNanosecondArray::from(vec![30, 40, 40])),
+            Arc::new(StringArray::from(vec!["old", "traced", "untraced"])),
+            Arc::new(StringArray::from(vec!["api"; 3])),
+            Arc::new(StringArray::from(vec![Some("a"), Some("a"), None])),
+            Arc::new(StringArray::from(vec![Some("s"), Some("s"), None])),
+        ],
+    )
+    .expect("batch");
+    let svc = IrService::new(super::tests::single_table_ctx("logs", schema, batch));
+    let doc = document(json!([]));
+
+    let (bodies, _, _) = page(&svc, &doc, tail_request(None, 40, 1)).await;
+    assert_eq!(bodies, ["untraced"]);
+    let (bodies, _, _) = page(&svc, &doc, tail_request(None, 40, 3)).await;
+    assert_eq!(bodies, ["old", "traced", "untraced"]);
+}
+
+/// The report's key is the last row emitted, the newest, so resuming after
+/// it repeats nothing.
+#[tokio::test]
+async fn a_first_tail_call_reports_the_key_of_its_newest_row() {
+    let svc = IrService::new(ctx());
+    let doc = document(json!([]));
+    let (_, report, _) = page(&svc, &doc, tail_request(None, 40, 3)).await;
+    let last_key = report.last_key.expect("last key");
+    assert_eq!(last_key[0].value, KeyValue::I64(40));
+
+    let mut next = tail_request(Some(0), 50, 10);
+    next.after = Some(last_key);
+    let (bodies, _, _) = page(&svc, &doc, next).await;
+    assert_eq!(bodies, ["r7"]);
 }
