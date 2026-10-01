@@ -106,6 +106,8 @@ links, without building URLs from documentation.
 - Collections return `{"items": [...], "_links": {"self": ..., "next": ...}}`.
   `next` is present only when there's another page. Pagination is cursor-based
   (`?cursor=...&limit=...`); clients follow `next` and never build cursors.
+  Exception: `POST /api/v1/query` takes its cursor in the body
+  (`page.cursor`) and returns `page.next_cursor`, since the query is a body.
 - Build `href`s from the same path constants the router mounts. Never write
   them as string literals scattered through handlers.
 

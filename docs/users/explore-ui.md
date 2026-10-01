@@ -176,7 +176,10 @@ connector **consent screen** at `/oauth/consent` (see [MCP](mcp.md)).
   suggestion, instead of silently rendering one `null`-labelled group. The
   builder is URL-backed (`?qsrc=`, `?qres=`, repeated `?qf=`, and `?qrun=1`
   once run), so a reload, a tab switch, or Back keeps the query; **Run** on
-  an unchanged document re-runs it against a fresh "now".
+  an unchanged document re-runs it against a fresh "now". A `rows` result
+  arrives 500 rows at a time, newest first; **Load more** under the table
+  fetches the next page with the response's cursor
+  ([Pagination](querying-ir.md#pagination-ir-v14)) over the same window.
 - **Correlation** — log rows with a `trace_id` open the trace waterfall;
   the span panel links back to logs filtered by that trace, and, for a span
   with a linked profile, offers a "Profile: `<sample type>` →" button that
@@ -1056,7 +1059,8 @@ tenant-less page.
 
 ![The post-login tenant selector listing each membership with its name and role](../assets/screenshots/login-tenant-selector.png)
 
-Signing in calls `POST /ui/session`, which validates the credentials and
+Signing in calls `POST /ui/session` (through the generated client, like
+every other UI call), which validates the credentials and
 sets an `HttpOnly`, `Secure`, `SameSite=Lax` cookie containing an opaque
 random token. The password and tenant API keys never live in the cookie,
 page JavaScript, `localStorage`, or URLs. A session starts with a 12-hour

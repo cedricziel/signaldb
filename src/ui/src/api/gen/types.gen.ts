@@ -1779,6 +1779,21 @@ export type IrOverTime = {
 export type IrOverTimeFn = 'avg' | 'min' | 'max' | 'sum' | 'count' | 'last' | 'stddev' | 'stdvar' | 'present' | 'quantile' | 'delta' | 'deriv' | 'changes' | 'resets';
 
 /**
+ * A document-level `page`: walk the result `size` rows (or traces) at a time.
+ */
+export type IrPage = {
+    /**
+     * The previous response's `page.next_cursor`; absent on the first page.
+     */
+    cursor?: string | null;
+    /**
+     * Rows (or, for the `trace` envelope, traces) per page; the server
+     * default when omitted.
+     */
+    size?: number | null;
+};
+
+/**
  * A parser for the `extract` stage. `regex` is deferred (registry-gated).
  */
 export type IrParser = 'json' | 'logfmt';
@@ -2494,6 +2509,7 @@ export type QueryIrRequest = {
      * IR document version (the server accepts a bounded range).
      */
     irVersion: number;
+    page?: null | IrPage;
     /**
      * Ordered transform stages.
      */
@@ -2537,6 +2553,7 @@ export type QueryIrResponse = {
     graph?: null | ServiceGraph;
     heatmap?: HeatmapResult;
     metadata?: null | MetadataResult;
+    page?: null | QueryPage;
     /**
      * Present iff `result == "scalar"`: one `[t_ns, value]` point per
      * evaluation instant, with no labels (`null` is NaN or ±Inf).
@@ -2564,6 +2581,17 @@ export type QueryIrResponse = {
      * The resolved absolute window the query ran over.
      */
     window: ResolvedWindow;
+};
+
+/**
+ * The `page` member of a paged response.
+ */
+export type QueryPage = {
+    /**
+     * Present exactly when more of the result exists; send it back as
+     * `page.cursor` with the same document. Opaque: never build or edit one.
+     */
+    next_cursor?: string | null;
 };
 
 /**
@@ -4561,6 +4589,10 @@ export type QueryIrErrors = {
      * Missing read scope for a queried source
      */
     403: ApiErrorBody;
+    /**
+     * The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk
+     */
+    410: ApiErrorBody;
     /**
      * The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry
      */

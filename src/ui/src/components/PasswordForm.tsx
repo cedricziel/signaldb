@@ -3,7 +3,7 @@
 
 import { useState } from "react";
 import { toErrorMessage } from "../api/http";
-import { createSession, type SessionResult } from "../api/session";
+import { createSession, type CreateSessionResponse } from "../api/session";
 // Own the stylesheet its classes come from rather than relying on a caller
 // (LoginMethods) to have loaded it.
 import "../features/shell/LoginPanel.css";
@@ -12,7 +12,7 @@ interface Props {
   /** Called with the raw POST /ui/session response; the caller decides
    * whether that's a resolved tenant or a set of memberships to choose
    * from. */
-  onAuthenticated: (result: SessionResult) => void;
+  onAuthenticated: (result: CreateSessionResponse) => void;
   /** Solid `.btn-primary` submit vs the plain `.btn` style — plain when an
    * SSO control is offered above this form, so it reads as the secondary
    * path. */

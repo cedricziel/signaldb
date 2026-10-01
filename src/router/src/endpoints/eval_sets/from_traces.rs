@@ -262,6 +262,8 @@ fn build_document(
         baseline: None,
         step: None,
         constant: None,
+        page: None,
+        tail: None,
     };
     doc.ir_version = doc.minimum_ir_version();
     doc

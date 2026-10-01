@@ -10,7 +10,10 @@
 //! `match_max_trace_bytes` fails the query; it is never truncated or skipped.
 //! A trace the range visibly cut (a span whose parent is not buffered, or a
 //! span ending after the window) is counted in [`IncompleteTraces`] when the
-//! stage has a relation; the result does not change.
+//! stage has a relation; the result does not change. With a relation,
+//! [`lower`] also passes on a trace that lacks a span-set but was visibly cut
+//! (no in-range root, or a span ending after the window) as one null-padded
+//! row marked not whole, which the exec counts as unmatched.
 
 use std::cmp::Ordering;
 use std::collections::HashMap;
@@ -29,15 +32,18 @@ use datafusion::arrow::util::display::{ArrayFormatter, FormatOptions};
 use datafusion::catalog::Session;
 use datafusion::common::tree_node::TreeNodeRecursion;
 use datafusion::common::{
-    DFSchema, DFSchemaRef, DataFusionError, JoinType, Result as DFResult, internal_err,
+    DFSchema, DFSchemaRef, DataFusionError, JoinType, Result as DFResult, ScalarValue, internal_err,
 };
 use datafusion::dataframe::DataFrame;
 use datafusion::execution::memory_pool::{MemoryConsumer, MemoryReservation};
 use datafusion::execution::{SendableRecordBatchStream, TaskContext};
+use datafusion::functions::core::expr_fn::coalesce;
+use datafusion::functions::string::expr_fn::btrim;
 use datafusion::functions_aggregate::expr_fn::bool_or;
 use datafusion::logical_expr::physical_planning_context::PhysicalPlanningContext;
 use datafusion::logical_expr::{
-    Expr, Extension, LogicalPlan, UserDefinedLogicalNode, UserDefinedLogicalNodeCore, col,
+    Expr, Extension, LogicalPlan, UserDefinedLogicalNode, UserDefinedLogicalNodeCore,
+    cast as logical_cast, col, lit,
 };
 use datafusion::physical_expr::expressions::col as physical_col;
 use datafusion::physical_expr::{
@@ -59,6 +65,10 @@ use super::planner::with_querier_planner;
 /// Reserved prefix of the internal per-span-set flag columns.
 pub(crate) const FLAG_PREFIX: &str = "__match_";
 const CANDIDATE_TRACE: &str = "__match_trace";
+/// Whether a trace has a span for every span-set (relational stages only).
+const WHOLE_TRACE: &str = "__match_whole";
+const ROOTED: &str = "__match_rooted";
+const OPEN_PAST_END: &str = "__match_open";
 const TRACE_ID: &str = "trace_id";
 const SPAN_ID: &str = "span_id";
 const PARENT_SPAN_ID: &str = "parent_span_id";
@@ -181,22 +191,67 @@ pub(crate) fn lower(
     ) else {
         return Err(internal("match has no span-set"));
     };
-    let kept = flagged
-        .clone()
-        .filter(any)?
-        .aggregate(
-            vec![col(TRACE_ID)],
-            flag_cols.iter().map(|c| bool_or(col(c)).alias(c)).collect(),
-        )?
-        .filter(all)?
-        .select(vec![col(TRACE_ID).alias(CANDIDATE_TRACE)])?
-        .join(
-            flagged,
-            JoinType::RightSemi,
-            &[CANDIDATE_TRACE],
-            &[TRACE_ID],
-            None,
-        )?;
+    let set_flags = || flag_cols.iter().map(|c| bool_or(col(c)).alias(c));
+    let candidates = |traces: DataFrame, keep: Expr| {
+        traces
+            .filter(keep)?
+            .select(vec![col(TRACE_ID).alias(CANDIDATE_TRACE)])?
+            .join(
+                flagged.clone(),
+                JoinType::RightSemi,
+                &[CANDIDATE_TRACE],
+                &[TRACE_ID],
+                None,
+            )
+    };
+    let kept = if relations.is_empty() {
+        let traces = flagged
+            .clone()
+            .filter(any)?
+            .aggregate(vec![col(TRACE_ID)], set_flags().collect())?;
+        candidates(traces, all)?
+    } else {
+        // A trace missing a span-set cannot match. When one of its spans is
+        // in a span-set and the range visibly cut it (no in-range span is a
+        // root, or one ends after the window), it reaches the exec as a
+        // single row marked not whole, which the exec counts as unmatched.
+        // As in `evaluate`, an absent, empty or all-zero parent is a root.
+        let parent = logical_cast(col(PARENT_SPAN_ID), DataType::Utf8);
+        let root = coalesce(vec![btrim(vec![parent, lit("0")]), lit("")]).eq(lit(""));
+        let mut aggs: Vec<Expr> = set_flags().collect();
+        aggs.push(bool_or(root.clone()).alias(ROOTED));
+        let (mut cut, mut relevant) = (!col(ROOTED), any.clone().or(root));
+        if flagged.schema().has_column_with_unqualified_name(END_TIME) {
+            let open = col(END_TIME).gt(lit(window_end_ns));
+            aggs.push(bool_or(open.clone()).alias(OPEN_PAST_END));
+            cut = cut.or(col(OPEN_PAST_END));
+            relevant = relevant.or(open);
+        }
+        // Every per-trace flag is existential, so spans that set none of
+        // them can be dropped before aggregating.
+        let traces = flagged
+            .clone()
+            .filter(relevant)?
+            .aggregate(vec![col(TRACE_ID)], aggs)?;
+        let whole = coalesce(vec![all, lit(false)]);
+        let whole_rows =
+            candidates(traces.clone(), whole.clone())?.with_column(WHOLE_TRACE, lit(true))?;
+        let schema = whole_rows.schema().clone();
+        let mut padded = Vec::with_capacity(schema.fields().len());
+        for field in schema.fields() {
+            let name = field.name();
+            let value = if name == TRACE_ID {
+                col(TRACE_ID)
+            } else if name.starts_with(FLAG_PREFIX) {
+                lit(false)
+            } else {
+                lit(ScalarValue::try_new_null(field.data_type())?)
+            };
+            padded.push(value.alias(name));
+        }
+        let cut_rows = traces.filter((!whole).and(any).and(cut))?.select(padded)?;
+        whole_rows.union(cut_rows)?
+    };
 
     let (state, input) = kept.into_parts();
     let incomplete = IncompleteTraces::default();
@@ -477,6 +532,10 @@ struct Evaluator {
     parent: usize,
     /// `None` without an end-time column: only dangling parents count then.
     end: Option<usize>,
+    /// [`WHOLE_TRACE`], present when the stage has a relation.
+    whole: Option<usize>,
+    /// The id of the not-whole trace being skipped, already counted.
+    skipped: Option<ArrayRef>,
     incomplete: IncompleteTraces,
     flags: Vec<usize>,
     kept: Vec<usize>,
@@ -503,7 +562,7 @@ impl Evaluator {
             .map(|i| input.index_of(&format!("{FLAG_PREFIX}{i}")))
             .collect::<Result<Vec<_>, _>>()?;
         let kept = (0..input.fields().len())
-            .filter(|i| !flags.contains(i))
+            .filter(|&i| !input.field(i).name().starts_with(FLAG_PREFIX))
             .collect();
         Ok(Self {
             spec: spec.clone(),
@@ -512,6 +571,8 @@ impl Evaluator {
             span: input.index_of(SPAN_ID)?,
             parent: input.index_of(PARENT_SPAN_ID)?,
             end: input.index_of(END_TIME).ok(),
+            whole: input.index_of(WHOLE_TRACE).ok(),
+            skipped: None,
             incomplete,
             flags,
             kept,
@@ -533,12 +594,21 @@ impl Evaluator {
             .into_iter()
             .enumerate()
         {
-            if i > 0 || !self.continues(traces.as_ref())? {
+            let continues = i == 0 && self.continues(traces.as_ref())?;
+            if !continues {
                 self.finish_trace()?;
+                self.skipped = None;
             }
             let slice = batch.slice(range.start, range.len());
-            self.admit(&slice)?;
-            self.current.push(slice);
+            if self.is_whole(&slice) {
+                self.admit(&slice)?;
+                self.current.push(slice);
+            } else if !continues {
+                // It lacks a span-set, so it cannot match; `lower` only
+                // lets it through when the range visibly cut it.
+                self.incomplete.record(false, || self.trace_id(&slice))?;
+                self.skipped = Some(slice.column(self.trace).slice(0, 1));
+            }
         }
         self.gather()
     }
@@ -548,12 +618,21 @@ impl Evaluator {
         self.gather()
     }
 
-    /// Whether `traces[0]` is the trace being buffered.
+    /// Whether `slice`'s trace has a span for every span-set.
+    fn is_whole(&self, slice: &RecordBatch) -> bool {
+        self.whole.is_none_or(|i| {
+            let whole = slice.column(i).as_boolean_opt();
+            whole.is_none_or(|w| w.is_valid(0) && w.value(0))
+        })
+    }
+
+    /// Whether `traces[0]` is the trace being buffered or skipped.
     fn continues(&self, traces: &dyn Array) -> DFResult<bool> {
-        let Some(last) = self.current.last() else {
-            return Ok(false);
+        let prev = match (self.current.last(), &self.skipped) {
+            (Some(last), _) => last.column(self.trace),
+            (None, Some(skipped)) => skipped,
+            (None, None) => return Ok(false),
         };
-        let prev = last.column(self.trace);
         let cmp = make_comparator(prev.as_ref(), traces, SortOptions::default())?;
         Ok(cmp(prev.len() - 1, 0) == Ordering::Equal)
     }
@@ -981,7 +1060,7 @@ mod tests {
     use crate::query::IrQueryParams;
     use crate::query::ir_planner::IrService;
     use common::flight::{MatchIncompleteReport, QueryReport};
-    use datafusion::arrow::array::{Int64Array, StringViewArray, UInt64Array};
+    use datafusion::arrow::array::{BooleanArray, Int64Array, StringViewArray, UInt64Array};
     use datafusion::arrow::datatypes::{Field, Schema};
     use datafusion::catalog::memory::{MemoryCatalogProvider, MemorySchemaProvider};
     use datafusion::catalog::{CatalogProvider, MemTable, SchemaProvider};
@@ -1085,6 +1164,7 @@ mod tests {
         IrQueryParams {
             document,
             now_ns: 0,
+            page: None,
         }
     }
 
@@ -1498,6 +1578,211 @@ mod tests {
         };
         samples[..2].sort();
         assert_eq!(samples, ["w", "x", "y"]);
+    }
+
+    /// `r`'s root, the only `a`, starts before the range; `e` has no `a`
+    /// and a span open past the range end. None of the rest counts: `h`
+    /// has no `a` but is whole, `n` is cut but in no span-set, `p` keeps
+    /// its root beside an orphan, and `q`'s root has an all-zero parent.
+    #[tokio::test]
+    async fn cut_traces_missing_a_span_set_count_as_unmatched() {
+        let mut spans: Vec<Span> = straddling().into_iter().filter(|s| s[0] == "z").collect();
+        spans.extend(
+            [
+                ["r", "r1", "r0", "b"],
+                ["e", "e0", "", "b"],
+                ["e", "e1", "e0", OPEN],
+                ["h", "h0", "", "b"],
+                ["n", "n1", "n0", "c"],
+                ["p", "p0", "", "b"],
+                ["p", "p1", "gone", "c"],
+                ["q", "q0", &"0".repeat(32), "b"],
+            ]
+            .map(|[t, id, parent, name]| span(t, id, parent, name)),
+        );
+        let stage = relation("a", "child", "b");
+        let (rows, report) = run_reporting(ctx(&spans), params(stage, &[]), WITNESS).await;
+        assert_eq!(rows, ["z0:a", "z1:b"]);
+        let Some(MatchIncompleteReport {
+            matched: 0,
+            unmatched: 2,
+            sample_trace_ids: mut samples,
+        }) = report.match_incomplete
+        else {
+            panic!("{report:?}");
+        };
+        samples.sort();
+        assert_eq!(samples, ["e", "r"]);
+    }
+
+    /// The per-trace aggregate is the join's build side, and a cut trace
+    /// that lacks a span-set reaches the exec's sort as one row.
+    #[tokio::test]
+    async fn a_cut_trace_missing_a_span_set_reaches_the_exec_as_one_row() {
+        let mut spans = chain("d1", 1);
+        spans.extend(
+            [
+                ["big", "b1", "b0", "write"],
+                ["big", "b2", "b1", "write"],
+                ["big", "b3", "b1", "write"],
+            ]
+            .map(|[t, id, parent, name]| span(t, id, parent, name)),
+        );
+        let params = params(relation("root", "descendant", "write"), &[]);
+        let d = serde_json::from_value(params.document).unwrap();
+        let ctx = ctx(&spans);
+        let (df, _) = IrService::new(ctx.clone())
+            .plan(&d, "t", "d", 0)
+            .await
+            .unwrap()
+            .unwrap();
+        let plan = df.create_physical_plan().await.unwrap();
+        let text = displayable(plan.as_ref()).indent(true).to_string();
+        let lines: Vec<&str> = text.lines().map(str::trim).collect();
+        let join = lines
+            .iter()
+            .position(|l| l.starts_with("HashJoinExec"))
+            .unwrap();
+        let scan = join
+            + lines[join..]
+                .iter()
+                .position(|l| l.starts_with("DataSourceExec"))
+                .unwrap();
+        assert!(
+            lines[join..scan]
+                .iter()
+                .any(|l| l.starts_with("AggregateExec")),
+            "the build side is the per-trace aggregate: {text}"
+        );
+
+        datafusion::physical_plan::collect(Arc::clone(&plan), ctx.task_ctx())
+            .await
+            .unwrap();
+        fn sort_rows_below_match(plan: &Arc<dyn ExecutionPlan>) -> Option<usize> {
+            if plan.name() == "StructuralMatchExec" {
+                return plan.children()[0].metrics()?.output_rows();
+            }
+            plan.children().into_iter().find_map(sort_rows_below_match)
+        }
+        assert_eq!(sort_rows_below_match(&plan), Some(3), "{text}");
+    }
+
+    /// Input slices as the exec sees them: whole traces and a skipped one
+    /// in one batch, and a skipped trace split across two batches.
+    #[test]
+    fn the_exec_skips_a_not_whole_trace_once_across_slices_and_batches() {
+        let input = |rows: &[(&str, &str, &str, &str, bool)]| -> RecordBatch {
+            let text = |i: usize| -> ArrayRef {
+                let values = rows.iter().map(|r| Some([r.0, r.1, r.2, r.3][i]));
+                Arc::new(
+                    values
+                        .map(|v| v.filter(|v| !v.is_empty()))
+                        .collect::<StringArray>(),
+                )
+            };
+            let flag = |name: &'static str| -> ArrayRef {
+                Arc::new(
+                    rows.iter()
+                        .map(|r| Some(r.3 == name))
+                        .collect::<BooleanArray>(),
+                )
+            };
+            let fields = [
+                ("trace_id", DataType::Utf8),
+                ("span_id", DataType::Utf8),
+                ("parent_span_id", DataType::Utf8),
+                ("span_name", DataType::Utf8),
+                ("start_time_unix_nano", DataType::Int64),
+                ("__match_0", DataType::Boolean),
+                ("__match_1", DataType::Boolean),
+                (WHOLE_TRACE, DataType::Boolean),
+            ]
+            .map(|(n, t)| Field::new(n, t, true));
+            let columns: Vec<ArrayRef> = vec![
+                text(0),
+                text(1),
+                text(2),
+                text(3),
+                Arc::new(Int64Array::from(vec![0; rows.len()])),
+                flag("a"),
+                flag("b"),
+                Arc::new(rows.iter().map(|r| Some(r.4)).collect::<BooleanArray>()),
+            ];
+            RecordBatch::try_new(Arc::new(Schema::new(fields.to_vec())), columns).unwrap()
+        };
+        let batches = [
+            input(&[
+                ("t1", "t1a", "", "a", true),
+                ("t1", "t1b", "t1a", "b", true),
+                ("t2", "t2b", "t2a", "b", false),
+                ("t3", "t3a", "", "a", true),
+                ("t3", "t3b", "t3a", "b", true),
+                ("t4", "t4b", "t4a", "b", false),
+            ]),
+            input(&[
+                ("t4", "t4c", "t4a", "b", false),
+                ("t5", "t5a", "", "a", true),
+                ("t5", "t5b", "t5a", "b", true),
+            ]),
+        ];
+        let output = Arc::new(Schema::new(vec![
+            Field::new("trace_id", DataType::Utf8, true),
+            Field::new("span_id", DataType::Utf8, true),
+            Field::new("parent_span_id", DataType::Utf8, true),
+            Field::new("span_name", DataType::Utf8, true),
+            Field::new("start_time_unix_nano", DataType::Int64, true),
+            Field::new(Match::SPANSETS, DataType::Utf8, false),
+        ]));
+        let spec = Spec {
+            names: vec!["a".into(), "b".into()],
+            relations: vec![(0, MatchOp::Child, 1)],
+            limits: MatchLimits::default(),
+            time_col: "start_time_unix_nano".into(),
+            window_end_ns: 1000,
+        };
+        let pool: Arc<dyn MemoryPool> = Arc::new(GreedyMemoryPool::new(usize::MAX));
+        let incomplete = IncompleteTraces::default();
+        let mut evaluator = Evaluator::try_new(
+            &batches[0].schema(),
+            &output,
+            &spec,
+            incomplete.clone(),
+            MemoryConsumer::new("test").register(&pool),
+        )
+        .unwrap();
+        let mut outputs: Vec<RecordBatch> = Vec::new();
+        for batch in &batches {
+            outputs.extend(evaluator.push(batch).unwrap());
+        }
+        outputs.extend(evaluator.finish().unwrap());
+        let spans: Vec<&str> = outputs
+            .iter()
+            .flat_map(|out| out.column(1).as_string::<i32>().iter().flatten())
+            .collect();
+        assert_eq!(spans, ["t1a", "t1b", "t3a", "t3b", "t5a", "t5b"]);
+        let report = incomplete.report().unwrap();
+        assert_eq!((report.matched, report.unmatched), (0, 2));
+        assert_eq!(report.sample_trace_ids, ["t2", "t4"]);
+    }
+
+    /// A cut trace that lacks a span-set cannot match, so it is counted
+    /// without being buffered and never trips the trace bounds.
+    #[tokio::test]
+    async fn a_cut_trace_missing_a_span_set_is_counted_under_the_span_bound() {
+        let spans = [
+            ["big", "b1", "b0", "b"],
+            ["big", "b2", "b1", "b"],
+            ["big", "b3", "b1", "b"],
+        ]
+        .map(|[t, id, parent, name]| span(t, id, parent, name));
+        let (_, _, report) = IrService::new(ctx(&spans))
+            .with_match_limits(2, usize::MAX)
+            .query(&params(relation("a", "child", "b"), &[]), "t", "d")
+            .await
+            .unwrap();
+        let incomplete = report.match_incomplete.unwrap();
+        assert_eq!((incomplete.matched, incomplete.unmatched), (0, 1));
+        assert_eq!(incomplete.sample_trace_ids, ["big"]);
     }
 
     #[tokio::test]

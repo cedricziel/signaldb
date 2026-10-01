@@ -4,12 +4,8 @@ type: explanation
 status: living
 sources:
   - Cargo.toml
-  - src/signaldb-bin/src/**
-  - src/router/src/endpoints/**
-  - src/common/src/config/mod.rs
+  - src/signaldb-bin/src/main.rs
   - src/common/src/service_bootstrap.rs
-  - src/common/src/iceberg/**
-  - src/compactor/src/**
   - schemas.toml
 ---
 

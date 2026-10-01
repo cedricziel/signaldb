@@ -60,6 +60,14 @@ impl ApiError {
         Self::new(StatusCode::BAD_REQUEST, message)
     }
 
+    /// A `422` with `errorType` `resource_limit`: a server bound the request
+    /// would exceed again unchanged.
+    pub fn resource_limit(message: impl Into<String>) -> Self {
+        let mut err = Self::new(StatusCode::UNPROCESSABLE_ENTITY, message);
+        err.resource_limit = true;
+        err
+    }
+
     /// Build a `429` from a rejected [`RateLimitExceeded`]: status,
     /// message, `retryAfterMs` in the body, and the `Retry-After` /
     /// `X-RateLimit-Limit` / `X-RateLimit-Burst` headers on the response —
@@ -118,6 +126,7 @@ impl ApiError {
             StatusCode::FORBIDDEN => "forbidden",
             StatusCode::NOT_FOUND => "not_found",
             StatusCode::CONFLICT => "conflict",
+            StatusCode::GONE => "gone",
             StatusCode::PAYLOAD_TOO_LARGE => "payload_too_large",
             StatusCode::UNPROCESSABLE_ENTITY => "invalid",
             StatusCode::TOO_MANY_REQUESTS => "rate_limited",

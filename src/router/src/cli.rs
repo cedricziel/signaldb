@@ -88,7 +88,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
 
     // Initialize router service bootstrap for catalog-based discovery
     let router_bootstrap =
-        ServiceBootstrap::new(config.clone(), ServiceType::Router, flight_addr.to_string())
+        ServiceBootstrap::from_bind_addr(config.clone(), ServiceType::Router, flight_addr)
             .await
             .context("Failed to initialize router service bootstrap")?;
 
@@ -168,6 +168,7 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
             "Flight port is UNAUTHENTICATED ([auth].internal_service_key is not set); \
              it must be restricted to a trusted network"
         );
+        warn_unsigned_cursors();
     }
     let flight_service = create_flight_service(state);
     let flight_handle = tokio::spawn(async move {
@@ -226,4 +227,13 @@ pub async fn run(common: &CommonArgs, args: Args) -> Result<()> {
     tracing::info!("Router service stopped gracefully");
 
     Ok(())
+}
+
+/// The startup warning that, without `[auth].internal_service_key`, Query IR
+/// page and tail cursors are only checksummed, not signed.
+pub fn warn_unsigned_cursors() {
+    tracing::warn!(
+        "Query IR page and tail cursors are unsigned ([auth].internal_service_key is \
+         not set); a client can edit one to reset its walk budget or lifetime"
+    );
 }

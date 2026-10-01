@@ -1466,6 +1466,16 @@
               }
             }
           },
+          "410": {
+            "description": "The `page.cursor` expired or comes from an incompatible server version (`errorType` `gone`); restart the walk",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApiErrorBody"
+                }
+              }
+            }
+          },
           "422": {
             "description": "The query exceeds a server-side resource bound (`errorType` `resource_limit`); narrow it rather than retry",
             "content": {
@@ -9506,6 +9516,29 @@
           "resets"
         ]
       },
+      "IrPage": {
+        "type": "object",
+        "description": "A document-level `page`: walk the result `size` rows (or traces) at a time.",
+        "properties": {
+          "cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The previous response's `page.next_cursor`; absent on the first page."
+          },
+          "size": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int32",
+            "description": "Rows (or, for the `trace` envelope, traces) per page; the server\ndefault when omitted.",
+            "minimum": 0
+          }
+        },
+        "additionalProperties": false
+      },
       "IrParser": {
         "type": "string",
         "description": "A parser for the `extract` stage. `regex` is deferred (registry-gated).",
@@ -11351,6 +11384,17 @@
             "format": "int64",
             "description": "IR document version (the server accepts a bounded range)."
           },
+          "page": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrPage",
+                "description": "Walk a `rows`/`trace` result in pages (irVersion 14+): resend the\nsame document with `page.cursor` set to the previous\n`page.next_cursor` to continue."
+              }
+            ]
+          },
           "pipeline": {
             "type": "array",
             "items": {
@@ -11444,6 +11488,17 @@
               }
             ]
           },
+          "page": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/QueryPage",
+                "description": "Present iff the request carried `page` (`rows`/`trace` only)."
+              }
+            ]
+          },
           "points": {
             "type": [
               "array",
@@ -11499,6 +11554,19 @@
           "window": {
             "$ref": "#/components/schemas/ResolvedWindow",
             "description": "The resolved absolute window the query ran over."
+          }
+        }
+      },
+      "QueryPage": {
+        "type": "object",
+        "description": "The `page` member of a paged response.",
+        "properties": {
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Present exactly when more of the result exists; send it back as\n`page.cursor` with the same document. Opaque: never build or edit one."
           }
         }
       },

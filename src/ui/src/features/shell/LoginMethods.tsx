@@ -4,7 +4,10 @@
 // is a one-line change to `providers` below, not a new component.
 
 import { useEffect, useRef } from "react";
-import type { LoginConfigResponse, SessionResult } from "../../api/session";
+import type {
+  LoginConfigResponse,
+  CreateSessionResponse,
+} from "../../api/session";
 import { CHECKING_LOGIN_OPTIONS_HINT } from "../../lib/useLoginConfig";
 import { DemoButton } from "../../components/DemoButton";
 import { PasswordForm } from "../../components/PasswordForm";
@@ -17,7 +20,7 @@ interface Props {
   /** Same-app path the SSO control should return to after the IdP round
    * trip; already validated by the caller. */
   redirect: string;
-  onAuthenticated: (result: SessionResult) => void;
+  onAuthenticated: (result: CreateSessionResponse) => void;
   /** Contextual copy shown above the credential controls (differs by
    * caller: the page's default, the gate's "session expired", consent's
    * "sign in to authorize"). */

@@ -5,7 +5,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useRef, useState } from "react";
 import { Link, useNavigate } from "react-router";
 import { clearPersistedTenantContext, toErrorMessage } from "../../api/http";
-import { deleteSession, type WhoamiResponse } from "../../api/session";
+import { deleteSession, type WhoamiIdentityResponse } from "../../api/session";
 import { clearRecentQueries } from "../../lib/recentQueries";
 import { isDarkTheme, toggleTheme } from "../../lib/theme";
 import { useEscapeKey } from "../../hooks/useEscapeKey";
@@ -13,7 +13,7 @@ import "./UserMenu.css";
 
 interface Props {
   /** The signed-in identity; nothing renders without a user. */
-  who: WhoamiResponse | undefined;
+  who: WhoamiIdentityResponse | undefined;
   /**
    * `topbar` (the default): avatar + name + caret, the popover dropping
    * below. `sidebar`: the nav sidebar's footer row — avatar, then name over
@@ -82,7 +82,7 @@ export function UserMenu({
 }
 
 interface PopoverProps {
-  who: WhoamiResponse;
+  who: WhoamiIdentityResponse;
   role: string | undefined;
   onClose: () => void;
 }

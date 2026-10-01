@@ -2,13 +2,6 @@
 name: frontend-instrumentation
 description: Best practices for instrumenting the SignalDB browser UI with OpenTelemetry - end-to-end trace correlation, RUM sessions, context propagation, exporter config, and manual spans - plus the UI-wide rule that every visualization panel shows its data through the shared VizTooltip. Use when working on src/ui telemetry, browser tracing, session tracking, frontend-to-backend correlation, or adding a chart/panel to the UI.
 user-invocable: false
-sources:
-  - src/ui/src/telemetry/**
-  - src/ui/src/components/VizTooltip.tsx
-  - src/ui/src/lib/vizFormat.ts
-  - src/ui/vite.config.ts
-  - src/ui/.env.example
-  - src/router/src/ui.rs
 ---
 
 # Frontend Instrumentation

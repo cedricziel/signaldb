@@ -5,10 +5,10 @@
 // everyone else sees the page read-only.
 import { useOutletState } from "../../lib/outletState";
 import { useWhoami } from "../../lib/useWhoami";
-import type { WhoamiDataset, WhoamiResponse } from "../../api/session";
+import type { WhoamiDataset, WhoamiIdentityResponse } from "../../api/session";
 
 export interface ProcessorsSession {
-  who: WhoamiResponse | undefined;
+  who: WhoamiIdentityResponse | undefined;
   isLoading: boolean;
   isTenantAdmin: boolean;
   tenant: string;

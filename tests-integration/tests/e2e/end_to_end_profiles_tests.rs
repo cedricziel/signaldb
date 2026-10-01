@@ -4,8 +4,8 @@
 //! ticket against the querier, the router's Pyroscope-compatible
 //! `/pyroscope/render` HTTP endpoint, the generated SDK client the CLI's
 //! `profiles` commands dispatch through (change: `pyroscope-openapi-parity`,
-//! task 5.2), and the MCP server's `discover_profile_types` tool called over
-//! a real Streamable HTTP session.
+//! task 5.2), and the MCP server's `discover_profile_types` and
+//! `profiles_for_trace` tools called over a real Streamable HTTP session.
 //!
 //! Modeled on `end_to_end_trace_tests.rs`: a test tenant `AuthConfig`, a
 //! `TenantContext`-injecting gRPC interceptor (tests don't run the real auth
@@ -37,8 +37,8 @@ use opentelemetry_proto::tonic::collector::profiles::v1development::{
 };
 use opentelemetry_proto::tonic::common::v1::{AnyValue, KeyValue, any_value};
 use opentelemetry_proto::tonic::profiles::v1development::{
-    Function, Line, Location, Profile, ProfilesDictionary, ResourceProfiles, Sample, ScopeProfiles,
-    Stack, ValueType,
+    Function, Line, Link, Location, Profile, ProfilesDictionary, ResourceProfiles, Sample,
+    ScopeProfiles, Stack, ValueType,
 };
 use opentelemetry_proto::tonic::resource::v1::Resource;
 use querier::flight::QuerierFlightService;
@@ -421,8 +421,12 @@ fn test_profile_request(profile_id: [u8; 16]) -> ExportProfilesServiceRequest {
 /// Send a test profile via OTLP gRPC and return its profile ID.
 async fn send_test_profile(services: &TestServices) -> [u8; 16] {
     let profile_id = [0x77; 16];
-    let request = test_profile_request(profile_id);
+    send_profile_request(services, test_profile_request(profile_id)).await;
+    profile_id
+}
 
+/// Export `request` to the acceptor over OTLP gRPC.
+async fn send_profile_request(services: &TestServices, request: ExportProfilesServiceRequest) {
     let endpoint = format!("http://{}", services.acceptor_addr);
     let mut otlp_client = opentelemetry_proto::tonic::collector::profiles::v1development::profiles_service_client::ProfilesServiceClient::connect(endpoint)
         .await
@@ -432,8 +436,6 @@ async fn send_test_profile(services: &TestServices) -> [u8; 16] {
         .await
         .expect("OTLP profiles export timed out")
         .expect("OTLP profiles export failed");
-
-    profile_id
 }
 
 /// Poll the object store until it has persisted data or the timeout elapses.
@@ -995,20 +997,13 @@ async fn read_mcp_jsonrpc_response(
     }
 }
 
-/// The MCP server's `discover_profile_types` tool, called over a real
-/// Streamable HTTP session against the live router, must list the ingested
-/// CPU profile type — the same discovery surface `signaldb profiles types`
-/// exposes on the CLI side.
-#[tokio::test]
-async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
+/// An initialized MCP Streamable HTTP session against the live router:
+/// the MCP app and its session id.
+async fn mcp_session(services: &TestServices) -> (axum::Router, String) {
     use axum::http::StatusCode;
     use tower::ServiceExt;
 
-    let services = setup_services().await;
-    send_test_profile(&services).await;
-    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
-
-    let router_base_url = spawn_router_http(&services).await;
+    let router_base_url = spawn_router_http(services).await;
     let mcp_state =
         mcp_server::McpAppState::new(router_base_url).with_router_timeout(Duration::from_secs(10));
     let mcp_app = mcp_server::mcp_http_router(mcp_state, &[]);
@@ -1046,17 +1041,31 @@ async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
         .expect("initialized responds");
     assert_eq!(response.status(), StatusCode::ACCEPTED, "initialized");
 
+    (mcp_app, session_id)
+}
+
+/// Call `tool` with `arguments` until `done` accepts its JSON result, and
+/// return that result. The writer persists asynchronously, so a reply
+/// without a JSON text block (a transient router or querier error) counts
+/// as not done; the last raw reply is reported if the deadline passes.
+async fn call_mcp_tool_until(
+    mcp_app: &axum::Router,
+    session_id: &str,
+    tool: &str,
+    arguments: serde_json::Value,
+    done: impl Fn(&serde_json::Value) -> bool,
+) -> serde_json::Value {
+    use axum::http::StatusCode;
+    use tower::ServiceExt;
+
     let deadline = Instant::now() + Duration::from_secs(15);
-    let mut next_id = 2u64;
-    let types = loop {
+    let mut last = serde_json::Value::Null;
+    for id in 2u64.. {
         let call = mcp_profiles_request(
-            Some(&session_id),
+            Some(session_id),
             serde_json::json!({
-                "jsonrpc": "2.0", "id": next_id, "method": "tools/call",
-                "params": {
-                    "name": "discover_profile_types",
-                    "arguments": {"tenant": TEST_TENANT, "dataset": TEST_DATASET}
-                }
+                "jsonrpc": "2.0", "id": id, "method": "tools/call",
+                "params": { "name": tool, "arguments": arguments }
             }),
         );
         let response = mcp_app
@@ -1065,29 +1074,102 @@ async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
             .await
             .expect("tools/call responds");
         assert_eq!(response.status(), StatusCode::OK, "tools/call HTTP status");
-        let reply = read_mcp_jsonrpc_response(response, next_id).await;
-        let text = reply["result"]["content"][0]["text"]
+        let reply = read_mcp_jsonrpc_response(response, id).await;
+        let result = reply["result"]["content"][0]["text"]
             .as_str()
-            .unwrap_or_else(|| panic!("discover_profile_types carries no text block: {reply}"));
-        let types: serde_json::Value = serde_json::from_str(text).expect("tool result is JSON");
-        if types
-            .as_array()
-            .is_some_and(|arr| arr.iter().any(|t| t["sampleType"] == "cpu"))
+            .and_then(|text| serde_json::from_str::<serde_json::Value>(text).ok());
+        if let Some(result) = result
+            && done(&result)
         {
-            break types;
+            return result;
         }
-        next_id += 1;
+        last = reply;
         if Instant::now() >= deadline {
-            panic!("discover_profile_types never listed the ingested cpu type; got {types}");
+            break;
         }
         sleep(Duration::from_millis(200)).await;
+    }
+    panic!("{tool} never returned the expected result; last reply: {last}");
+}
+
+/// The MCP server's `discover_profile_types` tool, called over a real
+/// Streamable HTTP session against the live router, must list the ingested
+/// CPU profile type — the same discovery surface `signaldb profiles types`
+/// exposes on the CLI side.
+#[tokio::test]
+async fn mcp_discover_profile_types_lists_the_ingested_profile_type() {
+    let services = setup_services().await;
+    send_test_profile(&services).await;
+    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+
+    let (mcp_app, session_id) = mcp_session(&services).await;
+    call_mcp_tool_until(
+        &mcp_app,
+        &session_id,
+        "discover_profile_types",
+        serde_json::json!({"tenant": TEST_TENANT, "dataset": TEST_DATASET}),
+        |types| {
+            types
+                .as_array()
+                .is_some_and(|arr| arr.iter().any(|t| t["sampleType"] == "cpu"))
+        },
+    )
+    .await;
+}
+
+/// The MCP server's `profiles_for_trace` tool, called over a real Streamable
+/// HTTP session against the live router, returns a populated summary for a
+/// profile whose sample links to the trace (#2125). The router names the
+/// `profiles` columns physically (`profile_id`), so a summary built from
+/// logical names would come back with every field empty.
+#[tokio::test]
+async fn mcp_profiles_for_trace_returns_the_linked_profile_summary() {
+    const TRACE_ID: [u8; 16] = [0xab; 16];
+    const SPAN_ID: [u8; 8] = [0xcd; 8];
+    let services = setup_services().await;
+
+    let profile_id = [0x55; 16];
+    let mut request = test_profile_request(profile_id);
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock after the epoch")
+        .as_nanos();
+    let dictionary = request.dictionary.as_mut().expect("fixture dictionary");
+    dictionary.link_table = vec![
+        Link::default(), // 0: null link
+        Link {
+            trace_id: TRACE_ID.to_vec(),
+            span_id: SPAN_ID.to_vec(),
+        },
+    ];
+    // `profiles_for_trace` reads the last 30 days.
+    let profile = &mut request.resource_profiles[0].scope_profiles[0].profiles[0];
+    profile.time_unix_nano = u64::try_from(now_ns).expect("now fits u64 nanoseconds");
+    profile.samples[0].link_index = 1;
+    send_profile_request(&services, request).await;
+    wait_for_objects_persisted(&services.object_store, Duration::from_secs(15)).await;
+
+    let (mcp_app, session_id) = mcp_session(&services).await;
+    let summaries = call_mcp_tool_until(
+        &mcp_app,
+        &session_id,
+        "profiles_for_trace",
+        serde_json::json!({
+            "trace_id": hex::encode(TRACE_ID),
+            "tenant": TEST_TENANT,
+            "dataset": TEST_DATASET
+        }),
+        |summaries| summaries.as_array().is_some_and(|s| !s.is_empty()),
+    )
+    .await;
+    let [summary] = summaries.as_array().map(Vec::as_slice).unwrap_or_default() else {
+        panic!("expected one linked profile, got {summaries}");
     };
-    assert!(
-        types
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|t| t["sampleType"] == "cpu"),
-        "expected a cpu profile type via MCP, got {types}"
-    );
+    assert_eq!(summary["profileID"], hex::encode(profile_id), "{summary}");
+    assert_eq!(summary["sampleType"], "cpu", "{summary}");
+    assert_eq!(summary["serviceName"], SERVICE_NAME, "{summary}");
+    assert_eq!(summary["spanID"], hex::encode(SPAN_ID), "{summary}");
+    assert_eq!(summary["sampleUnit"], "nanoseconds", "{summary}");
+    assert_ne!(summary["timeUnixNano"], "0", "{summary}");
+    assert_eq!(summary["durationNano"], "10000000000", "{summary}");
 }

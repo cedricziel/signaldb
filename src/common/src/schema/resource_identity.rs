@@ -113,7 +113,7 @@ fn write_canonical_object(object: &serde_json::Map<String, serde_json::Value>, o
 /// Appends the canonical form of an arbitrary JSON value to `out`: objects
 /// go through [`write_canonical_object`] (sorted keys), array elements keep
 /// their original order, and scalars use serde_json's default encoding.
-fn write_canonical_value(value: &serde_json::Value, out: &mut String) {
+pub(crate) fn write_canonical_value(value: &serde_json::Value, out: &mut String) {
     match value {
         serde_json::Value::Object(object) => write_canonical_object(object, out),
         serde_json::Value::Array(elements) => {

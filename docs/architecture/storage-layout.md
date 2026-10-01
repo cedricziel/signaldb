@@ -13,6 +13,7 @@ sources:
   - src/writer/src/storage/iceberg.rs
   - src/writer/src/schema_transform.rs
   - src/querier/src/query/warm_index/probe.rs
+  - src/common/src/schema/logical.rs
 ---
 
 # Storage Layout Design
@@ -295,13 +296,13 @@ Because both paths call the same constructor, a provisioned table is indistingui
 
 ### Signal Type to Table Mapping
 
-| Signal Type      | Table Name         | WalOperation    | Schema Source                    |
-| ---------------- | ------------------ | --------------- | -------------------------------- |
-| Traces           | `traces`           | `WriteTraces`   | `schemas.toml` (physical-v5)     |
-| Logs             | `logs`             | `WriteLogs`     | `schemas.toml` (physical-v4)     |
-| Metrics          | `metrics`          | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
-| Metric exemplars | `metric_exemplars` | `WriteMetrics`  | `schemas.toml` (physical-v4)     |
-| Profiles         | `profiles`         | `WriteProfiles` | `schemas.toml` (physical-v3)     |
+| Signal Type      | Table Name         | WalOperation    | Schema Source                |
+| ---------------- | ------------------ | --------------- | ---------------------------- |
+| Traces           | `traces`           | `WriteTraces`   | `schemas.toml` (physical-v5) |
+| Logs             | `logs`             | `WriteLogs`     | `schemas.toml` (physical-v4) |
+| Metrics          | `metrics`          | `WriteMetrics`  | `schemas.toml` (physical-v4) |
+| Metric exemplars | `metric_exemplars` | `WriteMetrics`  | `schemas.toml` (physical-v4) |
+| Profiles         | `profiles`         | `WriteProfiles` | `schemas.toml` (physical-v3) |
 
 `metrics` holds one row per data point across every metric type (`metric_type`: gauge, sum, histogram, exponential_histogram, summary), with typed columns for histogram buckets, exponential-histogram buckets, and summary quantiles rather than JSON strings. `metric_exemplars` holds one row per exemplar, linked to its owning point via `series_id` plus `point_timestamp` (a `series_id` alone identifies the series, not one point). A `WriteMetrics` batch's target table is extracted from the WAL entry's `metadata` JSON field (`target_table`), defaulting to `metrics`; the five legacy per-type tables (`metrics_gauge`, `metrics_sum`, `metrics_histogram`, `metrics_exponential_histogram`, `metrics_summary`) are dropped by the writer's table reconciler on upgrade and no longer created.
 
@@ -328,13 +329,13 @@ The key is time-leading for every signal, matching both the hour partitioning
 and the dominant query shape, "filter a time range, order by time, take the
 most recent _n_":
 
-| Table                  | Sort key                                     |
-| ---------------------- | -------------------------------------------- |
-| `traces`               | `timestamp`, `trace_id`                      |
-| `logs`                 | `timestamp`, `service_name`, `severity_text` |
-| `metrics`              | `timestamp`, `metric_name`, `service_name`   |
-| `metric_exemplars`     | `timestamp`, `trace_id`                      |
-| `profiles`             | `timestamp`, `service_name`                  |
+| Table              | Sort key                                     |
+| ------------------ | -------------------------------------------- |
+| `traces`           | `timestamp`, `trace_id`                      |
+| `logs`             | `timestamp`, `service_name`, `severity_text` |
+| `metrics`          | `timestamp`, `metric_name`, `service_name`   |
+| `metric_exemplars` | `timestamp`, `trace_id`                      |
+| `profiles`         | `timestamp`, `service_name`                  |
 
 All columns are ascending with nulls first. `TableSchema::sort_key_columns()`
 in `iceberg/schemas.rs` is the single source of truth: producers sort by it,
@@ -453,6 +454,8 @@ Defined in `schemas.toml` via v1 base plus v2 (renames, computed fields), v3 (#1
 All v3/v4/v5 additions are nullable; null on any row written before its column existed. See
 [Typed attribute layout](#typed-attribute-layout-v5-one-shot-cutover) below for what the five
 columns per container mean and how the v4 -> v5 cutover was applied.
+
+On rows written before v3, `arrow_to_otlp_traces` falls back to deriving `span_kind`/`status_code`'s numeric form from the string columns, and defaults the dropped counts to 0, only when the v3 column is absent or null.
 
 **Partition**: `Hour(timestamp)` as `timestamp_hour`
 
@@ -747,6 +750,11 @@ DataFusion's physical filter-pushdown injects the query predicate into the
 `DataSourceExec`, and with `datafusion.execution.parquet.bloom_filter_on_read`
 defaulting on, a bloom-filtered file skips row groups that cannot contain the
 target. See `tests-integration/tests/querier/trace_bloom_pruning.rs`.
+
+**Compactor gap**: a label column added to an _existing_ table by
+[schema evolution](#label-columns-can-be-added-to-existing-tables) does not
+gain a bloom filter, because only table creation sets these properties and
+compaction does not add one on rewrite either (tracked as #731).
 
 #### Metrics Table (physical-v4 -- current)
 
@@ -1082,13 +1090,15 @@ let batch = reader.into_iter().next().unwrap()?;
 
 Schemas are defined in `schemas.toml` at the repository root and compiled into the binary via `include_str!`. The system supports:
 
-| Feature             | Description                                                                                        |
-| ------------------- | -------------------------------------------------------------------------------------------------- |
-| **Versioning**      | Each signal type tracks a current `physical-vN` (e.g., `current_trace_version = "physical-v5"`)    |
-| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "physical-v1"`                         |
-| **Field renames**   | Rename fields across versions: `{ from = "name", to = "span_name" }`                               |
-| **Field additions** | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }` |
-| **Computed fields** | Fields derived from other fields at write time                                                     |
+| Feature             | Description                                                                                                                                                             |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **Versioning**      | Each signal type tracks a current `physical-vN` (e.g., `current_trace_version = "physical-v5"`)                                                                         |
+| **Inheritance**     | A version can inherit all fields from a parent: `inherits = "physical-v1"`                                                                                              |
+| **Field renames**   | Rename fields across versions: `{ from = "name", to = "span_name" }`                                                                                                    |
+| **Field additions** | Add new fields: `{ name = "timestamp", type = "timestamp_ns", computed = "start_time_unix_nano" }`                                                                      |
+| **Field removals**  | `{ name = "deprecated_field" }` drops an inherited field going forward only; no Parquet data is deleted                                                                 |
+| **Computed fields** | Fields derived from other fields at write time                                                                                                                          |
+| **Physical-only**   | `{ physical_only = true }` marks a field stored in Iceberg but absent from the client-visible logical schema; computed and partition-by fields are marked automatically |
 
 ### Schema Resolution
 
@@ -1098,6 +1108,9 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 2. If `inherits` is specified, recursively resolving the parent and starting with its fields
 3. Applying `field_renames` to inherited fields
 4. Appending `field_additions`
+5. Applying `field_removals`
+
+`SchemaDefinitions::version_chain` is a separate function that computes the forward hop order between two named versions by walking `inherits` backward from the target and reversing it -- version _names_ carry no ordering of their own, only `inherits` pointers do. This is what drives the live-table schema evolution described [below](#an-existing-tables-schema-tracks-and-catches-up-to-schemastomls-version); the resolution steps above are for resolving one version's field set, not for sequencing versions.
 
 ### Three version axes
 
@@ -1112,6 +1125,53 @@ The `SchemaDefinitions` struct (`src/common/src/schema/schema_parser.rs`) resolv
 3. **Logical schema version** (`logical_schema_version`, `LogicalSchema::VERSION`):
    the client-visible OTel schema in `common::schema::logical`. A field change
    there moves this axis only.
+
+### Logical schema
+
+`LogicalSchema::core()` (`src/common/src/schema/logical.rs`) is the one
+client-visible schema that ingest, the Query IR and every dialect bind to. It
+names fields the way OpenTelemetry does and says nothing about storage;
+`schemas.toml` is its physical realization. `src/common/tests/schema_realization.rs`
+checks that every physical column is a logical field (directly or by alias), an
+attribute container, or `physical_only`.
+
+A field is identified by `(source, level, name)`. The source is `logs`,
+`traces`, `metrics`, `exemplars` or `profiles`; the level is an
+`AttributeLevel` (`resource`, `scope`, `record`) for attributes and absent for
+record metadata, so a resource and a record attribute with the same dotted name
+are distinct fields. An exact level-less SignalDB name (such as
+`resource.identity`) matches first, then a `resource.`/`scope.`/`record.`
+qualifier; an unqualified name shadows record, then scope, then resource.
+`LogicalType` is `String`, `Bool`, `Int64`, `Float64`, `TimestampNs`,
+`DurationNs`, `Bytes` or `AnyValue`; log `body` is an `AnyValue`.
+
+- **Record metadata** carries the OTLP fields the records have: log
+  `severity_number`/`severity_text`/`trace_flags`/`event_name`/
+  `observed_timestamp`, `dropped_*_count` on logs and traces, span kind and
+  status numbers.
+- **Join keys**: `core()` declares `trace_id` and `span_id` on `traces` and
+  `logs`, and `trace.id`/`span.id` on `exemplars`. The other correlate keys
+  (`CorrelateKey` in `query-ir`: profiles' `trace.id`/`span.id`, `series.id` on
+  `metrics` and `exemplars`, `resource.identity`) resolve through planner
+  aliases, not `core()` fields. `resource.identity` is a SignalDB-defined digest
+  of the resource attribute set, flagged non-native.
+- **Retrieval-only fields** can be read but not used in predicates: span
+  events, the `{scope}.attributes` bags (which return the original `AnyValue`s,
+  residue content included), and the metric bucket, bound and quantile lists.
+- **Metrics** are one logical source: `metric.type`, `metric.temporality` and
+  `metric.monotonic` are fields on it, not separate per-type sources. Exemplars
+  are the sibling `exemplars` source.
+- **`physical_only`** columns exist in a table but are not logical fields
+  (computed, partition, and other storage-only columns). Physical names are
+  rejected in queries.
+
+`LogicalSchema::VERSION` must equal `logical_schema_version` in `schemas.toml`;
+a pinned fingerprint test fails when the field set changes without bumping
+both. Attribute values are typed by the attribute type authority
+(`src/common/src/schema/type_authority.rs`): values of the canonical type live
+in the matching `{container}_str/_int/_double/_bool` map, and everything else
+(off-type scalars, arrays, kvlists, bytes, empty or null values) stays in
+`{container}_residue` (`typed_attributes.rs` names the columns).
 
 ### Flight wire vs Iceberg storage
 

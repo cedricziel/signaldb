@@ -58,6 +58,36 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
 
+  # release-please's cargo-workspace plugin writes Cargo.lock versions for
+  # every workspace crate, including the QL parsers that release in their own
+  # PRs, so a release PR's lockfile can disagree with its manifests and fail
+  # CI's `--locked` builds. Regenerate it on each open release PR, pushing
+  # with the release token so CI runs on the fix.
+  sync-release-lockfiles:
+    name: Sync Release PR Lockfiles
+    runs-on: ubuntu-latest
+    needs: release-please
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          token: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+
+      - name: Regenerate Cargo.lock on open release PRs
+        env:
+          GH_TOKEN: ${{ secrets.MY_RELEASE_PLEASE_TOKEN }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          for branch in $(gh pr list --label "autorelease: pending" --json headRefName --jq '.[].headRefName'); do
+            git fetch --quiet --depth=1 origin "$branch"
+            git checkout --quiet -B "$branch" FETCH_HEAD
+            cargo update --workspace
+            git diff --quiet -- Cargo.lock || {
+              git commit --quiet -m "chore: sync Cargo.lock with release versions" -- Cargo.lock
+              git push origin "$branch"
+            }
+          done
+
   # The compatibility query-language parsers are published libraries, not
   # service artifacts: no binaries, no images, nothing to attach to a release.
   # Each is gated on its own output so releasing one never republishes the

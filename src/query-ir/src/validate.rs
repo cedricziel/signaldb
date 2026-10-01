@@ -100,6 +100,12 @@ pub enum IrError {
     #[error("`fields` entry '{field}' is not present in the terminal relation")]
     FieldNotInTerminal { field: String },
 
+    #[error("page: {reason}")]
+    NotPaginatable { at: String, reason: String },
+
+    #[error("tail: {reason}")]
+    NotTailable { at: String, reason: String },
+
     #[error("invalid query: {0}")]
     Invalid(String),
 }
@@ -132,7 +138,8 @@ pub fn validate(
 /// document. [`validate`] runs them too.
 pub fn check_structure(doc: &Document) -> Result<(), IrError> {
     let registry = check_version(doc.ir_version)?;
-    check_match_placement(doc, &registry)
+    check_match_placement(doc, &registry)?;
+    super::page::check(doc)
 }
 
 /// `match` is `traces`-only and the first stage, since a preceding filter
@@ -862,6 +869,8 @@ impl InferCtx<'_> {
             baseline: None,
             step: self.doc.step.clone(),
             constant: sub.constant,
+            page: None,
+            tail: None,
         };
         let terminal = infer(&child, self.sources, self.resolver)?.relation;
         match terminal {
@@ -1619,6 +1628,8 @@ impl InferCtx<'_> {
             baseline: None,
             step: None,
             constant: None,
+            page: None,
+            tail: None,
         };
         infer(&child, self.sources, self.resolver).map(|_| ())
     }
@@ -2066,7 +2077,7 @@ struct HistogramShape<'a> {
     as_name: &'a str,
 }
 
-fn require_feature(
+pub(crate) fn require_feature(
     registry: &OperatorRegistry,
     feature: Feature,
     what: &str,
@@ -3690,13 +3701,13 @@ mod tests {
 
     #[test]
     fn an_unsupported_version_still_reports_the_range() {
-        let err = validate_json(describe_doc(14, json!({ "target": "fields" }))).unwrap_err();
+        let err = validate_json(describe_doc(15, json!({ "target": "fields" }))).unwrap_err();
         assert!(
             matches!(
                 err,
                 IrError::UnsupportedVersion {
-                    found: 14,
-                    max: 13,
+                    found: 15,
+                    max: 14,
                     ..
                 }
             ),
