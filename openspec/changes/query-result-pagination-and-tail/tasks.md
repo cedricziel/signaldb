@@ -119,18 +119,18 @@ optional follow-up and outside this change's definition of done.
 
 ## 5. Pagination surfaces: CLI, MCP, UI
 
-- [ ] 5.1 Write a failing CLI test, then implement `signaldb query ir
+- [x] 5.1 Write a failing CLI test, then implement `signaldb query ir
     --page-size N --all-pages` through `signaldb-sdk`, streaming each page's
       rows as NDJSON and stopping at the last page.
       Verify with `cargo test -p signaldb-cli query`
-- [ ] 5.2 Write a failing test, then extend the MCP `query_ir` tool:
+- [x] 5.2 Write a failing test, then extend the MCP `query_ir` tool:
       `page`/`cursor` input, and `next_cursor` in the output and its
       description. Verify with `cargo test -p mcp-server query_ir`
 - [ ] 5.3 Write failing UI tests (vitest), then add "Load more" to the
       Explore query results table using `page.next_cursor` through the
       generated client only. Verify with `pnpm --filter ./src/ui test &&
     pnpm --filter ./src/ui lint`
-- [ ] 5.4 Docs: the CLI reference and MCP tool docs. Verify that the docs
+- [x] 5.4 Docs: the CLI reference and MCP tool docs. Verify that the docs
       build passes
 
 ## 6. Querier tail execution (querier)
