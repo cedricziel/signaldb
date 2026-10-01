@@ -272,6 +272,7 @@ impl Modify for SecurityAddon {
         crate::endpoints::query::QueryIrRequest,
         crate::endpoints::query::QueryRange,
         crate::endpoints::query::QueryIrResponse,
+        common::query_ir::Stage,
         common::discovery::MetadataResult,
         common::discovery::MetadataKind,
         common::discovery::DiscoveredField,
@@ -441,6 +442,38 @@ mod tests {
                 "{path} must document the keys parameter it resolves"
             );
         }
+    }
+
+    /// The IR's own stage grammar is published as `IrStage` (externally
+    /// tagged: one single-key object per stage), so the generated clients
+    /// carry a variant per stage. The IR schemas take an `Ir` prefix:
+    /// unprefixed, `HeatmapAxisX`/`Y` collide with the response DTOs and one
+    /// silently replaces the other.
+    #[test]
+    fn ir_stage_schemas_are_published() {
+        let spec: serde_json::Value =
+            serde_json::from_str(&openapi_document().to_pretty_json().unwrap()).unwrap();
+
+        let variants = spec
+            .pointer("/components/schemas/IrStage/oneOf")
+            .and_then(|v| v.as_array())
+            .expect("IrStage must be a oneOf");
+        let tags: Vec<&str> = variants
+            .iter()
+            .filter_map(|v| v.pointer("/required/0").and_then(|t| t.as_str()))
+            .collect();
+        for stage in ["where", "aggregate", "match", "binop", "histogram_quantile"] {
+            assert!(tags.contains(&stage), "IrStage lacks `{stage}`: {tags:?}");
+        }
+        assert!(
+            spec.pointer("/components/schemas/IrPredicate/oneOf")
+                .is_some(),
+            "the `where` predicate must be a typed schema"
+        );
+        assert_eq!(
+            spec.pointer("/components/schemas/IrHeatmap/properties/x/$ref"),
+            Some(&serde_json::json!("#/components/schemas/IrHeatmapAxisX")),
+        );
     }
 
     /// `dedicated-login-page` change, section 1, and `oidc-login` task 4.1:

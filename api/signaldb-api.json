@@ -8380,6 +8380,1535 @@
           }
         }
       },
+      "IrAbsent": {
+        "type": "object",
+        "description": "The `absent` stage: one series valued 1 where the input has none.",
+        "properties": {
+          "labels": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrAgg": {
+        "type": "object",
+        "description": "A single named aggregate output.",
+        "required": [
+          "fn",
+          "as"
+        ],
+        "properties": {
+          "across": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrAggFn",
+                "description": "For a per-series range function (`rate`/`increase`/`irate`/\n`*_over_time`), the reducer that folds each `by` group's per-series\nvalues into one value per step. Defaults to `sum` (the historical\n`rate`/`increase` behaviour). `irVersion` 7."
+              }
+            ]
+          },
+          "arg": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "A numeric argument (e.g. the quantile in `[0,1]`)."
+          },
+          "as": {
+            "type": "string",
+            "description": "The output column name — the only thing later stages may reference."
+          },
+          "divisor": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "Divide the aggregate's value by this scalar, so a measure can be\nreported per unit rather than absolute (`irVersion` 5).\n\nThis is what a rate is: a count over a window, divided by the window.\nNamed for the operation rather than for time — dividing an aggregate\nby a scalar is not inherently temporal, and this IR is\nsignal-agnostic."
+          },
+          "fn": {
+            "$ref": "#/components/schemas/IrAggFn"
+          },
+          "of": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The field being aggregated (a logical name). Omitted for `count`."
+          },
+          "where": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrPredicate",
+                "description": "An optional predicate scoping which records this aggregate consumes,\nso one grouped query can report a total and a subset measure over the\nsame groups (`count` of everything beside `count` of just the errors).\n\nIt is the same grammar, resolver and evaluation semantics as the `where`\nstage — deliberately the shared [`Predicate`], not a second grammar —\nand it narrows only this aggregate. Grouping happens once regardless."
+              }
+            ]
+          },
+          "window": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "For a per-series range function, the lookback window: each step's\nvalue uses samples in `(t - window, t]`. A duration string like\n`step`. Defaults to `step` (the historical behaviour). `irVersion` 7."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrAggFn": {
+        "type": "string",
+        "description": "An aggregate function. Member of the versioned function registry.",
+        "enum": [
+          "count",
+          "sum",
+          "avg",
+          "min",
+          "max",
+          "quantile",
+          "stddev",
+          "stdvar",
+          "first",
+          "last",
+          "rate",
+          "increase",
+          "irate",
+          "avg_over_time",
+          "min_over_time",
+          "max_over_time",
+          "sum_over_time",
+          "count_over_time",
+          "count_distinct"
+        ]
+      },
+      "IrAggregate": {
+        "type": "object",
+        "description": "The `aggregate` stage: group-reduce, optionally time-bucketed by `step`.",
+        "required": [
+          "aggs"
+        ],
+        "properties": {
+          "aggs": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrAgg"
+            },
+            "description": "The named aggregate outputs."
+          },
+          "by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Grouping fields (logical names)."
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "A time-bucket width (`\"1m\"`). Present → the result is a `series`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrBinop": {
+        "type": "object",
+        "description": "The `binop` stage: combine the pipeline (left) with `right`.\n\nTwo series match on a key of their labels, as in PromQL: by default every\nlabel but `metric.name`; with `ignoring`, every label but `metric.name`\nand the listed ones; with `on`, exactly the listed labels.",
+        "required": [
+          "op",
+          "right"
+        ],
+        "properties": {
+          "bool": {
+            "type": "boolean",
+            "description": "Comparison ops only: yield 0/1 instead of filtering."
+          },
+          "group": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrBinopGroup"
+              }
+            ]
+          },
+          "ignoring": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "on": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "op": {
+            "$ref": "#/components/schemas/IrBinopOp"
+          },
+          "reverse": {
+            "type": "boolean",
+            "description": "Evaluate `right op left` (e.g. `2 - series`)."
+          },
+          "right": {
+            "$ref": "#/components/schemas/IrBinopOperand"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrBinopGroup": {
+        "type": "object",
+        "description": "A `binop`'s one-to-many (`group_left`/`group_right`) match.",
+        "required": [
+          "side"
+        ],
+        "properties": {
+          "include": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Labels copied from the \"one\" side onto the result."
+          },
+          "side": {
+            "$ref": "#/components/schemas/IrGroupSide"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrBinopOp": {
+        "type": "string",
+        "description": "A `binop` operator (`irVersion` 10).",
+        "enum": [
+          "add",
+          "sub",
+          "mul",
+          "div",
+          "mod",
+          "pow",
+          "atan2",
+          "eq",
+          "ne",
+          "gt",
+          "ge",
+          "lt",
+          "le",
+          "and",
+          "or",
+          "unless"
+        ]
+      },
+      "IrBinopOperand": {
+        "oneOf": [
+          {
+            "type": "number",
+            "format": "double"
+          },
+          {
+            "$ref": "#/components/schemas/IrSubDocument"
+          }
+        ],
+        "description": "A `binop`'s right operand: a number or a sub-document."
+      },
+      "IrCompareOp": {
+        "type": "string",
+        "description": "A comparison against a number.",
+        "enum": [
+          "eq",
+          "ne",
+          "gt",
+          "ge",
+          "lt",
+          "le"
+        ]
+      },
+      "IrComparisonOp": {
+        "type": "string",
+        "description": "A comparison operator. Members of the versioned operator registry.",
+        "enum": [
+          "eq",
+          "ne",
+          "gt",
+          "gte",
+          "lt",
+          "lte",
+          "in",
+          "between",
+          "contains",
+          "regex",
+          "exists"
+        ]
+      },
+      "IrCorrelate": {
+        "type": "object",
+        "description": "The `correlate` stage. With `to: \"parent\"` (`irVersion` 8) it joins each\nspan to its parent span, whose columns come back under a fixed `parent.`\nprefix. With a signal target (`irVersion` 11) it joins the relation to\nthat source `on` a logical key; `pipeline` (`where` stages only) narrows\nthe target side.",
+        "required": [
+          "to",
+          "kind"
+        ],
+        "properties": {
+          "fanout": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "inner/left only: the most target rows kept per source row."
+          },
+          "kind": {
+            "$ref": "#/components/schemas/IrJoinKind"
+          },
+          "on": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrCorrelateKey"
+              }
+            ]
+          },
+          "pipeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrStage"
+            }
+          },
+          "to": {
+            "type": "string"
+          },
+          "window": {
+            "oneOf": [
+              {
+                "type": "null"
+              },
+              {
+                "$ref": "#/components/schemas/IrCorrelateWindow"
+              }
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrCorrelateKey": {
+        "type": "string",
+        "description": "A logical join key a signal `correlate` matches on.",
+        "enum": [
+          "trace_id",
+          "span_id",
+          "resource_identity",
+          "series_id"
+        ]
+      },
+      "IrCorrelateWindow": {
+        "type": "object",
+        "description": "How far a signal `correlate` widens its target scan beyond the source\nrows' time envelope. Both default to zero.",
+        "properties": {
+          "after": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "before": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrDerivedField": {
+        "type": "object",
+        "description": "A field derived by an `extract` stage, with its declared type.",
+        "required": [
+          "name",
+          "type"
+        ],
+        "properties": {
+          "name": {
+            "type": "string"
+          },
+          "type": {
+            "$ref": "#/components/schemas/IrValueType"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrDescribe": {
+        "type": "object",
+        "description": "The `describe` stage: introspect the source instead of reading its records.\n\nTerminal, and legal only with the `metadata` result envelope. It is answered\nfrom declared schema, the type authority, the tenant's schema registries\nand maintained statistics — not by lowering to a query plan — so it carries\nno predicate: see `openspec/changes/archive/2026-09-22-query-field-discovery`\n(design D6) for why a predicate-scoped answer is refused rather than approximated.",
+        "required": [
+          "target"
+        ],
+        "properties": {
+          "field": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The logical field whose values to suggest. Required by `values`,\nrejected by `fields`."
+          },
+          "limit": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "format": "int64",
+            "description": "Maximum items to return. Bounded by the server's own cap.",
+            "minimum": 0
+          },
+          "sample": {
+            "type": "boolean",
+            "description": "Opt in to reading signal data when no metadata covers the request.\nWithout it, an uncovered request is answered with an explanation\nrather than a scan."
+          },
+          "target": {
+            "$ref": "#/components/schemas/IrDescribeTarget"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrDescribeTarget": {
+        "type": "string",
+        "description": "What a `describe` stage introspects.",
+        "enum": [
+          "fields",
+          "values"
+        ]
+      },
+      "IrDirection": {
+        "type": "string",
+        "description": "A sort direction.",
+        "enum": [
+          "asc",
+          "desc"
+        ]
+      },
+      "IrExtract": {
+        "type": "object",
+        "description": "The `extract` stage: derive typed, query-local fields from log content.",
+        "required": [
+          "parser",
+          "as"
+        ],
+        "properties": {
+          "as": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrDerivedField"
+            }
+          },
+          "parser": {
+            "$ref": "#/components/schemas/IrParser"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrFilter": {
+        "type": "object",
+        "description": "The `filter` stage: keep the values that compare true, or with `bool`\nreplace every value by 0/1.",
+        "required": [
+          "op",
+          "value"
+        ],
+        "properties": {
+          "bool": {
+            "type": "boolean"
+          },
+          "op": {
+            "$ref": "#/components/schemas/IrCompareOp"
+          },
+          "value": {
+            "type": "number",
+            "format": "double"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrGroupSide": {
+        "type": "string",
+        "description": "Which operand of a `binop` holds many series per match.",
+        "enum": [
+          "left",
+          "right"
+        ]
+      },
+      "IrHeatmap": {
+        "type": "object",
+        "required": [
+          "x",
+          "y",
+          "value"
+        ],
+        "properties": {
+          "value": {
+            "$ref": "#/components/schemas/IrHeatmapValue"
+          },
+          "x": {
+            "$ref": "#/components/schemas/IrHeatmapAxisX"
+          },
+          "y": {
+            "$ref": "#/components/schemas/IrHeatmapAxisY"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrHeatmapAxisX": {
+        "type": "object",
+        "description": "A terminal two-dimensional count aggregate, available in IR v2.",
+        "required": [
+          "step",
+          "align"
+        ],
+        "properties": {
+          "align": {
+            "type": "string"
+          },
+          "step": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrHeatmapAxisY": {
+        "type": "object",
+        "required": [
+          "of",
+          "bounds"
+        ],
+        "properties": {
+          "bounds": {
+            "type": "array",
+            "items": {}
+          },
+          "of": {
+            "type": "string"
+          },
+          "overflow": {
+            "type": "boolean"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrHeatmapValue": {
+        "type": "object",
+        "required": [
+          "fn",
+          "as"
+        ],
+        "properties": {
+          "as": {
+            "type": "string"
+          },
+          "fn": {
+            "$ref": "#/components/schemas/IrAggFn"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrHistogramFraction": {
+        "type": "object",
+        "description": "The estimated fraction of histogram observations in `(lower, upper]`,\ncumulative(`upper`) − cumulative(`lower`): the `histogram_quantile`\nsibling (`irVersion` 10). A bound inside a bucket is interpolated, so the\nresult is an estimate.",
+        "required": [
+          "lower",
+          "upper",
+          "step",
+          "as"
+        ],
+        "properties": {
+          "as": {
+            "type": "string"
+          },
+          "by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          },
+          "lookback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "As on `histogram_quantile`."
+          },
+          "lower": {
+            "type": "number",
+            "format": "double"
+          },
+          "mode": {
+            "$ref": "#/components/schemas/IrHistogramMode"
+          },
+          "per_series": {
+            "type": "boolean",
+            "description": "One result per stored series instead of merging them (`irVersion`\n10). Excludes `by`; the output keeps each series' labels less\n`metric.name`."
+          },
+          "step": {
+            "type": "string"
+          },
+          "upper": {
+            "type": "number",
+            "format": "double"
+          },
+          "window": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrHistogramMode": {
+        "type": "string",
+        "description": "How data points sharing a `histogram_quantile` step bucket combine.",
+        "enum": [
+          "rate",
+          "instant"
+        ]
+      },
+      "IrHistogramQuantile": {
+        "type": "object",
+        "description": "A terminal quantile-over-buckets stage, available in IR v3. Only legal on\nthe `metrics` source, over its histogram rows: interpolates a percentile\nfrom OTLP classic-histogram bucket data, distinct from the `aggregate` stage's\n`fn: \"quantile\"` (`approx_percentile_cont` over independent scalar\nvalues — a different algorithm entirely, over a different source shape).",
+        "required": [
+          "q",
+          "step",
+          "as"
+        ],
+        "properties": {
+          "as": {
+            "type": "string",
+            "description": "The output value column name."
+          },
+          "by": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            },
+            "description": "Grouping labels (logical names), and the output's labels. Grouping\nalso separates metrics internally — merging bucket data across\ndifferent metrics is meaningless, since different metrics carry\ndifferent bucket bounds — but, as in Prometheus, the output does not\ncarry `metric.name`."
+          },
+          "lookback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Instant mode only: at each evaluation instant `t`, read each series'\nlatest point within `(t - lookback, t]`, as a PromQL instant vector\ndoes (`irVersion` 10). Without it the lookback is `step`."
+          },
+          "mode": {
+            "$ref": "#/components/schemas/IrHistogramMode"
+          },
+          "per_series": {
+            "type": "boolean",
+            "description": "One result per stored series instead of merging them (`irVersion`\n10). Excludes `by`; the output keeps each series' labels less\n`metric.name`."
+          },
+          "q": {
+            "type": "number",
+            "format": "double",
+            "description": "The quantile, in `[0, 1]`."
+          },
+          "step": {
+            "type": "string",
+            "description": "Evaluation step: the stage is evaluated at `t = from + k·step` and\neach value labelled `t`. The result is always a `series`."
+          },
+          "window": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Rate mode's window: each instant reads `(t - window, t]` (default:\n`step`), `irVersion` 10."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrJoinKind": {
+        "type": "string",
+        "description": "A join kind for a `correlate` stage. `semi`/`anti` need a signal target.",
+        "enum": [
+          "inner",
+          "left",
+          "semi",
+          "anti"
+        ]
+      },
+      "IrLabelJoin": {
+        "type": "object",
+        "description": "`labels.join`: PromQL's `label_join`.",
+        "required": [
+          "dst",
+          "separator",
+          "src"
+        ],
+        "properties": {
+          "dst": {
+            "type": "string"
+          },
+          "separator": {
+            "type": "string"
+          },
+          "src": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrLabelReplace": {
+        "type": "object",
+        "description": "`labels.replace`: PromQL's `label_replace`.",
+        "required": [
+          "dst",
+          "replacement",
+          "src",
+          "regex"
+        ],
+        "properties": {
+          "dst": {
+            "type": "string"
+          },
+          "regex": {
+            "type": "string"
+          },
+          "replacement": {
+            "type": "string"
+          },
+          "src": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrLabels": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "replace"
+            ],
+            "properties": {
+              "replace": {
+                "$ref": "#/components/schemas/IrLabelReplace"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "join"
+            ],
+            "properties": {
+              "join": {
+                "$ref": "#/components/schemas/IrLabelJoin"
+              }
+            }
+          }
+        ],
+        "description": "The `labels` stage: rewrite one label of every series."
+      },
+      "IrMap": {
+        "type": "object",
+        "description": "The `map` stage: apply a function to every value.",
+        "required": [
+          "fn"
+        ],
+        "properties": {
+          "args": {
+            "type": "array",
+            "items": {
+              "type": "number",
+              "format": "double"
+            }
+          },
+          "fn": {
+            "$ref": "#/components/schemas/IrMapFn"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrMapFn": {
+        "type": "string",
+        "description": "A per-value `map` function (`irVersion` 10).",
+        "enum": [
+          "abs",
+          "ceil",
+          "floor",
+          "round",
+          "sqrt",
+          "exp",
+          "ln",
+          "log2",
+          "log10",
+          "sgn",
+          "clamp",
+          "clamp_min",
+          "clamp_max",
+          "timestamp",
+          "day_of_month",
+          "day_of_week",
+          "day_of_year",
+          "days_in_month",
+          "hour",
+          "minute",
+          "month",
+          "year"
+        ]
+      },
+      "IrMatch": {
+        "type": "object",
+        "description": "The `match` stage (`irVersion` 12): keep the traces in which every\nspan-set has a matching span and every relation holds, returning the\nwitnessing spans.",
+        "required": [
+          "spansets"
+        ],
+        "properties": {
+          "relations": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrMatchRelation"
+            }
+          },
+          "spansets": {
+            "type": "object",
+            "additionalProperties": {
+              "$ref": "#/components/schemas/IrPredicate"
+            },
+            "propertyNames": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrMatchOp": {
+        "type": "string",
+        "description": "How a `match` relation relates its two span-sets.",
+        "enum": [
+          "child",
+          "descendant",
+          "ancestor",
+          "sibling"
+        ]
+      },
+      "IrMatchRelation": {
+        "type": "object",
+        "description": "One structural relation of a `match` stage, between two declared span-sets.",
+        "required": [
+          "left",
+          "op",
+          "right"
+        ],
+        "properties": {
+          "left": {
+            "type": "string"
+          },
+          "op": {
+            "$ref": "#/components/schemas/IrMatchOp"
+          },
+          "right": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrNoOperands": {
+        "type": "object",
+        "description": "The operand of a stage that takes none (`{\"scalar\": {}}`).",
+        "additionalProperties": false
+      },
+      "IrOrder": {
+        "type": "object",
+        "description": "An `order` key: a field or aggregate name plus a direction.",
+        "required": [
+          "of",
+          "dir"
+        ],
+        "properties": {
+          "dir": {
+            "$ref": "#/components/schemas/IrDirection"
+          },
+          "of": {
+            "type": "string",
+            "description": "A `FieldRef` or `AggRef` (a name), never an expression string."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrOverTime": {
+        "type": "object",
+        "description": "The `over_time` stage: re-window a Series evaluated at its own step (a\nsubquery).",
+        "required": [
+          "fn",
+          "window"
+        ],
+        "properties": {
+          "arg": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "fn": {
+            "$ref": "#/components/schemas/IrOverTimeFn"
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "window": {
+            "type": "string"
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrOverTimeFn": {
+        "type": "string",
+        "description": "An `over_time` function (`irVersion` 10).",
+        "enum": [
+          "avg",
+          "min",
+          "max",
+          "sum",
+          "count",
+          "last",
+          "stddev",
+          "stdvar",
+          "present",
+          "quantile",
+          "delta",
+          "deriv",
+          "changes",
+          "resets"
+        ]
+      },
+      "IrParser": {
+        "type": "string",
+        "description": "A parser for the `extract` stage. `regex` is deferred (registry-gated).",
+        "enum": [
+          "json",
+          "logfmt"
+        ]
+      },
+      "IrPredicate": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "field",
+              "op"
+            ],
+            "properties": {
+              "field": {
+                "type": "string"
+              },
+              "op": {
+                "$ref": "#/components/schemas/IrComparisonOp"
+              },
+              "value": {
+                "description": "Absent for `exists`."
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "and"
+            ],
+            "properties": {
+              "and": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/IrPredicate"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "or"
+            ],
+            "properties": {
+              "or": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/IrPredicate"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "not"
+            ],
+            "properties": {
+              "not": {
+                "$ref": "#/components/schemas/IrPredicate"
+              }
+            }
+          }
+        ],
+        "description": "A predicate: exactly one of a comparison leaf (`field`, `op`, and a\n`value` unless `op` is `exists`), `and`, `or`, or `not`."
+      },
+      "IrRank": {
+        "type": "object",
+        "description": "A `topk`/`bottomk` rank stage.",
+        "required": [
+          "n",
+          "of"
+        ],
+        "properties": {
+          "n": {
+            "type": "integer",
+            "format": "int64",
+            "description": "Must be an integer `> 0` (validated)."
+          },
+          "of": {
+            "type": "string",
+            "description": "The `AggRef` or `FieldRef` to rank by (a name)."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrReduce": {
+        "type": "object",
+        "description": "The `reduce` stage: Series → Series, grouped `by` or `without` labels.\n\n`without` also drops `metric.name`, as Prometheus does; `by` keeps\nexactly the listed labels (so `by (metric.name)` keeps the name).",
+        "required": [
+          "fn"
+        ],
+        "properties": {
+          "arg": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`topk`/`bottomk`: the integer k; `quantile`: the quantile."
+          },
+          "by": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          },
+          "fn": {
+            "$ref": "#/components/schemas/IrReduceFn"
+          },
+          "label": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`count_values`: the label that carries each value."
+          },
+          "without": {
+            "type": [
+              "array",
+              "null"
+            ],
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrReduceFn": {
+        "type": "string",
+        "description": "A `reduce` function: folds series into groups at every instant\n(`irVersion` 10).",
+        "enum": [
+          "sum",
+          "avg",
+          "min",
+          "max",
+          "count",
+          "group",
+          "stddev",
+          "stdvar",
+          "quantile",
+          "topk",
+          "bottomk",
+          "count_values"
+        ]
+      },
+      "IrSample": {
+        "type": "object",
+        "description": "The `sample` stage: evaluate a metric point stream into a `Series` at\nevery evaluation instant (`irVersion` 10).",
+        "required": [
+          "fn"
+        ],
+        "properties": {
+          "arg": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double",
+            "description": "`quantile_over_time` only: the quantile in `[0, 1]`."
+          },
+          "at": {
+            "description": "Pin every evaluation instant to this timestamp literal."
+          },
+          "fn": {
+            "$ref": "#/components/schemas/IrSampleFn"
+          },
+          "lookback": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "`latest` only: how far back a point still counts (default `5m`)."
+          },
+          "of": {
+            "$ref": "#/components/schemas/IrSampleOf"
+          },
+          "offset": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Shift the read window back by this non-negative duration."
+          },
+          "step": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The evaluation step; defaults to the document `step`."
+          },
+          "window": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "The range read by every function but `latest`: `(t - window, t]`."
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrSampleFn": {
+        "type": "string",
+        "description": "A function a `sample` stage evaluates over each series' point stream\n(`irVersion` 10).",
+        "enum": [
+          "latest",
+          "rate",
+          "increase",
+          "irate",
+          "delta",
+          "idelta",
+          "deriv",
+          "resets",
+          "changes",
+          "avg_over_time",
+          "min_over_time",
+          "max_over_time",
+          "sum_over_time",
+          "count_over_time",
+          "last_over_time",
+          "stddev_over_time",
+          "stdvar_over_time",
+          "present_over_time",
+          "quantile_over_time"
+        ]
+      },
+      "IrSampleOf": {
+        "type": "string",
+        "description": "Which value of a metric point a `sample` reads.",
+        "enum": [
+          "metric.value",
+          "metric.count",
+          "metric.sum"
+        ]
+      },
+      "IrStage": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": [
+              "where"
+            ],
+            "properties": {
+              "where": {
+                "$ref": "#/components/schemas/IrPredicate"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "extract"
+            ],
+            "properties": {
+              "extract": {
+                "$ref": "#/components/schemas/IrExtract"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "aggregate"
+            ],
+            "properties": {
+              "aggregate": {
+                "$ref": "#/components/schemas/IrAggregate"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "topk"
+            ],
+            "properties": {
+              "topk": {
+                "$ref": "#/components/schemas/IrRank"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "bottomk"
+            ],
+            "properties": {
+              "bottomk": {
+                "$ref": "#/components/schemas/IrRank"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "order"
+            ],
+            "properties": {
+              "order": {
+                "type": "array",
+                "items": {
+                  "$ref": "#/components/schemas/IrOrder"
+                }
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "limit"
+            ],
+            "properties": {
+              "limit": {
+                "type": "integer",
+                "format": "int64",
+                "minimum": 0
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "heatmap"
+            ],
+            "properties": {
+              "heatmap": {
+                "$ref": "#/components/schemas/IrHeatmap"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "histogram_quantile"
+            ],
+            "properties": {
+              "histogram_quantile": {
+                "$ref": "#/components/schemas/IrHistogramQuantile"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "describe"
+            ],
+            "properties": {
+              "describe": {
+                "$ref": "#/components/schemas/IrDescribe"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "correlate"
+            ],
+            "properties": {
+              "correlate": {
+                "$ref": "#/components/schemas/IrCorrelate"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "sample"
+            ],
+            "properties": {
+              "sample": {
+                "$ref": "#/components/schemas/IrSample"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "scalar"
+            ],
+            "properties": {
+              "scalar": {
+                "$ref": "#/components/schemas/IrNoOperands"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "vector"
+            ],
+            "properties": {
+              "vector": {
+                "$ref": "#/components/schemas/IrNoOperands"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "reduce"
+            ],
+            "properties": {
+              "reduce": {
+                "$ref": "#/components/schemas/IrReduce"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "map"
+            ],
+            "properties": {
+              "map": {
+                "$ref": "#/components/schemas/IrMap"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "labels"
+            ],
+            "properties": {
+              "labels": {
+                "$ref": "#/components/schemas/IrLabels"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "filter"
+            ],
+            "properties": {
+              "filter": {
+                "$ref": "#/components/schemas/IrFilter"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "sort"
+            ],
+            "properties": {
+              "sort": {
+                "$ref": "#/components/schemas/IrDirection"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "absent"
+            ],
+            "properties": {
+              "absent": {
+                "$ref": "#/components/schemas/IrAbsent"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "over_time"
+            ],
+            "properties": {
+              "over_time": {
+                "$ref": "#/components/schemas/IrOverTime"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "binop"
+            ],
+            "properties": {
+              "binop": {
+                "$ref": "#/components/schemas/IrBinop"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "histogram_fraction"
+            ],
+            "properties": {
+              "histogram_fraction": {
+                "$ref": "#/components/schemas/IrHistogramFraction"
+              }
+            }
+          },
+          {
+            "type": "object",
+            "required": [
+              "match"
+            ],
+            "properties": {
+              "match": {
+                "$ref": "#/components/schemas/IrMatch"
+              }
+            }
+          }
+        ],
+        "description": "A transform stage in the pipeline. Externally tagged: a single-key object\nwhose key names the stage. An unknown key is an unsupported stage and is\nrejected by name."
+      },
+      "IrSubDocument": {
+        "type": "object",
+        "description": "A `binop`'s right operand as a sub-document: it inherits `irVersion`,\n`range` and `step` from the enclosing document.",
+        "required": [
+          "from"
+        ],
+        "properties": {
+          "constant": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "format": "double"
+          },
+          "from": {
+            "type": "string"
+          },
+          "pipeline": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/IrStage"
+            }
+          }
+        },
+        "additionalProperties": false
+      },
+      "IrValueType": {
+        "oneOf": [
+          {
+            "type": "string",
+            "enum": [
+              "string"
+            ]
+          },
+          {
+            "type": "string",
+            "enum": [
+              "int64"
+            ]
+          },
+          {
+            "type": "string",
+            "enum": [
+              "float64"
+            ]
+          },
+          {
+            "type": "string",
+            "enum": [
+              "bool"
+            ]
+          },
+          {
+            "type": "string",
+            "description": "Nanoseconds since the Unix epoch.",
+            "enum": [
+              "timestamp_ns"
+            ]
+          },
+          {
+            "type": "string",
+            "description": "A duration in nanoseconds.",
+            "enum": [
+              "duration_ns"
+            ]
+          },
+          {
+            "type": "string",
+            "description": "Raw bytes, encoded as base64 on the wire.",
+            "enum": [
+              "bytes"
+            ]
+          },
+          {
+            "type": "object",
+            "description": "A homogeneous array of a single element type.",
+            "required": [
+              "array"
+            ],
+            "properties": {
+              "array": {
+                "$ref": "#/components/schemas/IrValueType",
+                "description": "A homogeneous array of a single element type."
+              }
+            }
+          }
+        ],
+        "description": "The canonical value types that flow through the IR.\n\nEach logical field has exactly one canonical `ValueType`, owned by the\nattribute registry. Literal coercion always targets a field's canonical\ntype — see [`coerce`]."
+      },
       "LabelsResponse": {
         "type": "object",
         "description": "Response body of the label-names / label-values endpoints.",
