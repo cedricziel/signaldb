@@ -2,7 +2,8 @@ import { useMemo, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
 import type { ExploreState } from "../../lib/urlState";
 import {
-  connectionInfo,
+  bearerCredential,
+  connectionQuery,
   type ConnectionInfoResponse,
 } from "../../api/connection";
 import { ApiError, toErrorMessage } from "../../api/http";
@@ -40,13 +41,6 @@ function tlsBlock(tls: boolean, indent: string): string {
 function grpcInsecureLine(tls: boolean): string {
   if (tls) return "";
   return "\n        otlptracegrpc.WithInsecure(),";
-}
-
-/** The credential a client config's `credentials:`/`Bearer `-style fields
- * take, extracted from the server's `Authorization: Bearer <placeholder>`
- * header contract. */
-function bearerCredential(authorization: string): string {
-  return authorization.replace(/^Bearer\s+/, "");
 }
 
 type SourceId =
@@ -279,12 +273,7 @@ interface Props {
 
 export function Instrumentation({ state }: Props) {
   const [selectedSource, setSelectedSource] = useState<SourceId>("otel-sdk");
-  const connection = useQuery({
-    queryKey: ["connection", state.tenant, state.dataset],
-    queryFn: () => connectionInfo(),
-    staleTime: 5 * 60_000,
-    retry: false,
-  });
+  const connection = useQuery(connectionQuery(state));
 
   const notes = connection.data?.notes ?? [];
   const source = SOURCES.find((s) => s.id === selectedSource)!;

@@ -29,7 +29,8 @@ export type NavIconName =
   | "collapse"
   | "updown"
   | "check"
-  | "menu";
+  | "menu"
+  | "connect";
 
 const round = { strokeLinecap: "round", strokeLinejoin: "round" } as const;
 
@@ -196,6 +197,13 @@ const GLYPHS: Record<NavIconName, ReactNode> = {
     </>
   ),
   check: <polyline points="3,8.5 6.5,12 13,4.5" {...round} />,
+  connect: (
+    <>
+      <path d="M5.5 2v3 M10.5 2v3" {...round} />
+      <path d="M3.5 5h9v2.5a4.5 4.5 0 0 1-9 0z" {...round} />
+      <line x1="8" y1="12" x2="8" y2="14.5" strokeLinecap="round" />
+    </>
+  ),
   menu: (
     <>
       <line x1="2" y1="4" x2="14" y2="4" strokeLinecap="round" />

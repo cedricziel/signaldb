@@ -4,6 +4,12 @@
 // each other or with the router's real values.
 import type { ConnectionInfoResponse } from "../api/gen";
 
+/** A deployment's MCP endpoint, for fixtures that need one. */
+export const MCP_ENDPOINT = {
+  url: "https://mcp.acme.example.com/mcp",
+  transport: "streamable-http",
+};
+
 /** A deployment with a dedicated ingest host — distinct from
  * `window.location.hostname` under test (jsdom's default, `localhost`), so a
  * leaked hostname-derived fallback would be caught. `tls` toggles both the
@@ -73,12 +79,7 @@ export function connectionInfoBody(
       },
     },
     required_scopes: {
-      ingest: [
-        "metrics:write",
-        "logs:write",
-        "traces:write",
-        "profiles:write",
-      ],
+      ingest: ["metrics:write", "logs:write", "traces:write", "profiles:write"],
       query: ["traces:read", "logs:read", "metrics:read", "profiles:read"],
     },
     otel_env: otelEnv,

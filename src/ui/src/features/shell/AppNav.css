@@ -582,6 +582,20 @@
   white-space: nowrap;
 }
 
+/* Square icon variant of `.btn btn-ghost`, sized to the search field. */
+.app-connect-trigger {
+  display: grid;
+  place-items: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  color: var(--dim);
+}
+
+.app-connect-trigger:hover {
+  color: var(--text);
+}
+
 /* ---- mobile top bar + drawer (<720px) --------------------------------- */
 
 .app-mobilebar {

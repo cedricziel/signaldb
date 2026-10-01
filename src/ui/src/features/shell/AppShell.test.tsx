@@ -6,6 +6,7 @@ import { sampleWhoami } from "../../stories/fetchStub";
 import { renderWithClient } from "../../test/render";
 import { AppShell } from "./AppShell";
 import { useBreadcrumbLeaf } from "./breadcrumbLeaf";
+import { CONNECT_TITLE } from "./ConnectPanel";
 
 const WHO = sampleWhoami();
 const VIEWER = sampleWhoami({
@@ -183,6 +184,26 @@ describe("AppShell", () => {
     expect(document.querySelector(".app-mobilebar-page")).toHaveTextContent(
       "abc12345",
     );
+  });
+
+  it("opens the Connect dialog from the page header's icon button", () => {
+    renderWithClient(<AppShell page="logs" who={WHO} />);
+    const trigger = screen.getByRole("button", { name: "Connect" });
+    expect(trigger.textContent).toBe("");
+    expect(trigger).toHaveAttribute("title", CONNECT_TITLE);
+    fireEvent.click(trigger);
+    expect(
+      screen.getByRole("dialog", { name: "Connect" }),
+    ).toBeInTheDocument();
+  });
+
+  it("opens the Connect dialog from the mobile top bar", () => {
+    stubViewport(390);
+    renderWithClient(<AppShell page="logs" who={WHO} />);
+    fireEvent.click(screen.getByRole("button", { name: "Connect" }));
+    expect(
+      screen.getByRole("dialog", { name: "Connect" }),
+    ).toBeInTheDocument();
   });
 
   it("shows the demo banner in demo mode", () => {
